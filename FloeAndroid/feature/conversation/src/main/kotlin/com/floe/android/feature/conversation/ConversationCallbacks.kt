@@ -150,9 +150,31 @@ data class ApprovalDecisionRequest(
     /** ⇄ ApprovalScope mapping (once/task/project/host × local/host/hostPath). */
     val grant: ApprovalGrantUi?,
     val reason: String?,
+    /** The user's EXPLICIT consent to end this conversation's own captured
+     * interactive terminal before this already-proposed call is dispatched.
+     * Never implied by an execution policy, a reusable grant, a full-access
+     * window or a card tier, and never present on a Deny. Null = the ordinary
+     * decision path, byte-identical to before. */
+    val terminalHandoff: TerminalHandoffConsentUi? = null,
 ) {
     override fun toString(): String =
-        "ApprovalDecisionRequest(approval=$approvalId, run=$runId, decision=$decision)"
+        "ApprovalDecisionRequest(approval=$approvalId, run=$runId, decision=$decision" +
+            ", terminalHandoff=${terminalHandoff != null})"
+}
+
+/**
+ * One explicit human decision to hand the single Linux engine workload slot
+ * from THIS conversation's own interactive terminal to the already-proposed
+ * command. It carries the exact identity the user was shown so the host can
+ * refuse a session that was replaced in the meantime instead of stopping a
+ * different terminal; the host remains the only party that closes anything,
+ * and it must prove the real release before dispatching the approval once.
+ */
+data class TerminalHandoffConsentUi(
+    val sessionToken: String,
+    val nativeEpoch: Long,
+) {
+    override fun toString(): String = "TerminalHandoffConsentUi(epoch=$nativeEpoch)"
 }
 
 /** ⇄ ApprovalDecision subset a human can emit from the card. */

@@ -108,6 +108,35 @@ struct G04TerminalMailboxIntegrationTests {
         return nil
     }
 
+    /// Claims events until EVERY requested actionReply arrived (bounded), so a
+    /// reply that completes out of order is retained by requestID instead of
+    /// being acknowledged and discarded while another ID is awaited. The two
+    /// strict-bool toggle submissions are independent and may settle in either
+    /// order; both replies must still be inspected.
+    private func drainReplies(_ box: G04TerminalHostMailbox,
+                              requestIDs: Set<String>,
+                              timeoutSeconds: Double = 4) throws -> [String: [String: Any]] {
+        var found: [String: [String: Any]] = [:]
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline && found.count < requestIDs.count {
+            let token = box.nextEvent(timeoutMillis: 5)
+            guard token > 0 else { continue }
+            var bytes = [CChar](repeating: 0, count: G04TerminalHostLimits.maximumFrameBytes + 1)
+            let count = box.describe(event: token, buffer: &bytes, capacity: Int32(bytes.count))
+            var parsed: [String: Any]?
+            if count > 0 {
+                let data = bytes.withUnsafeBytes { Data($0.prefix(Int(count))) }
+                parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            }
+            _ = box.ack(event: token)
+            if let parsed, let requestID = parsed["requestID"] as? String,
+               requestIDs.contains(requestID) {
+                found[requestID] = parsed
+            }
+        }
+        return found
+    }
+
     @Test func capabilitiesCarriesHonestDurableMirrorOnRealDispatch() throws {
         // An epoch no Root generation owns: the durable read must NOT claim
         // it succeeded. settingsKnown stays false, the enabled mirror is
@@ -146,12 +175,11 @@ struct G04TerminalMailboxIntegrationTests {
         ])
         #expect(box.submitAction(descriptor: missing, payload: nil) > 0)
         #expect(box.submitAction(descriptor: coerced, payload: nil) > 0)
-        let missingReply = try drainReply(box, requestID: "toggle-missing")
-        let first = try #require(missingReply)
+        let replies = try drainReplies(box, requestIDs: ["toggle-missing", "toggle-coerced"])
+        let first = try #require(replies["toggle-missing"])
         #expect(first["ok"] as? Bool == false)
         #expect(first["code"] as? String == "invalidType")
-        let coercedReply = try drainReply(box, requestID: "toggle-coerced")
-        let second = try #require(coercedReply)
+        let second = try #require(replies["toggle-coerced"])
         #expect(second["ok"] as? Bool == false)
         #expect(second["code"] as? String == "invalidType")
     }

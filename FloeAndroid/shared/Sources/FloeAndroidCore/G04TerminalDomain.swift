@@ -48,6 +48,9 @@ import Foundation
 import FloeCore
 import FloeTools
 import FloeAndroidShellTools
+// Owned-slot admission vocabulary (Main ruling 2026-10-28): FloeAndroidCore
+// already depends on FloeAgentRuntime, so this is an existing module edge.
+import FloeAgentRuntime
 
 // MARK: - Limits
 
@@ -291,6 +294,21 @@ public actor G04TerminalStore {
         guard !retired, G02NativeRootEpoch.readback() == epoch else {
             reply(requestID, ok: false, code: .retired); return
         }
+        // G05-R3 run-less first entry: the editor's explicit Run button shares
+        // the terminal's gate, so it prepares the readiness facts itself
+        // instead of waiting for somebody to send a message. This MUST precede
+        // the ORIGINAL admit(): a genuinely fresh ordinary task has no binding
+        // yet, so admitting first would refuse before the genuine binding can
+        // be created. No model run is manufactured to unlock it and a warm
+        // lane is a fast no-op; a typed refusal is a HARD refusal (no global
+        // readiness override).
+        switch await prepareFirstEntry(conversationID: conversationID,
+                                       expectedWorkspaceID: expectedWorkspaceID) {
+        case .proceed: break
+        case .refuse(let code, let token):
+            reply(requestID, ok: false, code: code, reason: token); return
+        }
+        // Re-prove the exact conversation/workspace AFTER the awaited prepare.
         guard let (workspaceID, _) = await admit(conversationID: conversationID,
                                                  expectedWorkspaceID: expectedWorkspaceID) else {
             reply(requestID, ok: false, code: .workspaceUnbound); return
@@ -329,6 +347,272 @@ public actor G04TerminalStore {
                    command: command, cwd: ".", columns: 80, rows: 24, requestID: requestID)
     }
 
+    // MARK: Run-less first entry (G05-R3, job-e2e7d046b63744cc)
+
+    /// Service-owned retention tasks: one per first-entry preparation whose
+    /// physical settlement was NOT proven when its waiter completed (an
+    /// uncertain/cancelled/`close_retained` reply, a budget expiry, a fence or
+    /// a still-claimed ticket). Tracked by this store (never by a view) and
+    /// deliberately NOT cancelled by `retire()`: neither a cancelled waiter nor
+    /// a generation fence is physical settlement, so the receipt stays attached
+    /// until the host's own ownership table reports this identity released.
+    private var firstEntryRetentions: [UUID: Task<Void, Never>] = [:]
+
+    /// Diagnostic/test truth: how many first-entry ownership retentions this
+    /// store still holds (a claimed ticket whose real settlement has not been
+    /// observed yet). Gates nothing.
+    var firstEntryRetentionCount: Int { firstEntryRetentions.count }
+
+    /// Prepares one EXPLICIT human terminal/run action's first entry WITHOUT a
+    /// model, provider or run, and answers whether the caller may continue.
+    ///
+    /// Two real gaps block a fresh generation, and both are closed here:
+    ///  1. a genuinely NEW ordinary task has NO workspace binding row — the
+    ///     production conversation store is constructed with
+    ///     `bindsNewConversationsToDefaultWorkspace = false`
+    ///     (RuntimeFacadeConversations.swift:2627) and `create` assigns
+    ///     ownership only when that flag is true (:3347, :3376) — so
+    ///     `LinuxWorkspaceAuthority.resolveWorkspace(conversationID:)` answers
+    ///     nil and the `admit` below could never reach a readiness step;
+    ///  2. the two receipt-backed readiness facts (`workspaceMappingSynced`,
+    ///     `leaseAuthorityQualified`) were produced only by the first ordinary
+    ///     MODEL run's preflight (`RuntimeFacadeRunAssembly.makeService`), so a
+    ///     no-provider user never qualified and the terminal refused.
+    ///
+    /// The binding is created through the SAME genuine ordinary workflow the
+    /// D14 `workspace.activate` command uses (`G04WorkspaceFacade.activate` ->
+    /// `SQLiteWorkspaceStore.ensureWorkspace(conversationID:title:)`: the
+    /// ORIGINAL canonical `.privateTask` / `PrivateTasks/<conversationID>`
+    /// ownership row inside the store's own serialized write transaction), with
+    /// the same canonical bounded title projection — never a first-project or
+    /// temp-directory guess, never a temporary/notes/foreign identity, never a
+    /// fabricated run row, and an existing association is returned untouched.
+    ///
+    /// Ownership discipline: ONE real `.conversation` operation lease
+    /// (`beginG04WorkspaceOperation`, registered with the ORIGINAL workspace
+    /// authority under a native-issued UI identity) covers this action's own
+    /// durable write and its NON-EXECUTING host preflight. It is discharged
+    /// exactly once, and ONLY on proven physical settlement: neither this
+    /// waiter's completion (a budget expiry or a cancellation releases the
+    /// waiter while a CLAIMED ticket stays owned), nor the host's completion of
+    /// the claim (`unavailable`/`cancelled`/`close_retained` are answered while
+    /// the pump's reconciliation may still own real IO), nor a generation fence
+    /// (the ORIGINAL fence contract keeps owned workers and remote leases alive)
+    /// counts. So the release needs the host's OWN asserted fact
+    /// (`ownershipReleased`) or an explicit per-request observation of the
+    /// pump's ownership table, and a store-owned task — never a view task, never
+    /// a global drain, never an elapsed-time success — holds the lease until
+    /// then. Every step is re-fenced against the exact Root generation, this
+    /// store's retirement and the lease's own cancellation after its await, and
+    /// the caller re-runs the ORIGINAL `admit` afterwards, so nothing opens
+    /// late.
+    ///
+    /// Anything this step cannot repair answers `.proceed`, so the ORIGINAL
+    /// admission below produces its ORIGINAL honest refusal: no new code is
+    /// invented here and nothing that could not open before may open now.
+    /// Internal (never a host entry point): the authored regression pins its
+    /// fail-closed shape with no installed composition, exactly like the
+    /// pump's `mappingIndexDigest` seam.
+    func prepareFirstEntry(conversationID: UUID,
+                           expectedWorkspaceID: UUID?) async -> G04TerminalFirstUseAdmission.Verdict {
+        guard !retired, G02NativeRootEpoch.readback() == epoch,
+              let installed = G02RuntimeComposition.shared.installedComposition,
+              installed.epoch == epoch else { return .proceed }
+        // Real reads only, then the PURE eligibility rule: a durable ORDINARY
+        // conversation of THIS exact generation, its actual ownership row (or a
+        // proven absence) and no foreign workspace expectation. A temporary
+        // chat has no persisted row by design; notes/foreign identities, a dead
+        // generation, an unreadable ownership row and an explicit foreign
+        // expectation all keep the ORIGINAL admission and its ORIGINAL refusal,
+        // so nothing here can widen what may open or write a row it must not.
+        let conversation = try? await installed.cluster.conversationStore
+            .conversation(id: conversationID)
+        var bindingKnown = false
+        var alreadyBound = false
+        do {
+            alreadyBound = try await installed.cluster.workspaceStore
+                .workspaceID(conversationID: conversationID) != nil
+            bindingKnown = true
+        } catch {
+            bindingKnown = false
+        }
+        let bound: Bool
+        switch G04TerminalFirstUseRule.bindingEligibility(
+            conversationPersisted: conversation != nil,
+            purposeOrdinary: conversation?.purpose == .ordinary,
+            generationLive: !retired && G02NativeRootEpoch.readback() == epoch && installed.epoch == epoch,
+            bindingKnown: bindingKnown,
+            alreadyBound: alreadyBound,
+            foreignWorkspaceExpectation: expectedWorkspaceID != nil) {
+        case .notEligible:
+            return .proceed
+        case .alreadyBound:
+            bound = true
+        case .eligible:
+            bound = false
+        }
+        let readiness = G04TerminalFirstUseRule.decision(
+            fields: LinuxReadinessIngress.shared.derivedFields(),
+            capabilityQualified: RuntimeFacadeLinuxBindings.shared.isCapabilityQualified)
+        var needsPreflight = false
+        switch readiness {
+        case .prepare:
+            needsPreflight = true
+        case .skipAlreadyQualified:
+            if bound { return .proceed }          // fully warm: nothing to do
+        case .refuse(let code):
+            // Without the five transport/rootfs/workload prerequisites nothing
+            // can execute, so no durable row is written for a lane that cannot
+            // run; an unbound task keeps its ORIGINAL workspace refusal.
+            guard bound else { return .proceed }
+            return G04TerminalFirstUseAdmission.verdict(code: code)
+        }
+        guard let (runDomain, _) = RunDomainFacade.current(epoch: epoch),
+              let receipt = await runDomain.beginG04WorkspaceOperation(conversationID: conversationID,
+                                                                       expectedEpoch: epoch) else {
+            return G04TerminalFirstUseAdmission.verdict(code: .leaseUnavailable)
+        }
+        let uiRunID = UUID()   // native-issued UI identity, NEVER a model run
+        guard LinuxWorkspaceAuthority.registerWorkspaceOperation(receipt, epoch: epoch,
+                                                                 uiRunID: uiRunID) else {
+            await runDomain.endG04WorkspaceOperation(receipt)
+            return G04TerminalFirstUseAdmission.verdict(code: .operationRegistrationRefused)
+        }
+        // Close the drain race BEFORE any SQLite/host await can settle: the
+        // ORIGINAL shell drain must see this receipt from operation admission
+        // until its exact physical release. Registering only after an
+        // uncertain reply would leave a mailbox-empty window in which stop /
+        // Root replacement could fence the sole observation channel.
+        RuntimeFacadeLinuxBindings.shared.retainFirstEntryOwnership(receipt.operationID)
+        var bindingFailure: G04TerminalFirstUseCode?
+        if !bound {
+            bindingFailure = await ensureOrdinaryTaskWorkspace(conversationID: conversationID,
+                                                               title: conversation?.title ?? "",
+                                                               receipt: receipt,
+                                                               runDomain: runDomain)
+        }
+        var outcome: G04TerminalFirstUse.Outcome?
+        if bindingFailure == nil, needsPreflight {
+            outcome = await G04TerminalFirstUse.prepare(epoch: epoch,
+                                                        conversationID: conversationID,
+                                                        operationID: receipt.operationID,
+                                                        uiRunID: uiRunID)
+        }
+        // Release exactly once, bound to the host's OWN physical-settlement
+        // fact — never to this waiter's completion, and never to a completed
+        // claim alone: the pump answers uncertain/cancelled/`close_retained`
+        // while it may still own the real import/export IO, and a generation
+        // fence explicitly does not end owned workers. A retained claim keeps
+        // the operation mapping and the conversation receipt attached under a
+        // store-owned task that observes the pump's own ownership table.
+        let ownership = G04TerminalFirstUseOwnership(
+            request: outcome?.request,
+            hostOwnershipReleased: outcome?.hostOwnershipReleased ?? false) {
+            LinuxWorkspaceAuthority.retireWorkspaceOperation(operationID: receipt.operationID)
+            await runDomain.endG04WorkspaceOperation(receipt)
+            // Only AFTER the REAL operation receipt ended may the original
+            // stop/drain/fence path stop seeing this first-use owner.
+            RuntimeFacadeLinuxBindings.shared.releaseFirstEntryOwnership(receipt.operationID)
+        }
+        if ownership.mustRetain {
+            retainFirstEntryOwnership(ownership, operationID: receipt.operationID,
+                                      uiRunID: uiRunID, conversationID: conversationID,
+                                      queryEpoch: epoch)
+        } else {
+            _ = await ownership.releaseOnce()
+        }
+        // Re-fence the EXACT generation/store/task truth after every await.
+        guard !retired, G02NativeRootEpoch.readback() == epoch else {
+            return G04TerminalFirstUseAdmission.verdict(code: .generationMoved)
+        }
+        guard !receipt.cancellation.isCancelled else {
+            return G04TerminalFirstUseAdmission.verdict(code: .leaseCancelled)
+        }
+        if let bindingFailure {
+            return G04TerminalFirstUseAdmission.verdict(code: bindingFailure)
+        }
+        guard let outcome else {
+            // Only the binding was missing and it is now genuine: proceed on
+            // Core's OWN live qualification (re-read here, never assumed).
+            return RuntimeFacadeLinuxBindings.shared.isCapabilityQualified
+                ? .proceed
+                : G04TerminalFirstUseAdmission.verdict(code: .capabilityNotQualified)
+        }
+        return G04TerminalFirstUseAdmission.verdict(
+            outcome: outcome,
+            capabilityQualified: RuntimeFacadeLinuxBindings.shared.isCapabilityQualified)
+    }
+
+    /// Creates the genuine persisted private-task workspace binding for ONE
+    /// ordinary conversation, run-less, under the caller's live operation
+    /// lease. Nil when the binding already existed (untouched) or was really
+    /// created; otherwise the bounded refusal token. The ORIGINAL store's own
+    /// serialized write transaction owns atomicity: a thrown error leaves no
+    /// row and no partial write (the same rollback guarantee the D14 command
+    /// relies on).
+    private func ensureOrdinaryTaskWorkspace(conversationID: UUID, title: String,
+                                             receipt: G04WorkspaceOwnedOperation,
+                                             runDomain: FacadeRunDomain) async -> G04TerminalFirstUseCode? {
+        guard !retired, G02NativeRootEpoch.readback() == epoch,
+              let installed = G02RuntimeComposition.shared.installedComposition,
+              installed.epoch == epoch else { return .generationMoved }
+        let store = installed.cluster.workspaceStore
+        do {
+            // An existing association is returned untouched — never re-pointed,
+            // never switched to a guessed private/first project.
+            if try await store.workspaceID(conversationID: conversationID) != nil { return nil }
+            try receipt.cancellation.throwIfCancelled()
+            _ = try await store.ensureWorkspace(
+                conversationID: conversationID,
+                title: G04TerminalFirstUse.canonicalWorkspaceTitle(title))
+            // The lease must still be live AFTER the write (the ORIGINAL D14
+            // re-validation): a deletion fence or retirement that landed
+            // mid-transaction is answered honestly instead of being spent.
+            guard await runDomain.validateG04WorkspaceOperation(receipt) else { return .leaseCancelled }
+            return nil
+        } catch is CancellationError {
+            return .leaseCancelled
+        } catch {
+            return .workspaceBindingFailed
+        }
+    }
+
+    /// Registers one store-owned retention task (never a view task, never a
+    /// global mailbox drain, never an elapsed-time release): it holds the
+    /// operation mapping + conversation receipt until the host's OWN ownership
+    /// table reports this exact identity released, then releases exactly once
+    /// and clears its entry. Bounded polls of one pure-read observation; a
+    /// fence, a failed observation or a cancellation RETAIN, and `retire()`
+    /// deliberately does not cancel these tasks — the original fence contract
+    /// keeps owned workers and remote leases alive until real release.
+    private func retainFirstEntryOwnership(_ ownership: G04TerminalFirstUseOwnership,
+                                           operationID: UUID, uiRunID: UUID,
+                                           conversationID: UUID, queryEpoch: UInt64) {
+        let task = Task.detached(priority: .utility) { [weak self] in
+            let observed = await ownership.settleByObservation {
+                await G04TerminalFirstUse.observeOwnership(operationID: operationID,
+                                                           uiRunID: uiRunID,
+                                                           conversationID: conversationID,
+                                                           queryEpoch: queryEpoch)
+            }
+            // `.released` is returned ONLY after the exactly-once release
+            // closure (including the drain gate) completed. Unexpected task
+            // cancellation keeps BOTH the local and global ownership markers
+            // fail-closed instead of silently opening a drain gap.
+            if observed == .released {
+                await self?.forgetFirstEntryRetention(operationID: operationID)
+            }
+        }
+        firstEntryRetentions[operationID] = task
+        // Released while the task was being registered: keep the table honest
+        // instead of retaining a finished task.
+        if !ownership.mustRetain { firstEntryRetentions[operationID] = nil }
+    }
+
+    private func forgetFirstEntryRetention(operationID: UUID) {
+        firstEntryRetentions[operationID] = nil
+    }
+
     // MARK: Open
 
     /// Opens the conversation's interactive terminal (or a run session).
@@ -340,6 +624,23 @@ public actor G04TerminalStore {
         guard !retired, G02NativeRootEpoch.readback() == epoch else {
             reply(requestID, ok: false, code: .retired); return
         }
+        // G05-R3 run-less FIRST ENTRY (job-e2e7d046b63744cc): THIS explicit
+        // human terminal action prepares its own genuine task workspace
+        // binding and/or the two receipt-backed readiness facts — no message,
+        // no provider, no model run and no fabricated run row. A fast no-op
+        // when both already exist (warm re-entry never re-imports), and a typed
+        // refusal is a HARD refusal: no global readiness truth may override a
+        // cancelled, fenced, expired or refused preparation of THIS action.
+        switch await prepareFirstEntry(conversationID: conversationID,
+                                       expectedWorkspaceID: expectedWorkspaceID) {
+        case .proceed: break
+        case .refuse(let code, let token):
+            reply(requestID, ok: false, code: code, reason: token); return
+        }
+        // The ORIGINAL admission now runs AFTER that await on every path, so it
+        // is also the re-fence of the exact Root generation, this store's
+        // retirement, the durable ordinary conversation row and the resolved
+        // workspace binding.
         guard let (workspaceID, rootURL) = await admit(conversationID: conversationID,
                                                        expectedWorkspaceID: expectedWorkspaceID) else {
             let code = await conversationPurposeRefused(conversationID) ? G04TerminalCode.purposeNotOrdinary
@@ -350,7 +651,8 @@ public actor G04TerminalStore {
             // Honest availability: until the TRUSTED readiness ingress says
             // the engine is qualified, an interactive terminal refuses with
             // guidance — it NEVER falls back to a host shell or a fake text
-            // log, and never "advertises" a pane that cannot run.
+            // log, and never "advertises" a pane that cannot run. Defensive
+            // re-read: the first entry above already carried its precise token.
             reply(requestID, ok: false, code: .engineUnqualified); return
         }
         let conversationSessions = byConversation[conversationID] ?? []
@@ -644,6 +946,60 @@ public actor G04TerminalStore {
         reply(requestID, ok: true, extra: ["sessions": states,
                                            "qualified": RuntimeFacadeLinuxBindings.shared.isCapabilityQualified])
         _ = root
+    }
+
+    // MARK: Owned-slot conflict truth (model admission gate)
+
+    /// Trusted host fact for the runtime's admission gate (Main ruling
+    /// 2026-10-28): the LIVE interactive terminal THIS conversation owns,
+    /// when that exact session is the workload the engine still holds a lease
+    /// for. This store is the ORIGINAL session owner, so the answer comes from
+    /// its own table plus the backend's real lease truth — never from a
+    /// projection, a guess or another conversation's session.
+    ///
+    /// It is a pure observation: nothing is stopped, killed, retried, queued
+    /// or granted here, and a `.run` (language/run-draft) session is never
+    /// reported as a manual terminal. Nil is the honest answer for an
+    /// unbound/retired generation, an unqualified engine, a free slot, an
+    /// already-released lease and a conversation with no live terminal — so
+    /// the ordinary approval path is unchanged whenever there is no conflict.
+    func interactiveTerminalHoldingEngineSlot(
+        conversationID: UUID
+    ) async -> LinuxEngineSlotConflict? {
+        guard !retired, G02NativeRootEpoch.readback() == epoch else { return nil }
+        guard let components else { return nil }
+        let liveInteractive = (byConversation[conversationID] ?? []).filter { token in
+            guard let record = sessions[token] else { return false }
+            return record.purpose.isInteractive && record.alive
+        }
+        guard !liveInteractive.isEmpty else { return nil }
+        // Both reads are the backend's own truth: `ownedSessions()` lists the
+        // leases whose REAL release is not proven yet, and `isEngineSlotBusy()`
+        // is the single-slot gate itself. Requiring both means a session the
+        // engine already released (or a gate freed by a generation fence) is
+        // never presented as a live conflict.
+        let ownedKeys = await components.backend.ownedSessions().map(\.sessionKey)
+        let slotBusy = await components.backend.isEngineSlotBusy()
+        // Ownership is re-proven AFTER those two suspensions and immediately
+        // before the fact is published: this actor can be retired, or the Root
+        // generation replaced, while either read is in flight — and the
+        // composition registry's own register/retire runs outside its mailbox
+        // lock, so the registry epoch alone is not this store's ownership
+        // proof. A moved-on generation publishes nothing (fail closed).
+        guard !retired, G02NativeRootEpoch.readback() == epoch else { return nil }
+        // The session table is re-read too: a token that settled during the
+        // await is no longer this conversation's live terminal.
+        let stillLive = liveInteractive.filter { token in
+            guard let record = sessions[token] else { return false }
+            return record.purpose.isInteractive && record.alive
+        }
+        return LinuxEngineSlotConflictRule.conflict(
+            conversationID: conversationID,
+            nativeEpoch: epoch,
+            liveInteractiveSessionTokens: stillLive,
+            engineSlotBusy: slotBusy,
+            ownedEngineSessionKeys: ownedKeys
+        )
     }
 
     // MARK: Settlement

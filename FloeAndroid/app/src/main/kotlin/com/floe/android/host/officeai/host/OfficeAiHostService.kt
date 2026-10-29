@@ -554,7 +554,12 @@ internal class OfficeAiHostService(
                 "docType" to target.docType,
                 "partsCount" to target.partsCount,
                 "selectedPart" to target.selectedPart,
-                "partIndex" to target.selectedPart?.toIntOrNull(),
+                // The engine's SAME-answer witnessed logical ordinal: a real
+                // braced presentation GUID has no decimal to parse here, and
+                // re-deriving it at this boundary is exactly what returned
+                // null and would refuse every PPTX saved verification. The
+                // native identity stays byte-exact in "selectedPart".
+                "partIndex" to target.selectedPartIndex,
                 "documentModified" to target.documentModified,
             )
             // Main CAPTURE_BASELINE_WIRE_ADDENDUM (2026-10-27): forward the
@@ -584,7 +589,7 @@ internal class OfficeAiHostService(
                 docType = target.docType,
                 partsCount = target.partsCount,
                 selectedPart = target.selectedPart,
-                partIndex = target.selectedPart?.toIntOrNull(),
+                partIndex = target.selectedPartIndex,
                 documentModified = target.documentModified,
                 inputEpoch = target.inputEpoch,
                 editEpoch = target.editEpoch,
@@ -601,7 +606,7 @@ internal class OfficeAiHostService(
                 is OfficePrecisionAnswer.DocumentContext -> facts = linkedMapOf(
                     "docType" to answer.docType, "partsCount" to answer.partsCount,
                     "selectedPart" to answer.selectedPart,
-                    "partIndex" to answer.selectedPart?.toIntOrNull(),
+                    "partIndex" to answer.selectedPartIndex,
                     "viewID" to answer.viewId, "readOnly" to answer.readOnly,
                     "documentModified" to answer.documentModified,
                 )
@@ -632,7 +637,7 @@ internal class OfficeAiHostService(
             when (val answer = result.answer) {
                 is OfficePrecisionAnswer.SlideSelected -> facts = linkedMapOf(
                     "shownPart" to answer.shownPart, "selectedPart" to answer.shownPart,
-                    "partIndex" to answer.shownPart.toIntOrNull(),
+                    "partIndex" to answer.shownPartIndex,
                 )
                 is OfficePrecisionAnswer.TextSelection -> {
                     // Keep this preparatory reply byte-count-only. Its text
@@ -1019,7 +1024,34 @@ internal class OfficeAiHostService(
 
         // The logical part index rides CAPTURED native facts (never sheet1,
         // never a filename ordinal; the verifier resolves ordered rels).
-        val partIndex = ticket.field("expectPartIndex")?.toInt() ?: capture?.partIndex
+        // The ticket's expectPartIndex is Core's RELAY of the captured
+        // observation (shared OfficeAIHostBridge expectations.partIndex is
+        // built from this host's own capture facts), never the model's
+        // requested slide. Lineage rule (part-ordinal84): while this host
+        // still holds the exact capture, its engine-witnessed ordinal is
+        // authoritative — an unwitnessed capture is REFUSED instead of being
+        // papered over by the relay (the old ticket-first fallback hid
+        // exactly that null for every braced presentation GUID), and a
+        // disagreeing relay refuses as a stale/crossed lineage. Only a
+        // genuinely historical proof whose capture left with the session
+        // (completedJob/reconcile) still rides the relay alone.
+        val ticketPartIndex = ticket.field("expectPartIndex")?.toInt()
+        val partIndex: Int? = if (format == "docx") {
+            ticketPartIndex ?: capture?.partIndex
+        } else if (capture != null) {
+            val observed = capture.partIndex
+            if (observed == null) {
+                return OfficeAiWire.failureReply("structureInvalid",
+                    "captured logical part index required for $format")
+            }
+            if (ticketPartIndex != null && ticketPartIndex != observed) {
+                return OfficeAiWire.failureReply("structureInvalid",
+                    "verification ticket part index disagrees with the captured native witness")
+            }
+            observed
+        } else {
+            ticketPartIndex
+        }
         if (format != "docx" && partIndex == null) {
             return OfficeAiWire.failureReply("structureInvalid",
                 "captured logical part index required for $format")

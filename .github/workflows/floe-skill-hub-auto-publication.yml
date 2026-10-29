@@ -1,0 +1,691 @@
+name: floe-skill-hub-auto-publication
+# TEMPLATE for the App repository (JiangNanGenius/floe-agent) — stage1 of the
+# cloud-only automatic publication pipeline (Hub docs/AUTOMATIC-PUBLICATION.md).
+#
+# Deployment is a single deliberate Root action: render the literal
+# HUB_ANCHOR_COMMIT below to the exact reviewed 40-hex Hub commit that contains
+# all automation code/policy/tests (automatic_transport.py,
+# automatic_publication.py, upstream_updates.py, upstream_pins.py and this
+# pipeline's gates), copy this file to
+# .github/workflows/floe-skill-hub-auto-publication.yml on the App default
+# branch, then set the repository variable FLOE_SKILL_HUB_AUTO_SIGNING to
+# "enabled". Until the placeholder is replaced the workflow fails closed in
+# preflight. Any later change to Hub scripts/**, public-key.json, schema/** or
+# the pinned policy blob requires one equally deliberate anchor repin.
+#
+# Trust discipline:
+#   * bootstrap ONLY from the literal anchor checkout; the automatic_transport
+#     history refresh proves the CURRENT live Hub main's trust-critical bytes
+#     equal the anchor, verifies every cumulative-ledger transition and the
+#     signed history, and yields the independently resolved live base B — a
+#     request's basePublication must equal that live B, never a historical
+#     ledger pin (verify_request_history_base binds it);
+#   * the candidate is verified INDEPENDENTLY in the read-only orchestrate job:
+#     rederived from the candidate's own immutable selected upstream commits
+#     (each NEW pin proven a reachable descendant of its OLD pin on the fixed
+#     official origin), byte-exactly re-materialized through the trusted
+#     tracker gates, and the committed candidate must equal that re-derivation
+#     — supplied manifests, gateResults and candidateFacts are never authority,
+#     and a late unrelated upstream advance never invalidates a legitimate
+#     candidate;
+#   * only the two sign jobs reference the signing secret, each in exactly ONE
+#     step, running the UNCHANGED sign_publication.py from the verified live
+#     tooling; no candidate code is imported or executed in any privileged
+#     step; the sign jobs re-fetch the canonical request themselves, bind its
+#     requestId to the orchestration decision, and HOLD before the key step
+#     when the freshly re-resolved official main no longer equals the
+#     orchestrator's verified base B (manual curation can move main outside
+#     this workflow's concurrency group — signatures must never be issued
+#     against a stale ledger baseline);
+#   * the relay job alone holds contents:write and publishes ONLY signature
+#     envelopes, the authenticated receipt and the bounded indexes under the
+#     top-level signing-relay/ prefix of the orphan data branch
+#     skill-hub-signing-relay — it never reads the key, never touches App
+#     main, never creates releases or tags; the payload is downloaded OUTSIDE
+#     any worktree and staged by explicit path, every tracked path and mode on
+#     the orphan branch is allowlist-verified before push, and the branch's
+#     commit messages carry [skip ci] because the consumers are scheduled or
+#     manual fixed-ref pollers, never push-triggered builds;
+#   * the legacy manual floe-skill-hub-signing.yml stays byte-untouched as the
+#     Root break-glass path; both share the floe-skill-hub-signing concurrency
+#     group so they can never run at once.
+#
+# Checkout discipline: persist-credentials is false on every checkout and the
+# primary checkout is never branch-swiped; the orphan data branch is
+# bootstrapped with commit-tree of the empty tree (never checkout --orphan
+# plus add -A leftovers) and written only through a worktree under the runner
+# temp directory; push authentication uses the job-scoped runtime token
+# strictly through the environment into a Git credential helper — the token is
+# never a literal in argv, logs or Git config.
+#
+# No Mac/App/Codex dependency, no local daemon: schedule + fixed-origin public
+# reads only. A no-op run exits after bounded tokenless reads with zero writes.
+on:
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Poll/verify/recompute and upload verdicts only, sign and relay nothing
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: floe-skill-hub-signing
+  cancel-in-progress: false
+
+env:
+  HUB_REPOSITORY: JiangNanGenius/floe-skill-hub
+  APP_REPOSITORY: JiangNanGenius/floe-agent
+  HUB_ORIGIN: https://github.com/JiangNanGenius/floe-skill-hub.git
+  # One-time Root-rendered literal (40 lowercase hex). The preflight refuses
+  # anything else; the template never runs with this placeholder.
+  HUB_ANCHOR_COMMIT: "fd9bedb8e23bd37fcab53410448261ae038a017b"
+  RELAY_BRANCH: skill-hub-signing-relay
+  CONTROL_BRANCH: auto-state
+  PYTHON_VERSION: "3.11"
+  CRYPTOGRAPHY_PIN: "cryptography==46.0.6"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  orchestrate:
+    if: vars.FLOE_SKILL_HUB_AUTO_SIGNING == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    outputs:
+      decision: ${{ steps.verify.outputs.decision }}
+      mode: ${{ steps.verify.outputs.mode }}
+      requestId: ${{ steps.verify.outputs.requestId }}
+      sourceCommit: ${{ steps.verify.outputs.sourceCommit }}
+      base: ${{ steps.verify.outputs.base }}
+    steps:
+      # Pinned immutable action commits (same SHAs the Hub workflows use):
+      #   actions/checkout        v4.4.0 -> 11d5960a326750d5838078e36cf38b85af677262
+      #   actions/setup-python    v5.6.0 -> a26af69be951a213d495a4c3e4e4022e16d87065
+      #   actions/upload-artifact v4.6.2 -> ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Preflight — the one-time anchor literal must be rendered (fail closed)
+        run: |
+          set -euo pipefail
+          if [[ ! "${HUB_ANCHOR_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "HUB_ANCHOR_COMMIT is the template placeholder; Root must render the" \
+                 "exact reviewed 40-hex Hub anchor commit before this workflow can run." >&2
+            exit 1
+          fi
+
+      - name: Check out the literal immutable Hub anchor (only trusted code)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: JiangNanGenius/floe-skill-hub
+          ref: ${{ env.HUB_ANCHOR_COMMIT }}
+          path: tooling
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the pinned signing library
+        run: python3 -m pip install --disable-pip-version-check "$CRYPTOGRAPHY_PIN"
+
+      - name: Anchor-frozen trusted-tooling refresh (binds live base B = current live main)
+        run: |
+          set -euo pipefail
+          floe_fetch_optional() {
+            local log rc
+            log=$(mktemp)
+            if git -C tooling -c gc.auto=0 fetch --no-tags "$1" "$2" 2>"$log"; then
+              rm -f "$log"; return 0
+            else
+              # capture the REAL git status here: `$?` after an if-compound
+              # with a false condition and no else is 0, which would turn a
+              # genuine fetch failure into a silent missing-ref no-op
+              rc=$?
+            fi
+            if grep -q "couldn't find remote ref" "$log"; then
+              echo "optional ref absent: $2"
+              rm -f "$log"; return 0
+            fi
+            cat "$log" >&2; rm -f "$log"; return "$rc"
+          }
+          python3 tooling/scripts/automatic_transport.py verify-history \
+            --tooling tooling --anchor-commit "${HUB_ANCHOR_COMMIT}" \
+            > "$RUNNER_TEMP/history.json"
+          BASE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["liveCommit"])' "$RUNNER_TEMP/history.json")
+          echo "LIVE_BASE=$BASE" >> "$GITHUB_ENV"
+          floe_fetch_optional "$HUB_ORIGIN" "+refs/heads/${CONTROL_BRANCH}:refs/floe/auto-state"
+          floe_fetch_optional "$HUB_ORIGIN" "+refs/heads/auto/candidate-*:refs/floe/candidates/*"
+
+      - name: Route the open Hub request (idle / processed / already relayed)
+        run: |
+          set -euo pipefail
+          echo '{"status":"idle"}' > "$RUNNER_TEMP/poll.json"
+          if git -C tooling rev-parse --verify --quiet refs/floe/auto-state >/dev/null; then
+            python3 tooling/scripts/automatic_publication.py poll-request \
+              --repo-root tooling \
+              --control-commit "$(git -C tooling rev-parse refs/floe/auto-state)" \
+              > "$RUNNER_TEMP/poll.json"
+          fi
+          STATUS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$RUNNER_TEMP/poll.json")
+          if [ "$STATUS" != "open" ]; then
+            echo "ROUTE=none" >> "$GITHUB_ENV"
+            echo "no open request"
+            exit 0
+          fi
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import json, pathlib, re, sys
+          tmp = pathlib.Path(sys.argv[1])
+          poll = json.loads((tmp / "poll.json").read_bytes())
+          request, manifest = poll["openRequest"], poll["manifest"]
+          (tmp / "request.json").write_bytes(json.dumps(
+              request, sort_keys=True, separators=(",", ":")).encode())
+          (tmp / "candidate-manifest.json").write_bytes(json.dumps(
+              manifest, sort_keys=True, indent=2).encode())
+          state = poll.get("state") or {}
+          ref = manifest["stagingRef"]
+          assert re.fullmatch(r"auto/candidate-[0-9A-Za-z._-]{1,120}", ref), ref
+          assert request["requestId"] == manifest["requestId"], "manifest is not bound to the request"
+          assert request["sourceCommit"] == manifest["sourceCommit"], "manifest source disagrees"
+          assert request["basePublication"] == manifest["basePublication"], "manifest base disagrees"
+          processed = request["requestId"] in (state.get("processedRequestIds") or [])
+          lines = [f"REQ_ID={request['requestId']}", f"MODE={request['mode']}",
+                   f"SRC_SHA={request['sourceCommit']}",
+                   f"PROCESSED={'1' if processed else '0'}"]
+          (tmp / "route.env").write_text("\n".join(lines) + "\n")
+          PY
+          . "$RUNNER_TEMP/route.env"
+          if [ "$PROCESSED" = "1" ]; then
+            echo "ROUTE=none" >> "$GITHUB_ENV"
+            echo "already-processed request: idempotent no-op"
+            exit 0
+          fi
+          if python3 tooling/scripts/automatic_publication.py relay-peek \
+               --request-id "$REQ_ID" --relay-ref "$RELAY_BRANCH"; then
+            echo "ROUTE=none" >> "$GITHUB_ENV"
+            echo "relay already carries this request; the Hub publisher owns the next step"
+            exit 0
+          fi
+          echo "ROUTE=verify" >> "$GITHUB_ENV"
+
+      - name: Independent re-derivation from the candidate's immutable commits + full verification
+        id: verify
+        run: |
+          set -euo pipefail
+          if [ "${ROUTE:-none}" != "verify" ]; then
+            echo "decision=none" >> "$GITHUB_OUTPUT"
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "requestId=" >> "$GITHUB_OUTPUT"
+            echo "sourceCommit=" >> "$GITHUB_OUTPUT"
+            echo "base=$LIVE_BASE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TODAY=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stageToday"])' "$RUNNER_TEMP/candidate-manifest.json")
+          git -C tooling worktree add --detach -q "$RUNNER_TEMP/base-wt" "$LIVE_BASE"
+          python3 "$RUNNER_TEMP/base-wt/scripts/automatic_publication.py" rederive-candidate \
+            --repo-root "$RUNNER_TEMP/base-wt" --base-commit "$LIVE_BASE" \
+            --candidate-commit "$SRC_SHA" --today "$TODAY" \
+            --stage-root "$RUNNER_TEMP/fresh-stage"
+          python3 "$RUNNER_TEMP/base-wt/scripts/automatic_publication.py" verify-candidate \
+            --repo-root "$RUNNER_TEMP/base-wt" \
+            --request-file "$RUNNER_TEMP/request.json" \
+            --manifest-file "$RUNNER_TEMP/candidate-manifest.json" \
+            --stage-root "$RUNNER_TEMP/fresh-stage" \
+            --expected-base "$LIVE_BASE" \
+            --history-verdict-file "$RUNNER_TEMP/history.json" \
+            > "$RUNNER_TEMP/verdict.json"
+          cat "$RUNNER_TEMP/verdict.json"
+          DECISION=sign
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DECISION=none
+            echo "dry run: verification evidence uploaded; nothing signed or relayed"
+          fi
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "requestId=$REQ_ID" >> "$GITHUB_OUTPUT"
+          echo "sourceCommit=$SRC_SHA" >> "$GITHUB_OUTPUT"
+          echo "base=$LIVE_BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Stage verification evidence (real bounded files, public data only, no secrets)
+        if: env.ROUTE == 'verify'
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/verify-evidence"
+          for f in "$RUNNER_TEMP/poll.json" "$RUNNER_TEMP/request.json" \
+                   "$RUNNER_TEMP/candidate-manifest.json" "$RUNNER_TEMP/history.json" \
+                   "$RUNNER_TEMP/verdict.json" \
+                   "$RUNNER_TEMP/fresh-stage/rederive-summary.json"; do
+            if [ -f "$f" ]; then
+              cp "$f" "$GITHUB_WORKSPACE/verify-evidence/"
+            fi
+          done
+          test -n "$(ls -A "$GITHUB_WORKSPACE/verify-evidence")"
+          # the request/manifest/verdict triple is the bounded verification
+          # artifact; no placeholder paths and no secret or argv content
+          test -f "$GITHUB_WORKSPACE/verify-evidence/request.json"
+          test -f "$GITHUB_WORKSPACE/verify-evidence/candidate-manifest.json"
+          test -f "$GITHUB_WORKSPACE/verify-evidence/verdict.json"
+          test -f "$GITHUB_WORKSPACE/verify-evidence/history.json"
+      - name: Upload verification evidence artifact
+        if: env.ROUTE == 'verify'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signer-verification-${{ github.run_id }}
+          path: verify-evidence
+          if-no-files-found: error
+
+  sign-reviews:
+    needs: orchestrate
+    if: >-
+      vars.FLOE_SKILL_HUB_AUTO_SIGNING == 'enabled' &&
+      needs.orchestrate.outputs.decision == 'sign' &&
+      needs.orchestrate.outputs.mode == 'reviews'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      REQ_ID: ${{ needs.orchestrate.outputs.requestId }}
+      SOURCE_COMMIT: ${{ needs.orchestrate.outputs.sourceCommit }}
+      BASE_COMMIT: ${{ needs.orchestrate.outputs.base }}
+    outputs:
+      relayed: ${{ steps.relay-build.outputs.relayed }}
+    steps:
+      - name: Stale-base guard — re-resolve live main before anything touches the key (HOLD on drift)
+        id: stale-guard
+        run: |
+          set -euo pipefail
+          LINE=$(git ls-remote "$HUB_ORIGIN" "refs/heads/main")
+          COUNT=$(printf '%s\n' "$LINE" | grep -c '')
+          if [ "$COUNT" != "1" ]; then
+            echo "official main resolution is not exactly one line" >&2
+            exit 2
+          fi
+          LIVE=$(printf '%s' "$LINE" | cut -f1)
+          if ! printf '%s' "$LIVE" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "official main resolution is not a 40-hex commit" >&2
+            exit 2
+          fi
+          if [ "$LIVE" != "$BASE_COMMIT" ]; then
+            echo "live Hub main advanced to ${LIVE} after the orchestrator verified base ${BASE_COMMIT}; HOLD: no signature is issued against a stale ledger baseline (manual curation can move main outside this concurrency group)"
+            echo "signed=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "signed=1" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the verified live tooling T at the resolved base B
+        if: steps.stale-guard.outputs.signed == '1'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: JiangNanGenius/floe-skill-hub
+          ref: ${{ env.BASE_COMMIT }}
+          path: tooling-live
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: steps.stale-guard.outputs.signed == '1'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the pinned signing library
+        if: steps.stale-guard.outputs.signed == '1'
+        run: python3 -m pip install --disable-pip-version-check "$CRYPTOGRAPHY_PIN"
+
+      - name: Re-fetch and bind the canonical request (identity, not authority)
+        if: steps.stale-guard.outputs.signed == '1'
+        run: |
+          set -euo pipefail
+          git -C tooling-live -c gc.auto=0 fetch --no-tags "$HUB_ORIGIN" \
+            "+refs/heads/${CONTROL_BRANCH}:refs/floe/auto-state"
+          python3 tooling-live/scripts/automatic_publication.py poll-request \
+            --repo-root tooling-live \
+            --control-commit "$(git -C tooling-live rev-parse refs/floe/auto-state)" \
+            > "$RUNNER_TEMP/poll.json"
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import json, pathlib, sys
+          tmp = pathlib.Path(sys.argv[1])
+          poll = json.loads((tmp / "poll.json").read_bytes())
+          request = poll["openRequest"]
+          (tmp / "request.json").write_bytes(json.dumps(
+              request, sort_keys=True, separators=(",", ":")).encode())
+          PY
+          RID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["requestId"])' "$RUNNER_TEMP/request.json")
+          test "$RID" = "$REQ_ID"
+          SRC=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sourceCommit"])' "$RUNNER_TEMP/request.json")
+          test "$SRC" = "$SOURCE_COMMIT"
+          BASE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["basePublication"])' "$RUNNER_TEMP/request.json")
+          test "$BASE" = "$BASE_COMMIT"
+
+      - name: Fetch the exact data snapshot S (tokenless, fixed origin, argv only)
+        if: steps.stale-guard.outputs.signed == '1'
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/data-work"
+          cd "$RUNNER_TEMP/data-work"
+          git init --quiet data
+          git -C data -c gc.auto=0 remote add origin https://github.com/JiangNanGenius/floe-skill-hub.git
+          git -C data -c gc.auto=0 fetch --depth 1 --no-tags origin "$SOURCE_COMMIT"
+          git -C data -c core.hooksPath=/nonexistent-floe-automation-hooks \
+                   -c core.fsmonitor=false checkout --quiet --detach FETCH_HEAD
+          test "$(git -C data rev-parse HEAD)" = "$SOURCE_COMMIT"
+
+      - name: Sign review envelopes with the existing signer (key read in this step only)
+        if: steps.stale-guard.outputs.signed == '1'
+        env:
+          FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          python3 tooling-live/scripts/sign_publication.py --mode reviews \
+            --source-commit "$SOURCE_COMMIT" --data "$RUNNER_TEMP/data-work/data" \
+            --tooling tooling-live --out "$RUNNER_TEMP/signed"
+
+      - name: Build the metadata-only relay payload (no key present in this step)
+        if: steps.stale-guard.outputs.signed == '1'
+        id: relay-build
+        run: |
+          set -euo pipefail
+          printf '{"runId":"%s","runUrl":"%s","anchorCommit":"%s","liveToolingCommit":"%s"}' \
+            "$GITHUB_RUN_ID" \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            "${HUB_ANCHOR_COMMIT}" "$BASE_COMMIT" > "$RUNNER_TEMP/relay-info.json"
+          python3 tooling-live/scripts/automatic_publication.py build-relay \
+            --request-file "$RUNNER_TEMP/request.json" \
+            --signer-out "$RUNNER_TEMP/signed" --out "$RUNNER_TEMP/relay" \
+            --info-file "$RUNNER_TEMP/relay-info.json" --today "$(date -u +%F)"
+          mkdir -p "$GITHUB_WORKSPACE/relay-upload"
+          cp -a "$RUNNER_TEMP/relay/." "$GITHUB_WORKSPACE/relay-upload/"
+          echo "relayed=1" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the relay payload for the scoped write job
+        if: steps.stale-guard.outputs.signed == '1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: relay-payload-reviews-${{ env.REQ_ID }}
+          path: relay-upload
+          if-no-files-found: error
+
+  sign-catalog:
+    needs: orchestrate
+    if: >-
+      vars.FLOE_SKILL_HUB_AUTO_SIGNING == 'enabled' &&
+      needs.orchestrate.outputs.decision == 'sign' &&
+      needs.orchestrate.outputs.mode == 'catalog'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      REQ_ID: ${{ needs.orchestrate.outputs.requestId }}
+      SOURCE_COMMIT: ${{ needs.orchestrate.outputs.sourceCommit }}
+      BASE_COMMIT: ${{ needs.orchestrate.outputs.base }}
+    outputs:
+      relayed: ${{ steps.relay-build.outputs.relayed }}
+    steps:
+      - name: Stale-base guard — re-resolve live main before anything touches the key (HOLD on drift)
+        id: stale-guard
+        run: |
+          set -euo pipefail
+          LINE=$(git ls-remote "$HUB_ORIGIN" "refs/heads/main")
+          COUNT=$(printf '%s\n' "$LINE" | grep -c '')
+          if [ "$COUNT" != "1" ]; then
+            echo "official main resolution is not exactly one line" >&2
+            exit 2
+          fi
+          LIVE=$(printf '%s' "$LINE" | cut -f1)
+          if ! printf '%s' "$LIVE" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "official main resolution is not a 40-hex commit" >&2
+            exit 2
+          fi
+          if [ "$LIVE" != "$BASE_COMMIT" ]; then
+            echo "live Hub main advanced to ${LIVE} after the orchestrator verified base ${BASE_COMMIT}; HOLD: no signature is issued against a stale ledger baseline (manual curation can move main outside this concurrency group)"
+            echo "signed=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "signed=1" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the verified live tooling T at the resolved base B
+        if: steps.stale-guard.outputs.signed == '1'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: JiangNanGenius/floe-skill-hub
+          ref: ${{ env.BASE_COMMIT }}
+          path: tooling-live
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: steps.stale-guard.outputs.signed == '1'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the pinned signing library
+        if: steps.stale-guard.outputs.signed == '1'
+        run: python3 -m pip install --disable-pip-version-check "$CRYPTOGRAPHY_PIN"
+
+      - name: Re-fetch and bind the canonical request (identity, not authority)
+        if: steps.stale-guard.outputs.signed == '1'
+        run: |
+          set -euo pipefail
+          git -C tooling-live -c gc.auto=0 fetch --no-tags "$HUB_ORIGIN" \
+            "+refs/heads/${CONTROL_BRANCH}:refs/floe/auto-state"
+          python3 tooling-live/scripts/automatic_publication.py poll-request \
+            --repo-root tooling-live \
+            --control-commit "$(git -C tooling-live rev-parse refs/floe/auto-state)" \
+            > "$RUNNER_TEMP/poll.json"
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import json, pathlib, sys
+          tmp = pathlib.Path(sys.argv[1])
+          poll = json.loads((tmp / "poll.json").read_bytes())
+          request = poll["openRequest"]
+          (tmp / "request.json").write_bytes(json.dumps(
+              request, sort_keys=True, separators=(",", ":")).encode())
+          PY
+          RID=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).read())["requestId"])' "$RUNNER_TEMP/request.json")
+          test "$RID" = "$REQ_ID"
+          SRC=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).read())["sourceCommit"])' "$RUNNER_TEMP/request.json")
+          test "$SRC" = "$SOURCE_COMMIT"
+          BASE=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).read())["basePublication"])' "$RUNNER_TEMP/request.json")
+          test "$BASE" = "$BASE_COMMIT"
+
+      - name: Fetch the exact data snapshot X (tokenless, fixed origin, argv only)
+        if: steps.stale-guard.outputs.signed == '1'
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/data-work"
+          cd "$RUNNER_TEMP/data-work"
+          git init --quiet data
+          git -C data -c gc.auto=0 remote add origin https://github.com/JiangNanGenius/floe-skill-hub.git
+          git -C data -c gc.auto=0 fetch --depth 1 --no-tags origin "$SOURCE_COMMIT"
+          git -C data -c core.hooksPath=/nonexistent-floe-automation-hooks \
+                   -c core.fsmonitor=false checkout --quiet --detach FETCH_HEAD
+          test "$(git -C data rev-parse HEAD)" = "$SOURCE_COMMIT"
+
+      - name: Sign the release catalog with the existing signer (key in this step only)
+        if: steps.stale-guard.outputs.signed == '1'
+        env:
+          FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          # --published-y is the workflow-resolved live base B (never a dispatch
+          # input): the immutability baseline anchors to actual published
+          # history and every launch/platform gate runs unchanged
+          python3 tooling-live/scripts/sign_publication.py --mode catalog \
+            --source-commit "$SOURCE_COMMIT" --data "$RUNNER_TEMP/data-work/data" \
+            --tooling tooling-live --published-y "$BASE_COMMIT" \
+            --out "$RUNNER_TEMP/signed"
+
+      - name: Build the metadata-only relay payload (no key present in this step)
+        if: steps.stale-guard.outputs.signed == '1'
+        id: relay-build
+        run: |
+          set -euo pipefail
+          printf '{"runId":"%s","runUrl":"%s","anchorCommit":"%s","liveToolingCommit":"%s"}' \
+            "$GITHUB_RUN_ID" \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            "${HUB_ANCHOR_COMMIT}" "$BASE_COMMIT" > "$RUNNER_TEMP/relay-info.json"
+          python3 tooling-live/scripts/automatic_publication.py build-relay \
+            --request-file "$RUNNER_TEMP/request.json" \
+            --signer-out "$RUNNER_TEMP/signed" --out "$RUNNER_TEMP/relay" \
+            --info-file "$RUNNER_TEMP/relay-info.json" --today "$(date -u +%F)"
+          mkdir -p "$GITHUB_WORKSPACE/relay-upload"
+          cp -a "$RUNNER_TEMP/relay/." "$GITHUB_WORKSPACE/relay-upload/"
+          echo "relayed=1" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the relay payload for the scoped write job
+        if: steps.stale-guard.outputs.signed == '1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: relay-payload-catalog-${{ env.REQ_ID }}
+          path: relay-upload
+          if-no-files-found: error
+
+  relay:
+    needs: [orchestrate, sign-reviews, sign-catalog]
+    if: >-
+      always() &&
+      vars.FLOE_SKILL_HUB_AUTO_SIGNING == 'enabled' &&
+      needs.orchestrate.outputs.decision == 'sign' &&
+      (needs.sign-reviews.outputs.relayed == '1' ||
+       needs.sign-catalog.outputs.relayed == '1')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # ONLY refs/heads/skill-hub-signing-relay in this repo
+    env:
+      REQ_ID: ${{ needs.orchestrate.outputs.requestId }}
+      MODE: ${{ needs.orchestrate.outputs.mode }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch or bootstrap the orphan metadata branch (empty tree, never checkout --orphan)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          floe_fetch_optional() {
+            local log rc
+            log=$(mktemp)
+            if git -c gc.auto=0 fetch --no-tags "$1" "$2" 2>"$log"; then
+              rm -f "$log"; return 0
+            else
+              # capture the REAL git status here: `$?` after an if-compound
+              # with a false condition and no else is 0, which would turn a
+              # genuine fetch failure into a silent missing-ref no-op
+              rc=$?
+            fi
+            if grep -q "couldn't find remote ref" "$log"; then
+              echo "optional ref absent: $2"
+              rm -f "$log"; return 0
+            fi
+            cat "$log" >&2; rm -f "$log"; return "$rc"
+          }
+          floe_fetch_optional origin "+refs/heads/${RELAY_BRANCH}:refs/floe/relay-tip"
+          if ! git rev-parse --verify --quiet refs/floe/relay-tip >/dev/null; then
+            echo "bootstrapping the orphan data branch from the empty tree"
+            EMPTY_TREE=$(git hash-object -t tree /dev/null)
+            BOOT=$(git -c user.name="floe-skill-hub-automation" \
+              -c user.email="automation@users.noreply.github.com" \
+              commit-tree "$EMPTY_TREE" -m "auto-relay: initialize metadata branch [skip ci]")
+            git -c credential.helper='!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f' \
+              -c gc.auto=0 push origin "$BOOT:refs/heads/${RELAY_BRANCH}"
+            git -c gc.auto=0 fetch --no-tags origin \
+              "+refs/heads/${RELAY_BRANCH}:refs/floe/relay-tip"
+          fi
+          WT="$RUNNER_TEMP/relay-wt"
+          rm -rf "$WT"
+          git worktree prune
+          git worktree add -B "$RELAY_BRANCH" -q "$WT" refs/floe/relay-tip
+
+      - name: Download the signed reviews relay payload outside every worktree
+        if: env.MODE == 'reviews'
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: relay-payload-reviews-${{ env.REQ_ID }}
+          path: ${{ runner.temp }}/relay-download
+
+      - name: Download the signed catalog relay payload outside every worktree
+        if: env.MODE == 'catalog'
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: relay-payload-catalog-${{ env.REQ_ID }}
+          path: ${{ runner.temp }}/relay-download
+
+      - name: Publish only signing-relay/ paths, commit, push the one scoped ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          WT="$RUNNER_TEMP/relay-wt"
+          DL="$RUNNER_TEMP/relay-download"
+          test -d "$DL"
+          # one explicit allowlist regex mirroring the Python whole-tree
+          # authority below: the request id is exactly 64 hex characters and
+          # no segment may cross a `/` (bash case `*` globs silently match
+          # across slashes and shadow each other)
+          RELAY_PATH_RE='^signing-relay/requests/[0-9a-f]{64}/(request\.json|relay-manifest\.json|signing-receipt\.json(\.sig)?|catalog\.sig|android/catalog\.sig|reviews/[a-z][a-z0-9-]*(\.[a-z0-9-]*)*/[0-9]+\.[0-9]+\.[0-9]+\.review\.json\.sig)$'
+          find "$DL" -type f | while read -r f; do
+            rel="${f#"$DL"/}"
+            if ! [[ "$rel" =~ $RELAY_PATH_RE ]] && [ "$rel" != "signing-relay/state.json" ]; then
+              echo "refusing unexpected relay payload path: $rel" >&2; exit 1
+            fi
+            if [ -L "$f" ]; then
+              echo "refusing symlinked relay payload file: $rel" >&2; exit 1
+            fi
+          done
+          if [ -L "$DL/signing-relay" ]; then
+            echo "refusing a symlinked relay payload root" >&2
+            exit 1
+          fi
+          # stage ONLY the signing-relay tree into the isolated worktree; the
+          # download directory itself, the App checkout, .github/**, App main,
+          # tags, releases and sources can never enter this branch
+          rm -rf "$WT/signing-relay"
+          cp -a "$DL/signing-relay" "$WT/signing-relay"
+          find "$WT/signing-relay" -type l | grep . && { echo "refusing symlinks in relay tree" >&2; exit 1; } || true
+          find "$WT/signing-relay" ! -type d ! -type f -exec echo "non-regular relay file" \; -exec false {} +
+          git -C "$WT" add -A signing-relay
+          python3 - "$WT" <<'PY'
+          import re, subprocess, sys
+          wt = sys.argv[1]
+          listed = subprocess.run(["git", "-C", wt, "ls-files", "-s", "-z"],
+                                  capture_output=True, check=True).stdout
+          pattern = re.compile(
+              r"^signing-relay/(requests/[0-9a-f]{64}/(request\.json|"
+              r"relay-manifest\.json|signing-receipt\.json(\.sig)?|catalog\.sig|"
+              r"android/catalog\.sig|reviews/[a-z][a-z0-9-]*(\.[a-z0-9-]*)*/"
+              r"[0-9]+\.[0-9]+\.[0-9]+\.review\.json\.sig)|state\.json)$")
+          for entry in [e for e in listed.split(b"\0") if e]:
+              meta, name = entry.split(b"\t", 1)
+              mode, rel = meta.split()[0].decode(), name.decode()
+              if not pattern.match(rel):
+                  raise SystemExit(
+                      f"refusing non-allowlisted tracked path on the relay branch: {rel}")
+              if mode != "100644":
+                  raise SystemExit(f"relay branch carries a non-blob mode: {mode} {rel}")
+          PY
+          if git -C "$WT" diff --cached --quiet; then
+            echo "relay unchanged for ${REQ_ID}; nothing to push"
+            exit 0
+          fi
+          git -C "$WT" -c user.name="floe-skill-hub-automation" \
+            -c user.email="automation@users.noreply.github.com" \
+            commit -q -m "auto-relay: signed metadata for skill-hub request ${REQ_ID} [skip ci]"
+          git -c credential.helper='!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f' \
+            -c gc.auto=0 push origin "${RELAY_BRANCH}:refs/heads/${RELAY_BRANCH}"

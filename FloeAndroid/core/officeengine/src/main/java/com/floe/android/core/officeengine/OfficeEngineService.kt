@@ -19,6 +19,7 @@ import android.view.InputDevice
 import android.view.View
 import android.webkit.WebView
 import com.floe.android.core.officeengine.OfficeRequestPolicy.formatForPath
+import com.floe.android.core.officeengine.precision.OfficePrecisionAttestation
 import com.floe.android.core.officeengine.precision.OfficePrecisionEngine
 import com.floe.android.core.officeengine.precision.OfficePrecisionFailure
 import com.floe.android.core.officeengine.precision.OfficePrecisionRequest
@@ -176,6 +177,31 @@ class OfficeEngineService : Service() {
         @Volatile var pageEditMode = false
             private set
 
+        /**
+         * Freshness/epoch fact for the cached [pageEditMode] observation
+         * (page-mode79): the raw boolean stays the ordering fact for the
+         * dispatch re-checks, while admission fast paths additionally
+         * require this witness to be fresh and un-invalidated. A cached
+         * EDITMODE-on that outlived the pinned page proxy's 30 s
+         * no-response watchdog window can silently straddle the transport
+         * death that forced the C15 first-failure after-effect UNKNOWN.
+         * page-transport85: freshness additionally requires a recent REAL
+         * activation witness stamp (fed from the FORWARD branch below) AND a
+         * recent PAGE-REPORTED fresh-downlink health answer (fed only from
+         * current-generation page-counter reads) — a fresh RAW bridge ack,
+         * fresh uplinks, or host-served bytes alone are not admission facts.
+         */
+        private val pageEditModeFact = OfficePageEditModeWitness()
+
+        /**
+         * Real page-originated `useractive` uplink frames accepted for
+         * forwarding — the edit-handshake transport witness. Only the page
+         * emits this frame (the pinned kit never sends it downstream and the
+         * host's own native wire never uses it), and the page can only
+         * forward it while its socket transport is open.
+         */
+        private val pageActivationWitnessCount = java.util.concurrent.atomic.AtomicLong(0)
+
         /** Full native edit-permission witness set completed for this mount. */
         @Volatile var editPermissionEstablished = false
             private set
@@ -196,8 +222,79 @@ class OfficeEngineService : Service() {
          * its own, and an un-coalesced trigger flood is what walked the page's
          * throttle ladder to its cap and armed its fatal 30 s no-response
          * watchdog (see [OfficeSendTrigger] and MobileSocket's class header).
+         *
+         * page-transport85: host-side coalescing alone does not bound the
+         * PAGE-side pending polls — a hidden/frozen renderer queues every
+         * injection without executing it, and the wake replays the whole
+         * flood before any queued XHR can complete. The page-side gate
+         * ([transportPump]'s single-pending-poll bookkeeping, released only
+         * by a served poll, a settled probe, a view change or the terminal)
+         * is therefore checked in [triggerSend] before every injection.
          */
         private val sendTrigger = OfficeSendTrigger()
+
+        /**
+         * Service-owned bounded background transport pump (page-transport85):
+         * ONE `ping` uplink + ONE poll probe per round, at most one round
+         * open, so an ordinary model/approval wait with a hidden WebView
+         * keeps a REAL `pong` waiting in the bounded MobileSocket queue (the
+         * only kind of poll response that resets the page's
+         * `lastDataTimestamp`, global.js:1731-1742) and at most ONE injection
+         * queued toward the frozen renderer. Runs only while this mount is
+         * live and READY — no PIP, no permanent keepalive, no new
+         * permission; dies with the session. Pure decisions in
+         * [OfficeTransportPump]; this field is its session wiring.
+         */
+        private val transportPump = OfficeTransportPump()
+        private val transportPumpStarted = AtomicBoolean(false)
+
+        /**
+         * Host-observed wsd `pong rendercount=` frames (docx-socket-repair122).
+         *
+         * The pinned wsd answers a client `ping` itself, and the answer reaches
+         * the HOST on `rawCallFakeWebsocketOnMessage` before it is queued for
+         * the page — so one new sequence value is a real NATIVE-side liveness
+         * witness that needs no page polling (a hidden page consumes no
+         * downlink at all). It is the only proof that the in-process wsd /
+         * FakeSocket / native session is still processing host uplinks during a
+         * hidden approval wait; the ungated EDITMODE bridge post alone works on
+         * a proxy whose transport is already gone and therefore proves nothing
+         * about the native side.
+         */
+        private val pongSeq = java.util.concurrent.atomic.AtomicLong(0)
+        @Volatile private var lastPongAtMs = 0L
+
+        /** One bounded hidden-gate diagnostic per hidden window (never spam). */
+        @Volatile private var hiddenProbeSuppressedLogged = false
+
+        /**
+         * Never-reused identities for `doSend()` injections (main-thread
+         * mint). Every execution/settle callback carries its injection's
+         * seq and is dropped unless it still matches the pump's single
+         * outstanding injection, so a stale callback from a previous
+         * view/socket generation or a superseded injection can never mark
+         * a newer round executed or clear the newer gate (Main late
+         * critical review 2026-10-28). View identity is re-checked on top.
+         */
+        private var nextInjectionSeq = 0L
+
+        /**
+         * Exact page/socket incarnation, independent of the mount generation.
+         * Attach/detach, a repeated HULLO and a refused reload all advance it.
+         * Preparation tokens and every probe/health continuation capture this
+         * value, so an answer from the old page can never affect the new one.
+         */
+        private val transportGeneration = java.util.concurrent.atomic.AtomicLong(0)
+        /** Lock order: ingress → preparation → generation; never reversed. */
+        private val transportGenerationLock = Any()
+
+        /** Read-only page/socket generation snapshot so an outer fence can observe the
+         *  exact incarnation without exposing the AtomicLong for external mutation. */
+        fun transportGenerationSnapshot(): Long = transportGeneration.get()
+
+        /** Main-thread scheduling handles for the pump (never null after run). */
+        @Volatile private var pumpTickTask: Runnable? = null
+        @Volatile private var pumpSettleTask: Runnable? = null
 
         /** Kit `statechanged:` `.uno:ModifiedStatus` fact (null until first frame). */
         @Volatile var documentModified: Boolean? = null
@@ -293,7 +390,8 @@ class OfficeEngineService : Service() {
             override fun elapsedMs(): Long = android.os.SystemClock.elapsedRealtime()
         }
 
-        private val editModePreparation = OfficeEditModePreparation(EditModePreparationHost())
+        private val editModePreparationHost = EditModePreparationHost()
+        private val editModePreparation = OfficeEditModePreparation(editModePreparationHost)
 
         /** Android/WebView joins for the bounded real page EDITMODE handshake. */
         private inner class EditModePreparationHost : OfficeEditModePreparation.Host {
@@ -308,16 +406,241 @@ class OfficeEngineService : Service() {
 
             override fun isPageEditMode(): Boolean = this@Session.pageEditMode
 
+            override fun isPageEditModeFresh(): Boolean =
+                pageEditModeFact.isFresh(android.os.SystemClock.elapsedRealtime())
+
+            override fun activationWitnessCount(): Long = pageActivationWitnessCount.get()
+
+            override fun pageTransportGeneration(): Long = transportGeneration.get()
+
+            /**
+             * ONE current page-truth transport-health read for the cached
+             * fast path (Main late critical review 2026-10-28): admission
+             * must never rest on host-side delivery bookkeeping alone, so
+             * even the triple-fresh cached route ends in a real read of the
+             * page's OWN counters on the CURRENT view, fenced by this exact
+             * token at issuance and re-fenced at the continuation. False on
+             * every stale/unreadable/fenced/replaced-view outcome — the
+             * caller then takes the full ordered handshake route, whose
+             * drain+probe+witness chain is the honest decider. A fresh
+             * answer also re-stamps the witness's page-observed downlink
+             * corroboration (the only feeder it has).
+             */
+            override fun verifyPageTransportHealth(
+                token: OfficeEditModePreparationToken,
+                onResult: (Boolean) -> Unit,
+            ) = issuePageHealthVerification(token, attempt = 0, bounded = false, onResult = onResult)
+
+            /**
+             * The cold route's bounded FINAL verification
+             * (office-background-repair118): the same read and the same
+             * [OfficeTransportDrain.isFresh] criterion, retried within the
+             * preparation's existing window while the page's socket stays
+             * OPEN and merely stale, each retry arming ONE on-demand
+             * heartbeat round exactly like the pre-handshake drain. A
+             * closed/closing socket and an exhausted budget both refuse
+             * immediately/ultimately with the unchanged typed detail; no
+             * native or hook effect is ever repeated and no timeout is
+             * added or extended.
+             */
+            override fun verifyPageTransportHealthUntilFresh(
+                token: OfficeEditModePreparationToken,
+                onResult: (Boolean) -> Unit,
+            ) = issuePageHealthVerification(token, attempt = 0, bounded = true, onResult = onResult)
+
+            /**
+             * Issues ONE page-truth health read. [bounded] selects the cold
+             * route's retry-on-stale-open continuation; the read itself, its
+             * token/generation/view fencing and its witness stamp are
+             * identical for both routes.
+             */
+            private fun issuePageHealthVerification(
+                token: OfficeEditModePreparationToken,
+                attempt: Int,
+                bounded: Boolean,
+                onResult: (Boolean) -> Unit,
+            ) {
+                mainHandler.post {
+                    val view = webView
+                    if (view == null) {
+                        onResult(false)
+                        return@post
+                    }
+                    val readGeneration = transportGeneration.get()
+                    var issueFailed = false
+                    val started = synchronized(host.nativeIngressLock) {
+                        editModePreparation.runIfActive(token) {
+                            if (isMountLive() && webView === view) {
+                                val ok = runCatching {
+                                    view.evaluateJavascript(
+                                        OfficeReadOnlyProtocol.PAGE_TRANSPORT_HEALTH_SCRIPT,
+                                    ) { raw ->
+                                        mainHandler.post {
+                                            onPageHealthVerificationRead(
+                                                token, attempt, bounded,
+                                                view, readGeneration, raw, onResult,
+                                            )
+                                        }
+                                    }
+                                }.isSuccess
+                                if (!ok) issueFailed = true
+                            } else {
+                                issueFailed = true
+                            }
+                        }
+                    }
+                    // Fenced (cancelled/closed) preparations drop silently:
+                    // the cancel/close owner already settled the operation.
+                    if (started && issueFailed) onResult(false)
+                }
+            }
+
+            /**
+             * Main thread: one health-read continuation. The generation check
+             * and its witness stamp stay atomic against HULLO/view changes;
+             * the retry's heartbeat arming and the operation callback both
+             * run OUTSIDE every monitor.
+             */
+            private fun onPageHealthVerificationRead(
+                token: OfficeEditModePreparationToken,
+                attempt: Int,
+                bounded: Boolean,
+                readView: COWebView,
+                readGeneration: Long,
+                raw: String?,
+                onResult: (Boolean) -> Unit,
+            ) {
+                var health: OfficeReadOnlyProtocol.OfficeTransportHealth? = null
+                var fenced = false
+                val fresh = synchronized(transportGenerationLock) {
+                    if (
+                        transportPumpTerminal() || webView !== readView ||
+                        transportGeneration.get() != readGeneration
+                    ) {
+                        fenced = true
+                        false
+                    } else {
+                        fenced = false
+                        val parsed = OfficeReadOnlyProtocol.parseTransportHealth(raw)
+                        health = parsed
+                        val current = OfficeTransportDrain.isFresh(parsed)
+                        if (current) {
+                            pageEditModeFact.onPageReportedFreshDownlink(
+                                android.os.SystemClock.elapsedRealtime(),
+                            )
+                        }
+                        current
+                    }
+                }
+                if (fenced) {
+                    onResult(false)
+                    return
+                }
+                // docx-socket-repair122 — hidden-window final verification.
+                // While the page window is hidden no poll response can be
+                // consumed, so page-consumed freshness is unattainable BY
+                // CONSTRUCTION; retrying/injecting would only walk the pinned
+                // ladder and could close the socket. The hidden route therefore
+                // verifies the ONE criterion that is both real and sufficient
+                // for what it admitted on: the page's OWN socket object is
+                // still open (`readyState === 1`; a 1006 close sets it to 3),
+                // read live with NO injection. The native-side liveness the
+                // admission also required (a fresh host-observed `pong`) has
+                // already been proven by the gate, and the effect/verification
+                // wire never traverses the page.
+                if (bounded && !isPageVisibleNow(readView)) {
+                    val verdict = OfficeHiddenTransportAdmission.decide(health)
+                    if (verdict != OfficeHiddenTransportAdmission.Verdict.ADMIT) {
+                        recordDiagnostic(
+                            OfficeSessionDiagnostics.KIND_TRANSPORT,
+                            "hidden final page-health verify refused " + verdict.name +
+                                " readyState=" + (health?.readyState?.toString() ?: "unreadable") +
+                                " msgInflight=" + (health?.msgInflight?.toString() ?: "-1") +
+                                " stalenessMs=" + (health?.stalenessMs?.toString() ?: "-1"),
+                        )
+                    }
+                    onResult(verdict == OfficeHiddenTransportAdmission.Verdict.ADMIT)
+                    return
+                }
+                if (fresh || !bounded) {
+                    onResult(fresh)
+                    return
+                }
+                when (OfficeTransportDrain.decide(health, attempt)) {
+                    OfficeTransportDrain.Decision.RETRY_WITH_PROBE -> {
+                        // Open but stale, in-flight BELOW the pinned cap: an
+                        // injection is provably safe (the pinned doSend()
+                        // creates its XHR). Arm ONE on-demand heartbeat round —
+                        // the same real recovery opportunity the pre-handshake
+                        // drain already uses — then re-read. The next issuance
+                        // re-fences the token, the mount and the captured view
+                        // identity from scratch.
+                        armDrainHeartbeat()
+                        mainHandler.postDelayed(
+                            {
+                                issuePageHealthVerification(
+                                    token, attempt + 1, bounded = true, onResult = onResult,
+                                )
+                            },
+                            OfficeTransportDrain.RETRY_DELAY_MS,
+                        )
+                    }
+                    OfficeTransportDrain.Decision.RETRY_READ_ONLY -> {
+                        // In-flight cap pinned (or unreadable): an injection
+                        // could only walk the ladder / never deliver data, and
+                        // at >30 s staleness it would close the socket. Inject
+                        // nothing; re-read while the page's own deferred polls
+                        // drain (the window is visible on this route).
+                        mainHandler.postDelayed(
+                            {
+                                issuePageHealthVerification(
+                                    token, attempt + 1, bounded = true, onResult = onResult,
+                                )
+                            },
+                            OfficeTransportDrain.RETRY_DELAY_MS,
+                        )
+                    }
+                    OfficeTransportDrain.Decision.PROCEED_SCRIPT,
+                    OfficeTransportDrain.Decision.REFUSE_ARMED,
+                    -> {
+                        // Closed/closing socket, an unreadable page, a budget
+                        // exhausted below the cap, or a cap still pinned: the
+                        // unchanged typed pre-dispatch refusal (never a burst
+                        // into a certain close). Record the page's OWN counters
+                        // (identity-safe: no path, no content, no token) so the
+                        // next live occurrence pins closed-vs-stale without
+                        // another diagnostic build.
+                        recordDiagnostic(
+                            OfficeSessionDiagnostics.KIND_TRANSPORT,
+                            "final page-health verify refused readyState=" +
+                                (health?.readyState?.toString() ?: "unreadable") +
+                                " msgInflight=" + (health?.msgInflight?.toString() ?: "-1") +
+                                " stalenessMs=" + (health?.stalenessMs?.toString() ?: "-1") +
+                                " attempts=" + (attempt + 1),
+                        )
+                        onResult(false)
+                    }
+                }
+            }
+
             override fun sendNativeEditable(token: OfficeEditModePreparationToken): Boolean =
                 synchronized(host.nativeIngressLock) {
                     if (!isMountLive()) {
                         false
                     } else {
-                        // Lock order is ALWAYS ingress -> preparation. Cancel
-                        // takes the same order, so no send starts after cancel.
-                        editModePreparation.runIfActive(token) {
-                            host.postMobileMessageNative(OfficeReadOnlyProtocol.SET_VIEW_EDITABLE)
+                        // Lock order is ALWAYS ingress -> preparation ->
+                        // generation. Cancel takes the same order; a HULLO
+                        // cannot slip between the token check and native send.
+                        var dispatched = false
+                        val active = editModePreparation.runIfActive(token) {
+                            synchronized(transportGenerationLock) {
+                                if (transportGeneration.get() == token.pageGeneration) {
+                                    host.postMobileMessageNative(OfficeReadOnlyProtocol.SET_VIEW_EDITABLE)
+                                    dispatched = true
+                                }
+                            }
                         }
+                        active && dispatched
                     }
                 }
 
@@ -326,34 +649,180 @@ class OfficeEngineService : Service() {
                 onHookResult: (Boolean) -> Unit,
             ) {
                 mainHandler.post {
-                    var hookFailed = false
-                    val started = synchronized(host.nativeIngressLock) {
-                        // The queued WebView runnable is an actual execution
-                        // point, not merely a callback: re-fence token + mount.
-                        editModePreparation.runIfActive(token) {
-                            if (!isMountLive()) {
-                                hookFailed = true
+                    // docx-socket-repair122 — route by the LIVE page-window
+                    // visibility:
+                    //
+                    //  * HIDDEN: no drain (it can inject nothing useful; a
+                    //    hidden page consumes no polls) and NO probe burst
+                    //    (that is what closed the socket in C17). Gate on the
+                    //    page's own open socket plus a real host-observed wsd
+                    //    `pong`, then run the same ordered hooks without the
+                    //    burst and verify the page's own open socket once.
+                    //  * VISIBLE: the unchanged bounded wake drain (read-first
+                    //    since 122) followed by the ordered burst handshake.
+                    if (!isPageVisibleNow()) {
+                        recordDiagnostic(
+                            OfficeSessionDiagnostics.KIND_TRANSPORT,
+                            "enter-edit hidden route admitted for gating",
+                        )
+                        runHiddenTransportGate(token, 0) { admitted, reason ->
+                            if (admitted) {
+                                runEnterEditScript(token, hiddenRoute = true, onHookResult = onHookResult)
                             } else {
-                                val view = webView
-                                if (view == null) {
-                                    hookFailed = true
-                                } else {
-                                    runCatching {
-                                        view.evaluateJavascript(
-                                            OfficeReadOnlyProtocol.PAGE_ENTER_EDIT_SCRIPT,
-                                        ) { raw ->
-                                            val ok = raw?.trim('"') == "true"
-                                            // Never invoke precision under the
-                                            // ingress/preparation monitors.
-                                            mainHandler.post { onHookResult(ok) }
-                                        }
-                                    }.onFailure { hookFailed = true }
-                                }
+                                recordDiagnostic(
+                                    OfficeSessionDiagnostics.KIND_TRANSPORT,
+                                    "hidden enter-edit gate refused: " + reason,
+                                )
+                                // Typed pre-dispatch refusal: nothing was
+                                // injected, the socket and the document stay
+                                // usable, and the next op (or the same op once
+                                // the viewer is visible) re-witnesses honestly.
+                                onHookResult(false)
                             }
                         }
+                        return@post
                     }
-                    if (started && hookFailed) onHookResult(false)
+                    runPageTransportDrain(
+                        token,
+                        0,
+                        { runEnterEditScript(token, hiddenRoute = false, onHookResult = onHookResult) },
+                        { reason ->
+                            recordDiagnostic(
+                                OfficeSessionDiagnostics.KIND_TRANSPORT,
+                                "pre-handshake drain refused armed: " + reason,
+                            )
+                            // No injection was made and no effect answered:
+                            // the page is merely waiting for its own deferred
+                            // polls. Refuse honestly instead of killing it.
+                            onHookResult(false)
+                        },
+                    )
                 }
+            }
+
+            /**
+             * Hidden-window transport gate (docx-socket-repair122): ONE
+             * page-truth health read requiring the page's own socket object to
+             * be OPEN, then a real host-observed wsd `pong` for the host `ping`
+             * — native-side liveness that needs no page polling. Bounded by
+             * [OfficeHiddenTransportAdmission.GATE_ATTEMPTS] x
+             * [OfficeHiddenTransportAdmission.PONG_WAIT_MS] inside the
+             * preparation's unchanged timeout. Never injects a `doSend()`.
+             */
+            private fun runHiddenTransportGate(
+                token: OfficeEditModePreparationToken,
+                attempt: Int,
+                onResult: (Boolean, String) -> Unit,
+            ) {
+                val view = webView
+                if (view == null) {
+                    onResult(false, "no-view")
+                    return
+                }
+                val readGeneration = transportGeneration.get()
+                var issueFailed = false
+                val started = synchronized(host.nativeIngressLock) {
+                    editModePreparation.runIfActive(token) {
+                        if (!editModePreparationHost.isMountLive() || webView !== view) {
+                            issueFailed = true
+                        } else {
+                            val issued = runCatching {
+                                view.evaluateJavascript(
+                                    OfficeReadOnlyProtocol.PAGE_TRANSPORT_HEALTH_SCRIPT,
+                                ) { raw ->
+                                    mainHandler.post {
+                                        onHiddenTransportGateRead(
+                                            token, attempt, view, readGeneration, raw, onResult,
+                                        )
+                                    }
+                                }
+                            }.isSuccess
+                            if (!issued) issueFailed = true
+                        }
+                    }
+                }
+                if (started && issueFailed) onResult(false, "hidden-gate-issue-failed")
+            }
+
+            private fun onHiddenTransportGateRead(
+                token: OfficeEditModePreparationToken,
+                attempt: Int,
+                readView: COWebView,
+                readGeneration: Long,
+                raw: String?,
+                onResult: (Boolean, String) -> Unit,
+            ) {
+                val active = synchronized(host.nativeIngressLock) {
+                    editModePreparation.runIfActive(token) { }
+                }
+                if (!active) return
+                val health = synchronized(transportGenerationLock) {
+                    if (webView === readView && transportGeneration.get() == readGeneration) {
+                        OfficeReadOnlyProtocol.parseTransportHealth(raw)
+                    } else {
+                        null
+                    }
+                }
+                when (OfficeHiddenTransportAdmission.decide(health)) {
+                    OfficeHiddenTransportAdmission.Verdict.ADMIT ->
+                        verifyHiddenWsdAlive(token, attempt, onResult)
+                    OfficeHiddenTransportAdmission.Verdict.REFUSE_SOCKET_CLOSED ->
+                        onResult(
+                            false,
+                            "page-socket-closed readyState=" +
+                                (health?.readyState?.toString() ?: "unreadable"),
+                        )
+                    OfficeHiddenTransportAdmission.Verdict.REFUSE_UNREADABLE ->
+                        onResult(false, "page-health-unreadable")
+                }
+            }
+
+            /**
+             * One real native liveness proof for the hidden route: send the
+             * pinned `ping` uplink and wait for a NEW `pong` to reach the HOST
+             * (`onMessageToJs` stamps [pongSeq] before the frame is queued for
+             * the page). Proves the in-process wsd / FakeSocket / native session
+             * still processes host uplinks — exactly the channel the effect
+             * wire uses — while the page consumes no downlink. Retried within
+             * the bounded gate budget; never an injection.
+             */
+            private fun verifyHiddenWsdAlive(
+                token: OfficeEditModePreparationToken,
+                attempt: Int,
+                onResult: (Boolean, String) -> Unit,
+            ) {
+                val active = synchronized(host.nativeIngressLock) {
+                    editModePreparation.runIfActive(token) { }
+                }
+                if (!active) return
+                val baseline = pongSeq.get()
+                val pingSent = runCatching {
+                    host.postMobileMessageNative(OfficeReadOnlyProtocol.TRANSPORT_PING)
+                }.isSuccess
+                if (!pingSent) {
+                    onResult(false, "hidden-ping-failed")
+                    return
+                }
+                mainHandler.postDelayed(
+                    {
+                        val stillActive = synchronized(host.nativeIngressLock) {
+                            editModePreparation.runIfActive(token) { }
+                        }
+                        if (!stillActive) return@postDelayed
+                        when {
+                            pongSeq.get() > baseline ->
+                                onResult(true, "wsd-pong")
+                            attempt + 1 >= OfficeHiddenTransportAdmission.GATE_ATTEMPTS ->
+                                onResult(
+                                    false,
+                                    "wsd-pong-missing attempts=" + (attempt + 1) +
+                                        " lastPongAtMs=" + lastPongAtMs,
+                                )
+                            else -> runHiddenTransportGate(token, attempt + 1, onResult)
+                        }
+                    },
+                    OfficeHiddenTransportAdmission.PONG_WAIT_MS,
+                )
             }
 
             override fun runOnControlLane(task: Runnable): Boolean = try {
@@ -399,24 +868,563 @@ class OfficeEngineService : Service() {
             }
         }
 
-        /** Serialized page fact fan-out for precision and the pending flush. */
-        private fun onPageEditModeForOwnedOperations(on: Boolean) {
-            editModePreparation.onPageEditMode(on)
-            if (!on) {
-                precision.onPageViewingObserved()
-                val opId = saveCoordinator.pendingFlushOpId()
-                if (opId != null) {
-                    if (saveCoordinator.isFlushDispatched()) {
-                        recordDiagnostic(
-                            OfficeSessionDiagnostics.KIND_SAVE,
-                            "page viewing after flush dispatch op=$opId; awaiting real save outcome",
-                        )
-                    } else {
-                        saveCoordinator.abortDispatch(opId, "page-viewing-before-flush")?.let { outcome ->
-                            this@OfficeEngineService.completeFlush(this@Session, outcome)
+        // --- genuine background transport (page-transport85) ---
+        //
+        // The pinned mobile page has no polling of its own and can never
+        // re-open its native session (MobileSocket.kt class header). A
+        // hidden page consumes no poll response, so its `lastDataTimestamp`
+        // cannot be refreshed and a `doSend()` injection in that state can
+        // only walk the pinned ladder toward the fatal 30 s close.
+        //
+        // docx-socket-repair122 (actual C17 DOCX first failure, 2026-10-29):
+        // the earlier revision injected heartbeat probes DURING the hidden
+        // window on the assumption that an injected `doSend()` would not
+        // execute on a hidden WebView. The retained C17 logcat disproves that
+        // (injected JS does execute; only the page's loads are deferred), and
+        // the injected probe was the execution context of the 17:04:00.123
+        // code-1006 close. The transport section therefore now:
+        //  * injects NO `doSend()` while the page window is not visible
+        //    ([isPageVisibleNow] gates every probe),
+        //  * keeps at most one real `pong` waiting in the bounded queue (one
+        //    `ping` per hidden window) for the wake drain to deliver,
+        //  * reads the page's own counters BEFORE arming any poll, and never
+        //    arms one while the in-flight counter is pinned at its cap,
+        //  * refuses honestly (no burst) if the cap is still pinned when the
+        //    bounded budget ends, instead of closing a merely-deferred page,
+        //  * gives the hidden edit preparation a real admission route built on
+        //    the page's open socket + a host-observed wsd `pong` + the same
+        //    ordered hooks without the probe burst.
+        // Everything here is mount-owned: no PIP, no permanent keepalive,
+        // no new permission, and no injection can outlive the mount.
+
+        /** True once this mount can never run transport work again. */
+        private fun transportPumpTerminal(): Boolean =
+            retired || presentationSuperseded || cancelled.get() ||
+                current !== this@Session ||
+                state == OfficeViewerState.CLOSING || state == OfficeViewerState.CLOSED ||
+                processRecoveryRequired.get()
+
+        /**
+         * Live page-window visibility (docx-socket-repair122).
+         *
+         * True only when the current engine WebView is attached, itself
+         * VISIBLE and its WINDOW is VISIBLE. That is the same predicate the
+         * WebView framework uses to drive the Chromium page's visibility
+         * state, evaluated at the injection point — no cached lifecycle flag,
+         * no resume/pause race, no assumption about activity state.
+         *
+         * Why every `doSend()` injection must check it: a hidden page defers
+         * its loads, so a poll response cannot be consumed (the C17 evidence:
+         * the enter-edit handshake's four polls were still `msgInflight` 20+ s
+         * later), while injected `evaluateJavascript` still executes (the
+         * post-close 'sending on closed socket' lines). An injection in that
+         * state can therefore never deliver data; it only walks the pinned
+         * throttle ladder, and once staleness passes 30 s that same `doSend()`
+         * closes the socket with code 1006 (pinned global.js 1696-1716) — the
+         * actual C17 DOCX first failure during the background approval wait.
+         */
+        fun isPageVisibleNow(view: COWebView? = webView): Boolean =
+            view != null && view.isShown && view.windowVisibility == View.VISIBLE
+
+        private fun startTransportPump() {
+            if (!transportPumpStarted.compareAndSet(false, true)) return
+            recordDiagnostic(
+                OfficeSessionDiagnostics.KIND_TRANSPORT,
+                "transport heartbeat pump started",
+            )
+            scheduleTransportPumpTick(OfficeTransportPump.DEFAULT_HEARTBEAT_INTERVAL_MS)
+        }
+
+        private fun scheduleTransportPumpTick(delayMs: Long) {
+            val task = Runnable { pumpTick() }
+            pumpTickTask = task
+            mainHandler.postDelayed(task, delayMs)
+        }
+
+        /**
+         * One heartbeat tick (main thread). Skips work while not READY or
+         * without a live view/socket (a detached window keeps ticking so the
+         * pump survives view reconstruction), and stops rescheduling only at
+         * the mount terminal or after a failed native ping — the existing
+         * transportFailed/process-recovery guards own that failure honestly.
+         */
+        private fun pumpTick() {
+            pumpTickTask = null
+            if (transportPumpTerminal() || transportPump.isStopped()) return
+            val ready = state == OfficeViewerState.READY_READ_ONLY ||
+                state == OfficeViewerState.READY_EDITABLE
+            if (ready && webView != null && socket != null) {
+                when (transportPump.onTick(android.os.SystemClock.elapsedRealtime())) {
+                    OfficeTransportPump.TickDecision.HEARTBEAT -> {
+                        val pingSent = runCatching {
+                            host.postMobileMessageNative(OfficeReadOnlyProtocol.TRANSPORT_PING)
+                        }.isSuccess
+                        if (!pingSent) {
+                            transportPump.stop()
+                            recordDiagnostic(
+                                OfficeSessionDiagnostics.KIND_TRANSPORT,
+                                "heartbeat ping failed; pump stopped",
+                            )
+                            return
+                        }
+                        issueTransportProbe(transportPump.currentRoundId())
+                    }
+                    // The ping already exists for this open round; only its
+                    // probe was gated by ordinary traffic. Never ping twice.
+                    OfficeTransportPump.TickDecision.PROBE ->
+                        issueTransportProbe(transportPump.currentRoundId())
+                    OfficeTransportPump.TickDecision.IDLE -> Unit
+                }
+            }
+            scheduleTransportPumpTick(OfficeTransportPump.DEFAULT_HEARTBEAT_INTERVAL_MS)
+        }
+
+        private fun stopTransportPump() {
+            transportPump.stop()
+            pumpTickTask?.let { mainHandler.removeCallbacks(it) }
+            pumpTickTask = null
+            pumpSettleTask?.let { mainHandler.removeCallbacks(it) }
+            pumpSettleTask = null
+        }
+
+        /**
+         * Attach/detach, repeated HULLO or refused reload: advance the exact
+         * page/socket incarnation before dropping its pump/freshness facts.
+         * Execution-point fencing is immediate; settlement returns to the
+         * ordinary control lane so no precision callback runs on a native
+         * bridge thread or underneath the ingress/preparation monitors.
+         */
+        fun onTransportGenerationChanged() {
+            synchronized(transportGenerationLock) {
+                transportGeneration.incrementAndGet()
+                transportPump.reset()
+                pumpSettleTask?.let { mainHandler.removeCallbacks(it) }
+                pumpSettleTask = null
+                pageEditModeFact.onPageLifecycleRestart()
+            }
+            val settle = Runnable {
+                if (!retired && current === this@Session) {
+                    editModePreparation.onPageTransportGenerationChanged()
+                }
+            }
+            try {
+                controlExecutor.execute(settle)
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                // Teardown owns final settlement; the generation check in
+                // runIfActive has already fenced every later side effect.
+            }
+        }
+
+        /**
+         * Issues ONE bounded `doSend()` poll probe with an execution
+         * callback, honoring the page-side single-pending-poll gate.
+         * [roundId] is the heartbeat round this probe belongs to (0 for
+         * drain-only probes). The callback distinguishes a frozen renderer
+         * (never fires; the injection stays the one pending poll) from an
+         * executed probe whose `doSend()` early-returned at the pinned
+         * `msgInflight >= 4` gate (fires, then settles after
+         * [OfficeTransportPump.PROBE_SETTLE_MS]). Both the never-reused
+         * injection seq and the captured view identity are re-checked in
+         * every continuation: a stale callback from a previous
+         * view/socket generation mutates nothing.
+         */
+        private fun issueTransportProbe(roundId: Long) {
+            val view = webView ?: return
+            // docx-socket-repair122: the host is the ONLY `doSend()` source
+            // (pinned MobileSocket deletes/no-ops `_setPollInterval`), so
+            // suppressing injections while the page window is hidden makes a
+            // watchdog close during a hidden approval wait IMPOSSIBLE — no
+            // injection, no watchdog evaluation, and nothing else can close the
+            // pinned socket (its `close()` is a no-op and a hidden page consumes
+            // no polls). The heartbeat's real `pong` waits in the bounded queue
+            // and is delivered by the first poll the wake drain arms.
+            if (!isPageVisibleNow(view)) {
+                if (!hiddenProbeSuppressedLogged) {
+                    hiddenProbeSuppressedLogged = true
+                    recordDiagnostic(
+                        OfficeSessionDiagnostics.KIND_TRANSPORT,
+                        "transport probe suppressed: page window hidden",
+                    )
+                }
+                return
+            }
+            if (hiddenProbeSuppressedLogged) hiddenProbeSuppressedLogged = false
+            synchronized(transportGenerationLock) {
+                if (transportPumpTerminal() || webView !== view || transportPump.pollOutstanding()) return
+                val probeGeneration = transportGeneration.get()
+                val seq = ++nextInjectionSeq
+                transportPump.onInjectionIssued(seq, roundId)
+                val issued = runCatching {
+                    // docx-socket-repair122: the page-side safe probe refuses
+                    // `doSend()` itself while `msgInflight >= 4`, so no host
+                    // injection path (pump tick, drain retry, final verify) can
+                    // reach the pinned watchdog branch even if a health read and
+                    // the injection straddle a page-side state change.
+                    view.evaluateJavascript(OfficeReadOnlyProtocol.PAGE_SAFE_POLL_PROBE_SCRIPT) {
+                        mainHandler.post {
+                            synchronized(transportGenerationLock) {
+                                if (
+                                    transportPumpTerminal() || webView !== view ||
+                                    transportGeneration.get() != probeGeneration
+                                ) return@post
+                                onTransportProbeExecuted(seq)
+                            }
+                        }
+                    }
+                }.isSuccess
+                if (!issued) {
+                    transportPump.onInjectionIssueFailed(seq, android.os.SystemClock.elapsedRealtime())
+                }
+            }
+        }
+
+        /** Main thread: arms the bounded settle window for an executed probe. */
+        private fun onTransportProbeExecuted(injectionSeq: Long) {
+            // A stale callback must not even REPLACE the current injection's
+            // settle task. The pump accepts only the exact outstanding seq.
+            if (!transportPump.onProbeExecuted(injectionSeq)) return
+            pumpSettleTask?.let { mainHandler.removeCallbacks(it) }
+            val settle = Runnable {
+                pumpSettleTask = null
+                // Identity-matched inside the pump: a settle for a
+                // superseded/stale injection is a deterministic no-op and
+                // can never clear the current outstanding injection.
+                transportPump.onProbeSettled(
+                    injectionSeq,
+                    android.os.SystemClock.elapsedRealtime(),
+                )
+            }
+            pumpSettleTask = settle
+            mainHandler.postDelayed(settle, OfficeTransportPump.PROBE_SETTLE_MS)
+        }
+
+        /**
+         * Bounded pre-handshake wake drain ([OfficeTransportDrain]).
+         *
+         * docx-socket-repair122 — READ FIRST, then inject only when the page's
+         * own counters make the injection provably non-fatal: each iteration
+         * READS the page's transport counters (no WebView mutation), and only
+         * a [OfficeTransportDrain.Decision.RETRY_WITH_PROBE] outcome arms ONE
+         * poll (plus one real `ping` so the delivered frame is a `pong`). The
+         * previous revision injected before every read; on a page left hidden
+         * with the handshake's polls pinned at the in-flight cap that first
+         * injection could only walk the ladder and closed the socket once
+         * staleness passed 30 s — the actual C17 wake shape. A budget that
+         * ends with the cap still pinned now refuses
+         * ([OfficeTransportDrain.Decision.REFUSE_ARMED]) instead of running
+         * the handshake's probe burst into the same close.
+         *
+         * The drain still never ADMITS: [onFinished] proceeds to the real
+         * handshake script, which remains the single admission verdict.
+         * [onArmedRefused] is the one new honest outcome — a typed
+         * pre-dispatch refusal with no injection, so a merely-deferred page
+         * is never killed. It runs on the main thread.
+         *
+         * [token] non-null fences every issuance and continuation under the
+         * ingress→preparation lock order (an owned preparation: cancel/close
+         * drops the chain with no further WebView step); null is the manual
+         * requestEdit path, fenced by session liveness only. Neither callback
+         * runs under the ingress/preparation monitors.
+         */
+        internal fun runPageTransportDrain(
+            token: OfficeEditModePreparationToken?,
+            attempt: Int,
+            onFinished: () -> Unit,
+            onArmedRefused: (String) -> Unit,
+        ) {
+            if (attempt >= OfficeTransportDrain.MAX_ATTEMPTS) {
+                onFinished()
+                return
+            }
+            val view = webView
+            if (view == null) {
+                onFinished()
+                return
+            }
+            val readGeneration = transportGeneration.get()
+            if (token != null) {
+                var proceedOutsideLocks = false
+                synchronized(host.nativeIngressLock) {
+                    editModePreparation.runIfActive(token) {
+                        if (editModePreparationHost.isMountLive() && webView === view) {
+                            if (!issueTransportHealthRead(
+                                    token, attempt, view, readGeneration, onFinished, onArmedRefused,
+                                )
+                            ) {
+                                proceedOutsideLocks = true
+                            }
+                        } else {
+                            // Mount gone mid-preparation: the script's own
+                            // fence reports the honest typed failure.
+                            proceedOutsideLocks = true
                         }
                     }
                 }
+                // A fenced (cancelled/closed) preparation drops the chain
+                // here without touching the WebView: the cancel/close owner
+                // has already settled the operation.
+                if (proceedOutsideLocks) onFinished()
+                return
+            }
+            if (transportPumpTerminal() || webView !== view) return
+            if (!issueTransportHealthRead(null, attempt, view, readGeneration, onFinished, onArmedRefused)) {
+                onFinished()
+            }
+        }
+
+        /** Issues one read-only health read; false when it could not start. */
+        private fun issueTransportHealthRead(
+            token: OfficeEditModePreparationToken?,
+            attempt: Int,
+            view: COWebView,
+            readGeneration: Long,
+            onFinished: () -> Unit,
+            onArmedRefused: (String) -> Unit,
+        ): Boolean = runCatching {
+            view.evaluateJavascript(OfficeReadOnlyProtocol.PAGE_TRANSPORT_HEALTH_SCRIPT) { raw ->
+                // Captured view AND page/socket generation travel with the
+                // answer: neither an old view nor a pre-HULLO answer may
+                // continue or authorize a chain against the new incarnation.
+                mainHandler.post {
+                    onTransportHealthRead(
+                        token, attempt, view, readGeneration, raw, onFinished, onArmedRefused,
+                    )
+                }
+            }
+        }.isSuccess
+
+        private fun onTransportHealthRead(
+            token: OfficeEditModePreparationToken?,
+            attempt: Int,
+            readView: COWebView,
+            readGeneration: Long,
+            raw: String?,
+            onFinished: () -> Unit,
+            onArmedRefused: (String) -> Unit,
+        ) {
+            // Re-fence at the real continuation point: a settled preparation
+            // or terminated manual session drives no further WebView step.
+            if (token != null) {
+                val active = synchronized(host.nativeIngressLock) {
+                    editModePreparation.runIfActive(token) { }
+                }
+                if (!active) return
+            } else if (transportPumpTerminal()) {
+                return
+            }
+            // Stale-view answer: NOT a health fact. Treat it as unreadable
+            // so the bounded retry re-reads the CURRENT page instead of
+            // proceeding on observations from a replaced incarnation.
+            val health = synchronized(transportGenerationLock) {
+                val current = if (webView === readView && transportGeneration.get() == readGeneration) {
+                    OfficeReadOnlyProtocol.parseTransportHealth(raw)
+                } else {
+                    null
+                }
+                if (OfficeTransportDrain.isFresh(current)) {
+                    // PAGE-CONSUMED downlink truth, stamped atomically with
+                    // the generation check so a pre-HULLO answer cannot
+                    // re-corroborate the new page incarnation.
+                    pageEditModeFact.onPageReportedFreshDownlink(
+                        android.os.SystemClock.elapsedRealtime(),
+                    )
+                }
+                current
+            }
+            when (OfficeTransportDrain.decide(health, attempt)) {
+                OfficeTransportDrain.Decision.RETRY_WITH_PROBE -> {
+                    // Safe to arm one poll (in-flight below the pinned cap, so
+                    // the injected doSend() creates its XHR and cannot reach
+                    // the watchdog branch). Make it able to witness REAL data:
+                    // open an on-demand heartbeat round (one `ping`; strictly
+                    // one open round at a time) so the pong is in the bounded
+                    // queue for this poll to deliver.
+                    armDrainHeartbeat()
+                    mainHandler.postDelayed(
+                        { runPageTransportDrain(token, attempt + 1, onFinished, onArmedRefused) },
+                        OfficeTransportDrain.RETRY_DELAY_MS,
+                    )
+                }
+                OfficeTransportDrain.Decision.RETRY_READ_ONLY -> {
+                    // The page's in-flight counter is pinned at the cap, or the
+                    // answer was unreadable: an injection could only walk the
+                    // ladder (never deliver data), and at >30 s staleness it
+                    // closes the socket. Inject NOTHING and re-read; the page's
+                    // own deferred polls complete when the window is visible.
+                    mainHandler.postDelayed(
+                        { runPageTransportDrain(token, attempt + 1, onFinished, onArmedRefused) },
+                        OfficeTransportDrain.RETRY_DELAY_MS,
+                    )
+                }
+                OfficeTransportDrain.Decision.PROCEED_SCRIPT -> {
+                    // office-background-repair118: proceeding WITHOUT fresh
+                    // page-truth means either a closed/closing socket (the
+                    // actual DOCX `page-edit-hook-unavailable` shape — the
+                    // drain cannot heal a 1006 close, only refuse honestly),
+                    // an unreadable page or a stale budget exhausted with the
+                    // in-flight counter BELOW the cap (an injection there is
+                    // provably safe). Record the page's OWN counters
+                    // (identity-safe: readyState/msgInflight/staleness only —
+                    // never a path, token or content) so the next device
+                    // occurrence pins the cause without guessing.
+                    if (!OfficeTransportDrain.isFresh(health)) {
+                        recordDiagnostic(
+                            OfficeSessionDiagnostics.KIND_TRANSPORT,
+                            "pre-handshake drain proceeded readyState=" +
+                                (health?.readyState?.toString() ?: "unreadable") +
+                                " msgInflight=" + (health?.msgInflight?.toString() ?: "-1") +
+                                " stalenessMs=" + (health?.stalenessMs?.toString() ?: "-1") +
+                                " attempts=" + (attempt + 1),
+                        )
+                    }
+                    onFinished()
+                }
+                OfficeTransportDrain.Decision.REFUSE_ARMED -> {
+                    // The in-flight cap is still pinned after the whole
+                    // bounded budget: running the handshake's synchronous
+                    // probe burst would close a page that is only waiting for
+                    // its own deferred polls. Refuse honestly with NO
+                    // injection; the socket and the document stay usable.
+                    val reason = "in-flight-cap-pinned readyState=" +
+                        (health?.readyState?.toString() ?: "unreadable") +
+                        " msgInflight=" + (health?.msgInflight?.toString() ?: "-1") +
+                        " stalenessMs=" + (health?.stalenessMs?.toString() ?: "-1") +
+                        " attempts=" + (attempt + 1)
+                    recordDiagnostic(
+                        OfficeSessionDiagnostics.KIND_TRANSPORT,
+                        "pre-handshake drain refused armed: " + reason,
+                    )
+                    onArmedRefused(reason)
+                }
+            }
+        }
+
+        /**
+         * One on-demand heartbeat for the drain's retry path: opens a pump
+         * round when none is open (bounded by the pump's single-round rule),
+         * sends the real `ping` and arms the poll probe that can carry the
+         * `pong` back to the page. A failed native ping stops the pump — the
+         * existing transportFailed/process-recovery guards own that failure.
+         */
+        private fun armDrainHeartbeat() {
+            if (transportPumpTerminal() || transportPump.isStopped()) return
+            if (webView == null || socket == null) return
+            if (!transportPump.requestRound()) {
+                // Reuse the already-pinged open round; a foreign ordinary
+                // probe may have just settled and freed its missing probe.
+                issueTransportProbe(transportPump.currentRoundId())
+                return
+            }
+            val pingSent = runCatching {
+                host.postMobileMessageNative(OfficeReadOnlyProtocol.TRANSPORT_PING)
+            }.isSuccess
+            if (!pingSent) {
+                transportPump.stop()
+                recordDiagnostic(
+                    OfficeSessionDiagnostics.KIND_TRANSPORT,
+                    "drain heartbeat ping failed; pump stopped",
+                )
+                return
+            }
+            issueTransportProbe(transportPump.currentRoundId())
+        }
+
+        /**
+         * The real enter-edit handshake execution point (page-mode79's
+         * queued-runnable body, unchanged): issuance re-fenced under the
+         * ingress→preparation lock order, the hook result marshalled to the
+         * main handler outside every monitor. hookRan=true only completes the
+         * owned phase latch; READY additionally requires the EDITMODE/
+         * activation candidate and this operation's final page-health read.
+         */
+        private fun runEnterEditScript(
+            token: OfficeEditModePreparationToken,
+            hiddenRoute: Boolean,
+            onHookResult: (Boolean) -> Unit,
+        ) {
+            // docx-socket-repair122: the synchronous 24-call `doSend()` burst
+            // exists only to force the pinned watchdog to evaluate NOW. It is
+            // fatal on a hidden page whose in-flight counter is pinned at the
+            // cap (C17), so the hidden route NEVER bursts and a visible route
+            // that has just gone hidden downgrades to the same ordered hooks
+            // WITHOUT the burst. The session never injects a `doSend()` while
+            // the window is hidden. Diagnostic outside every monitor.
+            recordDiagnostic(
+                OfficeSessionDiagnostics.KIND_TRANSPORT,
+                "enter-edit script hiddenRoute=" + hiddenRoute +
+                    " visibleNow=" + isPageVisibleNow(),
+            )
+            var hookFailed = false
+            val started = synchronized(host.nativeIngressLock) {
+                editModePreparation.runIfActive(token) {
+                    synchronized(transportGenerationLock) {
+                        if (!editModePreparationHost.isMountLive() || transportGeneration.get() != token.pageGeneration) {
+                            hookFailed = true
+                        } else {
+                            val view = webView
+                            if (view == null) {
+                                hookFailed = true
+                            } else {
+                                // Injection-time visibility is authoritative: a
+                                // window that hid between the route decision and
+                                // this execution point must not force the
+                                // watchdog (the only thing the burst can do).
+                                val burst = !hiddenRoute && isPageVisibleNow(view)
+                                val script = if (burst) {
+                                    OfficeReadOnlyProtocol.PAGE_ENTER_EDIT_SCRIPT
+                                } else {
+                                    OfficeReadOnlyProtocol.PAGE_ENTER_EDIT_SCRIPT_NO_PROBE
+                                }
+                                runCatching {
+                                    view.evaluateJavascript(script) { raw ->
+                                        val ok = raw?.trim('"') == "true"
+                                        // Never invoke precision under the
+                                        // ingress/preparation monitors.
+                                        mainHandler.post { onHookResult(ok) }
+                                    }
+                                }.onFailure { hookFailed = true }
+                            }
+                        }
+                    }
+                }
+            }
+            if (started && hookFailed) onHookResult(false)
+        }
+
+        /** Serialized page fact fan-out for precision and the pending flush. */
+        private fun onPageEditModeForOwnedOperations(on: Boolean, pageGeneration: Long) {
+            // The fact was observed on a specific page/socket incarnation.
+            // A stale OFF must neither settle a newer preparation nor drive
+            // its precision ledger into after-effect UNKNOWN.
+            if (transportGeneration.get() != pageGeneration) return
+            editModePreparation.onPageEditMode(on, pageGeneration)
+            if (!on) {
+                var settleFlush: (() -> Unit)? = null
+                synchronized(transportGenerationLock) {
+                    // Recheck at the ACTUAL ledger effect: a HULLO racing the
+                    // preparation fan-out must not turn its older OFF into a
+                    // new-generation precision UNKNOWN or flush abort.
+                    if (transportGeneration.get() != pageGeneration) return
+                    precision.onPageViewingObserved()
+                    val opId = saveCoordinator.pendingFlushOpId()
+                    if (opId != null) {
+                        if (saveCoordinator.isFlushDispatched()) {
+                            recordDiagnostic(
+                                OfficeSessionDiagnostics.KIND_SAVE,
+                                "page viewing after flush dispatch op=$opId; awaiting real save outcome",
+                            )
+                        } else {
+                            saveCoordinator.abortDispatch(opId, "page-viewing-before-flush")?.let { outcome ->
+                                // External completion stays outside every
+                                // generation/ingress/preparation monitor.
+                                settleFlush = {
+                                    this@OfficeEngineService.completeFlush(this@Session, outcome)
+                                }
+                            }
+                        }
+                    }
+                }
+                settleFlush?.invoke()
             }
         }
 
@@ -671,6 +1679,15 @@ class OfficeEngineService : Service() {
             state = next
             recordDiagnostic(OfficeSessionDiagnostics.KIND_STATE, "state=${next.name}")
             publishProgress()
+            // The transport heartbeat starts exactly when the mount becomes
+            // genuinely usable (document loaded, permission barrier observed,
+            // render witnessed) and never earlier: before READY there is no
+            // loaded document for the pinned `ping` to reference
+            // (ClientSession answers `nodocloaded`), and an OPENING mount's
+            // load burst already drives its own polls.
+            if (next == OfficeViewerState.READY_READ_ONLY || next == OfficeViewerState.READY_EDITABLE) {
+                startTransportPump()
+            }
         }
 
         fun publishProgress() {
@@ -745,6 +1762,10 @@ class OfficeEngineService : Service() {
         /** Delivers the terminal result exactly once for this mount. */
         fun deliverTerminal(closedCleanly: Boolean, failure: OfficeFailureCode?, message: String?) {
             if (!terminalDelivered.compareAndSet(false, true)) return
+            // No heartbeat/injection may be issued for a closing mount, and
+            // no queued pump task may act after teardown (page-transport85:
+            // after-close JavaScript can never touch a later mount).
+            stopTransportPump()
             // Fence any queued native/JS edit-preparation execution before
             // settling operations; late hooks cannot enter a closing mount.
             closeEditModePreparation()
@@ -802,15 +1823,54 @@ class OfficeEngineService : Service() {
                 }
                 return false
             }
-            if (message == "HULLO" && !hulloClaimed.compareAndSet(false, true)) return false
+            if (message == "HULLO" && !hulloClaimed.compareAndSet(false, true)) {
+                // A repeated handshake frame means the page restarted its
+                // native channel: the cached EDITMODE fact describes the
+                // previous page incarnation and cannot vouch for a new owned
+                // operation. The frame itself is still never forwarded — the
+                // pinned androidapp.cpp binds exactly one fake-socket native
+                // session per createCOOLWSD lifetime, so a second connect is
+                // not a supported producer path.
+                onTransportGenerationChanged()
+                recordDiagnostic(
+                    OfficeSessionDiagnostics.KIND_STATE,
+                    "page handshake after first HULLO; transport generation advanced",
+                )
+                return false
+            }
             if (OfficeReadOnlyProtocol.isReservedQuery(message)) return false
             if (OfficeReadOnlyProtocol.command(message) == "load") {
-                synchronized(this) {
-                    if (loadForwarded || !OfficeReadOnlyProtocol.matchesSnapshotLoad(message, File(request.stagedFilePath))) {
-                        notifyNotice("loadError", null)
-                        return false
+                var refusedReload = false
+                val forward = synchronized(this) {
+                    when {
+                        // Same evaluation order as the historical single-load
+                        // authority: an already-forwarded snapshot makes any
+                        // later load frame a page reload attempt.
+                        loadForwarded -> {
+                            refusedReload = true
+                            false
+                        }
+                        !OfficeReadOnlyProtocol.matchesSnapshotLoad(message, File(request.stagedFilePath)) -> false
+                        else -> {
+                            loadForwarded = true
+                            true
+                        }
                     }
-                    loadForwarded = true
+                }
+                if (!forward) {
+                    if (refusedReload) {
+                        // A page-issued reload `load` (the pinned mobile
+                        // transport can never re-open its native session):
+                        // the cached page-edit fact no longer describes the
+                        // live page incarnation.
+                        onTransportGenerationChanged()
+                        recordDiagnostic(
+                            OfficeSessionDiagnostics.KIND_STATE,
+                            "page reload load frame refused; transport generation advanced",
+                        )
+                    }
+                    notifyNotice("loadError", null)
+                    return false
                 }
             }
             // The page's own edit-mode notice (pinned Android behaviour: the
@@ -820,13 +1880,15 @@ class OfficeEngineService : Service() {
             if (OfficeReadOnlyProtocol.command(message) == "EDITMODE") {
                 val on = message.substringAfter(' ', "").trim() == "on"
                 if (editable) {
+                    val observedGeneration = transportGeneration.get()
                     pageEditMode = on
+                    pageEditModeFact.onPageFact(on, android.os.SystemClock.elapsedRealtime())
                     recordDiagnostic(OfficeSessionDiagnostics.KIND_STATE, "page EDITMODE=$on")
                     publishEditState()
                     runCatching {
                         controlExecutor.execute {
                             if (retired || presentationSuperseded || current !== this@Session) return@execute
-                            onPageEditModeForOwnedOperations(on)
+                            onPageEditModeForOwnedOperations(on, observedGeneration)
                         }
                     }
                 }
@@ -901,6 +1963,23 @@ class OfficeEngineService : Service() {
                         return false
                     }
                     precision.noteForwardedPageCommand(head)
+                    if (head == "useractive") {
+                        // The page can only emit this frame while its socket
+                        // transport is open (pinned Socket.ts gate + mobile
+                        // bridge uplink), so one real forwarded frame is the
+                        // edit-handshake transport liveness witness (see
+                        // OfficeEditModePreparation). The kit never sends
+                        // `useractive` downstream and the host's own native
+                        // wire never uses it, so this count cannot be fed by
+                        // anything but the live page. The monotonic count is
+                        // the handshake-baseline witness; the freshness stamp
+                        // additionally corroborates the cached fast path
+                        // (page-transport85 finding A: a fresh RAW EDITMODE
+                        // ack without a recent real witness frame is not an
+                        // admission fact — the bridge works on a dying proxy).
+                        pageActivationWitnessCount.incrementAndGet()
+                        pageEditModeFact.onActivationWitness(android.os.SystemClock.elapsedRealtime())
+                    }
                     return true
                 }
             }
@@ -921,6 +2000,15 @@ class OfficeEngineService : Service() {
 
         override fun onMessageToJs(message: ByteArray) {
             if (retired) return
+            // docx-socket-repair122: a host-observed wsd `pong` is recorded
+            // HERE, before the frame is queued for the page, so the hidden
+            // route has a real native-side liveness witness that does not need
+            // any page polling (a hidden page consumes no downlink at all). The
+            // frame is still relayed to the page unchanged below.
+            if (OfficeReadOnlyProtocol.isTransportPong(message)) {
+                pongSeq.incrementAndGet()
+                lastPongAtMs = android.os.SystemClock.elapsedRealtime()
+            }
             OfficeReadOnlyProtocol.barrierReport(message)?.let { loadReadOnly ->
                 if (permissionPolicyQueued.get()) {
                     nativeLoadReadOnly = loadReadOnly
@@ -1308,6 +2396,14 @@ class OfficeEngineService : Service() {
 
         override fun triggerSend() {
             val view = webView ?: return
+            // Page-side single-pending-poll gate (page-transport85): an
+            // injection not yet matched by a served poll is skipped — the
+            // pending poll drains the whole bounded batch, and
+            // MobileSocket.write()'s tail re-arm continues the chain on
+            // arrival. Stacking injections behind a frozen renderer is the
+            // C15 wake flood that walked the pinned throttle ladder to its
+            // cap and armed the fatal 30 s close.
+            if (transportPump.pollOutstanding()) return
             if (!sendTrigger.claim()) return
             // mainHandler (not view.post) so the claim is ALWAYS released: a
             // runnable queued on a detached view may never run, which would
@@ -1319,13 +2415,33 @@ class OfficeEngineService : Service() {
                     sendTrigger.release()
                     if (retired || presentationSuperseded || current !== this@Session) return@post
                     // Re-read: the poll belongs to the view that was attached
-                    // when this runnable was scheduled.
+                    // when this runnable was scheduled. Re-check the page-side
+                    // gate at the real execution point too: between claim and
+                    // run another path (pump probe, drain probe) may have
+                    // become the one pending poll.
                     if (webView === view) {
-                        runCatching { view.loadUrl("javascript:window.socket.doSend();") }
+                        // Ordinary traffic uses the SAME execution-identified
+                        // probe as heartbeat/drain. Without that callback an
+                        // arrival-safe gate could never distinguish this
+                        // injection from up to four older in-flight XHRs.
+                        issueTransportProbe(0L)
                     }
                 }
             }.getOrDefault(false)
             if (!posted) sendTrigger.release()
+        }
+
+        override fun onPollServed() {
+            // Called for a planned non-failure response from MobileSocket.write()
+            // on the WebView network thread. The pump accepts it as progress
+            // only after the CURRENT injection's execution callback; an old
+            // pre-freeze XHR cannot release the queued-injection gate.
+            // Deliberately NOT an admission-freshness fact: serving a body
+            // is a delivery opportunity, not a page-consumption proof (Main
+            // late critical review 2026-10-28). Downlink freshness for
+            // admission is stamped only by reads of the page's OWN counters
+            // (runPageTransportDrain / verifyPageTransportHealth).
+            transportPump.onPollServed(android.os.SystemClock.elapsedRealtime())
         }
 
         override fun transportFailed(reason: String) {
@@ -1505,6 +2621,10 @@ class OfficeEngineService : Service() {
         // its listeners are removed from the view that actually holds them.
         session.disarmLoadGeometryGuard()
         session.webView = view
+        // A fresh view carries a fresh MobileSocket (fresh serial space and
+        // poll reality): drop any injection/round bookkeeping from the old
+        // one so the heartbeat pump re-arms against the live transport.
+        session.onTransportGenerationChanged()
         synchronized(socketHosts) { socketHosts[view]?.delegate = session }
         view.addJavascriptInterface(session.host, JAVASCRIPT_INTERFACE)
         // G05-R2 first-paint repair (2026-10-26): this factory callback runs
@@ -1521,6 +2641,9 @@ class OfficeEngineService : Service() {
         if (session.request.sessionToken != sessionToken || session.generation != generation || session.webView !== view) return
         session.webView?.let { view ->
             session.disarmLoadGeometryGuard()
+            // Injections queued toward the leaving view can never arrive:
+            // drop the page-side gate and round bookkeeping with it.
+            session.onTransportGenerationChanged()
             runCatching { view.evaluateJavascript("window.__floeRenderWitness && window.__floeRenderWitness.cancel()", null) }
             runCatching { view.removeJavascriptInterface(JAVASCRIPT_INTERFACE) }
             runCatching { view.getWebViewClient().mobileSocket.close() }
@@ -1545,6 +2668,10 @@ class OfficeEngineService : Service() {
 
         override fun transportFailed(reason: String) {
             delegate?.transportFailed(reason)
+        }
+
+        override fun onPollServed() {
+            delegate?.onPollServed()
         }
     }
 
@@ -1868,32 +2995,81 @@ class OfficeEngineService : Service() {
                 session.publishEditState()
                 return@post
             }
-            val script = if (enable) {
-                OfficeReadOnlyProtocol.PAGE_ENTER_EDIT_SCRIPT
-            } else {
-                OfficeReadOnlyProtocol.PAGE_ENTER_VIEW_SCRIPT
-            }
-            runCatching {
-                view.evaluateJavascript(script) { raw ->
-                    if (session.retired || session.presentationSuperseded || current !== session) return@evaluateJavascript
-                    val ok = raw?.trim('"') == "true"
-                    if (!ok) {
-                        // The pinned page hook is absent or threw: honest
-                        // refusal — the kit view permission alone is NOT an
-                        // edit-mode claim while the page stays in viewing.
-                        session.editRequested = !enable
-                        session.notifyNotice("editEntryUnavailable", null)
-                        session.recordDiagnostic(
-                            OfficeSessionDiagnostics.KIND_STATE,
-                            "page edit entry unavailable (enable=$enable)",
-                        )
-                    }
-                    session.publishEditState()
-                }
-            }.onFailure {
+            val entryGeneration = session.transportGenerationSnapshot()
+            fun refuseEntry() {
                 session.editRequested = !enable
                 session.notifyNotice("editEntryUnavailable", null)
                 session.publishEditState()
+            }
+            fun evaluateEntry() {
+                if (session.retired || session.presentationSuperseded || current !== session) return
+                if (session.webView !== view || session.transportGenerationSnapshot() != entryGeneration) {
+                    // The view OR same-view page/socket incarnation changed
+                    // during the bounded drain: this toggle targeted the old
+                    // page — honest refusal, never an injection into the new.
+                    refuseEntry()
+                    return
+                }
+                // docx-socket-repair122: never run the synchronous 24-call
+                // `doSend()` burst on a hidden page — it can only walk the
+                // pinned ladder and, past 30 s staleness with the in-flight
+                // counter at its cap, close the socket. The manual toggle
+                // (like the owned handshake) uses the same ordered hooks
+                // without the burst whenever the page window is not visible.
+                val script = when {
+                    !enable -> OfficeReadOnlyProtocol.PAGE_ENTER_VIEW_SCRIPT
+                    session.isPageVisibleNow(view) -> OfficeReadOnlyProtocol.PAGE_ENTER_EDIT_SCRIPT
+                    else -> OfficeReadOnlyProtocol.PAGE_ENTER_EDIT_SCRIPT_NO_PROBE
+                }
+                runCatching {
+                    view.evaluateJavascript(script) { raw ->
+                        if (
+                            session.retired || session.presentationSuperseded || current !== session ||
+                            session.webView !== view || session.transportGenerationSnapshot() != entryGeneration
+                        ) return@evaluateJavascript
+                        val ok = raw?.trim('"') == "true"
+                        if (!ok) {
+                            // The pinned page hook is absent or threw: honest
+                            // refusal — the kit view permission alone is NOT an
+                            // edit-mode claim while the page stays in viewing.
+                            session.editRequested = !enable
+                            session.notifyNotice("editEntryUnavailable", null)
+                            session.recordDiagnostic(
+                                OfficeSessionDiagnostics.KIND_STATE,
+                                "page edit entry unavailable (enable=$enable)",
+                            )
+                        }
+                        session.publishEditState()
+                    }
+                }.onFailure {
+                    refuseEntry()
+                }
+            }
+            if (enable && session.isPageVisibleNow(view)) {
+                // A manual edit entry shares the owned handshake's bounded
+                // wake drain (page-transport85, read-first since
+                // docx-socket-repair122): a page just woken from a hidden wait
+                // gets the real opportunity to complete its deferred polls and
+                // deliver the heartbeat's real `pong` before any probe is
+                // armed. An in-flight counter still pinned at the cap after the
+                // budget refuses honestly instead of running the burst.
+                // A hidden window skips the drain entirely: no poll can be
+                // armed there, and the no-burst script's own readyState /
+                // connected() gates decide honestly.
+                session.runPageTransportDrain(
+                    null,
+                    0,
+                    { evaluateEntry() },
+                    { reason ->
+                        session.recordDiagnostic(
+                            OfficeSessionDiagnostics.KIND_TRANSPORT,
+                            "manual edit-entry drain refused armed: " + reason,
+                        )
+                        refuseEntry()
+                    },
+                )
+            } else {
+                evaluateEntry()
             }
         }
         return true
@@ -2099,7 +3275,7 @@ class OfficeEngineService : Service() {
                 failure = OfficePrecisionFailure.SESSION_MISMATCH,
                 detail = "no-live-mount-for-this-identity",
                 answer = null,
-                attestation = "refused-before-dispatch",
+                attestation = OfficePrecisionAttestation.REFUSED_BEFORE_DISPATCH,
                 submittedAtElapsedMs = now,
                 completedAtElapsedMs = now,
             )

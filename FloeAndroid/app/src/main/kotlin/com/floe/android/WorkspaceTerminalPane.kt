@@ -95,6 +95,12 @@ internal fun WorkspaceTerminalPane(
     var terminalReady by remember(conversationID) { mutableStateOf(false) }
     var startDispatched by remember(conversationID) { mutableStateOf(false) }
     var workspaceMappingPending by remember(conversationID) { mutableStateOf(false) }
+    // G05-R3 run-less first entry: true only while THIS pane's explicit open
+    // is inside the native non-executing workspace preparation. It is a
+    // progress truth ("Preparing this task's workspace…"), never a claim that
+    // a session exists — the authoritative phase still comes from the native
+    // session projection.
+    var preparingWorkspace by remember(conversationID) { mutableStateOf(false) }
     var openFailure by remember(controller, conversationID) { mutableStateOf<TerminalActionReply?>(null) }
     var showFailureDetails by remember(controller, conversationID) { mutableStateOf(false) }
     // Latest typed PTY input refusal (host-side truth, surfaced in the
@@ -139,6 +145,10 @@ internal fun WorkspaceTerminalPane(
     // An EXITED/STOPPED/FAULT session stays exactly as it ended: a visible
     // Reset control drives the explicit restart — no silent relaunch.
     // Gated by the honest availability predicate — never a fake log.
+    // G05-R3 run-less first entry: when every prerequisite is live and only
+    // THIS task's own workspace facts are missing, the explicit terminal
+    // action prepares them natively — no message, no provider and no AI run is
+    // a prerequisite, and the pane says plainly what it is doing.
     LaunchedEffect(controller, conversationID) {
         val host = controller ?: return@LaunchedEffect
         openFailure = null
@@ -156,23 +166,43 @@ internal fun WorkspaceTerminalPane(
         terminalReady = host.availability().let { it.qualified && it.workspaceAttached }
         val current = host.currentSnapshot(conversationID)
         val needsStart = current == null || current.phase == TerminalSessionPhase.CLOSED
-        if (needsStart && terminalReady) {
-            startDispatched = true
-            if (host.attachOrOpen(conversationID, workspaceID = null, columns = 80, rows = 24,
-                    onRefusal = { openFailure = it }) == null) {
-                // Native refused or timed out: nothing is starting.
-                startDispatched = false
-            }
-        } else if (!needsStart && current?.phase?.isLive() == true) {
-            host.attachOrOpen(conversationID, workspaceID = null, columns = 80, rows = 24)
-        }
-        if (needsStart && !startDispatched) {
-            // Nothing was dispatched for this opening: ONE bounded read of
-            // the ORIGINAL stage authority (the closed-token surface
-            // Settings uses, off-main) selects truthful guidance. It
-            // qualifies and gates nothing.
-            workspaceMappingPending = terminalWorkspaceMappingPending(
+        // ONE bounded read of the ORIGINAL stage authority (the closed-token
+        // surface Settings uses, off-main). It selects truthful guidance AND
+        // says whether this task's workspace can be prepared by the terminal
+        // itself. It qualifies and gates nothing.
+        workspaceMappingPending = if (needsStart && !terminalReady) {
+            terminalWorkspaceMappingPending(
                 runCatching { application?.linuxTaskExecutionDiagnostic() }.getOrNull())
+        } else {
+            false
+        }
+        val gate = terminalFirstUseGate(ready = terminalReady, needsStart = needsStart,
+            liveSession = current?.phase?.isLive() == true,
+            mappingPending = workspaceMappingPending)
+        when (gate) {
+            TerminalFirstUseGate.ATTACH_LIVE ->
+                // An existing live session is attached, never restarted.
+                host.attachOrOpen(conversationID, workspaceID = null, columns = 80, rows = 24)
+            TerminalFirstUseGate.START, TerminalFirstUseGate.PREPARE_FIRST_USE -> {
+                val firstUse = gate == TerminalFirstUseGate.PREPARE_FIRST_USE
+                preparingWorkspace = firstUse
+                startDispatched = true
+                val opened = host.attachOrOpen(conversationID, workspaceID = null, columns = 80, rows = 24,
+                    onRefusal = { openFailure = it })
+                preparingWorkspace = false
+                if (opened == null) {
+                    // Native refused or timed out: nothing is starting.
+                    startDispatched = false
+                } else if (firstUse) {
+                    // The run-less preparation really produced the facts: read
+                    // the ACTUAL availability once more (bounded, no polling)
+                    // so Reset/settings and the status line stop reporting the
+                    // pre-preparation gate. A refusal never flips this.
+                    host.refreshCapabilities()
+                    terminalReady = host.availability().let { it.qualified && it.workspaceAttached }
+                }
+            }
+            TerminalFirstUseGate.EXPLAIN -> Unit
         }
         snapshot = host.currentSnapshot(conversationID) ?: snapshot
     }
@@ -187,6 +217,11 @@ internal fun WorkspaceTerminalPane(
     val statusText = when (snapshot?.phase) {
         null -> when {
             controller == null -> stringResource(R.string.inspector_runtime_pending)
+            // The run-less first entry in flight: one short honest sentence,
+            // never "Starting terminal…" (nothing is starting yet) and never a
+            // fake session.
+            preparingWorkspace -> stringResource(
+                com.floe.android.feature.terminal.R.string.terminal_workspace_preparing)
             // "Starting…" is only said when a start actually went out for
             // this opening; a gate that dispatched nothing says so plainly.
             startDispatched -> stringResource(com.floe.android.feature.terminal.R.string.terminal_starting)
@@ -279,9 +314,23 @@ internal fun WorkspaceTerminalPane(
                     FloeText(
                         text = when {
                             controller == null -> stringResource(R.string.inspector_runtime_pending)
+                            // The run-less first entry in flight: what is
+                            // actually happening, in one short sentence.
+                            preparingWorkspace -> stringResource(
+                                com.floe.android.feature.terminal.R.string.terminal_workspace_preparing)
                             openFailure != null -> stringResource(
-                                if (openFailure.isEngineSlotBusyRefusal) R.string.workspace_runtime_slot_busy
-                                else com.floe.android.feature.terminal.R.string.terminal_start_failed)
+                                when {
+                                    openFailure.isEngineSlotBusyRefusal ->
+                                        R.string.workspace_runtime_slot_busy
+                                    // A refused run-less preparation says so,
+                                    // instead of blaming a completed install.
+                                    workspaceMappingPending ->
+                                        com.floe.android.feature.terminal.R.string
+                                            .terminal_workspace_prepare_failed
+                                    else ->
+                                        com.floe.android.feature.terminal.R.string
+                                            .terminal_start_failed
+                                })
                             workspaceMappingPending -> stringResource(
                                 com.floe.android.feature.terminal.R.string.terminal_workspace_mapping_pending)
                             else -> stringResource(
@@ -294,10 +343,15 @@ internal fun WorkspaceTerminalPane(
                         FloeCapsuleButton(stringResource(R.string.workspace_source_error_details),
                             onClick = { showFailureDetails = !showFailureDetails })
                         if (showFailureDetails) {
+                            // The bounded diagnostic token stays in the opened
+                            // details fold: the typed code plus, when native
+                            // answered one, the precise first-use reason.
                             val code = when (val failure = openFailure) {
-                                is TerminalActionReply.Refused -> failure.code.take(96)
-                                    .filter { it.isLetterOrDigit() || it in "_.-" }
-                                    .ifEmpty { "refused" }
+                                is TerminalActionReply.Refused ->
+                                    (failure.code + failure.reason?.let { ":$it" }.orEmpty())
+                                        .take(96)
+                                        .filter { it.isLetterOrDigit() || it in "_.-:" }
+                                        .ifEmpty { "refused" }
                                 TerminalActionReply.TimedOut -> "timedOut"
                                 else -> "unavailable"
                             }
@@ -318,6 +372,38 @@ internal fun WorkspaceTerminalPane(
                                         onRefusal = { openFailure = it })
                                     snapshot = opened
                                     if (opened == null) startDispatched = false
+                                }
+                            },
+                        )
+                    }
+                    if (controller != null && !qualified && workspaceMappingPending && !preparingWorkspace) {
+                        // G05-R3: the run-less first entry as an EXPLICIT user
+                        // control. The pane already attempted it once on show;
+                        // this is the honest retry after a refusal or a
+                        // timeout — never a silent relaunch and never a hidden
+                        // loop. It needs no provider, no model and no message:
+                        // native prepares THIS task's workspace under its own
+                        // real operation lease and answers truthfully.
+                        FloeCapsuleButton(
+                            stringResource(
+                                com.floe.android.feature.terminal.R.string
+                                    .terminal_workspace_prepare_action),
+                            onClick = {
+                                val host = controller ?: return@FloeCapsuleButton
+                                scope.launch {
+                                    openFailure = null
+                                    preparingWorkspace = true
+                                    startDispatched = true
+                                    val opened = host.attachOrOpen(conversationID, null, 80, 24,
+                                        onRefusal = { openFailure = it })
+                                    preparingWorkspace = false
+                                    startDispatched = opened != null
+                                    if (opened != null) {
+                                        host.refreshCapabilities()
+                                        terminalReady = host.availability()
+                                            .let { it.qualified && it.workspaceAttached }
+                                    }
+                                    snapshot = host.currentSnapshot(conversationID) ?: snapshot
                                 }
                             },
                         )
@@ -593,6 +679,26 @@ private val TerminalActionReply?.isEngineSlotBusyRefusal: Boolean
 internal fun terminalWorkspaceMappingPending(diagnostic: String?): Boolean =
     diagnostic == "missing:workspaceMappingSynced|refusal:|stage:" ||
         diagnostic == "missing:leaseAuthorityQualified|refusal:|stage:"
+
+/** What one pane opening may do (G05-R3). Pure and total, so the authored
+ * regression pins the real control-enablement seam instead of a Compose tree:
+ * a live session is only ever attached, a qualified lane starts as before, and
+ * the run-less first entry is offered ONLY on the exact mapping-pending shape
+ * — an unqualified engine, an unbound lane or a failed attempt this generation
+ * keeps the honest setup guidance and never dispatches. */
+internal enum class TerminalFirstUseGate { START, ATTACH_LIVE, PREPARE_FIRST_USE, EXPLAIN }
+
+internal fun terminalFirstUseGate(
+    ready: Boolean,
+    needsStart: Boolean,
+    liveSession: Boolean,
+    mappingPending: Boolean,
+): TerminalFirstUseGate = when {
+    !needsStart && liveSession -> TerminalFirstUseGate.ATTACH_LIVE
+    needsStart && ready -> TerminalFirstUseGate.START
+    needsStart && mappingPending -> TerminalFirstUseGate.PREPARE_FIRST_USE
+    else -> TerminalFirstUseGate.EXPLAIN
+}
 
 @Composable
 private fun TerminalControlLabel(label: String, onClick: () -> Unit) {

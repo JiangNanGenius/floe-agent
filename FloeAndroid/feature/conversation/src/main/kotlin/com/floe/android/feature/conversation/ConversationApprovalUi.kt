@@ -53,9 +53,30 @@ fun ConversationApprovalRow(
     holder: ConversationFlowHolder,
     modifier: Modifier = Modifier,
     onResolve: ((ApprovalCardUi, Boolean) -> Unit)? = null,
+    /** Test/inspector seam for the explicit owned-slot handoff, mirroring
+     * [onResolve]. Production keeps the holder's canonical path. */
+    onEndTerminalAndRun: ((ApprovalCardUi, TerminalHandoffConsentUi) -> Unit)? = null,
 ) {
     val colors = Floe.colors
-    val gateStopped = ApprovalGrantMapping.isGateStopped(card.reason)
+    // Owned Linux engine slot conflict (Main ruling 2026-10-28): the runtime
+    // escalated THIS exact call because this conversation's own live
+    // interactive terminal holds the single runtime-UID engine workload slot,
+    // so the proposed command cannot start until a human explicitly decides to
+    // end that terminal. The typed reason token is an opaque identifier and is
+    // NEVER rendered as prose — the card shows its own short localized copy.
+    val reasonIsSlotConflict = ApprovalGrantMapping.terminalHandoffConflict(card.reason)
+    // The host's live truth, not a parse of the reason: the explicit action is
+    // offered only while a terminal this host really owns is still live, for a
+    // tool that really needs the slot, on this conversation's own card.
+    val liveSlotConflict = holder.terminalHandoffConflict.value?.takeIf {
+        it.sessionToken.isNotEmpty() &&
+            card.conversationId == holder.conversationId &&
+            ApprovalGrantMapping.acquiresLinuxEngineSlot(card.toolName)
+    }
+    val slotConflict = reasonIsSlotConflict || liveSlotConflict != null
+    val handoffRefusal = holder.terminalHandoffRefusal.value
+        ?.takeIf { it.approvalKey == card.key }
+    val gateStopped = ApprovalGrantMapping.isGateStopped(card.reason) && !reasonIsSlotConflict
     val headerTitle = stringResource(R.string.approval_required)
     val actionLabel = stringResource(R.string.approval_action)
     val scopeLabel = stringResource(R.string.approval_scope_label)
@@ -64,6 +85,10 @@ fun ConversationApprovalRow(
     val denyLabel = stringResource(R.string.action_deny)
     val approveLabel = stringResource(R.string.action_approve)
     val skillNote = stringResource(R.string.approval_skill_create_note)
+    val slotConflictNote = stringResource(R.string.approval_terminal_conflict_note)
+    val endTerminalAndRunLabel = stringResource(R.string.approval_terminal_end_and_run)
+    val handoffRefusalNote = stringResource(R.string.approval_terminal_handoff_refused)
+    val handoffRefusalDetailsLabel = stringResource(R.string.approval_terminal_handoff_details)
     val tierLabels = listOf(
         stringResource(R.string.approval_scope_once),
     )
@@ -77,6 +102,28 @@ fun ConversationApprovalRow(
     val resolve: (ApprovalCardUi, Boolean) -> Unit = { c, allow ->
         if (allow) holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE)
         backendResolve(c, allow)
+    }
+    // The explicit handoff is a THIRD human control, not a variant of Allow:
+    // it is the only path that may end a manual terminal, and the host still
+    // re-fences the captured identity, proves the real engine release and only
+    // then dispatches this already-proposed call once through the ordinary
+    // route. Nothing here stops anything itself.
+    val backendEndTerminalAndRun: (ApprovalCardUi, TerminalHandoffConsentUi) -> Unit =
+        onEndTerminalAndRun ?: { c, consent ->
+            holder.resolveApproval(c, allow = true, terminalHandoff = consent)
+        }
+    val endTerminalAndRun: (ApprovalCardUi) -> Unit = { c ->
+        // Re-read the live identity at tap time: the consent names the session
+        // that is live NOW, so the host can refuse a replacement instead of
+        // stopping a different terminal.
+        val consent = holder.terminalHandoffConflict.value
+        if (consent != null && consent.sessionToken.isNotEmpty()) {
+            holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE)
+            backendEndTerminalAndRun(
+                c,
+                TerminalHandoffConsentUi(consent.sessionToken, consent.nativeEpoch),
+            )
+        }
     }
     val borderTint = headerTint.copy(alpha = 0.6f)
     val shape = RoundedCornerShape(FloeLayout.BubbleCorner)
@@ -115,11 +162,21 @@ fun ConversationApprovalRow(
                 FloeText(scopeLabel, style = Floe.typography.metadata, color = colors.secondaryLabel)
                 FloeText(card.scopeDescription, style = Floe.typography.evidence, color = colors.label)
             }
-            if (card.reason.isNotEmpty()) {
+            if (card.reason.isNotEmpty() && !reasonIsSlotConflict) {
                 FloeText(
                     card.reason,
                     style = Floe.typography.metadata,
                     color = if (gateStopped) colors.destructive else colors.secondaryLabel,
+                )
+            }
+            if (slotConflict) {
+                // One short actionable sentence: what is blocking and what the
+                // user can do. No session token, generation, exit code or
+                // protocol detail belongs on this surface.
+                FloeText(
+                    slotConflictNote,
+                    style = Floe.typography.metadata,
+                    color = colors.pending,
                 )
             }
             if (ApprovalGrantMapping.isSkillCreation(card.toolName)) {
@@ -143,7 +200,12 @@ fun ConversationApprovalRow(
             }
         }
 
-        if (ApprovalGrantMapping.requiresEvidence(card.isSideEffecting, card.riskLabels)) {
+        // A handoff refusal carries a diagnostic code, so the fold must exist
+        // even for a card that would otherwise have no evidence section:
+        // message on the surface, opaque code in the opened details only.
+        if (ApprovalGrantMapping.requiresEvidence(card.isSideEffecting, card.riskLabels) ||
+            handoffRefusal != null
+        ) {
             val expanded = card.key in holder.expandedApprovalEvidence.value
             Column {
                 Row(
@@ -175,6 +237,13 @@ fun ConversationApprovalRow(
                         card.evidenceLines.forEach { line ->
                             FloeText(line, style = Floe.typography.evidence, color = colors.secondaryLabel)
                         }
+                        if (handoffRefusal != null) {
+                            FloeText(
+                                "$handoffRefusalDetailsLabel ${handoffRefusal.code}",
+                                style = Floe.typography.evidence,
+                                color = colors.secondaryLabel,
+                            )
+                        }
                     }
                 }
             }
@@ -188,6 +257,38 @@ fun ConversationApprovalRow(
                 onSelect = { _ ->
                     holder.setApprovalScope(card.key, ApprovalScopeChoiceUi.ONCE)
                 },
+            )
+        }
+
+        if (liveSlotConflict != null) {
+            // The wording states the effect plainly: this ENDS the task's
+            // terminal and then runs the proposed command. It is never an
+            // unconditional auto-stop and never implied by a policy or tier.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = FloeLayout.MinimumTarget)
+                    .clip(RoundedCornerShape(FloeLayout.CircleToolbarCorner))
+                    .background(colors.pending)
+                    .clickable { endTerminalAndRun(card) }
+                    .semantics { contentDescription = endTerminalAndRunLabel }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                FloeText(
+                    endTerminalAndRunLabel,
+                    style = Floe.typography.bodyEmphasized,
+                    color = colors.readingSurface,
+                )
+            }
+        }
+        if (handoffRefusal != null) {
+            // Honest refusal: nothing was approved, nothing ran, and the card
+            // stays actionable. The opaque code lives in the details line.
+            FloeText(
+                handoffRefusalNote,
+                style = Floe.typography.metadata,
+                color = colors.destructive,
             )
         }
 

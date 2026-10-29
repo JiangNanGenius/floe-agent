@@ -95,7 +95,6 @@ fun FloeConversationHistoryDestination(
             holder = holder,
             mode = mode,
             title = title,
-            needsProvider = needsProvider,
             onBack = onBack,
             onOpenArchive = onOpenArchive,
             onOpenManagement = onOpenManagement,
@@ -326,7 +325,6 @@ private fun HistoryToolbar(
     holder: ConversationHistoryHolder,
     mode: HistoryDestinationMode,
     title: String,
-    needsProvider: Boolean,
     onBack: (() -> Unit)?,
     onOpenArchive: () -> Unit,
     onOpenManagement: () -> Unit,
@@ -381,7 +379,23 @@ private fun HistoryToolbar(
                 Box(
                     modifier = Modifier
                         .heightIn(min = FloeLayout.MinimumTarget)
-                        .clickable(enabled = !needsProvider) { holder.createConversation() }
+                        // G05-R3 first use: a durable ordinary task row needs
+                        // NO provider — creation is the existing real
+                        // `conversation.create` ownership API and a model run
+                        // stays gated where it already is. A pre-dispatch
+                        // refusal (conversation domain not ready) is the only
+                        // typed rejection this button can produce; it settles
+                        // honestly through the SAME error banner instead of a
+                        // disabled control, so a fresh no-provider user can
+                        // open a task and reach the manual terminal from its
+                        // Thread options.
+                        .clickable {
+                            if (holder.createConversation() is
+                                ConversationFlowResult.Rejected
+                            ) {
+                                holder.applyActionError("runtime_unavailable")
+                            }
+                        }
                         .padding(horizontal = 10.dp)
                         .semantics { contentDescription = newLabel },
                     contentAlignment = Alignment.Center,

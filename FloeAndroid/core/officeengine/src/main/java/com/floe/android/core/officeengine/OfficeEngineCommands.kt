@@ -563,6 +563,15 @@ internal class OfficeEngineCommandBinder(
 // MAX_TEXT_BYTES, answer payloads ≤ MAX_ANSWER_BYTES (both enforced before
 // marshalling); nullable scalars travel as -1 markers (the readState
 // pattern), nullable strings as null.
+//
+// Lineage bump 2026-10-28 (part-ordinal84): tags 1 (TargetCaptured), 2
+// (DocumentContext) and 6 (SlideSelected) each carry the witnessed logical
+// 0-based part ordinal as ONE additional Int right after the byte-exact
+// native part identifier (nullable scalar convention: -1 = unwitnessed).
+// Writer and reader are this same file; both sides compile into the SAME
+// Full APK, so Main must always build both consumers together in one batch
+// (no mixed old/new pairing exists on any real device). Both marshalling
+// consumers remain private to this file.
 // ----------------------------------------------------------------------
 
 /** Coarse admission code for one precision result (exact failure via READ). */
@@ -668,6 +677,7 @@ private fun writePrecisionResult(reply: Parcel?, result: OfficePrecisionResult) 
             reply.writeString(t.docType)
             reply.writeInt(t.partsCount ?: -1)
             reply.writeString(t.selectedPart)
+            reply.writeInt(t.selectedPartIndex ?: -1)
             reply.writeLong(t.capturedAtElapsedMs)
             reply.writeLong(t.expiresAtElapsedMs)
         }
@@ -676,6 +686,7 @@ private fun writePrecisionResult(reply: Parcel?, result: OfficePrecisionResult) 
             reply.writeString(answer.docType)
             reply.writeInt(answer.partsCount ?: -1)
             reply.writeString(answer.selectedPart)
+            reply.writeInt(answer.selectedPartIndex ?: -1)
             reply.writeInt(answer.widthTwip ?: -1)
             reply.writeInt(answer.heightTwip ?: -1)
             reply.writeInt(answer.viewId ?: -1)
@@ -706,6 +717,7 @@ private fun writePrecisionResult(reply: Parcel?, result: OfficePrecisionResult) 
         is OfficePrecisionAnswer.SlideSelected -> {
             reply.writeInt(6)
             reply.writeString(answer.shownPart)
+            reply.writeInt(answer.shownPartIndex ?: -1)
         }
         is OfficePrecisionAnswer.TextSelected -> {
             reply.writeInt(7)
@@ -774,6 +786,7 @@ private fun readPrecisionResult(reply: Parcel): OfficePrecisionResult? {
                 docType = reply.readString(),
                 partsCount = reply.readInt().takeIf { it >= 0 },
                 selectedPart = reply.readString(),
+                selectedPartIndex = reply.readInt().takeIf { it >= 0 },
                 capturedAtElapsedMs = reply.readLong(),
                 expiresAtElapsedMs = reply.readLong(),
             ),
@@ -782,6 +795,7 @@ private fun readPrecisionResult(reply: Parcel): OfficePrecisionResult? {
             docType = reply.readString(),
             partsCount = reply.readInt().takeIf { it >= 0 },
             selectedPart = reply.readString(),
+            selectedPartIndex = reply.readInt().takeIf { it >= 0 },
             widthTwip = reply.readInt().takeIf { it >= 0 },
             heightTwip = reply.readInt().takeIf { it >= 0 },
             viewId = reply.readInt().takeIf { it >= 0 },
@@ -806,7 +820,10 @@ private fun readPrecisionResult(reply: Parcel): OfficePrecisionResult? {
             byteCount = reply.readInt(),
             slideCount = reply.readInt().takeIf { it >= 0 },
         )
-        6 -> OfficePrecisionAnswer.SlideSelected(shownPart = reply.readString().orEmpty())
+        6 -> OfficePrecisionAnswer.SlideSelected(
+            shownPart = reply.readString().orEmpty(),
+            shownPartIndex = reply.readInt().takeIf { it >= 0 },
+        )
         7 -> OfficePrecisionAnswer.TextSelected(effectPayloadBytes = reply.readInt())
         8 -> {
             val count = reply.readInt().coerceIn(0, 32)

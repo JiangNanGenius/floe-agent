@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  GitHub full-channel self-update strings. They live in the full source set
+  only: the Play APK must not carry updater copy or any repository/feed text.
+-->
+<resources>
+    <string name="app_update_title">App update</string>
+    <string name="app_update_auto_check">Check for updates automatically</string>
+    <string name="app_update_current_version">Current version %1$s</string>
+    <string name="app_update_idle">Not checked yet</string>
+    <string name="app_update_check_now">Check for updates</string>
+    <string name="app_update_checking">Checking for updates…</string>
+    <string name="app_update_up_to_date">You are on the latest version</string>
+    <string name="app_update_available">Version %1$s is available</string>
+    <string name="app_update_new_version">Version %1$s</string>
+    <string name="app_update_check_failed">Could not check for updates</string>
+    <string name="app_update_rate_limited">Too many requests. Try again later</string>
+    <string name="app_update_no_release">No Android release found</string>
+    <string name="app_update_release_notes">What\'s new</string>
+    <string name="app_update_update_now">Update</string>
+    <string name="app_update_later">Later</string>
+    <string name="app_update_downloading">Downloading version %1$s</string>
+    <string name="app_update_progress">%1$d / %2$d MB</string>
+    <string name="app_update_progress_unknown">%1$d MB</string>
+    <string name="app_update_verifying">Verifying the package…</string>
+    <string name="app_update_ready">Download complete and verified</string>
+    <string name="app_update_ready_version">Version %1$s is ready to install</string>
+    <string name="app_update_install">Install</string>
+    <string name="app_update_install_now">Install now</string>
+    <string name="app_update_discard">Delete download</string>
+    <string name="app_update_resume">Resume download</string>
+    <string name="app_update_download_paused">Download paused</string>
+    <string name="app_update_download_failed">Download failed</string>
+    <string name="app_update_checksum_failed">Package verification failed; the download was discarded</string>
+    <string name="app_update_apk_invalid">The package does not match this app or this device</string>
+    <string name="app_update_disk_full">Not enough free space to download the update</string>
+    <string name="app_update_waiting_jobs">Downloaded. Waiting for current tasks to finish</string>
+    <string name="app_update_waiting_jobs_kinds">Waiting for: %1$s</string>
+    <string name="app_update_install_kills_app">Installing closes the app. Save your work first</string>
+    <string name="app_update_permission">Allow installing apps from Floe</string>
+    <string name="app_update_permission_detail">Android asks for this permission once and opens the system settings page</string>
+    <string name="app_update_open_permission">Open settings</string>
+    <string name="app_update_confirm_system">Confirm the installation in the system dialog</string>
+    <string name="app_update_confirm_now">Confirm installation</string>
+    <string name="app_update_committing">Submitting the installation…</string>
+    <string name="app_update_waiting_system">Waiting for system confirmation</string>
+    <string name="app_update_check_status">Check status</string>
+    <string name="app_update_installed">Update installed</string>
+    <string name="app_update_install_cancelled">Installation cancelled</string>
+    <string name="app_update_install_aborted">The system ended the installation</string>
+    <string name="app_update_install_failed">Installation failed</string>
+    <string name="app_update_install_identity_failed">Package identity check failed; installation refused</string>
+    <string name="app_update_system_note">Android requires the system install confirmation. The app cannot install silently.</string>
+    <string name="app_update_job_agent">Model task</string>
+    <string name="app_update_job_terminal">Terminal session</string>
+    <string name="app_update_job_durable">Background task</string>
+    <string name="app_update_job_environment">Environment install</string>
+    <string name="app_update_list_separator">", "</string>
+    <string name="app_update_preparing">Preparing the installation…</string>
+    <string name="app_update_notification_channel">App update download</string>
+    <string name="app_update_notification_downloading">Downloading the update…</string>
+    <string name="app_update_cancel_pending">Cancel install</string>
+</resources>

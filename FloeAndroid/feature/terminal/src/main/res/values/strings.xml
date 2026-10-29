@@ -12,7 +12,10 @@
     <string name="terminal_fault">Terminal unavailable: %1$s</string>
     <string name="terminal_engine_unqualified">The Linux runtime is not qualified yet. Open the runtime setup, finish installation, then try again.</string>
     <string name="terminal_not_ready">Terminal not started</string>
-    <string name="terminal_workspace_mapping_pending">Workspace mapping completes when you send a message in this task. Send a message, then reopen the terminal.</string>
+    <string name="terminal_workspace_mapping_pending">Open the terminal to prepare this workspace.</string>
+    <string name="terminal_workspace_preparing">Preparing workspace…</string>
+    <string name="terminal_workspace_prepare_action">Prepare and open terminal</string>
+    <string name="terminal_workspace_prepare_failed">Workspace preparation failed. View details and try again.</string>
     <string name="terminal_not_persistent_hint">A stopped terminal never resumes silently; use Reset to start a fresh session.</string>
     <string name="terminal_copy">Copy</string>
     <string name="terminal_paste">Paste</string>

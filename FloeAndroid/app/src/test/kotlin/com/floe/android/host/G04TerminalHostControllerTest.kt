@@ -3,11 +3,16 @@ package com.floe.android.host
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -486,18 +491,32 @@ class G04TerminalHostControllerTest {
         // Restore the live binding for the bounded-lane checks.
         root.epoch = 1L
         setFieldLong(controller, "boundEpoch", 1L)
-        // 3) bounded packet count: exactly InputLaneCapacity items admitted,
-        // the next write is an EXPLICIT refusal (never a silent drop).
+        // 3) bounded packet count: exactly InputLaneCapacity UNCOALESCABLE
+        // frames — each larger than half the coalescing cap, same token/epoch, so no two
+        // fit one merged frame — are admitted, and the next write is an
+        // EXPLICIT refusal (never a silent drop). linux-product80 changed
+        // this fixture from 1-byte frames because tiny consecutive frames
+        // now merge at the tail (the retained ~350-byte adb-input burst
+        // with inputLaneOverflow x3 on device 2026-10-28 is exactly the
+        // false pressure this removes); overflow stays reachable, honest
+        // and bounded when tails are full.
         val transport = controller.transportFor("c1")
-        repeat(128) { transport.write(byteArrayOf('q'.code.toByte())) }
+        val frame = ByteArray(1025) { 'q'.code.toByte() }
+        repeat(128) { transport.write(frame) }
         val issuesBeforeOverflow = issues.size
-        transport.write("overflow".toByteArray())
+        // The 129th write must ALSO be too large to coalesce into the tail
+        // (1025 + 1025 > MaxCoalescedInputFrameBytes), otherwise the lane
+        // rightly merges it and never reaches the packet cap. Overflow stays
+        // reachable, honest and bounded only for a genuinely non-mergeable
+        // frame; a tiny 8-byte write is now absorbed by design.
+        transport.write(frame)
         assertEquals(issuesBeforeOverflow + 1, issues.size)
         assertTrue(issues.last().contains("inputLaneOverflow"))
         input.drainAll()
         assertEquals("the admitted burst drains intact, in order, nothing fabricated",
             128, sent.size)
-        assertTrue(sent.all { it == "tok-1|q" })
+        val expectedFrame = "tok-1|" + frame.decodeToString()
+        assertTrue(sent.all { it == expectedFrame })
         // 4) bounded BYTES: a fresh lane under the packet cap but over the
         // byte budget refuses too (an item count alone is not boundedness).
         seedMap<String>(controller, "sessionTokens")["c2"] = "tok-2"
@@ -508,6 +527,51 @@ class G04TerminalHostControllerTest {
         transport2.write(chunk) // 17th -> over budget
         assertEquals(issuesBeforeBudget + 1, issues.size)
         assertTrue(issues.last().contains("inputLaneByteBudget"))
+    }
+
+    /** linux-product80 regression (authored, NOT executed by the authoring
+     * job): the retained real product failure was a rapid small-keystroke
+     * burst (hardware/adb input text, ~350 bytes, filename
+     * floe-c15-apt-update.log) honestly refused with inputLaneOverflow x3
+     * while the byte budget sat nearly empty. Consecutive same-token/
+     * same-epoch frames must coalesce in order instead of overflowing. */
+    @Test
+    fun keystrokeBurstCoalescesInOrderInsteadOfOverflowRefusal() {
+        val sent = mutableListOf<String>()
+        val issues = mutableListOf<String>()
+        val input = QueuedDispatcher() // nothing drains during the burst
+        val (controller, _) = laneController(input, sent, issues)
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-1"
+        val transport = controller.transportFor("c1")
+        val burst = ("floe-c15-apt-update.log" +
+            ".".repeat(200)).toByteArray(Charsets.UTF_8)
+        for (b in burst) transport.write(byteArrayOf(b))
+        assertTrue("a small keystroke burst within the byte budget must not " +
+            "overflow while tails are coalescable: $issues", issues.isEmpty())
+        input.drainAll()
+        assertEquals("the whole burst merges into bounded frames", 1, sent.size)
+        assertEquals("tok-1|" + burst.decodeToString(), sent[0])
+    }
+
+    /** Coalescing is bounded, ordered and never fabricates: frames beyond
+     * one coalescing cap keep draining as successive merged frames whose
+     * concatenation is EXACTLY the written byte stream, and the merge only
+     * applies to the same admitted token/epoch. */
+    @Test
+    fun coalescedFramesStayBoundedOrderedAndWithoutDuplication() {
+        val sent = mutableListOf<String>()
+        val issues = mutableListOf<String>()
+        val input = QueuedDispatcher()
+        val (controller, _) = laneController(input, sent, issues)
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-1"
+        val transport = controller.transportFor("c1")
+        repeat(3000) { transport.write(byteArrayOf('a'.code.toByte())) }
+        assertTrue("2048-byte coalescing bounds keep a 3000-byte burst inside " +
+            "the lane without refusals: $issues", issues.isEmpty())
+        input.drainAll()
+        assertEquals(2, sent.size)
+        assertEquals("tok-1|" + "a".repeat(2048), sent[0])
+        assertEquals("tok-1|" + "a".repeat(952), sent[1])
     }
 
     @Test
@@ -871,5 +935,414 @@ class G04TerminalHostControllerTest {
         output.drainAll()
         assertEquals("an old-Root queued retirement must never remove the new binding",
             "tok-reused", tokens["c1"])
+    }
+
+    /* ---- explicit interactive-terminal → model handoff (job-c4dd7334fa5341d2,
+       Main ruling 2026-10-28) ----
+
+       Device evidence 2026-10-27 (FIRST_FAILURE.json): one ordinary task held a
+       real interactive PTY, the model proposed ONE `pwd && printf …`, a human
+       tapped the ordinary approval, and the engine answered
+       `exit=75 status=notStarted` because the SAME conversation's terminal
+       still held the single runtime-UID workload slot. The same task with that
+       terminal genuinely ended returned `exit=0` (closed-case ACTUAL_RESULT),
+       so the slot itself is healthy and only the handoff was missing.
+
+       These tests pin the repaired contract: the captured terminal is closed
+       EXACTLY by its own token, the projected settlement is awaited, and the
+       REAL engine-slot release is proven before the caller may approve once.
+       Every refusal path proves NOTHING was released and no foreign or
+       replacement session was touched. The single slot, its caps and the
+       close/settle authority are unchanged: no cap is raised and no duplicate
+       worker is started here. */
+
+    private fun liveSnapshot(
+        conversationID: String,
+        token: String,
+        phase: TerminalSessionPhase = TerminalSessionPhase.RUNNING,
+        purpose: String = "interactive",
+    ) = TerminalSessionSnapshot(
+        conversationID, token, phase, purpose, "", null, null, null, 0)
+
+    /** A bound controller with BOTH handoff seams injected. The recorded
+     * [events] list proves the close → settle → REAL-release ordering, which is
+     * the whole point of the repair: no release (and therefore no approve) may
+     * precede an actual join. */
+    private fun handoffController(
+        epoch: Long = 7L,
+        closeReply: suspend (String, String) -> TerminalActionReply =
+            { _, _ -> TerminalActionReply.Success(buildJsonObject { }) },
+        releaseProof: suspend (Int) -> Boolean = { true },
+        onClose: ((LiveRoot) -> Unit)? = null,
+    ): Triple<G04TerminalHostController, LiveRoot, MutableList<String>> {
+        val root = LiveRoot(epoch)
+        val events = mutableListOf<String>()
+        val controller = G04TerminalHostController(
+            CoroutineScope(Dispatchers.Unconfined),
+            Dispatchers.Unconfined,
+            Dispatchers.Unconfined,
+            engineSlotReleaseProof = { timeout ->
+                events.add("releaseProof:$timeout"); releaseProof(timeout)
+            },
+            closeSinkOverride = { conversationID, token ->
+                events.add("close:$conversationID:$token")
+                onClose?.invoke(root)
+                closeReply(conversationID, token)
+            },
+        ) { root.epoch }
+        setFieldLong(controller, "boundEpoch", epoch)
+        (G04TerminalHostController::class.java.getDeclaredField("stopped")
+            .apply { isAccessible = true }.get(controller)
+            as java.util.concurrent.atomic.AtomicBoolean).set(false)
+        return Triple(controller, root, events)
+    }
+
+    /** Seeds one live interactive terminal exactly as an accepted open plus its
+     * authoritative native status event would, and returns the real capture. */
+    private fun seedLiveTerminal(
+        controller: G04TerminalHostController,
+        conversationID: String,
+        token: String,
+        purpose: String = "interactive",
+    ): TerminalHandoffCapture {
+        seedMap<String>(controller, "sessionTokens")[conversationID] = token
+        seedMap<TerminalSessionSnapshot>(controller, "snapshots")[conversationID] =
+            liveSnapshot(conversationID, token, purpose = purpose)
+        return checkNotNull(controller.liveInteractiveTerminal(conversationID)) {
+            "the seeded live interactive terminal must be capturable"
+        }
+    }
+
+    /** Marks the projected session settled, exactly as the authoritative
+     * `terminalStatus` event does after an accepted close. */
+    private fun settleSnapshot(
+        controller: G04TerminalHostController,
+        conversationID: String,
+        token: String,
+    ) {
+        seedMap<TerminalSessionSnapshot>(controller, "snapshots")[conversationID] =
+            liveSnapshot(conversationID, token, phase = TerminalSessionPhase.CLOSED)
+    }
+
+    /** Exercises real submit/reply futures and status decoding. The JNI seam
+     * emits both events before submit returns, so the RUNNING observation
+     * necessarily precedes attachOrOpen binding its captured handle. */
+    private fun interactiveOpenOrderingController(
+        statusBeforeReplyResume: Boolean,
+        root: LiveRoot,
+        afterNativeEvents: () -> Unit = {},
+    ): G04TerminalHostController {
+        lateinit var controller: G04TerminalHostController
+        controller = G04TerminalHostController(
+            CoroutineScope(Dispatchers.Unconfined),
+            Dispatchers.Unconfined,
+            Dispatchers.Unconfined,
+            nativeSubmitOverride = { descriptor, _ ->
+                val action = Json.parseToJsonElement(String(descriptor)) as JsonObject
+                assertEquals("terminalOpen", action["action"]?.jsonPrimitive?.content)
+                val requestID = checkNotNull(action["requestID"]?.jsonPrimitive?.content)
+                controller.handleEvent(0L,
+                    ("{\"type\":\"actionReply\",\"requestID\":\"" + requestID +
+                        "\",\"ok\":true,\"sessionToken\":\"tok-open\"}").toByteArray())
+                if (statusBeforeReplyResume) controller.handleEvent(0L,
+                    """{"type":"terminalStatus","conversationID":"c1","sessionToken":"tok-open",
+                        "phase":"running","purpose":"interactive"}""".toByteArray())
+                afterNativeEvents()
+                1L
+            },
+        ) { root.epoch }
+        setFieldLong(controller, "boundEpoch", 7L)
+        (G04TerminalHostController::class.java.getDeclaredField("stopped")
+            .apply { isAccessible = true }.get(controller)
+            as java.util.concurrent.atomic.AtomicBoolean).set(false)
+        return controller
+    }
+
+    @Test
+    fun interactiveReplyReprojectsOwnedCaptureWhenRunningStatusArrivesBeforeOpenResumes() = runBlocking {
+        val controller = interactiveOpenOrderingController(true, LiveRoot(7L))
+        val observed = java.util.concurrent.CopyOnWriteArrayList<TerminalHandoffCapture?>()
+        val detach = controller.watchSessions("c1") {
+            observed.add(controller.liveInteractiveTerminal("c1"))
+        }
+        val result = controller.attachOrOpen("c1", null, 80, 24)
+        assertEquals(TerminalSessionPhase.RUNNING, result?.phase)
+        assertEquals("tok-open", result?.sessionToken)
+        assertEquals("the status first has no captured handle", null, observed.first())
+        assertEquals("binding must refresh the previously-null handoff projection",
+            TerminalHandoffCapture("c1", "tok-open", 7L), observed.last())
+        detach()
+    }
+
+    @Test
+    fun interactiveReplyPublishesStartingWithoutInventingRunningWhenStatusComesLater() = runBlocking {
+        val controller = interactiveOpenOrderingController(false, LiveRoot(7L))
+        val phases = java.util.concurrent.CopyOnWriteArrayList<TerminalSessionPhase>()
+        val detach = controller.watchSessions("c1") { phases.add(it.phase) }
+        val result = controller.attachOrOpen("c1", null, 80, 24)
+        assertEquals(TerminalSessionPhase.STARTING, result?.phase)
+        assertEquals(listOf(TerminalSessionPhase.STARTING), phases.toList())
+        controller.handleEvent(0L,
+            """{"type":"terminalStatus","conversationID":"c1","sessionToken":"tok-open",
+                "phase":"running","purpose":"interactive"}""".toByteArray())
+        assertEquals(listOf(TerminalSessionPhase.STARTING, TerminalSessionPhase.RUNNING), phases.toList())
+        assertEquals(TerminalHandoffCapture("c1", "tok-open", 7L),
+            controller.liveInteractiveTerminal("c1"))
+        detach()
+    }
+
+    @Test
+    fun interactiveReplyNeverProjectsHandoffCaptureIntoAChangedNativeEpoch() = runBlocking {
+        val root = LiveRoot(7L)
+        val controller = interactiveOpenOrderingController(true, root) { root.epoch = 8L }
+        val observed = java.util.concurrent.CopyOnWriteArrayList<TerminalHandoffCapture?>()
+        val detach = controller.watchSessions("c1") {
+            observed.add(controller.liveInteractiveTerminal("c1"))
+        }
+        controller.attachOrOpen("c1", null, 80, 24)
+        assertTrue(observed.isNotEmpty())
+        assertTrue("a late binding must not authorize stopping another Root's work",
+            observed.all { it == null })
+        assertNull(controller.liveInteractiveTerminal("c1"))
+        detach()
+    }
+
+    @Test
+    fun liveInteractiveTerminalAnswersOnlyForThisHostsOwnLiveManualTerminal() {
+        val (controller, root, _) = handoffController(epoch = 11L)
+        val capture = seedLiveTerminal(controller, "c1", "tok-1")
+        assertEquals("c1", capture.conversationID)
+        assertEquals("tok-1", capture.sessionToken)
+        assertEquals(11L, capture.nativeEpoch)
+
+        // A different conversation is never answered from this one's state.
+        assertNull(controller.liveInteractiveTerminal("c2"))
+
+        // A language/run-draft session is NOT a manual terminal, so ending it
+        // is never offered as a handoff.
+        seedMap<TerminalSessionSnapshot>(controller, "snapshots")["c1"] =
+            liveSnapshot("c1", "tok-1", purpose = "run")
+        assertNull(controller.liveInteractiveTerminal("c1"))
+
+        // Every settled phase is a terminal that no longer holds anything.
+        for (phase in listOf(TerminalSessionPhase.CLOSED, TerminalSessionPhase.EXITED,
+                TerminalSessionPhase.STOPPED, TerminalSessionPhase.FAULT)) {
+            seedMap<TerminalSessionSnapshot>(controller, "snapshots")["c1"] =
+                liveSnapshot("c1", "tok-1", phase = phase)
+            assertNull("phase $phase must not be offered", controller.liveInteractiveTerminal("c1"))
+        }
+
+        // A snapshot of a RETIRED token is not a live terminal, and a
+        // replacement token is a different terminal.
+        seedMap<TerminalSessionSnapshot>(controller, "snapshots")["c1"] =
+            liveSnapshot("c1", "tok-1")
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-2"
+        assertNull(controller.liveInteractiveTerminal("c1"))
+
+        // No captured handle at all: nothing is owned here.
+        seedMap<String>(controller, "sessionTokens").remove("c1")
+        assertNull(controller.liveInteractiveTerminal("c1"))
+
+        // A moved-on or unbound Root generation answers nothing.
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-1"
+        root.epoch = 12L
+        assertNull("a replaced Root generation must not answer",
+            controller.liveInteractiveTerminal("c1"))
+        root.epoch = null
+        assertNull(controller.liveInteractiveTerminal("c1"))
+    }
+
+    @Test
+    fun unboundHostNeverOffersATerminalForHandoff() {
+        val controller = newController()
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-1"
+        seedMap<TerminalSessionSnapshot>(controller, "snapshots")["c1"] =
+            liveSnapshot("c1", "tok-1")
+        assertNull(controller.liveInteractiveTerminal("c1"))
+    }
+
+    @Test
+    fun handoffReleasesOnlyAfterTheRealEngineSlotProof() = runBlocking {
+        var settled: G04TerminalHostController? = null
+        val (controller, _, events) = handoffController(
+            closeReply = { conversationID, token ->
+                settleSnapshot(checkNotNull(settled), conversationID, token)
+                TerminalActionReply.Success(buildJsonObject { })
+            },
+            releaseProof = { true },
+        )
+        settled = controller
+        val capture = seedLiveTerminal(controller, "c1", "tok-1")
+
+        val result = controller.endCapturedTerminalForHandoff(
+            capture, settledWaitMillis = 500, releaseProofTimeoutMillis = 1_000)
+
+        assertEquals(TerminalHandoffResult.Released, result)
+        // Ordering IS the contract: the exact captured token is closed first
+        // and the REAL release proof is consulted only afterwards, exactly
+        // once (no hidden retry, no second dispatch, no elapsed-time success).
+        assertEquals(listOf("close:c1:tok-1", "releaseProof:1000"), events)
+        // The handle is unbound by an exact CAS against the captured token.
+        assertNull(seedMap<String>(controller, "sessionTokens")["c1"])
+    }
+
+    @Test
+    fun anAcceptedStopWithoutRealReleaseNeverAnswersReleased() = runBlocking {
+        // THE regression: an accepted `terminalClose` plus a projected CLOSED
+        // are only an ACCEPTED stop. Without the engine's real lease release
+        // the caller must not approve, or the command is dispatched into an
+        // occupied slot and fails exit=75 exactly as before.
+        var settled: G04TerminalHostController? = null
+        val (controller, _, events) = handoffController(
+            closeReply = { conversationID, token ->
+                settleSnapshot(checkNotNull(settled), conversationID, token)
+                TerminalActionReply.Success(buildJsonObject { })
+            },
+            releaseProof = { false },
+        )
+        settled = controller
+        val capture = seedLiveTerminal(controller, "c1", "tok-1")
+        val result = controller.endCapturedTerminalForHandoff(
+            capture, settledWaitMillis = 500, releaseProofTimeoutMillis = 1_000)
+        assertEquals("engineSlotStillHeld",
+            (result as TerminalHandoffResult.Refused).code)
+        assertEquals(listOf("close:c1:tok-1", "releaseProof:1000"), events)
+    }
+
+    @Test
+    fun aCloseThatNeverStartedConsultsNoReleaseProof() = runBlocking {
+        for (reply in listOf<TerminalActionReply>(
+            TerminalActionReply.Refused("saturated", "engineSlotBusy"),
+            TerminalActionReply.TimedOut,
+        )) {
+            val (controller, _, events) = handoffController(closeReply = { _, _ -> reply })
+            val capture = seedLiveTerminal(controller, "c1", "tok-1")
+            val result = controller.endCapturedTerminalForHandoff(
+                capture, settledWaitMillis = 200, releaseProofTimeoutMillis = 1_000)
+            val code = (result as TerminalHandoffResult.Refused).code
+            assertTrue("unexpected refusal code $code for $reply",
+                code == "saturated" || code == "closeTimedOut")
+            // No release proof, therefore no possible approve/dispatch, and a
+            // failed close RETAINS the handle for the original reconciliation.
+            assertEquals(listOf("close:c1:tok-1"), events)
+            assertEquals("tok-1", seedMap<String>(controller, "sessionTokens")["c1"])
+        }
+    }
+
+    @Test
+    fun aProjectedSessionThatNeverSettledIsNeverPresentedAsReleased() = runBlocking {
+        // The close was accepted but the authoritative status stayed LIVE: the
+        // honest answer is a bounded refusal, never an elapsed-time success.
+        val (controller, _, events) = handoffController()
+        val capture = seedLiveTerminal(controller, "c1", "tok-1")
+        val result = controller.endCapturedTerminalForHandoff(
+            capture, settledWaitMillis = 150, releaseProofTimeoutMillis = 1_000)
+        assertEquals("closeNotSettled", (result as TerminalHandoffResult.Refused).code)
+        assertEquals(listOf("close:c1:tok-1"), events)
+    }
+
+    @Test
+    fun aReplacementSessionIsNeverStoppedByAnOlderConsent() = runBlocking {
+        // The user consented to the terminal they were shown. If a Reset or a
+        // fresh open replaced it meanwhile, that is a DIFFERENT terminal:
+        // refuse, close nothing, prove nothing.
+        val (controller, _, events) = handoffController()
+        val capture = seedLiveTerminal(controller, "c1", "tok-1")
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-replacement"
+        seedMap<TerminalSessionSnapshot>(controller, "snapshots")["c1"] =
+            liveSnapshot("c1", "tok-replacement")
+        val result = controller.endCapturedTerminalForHandoff(capture)
+        assertEquals("staleCapture", (result as TerminalHandoffResult.Refused).code)
+        assertTrue("no close and no release proof may happen: $events", events.isEmpty())
+        assertEquals("the replacement must still be live and bound",
+            "tok-replacement", seedMap<String>(controller, "sessionTokens")["c1"])
+        assertNotNull(controller.liveInteractiveTerminal("c1"))
+    }
+
+    @Test
+    fun anAlreadyRetiredTerminalIsNotACapturableConflict() = runBlocking {
+        val (controller, _, events) = handoffController()
+        val capture = seedLiveTerminal(controller, "c1", "tok-1")
+        seedMap<String>(controller, "sessionTokens").remove("c1")
+        val result = controller.endCapturedTerminalForHandoff(capture)
+        assertEquals("staleCapture", (result as TerminalHandoffResult.Refused).code)
+        assertTrue(events.isEmpty())
+    }
+
+    @Test
+    fun aMovedOnRootGenerationRefusesBeforeAndAfterTheRealRelease() = runBlocking {
+        // Before: the captured epoch is no longer the live bound one.
+        val (before, root, beforeEvents) = handoffController(epoch = 21L)
+        val captureBefore = seedLiveTerminal(before, "c1", "tok-1")
+        root.epoch = 22L
+        val refusedBefore = before.endCapturedTerminalForHandoff(captureBefore)
+        assertEquals("staleGeneration", (refusedBefore as TerminalHandoffResult.Refused).code)
+        assertTrue(beforeEvents.isEmpty())
+
+        // After: the generation is replaced while the handoff is in flight, so
+        // a release is never published into a world that no longer owns it.
+        // The epoch must move AFTER the close was admitted (inside the real
+        // close seam), not before the call: a pre-call move is the separate
+        // pre-close fence already covered above and would close nothing.
+        val (after, _, afterEvents) = handoffController(
+            epoch = 31L, onClose = { root -> root.epoch = 32L })
+        val captureAfter = seedLiveTerminal(after, "c1", "tok-1")
+        settleSnapshot(after, "c1", "tok-1")
+        val refusedAfter = after.endCapturedTerminalForHandoff(
+            captureAfter, settledWaitMillis = 200, releaseProofTimeoutMillis = 1_000)
+        assertEquals("staleGeneration", (refusedAfter as TerminalHandoffResult.Refused).code)
+        assertEquals("the close already happened, but no release is published",
+            listOf("close:c1:tok-1"), afterEvents)
+    }
+
+    @Test
+    fun anEmptyOrUnboundCaptureRefusesWithoutAnyEffect() = runBlocking {
+        val (controller, _, events) = handoffController(epoch = 41L)
+        for (capture in listOf(
+            TerminalHandoffCapture("c1", "", 41L),
+            TerminalHandoffCapture("c1", "tok-1", 0L),
+        )) {
+            val result = controller.endCapturedTerminalForHandoff(capture)
+            assertEquals("staleCapture", (result as TerminalHandoffResult.Refused).code)
+        }
+        assertTrue(events.isEmpty())
+    }
+
+    @Test
+    fun aCancelledCallerGetsATypedRefusalInsteadOfASilentStop() {
+        // Cancellation (navigation away, run stop, surface retirement) must
+        // refuse safely: no release is claimed, so the caller can never treat
+        // the handoff as completed and approve behind it.
+        val events = mutableListOf<String>()
+        val gate = Job()
+        var observed: TerminalHandoffResult? = null
+        val controller = G04TerminalHostController(
+            CoroutineScope(Dispatchers.Unconfined),
+            Dispatchers.Unconfined,
+            Dispatchers.Unconfined,
+            engineSlotReleaseProof = { events.add("releaseProof"); true },
+            closeSinkOverride = { conversationID, token ->
+                events.add("close:$conversationID:$token")
+                gate.cancel()
+                TerminalActionReply.Success(buildJsonObject { })
+            },
+        ) { 51L }
+        setFieldLong(controller, "boundEpoch", 51L)
+        (G04TerminalHostController::class.java.getDeclaredField("stopped")
+            .apply { isAccessible = true }.get(controller)
+            as java.util.concurrent.atomic.AtomicBoolean).set(false)
+        val capture = seedLiveTerminal(controller, "c1", "tok-1")
+
+        // Unconfined: the body runs eagerly, so the cancelled fence is reached
+        // deterministically inside this call rather than by polling.
+        CoroutineScope(Dispatchers.Unconfined + gate).launch {
+            observed = controller.endCapturedTerminalForHandoff(
+                capture, settledWaitMillis = 200, releaseProofTimeoutMillis = 1_000)
+        }
+
+        val outcome = checkNotNull(observed) { "the unconfined body must have completed" }
+        assertEquals("cancelled", (outcome as TerminalHandoffResult.Refused).code)
+        assertEquals("no release proof after a cancelled caller",
+            listOf("close:c1:tok-1"), events)
     }
 }

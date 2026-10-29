@@ -506,7 +506,21 @@ data class OfficePrecisionTarget(
     /** Producer-observed document context at capture time. */
     val docType: String?,
     val partsCount: Int?,
+    /** Native part identity, byte-exact as the pinned producer names it:
+     * the braced page GUID for presentation/drawing, the documented decimal
+     * for spreadsheet/text. Never hashed, normalized or index-derived. */
     val selectedPart: String?,
+    /**
+     * The logical 0-based ordinal the SAME validated synchronous `status:`
+     * answer witnesses for [selectedPart]: its unique position among the
+     * answer's own ordered `parts[i].part` identifiers for
+     * presentation/drawing, or the documented decimal identifier's value
+     * for spreadsheet/text. Null ONLY when this answer does not itself
+     * witness the mapping (absent/duplicate-ambiguous/malformed/out-of-
+     * family) — never a guess, never the caller's requested index, and
+     * never re-derived by decimal-parsing a GUID at the host boundary.
+     */
+    val selectedPartIndex: Int? = null,
     /** Capture ordering facts (elapsedRealtime). */
     val capturedAtElapsedMs: Long,
     /** Handle lifetime bound (elapsedRealtime); expired handles are refused. */
@@ -545,6 +559,10 @@ sealed class OfficePrecisionAnswer {
         val docType: String?,
         val partsCount: Int?,
         val selectedPart: String?,
+        /** Witnessed logical 0-based ordinal of [selectedPart] in THIS same
+         * validated answer's ordered parts list (see [OfficePrecisionTarget.
+         * selectedPartIndex]); null when the answer does not witness it. */
+        val selectedPartIndex: Int? = null,
         val widthTwip: Int?,
         val heightTwip: Int?,
         val viewId: Int?,
@@ -578,8 +596,20 @@ sealed class OfficePrecisionAnswer {
         val slideCount: Int?,
     ) : OfficePrecisionAnswer()
 
-    /** SELECT_SLIDE: navigation postcondition proven by the `status:` readback. */
-    data class SlideSelected(val shownPart: String) : OfficePrecisionAnswer()
+    /**
+     * SELECT_SLIDE: navigation postcondition proven by the `status:` readback.
+     * [shownPart] is the producer's part identifier byte-exact (braced page
+     * GUID for presentation/drawing; documented decimal otherwise), and
+     * [shownPartIndex] is the logical 0-based ordinal THIS same proven
+     * readback answer witnesses for it — its unique position among the
+     * readback's ordered parts identifiers (decimal value otherwise). The
+     * readback step refuses when a presentation identifier is not uniquely
+     * witnessed there; the requested index alone is never carried as proof.
+     */
+    data class SlideSelected(
+        val shownPart: String,
+        val shownPartIndex: Int? = null,
+    ) : OfficePrecisionAnswer()
 
     /**
      * SELECT_ALL_TEXT: byte count of a non-empty complex/oversize selection
@@ -634,4 +664,41 @@ data class OfficePrecisionResult(
     fun descriptorLine(): String =
         "precision op=$opId ${action.name} -> ${state.name}" +
             (failure?.let { " ($it)" } ?: "")
+}
+
+/**
+ * Authoritative dispatch-proof lineage tokens carried in
+ * [OfficePrecisionResult.attestation] (office-background-repair118).
+ *
+ * Why these are named contract constants and not producer-private literals:
+ * the actual C17 first failures (DOCX `applyText`, PPTX `selectSlide`) both
+ * ended in an engine refusal that was proven BEFORE any plan wire —
+ * `attestation = "refused-before-dispatch"`, no effect dispatched, the
+ * single-use content target not consumed — and the application adapter above
+ * the binder classified transport refusals by a whitelist of its OWN
+ * client-local detail strings. Every engine-produced detail fell through to
+ * its "ambiguous" catch-all, so the adapter discarded the engine's terminal
+ * and relayed a fabricated `UNKNOWN`
+ * (`transport-ambiguous-post-send-retained`). A PROVEN no-effect refusal was
+ * therefore reported as a possible-effect one: dishonest in the unsafe
+ * direction, because it blocks every legitimate recovery, wastes the bounded
+ * terminal re-read on an answer the client poll had already consumed, and
+ * leaves the user with an unactionable "unknown" instead of the real reason.
+ *
+ * [REFUSED_BEFORE_DISPATCH] is a NO-EFFECT PROOF. It may only survive on a
+ * terminal that really dispatched no effect-bearing wire; the ledger
+ * enforces that against its own pre-native-call dispatch record
+ * (`OfficePrecisionLedger.noteWireDispatchStarted`) and rewrites the lineage
+ * to [REFUSED_AFTER_EFFECT_DISPATCH] when a LATER step of a multi-step plan
+ * was refused after step 0's wire was really posted. Consumers may therefore
+ * treat [REFUSED_BEFORE_DISPATCH] as settled, and MUST keep treating
+ * [REFUSED_AFTER_EFFECT_DISPATCH] as possibly-effective (never re-dispatched,
+ * never claimed as nothing-sent).
+ */
+object OfficePrecisionAttestation {
+    /** Terminal refusal with NO effect-bearing wire dispatched: proven no-effect. */
+    const val REFUSED_BEFORE_DISPATCH = "refused-before-dispatch"
+
+    /** Terminal refusal AFTER an effect-bearing wire was really posted: maybe-effect. */
+    const val REFUSED_AFTER_EFFECT_DISPATCH = "refused-after-effect-dispatch"
 }

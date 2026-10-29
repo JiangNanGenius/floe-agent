@@ -101,19 +101,30 @@ object OfficeEngine {
      * [OfficeEngineCommands.readPrecisionAnswer]; see
      * `com.floe.android.core.officeengine.precision` for the typed contract
      * and its honest completion states.
-     */
-    fun viewerIntent(
+      *  - [approvalNotice]: the [OfficeApprovalNotice.parentBinder] endpoint
+      *    so the FOREGROUND viewer can ask (read-only, while resumed) whether
+      *    its OWNING conversation currently holds a captured pending
+      *    approval — the banner answer keeps Ask-first approvals reachable
+      *    without closing the owned document (G05-R3 office-approval107).
+      *    Present only for owned opens; the query grants nothing.
+      *  - [reviewComponent]: the App-minted ComponentName the banner's Review
+      *    action brings to the front with FLAG_ACTIVITY_REORDER_TO_FRONT
+      *    (the existing chat Activity; the document stays open underneath).
+      */
+     fun viewerIntent(
         context: android.content.Context,
         request: OfficePreviewRequest,
         closeAck: android.os.IBinder? = null,
         viewerIncarnation: Long = -1L,
         hostSaveChannel: android.os.IBinder? = null,
+        approvalNotice: android.os.IBinder? = null,
+        reviewComponent: android.content.ComponentName? = null,
     ): android.content.Intent =
         OfficePreviewActivity.intentFor(context, request).apply {
             // An IBinder is NOT a Parcelable: it travels through the Bundle's
             // putBinder/getBinder pair (API 18+), never putExtra (the R1
             // close-ack pattern). Ordinary longs stay putExtra.
-            if (closeAck != null || hostSaveChannel != null) {
+            if (closeAck != null || hostSaveChannel != null || approvalNotice != null) {
                 val capabilities = android.os.Bundle()
                 if (closeAck != null) {
                     capabilities.putBinder(OfficeCloseAckPolicy.EXTRA_CLOSE_ACK, closeAck)
@@ -125,11 +136,49 @@ object OfficeEngine {
                         hostSaveChannel,
                     )
                 }
+                if (approvalNotice != null) {
+                    capabilities.putBinder(OfficeApprovalNoticePolicy.EXTRA_APPROVAL_NOTICE, approvalNotice)
+                }
                 putExtras(capabilities)
             } else if (viewerIncarnation > 0L) {
                 putExtra(OfficeCloseAckPolicy.EXTRA_VIEWER_INCARNATION, viewerIncarnation)
             }
+            // The App-owned review target travels as a plain Parcelable extra:
+            // the module only forwards it to the banner action, never reads
+            // its contents and never invents a navigation destination.
+            if (reviewComponent != null) {
+                putExtra(OfficeApprovalNoticePolicy.EXTRA_REVIEW_COMPONENT, reviewComponent)
+            }
         }
+
+        /**
+         * G05-R3 office-return109: the INERT raise for the App's explicit
+         * owned-document return strip. Component only — NO request extra, NO
+         * capabilities, NO new mount semantics. The already-running viewer
+         * instance is reordered to the front within its existing task
+         * (document + owned editContext untouched; the Activity reads its
+         * launch request only in onCreate and re-reads nothing on raise).
+         * Concrete-instance correctness comes from the App side, NOT from
+         * this Intent: Android selects the record synchronously during
+         * startActivity handling, and the controller dispatches this raise
+         * while holding its single-operation lock, so no settle or new
+         * mount can interleave between the identity proof and the selection
+         * (see OfficePreviewController.requestOwnedViewerRestore). If no
+         * instance exists at selection, the module's own launch validation
+         * fails this inert Intent closed immediately (missing-request
+         * finish) — never a remount and never a different document opened.
+         * NEW_TASK is required for application-context launches; the task
+         * already holding the viewer is REUSED — never duplicated (no
+         * MULTIPLE_TASK), never cleared (no CLEAR_TOP), and nothing is
+         * finished by this path.
+         */
+        fun viewerRestoreIntent(context: android.content.Context): android.content.Intent =
+            android.content.Intent(context, OfficePreviewActivity::class.java).apply {
+                addFlags(
+                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                        android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT,
+                )
+            }
 }
 
 /** Honest, observation-only availability snapshot. */

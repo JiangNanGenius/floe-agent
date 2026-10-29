@@ -31,6 +31,7 @@ permissions:
 
 jobs:
   publish-source:
+    if: ${{ github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

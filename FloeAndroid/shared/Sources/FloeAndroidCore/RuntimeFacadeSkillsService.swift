@@ -80,15 +80,6 @@
 //    backup stays at installationRoot/../RemovedSkills and the upgrade
 //    journal at installationRoot/.upgrade-history — the ORIGINAL relative
 //    locations under a trusted root (SkillsCenter:342-346, :716).
-// 9. Official store channel: every catalog, signature and package read in
-//    this facade targets the shared FloeSkills Android channel
-//    (`skill-hub/android/...`). The legacy iOS feed is never fetched or
-//    rewritten from here. The store platform is `.android`; the RUNTIME
-//    environment stays `.linux` (delta 1) because store OS and execution
-//    projection are separate axes. This is not an App-version claim: the G02
-//    host still returns nil appVersion, so catalog/official flows stay typed
-//    appVersionUnbound before any network or file effect until a real
-//    Android version is bound.
 //
 // Permission honesty: signature/structure/validation NEVER grants tool
 // permission. The ORIGINAL permission store remains the only authority;
@@ -571,12 +562,6 @@ public actor SkillsDomain {
     private var inflightSkills: Set<String> = []
     private let autoUpdatesKey = "floe.content.update.autoScriptedSkills"
 
-    /// The store channel read by every official catalog/package path below.
-    /// Deliberately NOT `SkillRuntimeEnvironment.platform` (`.linux`): the
-    /// channel is the store/host OS, the environment is the execution
-    /// projection. See header delta 9.
-    static let officialHubPlatform: SkillPlatform = .android
-
     private struct StagedFolder {
         let directory: URL
         let canonicalSHA256: String
@@ -783,14 +768,14 @@ public actor SkillsDomain {
 
     // MARK: skills.list — catalog refresh (async effect; honest failure)
 
-    /// The ORIGINAL hub refresh (SkillsCenter.refreshOfficialCatalog:44-81)
-    /// on the ANDROID channel: hourly gate unless forced; immutable-commit
-    /// fetch of skill-hub/android/catalog.json + catalog.sig; per-id verified
-    /// signature with the COMPILED shared trust root (no Bundle.module on the
-    /// overlay — the key is the generated Swift literal already inside
-    /// FloeSkills). On ANY failure the PREVIOUS cache stays authoritative and
-    /// the result carries a typed reason + retryAfter (never an empty catalog
-    /// lie, never a "refreshed" claim). The legacy iOS feed is never read.
+    /// The ORIGINAL hub refresh (SkillsCenter.refreshOfficialCatalog:44-81):
+    /// hourly gate unless forced; immutable-commit fetch of
+    /// skill-hub/catalog.json + catalog.sig; per-id verified signature with
+    /// the COMPILED trust root (no Bundle.module on the overlay — the key is
+    /// the generated Swift literal already inside FloeSkills). On ANY
+    /// failure the PREVIOUS cache stays authoritative and the result carries
+    /// a typed reason + retryAfter (never an empty catalog lie, never a
+    /// "refreshed" claim).
     public func refreshCatalog(force: Bool, now: Date = Date()) async throws -> sending [String: Any] {
         _ = try requireBinding()
         if !force, let cache = catalogCache {
@@ -806,18 +791,16 @@ public actor SkillsDomain {
         guard let appVersion = Self.validatedAppVersion(hostContext.appVersion()) else {
             throw SkillsDomainRefusal.appVersionUnbound
         }
-        let source = try OfficialSkillHub.source(platform: Self.officialHubPlatform)
+        let source = try OfficialSkillHub.source()
         let commit: String
         let catalogBytes: Data
         let signature: Data
         do {
             commit = try await transport.resolveCommit(source)
-            catalogBytes = try await transport.fetch(
-                source, commit: commit,
-                path: OfficialSkillHub.catalogPath(for: Self.officialHubPlatform))
-            signature = try await transport.fetch(
-                source, commit: commit,
-                path: OfficialSkillHub.signaturePath(for: Self.officialHubPlatform))
+            catalogBytes = try await transport.fetch(source, commit: commit,
+                                                     path: OfficialSkillHub.catalogPath)
+            signature = try await transport.fetch(source, commit: commit,
+                                                  path: "skill-hub/catalog.sig")
         } catch let refusal as SkillsDomainRefusal {
             recordCatalogFailure(reason: Self.safe(refusal), now: now)
             throw refusal
@@ -831,8 +814,7 @@ public actor SkillsDomain {
             for id in OfficialSkillHub.skillIDs.sorted() {
                 let package = try OfficialSkillHub.verifiedPackage(
                     catalog: catalogBytes, signature: signature, id: id,
-                    appVersion: appVersion, trustedKeys: self.trustedKeys,
-                    platform: Self.officialHubPlatform)
+                    appVersion: appVersion, trustedKeys: self.trustedKeys)
                 entries.append(.init(id: package.id, version: package.version,
                                      path: package.path, size: package.size,
                                      sha256: package.sha256,
@@ -899,8 +881,7 @@ public actor SkillsDomain {
                     resolve: { [transport] source in try await transport.resolveCommit(source) },
                     fetch: { [transport] source, commit, path in
                         try await transport.fetch(source, commit: commit, path: path)
-                    },
-                    platform: Self.officialHubPlatform)
+                    })
                 registerUpgradeReview(token: reviewToken, candidate: candidate,
                                       stagingRoot: stagingRoot, binding: binding)
                 // Auto-apply ONLY under the exact original rule: the flag on
@@ -930,11 +911,9 @@ public actor SkillsDomain {
             try requireCompatibility(proposed.package)
             registerInstallReview(token: reviewToken, packageDirectory: packageRoot,
                                   canonicalSHA256: proposed.package.canonicalSHA256,
-                                  sourceURL: Self.hubSourceURL(
-                                    source: try OfficialSkillHub.source(
-                                        platform: Self.officialHubPlatform),
-                                    commit: cache.commit,
-                                    entry: entry),
+                                  sourceURL: Self.hubSourceURL(source: try OfficialSkillHub.source(),
+                                                                commit: cache.commit,
+                                                                entry: entry),
                                   sourceDigest: entry.sha256,
                                   rewriteModelID: "official-hub",
                                   manifestOverride: nil,
@@ -1479,8 +1458,7 @@ public actor SkillsDomain {
                     resolve: { [transport] source in try await transport.resolveCommit(source) },
                     fetch: { [transport] source, commit, path in
                         try await transport.fetch(source, commit: commit, path: path)
-                    },
-                    platform: Self.officialHubPlatform)
+                    })
             } else {
                 guard let source else {
                     throw ConfigDomainError(code: .notFound, reason: "upgradeSourceMissing")
@@ -1974,7 +1952,7 @@ public actor SkillsDomain {
     }
 
     private func fetchHubZip(entry: SkillsCatalogCache.Entry, commit: String) async throws -> Data {
-        let source = try OfficialSkillHub.source(platform: Self.officialHubPlatform)
+        let source = try OfficialSkillHub.source()
         let zip = try await transport.fetch(source, commit: commit, path: entry.path)
         guard zip.count == entry.size else { throw OfficialSkillHub.Failure.archive }
         let digest = SHA256.hash(data: zip).map { String(format: "%02x", $0) }.joined()
@@ -2083,10 +2061,8 @@ public actor SkillsDomain {
 
     static func hubSourceURL(source: GitHubSkillSource, commit: String,
                              entry: SkillsCatalogCache.Entry) -> String {
-        // The ORIGINAL immutable blob provenance shape
-        // (`https://github.com/<owner>/<repo>/blob/<commit>/<path>`);
-        // entry.path carries the SELECTED channel — the iOS feed or
-        // `skill-hub/android/...` — so provenance never crosses channels.
+        // The ORIGINAL immutable blob shape accepted by
+        // OfficialSkillHub.acceptsBundledUpgrade (OfficialSkillHub.swift:21-26).
         "https://github.com/\(source.owner)/\(source.repository)/blob/\(commit)/\(entry.path)"
     }
 

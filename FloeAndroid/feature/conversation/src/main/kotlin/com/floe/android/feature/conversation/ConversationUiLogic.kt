@@ -309,6 +309,28 @@ object ApprovalGrantMapping {
     /** ⇄ isSkillCreation: skill.create saves a reusable skill for ALL tasks —
      * the card must spell that out. */
     fun isSkillCreation(toolName: String): Boolean = toolName == "skill.create"
+
+    /* -------- owned Linux engine slot conflict (Main ruling 2026-10-28) -------- */
+
+    /** The EXACT typed conflict class the runtime puts on the existing
+     * approval-escalation `reason` channel when this conversation's own live
+     * interactive terminal holds the single runtime-UID engine workload slot
+     * (⇄ `LinuxEngineSlotConflict.approvalReasonToken`). Matched EXACTLY, never
+     * by substring: unlike [isGateStopped] this drives a real destructive
+     * action, so a fuzzy match could offer to end a terminal that is not the
+     * blocker. The token is an opaque identifier and is never rendered as
+     * prose — [terminalHandoffConflict] callers show their own localized copy. */
+    const val TERMINAL_HANDOFF_REASON_TOKEN = "linuxEngineSlotHeldByOwnInteractiveTerminal"
+
+    fun terminalHandoffConflict(reason: String): Boolean = reason == TERMINAL_HANDOFF_REASON_TOKEN
+
+    /** The model-facing tools that must ACQUIRE the single engine slot before
+     * they can start anything (⇄ `LinuxEngineSlotTools.slotAcquiring`). Only
+     * these may ever offer the explicit end-and-run action: tools that operate
+     * on an already-open session, and every non-engine tool, keep the ordinary
+     * card even while a terminal is live. */
+    fun acquiresLinuxEngineSlot(toolName: String): Boolean =
+        toolName == "exec.shell" || toolName == "shell.open"
 }
 
 /* ------------------------------- follow & drafts ----------------------------- */

@@ -97,8 +97,8 @@ final class QualificationSeamTests: XCTestCase {
         let report = smokeJSON(floeDbSmoke(directory.path))
         let failures = (report["failures"] as? [String]) ?? []
         XCTAssertEqual(report["ok"] as? Bool, true, "db smoke failures: \(failures)")
-        XCTAssertEqual(report["schemaVersion"] as? Int, 47)
-        XCTAssertEqual(report["appliedMigrationCount"] as? Int, 47)
+        XCTAssertEqual(report["schemaVersion"] as? Int, 48)
+        XCTAssertEqual(report["appliedMigrationCount"] as? Int, 48)
         XCTAssertEqual(report["appliedContainsV47"] as? Bool, true)
         XCTAssertEqual(report["ftsEnglishHits"] as? Int, 1)
         XCTAssertEqual(report["ftsCjkSubstringHits"] as? Int, 0)

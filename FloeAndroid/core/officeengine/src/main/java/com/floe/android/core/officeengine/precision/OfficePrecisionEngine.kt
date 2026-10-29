@@ -306,7 +306,9 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
         failure = failure,
         detail = detail?.take(240),
         answer = null,
-        attestation = "refused-before-dispatch",
+        // Synchronous admission refusal: nothing was ever claimed, so this is
+        // genuinely pre-dispatch (the named contract token, not a literal).
+        attestation = OfficePrecisionAttestation.REFUSED_BEFORE_DISPATCH,
         submittedAtElapsedMs = now,
         completedAtElapsedMs = now,
     )
@@ -754,6 +756,19 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
                     }
                 }
                 OfficePrecisionLedger.ArmDecision.DispatchNow -> {
+                    // Materialize the ACTUAL frame under the ledger lock at
+                    // this exact dispatch point: the SELECT_SLIDE dispatch
+                    // step posts `setclientpart part=<id>` built ONLY from
+                    // the identifier THIS run resolved from the producer's
+                    // own synchronous `status:` witness. An unresolved step
+                    // dispatches NOTHING (no template, no stale id, no
+                    // caller-supplied value can reach the kit).
+                    val dispatchWire = ledger.wireForDispatch(run, stepIndex)
+                    if (dispatchWire == null) {
+                        ledger.rejectRun(run, OfficePrecisionFailure.INTERNAL, "resolved-wire-absent")
+                            ?.let { finishRun(it) }
+                        return
+                    }
                     if (expect != null) armTimeout(run, stepIndex, step.timeoutMs)
                     try {
                         val dispatched = OfficeOwnedEditDispatch.run(
@@ -781,7 +796,7 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
                                 // Mark BEFORE native code can synchronously
                                 // re-enter page-off/error callbacks.
                                 ledger.noteWireDispatchStarted(run, stepIndex)
-                                host.sendWire(step.wire)
+                                host.sendWire(dispatchWire)
                             },
                         )
                         if (!dispatched) {

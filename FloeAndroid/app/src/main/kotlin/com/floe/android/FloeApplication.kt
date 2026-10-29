@@ -236,7 +236,21 @@ class FloeApplication : Application() {
                     action = action,
                 )
             }
+            // G05-R3 office-approval107: the owned-Office viewer may ask
+            // (read-only) whether its OWNING conversation holds a captured
+            // pending approval, so an Ask-first approval stays reachable
+            // without closing the owned document. The lookup answers ONLY
+            // for the currently visible conversation's selected-run card;
+            // it grants nothing and never touches the resolve path.
+            officePreviews.setApprovalNoticeLookup(host.conversations) { taskID ->
+                host.conversations.approvalNoticeFor(taskID)
+            }
         }
+        // G05-R3 Alpha14 (user requirement): GitHub full-channel App
+        // self-update. Application-owned, data-only creation here; checks,
+        // downloads and installs run in hostScope and never block startup.
+        // The Play flavour object is an empty Noop (no download/install code).
+        com.floe.android.host.update.AppUpdateFeature.attach(this, hostScope)
         hostScope.launch(Dispatchers.Default) { observeBootstrap(runtimeState) }
     }
 

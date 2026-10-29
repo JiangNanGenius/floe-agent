@@ -572,6 +572,157 @@ class HomeLaunchpadHost internal constructor(
         }
     }
 
+    /**
+     * G05-R3 first use: create and open ONE real ORDINARY task WITHOUT a
+     * model, a provider or a run — the durable product entry into the
+     * task-owned manual Linux terminal (the created task's own Thread
+     * options → Terminal, unchanged). The row is minted by the SAME ordinary
+     * ownership API the first send uses
+     * ([ConversationHostController.createConversationForLaunch]) and NOTHING
+     * is ever launched (no launchWhenModelReady, no run.start): a blank tap
+     * opens a truly EMPTY untitled task.
+     *
+     * Ownership is the EXISTING Home reducer, never an ad-hoc guard: one
+     * narrow [stateLock] section claims the request and mints a real
+     * [HomeSendToken] (shared with the send pipeline: a second tap or a
+     * concurrent temporary/ordinary send is silently refused); the native
+     * create settlement publishes the route INSIDE the same critical section
+     * that proves the exact request, registering the [OwnedNavigation] the
+     * shell claims and re-checks at the FINAL commit. An actual navigation
+     * therefore either fenced BEFORE this section (nothing publishes and the
+     * stale intent can never move the route) or AFTER it (commitNavigation's
+     * re-check refuses the stale owned claim). A late settlement of a
+     * superseded request touches nothing a newer request owns: no sending
+     * flag, no route, no draft.
+     *
+     * Draft/attachment semantics reuse the ordinary send's ONE-WRITER handoff
+     * WITHOUT sending: the exact visible text and the READY native-staged
+     * rows are taken up front; on the created holder they land and HOME_DRAFT
+     * is consumed (exact-text + origin-current, [HomeDraftTransfer]) only in
+     * the publish section above; a refusal or a superseded settlement returns
+     * the rows to the draft (which then leaves through the existing Home
+     * navigation lifecycle) and releases the unused holder. The draft is
+     * never SENT: no launch follows the handoff.
+     */
+    fun createFreshTask(
+        text: String,
+        onDraftConsumed: (HomeSendToken, Boolean) -> Unit,
+        onFailure: (HomeSendToken, String) -> Unit,
+    ) {
+        val token = synchronized(stateLock) {
+            if (sendingValue || pendingSend != null || ownedNavigation != null) {
+                null
+            } else {
+                sendingValue = true
+                requestGeneration += 1
+                HomeSendToken(homeGenerationValue, requestGeneration)
+            }
+        }
+        if (token == null) return
+        sendingState.value = true
+        val taskTitle = text.lines().firstOrNull()?.take(80) ?: text.take(80)
+        val (draftNonce, _) = host.conversations.rootWorkspace.currentDraftOwner()
+        val handoffAttachments = host.conversations.rootWorkspace.takeSendableForLaunch()
+        fun failWith(reason: String) {
+            // Rows return to the SAME draft owner (a departed nonce is the
+            // existing no-op, exactly like the send pipeline).
+            host.conversations.rootWorkspace.restoreHandedOff(draftNonce)
+            val settled = synchronized(stateLock) {
+                // EXACT origin AND request current (isCurrentLocked, the same
+                // discipline as settleTemporaryFailure): a departed Home or a
+                // newer request owns the indicator and the dialog now, so
+                // this stale failure changes nothing and fires no callback.
+                if (!isCurrentLocked(token)) {
+                    false
+                } else {
+                    // Observable settlement is ATOMIC with the exact request.
+                    sendingValue = false
+                    sendingState.value = false
+                    true
+                }
+            }
+            if (!settled) return
+            onFailure(token, reason)
+        }
+        val started = host.conversations.createConversationForLaunch(
+            title = taskTitle.takeIf { text.isNotBlank() },
+            onCreated = { conversationID ->
+                val holder = if (text.isNotBlank() || handoffAttachments.isNotEmpty()) {
+                    host.conversations.holderFor(
+                        conversationID,
+                        isTemporary = false,
+                        incarnationId = null,
+                        initialDraft = ComposerDraftSeedUi(
+                            text = text,
+                            attachments = handoffAttachments,
+                            caretIndex = null,
+                            selectionLength = null,
+                        ),
+                    )
+                } else null
+                val rowsLanded = holder == null ||
+                    host.attachments.handoffDraftToSession(
+                        draftNonce, holder.session, handoffAttachments.map { it.id },
+                    )
+                if (!rowsLanded) {
+                    failWith(host.attachments.failureMessage("stage_refused"))
+                    return@createConversationForLaunch
+                }
+                admissionPublishBarrier?.invoke()
+                var draftTransferred = false
+                val published = synchronized(stateLock) {
+                    if (!isCurrentLocked(token)) {
+                        false
+                    } else {
+                        draftTransferred = HomeDraftTransfer.consumeTransferred(
+                            FloeFoundation.draftStore,
+                            text,
+                            isOriginCurrent = true,
+                        )
+                        host.conversations.rootWorkspace.clearHandedOff(draftNonce)
+                        val target = SidebarSelection.Conversation(conversationID)
+                        ownedNavigation = OwnedNavigation(
+                            navigationID = nextNavigationID + 1,
+                            token = token,
+                            target = target,
+                        )
+                        nextNavigationID += 1
+                        // Publication is the SAME critical section as the
+                        // final ownership proof (the existing owned-navigation
+                        // contract): from here the shell's one-shot commit or
+                        // an actual invalidation owns the outcome. The
+                        // observable sending indicator settles HERE too —
+                        // never after the lock, where an invalidate + a newer
+                        // request could otherwise be cleared by this stale
+                        // settlement (the existing blank-temporary publish
+                        // precedent).
+                        host.conversations.navigationRequest.value = target
+                        sendingValue = false
+                        sendingState.value = false
+                        true
+                    }
+                }
+                if (!published) {
+                    // An actual navigation fenced FIRST: the durable row
+                    // simply waits in history, the staged rows return to the
+                    // draft, the unused holder is released, and NOTHING
+                    // publishes a route, clears a flag or consumes a draft.
+                    host.conversations.rootWorkspace.restoreHandedOff(draftNonce)
+                    holder?.let { host.conversations.releaseHolder(conversationID) }
+                    return@createConversationForLaunch
+                }
+                // One-shot page notification about the committed transfer,
+                // carrying the EXACT token (the temporary send's onAdmitted
+                // shape): the page re-validates isCurrentHome(token) plus the
+                // exact text, so a departed generation can never clear a
+                // newer Home field even on coincidentally identical text.
+                onDraftConsumed(token, draftTransferred)
+            },
+            onFailure = { reason -> failWith(reason) },
+        )
+        if (!started) failWith("conversation_unavailable")
+    }
+
     /** The temp.start dispatch, factored so the LAN producer gate can wrap
      * exactly one attempt (never a second start after a real accept). */
     private fun dispatchTemporaryStart(

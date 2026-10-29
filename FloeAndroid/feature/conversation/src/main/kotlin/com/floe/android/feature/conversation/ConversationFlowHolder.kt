@@ -547,6 +547,18 @@ class ConversationFlowHolder(
      * latch; cleared when the card leaves the projection). */
     private val approvalDispatched = mutableSetOf<String>()
 
+    /** Host-published live truth: THIS conversation's own interactive terminal
+     * currently holds the single Linux engine workload slot (⇄
+     * [TerminalHandoffConflictUi]). Null means no such terminal, so an ordinary
+     * approval card is unchanged. Written only by the host through
+     * [applyTerminalHandoffConflict] under the session epoch fence. */
+    val terminalHandoffConflict: MutableState<TerminalHandoffConflictUi?> = mutableStateOf(null)
+
+    /** The host's typed refusal of one explicitly-consented handoff. Nothing
+     * was approved or dispatched, so the card stays actionable and the user may
+     * decide again — this never re-dispatches on its own. */
+    val terminalHandoffRefusal: MutableState<TerminalHandoffRefusalUi?> = mutableStateOf(null)
+
     /** ⇄ latestFollow + showsReturnToLatest scroll intent. */
     val followState = ConversationFollowState()
     var showsReturnToLatest: Boolean by mutableStateOf(false)
@@ -747,6 +759,12 @@ class ConversationFlowHolder(
         expandedApprovalEvidence.value = emptySet()
         approvalScopeChoices.value = emptyMap()
         approvalDispatched.clear()
+        // The reset/rebind ends this surface's ownership: the live conflict
+        // fact and any pending handoff refusal belong to the retired session
+        // and must not survive into a replacement (the host republishes the
+        // real truth for the new session through its own watcher).
+        terminalHandoffConflict.value = null
+        terminalHandoffRefusal.value = null
         followState.returnToLatest()
         showsReturnToLatest = false
         actionError = null
@@ -836,6 +854,12 @@ class ConversationFlowHolder(
         // host-side; their dispatch latches are released with the card.
         val liveKeys = next.pendingApprovals.map { it.key }.toSet()
         approvalDispatched.retainAll(liveKeys)
+        // A handoff refusal for a card that left the projection describes a
+        // decision that no longer exists; drop it with the card instead of
+        // keeping a stale banner over an unrelated approval.
+        terminalHandoffRefusal.value?.let { refusal ->
+            if (refusal.approvalKey !in liveKeys) terminalHandoffRefusal.value = null
+        }
 
         // ⇄ onChange(of: hasLoaded) → scroll to latest anchor.
         if (previous?.hasLoaded != true && next.hasLoaded) {
@@ -1269,7 +1293,11 @@ class ConversationFlowHolder(
      * once. Deny carries the stable "user denied" vocabulary; the grant tier
      * is the user's chosen scope for the projected target — never a
      * content-imported permission (APR-UNTRUSTED-NO-GRANT / APR-CALL-BOUND). */
-    fun resolveApproval(approval: ApprovalCardUi, allow: Boolean): ConversationFlowResult {
+    fun resolveApproval(
+        approval: ApprovalCardUi,
+        allow: Boolean,
+        terminalHandoff: TerminalHandoffConsentUi? = null,
+    ): ConversationFlowResult {
         val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
         val live = state.pendingApprovals.firstOrNull { it.key == approval.key }
             ?: return ConversationFlowResult.Stale
@@ -1280,6 +1308,10 @@ class ConversationFlowHolder(
         val grant = (decision as? ApprovalUserDecisionUi.Allow)?.let {
             ApprovalGrantMapping.grant(live.toolName, live.target, live.scopeDescription, it.scopeChoice)
         }
+        // A fresh explicit decision supersedes a previous handoff refusal for
+        // the same card: the stale refusal must not keep shouting over a new
+        // attempt, and it can never widen the once-only dispatch latch.
+        terminalHandoffRefusal.value?.let { if (it.approvalKey == live.key) terminalHandoffRefusal.value = null }
         val started = host.resolveApproval(
             ApprovalDecisionRequest(
                 conversationId = conversationId,
@@ -1291,11 +1323,51 @@ class ConversationFlowHolder(
                 decision = decision,
                 grant = grant,
                 reason = if (allow) null else DENY_REASON,
+                // Consent rides ONLY an allow: ending a terminal is never part
+                // of a denial, and the host treats a consent on anything else
+                // as a refusal.
+                terminalHandoff = if (allow) terminalHandoff else null,
             )
         )
         if (!started) return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
         approvalDispatched.add(live.key)
         return ConversationFlowResult.Accepted
+    }
+
+    /** Host publication of the live owned-slot conflict for THIS session
+     * (epoch-fenced like every other host projection: a late callback from a
+     * retired or replacement surface touches nothing). */
+    fun applyTerminalHandoffConflict(
+        session: ConversationSessionToken,
+        conflict: TerminalHandoffConflictUi?,
+    ) {
+        if (retired) return
+        if (!session.isCurrentFor(this.session)) return
+        if (terminalHandoffConflict.value == conflict) return
+        terminalHandoffConflict.value = conflict
+        // The terminal is gone (or was never this conversation's): a pending
+        // refusal about ending it no longer describes anything actionable.
+        if (conflict == null) terminalHandoffRefusal.value = null
+    }
+
+    /** Host report that one explicitly-consented handoff was REFUSED before
+     * any approval was dispatched. The duplicate-press latch is released for
+     * exactly that card so the user can decide again explicitly; nothing is
+     * re-dispatched here and no other card is touched. */
+    fun applyTerminalHandoffRefusal(
+        session: ConversationSessionToken,
+        approvalKey: String,
+        code: String,
+    ) {
+        if (retired) return
+        if (!session.isCurrentFor(this.session)) return
+        if (approvalKey.isBlank()) return
+        approvalDispatched.remove(approvalKey)
+        terminalHandoffRefusal.value = TerminalHandoffRefusalUi(approvalKey, code)
+    }
+
+    fun dismissTerminalHandoffRefusal() {
+        terminalHandoffRefusal.value = null
     }
 
     fun setApprovalScope(key: String, choice: ApprovalScopeChoiceUi) {

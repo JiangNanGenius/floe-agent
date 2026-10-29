@@ -159,16 +159,17 @@ object OfficePrecisionProtocol {
                     utf16ParcelBytes(t.sourceRevision) + utf16ParcelBytes(t.sourceLogicalPath) +
                     utf16ParcelBytes(t.workspaceId) + utf16ParcelBytes(t.ownerTaskId) +
                     utf16ParcelBytes(t.workingCopySha256) + utf16ParcelBytes(t.docType) +
-                    utf16ParcelBytes(t.selectedPart) + 60L
+                    utf16ParcelBytes(t.selectedPart) + 64L
             }
             is OfficePrecisionAnswer.DocumentContext ->
                 bytes += utf16ParcelBytes(answer.docType) +
-                    utf16ParcelBytes(answer.selectedPart) + 32L
+                    utf16ParcelBytes(answer.selectedPart) + 36L
             is OfficePrecisionAnswer.TextSelection ->
                 bytes += utf16ParcelBytes(answer.text) + 12L
             is OfficePrecisionAnswer.CellCursor -> bytes += 32L
             is OfficePrecisionAnswer.PresentationInfo -> bytes += 12L
-            is OfficePrecisionAnswer.SlideSelected -> bytes += utf16ParcelBytes(answer.shownPart)
+            is OfficePrecisionAnswer.SlideSelected ->
+                bytes += utf16ParcelBytes(answer.shownPart) + 4L
             is OfficePrecisionAnswer.TextSelected -> bytes += 8L
             is OfficePrecisionAnswer.MutationApplied -> {
                 bytes += 20L + utf16ParcelBytes(answer.workingCopySha256) +
@@ -224,8 +225,23 @@ object OfficePrecisionProtocol {
     // accepted from callers, model output or document content).
     // ------------------------------------------------------------------
 
+    /**
+     * Builds `setclientpart part=<id>` for one producer-shaped part
+     * identifier ONLY: a decimal part index (the spreadsheet/text family's
+     * identifier form) or a page GUID in braced form (the presentation/
+     * drawing family's identifier form). Both grammars are the pinned
+     * producer's own admission rule — common/Protocol.hpp isValidPartId at
+     * revision 2333344185931274f9c49d6c12a408cefcef6844 — and NOTHING else
+     * reaches the kit. The public request surface stays the decimal logical
+     * index (OfficePrecisionContract); the braced GUID form is produced ONLY
+     * by the ledger from the producer's own `status:` parts witness.
+     */
     fun setClientPart(partId: String): String? =
-        if (isValidPartId(partId)) "setclientpart part=$partId" else null
+        if (isValidPartId(partId) || isValidGuidPartId(partId)) {
+            "setclientpart part=$partId"
+        } else {
+            null
+        }
 
     fun goToCell(cellAddress: String): String? =
         if (isValidCellAddress(cellAddress)) {
@@ -254,11 +270,35 @@ object OfficePrecisionProtocol {
 
     private val PART_ID_REGEX = Regex("^[0-9]{1,9}$")
 
+    /**
+     * The pinned protocol's page-GUID identifier grammar, mirrored EXACTLY
+     * from common/Protocol.hpp isValidPartId at revision
+     * 2333344185931274f9c49d6c12a408cefcef6844: 38 characters total —
+     * braces at both ends, 32 hex digits in groups of 8-4-4-4-12, dashes at
+     * offsets 9, 14, 19 and 24. Presentation and drawing pages are named by
+     * this identifier (browser/src/layer/tile/ImpressTileLayer.js at the
+     * same revision: "The part identifier of a presentation or drawing page
+     * is the page's GUID, carried by each part list entry"); a spreadsheet's
+     * part identifier is the decimal sheet index (kit/KitHelper.hpp
+     * documentStatus comment at the same revision). The C15 first-failure
+     * cause: the core resolves ONLY this GUID for a presentation page, so
+     * the decimal index named no page, setclientpart silently selected
+     * nothing, and the synchronous `status:` selectedpart (a braced GUID)
+     * could never equal it — a deterministic part-readback-mismatch.
+     */
+    private val GUID_PART_ID_REGEX = Regex(
+        "^\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\}$",
+    )
+
     /** A1 cell reference with optional `$` anchors (no sheet qualifier). */
     private val CELL_ADDRESS_REGEX = Regex("^\\$?[A-Za-z]{1,3}\\$?[1-9][0-9]{0,6}$")
 
     fun isValidPartId(partId: String?): Boolean =
         partId != null && PART_ID_REGEX.matches(partId)
+
+    /** True only for the pinned braced page-GUID identifier grammar. */
+    fun isValidGuidPartId(partId: String?): Boolean =
+        partId != null && GUID_PART_ID_REGEX.matches(partId)
 
     fun isValidCellAddress(address: String?): Boolean {
         if (address == null || !CELL_ADDRESS_REGEX.matches(address)) return false
@@ -337,6 +377,180 @@ object OfficePrecisionProtocol {
         val readOnly = jsonBoolField(json, "readonly")
         if (type == null && parts == null && selected == null && width == null) return null
         return DocumentStatusInfo(type, parts, selected, width, height, viewId, readOnly)
+    }
+
+    /**
+     * Extracts the ORDERED part identifiers carried by the pinned `status:`
+     * JSON `parts` array (kit/KitHelper.hpp fetchPartsData at revision
+     * 2333344185931274f9c49d6c12a408cefcef6844 concatenates one core
+     * `getPartInfo` object per part, index order 0..partscount-1, and the
+     * producer's own presentation frontend consumes exactly this list:
+     * `statusJSON.parts[i].part` is the page identifier used for every real
+     * `setclientpart` the viewer sends — ImpressTileLayer getPartFromIndex/
+     * getIndexFromPart/_onStatusMsg at the same revision).
+     *
+     * Only a TOP-LEVEL `"part":"<value>"` key of each entry is witnessed;
+     * keys or values that merely contain the substring "part"
+     * ("selectedpart", "partscount", "partdimensions", "partHasComments")
+     * never match, string contents (commas included) never split an entry,
+     * and an entry with no top-level witness yields a null PLACEHOLDER so a
+     * later entry can never shift into the requested index. Absent or
+     * structurally incomplete `parts` returns the witnesses actually proven
+     * (possibly empty) — fail-closed, never a guess.
+     *
+     * [statusPartWitness] exposes the SAME scan plus the one fact the
+     * complete-and-consistent ordinal proof needs: whether the parts array
+     * was parsed to its proven `]` end. An unfinished scan is honestly
+     * incomplete — never accepted as "enough identifiers seen so far".
+     */
+    fun parseStatusPartIdentifiers(payload: String): List<String?> =
+        statusPartWitness(payload).orderedIdentifiers
+
+    /** The ordered top-level `part` witnesses of one `status:` answer plus
+     * whether the parts ARRAY was proven CLOSED (`arrayClosed`). Only a
+     * closed scan can witness a COMPLETE ordered list; a truncated or
+     * structurally wrong one keeps its already-proven entries but is marked
+     * incomplete, so nothing downstream may treat it as the full part list. */
+    data class StatusPartWitness(
+        val orderedIdentifiers: List<String?>,
+        val arrayClosed: Boolean,
+    )
+
+    fun statusPartWitness(payload: String): StatusPartWitness {
+        val arrayOpen = Regex("\"parts\"\\s*:\\s*\\[").find(payload)?.range?.last
+            ?: return StatusPartWitness(emptyList(), false)
+        val ids = ArrayList<String?>()
+        var i = arrayOpen
+        val n = payload.length
+        var depth = 0 // brace depth relative to the parts array
+        var inString = false
+        var escaped = false
+        var entryId: String? = null
+        while (i < n) {
+            val c = payload[i]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inString = false
+                }
+                i += 1
+                continue
+            }
+            when {
+                c == '"' -> {
+                    if (depth == 1 && entryId == null) {
+                        entryId = PART_ID_KEY_REGEX.matchAt(payload, i)?.groupValues?.get(1)
+                            ?.ifEmpty { null }
+                    }
+                    inString = true
+                    i += 1
+                }
+                c == '{' -> {
+                    depth += 1
+                    i += 1
+                }
+                c == '}' -> {
+                    depth -= 1
+                    if (depth == 0) {
+                        ids.add(entryId)
+                        entryId = null
+                    } else if (depth < 0) {
+                        // structure proven wrong: keep only witnesses, honestly
+                        // marked NOT closed.
+                        return StatusPartWitness(ids, false)
+                    }
+                    i += 1
+                }
+                c == ']' && depth == 0 -> return StatusPartWitness(ids, true)
+                else -> i += 1
+            }
+        }
+        return StatusPartWitness(ids, false)
+    }
+
+    /** Top-level `part` key of one `parts` array entry (see above). */
+    private val PART_ID_KEY_REGEX = Regex("\"part\"\\s*:\\s*\"([^\"\\\\]*)\"")
+
+    /**
+     * Derives the LOGICAL 0-based ordinal witnessed for one selected/shown
+     * part by the SAME validated synchronous `status:` answer, keeping the
+     * native part identity itself byte-exact and separate. The ordinal is
+     * the bridge the downstream capture/verification lineage needs: the
+     * pinned producer names presentation/drawing pages ONLY by braced GUID
+     * (kit/KitHelper.hpp documentStatus/fetchPartsData at revision
+     * 2333344185931274f9c49d6c12a408cefcef6844), so ANY decimal re-parse
+     * of that identifier at the host boundary is NULL — the exact lineage
+     * gap that would make an otherwise-successful selectSlide refuse its
+     * saved OOXML verification ("captured logical part index required").
+     *
+     * Rules (fail-closed, never a guess):
+     *  - presentation/drawing: [witness] MUST be [statusPartWitness] and
+     *    [partsCount] the parsed `partscount` of this SAME answer, and the
+     *    identifier maps to its unique top-level position. Null (unwitnessed)
+     *    whenever: the parts array is absent, MALFORMED or STRUCTURALLY
+     *    UNFINISHED ([StatusPartWitness.arrayClosed] false — a partial scan
+     *    is NEVER qualified as complete just because it already yielded
+     *    "enough" identifiers), the selectedPart is absent or not the pinned
+     *    braced-GUID grammar, the identifier appears at two or more
+     *    positions (duplicate ambiguity), the answer carries no count, or
+     *    the COMPLETE ordered witness does not contain exactly one entry
+     *    (identifier OR null hole) per native partscount entry: a SHORT list
+     *    cannot prove uniqueness (an unseen later entry could repeat the
+     *    selected GUID) and an OVER-long list contradicts the same answer's
+     *    own count; an index at or beyond partscount likewise refuses.
+     *    A null hole keeps its position in a complete array — later pages
+     *    NEVER shift, and nothing is ever hashed into an index.
+     *  - spreadsheet/text: the documented decimal identifier IS the
+     *    ordinal (pinned documentStatus comment; the proven pre-repair
+     *    decimal behaviour, byte-identical here), null when unparseable.
+     *    The witness/partsCount inputs are deliberately NOT consulted for
+     *    this family — its identifier needs no parts list.
+     *  - any other family (including null/unknown type): null — never a
+     *    grammar guess.
+     */
+    fun statusPartOrdinal(
+        docType: String?,
+        selectedPart: String?,
+        witness: StatusPartWitness?,
+        partsCount: Int?,
+    ): Int? = when (docType) {
+        "presentation", "drawing" -> {
+            if (selectedPart == null || !isValidGuidPartId(selectedPart) ||
+                witness == null || !witness.arrayClosed
+            ) {
+                null
+            } else {
+                val ids = witness.orderedIdentifiers
+                var found = -1
+                var ambiguous = false
+                for (index in ids.indices) {
+                    if (ids[index] == selectedPart) {
+                        if (found >= 0) ambiguous = true
+                        found = index
+                    }
+                }
+                when {
+                    ambiguous || found < 0 -> null
+                    // The witness must be the COMPLETE ordered list of this
+                    // very answer, in exact agreement with its own count.
+                    partsCount == null -> null
+                    ids.size != partsCount -> null
+                    // Original out-of-range requirement kept explicit (the
+                    // two checks above make this unreachable today; it stays
+                    // as the stated family contract, never relaxed).
+                    found >= partsCount -> null
+                    else -> found
+                }
+            }
+        }
+        "spreadsheet", "text" ->
+            if (selectedPart != null && isValidPartId(selectedPart)) {
+                selectedPart.toIntOrNull()
+            } else {
+                null
+            }
+        else -> null
     }
 
     /**

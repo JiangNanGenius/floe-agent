@@ -388,6 +388,37 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore, AtomicInt
                 }
                 // Existing correct canonical workspace is reused as-is.
                 owningWorkspaceID = existingOwner
+                // Canonical convergence (2026-10-29): ownership can be
+                // pre-bound WITHOUT a task_policies row (terminal-first
+                // ensureWorkspace, keep promotion, workspace move). Without
+                // this row the policy read synthesizes a fresh Date() on
+                // every call, so run.policy.update's CAS stamp can never
+                // remain stable and every typed update is refused. The
+                // launch transaction materializes the canonical policy row
+                // from the launch draft policy — INSERT-if-absent INSIDE
+                // this same writer transaction; an existing row (approval
+                // mode, allowedToolNames, ceilings, file grants, stamps) is
+                // never touched.
+                try db.execute(
+                    sql: """
+                        INSERT INTO task_policies (
+                            conversation_id, approval_mode, recovery_policy,
+                            notification_policy, updated_at
+                        )
+                        SELECT ?, ?, ?, ?, ?
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM task_policies WHERE conversation_id = ?
+                        )
+                        """,
+                    arguments: [
+                        conversation.id.uuidString,
+                        request.initialPolicy.approvalMode.rawValue,
+                        request.initialPolicy.recoveryPolicy.rawValue,
+                        request.initialPolicy.notificationPolicy.rawValue,
+                        PersistenceCodec.encode(now),
+                        conversation.id.uuidString,
+                    ]
+                )
             } else if try createdConversation
                         || (request.activatesEmptyOrdinaryHeader
                             && eligibleEmptyOrdinaryHeader

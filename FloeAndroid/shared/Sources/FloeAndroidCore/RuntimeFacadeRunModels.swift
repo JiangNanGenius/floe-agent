@@ -1314,16 +1314,26 @@ public struct RunDomainReply: Sendable {
     }
 
     static func terminalResult(for error: RunDomainError) -> RuntimeCommandResult {
+        // The frozen App decode reads the typed domain code from
+        // detail["wire"] whenever the outer code is ordinaryRuntimeBlocked
+        // — the SAME contract the G02 binder (G02DomainBinder) already
+        // honours. The run domain's wireObject keys ("error"/"reason")
+        // otherwise mask every typed refusal behind the generic outer code.
+        // Carry the typed code under "wire" too; wireObject members stay
+        // untouched for diagnostics. No grammar, scope, or revision semantic
+        // change; this grants no authority — typed vocabulary only.
+        var detail = error.wireObject
+        detail["wire"] = error.code.rawValue
         switch error.code {
         case .notFound: return RuntimeCommandResult(kind: .rejected, code: .runRecordNotFound,
-                                                    detail: error.wireObject)
+                                                    detail: detail)
         case .staleRevision, .duplicateInFlight, .invalidState:
             return RuntimeCommandResult(kind: .rejected, code: .ordinaryRuntimeBlocked,
-                                        detail: error.wireObject)
+                                        detail: detail)
         case .persistenceUnavailable: return RuntimeCommandResult(kind: .failed, code: .storeOpenFailed,
-                                                                  detail: error.wireObject)
+                                                                  detail: detail)
         default: return RuntimeCommandResult(kind: .rejected, code: .ordinaryRuntimeBlocked,
-                                             detail: error.wireObject)
+                                             detail: detail)
         }
     }
 }

@@ -4,6 +4,9 @@
     <string name="office_viewer_readonly_cd">Read-only preview</string>
     <string name="office_viewer_opening">Opening document…</string>
     <string name="office_viewer_failed_title">Couldn\'t open this document</string>
+    <string name="office_approval_banner_title">Approval required</string>
+    <string name="office_approval_banner_body">Review it in the chat task</string>
+    <string name="office_approval_banner_review">Review</string>
     <string name="office_notice_save_unavailable">Preview only — saving and export aren\'t available yet.</string>
     <string name="office_notice_readonly_only">This document is open in preview; editing isn\'t available yet.</string>
     <string name="office_notice_link_blocked">Opening links from the document isn\'t available in preview.</string>

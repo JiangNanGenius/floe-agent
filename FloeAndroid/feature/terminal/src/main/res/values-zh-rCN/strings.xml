@@ -9,7 +9,10 @@
     <string name="terminal_fault">终端不可用：%1$s</string>
     <string name="terminal_engine_unqualified">Linux 运行环境尚未就绪。请打开运行环境设置，完成安装后再试。</string>
     <string name="terminal_not_ready">终端未启动</string>
-    <string name="terminal_workspace_mapping_pending">在此任务中发送一条消息即可完成工作区映射。请先发送消息，再重新打开终端。</string>
+    <string name="terminal_workspace_mapping_pending">打开终端以准备此工作区。</string>
+    <string name="terminal_workspace_preparing">正在准备工作区…</string>
+    <string name="terminal_workspace_prepare_action">准备并打开终端</string>
+    <string name="terminal_workspace_prepare_failed">工作区准备失败，请查看详情后重试。</string>
     <string name="terminal_not_persistent_hint">已停止的终端不会静默恢复；请使用“重置”开启新会话。</string>
     <string name="terminal_copy">复制</string>
     <string name="terminal_paste">粘贴</string>

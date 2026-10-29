@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,9 +49,11 @@ import com.floe.android.feature.conversation.ApprovalModeUi
 import com.floe.android.feature.conversation.FloeDraftAttachmentTray
 import com.floe.android.feature.providers.ReasoningEffortUi
 
+import kotlinx.coroutines.launch
+
 private enum class HomeDialog {
     NONE, TEMP_CHAT, VOICE, ATTACH, ATTACH_REFUSED, REASONING, REASONING_FAILED,
-    PROJECT, TARGET, PERMISSIONS, SEND_FAILED,
+    PROJECT, TARGET, PERMISSIONS, SEND_FAILED, FRESH_TASK_FAILED,
 }
 
 /**
@@ -71,6 +74,7 @@ fun HomeLaunchpadPage(
     runtimeHost: RuntimeHost? = null,
 ) {
     val colors = Floe.colors
+    val freshTaskUiScope = rememberCoroutineScope()
     var field by remember {
         mutableStateOf(TextFieldValue(HomeDraftTransfer.draft(FloeFoundation.draftStore)))
     }
@@ -189,6 +193,52 @@ fun HomeLaunchpadPage(
                 }
             } else null,
             actions = {
+                // G05-R3 first use: open a REAL ordinary task right now —
+                // no model, no provider, no run. The created task is the
+                // durable owner of the manual Linux terminal entry (its own
+                // Thread options → Terminal, the existing pane). Ordinary
+                // path only: a temporary session never gains this and keeps
+                // its RAM-only/public-web ceiling. The draft HANDS OFF into
+                // the created task exactly like the first send's handoff —
+                // it is NEVER sent; a blank tap opens an empty task. Without
+                // a host the refusal is stated honestly.
+                FloeCircleButton(
+                    icon = FloeIcons.NewTask,
+                    contentDescription = stringResource(R.string.new_task),
+                    onClick = {
+                        if (runtimeHost != null) {
+                            val text = field.text
+                            runtimeHost.home.createFreshTask(
+                                text = text,
+                                onDraftConsumed = { token, consumed ->
+                                    // Host callbacks arrive on Default. Recheck
+                                    // identity on this composition's UI scope;
+                                    // navigation and text edits then serialize
+                                    // with the field update, and disposal
+                                    // cancels a departed page's queued callback.
+                                    freshTaskUiScope.launch {
+                                        if (consumed &&
+                                            runtimeHost.home.isCurrentHome(token) &&
+                                            field.text == text
+                                        ) {
+                                            field = TextFieldValue("")
+                                        }
+                                    }
+                                },
+                                onFailure = { token, _ ->
+                                    freshTaskUiScope.launch {
+                                        if (runtimeHost.home.isCurrentHome(token)) {
+                                            dialog = HomeDialog.FRESH_TASK_FAILED
+                                        }
+                                    }
+                                },
+                            )
+                        } else {
+                            dialog = HomeDialog.FRESH_TASK_FAILED
+                        }
+                    },
+                    tint = colors.secondaryLabel,
+                )
                 // Temporary chat: with the runtime host a real temporary
                 // session starts and the shell navigates to it; otherwise the
                 // dialog states the lifecycle is absent, truthfully.
@@ -510,6 +560,12 @@ fun HomeLaunchpadPage(
         HomeDialog.SEND_FAILED -> FloeInfoDialog(
             title = stringResource(R.string.send_failed_title),
             message = stringResource(R.string.send_failed_message),
+            confirmLabel = stringResource(R.string.done),
+            onDismiss = { dialog = HomeDialog.NONE },
+        )
+        HomeDialog.FRESH_TASK_FAILED -> FloeInfoDialog(
+            title = stringResource(R.string.new_task),
+            message = stringResource(R.string.home_fresh_task_failed),
             confirmLabel = stringResource(R.string.done),
             onDismiss = { dialog = HomeDialog.NONE },
         )

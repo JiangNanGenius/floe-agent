@@ -11,6 +11,8 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         (application as FloeApplication).linuxSetup.onResume()
         (application as FloeApplication).reconcileForegroundOnResume()
+        // Cooldown-gated automatic update check + install/permission resume.
+        com.floe.android.host.update.AppUpdateFeature.onApplicationForeground()
         (application as FloeApplication).setActivityForeground(true)
     }
     override fun onPause() {

@@ -193,6 +193,12 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     /// One service-owned proof recheck for each settled dispatch; an
     /// unproven lease retains its exact ledger entry and registry token.
     private var releaseReconcileScheduled: Set<String> = []
+    /// G05-R3 exact operation IDs whose run-less terminal first-use receipt is
+    /// still owned. Registration happens BEFORE any binding/preflight await,
+    /// so an uncertain reply cannot create a mailbox-empty drain race. These
+    /// are lifecycle guards only: no global drain or readiness decision reads
+    /// them, and each ID clears only after its REAL conversation receipt ends.
+    private var firstEntryOwnershipIDs: Set<UUID> = []
 
     /// Internal for tests; production uses `.shared` (one per process).
     init() {}
@@ -360,12 +366,37 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         Task { for coordinator in coordinators { await coordinator.fenceEpoch(epoch: epoch) } }
     }
 
+    /// Marks one exact first-use operation receipt as physically owned BEFORE
+    /// its SQLite/host work starts. Idempotent by operation identity; internal
+    /// to the Core terminal domain, never a host/model API.
+    func retainFirstEntryOwnership(_ operationID: UUID) {
+        withState { _ = firstEntryOwnershipIDs.insert(operationID) }
+    }
+
+    /// Clears that guard only after the original operation mapping and real
+    /// conversation receipt ended. Idempotent, but never called on a waiter
+    /// timeout, generation fence, unknown ticket or premature table absence.
+    func releaseFirstEntryOwnership(_ operationID: UUID) {
+        withState { _ = firstEntryOwnershipIDs.remove(operationID) }
+    }
+
     /// Honest drain checkpoint for lifecycle gates (shutdown / generation
-    /// handover): true only when no transport receipt is live AND the
-    /// backend has no lease awaiting release proof.
+    /// handover): true only when no transport receipt is live, no run-less
+    /// first-use conversation receipt is retained, AND the backend has no
+    /// lease awaiting release proof. Keeping the pure observation mailbox
+    /// bound until these guards clear is what lets stop() cancel real IO,
+    /// observe its settlement, and only then fence the original channel.
     public func isDrained() async -> Bool {
-        let (components, hasWorkers) = withState { (componentsStorage, !ledgerIndex.isEmpty) }
-        guard !hasWorkers, !LinuxShellMailbox.shared.hasLiveTickets else { return false }
+        await isDrained(mailbox: .shared)
+    }
+
+    /// Internal injectable mailbox for focused regressions; production uses
+    /// the ORIGINAL shared mailbox through the public overload above.
+    func isDrained(mailbox: LinuxShellMailbox) async -> Bool {
+        let (components, hasWorkers, hasFirstEntryOwnership) = withState {
+            (componentsStorage, !ledgerIndex.isEmpty, !firstEntryOwnershipIDs.isEmpty)
+        }
+        guard !hasWorkers, !hasFirstEntryOwnership, !mailbox.hasLiveTickets else { return false }
         guard let components else { return true }
         let owned = await components.backend.ownedSessions()
         let slotBusy = await components.backend.isEngineSlotBusy()
