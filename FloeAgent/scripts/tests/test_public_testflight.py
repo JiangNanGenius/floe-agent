@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -115,6 +116,32 @@ def app_info_localization(locale, privacy_policy_url=None):
 def version_localization(locale, support_url=None):
     return {'type': 'appStoreVersionLocalizations', 'id': 'avl-' + locale,
             'attributes': {'locale': locale, 'supportUrl': support_url}}
+
+
+class JsonResponse:
+    """Minimal urlopen response double for transport-level tests."""
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self):
+        return self.payload
+
+
+def asc_http_error(status, *, code='UNEXPECTED_ERROR', detail='raw server detail', pointer=None):
+    body = {'errors': [{'status': str(status), 'code': code, 'title': 'server error',
+                        'detail': detail}]}
+    if pointer:
+        body['errors'][0]['source'] = {'pointer': pointer}
+    return urllib.error.HTTPError(
+        'https://api.appstoreconnect.apple.com/v1/builds', status, 'Server Error', {},
+        io.BytesIO(json.dumps(body).encode()))
 
 
 class FakeASC:
@@ -486,6 +513,28 @@ class PublicTestFlightTests(unittest.TestCase):
         evidence = pt.source_evidence(repo, 'v1.7.0', sha, 'org.floeagent.ios', '1.7.0', '241')
         self.assertTrue(evidence['verified'])
 
+    def test_source_evidence_reads_the_frozen_tag_after_head_advances(self):
+        # The metadata workflow is dispatched at a newer main/packaging-policy
+        # commit while the tag/source inputs stay frozen on the product commit.
+        # source_evidence must read the tag/source commit, not the dispatch HEAD.
+        repo, sha = make_source_repo(Path(self.tmp.name) / 'advanced-head-src')
+        env = dict(os.environ)
+        env.update({
+            'GIT_AUTHOR_NAME': 'test', 'GIT_AUTHOR_EMAIL': 'test@example.com',
+            'GIT_COMMITTER_NAME': 'test', 'GIT_COMMITTER_EMAIL': 'test@example.com',
+        })
+        (repo / 'packaging-policy.txt').write_text('newer packaging policy\n')
+        subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True, env=env)
+        subprocess.run(['git', '-C', str(repo), 'commit', '-qm', 'packaging policy'],
+                       check=True, env=env)
+        head = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'],
+                                       text=True).strip()
+        self.assertNotEqual(head, sha)
+        evidence = pt.source_evidence(repo, 'v1.7.0', sha, 'org.floeagent.ios', '1.7.0', '241')
+        self.assertTrue(evidence['verified'])
+        self.assertEqual(evidence['tagCommit'], sha)
+        self.assertEqual(evidence['sourceSha'], sha)
+
     def test_source_mismatch_blocks_submit_without_writes(self):
         fake = FakeASC()
         with self.assertRaises(ValueError):
@@ -503,6 +552,28 @@ class PublicTestFlightTests(unittest.TestCase):
                 self.assertFalse(result['ok'])
                 with self.assertRaises(ValueError):
                     self.submit(fake)
+                self.assert_no_writes(fake)
+
+    def test_preflight_get_failure_at_observed_paths_performs_no_write(self):
+        # The two observed 304 failures were GETs inside collect_context. Both
+        # happen before the first write, so a preflight transport failure must
+        # leave every non-GET call untouched.
+        class Failing(FakeASC):
+            def __init__(self, fail_prefix):
+                super().__init__()
+                self.fail_prefix = fail_prefix
+
+            def call(self, method, path, body=None):
+                if method == 'GET' and path.startswith(self.fail_prefix):
+                    raise pt.ApiError('GET', path, 500, 'UNEXPECTED_ERROR', attempts=3)
+                return super().call(method, path, body)
+
+        for prefix in ('/v1/builds?', '/v1/betaBuildLocalizations?'):
+            with self.subTest(path=prefix):
+                fake = Failing(prefix)
+                with self.assertRaises(pt.ApiError):
+                    self.submit(fake)
+                self.assertTrue(fake.calls)
                 self.assert_no_writes(fake)
 
     # -- submit happy path -------------------------------------------------
@@ -961,6 +1032,127 @@ class PublicTestFlightTests(unittest.TestCase):
         self.assertNotIn(secret, message)
         self.assertNotIn('raw response', message)
 
+    def test_get_retries_transient_status_then_succeeds(self):
+        responses = [
+            asc_http_error(500),
+            asc_http_error(503),
+            JsonResponse(json.dumps({'data': []}).encode()),
+        ]
+        sleeps = []
+        with mock.patch.dict(os.environ, {'ASC_TOKEN': 'test-token'}):
+            with mock.patch.object(pt.urllib.request, 'urlopen', side_effect=responses) as urlopen:
+                result = pt.api('GET', '/v1/builds', sleep=sleeps.append)
+        self.assertEqual(result, {'data': []})
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual(sleeps, list(pt.GET_RETRY_BACKOFF_SECONDS))
+        self.assertTrue(all(0 < delay <= 1.0 for delay in sleeps))
+
+    def test_get_retry_exhaustion_is_bounded_and_sanitized(self):
+        secret = 'do-not-echo-this-response-body'
+        errors = [asc_http_error(502, detail=secret) for _ in range(pt.MAX_GET_ATTEMPTS + 2)]
+        sleeps = []
+        with mock.patch.dict(os.environ, {'ASC_TOKEN': 'test-token'}):
+            with mock.patch.object(pt.urllib.request, 'urlopen', side_effect=errors) as urlopen:
+                with self.assertRaises(pt.ApiError) as caught:
+                    pt.api('GET', '/v1/builds?filter[x]=1', sleep=sleeps.append)
+        self.assertEqual(urlopen.call_count, pt.MAX_GET_ATTEMPTS)
+        error = caught.exception
+        self.assertEqual(error.status, 502)
+        self.assertEqual(error.code, 'UNEXPECTED_ERROR')
+        self.assertEqual(error.attempts, pt.MAX_GET_ATTEMPTS)
+        message = str(error)
+        self.assertIn('HTTP 502', message)
+        self.assertIn(f'after {pt.MAX_GET_ATTEMPTS} attempts', message)
+        self.assertNotIn(secret, message)
+        self.assertNotIn('test-token', message)
+        self.assertEqual(sleeps, list(pt.GET_RETRY_BACKOFF_SECONDS))
+
+    def test_get_auth_and_client_errors_are_never_retried(self):
+        for status, code in ((401, 'NOT_AUTHORIZED'), (403, 'FORBIDDEN'), (400, 'PARAMETER_ERROR')):
+            with self.subTest(status=status):
+                sleeps = []
+                with mock.patch.dict(os.environ, {'ASC_TOKEN': 'test-token'}):
+                    with mock.patch.object(pt.urllib.request, 'urlopen',
+                                           side_effect=[asc_http_error(status, code=code)]) as urlopen:
+                        with self.assertRaises(pt.ApiError) as caught:
+                            pt.api('GET', '/v1/builds', sleep=sleeps.append)
+                self.assertEqual(urlopen.call_count, 1)
+                self.assertEqual(sleeps, [])
+                self.assertEqual(caught.exception.status, status)
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(caught.exception.attempts, 1)
+
+    def test_non_get_requests_never_retry_transient_status_or_timeout(self):
+        cases = [
+            ('POST', asc_http_error(503), '/v1/betaAppReviewSubmissions'),
+            ('PATCH', asc_http_error(500), '/v1/betaAppReviewDetails/bad-1'),
+            ('POST', TimeoutError('timed out'), '/v1/betaAppReviewSubmissions'),
+            ('PATCH', socket.timeout('timed out'), '/v1/betaAppReviewDetails/bad-1'),
+            ('PATCH', urllib.error.URLError(TimeoutError('timed out')), '/v1/betaAppReviewDetails/bad-1'),
+            ('PATCH', urllib.error.URLError(socket.timeout('timed out')), '/v1/betaAppReviewDetails/bad-1'),
+        ]
+        for method, failure, path in cases:
+            with self.subTest(method=method, failure=type(failure).__name__):
+                sleeps = []
+                with mock.patch.dict(os.environ, {'ASC_TOKEN': 'test-token'}):
+                    with mock.patch.object(pt.urllib.request, 'urlopen',
+                                           side_effect=[failure, JsonResponse(b'{}')]) as urlopen:
+                        with self.assertRaises(pt.ApiError) as caught:
+                            pt.api(method, path, {'data': {}}, sleep=sleeps.append)
+                self.assertEqual(urlopen.call_count, 1)
+                self.assertEqual(sleeps, [])
+                self.assertEqual(caught.exception.attempts, 1)
+
+    def test_get_read_timeout_is_retried_and_bounded(self):
+        class TimeoutResponse(JsonResponse):
+            def read(self):
+                raise TimeoutError('read timed out')
+
+        for failure in (TimeoutResponse(b''), TimeoutError('connect timed out'),
+                        socket.timeout('connect timed out'),
+                        urllib.error.URLError(TimeoutError('connect timed out')),
+                        urllib.error.URLError(socket.timeout('connect timed out'))):
+            with self.subTest(failure=type(failure).__name__):
+                sleeps = []
+                with mock.patch.dict(os.environ, {'ASC_TOKEN': 'test-token'}):
+                    with mock.patch.object(pt.urllib.request, 'urlopen',
+                                           side_effect=[failure, JsonResponse(b'{"data": []}')]) as urlopen:
+                        result = pt.api('GET', '/v1/builds', sleep=sleeps.append)
+                self.assertEqual(result, {'data': []})
+                self.assertEqual(urlopen.call_count, 2)
+                self.assertEqual(sleeps, [pt.GET_RETRY_BACKOFF_SECONDS[0]])
+
+    def test_get_timeout_exhaustion_is_bounded_and_sanitized(self):
+        sleeps = []
+        failures = [TimeoutError('read timed out') for _ in range(pt.MAX_GET_ATTEMPTS + 1)]
+        with mock.patch.dict(os.environ, {'ASC_TOKEN': 'secret-token-value'}):
+            with mock.patch.object(pt.urllib.request, 'urlopen', side_effect=failures) as urlopen:
+                with self.assertRaises(pt.ApiError) as caught:
+                    pt.api('GET', '/v1/builds', sleep=sleeps.append)
+        self.assertEqual(urlopen.call_count, pt.MAX_GET_ATTEMPTS)
+        message = str(caught.exception)
+        self.assertEqual(caught.exception.status, 0)
+        self.assertEqual(caught.exception.code, 'TRANSPORT')
+        self.assertEqual(caught.exception.attempts, pt.MAX_GET_ATTEMPTS)
+        self.assertIn('code=TRANSPORT', message)
+        self.assertIn(f'after {pt.MAX_GET_ATTEMPTS} attempts', message)
+        self.assertNotIn('timed out', message)
+        self.assertNotIn('secret-token-value', message)
+        self.assertEqual(sleeps, list(pt.GET_RETRY_BACKOFF_SECONDS))
+
+    def test_get_malformed_json_is_not_retried(self):
+        sleeps = []
+        with mock.patch.dict(os.environ, {'ASC_TOKEN': 'test-token'}):
+            with mock.patch.object(
+                    pt.urllib.request, 'urlopen',
+                    side_effect=[JsonResponse(b'not-json'),
+                                 JsonResponse(b'{"data": []}')]) as urlopen:
+                with self.assertRaises(ValueError) as caught:
+                    pt.api('GET', '/v1/builds', sleep=sleeps.append)
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(sleeps, [])
+        self.assertNotIsInstance(caught.exception, pt.ApiError)
+
     def test_pagination_walks_pages_and_rejects_foreign_host(self):
         pages = {
             '/v1/betaGroups?page=1': {'data': [{'id': '1'}], 'links': {'next': pt.BASE + '/v1/betaGroups?page=2'}},
@@ -1103,6 +1295,18 @@ class PublicTestFlightTests(unittest.TestCase):
         self.assertIn("parser.add_argument('--operation', choices=('inspect', 'submit'), default='inspect'", helper)
         for flag in ('--confirm-submit', '--enable-public-link', '--allow-resubmit-rejected', '--review-notes'):
             self.assertIn(flag, helper)
+
+    def test_workflow_dispatch_ref_is_not_bound_to_the_frozen_source_commit(self):
+        # The workflow may be dispatched at a newer main packaging-policy
+        # commit: it must validate the frozen tag input, not require the
+        # dispatch HEAD to equal source_sha.
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        step = next(item for item in workflow['jobs']['public-testflight']['steps']
+                    if item.get('name') == 'Validate inputs and immutable tag before any credential use')
+        script = step['run']
+        self.assertIn('git rev-parse --verify "$TAG^{commit}"', script)
+        self.assertNotIn('rev-parse HEAD', script)
+        self.assertNotIn('git rev-parse HEAD', WORKFLOW.read_text())
 
     # -- explicit demoAccountRequired control ------------------------------
     def test_inspect_demo_required_false_reports_pending_write_without_writing(self):

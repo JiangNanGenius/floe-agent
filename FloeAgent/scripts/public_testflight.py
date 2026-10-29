@@ -54,6 +54,10 @@ Safety properties:
     only ever targets the already matched existing external group. An enabled
     link is reported only as the real read-back URL (``publicLink`` or a URL
     derived from ``publicLinkId``), never as an ``enabled`` placeholder.
+  * Only idempotent GETs may retry: at most 3 attempts with a short bounded
+    backoff, and only for HTTP 500/502/503/504 or a transport read timeout.
+    Every non-GET request, auth/client error and malformed response fails on
+    the first response without a retry.
   * Raw API response text is never echoed. Failures keep Apple's status and
     error ``code`` plus an optional field pointer; ``title``/``detail`` (which
     can echo user data) are dropped. Contact values and feedback addresses are
@@ -66,8 +70,10 @@ import argparse
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -82,6 +88,15 @@ MAX_TEXT = 4000
 # (BetaAppReviewDetail.Attributes, App Store Connect API; publicdocs evidence in
 # Local/Private/build241/public-beta/apple-docs/).
 MAX_REVIEW_NOTES = 4000
+
+# App Store Connect occasionally answers an otherwise valid read-only GET with
+# a transient 5xx (observed: 500 UNEXPECTED_ERROR on /v1/builds and
+# /v1/betaBuildLocalizations) or a read timeout before any mutation. Repeating
+# the same idempotent GET is safe; every other method/status/response does not
+# retry so a write, auth failure or malformed payload still fails closed.
+MAX_GET_ATTEMPTS = 3
+RETRYABLE_GET_STATUSES = frozenset((500, 502, 503, 504))
+GET_RETRY_BACKOFF_SECONDS = (0.5, 1.0)
 
 # Markers that prove a review-notes draft was not replaced by final product
 # text. Matching is intentionally conservative: a false positive only refuses a
@@ -131,24 +146,51 @@ BETA_APP_LOCALIZATION_FIELDS = ('description', 'feedbackEmail', 'marketingUrl', 
 class ApiError(RuntimeError):
     """Sanitized App Store Connect transport error.
 
-    Only the HTTP status, Apple error ``code`` and an optional JSON:API field
-    pointer are retained; ``title``/``detail`` may echo submitted content and
-    are deliberately not included.
+    Only the HTTP status, Apple error ``code``, an optional JSON:API field
+    pointer and the bounded attempt count are retained; ``title``/``detail``
+    may echo submitted content and are deliberately not included.
     """
 
-    def __init__(self, method, path, status, code='UNKNOWN', pointer=None):
+    def __init__(self, method, path, status, code='UNKNOWN', pointer=None, attempts=1):
         self.method = method
         self.path = path
         self.status = status
         self.code = code
         self.pointer = pointer
+        self.attempts = attempts
         message = f'App Store Connect {method} {path.split("?", 1)[0]} failed with HTTP {status} code={code}'
         if pointer:
             message += f' field={pointer}'
+        if attempts > 1:
+            message += f' after {attempts} attempts'
         super().__init__(message)
 
 
-def api(method, path, body=None):
+def _timeout_error(error):
+    """True only for a transport timeout; auth and client errors stay fatal."""
+    if isinstance(error, (TimeoutError, socket.timeout)):
+        return True
+    return (isinstance(error, urllib.error.URLError)
+            and isinstance(error.reason, (TimeoutError, socket.timeout)))
+
+
+def _error_details(error):
+    """Read only Apple's machine code and field pointer; never body text."""
+    code, pointer = 'UNKNOWN', None
+    try:
+        payload = json.loads(error.read() or b'{}')
+        errors = payload.get('errors') or []
+        if errors:
+            # Apple machine codes and field pointers are safe; the
+            # human-readable title/detail are not echoed on purpose.
+            code = str(errors[0].get('code') or 'UNKNOWN')
+            pointer = (errors[0].get('source') or {}).get('pointer')
+    except (AttributeError, KeyError, ValueError, TypeError, OSError):
+        pass
+    return code, pointer
+
+
+def api(method, path, body=None, *, sleep=time.sleep):
     if not path.startswith('/v1/'):
         raise ValueError('Unexpected API path')
     token = os.environ.get('ASC_TOKEN', '').strip()
@@ -160,25 +202,34 @@ def api(method, path, body=None):
         headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'},
         data=None if body is None else json.dumps(body).encode(),
     )
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            data = response.read()
-            return json.loads(data) if data else {}
-    except urllib.error.HTTPError as error:
-        code, pointer = 'UNKNOWN', None
+    # A write that timed out may already have been applied, so only idempotent
+    # GETs are ever repeated; every other method gets exactly one attempt.
+    allowed_attempts = MAX_GET_ATTEMPTS if method == 'GET' else 1
+    attempt = 0
+    while True:
+        attempt += 1
         try:
-            payload = json.loads(error.read() or b'{}')
-            errors = payload.get('errors') or []
-            if errors:
-                # Apple machine codes and field pointers are safe; the
-                # human-readable title/detail are not echoed on purpose.
-                code = str(errors[0].get('code') or 'UNKNOWN')
-                pointer = (errors[0].get('source') or {}).get('pointer')
-        except (ValueError, TypeError):
-            pass
-        raise ApiError(method, path, error.code, code, pointer) from None
-    except urllib.error.URLError:
-        raise ApiError(method, path, 0, 'TRANSPORT') from None
+            with urllib.request.urlopen(request, timeout=60) as response:
+                data = response.read()
+                return json.loads(data) if data else {}
+        except urllib.error.HTTPError as error:
+            if (method == 'GET' and error.code in RETRYABLE_GET_STATUSES
+                    and attempt < allowed_attempts):
+                sleep(GET_RETRY_BACKOFF_SECONDS[attempt - 1])
+                continue
+            code, pointer = _error_details(error)
+            raise ApiError(method, path, error.code, code, pointer, attempts=attempt) from None
+        except (TimeoutError, socket.timeout):
+            # A read timeout may surface directly from response.read().
+            if method == 'GET' and attempt < allowed_attempts:
+                sleep(GET_RETRY_BACKOFF_SECONDS[attempt - 1])
+                continue
+            raise ApiError(method, path, 0, 'TRANSPORT', attempts=attempt) from None
+        except urllib.error.URLError as error:
+            if method == 'GET' and _timeout_error(error) and attempt < allowed_attempts:
+                sleep(GET_RETRY_BACKOFF_SECONDS[attempt - 1])
+                continue
+            raise ApiError(method, path, 0, 'TRANSPORT', attempts=attempt) from None
 
 
 def paged(path, call=api):
