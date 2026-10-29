@@ -120,6 +120,21 @@ final class ProviderCatalogPickerUITests: XCTestCase {
         return identified.exists ? identified : app.searchFields.firstMatch
     }
 
+    /// The unfiltered catalog also virtualizes rows. Keep the search empty
+    /// while revealing the final manual preset inside the picker itself.
+    private func revealCatalogRow(_ row: XCUIElement, in app: XCUIApplication) {
+        let list = app.collectionViews["providers.catalog.search"]
+        XCTAssertTrue(list.waitForExistence(timeout: 6))
+        let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+        let end = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+        for _ in 0..<16 {
+            if row.exists && row.isHittable { return }
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+        XCTAssertTrue(row.exists && row.isHittable,
+                      "the unfiltered catalog row must be reachable by scrolling")
+    }
+
     /// The provider form's own scroll surface. `Form` renders as a
     /// `UICollectionView`; scope it by the form's display-name field so the
     /// settings/sidebar collection views behind the sheet are never
@@ -286,10 +301,12 @@ final class ProviderCatalogPickerUITests: XCTestCase {
         XCTAssertTrue(name.exists, "provider form must stay mounted behind the picker")
         // The same selector offers every built-in preset, including the
         // explicit manual/custom choice — with no query at all.
-        XCTAssertTrue(app.buttons["providers.supplier.preset.custom"].waitForExistence(timeout: 6),
-                      "built-in manual/custom choice missing from the unified selector")
         XCTAssertTrue(app.buttons["providers.supplier.preset.openAI"].exists,
                       "built-in OpenAI preset missing from the unified selector")
+        let custom = app.buttons["providers.supplier.preset.custom"]
+        revealCatalogRow(custom, in: app)
+        XCTAssertTrue(custom.exists,
+                      "built-in manual/custom choice missing from the unified selector")
         attach(app, "02-embedded-picker-open")
 
         // Local alias search narrows the list and marks the alias.
