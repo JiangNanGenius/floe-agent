@@ -261,6 +261,27 @@ internal class G04TerminalHostController(
         val epoch: Long,
         val previousToken: String?,
     )
+
+    /** requestID -> the interactive `attachOrOpen` that submitted it. The
+     * accepted UI terminal's token is bound by the actionReply itself, BEFORE
+     * native's first output / running status events (which follow the reply
+     * in mailbox order) and before the deferred open coroutine resumes. The
+     * same ordering gap the Run lane closed on 2026-10-25 otherwise drops
+     * the first output page and leaves the pane key's snapshot at its
+     * STARTING seed while the terminal is actually live. An intent is
+     * consumed by its exact actionReply and cleared by the submitting call's
+     * refusal/timeout/fence; a late reply never binds. */
+    private val pendingInteractiveOpens = ConcurrentHashMap<String, PendingInteractiveOpen>()
+
+    /** One interactive-open intent: the conversation key, the admitted Root
+     * generation and the binding captured before dispatch (the CAS
+     * predecessor). */
+    private data class PendingInteractiveOpen(
+        val conversationID: String,
+        val epoch: Long,
+        val previousToken: String?,
+    )
+
     private val outputListeners = ConcurrentHashMap<String, MutableSet<(ByteArray) -> Unit>>() // token -> listeners
     private val engines = ConcurrentHashMap<String, G04TerminalEngine>()
     private val snapshots = ConcurrentHashMap<String, TerminalSessionSnapshot>()
@@ -442,10 +463,11 @@ internal class G04TerminalHostController(
         val pendingCompletions = completions.values.toList()
         completions.clear()
         pendingCompletions.forEach { it.complete(null) }
-        // Run-open intents never survive a fence: an actionReply arriving
-        // after this point can no longer claim an owned binding (the same
-        // honest local-waiter refusal the replies/completions get).
+        // Run-open and interactive-open intents never survive a fence: an
+        // actionReply arriving after this point can no longer claim an owned
+        // binding (the same honest local-waiter refusal the replies get).
         pendingRunOpens.clear()
+        pendingInteractiveOpens.clear()
         availability = availability.copy(bound = false, capabilitiesKnown = false)
     }
 
@@ -807,18 +829,40 @@ internal class G04TerminalHostController(
             return snapshots[conversationID]
         }
         val openingEpoch = boundEpoch
+        val previousToken = token
         val requestID = UUID.randomUUID().toString()
-        val reply = submit(buildJsonObject {
-            put("action", "terminalOpen")
-            put("conversationID", conversationID)
-            workspaceID?.let { put("workspaceID", it) }
-            put("columns", columns); put("rows", rows); put("requestID", requestID)
-        }, timeoutMillis = 165_000)
+        // Register the intent BEFORE dispatch: the reply handler binds the
+        // accepted token synchronously, so native's following output/status
+        // events are never processed against a missing pane binding.
+        pendingInteractiveOpens[requestID] =
+            PendingInteractiveOpen(conversationID, openingEpoch, previousToken)
+        val reply = try {
+            submit(buildJsonObject {
+                put("action", "terminalOpen")
+                put("conversationID", conversationID)
+                workspaceID?.let { put("workspaceID", it) }
+                put("columns", columns); put("rows", rows); put("requestID", requestID)
+            }, timeoutMillis = 165_000)
+        } finally {
+            // Consumed by the exact accepted reply; a refusal/timeout/fence
+            // must leave no late-binding intent behind.
+            pendingInteractiveOpens.remove(requestID)
+        }
         if (boundEpoch != openingEpoch || (openingEpoch != 0L && stopped.get())) return null
         if (reply is TerminalActionReply.Success) {
             val newToken = reply.fields["sessionToken"]?.jsonPrimitive?.contentOrNull
             if (newToken != null) {
-                sessionTokens[conversationID] = newToken
+                val current = sessionTokens[conversationID]
+                if (current == null || current == previousToken) {
+                    sessionTokens[conversationID] = newToken
+                }
+                if (sessionTokens[conversationID] != newToken) {
+                    // A newer open/reset/stop moved this conversation's
+                    // binding while this reply was in flight: the reply
+                    // handler already fenced it. Never overwrite the newer
+                    // session's authoritative projection with this stale one.
+                    return snapshots[conversationID]
+                }
                 // A fresh session bound: the previous generation's typed
                 // input refusals no longer describe the live truth.
                 clearInputIssue(conversationID)
@@ -827,12 +871,18 @@ internal class G04TerminalHostController(
                 // authoritative phase (never a silent fake "running").
                 // A stale snapshot of the PREVIOUS token must not survive a
                 // fresh open: replace it, but never downgrade the NEW
-                // token's already-arrived authoritative status.
+                // token's already-arrived authoritative status — including
+                // the case where that status was published under the native
+                // `UUID.uuidString` spelling before this coroutine resumed.
                 val existing = snapshots[conversationID]
                 if (existing == null || existing.sessionToken != newToken) {
-                    snapshots[conversationID] = TerminalSessionSnapshot(
-                        conversationID, newToken, TerminalSessionPhase.STARTING, "interactive", "",
-                        null, null, null, 0)
+                    if (snapshots.values.any { it.sessionToken == newToken }) {
+                        adoptSnapshotForToken(conversationID, newToken)
+                    } else {
+                        snapshots[conversationID] = TerminalSessionSnapshot(
+                            conversationID, newToken, TerminalSessionPhase.STARTING, "interactive", "",
+                            null, null, null, 0)
+                    }
                 }
                 // Completing the open reply schedules this coroutine separately
                 // from the mailbox reader. RUNNING status may already have been
@@ -1163,6 +1213,76 @@ internal class G04TerminalHostController(
         }
     }
 
+    /** Binds an accepted UI (interactive) `attachOrOpen` token at the
+     * actionReply event itself, before the waiter resumes and before native's
+     * following `terminalOutput` / `terminalStatus` events are consumed. This
+     * is the same ordering contract [bindRunOpenReply] already enforces for
+     * Run sessions: the token enters [sessionTokens] only for the exact
+     * admitted Root generation and only while this conversation's binding has
+     * not moved (per-conversation CAS against the predecessor captured at
+     * registration). A late/refused/fenced reply never binds.
+     *
+     * It seeds NO phase: the authoritative `terminalStatus` event stays the
+     * only source of RUNNING/WAITING/EXITED. It only makes the pane key's
+     * token visible so output ownership and the status projection can use the
+     * SAME key the pane/engine already use. */
+    private fun bindInteractiveOpenReply(intent: PendingInteractiveOpen, sessionToken: String?) {
+        if (sessionToken.isNullOrEmpty()) return
+        if (intent.epoch == 0L || stopped.get() || boundEpoch != intent.epoch ||
+            currentNativeEpoch() != intent.epoch) {
+            return
+        }
+        var claimed = false
+        sessionTokens.compute(intent.conversationID) { _, current ->
+            if (current != intent.previousToken && current != sessionToken) {
+                // A newer open/reset/stop moved this conversation's binding
+                // while this reply was in flight: fence the stale reply.
+                current
+            } else {
+                claimed = true
+                sessionToken
+            }
+        }
+        if (!claimed) return
+        // The service-owned engine must exist at the binding boundary: the
+        // first output page follows the reply in mailbox order and must reach
+        // the real conversation engine even before any pane re-composition.
+        engineEnsurer(intent.conversationID)
+        clearInputIssue(intent.conversationID)
+        // An authoritative status that arrived before this reply was handled
+        // (out-of-order event, never reordered here) belongs to the same
+        // token; project it onto the bound key instead of leaving a STARTING
+        // seed to overwrite it later.
+        adoptSnapshotForToken(intent.conversationID, sessionToken)
+    }
+
+    /** Projects one authoritative native snapshot onto the conversation key
+     * THIS host actually bound, using the exact session token as the ONLY
+     * identity. Native events carry `UUID.uuidString` (canonical uppercase);
+     * the App route/holder may retain another spelling of the same UUID, and
+     * the first status can arrive before the deferred open coroutine seeds the
+     * pane key. The session token is already the ownership key both sides use
+     * for output delivery, so this re-keys the SAME phase/fault/exit metadata
+     * — it never infers RUNNING from output and never adopts a different
+     * session. A snapshot already under the bound key is left untouched when
+     * it is the same token (the caller only invokes this while seeding). */
+    private fun adoptSnapshotForToken(conversationID: String, sessionToken: String) {
+        // Never downgrade an already-authoritative snapshot this pane key
+        // holds for the same token (a status projection may already be newer
+        // than the event-key copy this adoption was asked to mirror). A bare
+        // STARTING seed is not authoritative and may be replaced.
+        val byKey = snapshots[conversationID]
+        if (byKey != null && byKey.sessionToken == sessionToken &&
+            byKey.phase != TerminalSessionPhase.STARTING) return
+        val candidates = snapshots.values.filter { it.sessionToken == sessionToken }
+        val authoritative = candidates.firstOrNull { it.phase != TerminalSessionPhase.STARTING }
+            ?: candidates.firstOrNull()
+            ?: return
+        val projected = authoritative.copy(conversationID = conversationID)
+        snapshots[conversationID] = projected
+        sessionWatchers[conversationID]?.forEach { it(projected) }
+    }
+
     /** True once the conversation's projected session is actually settled:
      * no snapshot at all, or a phase that is not live (CLOSED/EXITED/
      * STOPPED/FAULT). `terminalClose` answers before native settlement, so
@@ -1395,6 +1515,33 @@ internal class G04TerminalHostController(
                 if (snapshot.sessionToken.isNotEmpty()) {
                     if (snapshot.conversationID.isNotEmpty()) {
                         snapshots[snapshot.conversationID] = snapshot
+                        // Native names this event with `UUID.uuidString`
+                        // (canonical uppercase). The App route/holder key is
+                        // the identity that owns [sessionTokens] and the
+                        // pane/engine, and it may retain the original
+                        // spelling of the SAME UUID. The session token is the
+                        // ownership key both sides already use for output, so
+                        // project this SAME authoritative snapshot (phase,
+                        // fault, exit — never inferred from output) onto the
+                        // bound key and notify its watchers. Exact token +
+                        // live generation only; a different/absent binding is
+                        // left alone.
+                        val boundKeys = buildSet {
+                            sessionTokens.entries.forEach {
+                                if (it.value == snapshot.sessionToken) add(it.key)
+                            }
+                            snapshots.entries.forEach {
+                                if (it.value.sessionToken == snapshot.sessionToken) add(it.key)
+                            }
+                        }
+                        if (boundEpoch != 0L && currentNativeEpoch() == boundEpoch) {
+                            for (key in boundKeys) {
+                                if (key == snapshot.conversationID) continue
+                                val projected = snapshot.copy(conversationID = key)
+                                snapshots[key] = projected
+                                sessionWatchers[key]?.forEach { it(projected) }
+                            }
+                        }
                         if (snapshot.phase == TerminalSessionPhase.CLOSED) {
                             // Retirement is ORDERED after accepted output: the
                             // reader admits terminalOutput pages onto the same
@@ -1422,7 +1569,15 @@ internal class G04TerminalHostController(
                                     currentNativeEpoch() != retirementEpoch) {
                                     return@launch
                                 }
-                                sessionTokens.remove(snapshot.conversationID, snapshot.sessionToken)
+                                // Retire every key that actually maps this
+                                // session by the exact token CAS (the App's
+                                // original key included), so a replacement
+                                // session is never erased.
+                                sessionTokens.entries
+                                    .filter { it.value == snapshot.sessionToken }
+                                    .forEach { (key, _) ->
+                                        sessionTokens.remove(key, snapshot.sessionToken)
+                                    }
                             }
                         }
                     }
@@ -1451,7 +1606,16 @@ internal class G04TerminalHostController(
                 // SYNCHRONOUSLY here — before the waiter resumes and before
                 // native's subsequent terminalOutput/terminalStatus events
                 // reach this reader loop. A refused reply never binds
-                // (never fabricated).
+                // (never fabricated). The interactive `attachOrOpen` lane
+                // uses the same rule: its accepted token is bound here,
+                // before the deferred open coroutine resumes, so native's
+                // first output/status events already see the pane binding.
+                pendingInteractiveOpens.remove(requestID)?.let { intent ->
+                    if (ok && future != null) {
+                        bindInteractiveOpenReply(intent,
+                            descriptor["sessionToken"]?.jsonPrimitive?.contentOrNull)
+                    }
+                }
                 pendingRunOpens.remove(requestID)?.let { intent ->
                     if (ok && future != null) {
                         bindRunOpenReply(intent, descriptor["sessionToken"]?.jsonPrimitive?.contentOrNull)

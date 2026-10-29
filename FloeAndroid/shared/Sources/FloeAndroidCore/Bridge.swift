@@ -28,7 +28,8 @@ public enum AndroidBridge {
         // version fails closed. v1 and v2 behavior is unchanged.
         let requestVersion = request["version"] as? Int
         guard requestVersion == version || requestVersion == BridgeV2.version
-                || requestVersion == BridgeV3.version else {
+                || requestVersion == BridgeV3.version
+                || requestVersion == BridgeV4.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -38,6 +39,20 @@ public enum AndroidBridge {
         if requestVersion == BridgeV3.version {
             return response(BridgeV3.handle(request: request, requestID: requestID),
                             stampVersion: BridgeV3.version)
+        }
+        if requestVersion == BridgeV4.version {
+            // Additive G06 Notes channel: same C ABI, dedicated action/event
+            // schema, no task/run/provider authority. v1/v2/v3 bytes below
+            // remain unchanged.
+            let object = BridgeV4.handle(requestData: data, fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= BridgeV4.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV4.version)
+            }
+            return response(object, stampVersion: BridgeV4.version)
         }
         switch request["operation"] as? String {
         case "handshake":

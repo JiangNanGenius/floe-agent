@@ -1025,8 +1025,9 @@ class G04TerminalHostControllerTest {
     }
 
     /** Exercises real submit/reply futures and status decoding. The JNI seam
-     * emits both events before submit returns, so the RUNNING observation
-     * necessarily precedes attachOrOpen binding its captured handle. */
+     * emits both events before submit returns; the accepted token is now bound
+     * at the reply event itself, so the following RUNNING status already
+     * observes the captured handle (the deferred coroutine only re-publishes). */
     private fun interactiveOpenOrderingController(
         statusBeforeReplyResume: Boolean,
         root: LiveRoot,
@@ -1051,6 +1052,9 @@ class G04TerminalHostControllerTest {
                 1L
             },
         ) { root.epoch }
+        // The binding boundary now ensures the service-owned engine; this
+        // focused JVM test keeps that registry out of the Android emulator.
+        controller.engineEnsurer = { }
         setFieldLong(controller, "boundEpoch", 7L)
         (G04TerminalHostController::class.java.getDeclaredField("stopped")
             .apply { isAccessible = true }.get(controller)
@@ -1068,8 +1072,9 @@ class G04TerminalHostControllerTest {
         val result = controller.attachOrOpen("c1", null, 80, 24)
         assertEquals(TerminalSessionPhase.RUNNING, result?.phase)
         assertEquals("tok-open", result?.sessionToken)
-        assertEquals("the status first has no captured handle", null, observed.first())
-        assertEquals("binding must refresh the previously-null handoff projection",
+        assertEquals("the accepted token is bound at the reply, so the running status already projects the capture",
+            TerminalHandoffCapture("c1", "tok-open", 7L), observed.first())
+        assertEquals("the deferred open coroutine re-publishes the SAME authoritative capture",
             TerminalHandoffCapture("c1", "tok-open", 7L), observed.last())
         detach()
     }
@@ -1101,9 +1106,123 @@ class G04TerminalHostControllerTest {
         }
         controller.attachOrOpen("c1", null, 80, 24)
         assertTrue(observed.isNotEmpty())
-        assertTrue("a late binding must not authorize stopping another Root's work",
-            observed.all { it == null })
+        assertTrue("the status observed while generation 7 was live may project its own capture",
+            observed.any { it == TerminalHandoffCapture("c1", "tok-open", 7L) })
+        assertNull("after the epoch moves, a late binding must not authorize stopping another Root's work",
+            observed.last())
         assertNull(controller.liveInteractiveTerminal("c1"))
+        detach()
+    }
+
+    /** A bound controller whose `nativeSubmitOverride` lets a test choose the
+     * exact native event order for one `terminalOpen` (reply, status, both).
+     * No real engine is constructed; no production guard is bypassed. */
+    private fun interactiveReplyController(
+        root: LiveRoot,
+        onReply: (G04TerminalHostController, String) -> Unit,
+    ): G04TerminalHostController {
+        lateinit var controller: G04TerminalHostController
+        controller = G04TerminalHostController(
+            CoroutineScope(Dispatchers.Unconfined),
+            Dispatchers.Unconfined,
+            Dispatchers.Unconfined,
+            nativeSubmitOverride = { descriptor, _ ->
+                val action = Json.parseToJsonElement(String(descriptor)) as JsonObject
+                assertEquals("terminalOpen", action["action"]?.jsonPrimitive?.content)
+                onReply(controller, checkNotNull(action["requestID"]?.jsonPrimitive?.content))
+                1L
+            },
+        ) { root.epoch }
+        controller.engineEnsurer = { }
+        setFieldLong(controller, "boundEpoch", 7L)
+        (G04TerminalHostController::class.java.getDeclaredField("stopped")
+            .apply { isAccessible = true }.get(controller)
+            as java.util.concurrent.atomic.AtomicBoolean).set(false)
+        return controller
+    }
+
+    private fun acceptedOpenReply(requestID: String, token: String): ByteArray =
+        ("{\"type\":\"actionReply\",\"requestID\":\"" + requestID +
+            "\",\"ok\":true,\"sessionToken\":\"" + token + "\"}").toByteArray()
+
+    private fun nativeStatus(conversationID: String, token: String, phase: String): ByteArray =
+        ("{\"type\":\"terminalStatus\",\"conversationID\":\"" + conversationID +
+            "\",\"sessionToken\":\"" + token + "\",\"phase\":\"" + phase +
+            "\",\"purpose\":\"interactive\"}").toByteArray()
+
+    @Test
+    fun acceptedOpenBindsThePaneTokenAtTheReplyBeforeTheWaiterResumes() = runBlocking {
+        var boundAtReply: String? = null
+        val controller = interactiveReplyController(LiveRoot(7L)) { c, requestID ->
+            c.handleEvent(0L, acceptedOpenReply(requestID, "tok-open"))
+            // The mailbox reader is still inside the reply event here; the
+            // deferred open coroutine cannot have resumed yet. First output
+            // and running status follow this point in mailbox order.
+            boundAtReply = seedMap<String>(c, "sessionTokens")["c1"]
+        }
+        val result = controller.attachOrOpen("c1", null, 80, 24)
+        assertEquals("the accepted token must already be bound when the reply event returns",
+            "tok-open", boundAtReply)
+        assertEquals("tok-open", result?.sessionToken)
+    }
+
+    @Test
+    fun runningStatusUnderTheNativeUUIDSpellingReachesTheOriginalPaneKey() = runBlocking {
+        val controller = interactiveReplyController(LiveRoot(7L)) { c, requestID ->
+            c.handleEvent(0L, acceptedOpenReply(requestID, "tok-open"))
+            // Native names the event with UUID.uuidString (canonical
+            // uppercase); the App route/holder key is the original spelling.
+            c.handleEvent(0L, nativeStatus("C1", "tok-open", "running"))
+        }
+        val phases = java.util.concurrent.CopyOnWriteArrayList<TerminalSessionPhase>()
+        val detach = controller.watchSessions("c1") { phases.add(it.phase) }
+        val result = controller.attachOrOpen("c1", null, 80, 24)
+        assertEquals("the authoritative running phase must reach the pane key",
+            TerminalSessionPhase.RUNNING, result?.phase)
+        assertEquals(TerminalSessionPhase.RUNNING, controller.currentSnapshot("c1")?.phase)
+        assertEquals(TerminalSessionPhase.RUNNING, phases.last())
+        detach()
+    }
+
+    @Test
+    fun statusThatPrecedesTheReplyIsAdoptedOnlyByItsExactToken() = runBlocking {
+        val controller = interactiveReplyController(LiveRoot(7L)) { c, requestID ->
+            c.handleEvent(0L, nativeStatus("C1", "tok-open", "running"))
+            c.handleEvent(0L, acceptedOpenReply(requestID, "tok-open"))
+        }
+        assertEquals("an earlier authoritative status for the SAME token is adopted, never overwritten by STARTING",
+            TerminalSessionPhase.RUNNING,
+            controller.attachOrOpen("c1", null, 80, 24)?.phase)
+    }
+
+    @Test
+    fun statusForAnotherTokenNeverProjectsIntoTheAcceptedKey() = runBlocking {
+        val controller = interactiveReplyController(LiveRoot(7L)) { c, requestID ->
+            c.handleEvent(0L, nativeStatus("C1", "tok-other", "running"))
+            c.handleEvent(0L, acceptedOpenReply(requestID, "tok-open"))
+        }
+        assertEquals("the pane key must stay at its honest seed; no foreign token's phase is adopted",
+            TerminalSessionPhase.STARTING,
+            controller.attachOrOpen("c1", null, 80, 24)?.phase)
+    }
+
+    @Test
+    fun closedStatusReachesThePaneKeyAfterTheCloseReplyRemovedTheToken() = runBlocking {
+        val controller = interactiveReplyController(LiveRoot(7L)) { c, requestID ->
+            c.handleEvent(0L, acceptedOpenReply(requestID, "tok-open"))
+            c.handleEvent(0L, nativeStatus("C1", "tok-open", "running"))
+        }
+        controller.attachOrOpen("c1", null, 80, 24)
+        // `closeSession` removes the pane binding as soon as the accepted
+        // close reply arrives, which is BEFORE the store's CLOSED status
+        // (the reply is emitted first). The pane snapshot for this exact
+        // token is the remaining ownership proof and must still receive it.
+        seedMap<String>(controller, "sessionTokens").remove("c1")
+        val phases = java.util.concurrent.CopyOnWriteArrayList<TerminalSessionPhase>()
+        val detach = controller.watchSessions("c1") { phases.add(it.phase) }
+        controller.handleEvent(0L, nativeStatus("C1", "tok-open", "closed"))
+        assertEquals(TerminalSessionPhase.CLOSED, controller.currentSnapshot("c1")?.phase)
+        assertEquals(TerminalSessionPhase.CLOSED, phases.last())
         detach()
     }
 

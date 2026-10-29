@@ -1271,6 +1271,21 @@ public enum AndroidRuntimeBootstrap {
             return live.identity.token == token
         }
     }
+
+    /// G06 Notes root binding (additive). The accepted runtime generation is
+    /// the ONLY source of the app-private Notes root; no request path can name
+    /// a directory. An optional owner token is verified when supplied by the
+    /// privileged host; the ordinary App adapter uses the live epoch and gets
+    /// the same validated root. Notes never opens as an incidental chat side
+    /// effect — this only authorizes the later lazy engine construction.
+    static func notesBinding(epoch: UInt64, ownerToken: String?) -> RuntimeStorageRoot? {
+        withStateLock {
+            guard let live = generation, live.epoch == epoch,
+                  phase == .starting, !live.retiring else { return nil }
+            if let ownerToken, live.identity.token != ownerToken { return nil }
+            return live.identity.root
+        }
+    }
 }
 
 // Owner-actor accessors the lifecycle needs without exposing mutable stores.

@@ -515,6 +515,12 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         //    registry independently fails a retired binding closed.
         routeContext.retireBoundRoute(epoch: epoch)
 
+        // 0b. G06 Notes authority retirement: exact-epoch close of the one
+        //     service-owned NotesStore. A stale epoch is a no-op and never
+        //     closes a newer generation's store. This runs on every normal or
+        //     failed generation retirement, before the runtime DB close.
+        await NotesDomainService.shared.retire(epoch: epoch)
+
         // 1. Fence domain admissions: unregister the synchronous binder keys
         //    FIRST so no new domain command can be admitted. The async
         //    processors lived on the generation's registry and become

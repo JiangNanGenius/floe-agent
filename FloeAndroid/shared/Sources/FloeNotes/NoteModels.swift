@@ -1,0 +1,510 @@
+// SPDX-License-Identifier: MPL-2.0
+import Foundation
+import Crypto
+
+import FloeCore
+public enum NoteError: Error, LocalizedError, Sendable {
+    case notFound, conflict, invalidDocument(String), invalidOperation(String), resourceUnavailable, storageUnavailable(String)
+    public var errorDescription: String? {
+        switch self {
+        case .notFound: FloeL10n.l("notes.note_models.the_note_content_does_not_exist")
+        case .conflict: FloeL10n.l("notes.note_models.the_content_was_modified_reload_and")
+        case .invalidDocument(let reason), .invalidOperation(let reason): reason
+        case .resourceUnavailable: FloeL10n.l("notes.note_models.the_material_has_not_been_downloaded")
+        case .storageUnavailable(let reason): reason
+        }
+    }
+}
+
+public struct NoteRect: Codable, Hashable, Sendable {
+    public var x: Double
+    public var y: Double
+    public var width: Double
+    public var height: Double
+    public init(x: Double = 0, y: Double = 0, width: Double = 240, height: Double = 120) {
+        self.x = x; self.y = y; self.width = width; self.height = height
+    }
+    public var isValid: Bool {
+        [x, y, width, height].allSatisfy(\.isFinite) && width > 0 && height > 0
+    }
+}
+
+public struct NoteSourceReference: Codable, Hashable, Sendable {
+    public enum Space: String, Codable, Sendable { case notes, canvas, workspace }
+    public var space: Space
+    public var documentID: UUID
+    public var revision: Int
+    public var pageID: UUID?
+    public var nodeID: UUID?
+    public var region: NoteRect?
+    public var recordingSeconds: Double?
+    public init(space: Space = .notes, documentID: UUID, revision: Int, pageID: UUID? = nil,
+                nodeID: UUID? = nil, region: NoteRect? = nil, recordingSeconds: Double? = nil) {
+        self.space = space; self.documentID = documentID; self.revision = revision
+        self.pageID = pageID; self.nodeID = nodeID; self.region = region
+        self.recordingSeconds = recordingSeconds
+    }
+}
+
+/// A slice of the deterministic formatted layout, not a substring of Markdown.
+public struct NoteTextSlice: Codable, Hashable, Sendable {
+    public var start: Int
+    public var count: Int
+    public var total: Int?
+    public init(start: Int, count: Int, total: Int? = nil) { self.start = start; self.count = count; self.total = total }
+}
+
+public struct NoteElement: Codable, Hashable, Identifiable, Sendable {
+    public enum Kind: String, Codable, Sendable { case text, image, rectangle, ellipse, line, arrow }
+    public var id: UUID
+    public var kind: Kind
+    public var frame: NoteRect
+    public var text: String
+    public var resourceID: UUID?
+    public var color: String
+    public var fontSize: Double
+    /// Nil in existing documents means plain text. Unknown values are retained.
+    public var textFormat: String?
+    public var textSourceID: UUID?
+    public var textSlice: NoteTextSlice?
+    public var isMarkdown: Bool { textFormat == "markdown" }
+    public var source: NoteSourceReference?
+    public var isAIGenerated: Bool
+    public init(id: UUID = UUID(), kind: Kind = .text, frame: NoteRect = .init(), text: String = "",
+                resourceID: UUID? = nil, color: String = "#202020", fontSize: Double = 20,
+                source: NoteSourceReference? = nil, isAIGenerated: Bool = false) {
+        self.id = id; self.kind = kind; self.frame = frame; self.text = text
+        self.resourceID = resourceID; self.color = color; self.fontSize = fontSize
+        self.source = source; self.isAIGenerated = isAIGenerated
+    }
+}
+
+public struct NotePage: Codable, Hashable, Identifiable, Sendable {
+    public enum Paper: String, Codable, CaseIterable, Sendable { case plain, ruled, grid }
+    public var id: UUID
+    public var width: Double
+    public var height: Double
+    public var paper: Paper
+    public var backgroundResourceID: UUID?
+    public var pdfPageIndex: Int?
+    public var drawingResourceID: UUID?
+    public var elements: [NoteElement]
+    public var isBookmarked: Bool
+    /// Extracted source text is distinct from editable or AI-generated annotations.
+    public var extractedText: String?
+    public var ocrText: String?
+    public var ocrSourceKey: String?
+    public var ocrError: String?
+    public var needsVisualIndex: Bool {
+        drawingResourceID != nil || elements.contains { $0.kind == .image }
+            || (backgroundResourceID != nil && (extractedText ?? "").isEmpty)
+    }
+    public var visualIndexKey: String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let geometry = "\(width):\(height):\(pdfPageIndex ?? -1):\(backgroundResourceID?.uuidString ?? ""):\(drawingResourceID?.uuidString ?? "")"
+        var data = Data(geometry.utf8)
+        if let elements = try? encoder.encode(elements) { data.append(elements) }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+    public var indexedVisualText: String? { ocrSourceKey == visualIndexKey ? ocrText : nil }
+
+    public var textExtractionTruncated: Bool?
+    public init(id: UUID = UUID(), width: Double = 768, height: Double = 1024,
+                paper: Paper = .plain, backgroundResourceID: UUID? = nil, pdfPageIndex: Int? = nil,
+                drawingResourceID: UUID? = nil, elements: [NoteElement] = [], isBookmarked: Bool = false,
+                extractedText: String? = nil, textExtractionTruncated: Bool? = nil) {
+        self.id = id; self.width = width; self.height = height; self.paper = paper
+        self.backgroundResourceID = backgroundResourceID; self.pdfPageIndex = pdfPageIndex
+        self.drawingResourceID = drawingResourceID; self.elements = elements; self.isBookmarked = isBookmarked
+        self.extractedText = extractedText; self.textExtractionTruncated = textExtractionTruncated
+    }
+}
+
+/// A topic owns resource references, never temporary paths. Previews are created on demand.
+public struct MindMapAttachment: Codable, Hashable, Identifiable, Sendable {
+    public enum Kind: String, Codable, CaseIterable, Sendable { case image, document, audio, video, file }
+    public var id: UUID
+    public var resourceID: UUID
+    public var fileName: String
+    public var mediaType: String
+    public var kind: Kind
+    public var caption: String
+    public var source: NoteSourceReference?
+    public init(id: UUID = UUID(), resourceID: UUID, fileName: String, mediaType: String,
+                kind: Kind = .file, caption: String = "", source: NoteSourceReference? = nil) {
+        self.id = id; self.resourceID = resourceID; self.fileName = fileName
+        self.mediaType = mediaType; self.kind = kind; self.caption = caption; self.source = source
+    }
+    public func validate() throws {
+        guard !fileName.isEmpty, fileName != ".", fileName != "..",
+              fileName == (fileName as NSString).lastPathComponent,
+              !fileName.contains("\\"), !fileName.contains(":"),
+              !fileName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              fileName.utf8.count <= 255, mediaType.utf8.count <= 256, caption.utf8.count <= 65_536 else {
+            throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_topic_attachment_file_name_or"))
+        }
+    }
+}
+
+/// A document links to an independent map; removing this relationship never removes its target.
+public struct NoteMindMapLink: Codable, Hashable, Identifiable, Sendable {
+    public var id: UUID
+    public var documentID: UUID
+    public var pageID: UUID?
+    public init(id: UUID = UUID(), documentID: UUID, pageID: UUID? = nil) {
+        self.id = id; self.documentID = documentID; self.pageID = pageID
+    }
+}
+
+/// World-space placement of a topic on the native map surface. Optional so
+/// archives and documents written before free positioning still decode:
+/// a nil position means the tree layout decides, and positions are written
+/// only after the user first moves or places a topic.
+public struct MindMapPoint: Codable, Hashable, Sendable {
+    public var x: Double
+    public var y: Double
+    public init(x: Double, y: Double) { self.x = x; self.y = y }
+    public var isValid: Bool {
+        x.isFinite && y.isFinite && abs(x) <= 100_000 && abs(y) <= 100_000
+    }
+}
+
+public struct MindMapNode: Codable, Hashable, Identifiable, Sendable {
+    public var id: UUID
+    public var parentID: UUID?
+    public var title: String
+    public var note: String
+    public var order: Int
+    public var isCollapsed: Bool
+    public var color: String?
+    public var imageResourceID: UUID?
+    public var attachments: [MindMapAttachment]?
+    public var style: [String: String]?
+    public var tags: [String]?
+    public var icons: [String]?
+    public var direction: Int?
+    public var branchColor: String?
+    public var hyperLink: String?
+    public var isAIGenerated: Bool?
+    public var source: NoteSourceReference?
+    /// Manual world-space center. Nil joins the automatic tree layout.
+    public var position: MindMapPoint?
+    public init(id: UUID = UUID(), parentID: UUID? = nil, title: String, note: String = "", order: Int = 0,
+                isCollapsed: Bool = false, color: String? = nil, imageResourceID: UUID? = nil,
+                source: NoteSourceReference? = nil, position: MindMapPoint? = nil) {
+        self.id = id; self.parentID = parentID; self.title = title; self.note = note; self.order = order
+        self.isCollapsed = isCollapsed; self.color = color; self.imageResourceID = imageResourceID; self.source = source
+        self.position = position
+    }
+}
+
+public struct MindMapConnection: Codable, Hashable, Identifiable, Sendable {
+    public var id: UUID
+    public var from: UUID
+    public var to: UUID
+    public var title: String
+    public struct Offset: Codable, Hashable, Sendable { public var x: Double; public var y: Double }
+    public var delta1: Offset?
+    public var delta2: Offset?
+    public var bidirectional: Bool?
+    public var style: [String: String]?
+    public init(id: UUID = UUID(), from: UUID, to: UUID, title: String = "") {
+        self.id = id; self.from = from; self.to = to; self.title = title
+    }
+}
+
+public struct MindMapSummary: Codable, Hashable, Identifiable, Sendable {
+    public var id: UUID
+    public var label: String
+    public var parent: UUID
+    public var start: Int
+    public var end: Int
+    public var style: [String: String]?
+    public init(id: UUID = UUID(), label: String, parent: UUID, start: Int, end: Int, style: [String: String]? = nil) {
+        self.id = id; self.label = label; self.parent = parent; self.start = start; self.end = end; self.style = style
+    }
+}
+
+public struct Notebook: Codable, Hashable, Identifiable, Sendable {
+    public var id: UUID
+    public var title: String
+    public var createdAt: Date
+    public init(id: UUID = UUID(), title: String, createdAt: Date = Date()) {
+        self.id = id; self.title = title; self.createdAt = createdAt
+    }
+}
+
+/// Immutable content-addressed resource metadata. The `hash` is the stored
+/// CAS file name and must never be chosen by a caller; Android's consumer
+/// contract uses this to prove the exact bytes it imported or will display.
+public struct NoteResourceRecord: Codable, Hashable, Sendable {
+    public var id: UUID
+    public var hash: String
+    public var byteCount: Int64
+    public var fileName: String
+    public var mediaType: String
+    public init(id: UUID, hash: String, byteCount: Int64, fileName: String, mediaType: String) {
+        self.id = id; self.hash = hash; self.byteCount = byteCount
+        self.fileName = fileName; self.mediaType = mediaType
+    }
+}
+
+public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
+    public enum Kind: String, Codable, CaseIterable, Sendable { case notebook, mindMap, office, engineering }
+    public var schemaVersion: Int = 1
+    public var id: UUID
+    public var kind: Kind
+    public var notebookID: UUID?
+    public var title: String
+    public var revision: Int
+    public var pages: [NotePage]
+    /// Shared immutable source per formatted text flow; pagination never duplicates it.
+    public var textSources: [String: String]?
+    public var nodes: [MindMapNode]
+    public var connections: [MindMapConnection]
+    public var linkedMindMaps: [NoteMindMapLink]?
+    public var mindMapDirection: Int?
+    public var summaries: [MindMapSummary]?
+    public var tags: [String]
+    public var isFavorite: Bool
+    public var createdAt: Date
+    public var updatedAt: Date
+    public var deletedAt: Date?
+    public var officeResourceID: UUID?
+    public var officeFileName: String?
+    /// Rebuildable text cache, valid only for this immutable Office resource.
+    public var officeTextResourceID: UUID?
+    public var officeExtractedText: String?
+    public var officeTextError: String?
+    /// Rebuildable first-page render of the exact immutable Office resource.
+    /// Separate from an explicit user cover; never display it for other bytes.
+    public var officePreviewSourceID: UUID?
+    public var officePreviewResourceID: UUID?
+    public var matchingOfficePreviewResourceID: UUID? {
+        guard kind == .office, let source = officeResourceID,
+              officePreviewSourceID == source else { return nil }
+        return officePreviewResourceID
+    }
+    /// Standalone engineering/CAD document: exactly one immutable resource, previewed read-only.
+    /// Optional so archives written before this kind still decode.
+    public var engineeringResourceID: UUID?
+    public var engineeringFileName: String?
+    /// Explicit user cover for this document, independent of the document's own
+    /// bytes. It is a document-bound immutable Notes resource (registered in the
+    /// same store as every other resource), never an external path, and it has
+    /// priority over every automatic cover renderer. Optional so documents and
+    /// archives written before custom covers decode with no cover.
+    public var coverResourceID: UUID?
+    /// Monotonic cover version, independent of the content `revision`. It
+    /// changes on every set/restore so a cover cache key invalidates without
+    /// depending on the content revision. Nil means "never customized" for
+    /// documents written before custom covers; because clearing keeps a bumped
+    /// version, a restored automatic cover can never collide with the old key.
+    public var coverRevision: Int?
+    /// The effective cover: an explicit custom resource or the automatic
+    /// renderer. This is the single priority decision every cover surface reads.
+    public var coverMode: NoteCoverMode {
+        coverResourceID.map(NoteCoverMode.custom) ?? .automatic
+    }
+    /// The cover version normalized for compare-and-swap: a document written
+    /// before custom covers has no version and is treated as version 0, so the
+    /// first cover edit is still a compare against a known baseline.
+    public var normalizedCoverRevision: Int { coverRevision ?? 0 }
+    /// Cache-key fragment that changes on exactly the cover state changes.
+    /// It carries a cover-specific version, not the content revision.
+    public var coverCacheToken: String {
+        let source = coverResourceID?.uuidString
+            ?? matchingOfficePreviewResourceID.map { "office-preview:\($0.uuidString)" } ?? "auto"
+        return "\(source)@\(normalizedCoverRevision)"
+    }
+    public init(id: UUID = UUID(), kind: Kind = .notebook, notebookID: UUID? = nil, title: String) {
+        self.id = id; self.kind = kind; self.notebookID = notebookID; self.title = title; self.revision = 0
+        self.pages = kind == .notebook ? [NotePage()] : []
+        self.nodes = kind == .mindMap ? [MindMapNode(title: title)] : []
+        self.connections = []; self.tags = []; self.isFavorite = false
+        self.createdAt = Date(); self.updatedAt = createdAt
+    }
+    public var resourceIDs: Set<UUID> {
+        Set(pages.flatMap { page in
+            [page.backgroundResourceID, page.drawingResourceID].compactMap { $0 }
+            + page.elements.compactMap(\.resourceID)
+        } + nodes.compactMap(\.imageResourceID) + nodes.flatMap { ($0.attachments ?? []).map(\.resourceID) } + [officeResourceID, engineeringResourceID, coverResourceID, matchingOfficePreviewResourceID].compactMap { $0 })
+    }
+    public var searchableText: String {
+        ([title] + tags + ((officeTextResourceID == officeResourceID ? officeExtractedText : nil).map { [$0] } ?? []) + (engineeringFileName.map { [$0] } ?? []) + pages.compactMap(\.extractedText) + pages.compactMap(\.indexedVisualText) + pages.flatMap { $0.elements.map(\.text) }
+         + nodes.flatMap { [$0.title, $0.note] + ($0.attachments ?? []).flatMap { [$0.fileName, $0.caption] } }).joined(separator: "\n")
+    }
+    /// Engineering formats this build can route to a bundled viewer. Mirrors
+    /// `EngineeringPreviewKind.identify` (FloeWorkspace) minus `.unsupported`;
+    /// keep the two in sync when the viewer gains or drops a decoder.
+    public static let supportedEngineeringFileExtensions: Set<String> = [
+        "stl", "obj", "ply", "off", "3ds", "dae", "fbx", "3mf", "amf", "gltf", "glb", "wrl", "bim",
+        "dxf", "dwg", "step", "stp", "iges", "igs", "brep",
+        "gbr", "ger", "gerber", "gtl", "gbl", "gts", "gbs", "gto", "gbo", "gko", "gm1", "gml", "drl", "xln"
+    ]
+    /// Strict basename + supported-format check for an engineering import.
+    public static func isSupportedEngineeringFileName(_ name: String) -> Bool {
+        guard !name.isEmpty, name != ".", name != "..",
+              name == (name as NSString).lastPathComponent,
+              !name.contains("\\"), !name.contains(":"),
+              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              name.utf8.count <= 255 else { return false }
+        return supportedEngineeringFileExtensions.contains((name as NSString).pathExtension.lowercased())
+    }
+    public func validate() throws {
+        guard (1...2).contains(schemaVersion), revision >= 0, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_document_version_or_title_is"))
+        }
+        guard coverRevision == nil || coverRevision! >= 0 else {
+            throw NoteError.invalidDocument(NoteLocalization.text(
+                "notes.note_models.invalid_cover_version",
+                fallback: "The document cover version is invalid"))
+        }
+        guard Set(pages.map(\.id)).count == pages.count,
+              Set(nodes.map(\.id)).count == nodes.count,
+              Set(connections.map(\.id)).count == connections.count,
+              Set((summaries ?? []).map(\.id)).count == (summaries ?? []).count,
+              pages.count <= 5_000, connections.count <= 10_000, (summaries ?? []).count <= 10_000 else {
+            throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_document_contains_duplicate_identifiers"))
+        }
+        let links = linkedMindMaps ?? []
+        guard links.count <= 100, Set(links.map(\.id)).count == links.count,
+              Set(links.map(\.documentID)).count == links.count,
+              kind != .mindMap || links.isEmpty,
+              links.allSatisfy({ link in link.documentID != id && (link.pageID == nil || pages.contains(where: { $0.id == link.pageID })) }) else {
+            throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.linked_mind_maps_are_duplicated_too"))
+        }
+        for page in pages {
+            guard page.width.isFinite, page.height.isFinite, page.width > 0, page.height > 0,
+                  page.width <= 16_384, page.height <= 16_384,
+                  Set(page.elements.map(\.id)).count == page.elements.count, page.elements.count <= 2_000,
+                  page.elements.filter({ $0.kind == .image }).count <= 64 else {
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_page_size_or_content_identifier"))
+            }
+            if let index = page.pdfPageIndex, index < 0 || page.backgroundResourceID == nil {
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_pdf_page_reference_is_invalid"))
+            }
+            for element in page.elements {
+                guard element.frame.isValid, element.fontSize.isFinite, (1...512).contains(element.fontSize) else {
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_page_content_size"))
+                }
+                if let sourceID = element.textSourceID {
+                    guard schemaVersion >= 2, element.kind == .text, textSources?[sourceID.uuidString] != nil,
+                          let slice = element.textSlice, slice.start >= 0, slice.count > 0,
+                          let total = slice.total, total > 0, slice.start <= total, slice.count <= total - slice.start else {
+                        throw NoteError.invalidDocument(NoteLocalization.text(
+                            "notes.text.unavailable",
+                            fallback: "The formatted text could not be read"))
+                    }
+                }
+                if element.kind == .image && element.resourceID == nil {
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_image_is_missing_a_resource"))
+                }
+            }
+        }
+        if kind != .mindMap, mindMapDirection != nil || !(summaries ?? []).isEmpty {
+            throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_regular_note_cannot_contain_a"))
+        }
+        switch kind {
+        case .office:
+            guard pages.isEmpty, nodes.isEmpty, connections.isEmpty, officeResourceID != nil,
+                  engineeringResourceID == nil, engineeringFileName == nil,
+                  let name = officeFileName, name == (name as NSString).lastPathComponent,
+                  ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].contains((name as NSString).pathExtension.lowercased()) else {
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_office_document_is_missing_a"))
+            }
+        case .engineering:
+            guard pages.isEmpty, nodes.isEmpty, connections.isEmpty,
+                  officeResourceID == nil, officeFileName == nil,
+                  officeTextResourceID == nil, officeExtractedText == nil, officeTextError == nil,
+                  engineeringResourceID != nil, let name = engineeringFileName,
+                  Self.isSupportedEngineeringFileName(name) else {
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_engineering_drawing_document_is_missing"))
+            }
+        case .notebook:
+            guard !pages.isEmpty, nodes.isEmpty, connections.isEmpty, officeResourceID == nil, officeFileName == nil,
+                  engineeringResourceID == nil, engineeringFileName == nil else {
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_note_needs_at_least_one"))
+            }
+        case .mindMap:
+            guard Set(nodes.compactMap(\.imageResourceID)).count <= 64 else {
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_mind_map_can_use_at"))
+            }
+            guard pages.isEmpty, !nodes.isEmpty, nodes.count <= 10_000, officeResourceID == nil, officeFileName == nil,
+                  engineeringResourceID == nil, engineeringFileName == nil,
+                  nodes.filter({ $0.parentID == nil }).count == 1 else {
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_mind_map_requires_a_single"))
+            }
+            let lookup = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
+            guard mindMapDirection == nil || (0...2).contains(mindMapDirection!) else { throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_direction")) }
+            let permittedStyles: Set<String> = ["fontSize", "fontFamily", "color", "background", "fontWeight", "width", "border", "textDecoration"]
+            guard nodes.reduce(0, { $0 + ($1.attachments ?? []).count }) <= 2_000 else {
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_mind_map_can_keep_at"))
+            }
+            for node in nodes {
+                let attachments = node.attachments ?? []
+                guard attachments.count <= 32, Set(attachments.map(\.id)).count == attachments.count else {
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.each_topic_keeps_at_most_32"))
+                }
+                for attachment in attachments { try attachment.validate() }
+                guard node.order >= 0, node.title.utf8.count <= 65_536, node.note.utf8.count <= 65_536,
+                      (node.style ?? [:]).allSatisfy({ permittedStyles.contains($0.key) && $0.value.utf8.count <= 256 }),
+                      node.direction == nil || node.direction == 0 || node.direction == 1,
+                      (node.tags ?? []).count <= 100, (node.icons ?? []).count <= 100 else {
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_style"))
+                }
+                if let position = node.position, !position.isValid {
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_topic_position"))
+                }
+                if let link = node.hyperLink, !link.isEmpty {
+                    guard let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else {
+                        throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.mind_map_links_support_only_web"))
+                    }
+                }
+                var visited = Set<UUID>()
+                var current: MindMapNode? = node
+                while let value = current {
+                    guard visited.insert(value.id).inserted else { throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_mind_map_cannot_form_a")) }
+                    if let parent = value.parentID {
+                        guard let next = lookup[parent] else { throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_mind_map_parent_node_does")) }
+                        current = next
+                    } else { current = nil }
+                }
+            }
+            for summary in summaries ?? [] {
+                let count = nodes.filter { $0.parentID == summary.parent }.count
+                guard lookup[summary.parent] != nil, summary.start >= 0, summary.end >= summary.start, summary.end < count, summary.label.utf8.count <= 65_536,
+                      (summary.style ?? [:]).count <= 32, (summary.style ?? [:]).allSatisfy({ $0.key.utf8.count <= 64 && $0.value.utf8.count <= 256 }) else {
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_summary_scope"))
+                }
+            }
+            for edge in connections {
+                for offset in [edge.delta1, edge.delta2].compactMap({ $0 }) {
+                    guard offset.x.isFinite, offset.y.isFinite, abs(offset.x) <= 100_000, abs(offset.y) <= 100_000 else {
+                        throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_connection_position"))
+                    }
+                }
+                guard edge.title.utf8.count <= 65_536, (edge.style ?? [:]).count <= 32,
+                      (edge.style ?? [:]).allSatisfy({ $0.key.utf8.count <= 64 && $0.value.utf8.count <= 256 }),
+                      edge.from != edge.to, lookup[edge.from] != nil, lookup[edge.to] != nil else {
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_connection_node"))
+                }
+            }
+        }
+    }
+}
+
+public struct NoteSelectionContext: Codable, Hashable, Sendable {
+    public var source: NoteSourceReference
+    public var selectedElementIDs: [UUID]
+    public var selectedNodeIDs: [UUID]
+    public var extractedText: String
+    public var surroundingText: String
+    public var compositeImageResourceID: UUID?
+    public init(source: NoteSourceReference, selectedElementIDs: [UUID] = [], selectedNodeIDs: [UUID] = [],
+                extractedText: String, surroundingText: String = "", compositeImageResourceID: UUID? = nil) {
+        self.source = source; self.selectedElementIDs = selectedElementIDs; self.selectedNodeIDs = selectedNodeIDs
+        self.extractedText = extractedText; self.surroundingText = surroundingText
+        self.compositeImageResourceID = compositeImageResourceID
+    }
+}

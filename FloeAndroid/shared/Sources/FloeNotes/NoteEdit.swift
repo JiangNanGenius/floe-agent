@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: MPL-2.0
+import Foundation
+
+import FloeCore
+/// Value-only commands shared by UI and tool adapters. No executable scripts or filesystem paths.
+public enum NoteEdit: Codable, Hashable, Sendable {
+    case textSource(id: UUID, text: String?)
+    case linkMindMap(NoteMindMapLink)
+    case unlinkMindMap(UUID)
+    case rename(String)
+    case moveToNotebook(UUID?)
+    case favorite(Bool)
+    case tags([String])
+    case insertPage(NotePage, at: Int)
+    case updatePage(NotePage)
+    case movePage(UUID, to: Int)
+    /// Copies a page directly after the original with fresh element identities
+    /// (ink/background references stay shared by reference, never duplicated).
+    case duplicatePage(UUID)
+    case deletePage(UUID)
+    case drawing(pageID: UUID, resourceID: UUID?)
+    case upsertElement(pageID: UUID, element: NoteElement)
+    case deleteElements(pageID: UUID, ids: [UUID])
+    case upsertNode(MindMapNode)
+    case deleteBranch(UUID)
+    case upsertConnection(MindMapConnection)
+    case deleteConnection(UUID)
+    case replaceMindMap(nodes: [MindMapNode], connections: [MindMapConnection])
+    case replaceOfficeResource(UUID)
+    case mindMapLayout(direction: Int, summaries: [MindMapSummary])
+
+    public func apply(to document: inout NoteDocument) throws {
+        switch self {
+        case .textSource(let id, let text):
+            if let text {
+                document.schemaVersion = max(2, document.schemaVersion)
+                if document.textSources == nil { document.textSources = [:] }
+                document.textSources?[id.uuidString] = text
+            } else {
+                guard !document.pages.contains(where: { $0.elements.contains(where: { $0.textSourceID == id }) }) else {
+                    throw NoteError.invalidOperation(NoteLocalization.text(
+                        "notes.text.still_in_use", fallback: "This text is still in use"))
+                }
+                document.textSources?.removeValue(forKey: id.uuidString)
+            }
+        case .linkMindMap(let link):
+            var links = document.linkedMindMaps ?? []
+            if let index = links.firstIndex(where: { $0.id == link.id }) { links[index] = link }
+            else { links.append(link) }
+            document.linkedMindMaps = links
+        case .unlinkMindMap(let id):
+            guard document.linkedMindMaps?.contains(where: { $0.id == id }) == true else { throw NoteError.notFound }
+            document.linkedMindMaps?.removeAll { $0.id == id }
+        case .mindMapLayout(let direction, let summaries):
+            guard document.kind == .mindMap else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_edit.the_target_is_not_a_mind")) }
+            document.mindMapDirection = direction; document.summaries = summaries
+        case .replaceOfficeResource(let resource):
+            guard document.kind == .office else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_target_is_not_an_office")) }
+            if document.officeResourceID != resource {
+                document.officePreviewSourceID = nil
+                document.officePreviewResourceID = nil
+            }
+            document.officeResourceID = resource
+        case .replaceMindMap(let nodes, let connections):
+            guard document.kind == .mindMap else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_edit.the_target_is_not_a_mind")) }
+            document.nodes = nodes; document.connections = connections
+        case .rename(let title): document.title = title
+        case .moveToNotebook(let id): document.notebookID = id
+        case .favorite(let value): document.isFavorite = value
+        case .tags(let values): document.tags = Array(Set(values)).sorted()
+        case .insertPage(let page, let index):
+            guard (0...document.pages.count).contains(index) else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_edit.invalid_page_position")) }
+            document.pages.insert(page, at: index)
+        case .updatePage(let page): document.pages[try pageIndex(page.id, in: document)] = page
+        case .movePage(let id, let index):
+            guard document.pages.indices.contains(index) else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_edit.invalid_page_position")) }
+            let page = document.pages.remove(at: try pageIndex(id, in: document))
+            document.pages.insert(page, at: index)
+        case .duplicatePage(let id):
+            let index = try pageIndex(id, in: document)
+            var copy = document.pages[index]
+            copy.id = UUID()
+            // Fresh element identities so later edits/deletes never alias the
+            // original page; drawing/background resources stay shared.
+            var copiedSources: [UUID: UUID] = [:]
+            copy.elements = copy.elements.map { element in
+                var duplicate = element
+                duplicate.id = UUID()
+                if let sourceID = element.textSourceID, let sourceText = document.textSources?[sourceID.uuidString] {
+                    let independent = copiedSources[sourceID] ?? UUID()
+                    copiedSources[sourceID] = independent
+                    document.textSources?[independent.uuidString] = sourceText
+                    duplicate.textSourceID = independent
+                }
+                return duplicate
+            }
+            document.pages.insert(copy, at: index + 1)
+        case .deletePage(let id):
+            document.pages.remove(at: try pageIndex(id, in: document))
+            // Preserve the relationship at document level when its page is removed.
+            if var links = document.linkedMindMaps {
+                for index in links.indices where links[index].pageID == id { links[index].pageID = nil }
+                document.linkedMindMaps = links
+            }
+        case .drawing(let id, let resource): document.pages[try pageIndex(id, in: document)].drawingResourceID = resource
+        case .upsertElement(let id, let element):
+            let index = try pageIndex(id, in: document)
+            if let existing = document.pages[index].elements.firstIndex(where: { $0.id == element.id }) {
+                document.pages[index].elements[existing] = element
+            } else { document.pages[index].elements.append(element) }
+        case .deleteElements(let id, let ids):
+            let index = try pageIndex(id, in: document)
+            guard Set(ids).isSubset(of: Set(document.pages[index].elements.map(\.id))) else { throw NoteError.notFound }
+            document.pages[index].elements.removeAll { ids.contains($0.id) }
+        case .upsertNode(let node):
+            let previous = document.nodes
+            if let index = document.nodes.firstIndex(where: { $0.id == node.id }) { document.nodes[index] = node }
+            else { document.nodes.append(node) }
+            reanchorSummaries(previous: previous, document: &document)
+        case .deleteBranch(let id):
+            let previous = document.nodes
+            guard let node = document.nodes.first(where: { $0.id == id }), node.parentID != nil else {
+                throw NoteError.invalidOperation(FloeL10n.l("notes.note_edit.the_central_topic_cannot_be_deleted"))
+            }
+            var removed: Set<UUID> = [id]
+            var changed = true
+            while changed {
+                changed = false
+                for value in document.nodes where value.parentID.map(removed.contains) == true {
+                    if removed.insert(value.id).inserted { changed = true }
+                }
+            }
+            document.nodes.removeAll { removed.contains($0.id) }
+            document.connections.removeAll { removed.contains($0.from) || removed.contains($0.to) }
+            reanchorSummaries(previous: previous, document: &document)
+        case .upsertConnection(let edge):
+            if let index = document.connections.firstIndex(where: { $0.id == edge.id }) { document.connections[index] = edge }
+            else { document.connections.append(edge) }
+        case .deleteConnection(let id):
+            guard document.connections.contains(where: { $0.id == id }) else { throw NoteError.notFound }
+            document.connections.removeAll { $0.id == id }
+        }
+    }
+
+    /// Keep summaries attached to their surviving child topics, not stale array offsets.
+    private func reanchorSummaries(previous: [MindMapNode], document: inout NoteDocument) {
+        guard let summaries = document.summaries else { return }
+        let old = Dictionary(grouping: previous, by: \.parentID)
+        let current = Dictionary(grouping: document.nodes, by: \.parentID)
+        let ids = Set(document.nodes.map(\.id))
+        func ordered(_ nodes: [MindMapNode]) -> [MindMapNode] {
+            nodes.sorted { $0.order == $1.order ? $0.id.uuidString < $1.id.uuidString : $0.order < $1.order }
+        }
+        document.summaries = summaries.compactMap { original in
+            guard ids.contains(original.parent) else { return nil }
+            let children = ordered(old[original.parent] ?? [])
+            guard original.start >= 0, original.end >= original.start, original.end < children.count else { return nil }
+            let covered = Set(children[original.start...original.end].map(\.id))
+            let positions = ordered(current[original.parent] ?? []).enumerated().filter { covered.contains($0.element.id) }.map(\.offset)
+            guard let start = positions.first, let end = positions.last else { return nil }
+            var value = original; value.start = start; value.end = end
+            return value
+        }
+    }
+
+    private func pageIndex(_ id: UUID, in document: NoteDocument) throws -> Int {
+        guard let index = document.pages.firstIndex(where: { $0.id == id }) else { throw NoteError.notFound }
+        return index
+    }
+}
+
+public struct NoteEditBatch: Codable, Hashable, Sendable {
+    public var documentID: UUID
+    public var expectedRevision: Int
+    public var title: String
+    public var edits: [NoteEdit]
+    public var requestID: String?
+    public init(documentID: UUID, expectedRevision: Int, title: String, edits: [NoteEdit], requestID: String? = nil) {
+        self.documentID = documentID; self.expectedRevision = expectedRevision; self.title = title; self.edits = edits
+        self.requestID = requestID
+    }
+}
+
+public struct NoteHistoryState: Sendable {
+    public var canUndo: Bool
+    public var canRedo: Bool
+}

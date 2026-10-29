@@ -326,7 +326,12 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
         let v2 = try exchange(#"{"version":2,"requestID":"h2","operation":"handshake"}"#)
         XCTAssertEqual(v2["version"] as? Int, 2)
         XCTAssertEqual((v2["stagedOperations"] as? [[String: Any]])?.count, 2)
-        let unknown = try exchange(#"{"version":4,"requestID":"h4","operation":"handshake"}"#)
+        // G06 additive notes channel: v4 exists and has its own dedicated
+        // schema; it never reinterprets v1/v2/v3 bytes.
+        let v4 = try exchange(#"{"version":4,"requestID":"h4","operation":"handshake"}"#)
+        XCTAssertEqual(v4["version"] as? Int, 4)
+        XCTAssertEqual(v4["schema"] as? String, "floe.notes/4")
+        let unknown = try exchange(#"{"version":999,"requestID":"h999","operation":"handshake"}"#)
         XCTAssertEqual(unknown["error"] as? String, "unsupportedVersion")
         let unknownV3Operation = try exchange(#"{"version":3,"requestID":"x","operation":"linux.exec"}"#)
         XCTAssertEqual(unknownV3Operation["error"] as? String, "unsupportedOperation")

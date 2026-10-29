@@ -64,6 +64,9 @@ class FloeApplication : Application() {
     private lateinit var networkWorkspaceHost: com.floe.android.host.NetworkWorkspaceHostController
     private lateinit var workspaceGitTrust: com.floe.android.host.G04GitTrustController
     private lateinit var workspaceTerminal: com.floe.android.host.G04TerminalHostController
+    /** Application-owned, lazy Notes authority adapter; ordinary chat never opens the library. */
+    internal lateinit var notesHost: com.floe.android.host.notes.NotesHostController
+        private set
     // G03-R3: app-owned Core->runtime-UID workspace-copy cleanup pump. It is
     // bound at the SAME actual accepted native Root epoch as the shell pump
     // and stays serviceable while shell/model admission is fenced.
@@ -155,6 +158,11 @@ class FloeApplication : Application() {
         )
         workspaceGitTrust = com.floe.android.host.G04GitTrustController(this) { runtimeHost?.nativeRootEpoch() }
         workspaceTerminal = com.floe.android.host.G04TerminalHostController(hostScope) { runtimeHost?.nativeRootEpoch() }
+        // Construction is data-only. Binding and all Notes storage/JNI access occur off-main
+        // on explicit Notes operations, without requiring a provider or Linux installation.
+        notesHost = com.floe.android.host.notes.NotesHostController(
+            epochProvider = { runtimeHost?.nativeRootEpoch()?.takeIf { it > 0L } },
+        )
         linuxCleanup = com.floe.android.host.linux.LinuxRuntimeCleanupPump(this, hostScope)
         // The controller receives the APPLICATION-owned scope only to run
         // BOUNDED, cancellable re-ingress attempts triggered by REAL

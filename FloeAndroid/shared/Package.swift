@@ -546,6 +546,15 @@ let package = Package(
             "FloeCore", "FloeModels", "FloeTools", "FloeTransport",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
+        // G06 Notes authority: the exact public FloeNotes sources pinned by
+        // the owner lane (see PROVENANCE.md G06 section), linked per file into
+        // the frozen mirror. Upstream already uses Swift 6 language mode;
+        // only the one portable localization shim plus the read-only resource
+        // metadata projection differ (both documented in the mirror).
+        .target(name: "FloeNotes", dependencies: [
+            "FloeCore", "GRDB", "ZIPFoundation",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: [.swiftLanguageMode(.v6)]),
         .target(name: "FloeAndroidJobTools", dependencies: [
             "FloeCore", "FloeModels", "FloeTools", "FloePersistence", "FloeAndroidShellTools",
             .product(name: "Crypto", package: "swift-crypto"),
@@ -620,6 +629,9 @@ let package = Package(
             // registers them (dependency only; NO service registration here).
             "FloeAndroidWebTools", "FloeAndroidShellTools", "FloeAndroidJobTools", "FloeAndroidWorkspaceTools",
             "FloeWorkspace", "FloeGit", "FloeBrowser",
+            // G06 independent Notes authority (one NotesStore per runtime
+            // generation; no chat database dependency or incidental open).
+            "FloeNotes",
             // G03-R1 environment authority: links the original registry/
             // coordinator/lease authority into the product .so (dependency
             // only; NO ToolEnvironmentRouting registration, NO backend
@@ -684,6 +696,9 @@ let package = Package(
             // G03-R1 ownership/rejection suites for the ported environment
             // authority and the lease descriptor (authored, host-runnable).
             "FloeEnvironments",
+            // G06 notes suites run the REAL NotesStore + NotesEngine against
+            // temporary roots on the host (no bootstrap/device dependency).
+            "FloeNotes",
         ], swiftSettings: strictSettings)
     ]
 )
