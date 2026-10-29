@@ -124,10 +124,16 @@ public actor DatabaseManager {
         try lease.check()
         if let queue {
             try migrator.migrate(queue)
-            try queue.write { try Self.repairPrereleaseChatSchemaVersion($0) }
+            try await queue.write { db in
+                try lease.check()
+                try Self.repairPrereleaseChatSchemaVersion(db)
+            }
         } else if let pool {
             try migrator.migrate(pool)
-            try pool.write { try Self.repairPrereleaseChatSchemaVersion($0) }
+            try await pool.write { db in
+                try lease.check()
+                try Self.repairPrereleaseChatSchemaVersion(db)
+            }
         }
     }
 
