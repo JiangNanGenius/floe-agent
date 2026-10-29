@@ -244,6 +244,7 @@
     <string name="settings_action_failed">操作失败：%1$s</string>
     <string name="send_failed_title">发送失败</string>
     <string name="send_failed_message">消息未能发送，草稿已恢复。</string>
+    <string name="home_fresh_task_failed">未能创建新任务，请重试。</string>
     <string name="settings_web_search">网页搜索</string>
     <string name="websearch_providers">提供商</string>
     <string name="websearch_providers_footer">启用 Floe 可使用的搜索服务。凭证会安全保存，之后不会再次显示。</string>
@@ -460,4 +461,6 @@
     <string name="run_pdf_print_opened">已打开系统打印界面，请在其中选择打印机。</string>
     <string name="run_pdf_print_unavailable">此设备暂不支持打印。</string>
     <string name="run_pdf_print_gone">打印前文件已不可用。</string>
+    <string name="office_return_title">返回 %1$s</string>
+    <string name="office_return_action">打开</string>
 </resources>

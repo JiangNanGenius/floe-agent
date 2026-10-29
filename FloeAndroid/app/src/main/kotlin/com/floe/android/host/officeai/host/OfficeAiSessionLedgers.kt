@@ -85,9 +85,14 @@ internal data class OfficeAiCaptureRecord(
     val docType: String?,
     val partsCount: Int?,
     val selectedPart: String?,
-    /** ACTUAL captured logical 0-based part index (resolved from the engine's
-     * own selectedpart decimal part id), null when unparseable — NEVER a
-     * sheet1/slide1 default. */
+    /** ACTUAL captured logical 0-based part index, carried TYPED from the
+     * engine's own TargetCaptured answer (selectedPartIndex): the unique
+     * position this capture's validated `status:` ordered parts witness
+     * proves for the byte-exact selectedPart (braced page GUID for
+     * presentation/drawing), or the documented decimal identifier value for
+     * spreadsheet/text. Null ONLY when that same answer witnessed no unique
+     * mapping — never a sheet1/slide1 default, never a decimal re-parse of
+     * a GUID, never the caller's requested index. */
     val partIndex: Int?,
     val documentModified: Boolean?,
     /** Native epochs carried by this exact TargetCaptured. A pre-effect fact

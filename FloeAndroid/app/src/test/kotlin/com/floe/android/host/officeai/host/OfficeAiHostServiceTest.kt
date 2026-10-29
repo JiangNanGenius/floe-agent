@@ -1278,22 +1278,46 @@ class OfficeAiHostServiceTest {
 
     @Test
     fun ordinaryPptxSlideFlowBindsRealEmptySelectionAtTheCapturedSlide() {
+        // Producer-pinned PPTX shape (Collabora 26.04.4.2-937 @2333344): the
+        // shown page is named ONLY by its braced GUID; the logical ordinal
+        // is the engine's witness-derived companion, never a decimal parse
+        // of the GUID (which was null — the gap that would have refused the
+        // saved verification for every real presentation slide).
         newService()
+        val guidA = "{A1A2A3A4-B1B2-C1C2-D1D2-E1E2E3E4E5A0}"
+        val guidB = "{A1A2A3A4-B1B2-C1C2-D1D2-E1E2E3E4E5B1}"
         val snapshot = docSnapshot(path = "qa/slides.pptx", formatExt = "pptx")
         seedSession(snapshot)
         val captureDigest = sha(File(snapshot.stagedWorkingCopyPath!!).readBytes())
         ports.precisionScript.add(precisionResult(
             OfficePrecisionRequest("slide-f59", session, 9L,
                 com.floe.android.core.officeengine.precision.OfficePrecisionAction.SELECT_SLIDE),
-            OfficePrecisionState.MUTATION_VERIFIED, OfficePrecisionAnswer.SlideSelected("1"),
+            OfficePrecisionState.MUTATION_VERIFIED,
+            OfficePrecisionAnswer.SlideSelected(guidB, shownPartIndex = 1),
         ))
-        runTicket(commandTicket("slide-f59", "selectSlide", "partId" to "1"))
+        val select = runTicket(commandTicket("slide-f59", "selectSlide", "partId" to "1"))
+            as OfficeAiWire.Settlement.Success
+        val selectFacts = select.body["facts"] as kotlinx.serialization.json.JsonObject
+        // The shown identity stays byte-exact AND the ordinal is the witnessed
+        // 1 (second slide) — previously null at this boundary.
+        assertEquals(guidB, (selectFacts["shownPart"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertEquals("1", (selectFacts["partIndex"] as kotlinx.serialization.json.JsonPrimitive).content)
         ports.precisionScript.add(precisionResult(
             OfficePrecisionRequest("cap-p59", session, 9L,
                 com.floe.android.core.officeengine.precision.OfficePrecisionAction.CAPTURE_TARGET),
-            OfficePrecisionState.QUERY_OBSERVED, targetCaptured(captureDigest),
+            OfficePrecisionState.QUERY_OBSERVED,
+            OfficePrecisionAnswer.TargetCaptured(
+                OfficePrecisionTargetAnswerFixture.presentation(
+                    handle, captureDigest, 4L, selectedPart = guidB, selectedPartIndex = 1,
+                ),
+            ),
         ))
-        runTicket(commandTicket("cap-p59", "captureTarget"))
+        val capture = runTicket(commandTicket("cap-p59", "captureTarget"))
+            as OfficeAiWire.Settlement.Success
+        val captureFacts = capture.body["facts"] as kotlinx.serialization.json.JsonObject
+        assertEquals("1", (captureFacts["partIndex"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertEquals(guidB, (captureFacts["selectedPart"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertEquals(1, captures.get(session, handle)!!.partIndex)
         val marker = "selected-slide marker"
         ports.precisionScript.add(precisionResult(
             OfficePrecisionRequest("apply-p59", session, 9L,
@@ -1302,7 +1326,7 @@ class OfficeAiHostServiceTest {
             OfficePrecisionAnswer.MutationApplied(
                 listOf("pre-effect-part", "pre-effect-empty-selection", "pasteresult-success"),
                 bytes(marker).size, OfficePrecisionContentReadback.UNAVAILABLE, captureDigest, handle,
-                preEffectEvidence = preEffect("apply-p59", ""),
+                preEffectEvidence = preEffect("apply-p59", "", partId = guidB),
             ),
         ))
         runTicket(commandTicket("apply-p59", "applyText", "targetHandle" to handle), staged = bytes(marker))
@@ -1318,8 +1342,95 @@ class OfficeAiHostServiceTest {
         assertEquals("a real empty selection means insertion, not missing evidence",
             "", input.baseline?.priorSelectionText)
         assertEquals(1, input.partIndex)
-        assertEquals("1", selections.forEffect(session, 9L, handle, "apply-p59")?.partId)
+        assertEquals(1, input.baseline?.partIndex)
+        assertEquals(guidB, selections.forEffect(session, 9L, handle, "apply-p59")?.partId)
         assertNull(selections.forEffect(session, 9L, handle, "other-op"))
+    }
+
+    /**
+     * The concrete anti-fake-witness fences (part-ordinal84): with the exact
+     * capture present, the host-side engine witness decides the saved
+     * verification ordinal. An UNWITNESSED presentation capture (null
+     * ordinal — absent/duplicate-ambiguous/malformed parts witness) is
+     * refused even when the ticket carries an index: the old ticket-first
+     * fallback hid exactly that null and would have verified a model-named
+     * slide without any native witness. A DISAGREEING relay (stale/crossed
+     * capture context) likewise refuses instead of silently trusting either
+     * side.
+     */
+    @Test
+    fun pptxVerifyRefusesUnwitnessedOrDisagreeingPartIndexLineage() {
+        newService()
+        val guidA = "{A1A2A3A4-B1B2-C1C2-D1D2-E1E2E3E4E5A0}"
+        val guidB = "{A1A2A3A4-B1B2-C1C2-D1D2-E1E2E3E4E5B1}"
+        val snapshot = docSnapshot(path = "qa/slides-witness.pptx", formatExt = "pptx")
+        seedSession(snapshot)
+        val captureDigest = sha(File(snapshot.stagedWorkingCopyPath!!).readBytes())
+
+        // Capture WITHOUT any ordinal witness for its braced GUID.
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("cap-unw", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.CAPTURE_TARGET),
+            OfficePrecisionState.QUERY_OBSERVED,
+            OfficePrecisionAnswer.TargetCaptured(
+                OfficePrecisionTargetAnswerFixture.presentation(
+                    handle, captureDigest, 4L,
+                    selectedPart = guidB, selectedPartIndex = null,
+                ),
+            ),
+        ))
+        val cap = runTicket(commandTicket("cap-unw", "captureTarget")) as OfficeAiWire.Settlement.Success
+        val capFacts = cap.body["facts"] as kotlinx.serialization.json.JsonObject
+        assertFalse(capFacts.containsKey("partIndex"))
+        assertNull(captures.get(session, handle)!!.partIndex)
+        val export = packageFile("pptx")
+        val sha = sha(export.readBytes())
+        val unwitnessed = runTicket(verifyJsonBytes(
+            "pptx", export.canonicalPath, sha, "applyText",
+            "verificationMode" to "liveEffect", "effectOpId" to "apply-unw",
+            "exportOpId" to "seed-export-unw", "sessionToken" to session, "generation" to "9",
+            "targetHandle" to handle, "taskID" to task, "expectPartIndex" to "1",
+            "preEditSha256" to captureDigest,
+        ), staged = bytes("marker"))
+        assertEquals("structureInvalid", (unwitnessed as OfficeAiWire.Settlement.Failure).code)
+
+        // Fresh session capture WITH the witnessed ordinal 1; a disagreeing
+        // relay refuses, while an absent relay still verifies at 1.
+        val handle2 = "e".repeat(32)
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("cap-wit", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.CAPTURE_TARGET),
+            OfficePrecisionState.QUERY_OBSERVED,
+            OfficePrecisionAnswer.TargetCaptured(
+                OfficePrecisionTargetAnswerFixture.presentation(
+                    handle2, captureDigest, 4L,
+                    selectedPart = guidB, selectedPartIndex = 1,
+                ),
+            ),
+        ))
+        runTicket(commandTicket("cap-wit", "captureTarget"))
+        val crossed = runTicket(verifyJsonBytes(
+            "pptx", export.canonicalPath, sha, "applyText",
+            "verificationMode" to "liveEffect", "effectOpId" to "apply-wit",
+            "exportOpId" to "seed-export-wit", "sessionToken" to session, "generation" to "9",
+            "targetHandle" to handle2, "taskID" to task, "expectPartIndex" to "0",
+            "preEditSha256" to captureDigest,
+        ), staged = bytes("marker"))
+        assertEquals("structureInvalid", (crossed as OfficeAiWire.Settlement.Failure).code)
+        assertTrue(verifier.inputs.isEmpty())
+
+        runTicket(verifyJsonBytes(
+            "pptx", export.canonicalPath, sha, "applyText",
+            "verificationMode" to "liveEffect", "effectOpId" to "apply-wit2",
+            "exportOpId" to "seed-export-wit2", "sessionToken" to session, "generation" to "9",
+            "targetHandle" to handle2, "taskID" to task,
+            "preEditSha256" to captureDigest,
+        ), staged = bytes("marker")) as OfficeAiWire.Settlement.Success
+        val input = verifier.inputs.last()
+        // The captured native witness — not the caller — decides the ordinal.
+        assertEquals(1, input.partIndex)
+        assertEquals(1, input.baseline?.partIndex)
+        assertEquals(guidB, captures.get(session, handle2)!!.selectedPart)
     }
 
     @Test
@@ -1491,10 +1602,36 @@ internal object OfficePrecisionTargetAnswerFixture {
         inputEpoch = 0,
         editEpoch = 0,
         documentModified = false,
-        docType = "calc",
+        docType = "spreadsheet",
         partsCount = 3,
         selectedPart = "1",
+        // The documented spreadsheet decimal identifier IS the logical
+        // ordinal (pinned documentStatus rule) — exactly what the engine
+        // carries on this answer since part-ordinal84; the host no longer
+        // re-derives it by decimal-parsing selectedPart at this boundary.
+        selectedPartIndex = 1,
         capturedAtElapsedMs = 1L,
         expiresAtElapsedMs = Long.MAX_VALUE / 4,
+    )
+
+    /** Presentation capture in the REAL producer shape: the pinned Impress
+     * producer names the shown page ONLY by its braced GUID (kit/KitHelper.
+     * hpp documentStatus + fetchPartsData @2333344) — the decimal fixture
+     * this test used before was parroting the wrong algorithm.
+     * [selectedPartIndex] null models an answer that witnesses no unique
+     * ordinal (absent/duplicate/malformed parts), which downstream MUST be
+     * refused rather than papered over by the ticket relay. */
+    fun presentation(
+        handle: String,
+        workingCopySha: String?,
+        workingCopyBytes: Long,
+        selectedPart: String,
+        selectedPartIndex: Int?,
+        partsCount: Int? = 2,
+    ): OfficePrecisionTarget = fixtureWith(handle, workingCopySha, workingCopyBytes).copy(
+        docType = "presentation",
+        partsCount = partsCount,
+        selectedPart = selectedPart,
+        selectedPartIndex = selectedPartIndex,
     )
 }

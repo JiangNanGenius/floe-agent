@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.content.res.Configuration
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
@@ -38,6 +40,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.floe.android.design.Floe
@@ -95,6 +99,41 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
      */
     private var closeAck: android.os.IBinder? = null
     private var viewerIncarnation = -1L
+
+    /**
+     * Parent approval-notice capability + the App-minted review target
+     * (OfficeApprovalNoticePolicy), received ONLY from this Activity's own
+     * launch Intent. Present only for OWNED opens: the foreground viewer
+     * polls the capability while resumed and, when the OWNING conversation
+     * holds a captured pending approval, shows one banner whose Review
+     * action raises the existing chat Activity (the review ComponentName)
+     * WITHOUT closing this document. The banner grants, approves, cancels
+     * and replays nothing — review stays on the ordinary conversation card.
+     */
+    private var approvalNoticeCapability: android.os.IBinder? = null
+    private var reviewComponent: ComponentName? = null
+
+    /** Live pending-approval answer for this exact mount (null = none/not
+     *  applicable). Display state only: the parent re-validates ownership on
+     *  EVERY query, so a close/settle/replacement withdraws the banner by
+     *  itself on the next poll. The tool name is a GATE signal only: the
+     *  banner never renders it (office-return109 product-copy rule) — the
+     *  identifier stays where it is meaningful, the explicit approval card
+     *  in the owning conversation. */
+    private var approvalNoticeTool: String? by mutableStateOf(null)
+
+    /** One dedicated poll thread: the synchronous parent transact never runs
+     *  on the main thread. Started only in onResume, torn down in onPause. */
+    private var noticeThread: HandlerThread? = null
+    private var noticeHandler: Handler? = null
+    // EXPLICIT Looper (office-return109, Main review): a field initializer
+    // runs while the Activity base context is NOT yet attached, so the
+    // ContextWrapper.getMainLooper() receiver behind a bare `mainLooper`
+    // risks a launch NPE. Looper.getMainLooper() is a static and attaches
+    // nothing. The poll stays one background HandlerThread with the main
+    // apply kept sequence-fenced through this handler.
+    private val mainHandler = Handler(android.os.Looper.getMainLooper())
+    private var noticeSeq = 0L
 
     /**
      * R2 generic host save-target channel (OfficeHostSaveChannel), received
@@ -321,6 +360,19 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         // capability — an inert IBinder reference from our own non-exported
         // launch Intent, used only for the fenced handoff transactions.
         hostSaveChannel = intent.extras?.getBinder(OfficeEngineCommandsPolicy.EXTRA_HOST_SAVE_CHANNEL)
+        // G05-R3 approval-notice capability + App-owned review target: same
+        // trust model again. Both are present only for OWNED opens; either
+        // missing simply means this surface never shows the banner.
+        approvalNoticeCapability = intent.extras?.getBinder(OfficeApprovalNoticePolicy.EXTRA_APPROVAL_NOTICE)
+        reviewComponent = if (android.os.Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(
+                OfficeApprovalNoticePolicy.EXTRA_REVIEW_COMPONENT,
+                ComponentName::class.java,
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<ComponentName>(OfficeApprovalNoticePolicy.EXTRA_REVIEW_COMPONENT)
+        }
 
         if (!OfficeWebViewDirectory.ensureOnce()) {
             deliverLocalFailure(OfficeFailureCode.WEBVIEW_ISOLATION_FAILED, null)
@@ -399,6 +451,28 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                         if (token != null) service?.detachWebView(view, token, nativeGeneration)
                         if (viewerView === view) viewerView = null
                         view.destroy()
+                    },
+                    approvalNoticeTool = approvalNoticeTool,
+                    onReviewApproval = {
+                        // Bring the existing chat Activity forward WITHOUT
+                        // closing this document: the owned editContext stays
+                        // valid and the ordinary approval card is already
+                        // projected there. Return to THIS viewer is the
+                        // explicit "Back to document" strip the App shows on
+                        // the owning conversation while this mount is live
+                        // (office-return109). System Back on a compact chat
+                        // surface keeps its ordinary New Task semantics and
+                        // must NOT be claimed to return here — that was the
+                        // unproven 107 assumption Main's review rejected.
+                        val target = reviewComponent
+                        if (target != null) {
+                            runCatching {
+                                startActivity(
+                                    Intent().setComponent(target)
+                                        .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
+                                )
+                            }
+                        }
                     },
                 )
                 // Dirty-close guard (editable mounts): explicit user choice,
@@ -852,7 +926,70 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         if (hasFocus) request?.sessionToken?.let { service?.refreshVisibleFrame(it, nativeGeneration) }
     }
 
+    override fun onResume() {
+        super.onResume()
+        startApprovalNoticePoll()
+    }
+
+    override fun onPause() {
+        stopApprovalNoticePoll()
+        super.onPause()
+    }
+
+    /**
+     * Starts the approval-notice poll for THIS exact mount. The synchronous
+     * parent query runs on ONE dedicated background thread (never the main
+     * thread); results are applied on the main thread behind a generation
+     * fence, so an answer that outlives its poll round (pause/close) can
+     * never overwrite newer state. No query is issued for unowned opens or
+     * while the capability is absent — the banner simply never exists there.
+     * The poll re-checks continuously because an approval may be captured at
+     * any time while the document is open, and resolved just as freely in
+     * the chat the banner routes to.
+     */
+    private fun startApprovalNoticePoll() {
+        if (noticeThread != null) return
+        val capability = approvalNoticeCapability ?: return
+        val token = request?.sessionToken ?: return
+        val ownerTaskId = request?.ownerTaskId ?: return
+        val incarnation = viewerIncarnation
+        if (incarnation < 1L) return
+        val thread = HandlerThread("office-approval-notice").apply { start() }
+        val handler = Handler(thread.looper)
+        noticeThread = thread
+        noticeHandler = handler
+        val seq = ++noticeSeq
+        val poll = object : Runnable {
+            override fun run() {
+                val answer = OfficeApprovalNotice.queryPending(
+                    capability,
+                    token,
+                    incarnation,
+                    ownerTaskId,
+                )
+                mainHandler.post {
+                    // The parent validated the exact current VIEWING operation
+                    // on every query: a close/settle/replacement simply
+                    // answers null and the banner withdraws by itself.
+                    if (seq == noticeSeq) approvalNoticeTool = answer
+                }
+                handler.postDelayed(this, APPROVAL_NOTICE_POLL_MS)
+            }
+        }
+        handler.post(poll)
+    }
+
+    /** Tears the poll down and invalidates any in-flight answer. */
+    private fun stopApprovalNoticePoll() {
+        noticeSeq++
+        noticeHandler?.removeCallbacksAndMessages(null)
+        noticeThread?.quitSafely()
+        noticeHandler = null
+        noticeThread = null
+    }
+
     override fun onDestroy() {
+        stopApprovalNoticePoll()
         exportPurposes.clear()
         pdfBusyKey = null
         pdfRenderHost?.release()
@@ -1052,6 +1189,13 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     }
 
     companion object {
+        /** Approval-notice poll cadence while the viewer is foreground. A
+         *  captured Ask-first approval is human-driven state (it resolves
+         *  only by an explicit chat decision), so a one-second visibility
+         *  delay is honest and cheap; the query itself is a tiny same-UID
+         *  binder round-trip on a dedicated thread. */
+        private const val APPROVAL_NOTICE_POLL_MS = 1_000L
+
         internal fun intentFor(context: Context, request: OfficePreviewRequest): Intent =
             Intent(context, OfficePreviewActivity::class.java).apply {
                 putExtra(OfficeViewerOutcome.EXTRA_REQUEST, request)
@@ -1103,6 +1247,14 @@ private fun OfficeViewerScreen(
     createView: (Context) -> COWebView?,
     onViewReady: (COWebView?) -> Unit,
     onViewLeaving: (COWebView) -> Unit,
+    /** G05-R3 approval notice: non-null ONLY while the parent answers that
+     *  this exact mount's OWNING conversation holds a captured pending
+     *  approval (the tool name itself is an admission signal and is NOT
+     *  rendered here — office-return109). The row below the toolbar appears
+     *  ONLY while pending; it navigates to review and never decides
+     *  anything itself. */
+    approvalNoticeTool: String? = null,
+    onReviewApproval: () -> Unit = {},
 ) {
     val state = progress?.state ?: OfficeViewerState.IDLE
     val editorReady = editableSession &&
@@ -1252,6 +1404,59 @@ private fun OfficeViewerScreen(
             },
             showHairline = true,
         )
+        // G05-R3 approval notice (office-approval107, copy amended by
+        // office-return109): one slim row, shown ONLY while the parent
+        // answers that THIS exact mount's owning conversation holds a
+        // captured pending approval (the parent re-validates on every poll,
+        // so close/settle/replacement withdraws it by itself). Tapping
+        // Review raises the existing chat Activity — the document stays
+        // open underneath and the approval is reviewed and decided on the
+        // ordinary conversation card. The compact return back to THIS
+        // document is the explicit "Back to document" strip the App owns on
+        // the conversation surface (109); Back here is NOT claimed. The
+        // pending tool identifier is deliberately NOT rendered in this row:
+        // product copy stays human ("review it in the chat task") and the
+        // identifier remains on the explicit approval card where it is
+        // meaningful. This row never decides anything and never renders
+        // engine details.
+        if (approvalNoticeTool != null) {
+            val approvalTitle = stringResource(R.string.office_approval_banner_title)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .clickable(onClick = onReviewApproval)
+                    .semantics { contentDescription = approvalTitle }
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Image(
+                    imageVector = FloeIcons.ShieldAlert,
+                    contentDescription = null,
+                    colorFilter = ColorFilter.tint(Floe.colors.pending),
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    FloeText(
+                        text = approvalTitle,
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.label,
+                    )
+                    FloeText(
+                        text = stringResource(R.string.office_approval_banner_body),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                FloeText(
+                    text = stringResource(R.string.office_approval_banner_review),
+                    style = Floe.typography.bodyEmphasized,
+                    color = Floe.colors.accent,
+                )
+            }
+        }
         // Honest lifecycle representation (Main decision 2026-10-26): the
         // opening row is shown only while a document genuinely still opens.
         // FAILED keeps the notice row with the actual error detail; CLOSING

@@ -32,6 +32,29 @@ final class LinuxShellBackendTests: XCTestCase {
         return (backend, transport)
     }
 
+    /// Builds the backend over a forwarding transport that answers the CURRENT
+    /// explicit-EOF protocol honestly (see `ExplicitEofAckShellTransport` at
+    /// the bottom of this file). The shared fake stays available for scripts
+    /// and start/poll evidence; only the `shellInput` replies differ.
+    private func makeBackendWithExplicitEofAck(
+        fake: FakeLinuxShellTransport = FakeLinuxShellTransport()
+    ) -> (backend: AndroidLinuxShellBackend, fake: FakeLinuxShellTransport,
+          eof: ExplicitEofAckShellTransport) {
+        let configuration = AndroidLinuxShellBackend.Configuration(
+            pollIntervalNanos: 1_000_000,
+            releaseGrace: 0.2,
+            stdinWriteRetries: 8,
+            reconcileIntervalNanos: 5_000_000,
+            reconcileObservation: 30
+        )
+        let ack = ExplicitEofAckShellTransport(fake)
+        let backend = AndroidLinuxShellBackend(
+            transport: ack,
+            readiness: StaticLinuxShellReadiness(qualified: true),
+            configuration: configuration)
+        return (backend, fake, ack)
+    }
+
     private func runRequest(root: URL,
                             runID: UUID? = UUID(),
                             conversationID: UUID? = nil,
@@ -121,8 +144,19 @@ final class LinuxShellBackendTests: XCTestCase {
     // MARK: - Merged-output honesty
 
     func testRunMapsMergedPTYOutputToExitedWithEmptyStderr() async {
+        // Corrected against the CURRENT explicit-EOF protocol (private
+        // postimage, job-cfeb544233f74be2). Original failure (attempt-02):
+        // stderr carried "[metadata] stdin EOF unconfirmed (reply carried no
+        // stdinEof state); no delivery was assumed" because the shared
+        // FakeLinuxShellTransport predates the additive `stdinEof` field and
+        // never acknowledges the one-shot EOF page. The merged-output
+        // assertions below stay byte-for-byte; the fake host now gives the
+        // genuine explicit "closed" acknowledgment, so the empty note channel
+        // is proven for the right reason, never by ignoring unconfirmed
+        // delivery (AndroidLinuxShellStdinEofTests keeps asserting that note
+        // for a deliberately non-acknowledging transport).
         let root = try! ShellTestRoot.make()
-        let (backend, transport) = makeBackend()
+        let (backend, transport, eof) = makeBackendWithExplicitEofAck()
         let conversation = UUID()
         transport.pollScript = { session, cursor, nth in
             if nth == 1 {
@@ -141,6 +175,9 @@ final class LinuxShellBackendTests: XCTestCase {
         XCTAssertFalse(truncated)
         XCTAssertFalse(stderrTruncated)
         XCTAssertGreaterThanOrEqual(durationMs, 0)
+        XCTAssertEqual(eof.operations, [.eofAcknowledged],
+                       "a nil-stdin one-shot run sends exactly one separate empty EOF page command")
+        XCTAssertTrue(transport.written.isEmpty, "nil stdin sends no data pages")
         // Engine start carried the exact owner identities unchanged.
         XCTAssertEqual(transport.starts.count, 1)
         XCTAssertEqual(transport.starts[0].conversationID, conversation)
@@ -426,8 +463,17 @@ final class LinuxShellBackendTests: XCTestCase {
     }
 
     func testStdinOneShotWritesThenEot() async throws {
+        // Corrected against the CURRENT explicit-EOF protocol (private
+        // postimage, job-cfeb544233f74be2). Original failure (attempt-02):
+        // "8 bytes" != "9 bytes" — this fixture still expected the pre-EOF
+        // in-band PTY 0x04 EOT byte. The current protocol never invents a
+        // trailing control byte: the payload rides shell.input data pages and
+        // ONE separate EMPTY page commands the close, acknowledged by the
+        // engine with stdinEof == "closed" (AndroidLinuxShellStdinEofTests
+        // proves the same contract independently). Method name kept stable
+        // for case identity; the assertion now covers payload + separate EOF.
         let root = try! ShellTestRoot.make()
-        let (backend, transport) = makeBackend()
+        let (backend, transport, eof) = makeBackendWithExplicitEofAck()
         transport.pollScript = { session, cursor, nth in
             if nth == 1 { return FakeLinuxShellTransport.page(session: session, cursor: cursor, text: "") }
             return FakeLinuxShellTransport.page(session: session, cursor: cursor, text: "",
@@ -435,8 +481,11 @@ final class LinuxShellBackendTests: XCTestCase {
         }
         let outcome = await backend.run(runRequest(root: root, stdin: "feed me\n"), cancellation: nil)
         guard case .exited = outcome else { return XCTFail("expected exited, got \(outcome)") }
-        let all = transport.written.map(\.bytes).reduce(Data(), +)
-        XCTAssertEqual(all, Data("feed me\n\u{04}".utf8), "stdin rides shell.input chunks then the PTY EOT byte")
+        XCTAssertEqual(eof.operations, [.payload(Data("feed me\n".utf8)), .eofAcknowledged],
+                       "payload page first, then exactly one separate empty EOF page — no invented EOT byte")
+        XCTAssertEqual(eof.eofPageCount, 1, "exactly one EOF command operation")
+        XCTAssertEqual(transport.written.map(\.bytes).reduce(Data(), +), Data("feed me\n".utf8),
+                       "the engine records data pages only; EOF is a separate zero-byte command")
     }
 
     func testTransportFailureSurfacesFailedWithoutAssumingAnything() async {
@@ -461,5 +510,78 @@ private final class PollFlipCounter: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         seen += 1
         return seen == 1
+    }
+}
+
+/// Forwarding fake host for the CURRENT explicit-EOF protocol (private
+/// postimage, job-cfeb544233f74be2, G05-R3 native-qualification90).
+///
+/// Why this exists: `FakeLinuxShellTransport.shellInput` predates the additive
+/// `stdinEof` reply field, so it never acknowledges the one-shot EOF command
+/// page. `AndroidLinuxShellBackend.sendStdinEof` honestly treats a reply with
+/// no `stdinEof` state as UNCONFIRMED and composes a stdinFailureNote — which
+/// is the correct production behaviour (never invent a delivery success). Two
+/// pre-EOF fixtures therefore failed on the frozen tree for reasons unrelated
+/// to the terminal batch: the merged-output fixture saw the note in stderr,
+/// and the one-shot stdin fixture still expected an invented in-band 0x04 EOT
+/// byte that the current protocol never sends.
+///
+/// This transport behaves exactly like the wrapped fake for every other call.
+/// A zero-byte `shell.input` page (the EOF command) is answered with the
+/// genuine engine acknowledgment `stdinEof == "closed"` and recorded as its
+/// own ordered operation; payload pages forward unchanged. Nothing here
+/// widens a gate, skips a note or rewrites terminal evidence.
+private final class ExplicitEofAckShellTransport: LinuxShellTransport, @unchecked Sendable {
+    enum Operation: Equatable {
+        case payload(Data)
+        case eofAcknowledged
+    }
+
+    let inner: FakeLinuxShellTransport
+    private let lock = NSLock()
+    private var _operations: [Operation] = []
+
+    init(_ inner: FakeLinuxShellTransport) { self.inner = inner }
+
+    /// Sync helper: NSLock is unavailable directly from async contexts.
+    private func record(_ operation: Operation) {
+        lock.lock(); defer { lock.unlock() }
+        _operations.append(operation)
+    }
+
+    var operations: [Operation] {
+        lock.lock(); defer { lock.unlock() }
+        return _operations
+    }
+    var eofPageCount: Int { operations.filter { $0 == .eofAcknowledged }.count }
+    var payloadBytes: Data {
+        operations.reduce(Data()) { acc, op in
+            if case .payload(let d) = op { return acc + d }
+            return acc
+        }
+    }
+
+    func shellStart(_ request: LinuxShellStartRequest) async throws -> LinuxShellStartReply {
+        try await inner.shellStart(request)
+    }
+    func shellPoll(_ request: LinuxShellPollRequest) async throws -> LinuxShellPollReply {
+        try await inner.shellPoll(request)
+    }
+    func shellResize(_ request: LinuxShellResizeRequest) async throws -> LinuxShellResizeReply {
+        try await inner.shellResize(request)
+    }
+    func shellCancel(_ request: LinuxShellCancelRequest) async throws -> LinuxShellCancelReply {
+        try await inner.shellCancel(request)
+    }
+    func shellInput(_ request: LinuxShellInputRequest) async throws -> LinuxShellInputReply {
+        if request.bytes.isEmpty {
+            // The EOF command page: exactly the engine's explicit close
+            // acknowledgment, never bundled with data acceptance. NSLock is
+            // unavailable from async contexts, so record through a sync helper.
+            record(.eofAcknowledged)
+            return LinuxShellInputReply(acceptedBytes: 0, stdinEof: "closed")
+        }
+        record(.payload(request.bytes))
+        return try await inner.shellInput(request)
     }
 }

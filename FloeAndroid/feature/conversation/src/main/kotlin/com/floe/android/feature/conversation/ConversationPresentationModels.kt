@@ -251,6 +251,31 @@ data class ApprovalCardUi(
     val key: String get() = "$runId/$approvalId"
 }
 
+/**
+ * Host truth (never inferred in this module): THIS conversation owns a LIVE
+ * interactive Linux terminal that currently holds the single runtime-UID
+ * engine workload slot, so a proposed engine command cannot start until the
+ * user explicitly decides to end that terminal.
+ *
+ * Both fields are opaque fences, NOT user copy: the host re-validates the
+ * exact session identity and Root generation at consent time and refuses
+ * rather than stopping a session that replaced this one. Null on the holder
+ * means no such terminal is live, so an ordinary approval card is unchanged.
+ */
+data class TerminalHandoffConflictUi(
+    val sessionToken: String,
+    val nativeEpoch: Long,
+)
+
+/** Typed refusal of one explicitly-consented handoff: the captured terminal
+ * did NOT really release the engine, so nothing was approved or dispatched.
+ * [code] is a diagnostic identity for the opened details only — the ordinary
+ * surface shows one short localized sentence. */
+data class TerminalHandoffRefusalUi(
+    val approvalKey: String,
+    val code: String,
+)
+
 /* ------------------------------ pending inputs ------------------------------ */
 
 /** ⇄ RunningInputMode (AppSettings): what Enter does while a run is active. */

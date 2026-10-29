@@ -29,6 +29,9 @@ import CoreFoundation
 import FloeCore
 import FloeTools
 import FloeAndroidShellTools
+// Owned-slot conflict producer registration (Main ruling 2026-10-28):
+// FloeAndroidCore already depends on FloeAgentRuntime.
+import FloeAgentRuntime
 
 // MARK: - Limits
 
@@ -128,6 +131,17 @@ public final class G04TerminalHostMailbox: @unchecked Sendable {
         }
         condition.broadcast()
         condition.unlock()
+        // Publish THIS generation's real terminal owner as the owned-slot
+        // conflict producer for the model admission gate (Main ruling
+        // 2026-10-28). Registration is strictly-newer-epoch only, so a late
+        // retiring generation can never replace a newer producer, and an
+        // unregistered generation simply reports no conflict — the ordinary
+        // approval path is then unchanged. Outside the condition lock: the
+        // registry owns its own lock.
+        LinuxEngineSlotAuthority.register(
+            G04TerminalSlotConflictProbe(store: storeValue, epoch: newEpoch),
+            epoch: newEpoch
+        )
         oldDispatch.forEach { $0.cancel() }
         Task { await retiringStore?.retire(); await retiringServers?.retireAll(reason: "generation-replaced") }
         // Load-on-Root-bind: the persisted language choices preload into the
@@ -168,6 +182,10 @@ public final class G04TerminalHostMailbox: @unchecked Sendable {
         counters.fenced += 1
         condition.broadcast()
         condition.unlock()
+        // Exact-generation retirement of the owned-slot conflict producer: a
+        // retired generation must never keep answering the admission gate,
+        // and a newer registered generation is never cleared by this call.
+        LinuxEngineSlotAuthority.retire(epoch: closingEpoch)
         activeDispatch.forEach { $0.cancel() }
         Task {
             await retiringStore?.retire()
@@ -614,6 +632,26 @@ public final class G04TerminalHostMailbox: @unchecked Sendable {
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
               let text = String(data: data, encoding: .utf8) else { return "{\"error\":\"stats\"}" }
         return text
+    }
+}
+
+// MARK: - Owned-slot conflict producer
+
+/// The exact-generation adapter that publishes the REAL terminal owner's
+/// conflict truth to the model admission gate. It holds no state of its own
+/// and decides nothing: a store whose generation moved on answers nil, so a
+/// retired generation can never report a live terminal it no longer owns.
+struct G04TerminalSlotConflictProbe: LinuxEngineSlotConflictProbe {
+    let store: G04TerminalStore
+    let epoch: UInt64
+
+    func interactiveTerminalHoldingEngineSlot(
+        conversationID: UUID
+    ) async -> LinuxEngineSlotConflict? {
+        // `G04TerminalStore.epoch` is an immutable Sendable `let`, so this
+        // generation fence is a synchronous read (no needless await).
+        guard store.epoch == epoch else { return nil }
+        return await store.interactiveTerminalHoldingEngineSlot(conversationID: conversationID)
     }
 }
 

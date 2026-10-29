@@ -12,6 +12,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -24,9 +25,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -48,10 +51,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
 import com.floe.android.design.FloeCheckboxRow
@@ -61,6 +66,7 @@ import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloeSelectionStyle
 import com.floe.android.design.FloeSegmented
+import com.floe.android.design.FloeText
 import com.floe.android.design.FloeThemeMode
 import com.floe.android.design.FloeVerticalDivider
 import com.floe.android.design.InspectorContent
@@ -548,7 +554,63 @@ private fun FloeShellContent(
         }
 
         val detail: @Composable () -> Unit = {
+            // G05-R3 office-return109 explicit owned-document return strip.
+            // Visible ONLY on the conversation that OWNS the live VIEWING
+            // Office mount; at click the controller re-proves the exact
+            // identity + ownerCurrent fence and dispatches the raise under
+            // the SAME lock, so no settle or replacement mount can be
+            // selected in between. It cannot steal another chat's,
+            // settings' or the home surface's navigation — and ordinary
+            // system Back semantics elsewhere stay EXACTLY as before. One
+            // tap raises the SAME viewer instance (document and owned
+            // editContext preserved; no close, recreate or replay);
+            // close/settle/replace clears the published identity and the
+            // strip disappears with it. Provider-pick opens have no owner
+            // and never show it.
+            val officeState = officePreviews?.state?.collectAsState()?.value
+            val visibleConversationId =
+                (selection as? SidebarSelection.Conversation)?.conversationId
+            val ownedReturnTarget = officeState?.ownedReturn?.takeIf { target ->
+                visibleConversationId != null && target.ownerTaskId == visibleConversationId
+            }
             Column(Modifier.fillMaxSize()) {
+                ownedReturnTarget?.let { target ->
+                    val returnLabel = stringResource(
+                        R.string.office_return_title,
+                        officeState?.viewer?.request?.displayName.orEmpty(),
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 44.dp)
+                            .clickable { officePreviews?.requestOwnedViewerRestore(target) }
+                            .semantics { contentDescription = returnLabel }
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Image(
+                            imageVector = FloeIcons.ChevronBack,
+                            contentDescription = null,
+                            colorFilter = ColorFilter.tint(Floe.colors.accent),
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        FloeText(
+                            text = returnLabel,
+                            modifier = Modifier.weight(1f),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.label,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        FloeText(
+                            text = stringResource(R.string.office_return_action),
+                            style = Floe.typography.bodyEmphasized,
+                            color = Floe.colors.accent,
+                        )
+                    }
+                }
                 FloeDetailColumn(
                     selection = selection,
                     showSidebarToggle = !persistentSidebar && twoColumn,
@@ -687,6 +749,10 @@ private fun FloeShellContent(
                 }
             },
         )
+
+        // G05-R3 Alpha14: one self-update surface (full channel only; the
+        // Play flavour object renders nothing and opens no dialog).
+        com.floe.android.host.update.AppUpdateFeature.DialogHost()
 
         if (previewVisible) {
             ComponentPreviewScreen(onDismiss = { previewVisible = false })

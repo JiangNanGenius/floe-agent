@@ -2,6 +2,7 @@
 package com.floe.android.host.officeai
 
 import com.floe.android.core.officeengine.precision.OfficePrecisionAction
+import com.floe.android.core.officeengine.precision.OfficePrecisionAttestation
 import com.floe.android.core.officeengine.precision.OfficePrecisionFailure
 import com.floe.android.core.officeengine.precision.OfficePrecisionRequest
 import com.floe.android.core.officeengine.precision.OfficePrecisionResult
@@ -21,6 +22,17 @@ import org.junit.Test
  * UNKNOWN — never a clean rejected/nothing-sent claim and never an automatic
  * re-dispatch. Normal terminal results (including the client-side
  * UNKNOWN+TIMEOUT deadline shape) are SETTLED relays.
+ *
+ * office-background-repair118 (the actual C17 DOCX/PPTX first failures): the
+ * ENGINE's own pre-dispatch transport refusals (details `edit-preparation:*`,
+ * `mount-ended-*`, ...) share the REJECTED+TRANSPORT shape but are classified
+ * by the producer's OWN dispatch proof
+ * ([OfficePrecisionResult.attestation] ==
+ * [OfficePrecisionAttestation.REFUSED_BEFORE_DISPATCH], written only when no
+ * effect wire was dispatched). Those are SETTLED - relaying them as a
+ * post-send UNKNOWN fabricated a possible effect the engine had proven
+ * absent. A refusal attested AFTER an effect wire, or carrying any non-proof
+ * lineage, stays AMBIGUOUS_RETAINED.
  */
 class OfficeAiPrecisionTransportTest {
 
@@ -33,10 +45,11 @@ class OfficeAiPrecisionTransportTest {
         state: OfficePrecisionState,
         failure: OfficePrecisionFailure?,
         detail: String?,
+        attestation: String = "test",
     ): OfficePrecisionResult = OfficePrecisionResult(
         opId = "ap-1", sessionToken = "sess", generation = 7L,
         action = OfficePrecisionAction.SET_CELL_CONTENT, state = state, failure = failure,
-        detail = detail, answer = null, attestation = "test",
+        detail = detail, answer = null, attestation = attestation,
         submittedAtElapsedMs = 0L, completedAtElapsedMs = 1L,
     )
 
@@ -65,6 +78,56 @@ class OfficeAiPrecisionTransportTest {
         assertEquals(
             PrecisionTransportDisposition.AMBIGUOUS_RETAINED,
             classifyPrecisionResult(null),
+        )
+    }
+
+    @Test
+    fun engineProvenPreDispatchRefusalIsSettledNotAmbiguous() {
+        // The exact C17 first-failure shapes: the engine refused BEFORE any
+        // plan wire and said so in its own attestation. These must settle as
+        // the engine's own REJECTED result — never laundered into an
+        // ambiguous post-send UNKNOWN that fabricated a possible effect.
+        for (detail in listOf(
+            "edit-preparation:page-edit-hook-unavailable", // DOCX applyText
+            "edit-preparation:page-health-verification-failed", // PPTX selectSlide
+            "mount-ended-before-dispatch",
+        )) {
+            assertEquals(
+                "detail=$detail",
+                PrecisionTransportDisposition.SETTLED,
+                classifyPrecisionResult(result(
+                    OfficePrecisionState.REJECTED, OfficePrecisionFailure.TRANSPORT,
+                    detail, attestation = OfficePrecisionAttestation.REFUSED_BEFORE_DISPATCH,
+                )),
+            )
+        }
+    }
+
+    @Test
+    fun postDispatchRefusalLineageStaysAmbiguousAndRetained() {
+        // A refusal attested AFTER an effect-bearing wire was really posted is
+        // maybe-effect: re-read + honest UNKNOWN, NEVER settled and NEVER
+        // auto-replayed. The engine-detail catch-all must not widen it.
+        assertEquals(
+            PrecisionTransportDisposition.AMBIGUOUS_RETAINED,
+            classifyPrecisionResult(result(
+                OfficePrecisionState.REJECTED, OfficePrecisionFailure.TRANSPORT,
+                "mount-ended-before-step",
+                attestation = OfficePrecisionAttestation.REFUSED_AFTER_EFFECT_DISPATCH,
+            )),
+        )
+    }
+
+    @Test
+    fun engineDetailWithoutDispatchProofStaysAmbiguous() {
+        // The pre-dispatch attestation is the ONLY settled transport shape: an
+        // engine detail carrying a NON-proof lineage stays ambiguous/retained.
+        assertEquals(
+            PrecisionTransportDisposition.AMBIGUOUS_RETAINED,
+            classifyPrecisionResult(result(
+                OfficePrecisionState.REJECTED, OfficePrecisionFailure.TRANSPORT,
+                "edit-preparation:page-edit-hook-unavailable", attestation = "engine-other",
+            )),
         )
     }
 

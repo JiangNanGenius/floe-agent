@@ -3133,13 +3133,30 @@ public actor FloeAgentRuntime {
                 return .stopped(reason: verdict.reason ?? patternID)
             }
         }
+        // Owned-slot conflict (Main ruling 2026-10-28): a manual interactive
+        // terminal is HUMAN-owned work holding the single runtime-UID Linux
+        // engine slot. No execution policy, reusable grant, classifier or
+        // full-access window may silently take that slot away, so a real
+        // conflict in THIS conversation always becomes an explicit human
+        // decision on the existing approval surface — before the reusable
+        // grant shortcut below and before any policy is consulted. The
+        // runtime never stops a terminal, never fabricates a decision and
+        // never replays a failed command: the trusted host performs the
+        // close/join/real-release handoff and only then dispatches this exact
+        // already-proposed call once through the normal path. A conflict is
+        // never invented — no registered trusted producer means nil here and
+        // the ordinary path below stays byte-identical.
+        let engineSlotConflict = await LinuxEngineSlotAuthority.interactiveTerminalConflict(
+            conversationID: configuration.conversationID,
+            toolName: call.toolName
+        )
         // A human can deliberately choose a task/project/host scope on the
         // inline approval card. Reuse that non-single-use grant for later
         // matching calls in this activation instead of asking for the same
         // authority on every SSH/bootstrap step. The catastrophic gate above
         // still evaluates every concrete command, including reused grants.
         let authorizationIdentity = descriptor.authorizationIdentity
-        if let reusableGrant = grants.last(where: {
+        if engineSlotConflict == nil, let reusableGrant = grants.last(where: {
             !$0.scope.singleUse && !$0.isExpired()
                 && Self.scopePermits(
                     $0.scope,
@@ -3155,7 +3172,17 @@ public actor FloeAgentRuntime {
         let decision: ApprovalDecision
         let requiresModelReview = (policy as? any ApprovalReviewRouting)?
             .requiresModelReview(action) ?? (policy.policyName == "approval-model")
-        if !approvalDescriptor.isSideEffecting, !requiresModelReview {
+        if engineSlotConflict != nil {
+            // Typed conflict class on the existing escalation channel; the
+            // host renders its own short localized copy and offers the
+            // explicit "end the terminal, then run this command" action.
+            logger.info(
+                "toolDecision run=\(runID.uuidString) tool=\(call.toolName) policy=engine-slot-conflict decision=escalateToHuman"
+            )
+            decision = .escalateToHuman(
+                reason: LinuxEngineSlotConflict.approvalReasonToken
+            )
+        } else if !approvalDescriptor.isSideEffecting, !requiresModelReview {
             decision = .allow(scope: Self.approvalScope(for: call), expiresAt: nil)
         } else {
             if requiresModelReview {

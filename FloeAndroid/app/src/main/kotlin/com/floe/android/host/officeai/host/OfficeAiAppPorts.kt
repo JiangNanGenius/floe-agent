@@ -3,6 +3,7 @@ package com.floe.android.host.officeai
 
 import android.content.Context
 import android.os.SystemClock
+import com.floe.android.core.officeengine.precision.OfficePrecisionAttestation
 import com.floe.android.core.officeengine.precision.OfficePrecisionFailure
 import com.floe.android.core.officeengine.precision.OfficePrecisionRequest
 import com.floe.android.core.officeengine.precision.OfficePrecisionResult
@@ -157,6 +158,25 @@ internal class AppOfficeAiDocumentPorts(
      *    proof relays an honest UNKNOWN/retained result (no auto-replay, no
      *    auto-undo; the engine ledger keeps the possible effect and the
      *    later reconcile/collect path decides).
+     *
+     * A THIRD producer shares the REJECTED+TRANSPORT shape and must not be
+     * judged by this adapter's own client-local detail strings
+     * (office-background-repair118, the actual C17 DOCX `applyText` and PPTX
+     * `selectSlide` first failures): the ENGINE's own pre-dispatch refusals,
+     * whose details are `edit-preparation:*`, `mount-ended-*`,
+     * `resolved-wire-absent`, the quarantine tokens and so on. The engine
+     * attests its dispatch proof in [OfficePrecisionResult.attestation], and
+     * [OfficePrecisionAttestation.REFUSED_BEFORE_DISPATCH] is written only by
+     * a terminal that really dispatched no effect-bearing wire (the ledger
+     * rewrites that lineage when a later step was refused after step 0's wire
+     * was posted). Such a refusal is SETTLED: relaying it as an ambiguous
+     * post-send UNKNOWN fabricated a possible effect the engine had proven
+     * absent, which blocked every legitimate recovery, burned the bounded
+     * re-read on an answer the client poll had already CONSUMED
+     * (`readPrecisionAnswer` is destructive) and left the user with an
+     * unactionable "unknown". Everything without that proof stays ambiguous
+     * and retained exactly as before — this narrows the catch-all; it never
+     * widens a success, a save proof or a retry.
      */
     override suspend fun precision(
         request: OfficePrecisionRequest,
@@ -296,7 +316,17 @@ internal fun classifyPrecisionResult(result: OfficePrecisionResult?): PrecisionT
             "engine-command-binding-unavailable" -> PrecisionTransportDisposition.PRE_DISPATCH_RETRYABLE
             "binder-transport-failed", "poll-interrupted" ->
                 PrecisionTransportDisposition.AMBIGUOUS_RETAINED
-            else -> PrecisionTransportDisposition.AMBIGUOUS_RETAINED
+            // Every other REJECTED+TRANSPORT shape is ENGINE-produced, and the
+            // engine — not this adapter — knows whether a wire left. Its own
+            // attestation is the authoritative dispatch proof; the client's
+            // local refusals carry `client-local-refusal` and never reach
+            // this branch, so the two branches above stay exactly as pinned.
+            else ->
+                if (result.attestation == OfficePrecisionAttestation.REFUSED_BEFORE_DISPATCH) {
+                    PrecisionTransportDisposition.SETTLED
+                } else {
+                    PrecisionTransportDisposition.AMBIGUOUS_RETAINED
+                }
         }
     }
     return PrecisionTransportDisposition.SETTLED

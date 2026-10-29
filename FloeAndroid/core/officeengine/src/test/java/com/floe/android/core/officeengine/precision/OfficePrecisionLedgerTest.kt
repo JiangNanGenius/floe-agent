@@ -126,6 +126,29 @@ class OfficePrecisionLedgerTest {
         "{\"type\":\"spreadsheet\",\"partscount\":2,\"selectedpart\":\"0\"," +
             "\"width\":100,\"height\":100,\"viewid\":0}"
 
+    // Producer-pinned presentation identifiers (Collabora Mobile
+    // 26.04.4.2/937 @2333344185931274f9c49d6c12a408cefcef6844):
+    // kit/KitHelper.hpp documentStatus emits `selectedpart` as the core
+    // getPart() string, and for a presentation that is the page GUID in
+    // braced form; fetchPartsData concatenates one core getPartInfo object
+    // per page and the pinned Impress frontend reads exactly
+    // `parts[i].part` for its own setclientpart. A presentation `status:`
+    // NEVER carries a decimal selectedpart.
+    private val pageGuidA = "{A1A2A3A4-B1B2-C1C2-D1D2-E1E2E3E4E5A0}"
+    private val pageGuidB = "{A1A2A3A4-B1B2-C1C2-D1D2-E1E2E3E4E5B1}"
+    private val pageGuidC = "{A1A2A3A4-B1B2-C1C2-D1D2-E1E2E3E4E5C2}"
+
+    /** Pinned-shape presentation status JSON (payload only, no frame prefix). */
+    private fun presentationStatusJson(
+        selectedPart: String,
+        parts: List<String> = listOf(pageGuidA, pageGuidB, pageGuidC),
+    ): String =
+        "{\"type\":\"presentation\",\"partscount\":${parts.size}," +
+            "\"selectedpart\":\"$selectedPart\",\"width\":10,\"height\":10,\"viewid\":0," +
+            "\"parts\":[" + parts.joinToString(",") {
+            "{\"part\":\"$it\",\"width\":10,\"height\":10,\"mode\":0}"
+        } + "]}"
+
     private fun claimArmed(
         ledger: OfficePrecisionLedger,
         req: OfficePrecisionRequest,
@@ -433,9 +456,14 @@ class OfficePrecisionLedgerTest {
     fun errorForAnyDispatchedCommandIsConsumed() {
         val l = ledger()
         val run = claimArmed(l, request("n1", OfficePrecisionAction.SELECT_SLIDE, partId = "9"))
-        armDispatched(l, run, 0) // select-part fire-and-forget
-        l.markDispatched(run, 0)
-        armDispatched(l, run, 1) // part-readback armed
+        armDispatched(l, run, 0) // part-index-resolve `status` pull
+        assertTrue(
+            l.onFrame(statusFrame(statusJson)) is OfficePrecisionLedger.LedgerEvent.DispatchStep,
+        ) // spreadsheet keeps the documented decimal identifier
+        assertEquals("setclientpart part=9", l.wireForDispatch(run, 1))
+        armDispatched(l, run, 1) // select-part fire-and-forget
+        assertTrue(l.markDispatched(run, 1) is OfficePrecisionLedger.LedgerEvent.DispatchStep)
+        armDispatched(l, run, 2) // part-readback armed
         // The producer refuses the EARLIER setclientpart while the readback
         // is armed (e.g. an out-of-range part): still THIS op's refusal.
         val consumed = l.onFrame(errorFrame("setclientpart", "invalid"))
@@ -484,6 +512,52 @@ class OfficePrecisionLedgerTest {
     // ------------------------------------------------------------------
     // Selection / navigation: proven readbacks only, callback frames never
     // ------------------------------------------------------------------
+
+    @Test
+    fun preDispatchRefusalKeepsItsProvenNoEffectLineage() {
+        // office-background-repair118, the exact C17 first-failure shape:
+        // refused BEFORE any plan wire -> the no-effect token survives and the
+        // effect epoch does NOT move (nothing was dispatched).
+        val l = ledger()
+        val epochBefore = l.editEpoch()
+        val run = claimArmed(l, request("ref-pre", OfficePrecisionAction.SELECT_ALL_TEXT))
+        val refused = l.rejectRun(
+            run,
+            OfficePrecisionFailure.TRANSPORT,
+            "edit-preparation:page-edit-hook-unavailable",
+        )
+        assertNotNull(refused)
+        assertEquals(OfficePrecisionState.REJECTED, refused!!.state)
+        assertEquals(OfficePrecisionFailure.TRANSPORT, refused.failure)
+        assertEquals(OfficePrecisionAttestation.REFUSED_BEFORE_DISPATCH, refused.attestation)
+        assertEquals(epochBefore, l.editEpoch())
+    }
+
+    @Test
+    fun postDispatchRefusalCanNeverClaimPreDispatchLineage() {
+        // office-background-repair118: a fence re-check at a LATER step (the
+        // engine's `mount-ended-before-step`) refuses an ARMED run whose step-0
+        // effect wire was REALLY posted: the maybe-effect epoch advanced and the
+        // lineage can NEVER say "refused-before-dispatch", or the upper layer
+        // would wrongly claim no effect happened.
+        val l = ledger()
+        val epochBefore = l.editEpoch()
+        val run = claimArmed(l, request("ref-post", OfficePrecisionAction.SELECT_ALL_TEXT))
+        armDispatched(l, run, 0) // step-0 effect wire REALLY posted
+        val refused = l.rejectRun(
+            run,
+            OfficePrecisionFailure.SESSION_ENDING,
+            "mount-ended-before-step",
+        )
+        assertNotNull(refused)
+        assertEquals(OfficePrecisionState.REJECTED, refused!!.state)
+        assertEquals(epochBefore + 1, l.editEpoch())
+        assertEquals(
+            OfficePrecisionAttestation.REFUSED_AFTER_EFFECT_DISPATCH,
+            refused.attestation,
+        )
+        assertFalse(refused.attestation.contains(OfficePrecisionAttestation.REFUSED_BEFORE_DISPATCH))
+    }
 
     @Test
     fun selectAllTextVerifiesOnlyThroughProvenReadback() {
@@ -551,38 +625,350 @@ class OfficePrecisionLedgerTest {
         val l = ledger()
         val run = claimArmed(l, request("n1", OfficePrecisionAction.SELECT_SLIDE, partId = "2"))
         armDispatched(l, run, 0)
-        l.markDispatched(run, 0) // setclientpart posted
-        armDispatched(l, run, 1)
-        // The callback-emitted setpart echo is corroboration only: it can
-        // never settle the operation, whatever part it names.
+        // The callback-emitted setpart echo can never settle the mandatory
+        // synchronous resolve pull either, whatever part it names.
         assertEquals(
             OfficePrecisionLedger.LedgerEvent.Ignored,
-            l.onFrame(partEchoFrame("2")),
+            l.onFrame(partEchoFrame(pageGuidC)),
         )
-        // A status readback showing a DIFFERENT selected part fails honestly.
-        val mismatch = l.onFrame(
-            statusFrame(
-                "{\"type\":\"presentation\",\"partscount\":3,\"selectedpart\":\"0\"," +
-                    "\"width\":10,\"height\":10,\"viewid\":0}",
-            ),
-        ) as OfficePrecisionLedger.LedgerEvent.Terminal
+        // Resolve: the producer's OWN status names page 3 by its braced GUID
+        // at parts index 2. The dispatched navigation wire must carry THAT
+        // identifier — never the decimal request (the C15 defect: the pinned
+        // Impress boundary resolves only the page GUID, so `part=2` named
+        // no page, silently selected nothing, and the honest readback could
+        // never match it).
+        val resolved = l.onFrame(statusFrame(presentationStatusJson(pageGuidA)))
+        assertTrue(resolved is OfficePrecisionLedger.LedgerEvent.DispatchStep)
+        assertEquals("setclientpart part=$pageGuidC", l.wireForDispatch(run, 1))
+        armDispatched(l, run, 1)
+        assertTrue(l.markDispatched(run, 1) is OfficePrecisionLedger.LedgerEvent.DispatchStep)
+        armDispatched(l, run, 2)
+        // The callback-emitted setpart echo is corroboration only: it can
+        // never settle the operation, even when it names the exact target.
+        assertEquals(
+            OfficePrecisionLedger.LedgerEvent.Ignored,
+            l.onFrame(partEchoFrame(pageGuidC)),
+        )
+        // A status readback showing a DIFFERENT selected part (still the
+        // first page's GUID) fails honestly with the original C15 tokens.
+        val mismatch = l.onFrame(statusFrame(presentationStatusJson(pageGuidA)))
+            as OfficePrecisionLedger.LedgerEvent.Terminal
         assertEquals(OfficePrecisionState.FAILED, mismatch.result.state)
         assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, mismatch.result.failure)
+        assertEquals("part-readback-mismatch", mismatch.result.detail)
 
-        // Fresh run: the proven readback echoing the requested part is the
-        // FULL navigation postcondition -> MUTATION_VERIFIED.
+        // Fresh run: the proven readback echoing the producer's resolved
+        // page GUID is the FULL navigation postcondition -> MUTATION_VERIFIED.
         val run2 = claimArmed(l, request("n2", OfficePrecisionAction.SELECT_SLIDE, partId = "2"))
         armDispatched(l, run2, 0)
-        l.markDispatched(run2, 0)
+        assertTrue(
+            l.onFrame(statusFrame(presentationStatusJson(pageGuidA)))
+                is OfficePrecisionLedger.LedgerEvent.DispatchStep,
+        )
         armDispatched(l, run2, 1)
+        assertTrue(l.markDispatched(run2, 1) is OfficePrecisionLedger.LedgerEvent.DispatchStep)
+        armDispatched(l, run2, 2)
+        val ok = l.onFrame(statusFrame(presentationStatusJson(pageGuidC)))
+            as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.MUTATION_VERIFIED, ok.result.state)
+        val selectedAnswer = ok.result.answer as OfficePrecisionAnswer.SlideSelected
+        assertEquals(pageGuidC, selectedAnswer.shownPart)
+        // This same readback answer's ordered witness places page C at
+        // logical ordinal 2 — the lineage the capture/host/Parcel path must
+        // carry separately from the byte-exact GUID identity.
+        assertEquals(2, selectedAnswer.shownPartIndex)
+    }
+
+    @Test
+    fun selectSlideResolvesBracedPageGuidForTheRealC15TwoSlideFailure() {
+        // Deterministic replay of the C15 first failure as a passing
+        // regression: real two-slide preview, scripted request "slide 2"
+        // (decimal partId "1"), producer status identifying each page by
+        // its GUID. Pre-repair this chain was REFUSED with detail
+        // "part-readback-mismatch" / attestation
+        // "part-readback-readback-disagreed" and the view stayed on page 1.
+        val l = ledger()
+        val run = claimArmed(l, request("c15", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
+        armDispatched(l, run, 0)
+        val firstPull = l.onFrame(
+            statusFrame(presentationStatusJson(pageGuidA, parts = listOf(pageGuidA, pageGuidB))),
+        )
+        assertTrue(firstPull is OfficePrecisionLedger.LedgerEvent.DispatchStep)
+        assertEquals("setclientpart part=$pageGuidB", l.wireForDispatch(run, 1))
+        armDispatched(l, run, 1)
+        assertTrue(l.markDispatched(run, 1) is OfficePrecisionLedger.LedgerEvent.DispatchStep)
+        armDispatched(l, run, 2)
+        val terminal = l.onFrame(
+            statusFrame(presentationStatusJson(pageGuidB, parts = listOf(pageGuidA, pageGuidB))),
+        ) as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.MUTATION_VERIFIED, terminal.result.state)
+        assertNull(terminal.result.failure)
+        val selected = terminal.result.answer as OfficePrecisionAnswer.SlideSelected
+        assertEquals(pageGuidB, selected.shownPart)
+        // The concrete downstream lineage: slide 2 was requested by decimal,
+        // the producer dispatched and proved the page GUID, and the SAME
+        // proven readback witnesses logical ordinal 1 — the value the
+        // capture/Parcel/host saved-verification path needs to choose the
+        // SECOND ordered OOXML slide (pre-84 this was null at the host).
+        assertEquals(1, selected.shownPartIndex)
+        assertTrue(terminal.result.attestation.contains("part-index-resolve:part-index-resolved"))
+        assertTrue(terminal.result.attestation.contains("select-part:sent"))
+        assertTrue(terminal.result.attestation.contains("part-readback:part-readback-matched"))
+    }
+
+    @Test
+    fun selectSlideRefusesBeforeAnyNavigationWireWhenIndexNamesNoPart() {
+        val l = ledger()
+        val run = claimArmed(l, request("n1", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
+        armDispatched(l, run, 0)
+        val terminal = l.onFrame(
+            statusFrame(presentationStatusJson(pageGuidA, parts = listOf(pageGuidA))),
+        ) as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.FAILED, terminal.result.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, terminal.result.failure)
+        assertEquals("part-index-out-of-range", terminal.result.detail)
+        // No navigation command can even be materialized: fail closed BEFORE
+        // any effect instead of dispatching a decimal that names no page.
+        assertNull(l.wireForDispatch(run, 1))
+    }
+
+    @Test
+    fun selectSlideRefusesEntryIdentifierThatIsNotABracedGuid() {
+        val l = ledger()
+        val run = claimArmed(l, request("n1", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
+        armDispatched(l, run, 0)
+        // Witnessed entry identifier that is NOT the pinned braced GUID
+        // grammar (here a bare decimal) is refused, never forwarded or
+        // normalized to a "wrong index".
+        val weird = "{\"type\":\"presentation\",\"partscount\":2,\"selectedpart\":\"$pageGuidA\"," +
+            "\"width\":10,\"height\":10,\"viewid\":0," +
+            "\"parts\":[{\"part\":\"$pageGuidA\",\"width\":10,\"height\":10,\"mode\":0}," +
+            "{\"part\":\"1\",\"width\":10,\"height\":10,\"mode\":0}]}"
+        val terminal = l.onFrame(statusFrame(weird)) as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.FAILED, terminal.result.state)
+        assertEquals("part-id-unresolved", terminal.result.detail)
+        assertNull(l.wireForDispatch(run, 1))
+    }
+
+    @Test
+    fun selectSlideRefusesMissingPartWitnessWithoutShiftingLaterPages() {
+        val l = ledger()
+        val run = claimArmed(l, request("n1", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
+        armDispatched(l, run, 0)
+        // parts[1] carries no `part` witness at all. The null placeholder
+        // must keep its position: index 1 refuses, and parts[2]'s GUID can
+        // never slide into it.
+        val missing = "{\"type\":\"presentation\",\"partscount\":3,\"selectedpart\":\"$pageGuidA\"," +
+            "\"width\":10,\"height\":10,\"viewid\":0," +
+            "\"parts\":[{\"part\":\"$pageGuidA\",\"width\":10,\"height\":10,\"mode\":0}," +
+            "{\"width\":10,\"height\":10,\"mode\":0}," +
+            "{\"part\":\"$pageGuidC\",\"width\":10,\"height\":10,\"mode\":0}]}"
+        val terminal = l.onFrame(statusFrame(missing)) as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.FAILED, terminal.result.state)
+        assertEquals("part-id-unresolved", terminal.result.detail)
+        assertNull(l.wireForDispatch(run, 1))
+    }
+
+    @Test
+    fun selectSlideRefusesStatusWithoutAnyPartsWitnessForPresentation() {
+        val l = ledger()
+        val run = claimArmed(l, request("n1", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
+        armDispatched(l, run, 0)
+        // Absent parts array: the producer names no pages in THIS answer,
+        // so nothing may be dispatched on the decimal alone.
+        val noParts = "{\"type\":\"presentation\",\"partscount\":2,\"selectedpart\":\"$pageGuidA\"," +
+            "\"width\":10,\"height\":10,\"viewid\":0}"
+        val terminal = l.onFrame(statusFrame(noParts)) as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.FAILED, terminal.result.state)
+        assertEquals("part-index-out-of-range", terminal.result.detail)
+        assertNull(l.wireForDispatch(run, 1))
+    }
+
+    @Test
+    fun selectSlideKeepsDecimalIdentifierForSpreadsheetAndTextFamilies() {
+        // The documented spreadsheet identifier IS the decimal sheet index
+        // (kit/KitHelper.hpp @2333344), so its wire and readback stay
+        // byte-identical to the proven pre-repair behaviour.
+        val l = ledger()
+        val run = claimArmed(l, request("x1", OfficePrecisionAction.SELECT_SLIDE, partId = "2"))
+        armDispatched(l, run, 0)
+        val resolve = "{\"type\":\"spreadsheet\",\"partscount\":3,\"selectedpart\":\"0\"," +
+            "\"width\":10,\"height\":10,\"viewid\":0}"
+        assertTrue(
+            l.onFrame(statusFrame(resolve)) is OfficePrecisionLedger.LedgerEvent.DispatchStep,
+        )
+        assertEquals("setclientpart part=2", l.wireForDispatch(run, 1))
+        armDispatched(l, run, 1)
+        assertTrue(l.markDispatched(run, 1) is OfficePrecisionLedger.LedgerEvent.DispatchStep)
+        armDispatched(l, run, 2)
         val ok = l.onFrame(
             statusFrame(
-                "{\"type\":\"presentation\",\"partscount\":3,\"selectedpart\":\"2\"," +
+                "{\"type\":\"spreadsheet\",\"partscount\":3,\"selectedpart\":\"2\"," +
                     "\"width\":10,\"height\":10,\"viewid\":0}",
             ),
         ) as OfficePrecisionLedger.LedgerEvent.Terminal
         assertEquals(OfficePrecisionState.MUTATION_VERIFIED, ok.result.state)
-        assertEquals("2", (ok.result.answer as OfficePrecisionAnswer.SlideSelected).shownPart)
+        val decimalSelected = ok.result.answer as OfficePrecisionAnswer.SlideSelected
+        assertEquals("2", decimalSelected.shownPart)
+        // The documented decimal identifier IS the legitimate ordinal for
+        // this family (byte-identical to the proven pre-repair behaviour).
+        assertEquals(2, decimalSelected.shownPartIndex)
+    }
+
+    @Test
+    fun selectSlideRefusesUnknownDocumentFamilyWithoutGuessing() {
+        val l = ledger()
+        val run = claimArmed(l, request("n1", OfficePrecisionAction.SELECT_SLIDE, partId = "0"))
+        armDispatched(l, run, 0)
+        // documentTypeToString emits "other-<n>" for unknown cores; the
+        // resolve step must refuse instead of guessing a grammar.
+        val weirdType = "{\"type\":\"other-42\",\"partscount\":1,\"selectedpart\":\"0\"," +
+            "\"width\":10,\"height\":10,\"viewid\":0}"
+        val terminal = l.onFrame(statusFrame(weirdType)) as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.FAILED, terminal.result.state)
+        assertEquals("part-family-unsupported", terminal.result.detail)
+        assertNull(l.wireForDispatch(run, 1))
+    }
+
+    @Test
+    fun selectSlideResolveQuarantineStaysWithinBoundedWindowLikeOtherStatusPulls() {
+        // A missed resolve answer is the same pinned-synchronous `status`
+        // kind: the run terminates UNKNOWN (no effect dispatched beyond the
+        // resolve pull itself) and the kind quarantines — never an implicit
+        // retry or replay of the selection.
+        val l = ledger()
+        val run = claimArmed(l, request("n1", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
+        armDispatched(l, run, 0)
+        val unknown = l.onStepTimeout("n1", 0)!!
+        assertEquals(OfficePrecisionState.UNKNOWN, unknown.state)
+        assertEquals(OfficePrecisionFailure.TIMEOUT, unknown.failure)
+        assertEquals("step=part-index-resolve", unknown.detail)
+        assertTrue(l.quarantineActive())
+    }
+
+    // ------------------------------------------------------------------
+    // Witnessed logical ordinal lineage (part-ordinal84): the GUID stays
+    // byte-exact identity while the ordinal is carried SEPARATELY from the
+    // SAME validated status answer's ordered parts witness — capture,
+    // context and readback — fail-closed on anything the answer does not
+    // itself witness. Never the caller's desired index, never a decimal
+    // re-parse of a GUID at the host boundary (the gap that would refuse
+    // the saved PPTX verification after a successful 81 select).
+    // ------------------------------------------------------------------
+
+    @Test
+    fun capturedTargetBindsOrdinalFromItsOwnStatusWitnessNotFromTheGuid() {
+        val l = ledger()
+        val target = l.issueTarget(gen, "sha-a", 10, false, null, null, null, null, null)
+        // Mirrors the engine: the handle exists before this capture's own
+        // status pull settles; the bind below completes it.
+        l.pendingCaptureTarget = target
+        val run = claimArmed(l, request("cap-o", OfficePrecisionAction.CAPTURE_TARGET))
+        armDispatched(l, run, 0)
+        val terminal = l.onFrame(
+            statusFrame(presentationStatusJson(pageGuidB, parts = listOf(pageGuidA, pageGuidB))),
+        ) as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.QUERY_OBSERVED, terminal.result.state)
+        val captured = (terminal.result.answer as OfficePrecisionAnswer.TargetCaptured).target
+        // Identity byte-exact, ordinal separately witnessed as the SECOND
+        // page (index 1 of this answer's own parts witness).
+        assertEquals(pageGuidB, captured.selectedPart)
+        assertEquals(1, captured.selectedPartIndex)
+        assertEquals(2, captured.partsCount)
+        // One immutable value: the stored record a later content run consumes
+        // carries the SAME ordinal as the advertised answer.
+        val check = l.validateTarget(captured.handleId, gen, "sha-a", consume = false)
+        assertTrue(check is OfficePrecisionLedger.TargetCheck.Ok)
+        val stored = (check as OfficePrecisionLedger.TargetCheck.Ok).target
+        assertEquals(captured.selectedPartIndex, stored.selectedPartIndex)
+        assertEquals(pageGuidB, stored.selectedPart)
+    }
+
+    @Test
+    fun contextAndCaptureKeepOrdinalNullWhenThisAnswerWitnessesNoMapping() {
+        // Honest absence at the QUERY boundary: a presentation answer whose
+        // parts witness is missing, or whose list contradicts its own
+        // partscount, NEVER yields a guessed ordinal; the downstream host
+        // fence (not the engine) refuses anything built on it.
+        val l = ledger()
+        val run = claimArmed(l, request("q-o", OfficePrecisionAction.QUERY_DOCUMENT_CONTEXT))
+        armDispatched(l, run, 0)
+        val noParts = "{\"type\":\"presentation\",\"partscount\":2,\"selectedpart\":\"$pageGuidB\"," +
+            "\"width\":10,\"height\":10,\"viewid\":0}"
+        val terminal = l.onFrame(statusFrame(noParts)) as OfficePrecisionLedger.LedgerEvent.Terminal
+        val answer = terminal.result.answer as OfficePrecisionAnswer.DocumentContext
+        assertEquals(pageGuidB, answer.selectedPart) // identity kept byte-exact
+        assertNull(answer.selectedPartIndex) // no witness in THIS answer
+        // The documented decimal family keeps its legitimate ordinal here
+        // (the ordinary spreadsheet status above).
+        val run2 = claimArmed(l, request("q-d", OfficePrecisionAction.QUERY_DOCUMENT_CONTEXT))
+        armDispatched(l, run2, 0)
+        val decimal = (l.onFrame(statusFrame(statusJson)) as OfficePrecisionLedger.LedgerEvent.Terminal)
+            .result.answer as OfficePrecisionAnswer.DocumentContext
+        assertEquals("0", decimal.selectedPart)
+        assertEquals(0, decimal.selectedPartIndex)
+    }
+
+    @Test
+    fun selectSlideRefusesUnwitnessedOrDriftedOrdinalAtTheProvenReadback() {
+        // (a) Identity matches but the proven readback answer itself carries
+        // no parts witness: the ordinal is NOT taken from the earlier cached
+        // resolve status — the operation refuses honestly.
+        val l = ledger()
+        val run = claimArmed(l, request("d1", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
+        armDispatched(l, run, 0)
+        assertTrue(
+            l.onFrame(statusFrame(presentationStatusJson(pageGuidA, parts = listOf(pageGuidA, pageGuidB))))
+                is OfficePrecisionLedger.LedgerEvent.DispatchStep,
+        )
+        armDispatched(l, run, 1)
+        assertTrue(l.markDispatched(run, 1) is OfficePrecisionLedger.LedgerEvent.DispatchStep)
+        armDispatched(l, run, 2)
+        val unwitnessed = l.onFrame(statusFrame(
+            "{\"type\":\"presentation\",\"partscount\":2,\"selectedpart\":\"$pageGuidB\"," +
+                "\"width\":10,\"height\":10,\"viewid\":0}",
+        )) as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.FAILED, unwitnessed.result.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, unwitnessed.result.failure)
+        assertEquals("part-ordinal-unresolved", unwitnessed.result.detail)
+        assertNull(unwitnessed.result.answer)
+
+        // (b) Duplicate ambiguity: the shown GUID appears at two positions
+        // of the SAME answer — no unique ordinal, refuse.
+        val l2 = ledger()
+        val run2 = claimArmed(l2, request("d2", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
+        armDispatched(l2, run2, 0)
+        assertTrue(
+            l2.onFrame(statusFrame(presentationStatusJson(pageGuidA, parts = listOf(pageGuidA, pageGuidB))))
+                is OfficePrecisionLedger.LedgerEvent.DispatchStep,
+        )
+        armDispatched(l2, run2, 1)
+        assertTrue(l2.markDispatched(run2, 1) is OfficePrecisionLedger.LedgerEvent.DispatchStep)
+        armDispatched(l2, run2, 2)
+        val ambiguous = l2.onFrame(
+            statusFrame(presentationStatusJson(pageGuidB, parts = listOf(pageGuidB, pageGuidB))),
+        ) as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals("part-ordinal-unresolved", ambiguous.result.detail)
+
+        // (c) Drift: the readback witness places the proven GUID at a
+        // DIFFERENT logical position than the resolve answer did (the part
+        // list moved) — refuse instead of carrying either index blindly.
+        val l3 = ledger()
+        val run3 = claimArmed(l3, request("d3", OfficePrecisionAction.SELECT_SLIDE, partId = "2"))
+        armDispatched(l3, run3, 0)
+        assertTrue(
+            l3.onFrame(statusFrame(presentationStatusJson(pageGuidA))) // [A,B,C] -> C
+                is OfficePrecisionLedger.LedgerEvent.DispatchStep,
+        )
+        assertEquals("setclientpart part=$pageGuidC", l3.wireForDispatch(run3, 1))
+        armDispatched(l3, run3, 1)
+        assertTrue(l3.markDispatched(run3, 1) is OfficePrecisionLedger.LedgerEvent.DispatchStep)
+        armDispatched(l3, run3, 2)
+        val drifted = l3.onFrame(
+            statusFrame(presentationStatusJson(pageGuidC, parts = listOf(pageGuidA, pageGuidC))),
+        ) as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.FAILED, drifted.result.state)
+        assertEquals("part-ordinal-drift", drifted.result.detail)
     }
 
     // ------------------------------------------------------------------
@@ -594,14 +980,14 @@ class OfficePrecisionLedgerTest {
         val l = ledger()
         val target = l.issueTarget(gen, "sha-a", 10, false, null, null, null, null, null)
 
-        // A SELECT_SLIDE whose readback never arrives: the setclientpart was
-        // really dispatched, so the part context MAY have moved — the op is
-        // UNKNOWN and the earlier capture is invalidated regardless.
+        // A SELECT_SLIDE whose resolve pull never answers: the first plan
+        // wire was really posted, and the pre-repair navigation dispatch
+        // (or a maybe-effect of any later step) still makes the part
+        // context uncertain — the op is UNKNOWN and the earlier capture
+        // is invalidated regardless.
         val run = claimArmed(l, request("n1", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
         armDispatched(l, run, 0)
-        l.markDispatched(run, 0)
-        armDispatched(l, run, 1)
-        val unknown = l.onStepTimeout("n1", 1)!!
+        val unknown = l.onStepTimeout("n1", 0)!!
         assertEquals(OfficePrecisionState.UNKNOWN, unknown.state)
         val stale = l.validateTarget(target.handleId, gen, "sha-a", consume = true)
         assertEquals(

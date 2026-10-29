@@ -1,1 +1,182 @@
-../../../../FloeAgent/Sources/FloeAgentRuntime/MemoryMaintenance.swift
+import Foundation
+
+/// Stable identity for a mutable fact. Content changes over time, while the
+/// subject/attribute slot remains stable (for example host:hk4h4g + address).
+public struct MemoryFactIdentity: Sendable, Codable, Hashable {
+    public var subjectKey: String
+    public var attributeKey: String
+
+    public init(subjectKey: String, attributeKey: String) {
+        self.subjectKey = Self.normalize(subjectKey)
+        self.attributeKey = Self.normalize(attributeKey)
+    }
+
+    public var isValid: Bool { !subjectKey.isEmpty && !attributeKey.isEmpty }
+
+    private static func normalize(_ value: String) -> String {
+        String(value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().prefix(160))
+    }
+}
+
+public enum MemoryOrganizationSuggestionKind: String, Sendable, Codable, Hashable {
+    case exactDuplicate
+    case sameFactReplacement
+    case possibleDuplicate
+    case expired
+    case missingOwnership
+}
+
+public struct MemoryOrganizationSuggestion: Sendable, Codable, Hashable, Identifiable {
+    public var id: UUID
+    public var kind: MemoryOrganizationSuggestionKind
+    public var memoryIDs: [UUID]
+    public var preferredMemoryID: UUID?
+    public var reason: String
+    public var canApplyAutomatically: Bool
+
+    public init(
+        id: UUID = UUID(),
+        kind: MemoryOrganizationSuggestionKind,
+        memoryIDs: [UUID],
+        preferredMemoryID: UUID? = nil,
+        reason: String,
+        canApplyAutomatically: Bool
+    ) {
+        self.id = id
+        self.kind = kind
+        self.memoryIDs = memoryIDs
+        self.preferredMemoryID = preferredMemoryID
+        self.reason = String(reason.prefix(500))
+        self.canApplyAutomatically = canApplyAutomatically
+    }
+}
+
+public struct MemoryOrganizationEntrySummary: Sendable, Codable, Hashable, Identifiable {
+    public var id: UUID
+    public var scope: MemoryScope
+    public var status: MemoryEntryStatus
+    public var content: String
+    public var factIdentity: MemoryFactIdentity?
+    public var originConversationID: UUID?
+    public var originWorkspaceID: UUID?
+    public var updatedAt: Date
+
+    public init(_ entry: MemoryEntry) {
+        id = entry.id
+        scope = entry.scope
+        status = entry.status
+        content = String(entry.content.prefix(1_024))
+        factIdentity = entry.factIdentity
+        originConversationID = entry.originConversationID
+        originWorkspaceID = entry.originWorkspaceID
+        updatedAt = entry.updatedAt
+    }
+}
+
+public struct MemoryOrganizationProposal: Sendable, Codable, Hashable, Identifiable {
+    public var id: UUID
+    public var generatedAt: Date
+    public var scannedCount: Int
+    public var suggestions: [MemoryOrganizationSuggestion]
+    /// Exact bounded entries referenced by suggestions. This makes a preview
+    /// reviewable without a second guess-based search pass.
+    public var entries: [MemoryOrganizationEntrySummary]
+
+    public init(
+        id: UUID = UUID(),
+        generatedAt: Date = Date(),
+        scannedCount: Int,
+        suggestions: [MemoryOrganizationSuggestion],
+        entries: [MemoryOrganizationEntrySummary] = []
+    ) {
+        self.id = id
+        self.generatedAt = generatedAt
+        self.scannedCount = scannedCount
+        self.suggestions = suggestions
+        self.entries = entries
+    }
+}
+
+public enum MemoryMaintenanceOperation: Sendable, Codable, Hashable {
+    case delete(memoryID: UUID)
+    case replace(memoryID: UUID, entry: MemoryEntry)
+}
+
+public struct MemoryMaintenanceBatch: Sendable, Codable, Hashable, Identifiable {
+    public var id: UUID
+    public var operations: [MemoryMaintenanceOperation]
+    public var syncRevision: Int64
+
+    public init(id: UUID = UUID(), operations: [MemoryMaintenanceOperation], syncRevision: Int64) {
+        self.id = id
+        self.operations = operations
+        self.syncRevision = syncRevision
+    }
+}
+
+public struct MemoryMaintenanceBatchResult: Sendable, Codable, Hashable {
+    public var batchID: UUID
+    public var appliedCount: Int
+    public var deletedCount: Int
+    public var replacedCount: Int
+    public var wasAlreadyApplied: Bool
+
+    public init(
+        batchID: UUID,
+        appliedCount: Int,
+        deletedCount: Int,
+        replacedCount: Int,
+        wasAlreadyApplied: Bool = false
+    ) {
+        self.batchID = batchID
+        self.appliedCount = appliedCount
+        self.deletedCount = deletedCount
+        self.replacedCount = replacedCount
+        self.wasAlreadyApplied = wasAlreadyApplied
+    }
+}
+
+/// Bounded, filterable enumeration used by the model and memory-management UI.
+/// Unlike semantic recall this is an inventory API: results are ordered and
+/// cursor based so a caller can eventually inspect every matching entry.
+public struct MemoryListRequest: Sendable, Codable, Hashable {
+    public var scope: MemoryScope?
+    public var status: MemoryEntryStatus?
+    public var originConversationID: UUID?
+    public var originWorkspaceID: UUID?
+    public var factIdentity: MemoryFactIdentity?
+    public var isPinned: Bool?
+    public var cursor: String?
+    public var limit: Int
+
+    public init(
+        scope: MemoryScope? = nil,
+        status: MemoryEntryStatus? = nil,
+        originConversationID: UUID? = nil,
+        originWorkspaceID: UUID? = nil,
+        factIdentity: MemoryFactIdentity? = nil,
+        isPinned: Bool? = nil,
+        cursor: String? = nil,
+        limit: Int = 100
+    ) {
+        self.scope = scope
+        self.status = status
+        self.originConversationID = originConversationID
+        self.originWorkspaceID = originWorkspaceID
+        self.factIdentity = factIdentity?.isValid == true ? factIdentity : nil
+        self.isPinned = isPinned
+        self.cursor = cursor
+        self.limit = min(500, max(1, limit))
+    }
+}
+
+public struct MemoryListPage: Sendable, Codable, Hashable {
+    public var entries: [MemoryEntry]
+    public var nextCursor: String?
+
+    public init(entries: [MemoryEntry], nextCursor: String? = nil) {
+        self.entries = entries
+        self.nextCursor = nextCursor
+    }
+}

@@ -127,6 +127,10 @@
     <string name="approval_scope_host">This host</string>
     <string name="approval_skill_create_note">This creates a reusable skill saved for all tasks.</string>
     <string name="approval_gate_stopped_note">This action is gated: allowing it still requires device confirmation before it can run.</string>
+    <string name="approval_terminal_conflict_note">This task\'s terminal is using the Linux engine. End it to run this command.</string>
+    <string name="approval_terminal_end_and_run">End terminal and run</string>
+    <string name="approval_terminal_handoff_refused">The terminal did not release the Linux engine, so nothing ran. Try again, or keep the terminal and run later.</string>
+    <string name="approval_terminal_handoff_details">Details:</string>
     <string name="risk_reads_files">Reads files</string>
     <string name="risk_writes_files">Writes files</string>
     <string name="risk_deletes_files">Deletes files</string>

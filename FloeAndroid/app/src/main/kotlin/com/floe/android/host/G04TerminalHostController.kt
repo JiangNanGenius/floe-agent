@@ -65,6 +65,29 @@ sealed class TerminalActionReply {
     data object TimedOut : TerminalActionReply()
 }
 
+/** The EXACT identity of one live interactive terminal this host owns, as
+ * captured for an explicit model handoff. Opaque by design: [sessionToken]
+ * and [nativeEpoch] are fences, never user copy and never a grant. A handoff
+ * may only ever touch THIS capture — a session that replaced it is a
+ * different terminal and is never stopped. */
+data class TerminalHandoffCapture(
+    val conversationID: String,
+    val sessionToken: String,
+    val nativeEpoch: Long,
+)
+
+/** Outcome of one explicitly-consented terminal→model handoff. [Released] is
+ * the ONLY success and means the captured terminal was closed AND the single
+ * runtime-UID engine slot was REALLY proven free (lease release, not an
+ * accepted stop request and not elapsed time). Every [Refused] code means
+ * nothing was dispatched and the caller must not approve the command. */
+sealed interface TerminalHandoffResult {
+    data object Released : TerminalHandoffResult
+    /** Typed refusal; [code] is a diagnostic identity for the opened details
+     * view, never prose for the ordinary surface. */
+    data class Refused(val code: String) : TerminalHandoffResult
+}
+
 data class TerminalCompletionItem(
     val label: String,
     val insertText: String,
@@ -172,6 +195,33 @@ internal class G04TerminalHostController(
      * production keeps the real mailbox admission. */
     private val inputSinkOverride:
         (suspend (conversationID: String, sessionToken: String, bytes: ByteArray) -> Unit)? = null,
+    /** REAL engine-slot release proof for the explicit terminal→model
+      * handoff. Production uses the EXISTING trusted-host drain read
+      * (`LinuxShellNative.drain` → `floe_linux_shell_drain` →
+      * `reconcileLedger()` + `isDrained()`): true only when no backend lease
+      * awaits its release proof, the single engine gate is free, no mailbox
+      * ticket is live and no ledger worker remains. It fences nothing, stops
+      * nothing, suspends no admission and closes no mailbox — it is the same
+      * proof `LinuxShellPump.stopAndDrain` already consumes, minus that
+      * method's own stop/fence steps, which are deliberately NOT performed
+      * here. Injectable so the focused host tests prove the handoff waits for
+      * a REAL release instead of an accepted stop or elapsed time. */
+    private val engineSlotReleaseProof: suspend (timeoutMillis: Int) -> Boolean = { timeout ->
+        withContext(Dispatchers.IO) {
+            runCatching { com.floe.android.bridge.LinuxShellNative.drain(timeout) == 1 }
+                .getOrDefault(false)
+        }
+    },
+    /** Test seam for the handoff's actual native close admission (the same
+      * convention as [inputSinkOverride]): production keeps the real
+      * `terminalClose` mailbox submit, so the focused host tests can prove the
+      * close→settle→REAL-release→approve ordering without a JNI library. */
+    private val closeSinkOverride:
+        (suspend (conversationID: String, sessionToken: String) -> TerminalActionReply)? = null,
+    /** Native mailbox submission seam for deterministic reply/status ordering
+     * tests. Production always uses TerminalNative; admission and reply-future
+     * ownership still run through the real submit path. */
+    private val nativeSubmitOverride: ((ByteArray, ByteArray?) -> Long)? = null,
     private val currentNativeEpoch: () -> Long?,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -551,89 +601,128 @@ internal class G04TerminalHostController(
      * PER keystroke could reorder at JNI admission (two IO workers racing
      * into `submitAction`) and flood the mailbox's in-flight window with
      * unbounded parallel submits — the contract is REAL ORDERED PTY input.
-     * Every keystroke therefore enqueues into one bounded channel (both a
-     * packet cap AND a byte budget — item count alone is not boundedness)
-     * and drains one item at a time in EXACT arrival order on a single
-     * owned worker whose [Job] handle the controller keeps, so a Root stop
-     * closes the channel and JOINS the worker before declaring the
-     * generation stopped. Each drain re-checks, IMMEDIATELY before the
+     * Every keystroke therefore enqueues into ONE bounded, byte-stream
+     * lane (both a packet cap AND a byte budget — item count alone is not
+     * boundedness) and drains one frame at a time in EXACT arrival order
+     * on a single owned worker whose [Job] handle the controller keeps, so
+     * a Root stop closes the lane and JOINS the worker before declaring
+     * the generation stopped. Each drain re-checks, IMMEDIATELY before the
      * native submit: the item's admitted epoch still equals the bound
      * epoch AND the runtime's live epoch, the host is not stopping, and
      * the exact token is still bound to the conversation. Every refusal is
      * truthful (reported, never silently dropped); cancellation flows with
-     * the app-owned [scope]. */
+     * the app-owned [scope].
+     *
+     * Coalescing (linux-product80, 2026-10-28): PTY stdin is ONE ordered
+     * byte stream per conversation, but the old lane queued one packet per
+     * key EVENT, so a rapid burst (device-retained: ~350-byte adb-input /
+     * hardware-keyboard typing with a momentarily stalled drain) honestly
+     * refused `inputLaneOverflow` while the byte budget was nearly empty —
+     * real user input lost in the visible warning. Consecutive small
+     * frames admitted for the SAME token and epoch now merge at the TAIL
+     * into one frame bounded by [MaxCoalescedInputFrameBytes], still under
+     * both the packet cap and the byte budget. Nothing is reordered,
+     * replayed or duplicated: a merged frame is admitted once, drains
+     * once, keeps the admission-time epoch/token copies, and a refused
+     * write still reports its real code. Boundedness is unchanged — the
+     * queue is still an ArrayDeque behind one monitor with a conflated
+     * wake token, and every reservation is taken atomically before the
+     * item becomes visible. */
     private inner class TerminalInputLane(val conversationID: String) {
-        private val channel = Channel<PtyInputItem>(capacity = InputLaneCapacity)
+        private val queue = ArrayDeque<PtyInputItem>()
+        private val wake = Channel<Unit>(capacity = 1)
         private var closed = false
         private var queuedCount = 0
         private var queuedBytes = 0L
 
         private val consumer: Job = scope.launch(inputDispatcher) {
-            for (item in channel) {
-                // NOTE: `this` inside the launch lambda is the CoroutineScope
-                // receiver — the lane lock must be qualified explicitly so
-                // offer() and the drain share ONE monitor.
-                synchronized(this@TerminalInputLane) {
-                    queuedCount -= 1
-                    queuedBytes -= item.bytes.size
+            // Conflated wake: one buffered token guarantees at least one
+            // following drain pass; each pass drains EVERY frame present,
+            // so an offer racing the pass either joins that drain or
+            // leaves its own token behind. Buffered elements are received
+            // before close() surfaces (same end-of-stream behaviour the
+            // old `for (item in channel)` relied on).
+            while (wake.receiveCatching().isSuccess) {
+                while (true) {
+                    val item = synchronized(this@TerminalInputLane) {
+                        if (queue.isEmpty()) null
+                        else {
+                            val head = queue.removeFirst()
+                            queuedCount -= 1
+                            queuedBytes -= head.bytes.size
+                            head
+                        }
+                    } ?: break
+                    // Exact fences immediately before the native submit.
+                    val refusal = when {
+                        item.admittedEpoch != boundEpoch -> "inputGenerationStale"
+                        currentNativeEpoch() != item.admittedEpoch -> "inputGenerationStale"
+                        stopped.get() -> "hostUnbound"
+                        sessionTokens[conversationID] != item.sessionToken -> "inputTokenRetired"
+                        else -> null
+                    }
+                    if (refusal != null) {
+                        reportInputIssue(conversationID, refusal)
+                        continue
+                    }
+                    inputSink(conversationID, item.sessionToken, item.bytes)
                 }
-                // Exact fences immediately before the native submit.
-                val refusal = when {
-                    item.admittedEpoch != boundEpoch -> "inputGenerationStale"
-                    currentNativeEpoch() != item.admittedEpoch -> "inputGenerationStale"
-                    stopped.get() -> "hostUnbound"
-                    sessionTokens[conversationID] != item.sessionToken -> "inputTokenRetired"
-                    else -> null
-                }
-                if (refusal != null) {
-                    reportInputIssue(conversationID, refusal)
-                    continue
-                }
-                inputSink(conversationID, item.sessionToken, item.bytes)
             }
         }
 
         /** Admits one item; returns null when queued, otherwise a truthful
-         * refusal code. Reservations (packet count AND byte budget) are
-         * taken under the lane lock before the channel offer, and released
-         * on a closed-channel race, so the lane can never exceed either
-         * bound. */
+         * refusal code. Reservations (packet count AND byte budget) and
+         * the tail coalescing are taken under ONE lane monitor before the
+         * item becomes visible, so the lane can never exceed either bound
+         * and the drain can never observe a half-merged frame. */
         fun offer(token: String, bytes: ByteArray, admittedEpoch: Long): String? {
-            val item = PtyInputItem(token, bytes.copyOf(), admittedEpoch)
-            val admitted = synchronized(this) {
+            val incoming = bytes.copyOf()
+            val refusal = synchronized(this) {
                 when {
-                    closed -> null
-                    queuedCount >= InputLaneCapacity -> "inputLaneOverflow"
-                    queuedBytes + item.bytes.size > InputLaneByteBudget -> "inputLaneByteBudget"
+                    closed -> "inputLaneStopped"
                     else -> {
-                        queuedCount += 1
-                        queuedBytes += item.bytes.size
-                        ""
+                        val tail = queue.lastOrNull()
+                        val canMerge = tail != null &&
+                            tail.sessionToken == token &&
+                            tail.admittedEpoch == admittedEpoch &&
+                            tail.bytes.size + incoming.size <= MaxCoalescedInputFrameBytes &&
+                            queuedBytes + incoming.size <= InputLaneByteBudget
+                        when {
+                            canMerge -> {
+                                queue.removeLast()
+                                queue.addLast(PtyInputItem(token, tail.bytes + incoming,
+                                    admittedEpoch))
+                                queuedBytes += incoming.size
+                                null
+                            }
+                            queuedCount >= InputLaneCapacity -> "inputLaneOverflow"
+                            queuedBytes + incoming.size > InputLaneByteBudget -> "inputLaneByteBudget"
+                            else -> {
+                                queuedCount += 1
+                                queuedBytes += incoming.size
+                                queue.addLast(PtyInputItem(token, incoming, admittedEpoch))
+                                null
+                            }
+                        }
                     }
                 }
             }
-            if (admitted == null) return "inputLaneStopped"
-            if (admitted.isNotEmpty()) return admitted
-            val send = channel.trySend(item)
-            if (send.isSuccess) return null
-            synchronized(this) {
-                queuedCount -= 1
-                queuedBytes -= item.bytes.size
-            }
-            return if (send.exceptionOrNull() is kotlinx.coroutines.channels.ClosedSendChannelException) {
-                "inputLaneStopped"
-            } else {
-                "inputLaneOverflow"
-            }
+            if (refusal != null) return refusal
+            // Best-effort wake only: a buffered token already guarantees a
+            // future drain pass that sees this frame.
+            wake.trySend(Unit)
+            return null
         }
 
-        /** Stops this owned worker: close the channel (truthful refusals
-         * for later offers) and JOIN the worker. Used by [stopAndJoin];
-         * bounded there — on timeout the lane RETAINS its closed channel
-         * and live worker (ownership is never fabricated away). */
+        /** Stops this owned worker: refuse later offers, give the drain a
+         * final pass over the admitted frames (each still fence-checked),
+         * then JOIN. Used by [stopAndJoin]; bounded there — on timeout
+         * the lane RETAINS its closed lane state and live worker
+         * (ownership is never fabricated away). */
         suspend fun terminate() {
             synchronized(this) { closed = true }
-            channel.close()
+            wake.trySend(Unit)
+            wake.close()
             consumer.join()
         }
     }
@@ -745,6 +834,14 @@ internal class G04TerminalHostController(
                         conversationID, newToken, TerminalSessionPhase.STARTING, "interactive", "",
                         null, null, null, 0)
                 }
+                // Completing the open reply schedules this coroutine separately
+                // from the mailbox reader. RUNNING status may already have been
+                // published while the captured handle was still absent. Re-publish
+                // the matching current snapshot after binding so observers can
+                // re-evaluate BOTH facts; never fabricate a RUNNING phase.
+                snapshots[conversationID]?.takeIf { it.sessionToken == newToken }?.let { snapshot ->
+                    sessionWatchers[conversationID]?.forEach { it(snapshot) }
+                }
             } else {
                 onRefusal(TerminalActionReply.Refused("invalidReply", null))
             }
@@ -776,6 +873,152 @@ internal class G04TerminalHostController(
         }
         return reply
     }
+
+    /* -------- explicit interactive-terminal → model handoff (Main ruling
+       2026-10-28) --------
+
+       The single runtime-UID Linux engine slot is PRESERVED: nothing here
+       raises a cap, starts a duplicate worker, kills a process, retries
+       hidden or fabricates a release. A manual terminal is human-owned work,
+       so only an EXPLICIT user decision on the existing approval surface may
+       end it, and the already-proposed command is dispatched by the ordinary
+       approval route AFTER the real release below — never replayed from a
+       failed run. */
+
+    /** The conversation's LIVE interactive terminal exactly as this host owns
+     * it right now, or null. Every clause is a real read: an admitted live
+     * Root generation, an authoritative LIVE status, this host's own captured
+     * handle, and both describing the SAME session. A `.run` (language/run
+     * draft) session, a settled phase, a retired token, another
+     * conversation's session or an unbound host therefore answer null — so no
+     * approval card can ever offer to end work this host does not own. */
+    fun liveInteractiveTerminal(conversationID: String): TerminalHandoffCapture? {
+        val epoch = boundEpoch
+        if (epoch == 0L || stopped.get()) return null
+        if (currentNativeEpoch() != epoch) return null
+        val snapshot = snapshots[conversationID] ?: return null
+        if (!snapshot.phase.isLive()) return null
+        if (snapshot.purpose != TERMINAL_PURPOSE_INTERACTIVE) return null
+        val token = sessionTokens[conversationID] ?: return null
+        // The captured handle and the authoritative status must describe the
+        // SAME session: a stale snapshot of a retired token is not a live
+        // terminal, and a replacement token is a different terminal.
+        if (token.isEmpty() || token != snapshot.sessionToken) return null
+        return TerminalHandoffCapture(
+            conversationID = conversationID,
+            sessionToken = token,
+            nativeEpoch = epoch,
+        )
+    }
+
+    /** Ends EXACTLY [capture] and proves the engine slot is really free, so
+     * the caller may then approve/dispatch the already-proposed command once.
+     *
+     * Fences, in order, each one refusing without touching anything:
+     *  * generation — the captured Root epoch must still be the live bound
+     *    one, re-checked AFTER every suspension (a generation that moved on
+     *    mid-handoff never publishes a release);
+     *  * identity — this host's handle for the conversation must still BE the
+     *    captured token, so a session that replaced it is never stopped, and
+     *    a different conversation is unreachable by construction (the map is
+     *    keyed per conversation and the close is submitted with the captured
+     *    token only);
+     *  * cancellation — a cancelled/navigated-away caller gets a typed
+     *    refusal, never a partial stop presented as success.
+     *
+     * Success requires BOTH the projected settlement AND the real release
+     * proof: `terminalClose` answers before native settlement, and an
+     * accepted engine stop request is not a released lease. A foreign
+     * workload that still holds the slot answers [TerminalHandoffResult.Refused]
+     * with `engineSlotStillHeld` and is NEVER closed here.
+     *
+     * The G04 domain's own close path already retires the captured
+     * operation/workspace mapping and ends its receipt, and the model run
+     * mints its own grant at dispatch, so no additional mapping refresh is
+     * performed or needed here.
+     */
+    suspend fun endCapturedTerminalForHandoff(
+        capture: TerminalHandoffCapture,
+        settledWaitMillis: Long = 20_000,
+        releaseProofTimeoutMillis: Int = 15_000,
+    ): TerminalHandoffResult {
+        if (capture.nativeEpoch == 0L || capture.sessionToken.isEmpty()) {
+            return TerminalHandoffResult.Refused("staleCapture")
+        }
+        fun generationLive(): Boolean =
+            boundEpoch == capture.nativeEpoch &&
+                !stopped.get() &&
+                currentNativeEpoch() == capture.nativeEpoch
+        if (!generationLive()) return TerminalHandoffResult.Refused("staleGeneration")
+        if (isHandoffCancelled()) return TerminalHandoffResult.Refused("cancelled")
+        // Identity fence BEFORE any effect: only the exact captured session is
+        // a candidate. `null` (already retired) and a replacement token both
+        // refuse — the replacement is a different terminal and stays running.
+        if (sessionTokens[capture.conversationID] != capture.sessionToken) {
+            return TerminalHandoffResult.Refused("staleCapture")
+        }
+        val closed = closeSessionExact(capture.conversationID, capture.sessionToken)
+        when (closed) {
+            is TerminalActionReply.Success -> Unit
+            TerminalActionReply.TimedOut ->
+                return TerminalHandoffResult.Refused("closeTimedOut")
+            is TerminalActionReply.Refused ->
+                return TerminalHandoffResult.Refused(closed.code.ifEmpty { "closeRefused" })
+        }
+        if (!generationLive()) return TerminalHandoffResult.Refused("staleGeneration")
+        if (isHandoffCancelled()) return TerminalHandoffResult.Refused("cancelled")
+        // Projected settlement (the same real-CLOSED observation the pane's
+        // explicit Reset already awaits): necessary, but NOT the release
+        // proof — an accepted close answers before the engine settles.
+        if (!awaitSessionSettled(capture.conversationID, settledWaitMillis)) {
+            return TerminalHandoffResult.Refused("closeNotSettled")
+        }
+        if (!generationLive()) return TerminalHandoffResult.Refused("staleGeneration")
+        if (isHandoffCancelled()) return TerminalHandoffResult.Refused("cancelled")
+        // The REAL settled/released/export roundtrip: the existing trusted
+        // host drain answers true only when no backend lease awaits its
+        // release proof, the single engine gate is free, no mailbox ticket is
+        // live and no ledger worker remains. Elapsed time is never a release.
+        if (!engineSlotReleaseProof(releaseProofTimeoutMillis)) {
+            return TerminalHandoffResult.Refused("engineSlotStillHeld")
+        }
+        if (!generationLive()) return TerminalHandoffResult.Refused("staleGeneration")
+        if (isHandoffCancelled()) return TerminalHandoffResult.Refused("cancelled")
+        return TerminalHandoffResult.Released
+    }
+
+    /** Closes EXACTLY [expectedToken]: the request carries the captured token
+     * (never a re-read one), and the handle is removed with a per-conversation
+     * CAS against that same value, so a replacement session bound meanwhile is
+     * never unbound and a timeout/refusal retains the handle for the ORIGINAL
+     * reconciliation path. */
+    private suspend fun closeSessionExact(
+        conversationID: String,
+        expectedToken: String,
+    ): TerminalActionReply {
+        val override = closeSinkOverride
+        val reply = if (override != null) {
+            override(conversationID, expectedToken)
+        } else {
+            submit(buildJsonObject {
+                put("action", "terminalClose")
+                put("sessionToken", expectedToken)
+                put("requestID", UUID.randomUUID().toString())
+            }, timeoutMillis = 20_000)
+        }
+        if (reply is TerminalActionReply.Success) {
+            sessionTokens.remove(conversationID, expectedToken)
+            // The session truth moved on: stop surfacing its input refusals.
+            clearInputIssue(conversationID)
+        }
+        return reply
+    }
+
+    /** Non-throwing cancellation read for the handoff: a cancelled caller gets
+     * a typed refusal instead of an exception that could be mistaken for a
+     * completed stop. */
+    private suspend fun isHandoffCancelled(): Boolean =
+        !kotlin.coroutines.coroutineContext.isActive
 
     suspend fun interrupt(conversationID: String): TerminalActionReply {
         val token = sessionTokens[conversationID] ?: return TerminalActionReply.Refused("sessionUnknown", null)
@@ -1304,7 +1547,10 @@ internal class G04TerminalHostController(
         replies[requestID] = future
         val descriptor = action.toString().toByteArray(Charsets.UTF_8)
         try {
-            val token = withContext(Dispatchers.IO) { TerminalNative.submitAction(descriptor, payload) }
+            val token = withContext(Dispatchers.IO) {
+                nativeSubmitOverride?.invoke(descriptor, payload)
+                    ?: TerminalNative.submitAction(descriptor, payload)
+            }
             if (token <= 0) return TerminalActionReply.Refused(codeForSubmit(token), null)
             return withTimeoutOrNull(timeoutMillis) { future.await() } ?: TerminalActionReply.TimedOut
         } finally {
@@ -1333,6 +1579,20 @@ private const val G04LanguageServerCompletionBudgetMillis = 15_000L
  * still applies its own payload limits (-106/-107) as the authority. */
 private const val InputLaneCapacity = 128
 private const val InputLaneByteBudget = 262_144L
+
+/** The G04 domain's own purpose tag for a HUMAN-owned interactive terminal
+ * (`G04TerminalSessionPurpose.purposeTag`). A language/run-draft session is
+ * tagged "run" and is never a handoff candidate: only a manual terminal may
+ * be offered for an explicit end-and-run decision. */
+private const val TERMINAL_PURPOSE_INTERACTIVE = "interactive"
+
+/** Coalescing cap for one queued PTY input frame (bytes). Consecutive
+ * small admission frames from the same conversation/epoch/token merge at
+ * the lane tail up to this size; larger frames still enter as separate
+ * items and never merge. 2 KiB is far below the native mailbox payload
+ * limits (the native -106/-107 bounds stay the authority) and keeps the
+ * packet/byte refusals truthfully reachable once tails are full. */
+private const val MaxCoalescedInputFrameBytes = 2_048
 
 /* ---------------- tiny JSON helpers (bounded, never invented) ---------------- */
 

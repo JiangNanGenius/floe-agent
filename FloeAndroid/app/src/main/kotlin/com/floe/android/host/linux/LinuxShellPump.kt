@@ -47,7 +47,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         @Volatile var lease: ForegroundLease? = null
     }
     private val jobForeground = ConcurrentHashMap<String, OwnedJobForeground>()
-    /** R3 first-use NON-EXECUTING workspace preflights (one per real run). */
+    /** R3 first-use NON-EXECUTING workspace preflights (one per real run, and
+     *  since G05-R3 one per explicit RUN-LESS terminal action). */
     private val preflights = ConcurrentHashMap<String, OwnedPreflight>()
     /** App-owned live readiness controller. Set by Application BEFORE
      *  [start]; a null controller means no preflight can ever qualify
@@ -235,6 +236,23 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 // the shell admission gates: it never starts a shell and no
                 // command can cross this session.
                 preflight(claim, payload, acceptedEpoch); return
+            }
+            if (operation == PREFLIGHT_OWNERSHIP_OPERATION) {
+                // G05-R3 pure READ of this pump's OWN first-use ownership
+                // table: how Core learns that a RETAINED claim's real IO
+                // finished after an uncertain reply, a released waiter or a
+                // generation fence. No IPC, no grant, no lease, no runtime
+                // call, no qualification and no stop happen here.
+                complete(claim, 0, preflightOwnership(payload, acceptedEpoch)); return
+            }
+            if (operation == TERMINAL_PREFLIGHT_OPERATION) {
+                // G05-R3 RUN-LESS first use for an EXPLICIT human terminal
+                // action (job-e2e7d046b63744cc): the SAME non-executing
+                // producer, minted against the trusted UI operation lease
+                // instead of a persisted model run row. Also handled BEFORE
+                // the shell admission gates: it starts no shell and no command
+                // can cross this session.
+                terminalPreflight(claim, payload, acceptedEpoch); return
             }
             if (operation == "shell.start") {
                 check(!admissionClosed.get())
@@ -446,6 +464,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
     private inner class OwnedPreflight(
         val controlID: String, val nativeEpoch: Long, val runID: String,
         val conversationID: String, val environmentID: String?,
+        /** G05-R3 run-less lane ONLY: the trusted UI operation-lease identity
+         *  this preflight was minted against. Null for the model-run lane, so a
+         *  terminal ownership query can never match a run entry. It is the
+         *  exact-owner key of the pure ownership read. */
+        val operationID: String? = null,
     ) {
         lateinit var lease: ForegroundLease
         var client: RuntimeConnection? = null
@@ -585,29 +608,85 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         }
     }
 
+    /** The two first-use preflight identities (G05-R3). [Run] is the ORIGINAL
+     *  model-run lane: a persisted run row mints the grant and the reply
+     *  echoes `runID`. [TerminalOperation] is the RUN-LESS lane for one
+     *  EXPLICIT human terminal action: the grant mints against the trusted UI
+     *  operation lease the Swift host registered in-process, and the reply
+     *  echoes `operationID` + `uiRunID` and NEVER a `runID` key, so a
+     *  native-issued UI identity can not be mistaken for a model run. */
+    internal sealed class PreflightIdentity {
+        abstract val conversationID: String
+        data class Run(val runID: String, override val conversationID: String) : PreflightIdentity()
+        data class TerminalOperation(
+            val operationID: String, val uiRunID: String,
+            override val conversationID: String,
+        ) : PreflightIdentity()
+
+        /** The identity the runtime-side NON-EXECUTING preflight is dispatched
+         *  with. The runtime validates UUID grammar only (it holds no run
+         *  store and no authority of its own): ownership is decided by the
+         *  grant, exactly as for `shell.start`. */
+        val dispatchRunID: String get() = when (this) {
+            is Run -> runID
+            is TerminalOperation -> uiRunID
+        }
+
+        /** The closed per-lane identity echo of a reply. */
+        fun echo(into: JSONObject): JSONObject = when (this) {
+            is Run -> into.put("runID", runID).put("conversationID", conversationID)
+            is TerminalOperation -> into.put("operationID", operationID)
+                .put("uiRunID", uiRunID).put("conversationID", conversationID)
+        }
+    }
+
+    /** One validated run-less terminal preflight request (pure value). */
+    internal data class TerminalPreflightRequest(
+        val operationID: String, val uiRunID: String, val conversationID: String)
+
+    /** One validated ownership read: the exact entry identity plus the ENTRY's
+     *  epoch (which may be an older, fenced generation). */
+    internal data class PreflightOwnershipQuery(
+        val operationID: String, val uiRunID: String, val conversationID: String,
+        val queryEpoch: Long)
+
+    /** The ONE preflight reply builder both first-use lanes share: status, the
+     *  pump's OWN accepted epoch (untrusted request strings are never
+     *  reflected back) and the exact identity echo. Every non-ready answer
+     *  also rides the EXISTING bounded diagnostic recording (Main steers
+     *  2026-10-23): the typed stage token enters the readiness controller's
+     *  closed refusal vocabulary so a real device failure is observable
+     *  without logs, tagged with THIS pump's captured accepted epoch so a late
+     *  callback from an old Root can never surface under a newer generation.
+     *  Recording qualifies nothing. */
+    private fun preflightReply(
+        controller: LinuxRuntimeReadinessController?, acceptedEpoch: Long,
+        identity: PreflightIdentity, status: String, reason: String?,
+        ownershipReleased: Boolean? = null,
+    ): JSONObject =
+        JSONObject().put("status", status).put("rootEpoch", acceptedEpoch)
+            .also { identity.echo(it) }
+            .also {
+                if (status != "ready") {
+                    it.put("reason", (reason ?: status).take(32))
+                    controller?.recordPreflightStage(acceptedEpoch, reason ?: status)
+                }
+                // G05-R3: ONLY the run-less lane asserts its own physical
+                // settlement, because only that lane's caller holds a Core-side
+                // operation lease across the claim. Fail closed — an
+                // unasserted fact publishes `false`, so Core retains. The
+                // model-run lane's reply key set stays byte-identical.
+                if (identity is PreflightIdentity.TerminalOperation) {
+                    it.put("ownershipReleased", ownershipReleased == true)
+                }
+            }
+
     private suspend fun preflight(claim: Long, request: JSONObject, acceptedEpoch: Long) {
         val runID = request.optString("runID")
         val conversationID = request.optString("conversationID")
         val environmentID = request.optString("environmentID").takeIf { it.isNotEmpty() }
         val allowedKeys = setOf("runID", "conversationID", "rootEpoch") +
             if (environmentID != null) setOf("environmentID") else emptySet()
-        fun reply(status: String, reason: String?): JSONObject =
-            JSONObject().put("status", status).put("rootEpoch", acceptedEpoch)
-                .put("runID", runID).put("conversationID", conversationID)
-                .also {
-                    if (status != "ready") {
-                        it.put("reason", (reason ?: status).take(32))
-                        // G03-R3 bounded diagnostic (Main steers 2026-10-23):
-                        // the typed stage token rides the EXISTING refusal
-                        // vocabulary into the readiness controller so the
-                        // real device failure is observable without logs.
-                        // The token is tagged with THIS pump's captured
-                        // accepted epoch: a late callback from an old Root
-                        // can never surface under a newer generation.
-                        // Recording qualifies nothing.
-                        readiness?.recordPreflightStage(acceptedEpoch, reason ?: status)
-                    }
-                }
         val controller = readiness
         // Exact canonical identities, closed request shape, epoch match.
         // Anything else is a typed unavailable — a malformed request can
@@ -624,16 +703,137 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             complete(claim, 0, JSONObject().put("status", "unavailable")
                 .put("rootEpoch", acceptedEpoch).put("reason", "request_invalid")); return
         }
+        val identity = PreflightIdentity.Run(runID, conversationID)
         if (admissionClosed.get() || LinuxShellNative.shouldStop(claim) != 0) {
-            complete(claim, 0, reply("cancelled", "run_or_epoch_stopped")); return
+            complete(claim, 0, preflightReply(controller, acceptedEpoch, identity,
+                "cancelled", "run_or_epoch_stopped")); return
         }
         if (controller.boundEpoch != acceptedEpoch || !controller.prerequisitesLive(acceptedEpoch)) {
             // Fast typed skip for an unconfigured/unproven peer: the Core
             // hook continues with ordinary non-Linux tools; no failed user
             // call and no bootstrap attempt.
-            complete(claim, 0, reply("unavailable", "prerequisites_unverified")); return
+            complete(claim, 0, preflightReply(controller, acceptedEpoch, identity,
+                "unavailable", "prerequisites_unverified")); return
         }
-        val owned = OwnedPreflight(UUID.randomUUID().toString(), acceptedEpoch, runID, conversationID, environmentID)
+        preflightRoundTrip(claim, controller, acceptedEpoch, identity, environmentID) { owned, refusalObserver ->
+            // The ORIGINAL grant ABI mints from the accepted Root + the
+            // ORIGINAL run/conversation/workspace ownership rows. A run that
+            // is not actually active/owned yields NO grant (null) — a typed
+            // unavailable, never a synthetic session.
+            CoreWorkspaceGrant.create(context, acceptedEpoch, runID, trustedCallID = null,
+                isOwned = WorkspaceOwnershipProbe {
+                    epoch.get() == acceptedEpoch && preflights[owned.controlID] === owned && !owned.lease.isClosed
+                }, authority = CoreWorkspaceNativeAuthority(),
+                refusalObserver = refusalObserver)
+        }
+    }
+
+    /** G05-R3 RUN-LESS first use for one EXPLICIT human terminal action
+     *  (job-e2e7d046b63744cc). The two receipt-backed workspace facts were
+     *  previously produced only by the first ordinary MODEL run's preflight,
+     *  so a fresh generation with no configured provider could never open a
+     *  terminal. This lane is the SAME non-executing producer over the SAME
+     *  original ownership/lifecycle: one trusted UI operation lease, the SAME
+     *  foreground/work registration, the SAME runtime `workspace.preflight`
+     *  control, the SAME receipt await, ingest, activation and reconciliation.
+     *  It starts no shell, executes nothing, mints no run and never widens a
+     *  grant; a model, provider or run is not a prerequisite. */
+    private suspend fun terminalPreflight(claim: Long, request: JSONObject, acceptedEpoch: Long) {
+        val controller = readiness
+        val parsed = terminalPreflightRequest(request, acceptedEpoch)
+        // Same closed-shape discipline as the run lane: a malformed request is
+        // a typed unavailable and can never be retried into qualification.
+        // Nothing was owned yet, so the physical-settlement fact is true.
+        if (parsed == null || controller == null) {
+            readiness?.recordPreflightStage(acceptedEpoch, "request_invalid")
+            complete(claim, 0, JSONObject().put("status", "unavailable")
+                .put("rootEpoch", acceptedEpoch).put("reason", "request_invalid")
+                .put("ownershipReleased", true)); return
+        }
+        val identity = PreflightIdentity.TerminalOperation(
+            parsed.operationID, parsed.uiRunID, parsed.conversationID)
+        if (admissionClosed.get() || LinuxShellNative.shouldStop(claim) != 0) {
+            complete(claim, 0, preflightReply(controller, acceptedEpoch, identity,
+                "cancelled", "run_or_epoch_stopped", ownershipReleased = true)); return
+        }
+        if (controller.boundEpoch != acceptedEpoch || !controller.prerequisitesLive(acceptedEpoch)) {
+            // Same fast typed skip as the run lane: an unconfigured/unproven
+            // peer answers honestly and the pane keeps its real setup guidance
+            // instead of pretending a terminal is one tap away.
+            complete(claim, 0, preflightReply(controller, acceptedEpoch, identity,
+                "unavailable", "prerequisites_unverified", ownershipReleased = true)); return
+        }
+        preflightRoundTrip(claim, controller, acceptedEpoch, identity, environmentID = null) { owned, refusalObserver ->
+            // The grant mints against the TRUSTED UI operation lease the Swift
+            // host registered in-process for THIS explicit action — the same
+            // G04-R2 operation-scoped path the terminal's own `shell.start`
+            // already uses. Never a durable-job claim (the two are mutually
+            // exclusive and the factory fails closed if both are present) and
+            // never a persisted run row: a run that does not exist mints
+            // nothing here either.
+            CoreWorkspaceGrant.create(context, acceptedEpoch, parsed.uiRunID,
+                trustedCallID = null, trustedOperationID = parsed.operationID,
+                isOwned = WorkspaceOwnershipProbe {
+                    epoch.get() == acceptedEpoch && preflights[owned.controlID] === owned && !owned.lease.isClosed
+                }, authority = CoreWorkspaceNativeAuthority(),
+                refusalObserver = refusalObserver)
+        }
+    }
+
+    /** Pure read of this pump's OWN first-use ownership table for ONE exact
+     *  identity (operation lease + native-issued UI identity + conversation +
+     *  the ENTRY's epoch, which need not be the live one — a fenced generation
+     *  must still be observable until its real IO ends). This deliberately
+     *  remains usable after stop() closes EXECUTION admission, exactly like
+     *  host.shellSettlement / host.jobOwnership: it starts no command, grant,
+     *  IO or qualification and cannot reopen admission.
+     *
+     *  Registration happens BEFORE any runtime/file IO and settle() removes
+     *  the entry only after its drained grant close, connection close and
+     *  foreground discharge. `owned` echoes pump-held values. `released` also
+     *  carries the exact query identity, but Core accepts that absence only
+     *  with the original claim's sticky host-settled fact or after an exact
+     *  `owned` observation; a pre-registration empty table therefore cannot
+     *  detach the receipt. Nothing here qualifies, ingests, stops, cancels,
+     *  mints or touches IO. */
+    private fun preflightOwnership(request: JSONObject, acceptedEpoch: Long): JSONObject {
+        val parsed = preflightOwnershipRequest(request)
+        if (parsed == null) {
+            return JSONObject().put("status", "unavailable").put("rootEpoch", acceptedEpoch)
+                .put("reason", "request_invalid")
+        }
+        val owned = preflights.values.firstOrNull {
+            it.nativeEpoch == parsed.queryEpoch && it.operationID == parsed.operationID &&
+                it.runID == parsed.uiRunID && it.conversationID == parsed.conversationID
+        }
+        val observed = owned?.let {
+            PreflightOwnershipQuery(checkNotNull(it.operationID), it.runID,
+                it.conversationID, it.nativeEpoch)
+        }
+        return preflightOwnershipReply(parsed, observed, acceptedEpoch)
+    }
+
+    /** The ONE owned, cancellable first-use round trip both lanes share:
+     *  foreground/work ownership registered BEFORE any IPC or file IO, the
+     *  lane's own grant mint, the SAME runtime control, the SAME receipt
+     *  await and the SAME verify -> settle path. Admission, cancellation,
+     *  retention and reconciliation are identical for both identities; only
+     *  the grant scope and the reply echo differ. */
+    private suspend fun preflightRoundTrip(
+        claim: Long, controller: LinuxRuntimeReadinessController, acceptedEpoch: Long,
+        identity: PreflightIdentity, environmentID: String?,
+        mintGrant: (OwnedPreflight, (String) -> Unit) -> CoreWorkspaceGrant?,
+    ) {
+        // The host's OWN physical-settlement fact for this request. Fail-closed
+        // false: it becomes true ONLY where a real drained settlement happened
+        // (or where nothing was ever owned), and the reply builder publishes it
+        // for the run-less lane only.
+        var ownershipReleased = false
+        fun reply(status: String, reason: String?): JSONObject =
+            preflightReply(controller, acceptedEpoch, identity, status, reason, ownershipReleased)
+        val owned = OwnedPreflight(UUID.randomUUID().toString(), acceptedEpoch,
+            identity.dispatchRunID, identity.conversationID, environmentID,
+            (identity as? PreflightIdentity.TerminalOperation)?.operationID)
         var registered = false
         var dispatched = false
         try {
@@ -644,10 +844,6 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             registered = true
             if (admissionClosed.get() || owned.stop.get() || LinuxShellNative.shouldStop(claim) != 0)
                 error("caller_stopped")
-            // The ORIGINAL grant ABI mints from the accepted Root + the
-            // ORIGINAL run/conversation/workspace ownership rows. A run that
-            // is not actually active/owned yields NO grant (null) — a typed
-            // unavailable, never a synthetic session.
             // Closed-token refusal discriminator (G03-R3 grant refusal
             // observation): create() reports EXACTLY ONE fixed closed token
             // naming the actual null branch (or the flat native reply
@@ -657,21 +853,21 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             // evidence. The historical token stays the fallback when null
             // came back without a report. Recording qualifies nothing; the
             // admission, ownership, cancellation and drain semantics of
-            // this lane are unchanged.
+            // this lane are unchanged. WHICH grant scope mints is the only
+            // per-lane difference and is supplied by the caller: the ordinary
+            // run row, or the trusted UI operation lease for the run-less
+            // terminal lane.
             var grantRefusal: String? = null
-            val grant = CoreWorkspaceGrant.create(context, acceptedEpoch, runID, trustedCallID = null,
-                isOwned = WorkspaceOwnershipProbe {
-                    epoch.get() == acceptedEpoch && preflights[owned.controlID] === owned && !owned.lease.isClosed
-                }, authority = CoreWorkspaceNativeAuthority(),
-                refusalObserver = { token -> grantRefusal = token })
+            val grant = mintGrant(owned) { token -> grantRefusal = token }
                 ?: error(grantRefusal ?: "workspace_unresolved")
             owned.workspaceGrant = grant
             // Stamp the claim with the ACTUAL anchored generation it is being
             // dispatched to; reconciliation later proves retirement ONLY by
             // a different measured generation, never by an elapsed budget.
             owned.dispatchedPeerToken = controller.anchoredProcessToken(acceptedEpoch)
-            val payload = JSONObject().put("projectID", grant.projectID).put("runID", runID)
-                .put("conversationID", conversationID)
+            val payload = JSONObject().put("projectID", grant.projectID)
+                .put("runID", identity.dispatchRunID)
+                .put("conversationID", identity.conversationID)
                 .also { if (environmentID != null) it.put("environmentID", environmentID) }
             // Explicit pre-queue refusals (busy) are retryable with the SAME
             // control UUID; a transport loss is uncertain, and the kernel's
@@ -696,7 +892,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             val outcome = awaitPreflightReceipt(owned, checkNotNull(first)) {
                 if (LinuxShellNative.shouldStop(claim) != 0) owned.requestCancel()
             }
-            settlePreflight(claim, owned, controller, outcome, acceptedEpoch, runID, conversationID)
+            settlePreflight(claim, owned, controller, outcome, acceptedEpoch, identity)
         } catch (failure: PreflightUncertain) {
             // Timeout, cancellation, transport loss and an unknown receipt
             // are NOT actual retirement of the claimed remote IO. Answer THIS
@@ -706,6 +902,9 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             // cancellable reconciliation until the SAME request settles on
             // the peer or peer/process retirement is actually proven.
             val code = boundedToken(failure.reason)
+            // Uncertain: the claimed remote IO is NOT proven finished, so the
+            // ownership fact stays false and Core keeps its lease attached.
+            ownershipReleased = false
             if (LinuxShellNative.isLive(claim) == 1 && LinuxShellNative.shouldStop(claim) == 0)
                 complete(claim, 0, reply(if (code in CANCEL_CODES) "cancelled" else "unavailable", code))
             if (code !in CANCEL_CODES && registered) controller.invalidateForEpoch(acceptedEpoch, "preflight_$code".take(48))
@@ -719,6 +918,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 // Claimed remote IO may still run: never drop it on budget,
                 // transport loss or caller cancellation.
                 val code = if (cancelled) "caller_stopped" else boundedCode(failure)
+                // Claimed remote IO may still run: never assert a release.
+                ownershipReleased = false
                 if (LinuxShellNative.isLive(claim) == 1 && LinuxShellNative.shouldStop(claim) == 0)
                     complete(claim, 0, reply(
                         if (cancelled || code in CANCEL_CODES) "cancelled" else "unavailable", code))
@@ -731,7 +932,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             } else {
                 // Nothing crossed the wire: only local channel closure can
                 // remain, and a FAILED close still retains ownership.
-                if (!owned.settle()) reconcilePreflightOwnership(owned)
+                ownershipReleased = owned.settle()
+                if (!ownershipReleased) reconcilePreflightOwnership(owned)
                 val code = boundedCode(failure)
                 if (code != "runtime_busy" && code !in CANCEL_CODES && registered)
                     controller.invalidateForEpoch(acceptedEpoch, "preflight_$code".take(48))
@@ -753,30 +955,29 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
     private suspend fun settlePreflight(
         claim: Long, owned: OwnedPreflight,
         controller: LinuxRuntimeReadinessController, outcome: JSONObject,
-        acceptedEpoch: Long, runID: String, conversationID: String,
+        acceptedEpoch: Long, identity: PreflightIdentity,
     ) {
+        // The host's OWN physical-settlement fact, published for the run-less
+        // lane only: true ONLY after `owned.settle()` really closed the drained
+        // grant, the connection and the foreground lease and dropped the entry.
+        var ownershipReleased = false
+        // Same bounded diagnostic recording as the dispatch lane's reply
+        // builder (closed tokens only, tagged with this claim's captured
+        // accepted epoch), and the same per-lane identity echo.
         fun reply(status: String, reason: String?): JSONObject =
-            JSONObject().put("status", status).put("rootEpoch", acceptedEpoch)
-                .put("runID", runID).put("conversationID", conversationID)
-                .also {
-                    if (status != "ready") {
-                        it.put("reason", (reason ?: status).take(32))
-                        // Same bounded diagnostic recording as the dispatch
-                        // lane's reply builder (closed tokens only, tagged
-                        // with this claim's captured accepted epoch).
-                        controller.recordPreflightStage(acceptedEpoch, reason ?: status)
-                    }
-                }
+            preflightReply(controller, acceptedEpoch, identity, status, reason, ownershipReleased)
         if (owned.stop.get() || LinuxShellNative.shouldStop(claim) != 0) {
             // The cancel was already proven settled (this call carries the
             // real same-request outcome); a failed channel close still keeps
             // the entry claimed for the owned reconciliation to retry.
-            if (!owned.settle()) reconcilePreflightOwnership(owned)
+            ownershipReleased = owned.settle()
+            if (!ownershipReleased) reconcilePreflightOwnership(owned)
             complete(claim, 0, reply("cancelled", "preflight_cancelled")); return
         }
         if (outcome.optString("status") != "ready") {
             val reason = boundedToken(outcome.optString("reason", "preflight_aborted"))
-            if (!owned.settle()) reconcilePreflightOwnership(owned)
+            ownershipReleased = owned.settle()
+            if (!ownershipReleased) reconcilePreflightOwnership(owned)
             // A target-scoped CANCELLATION of this own preflight is not a
             // generation failure: ordinary facts stay live and unrelated
             // conversations keep their qualification.
@@ -796,11 +997,16 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         // FAILED close RETAINS ownership: never swallow it and still ingest
         // this round trip; the owned reconciliation retries the close while
         // the caller stays honestly unqualified.
-        if (!owned.settle()) {
+        ownershipReleased = owned.settle()
+        if (!ownershipReleased) {
             controller.invalidateForEpoch(acceptedEpoch, "preflight_close_retained")
             reconcilePreflightOwnership(owned)
             complete(claim, 0, reply("unavailable", "close_retained")); return
         }
+        // From here the drained grant close, the connection close and the
+        // foreground-lease discharge really happened, so every remaining reply
+        // of this round trip (including the ingest/activation refusals) can
+        // truthfully assert the release.
         val indexDigest = mappingIndexDigest(receiptBytes, sessionKey)
         if (indexDigest == null) {
             controller.invalidateForEpoch(acceptedEpoch, "preflight_mapping")
@@ -882,6 +1088,86 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
 
     companion object {
         internal val ENVIRONMENT_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+
+        /** G05-R3 RUN-LESS first use: the trusted INTERNAL host operation an
+         *  EXPLICIT human terminal action submits through the ORIGINAL
+         *  `LinuxShellMailbox` when its task's workspace facts do not exist
+         *  yet. Not a model route, not a new Core ABI entry, not a tool. */
+        internal const val TERMINAL_PREFLIGHT_OPERATION = "host.terminalWorkspacePreflight"
+
+        /** G05-R3: the pure READ of this pump's own first-use ownership table,
+         *  over the SAME original mailbox. It exists because a completed claim
+         *  is not physical settlement: the pump answers uncertain/cancelled/
+         *  `close_retained` while its reconciliation may still own real IO, and
+         *  a mailbox fence drops claimed tickets without ending owned workers. */
+        internal const val PREFLIGHT_OWNERSHIP_OPERATION = "host.terminalPreflightOwnership"
+
+        /** Its CLOSED request shape: exactly these four keys. There is
+         *  deliberately NO `environmentID` (the terminal resolves its layer
+         *  from the ORIGINAL persisted workspace binding, so this lane never
+         *  guesses one), no command, no path and no model/provider field. */
+        internal val TERMINAL_PREFLIGHT_KEYS =
+            setOf("operationID", "uiRunID", "conversationID", "rootEpoch")
+
+        /** Pure validation of one run-less terminal preflight request: the
+         *  closed key set, the pump's OWN accepted epoch and three canonical
+         *  UPPER-CASE Core UUIDs (the trusted UI operation lease, the
+         *  native-issued UI interaction identity and the real conversation).
+         *  Null is a typed `request_invalid` that can never be retried into
+         *  qualification. No run row is required or consulted: this lane exists
+         *  precisely because no model run happened. */
+        internal fun terminalPreflightRequest(
+            request: JSONObject, acceptedEpoch: Long,
+        ): TerminalPreflightRequest? {
+            if (acceptedEpoch <= 0) return null
+            if (request.keys().asSequence().toSet() != TERMINAL_PREFLIGHT_KEYS) return null
+            if (request.optLong("rootEpoch") != acceptedEpoch) return null
+            val operationID = request.optString("operationID")
+            val uiRunID = request.optString("uiRunID")
+            val conversationID = request.optString("conversationID")
+            if (!isCanonicalUUID(operationID) || !isCanonicalUUID(uiRunID) ||
+                !isCanonicalUUID(conversationID)
+            ) return null
+            return TerminalPreflightRequest(operationID, uiRunID, conversationID)
+        }
+
+        /** Pure validation of one ownership read. The closed key set is the
+         *  same four-key shape, but `rootEpoch` is the ENTRY's epoch (the
+         *  identity being asked about), so it is NOT required to equal the
+         *  claim's accepted epoch — that is exactly what makes a fenced
+         *  generation's retained claim observable. */
+        internal fun preflightOwnershipRequest(request: JSONObject): PreflightOwnershipQuery? {
+            if (request.keys().asSequence().toSet() != TERMINAL_PREFLIGHT_KEYS) return null
+            val queryEpoch = request.optLong("rootEpoch")
+            if (queryEpoch <= 0) return null
+            val operationID = request.optString("operationID")
+            val uiRunID = request.optString("uiRunID")
+            val conversationID = request.optString("conversationID")
+            if (!isCanonicalUUID(operationID) || !isCanonicalUUID(uiRunID) ||
+                !isCanonicalUUID(conversationID)
+            ) return null
+            return PreflightOwnershipQuery(operationID, uiRunID, conversationID, queryEpoch)
+        }
+
+        /** Pure ownership reply with exact identity correlation. This helper
+         *  has NO execution-admission input by design: stop() cannot disable
+         *  the proof channel that its own drain still needs. `owned` values
+         *  are constructed from the pump-held entry; a released answer echoes
+         *  the already validated query and is still gated by Core's sticky
+         *  host-settled / prior-owned proof before it may release a receipt. */
+        internal fun preflightOwnershipReply(
+            query: PreflightOwnershipQuery,
+            owned: PreflightOwnershipQuery?,
+            acceptedEpoch: Long,
+        ): JSONObject {
+            val observed = owned ?: query
+            return JSONObject().put("status", if (owned == null) "released" else "owned")
+                .put("rootEpoch", acceptedEpoch)
+                .put("queryEpoch", observed.queryEpoch)
+                .put("operationID", observed.operationID)
+                .put("uiRunID", observed.uiRunID)
+                .put("conversationID", observed.conversationID)
+        }
 
         internal fun requiresControlReceipt(operation: String): Boolean {
             require(operation in setOf("shell.poll", "shell.input", "shell.resize"))

@@ -1,1 +1,207 @@
-../../../../FloeAgent/Sources/FloePersistence/SkillStore.swift
+import Foundation
+import GRDB
+
+public struct PersistedSkill: Codable, Sendable, Hashable, Identifiable {
+    public var id: String
+    public var name: String
+    public var version: String
+    public var status: String
+    public var skillMarkdown: String
+    public var manifestJSON: String
+    public var declaredCapabilitiesJSON: String
+    public var effectiveCapabilitiesJSON: String
+    public var sourceURL: String?
+    public var sourceDigest: String?
+    public var rewrittenDigest: String
+    public var rewriteModelID: String?
+    public var compatibilityReportJSON: String
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: String, name: String, version: String, status: String = "enabled",
+        skillMarkdown: String, manifestJSON: String,
+        declaredCapabilitiesJSON: String = "[]", effectiveCapabilitiesJSON: String = "[]",
+        sourceURL: String? = nil, sourceDigest: String? = nil, rewrittenDigest: String,
+        rewriteModelID: String? = nil, compatibilityReportJSON: String = "{}",
+        createdAt: Date = Date(), updatedAt: Date = Date()
+    ) {
+        self.id = id; self.name = name; self.version = version; self.status = status
+        self.skillMarkdown = skillMarkdown; self.manifestJSON = manifestJSON
+        self.declaredCapabilitiesJSON = declaredCapabilitiesJSON
+        self.effectiveCapabilitiesJSON = effectiveCapabilitiesJSON
+        self.sourceURL = sourceURL; self.sourceDigest = sourceDigest
+        self.rewrittenDigest = rewrittenDigest; self.rewriteModelID = rewriteModelID
+        self.compatibilityReportJSON = compatibilityReportJSON
+        self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+}
+
+public struct PersistedSkillPermission: Codable, Sendable, Equatable {
+    public let capability: String
+    public let decision: String
+    public let scopeJSON: String
+    public let grantedAt: String?
+    public let expiresAt: String?
+}
+
+public actor SQLiteSkillStore {
+    private let database: DatabaseManager
+    public init(database: DatabaseManager) { self.database = database }
+
+    public func save(_ skill: PersistedSkill, grantCapabilities: [String] = [], replaceGrants: Bool = false,
+                     restoringPermissions: [PersistedSkillPermission]? = nil) async throws {
+        try await database.writer { db in
+            try db.execute(sql: """
+                INSERT INTO skills (
+                    id, name, version, status, skill_markdown, manifest_json,
+                    declared_capabilities_json, effective_capabilities_json,
+                    source_url, source_digest, rewritten_digest, rewrite_model_id,
+                    compatibility_report_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name, version=excluded.version, status=excluded.status,
+                    skill_markdown=excluded.skill_markdown, manifest_json=excluded.manifest_json,
+                    declared_capabilities_json=excluded.declared_capabilities_json,
+                    effective_capabilities_json=excluded.effective_capabilities_json,
+                    source_url=excluded.source_url, source_digest=excluded.source_digest,
+                    rewritten_digest=excluded.rewritten_digest, rewrite_model_id=excluded.rewrite_model_id,
+                    compatibility_report_json=excluded.compatibility_report_json,
+                    updated_at=excluded.updated_at
+                """, arguments: [
+                    skill.id, skill.name, skill.version, skill.status, skill.skillMarkdown,
+                    skill.manifestJSON, skill.declaredCapabilitiesJSON,
+                    skill.effectiveCapabilitiesJSON, skill.sourceURL, skill.sourceDigest,
+                    skill.rewrittenDigest, skill.rewriteModelID, skill.compatibilityReportJSON,
+                    Self.date(skill.createdAt), Self.date(skill.updatedAt)
+                ])
+            if replaceGrants { try db.execute(sql: "DELETE FROM skill_permissions WHERE skill_id = ?", arguments: [skill.id]) }
+            for capability in grantCapabilities {
+                try db.execute(sql: """
+                    INSERT INTO skill_permissions (skill_id, capability, decision, scope_json, granted_at, expires_at)
+                    VALUES (?, ?, 'allow', '{}', ?, NULL)
+                    ON CONFLICT(skill_id, capability) DO UPDATE SET decision='allow', granted_at=excluded.granted_at, expires_at=NULL
+                    """, arguments: [skill.id, capability, Self.date(Date())])
+            }
+            if let restoringPermissions {
+                try db.execute(sql: "DELETE FROM skill_permissions WHERE skill_id = ?", arguments: [skill.id])
+                for permission in restoringPermissions {
+                    try db.execute(sql: """
+                        INSERT INTO skill_permissions (skill_id, capability, decision, scope_json, granted_at, expires_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """, arguments: [skill.id, permission.capability, permission.decision,
+                            permission.scopeJSON, permission.grantedAt, permission.expiresAt])
+                }
+            }
+        }
+    }
+
+    public func permissions(skillID: String) async throws -> [PersistedSkillPermission] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM skill_permissions WHERE skill_id = ? ORDER BY capability", arguments: [skillID]).map {
+                PersistedSkillPermission(capability: $0["capability"], decision: $0["decision"],
+                    scopeJSON: $0["scope_json"], grantedAt: $0["granted_at"], expiresAt: $0["expires_at"])
+            }
+        }
+    }
+
+    public func all() async throws -> [PersistedSkill] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM skills ORDER BY name COLLATE NOCASE").map(Self.row)
+        }
+    }
+
+    public func setEnabled(_ enabled: Bool, id: String, expectedDigest: String? = nil) async throws {
+        try await database.writer { db in
+            try Self.checkDigest(db, id: id, expected: expectedDigest)
+            try db.execute(sql: "UPDATE skills SET status = ?, updated_at = ? WHERE id = ?",
+                           arguments: [enabled ? "enabled" : "disabled", Self.date(Date()), id])
+        }
+    }
+
+    public func remove(id: String, expectedDigest: String? = nil, suppressBundledSeed: Bool = false) async throws {
+        try await database.writer { db in
+            try Self.checkDigest(db, id: id, expected: expectedDigest)
+            if suppressBundledSeed {
+                try db.execute(sql: "INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) VALUES (?, 'true', ?)",
+                    arguments: ["skills.userRemoved." + id, Self.date(Date())])
+            }
+            try db.execute(sql: "DELETE FROM skills WHERE id = ?", arguments: [id])
+        }
+    }
+
+    public func wasBundledSkillRemoved(id: String) async throws -> Bool {
+        try await database.reader { db in
+            try String.fetchOne(db, sql: "SELECT value_json FROM app_settings WHERE key = ?",
+                arguments: ["skills.userRemoved." + id]) == "true"
+        }
+    }
+
+    public func requestBundledSkillInstallation(id: String) async throws {
+        try await database.writer { db in
+            try db.execute(sql: "DELETE FROM app_settings WHERE key = ?", arguments: ["skills.userRemoved." + id])
+        }
+    }
+
+    public func updateInstructions(id: String, markdown: String, digest: String, expectedDigest: String) async throws {
+        try await database.writer { db in
+            try Self.checkDigest(db, id: id, expected: expectedDigest)
+            try db.execute(sql: "UPDATE skills SET skill_markdown = ?, rewritten_digest = ?, updated_at = ? WHERE id = ?",
+                           arguments: [markdown, digest, Self.date(Date()), id])
+        }
+    }
+
+    private static func checkDigest(_ db: Database, id: String, expected: String?) throws {
+        guard let expected else { return }
+        guard try String.fetchOne(db, sql: "SELECT rewritten_digest FROM skills WHERE id = ?", arguments: [id]) == expected else {
+            throw SkillStoreConflict.changedOrMissing
+        }
+    }
+
+    public func setPermission(
+        skillID: String, capability: String, decision: String,
+        scopeJSON: String = "{}", expiresAt: Date? = nil
+    ) async throws {
+        try await database.writer { db in
+            try db.execute(sql: """
+                INSERT INTO skill_permissions (
+                    skill_id, capability, decision, scope_json, granted_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(skill_id, capability) DO UPDATE SET decision=excluded.decision,
+                    scope_json=excluded.scope_json, granted_at=excluded.granted_at,
+                    expires_at=excluded.expires_at
+                """, arguments: [skillID, capability, decision, scopeJSON,
+                    decision == "allow" ? Self.date(Date()) : nil, expiresAt.map(Self.date)])
+        }
+    }
+
+    public func allowedCapabilities(skillID: String, now: Date = Date()) async throws -> Set<String> {
+        try await database.reader { db in
+            Set(try String.fetchAll(db, sql: """
+                SELECT capability FROM skill_permissions
+                WHERE skill_id = ? AND decision = 'allow'
+                  AND (expires_at IS NULL OR expires_at > ?)
+                """, arguments: [skillID, Self.date(now)]))
+        }
+    }
+
+    private static func row(_ row: Row) throws -> PersistedSkill {
+        PersistedSkill(
+            id: row["id"], name: row["name"], version: row["version"], status: row["status"],
+            skillMarkdown: row["skill_markdown"], manifestJSON: row["manifest_json"],
+            declaredCapabilitiesJSON: row["declared_capabilities_json"],
+            effectiveCapabilitiesJSON: row["effective_capabilities_json"], sourceURL: row["source_url"],
+            sourceDigest: row["source_digest"], rewrittenDigest: row["rewritten_digest"],
+            rewriteModelID: row["rewrite_model_id"], compatibilityReportJSON: row["compatibility_report_json"],
+            createdAt: parseDate(row["created_at"]), updatedAt: parseDate(row["updated_at"])
+        )
+    }
+
+    private static func date(_ value: Date) -> String { ISO8601DateFormatter().string(from: value) }
+    private static func parseDate(_ value: String) -> Date { ISO8601DateFormatter().date(from: value) ?? .distantPast }
+}
+
+public enum SkillStoreConflict: Error, LocalizedError, Sendable {
+    case changedOrMissing
+    public var errorDescription: String? { "Skill changed or was removed; read its current state before retrying." }
+}

@@ -115,16 +115,63 @@ internal object OfficePrecisionPlan {
         data class CursorAt(val column: Int, val row: Int) : StepCheck()
 
         /**
-         * The `status:` readback's `selectedpart` must equal the requested
-         * part — the pinned-ordering-proven navigation postcondition (the
-         * kit processes the earlier `setclientpart` before answering this
+         * Resolves — BEFORE any navigation wire is dispatched — the
+         * producer's OWN part identifier for the requested 0-based logical
+         * part index, from this run's synchronous `status:` answer.
+         *
+         * Pinned facts (revision 2333344185931274f9c49d6c12a408cefcef6844):
+         * presentation/drawing page identifiers are the braced page GUID
+         * carried as each `parts` entry's `part` (kit/KitHelper.hpp
+         * documentStatus emits the core `getPart()` string as
+         * `selectedpart`; browser/src/layer/tile/ImpressTileLayer.js names
+         * the same rule), and the Impress boundary resolves ONLY that GUID —
+         * a decimal index names no page, so the C15 decimal `setclientpart`
+         * silently selected nothing and the honest `status:` readback could
+         * never match it (the real first failure). Spreadsheet and text
+         * documents keep the documented decimal-index identifier, so their
+         * wire and readback stay byte-identical to the proven pre-repair
+         * behaviour. Nothing is normalised or invented: whatever this
+         * status does not itself carry at that index is a fail-closed
+         * refusal BEFORE any effect is dispatched.
+         */
+        data class StatusResolvePartIndex(val partIndex: Int) : StepCheck()
+
+        /**
+         * The `status:` readback's `selectedpart` must equal the identifier
+         * THIS run resolved through [StatusResolvePartIndex] — the
+         * pinned-ordering-proven navigation postcondition (the kit
+         * processes the earlier `setclientpart` before answering this
          * synchronous pull, so the reported part is the real post-command
          * state; the `setpart:` callback echo is corroboration only).
          */
-        data class StatusSelectedPartMatches(val partId: String) : StepCheck()
+        object StatusSelectedPartMatchesResolved : StepCheck()
 
-        /** BEFORE content: current native part must still equal the consumed
-         * capture's part. This is a fresh synchronous read, not a cached fact. */
+        /**
+         * Dispatch-only marker for the fire-and-forget
+         * `setclientpart part=<resolved>` step: the ledger materializes the
+         * wire from THIS run's producer-resolved identifier
+         * ([OfficePrecisionLedger.wireForDispatch]) and never from a
+         * caller-supplied or stale value; an unresolved run dispatches no
+         * wire at all. This check never settles on a frame (the step has
+         * [Expectation] null).
+         */
+        object SendResolvedPartWire : StepCheck()
+
+        /**
+         * BEFORE content: the current native part must still equal the
+         * consumed capture's part BYTE-EXACTLY (identity) and, for
+         * presentation/drawing, the SAME GUID must still sit at the
+         * captured witnessed logical ordinal in this fresh synchronous
+         * status answer's own complete, closed, count-consistent ordered
+         * parts witness — a reordered deck refuses BEFORE the selection
+         * pull and before any paste/commit wire (pre-ordinal84 this gate
+         * was identity-only, so a same-GUID reorder could pass here and
+         * only surface as an avoidable saved-verification failure after
+         * the effect). This is a fresh synchronous read, not a cached
+         * fact; the documented decimal families' identifier IS their
+         * ordinal, so the identity comparison already proves position
+         * there and their behaviour stays byte-identical.
+         */
         object PreEffectTargetStatus : StepCheck()
 
         /** BEFORE content: retain this op's real current selection. Empty is
@@ -153,7 +200,13 @@ internal object OfficePrecisionPlan {
     data class Step(
         /** Identity-safe attestation token (path-free, content-free). */
         val name: String,
-        /** Exact wire message (built from validated typed parameters only). */
+        /**
+         * Exact wire message (built from validated typed parameters only),
+         * or for [StepCheck.SendResolvedPartWire] just the pinned command
+         * head: the engine materializes the full frame at dispatch time via
+         * [OfficePrecisionLedger.wireForDispatch] from THIS run's
+         * producer-resolved identifier (never from a caller value).
+         */
         val wire: String,
         /** Expected producer evidence; null = completes on successful send. */
         val expect: Expectation?,
@@ -186,7 +239,8 @@ internal object OfficePrecisionPlan {
      * the typed parameters cannot be translated into a pinned wire command
      * (honest refusal; never a partial/guessed command).
      */
-    fun forRequest(request: OfficePrecisionRequest): List<Step>? = when (request.action) {
+    fun forRequest(request: OfficePrecisionRequest): List<Step>? {
+        return when (request.action) {
         OfficePrecisionAction.CAPTURE_TARGET,
         OfficePrecisionAction.QUERY_DOCUMENT_CONTEXT,
         -> listOf(
@@ -230,27 +284,47 @@ internal object OfficePrecisionPlan {
         )
 
         OfficePrecisionAction.SELECT_SLIDE -> {
-            val wire = OfficePrecisionProtocol.setClientPart(request.partId ?: return null)
-                ?: return null
+            val requested = request.partId ?: return null
+            if (!OfficePrecisionProtocol.isValidPartId(requested)) return null
+            val partIndex = requested.toIntOrNull() ?: return null
             listOf(
+                // Resolve the producer's OWN part identifier for the
+                // requested logical index BEFORE any effect is dispatched:
+                // presentation/drawing pages are named by their braced GUID
+                // carried in the synchronous `status:` witness's `parts`
+                // entries, and the Impress boundary resolves only that GUID
+                // — the C15 decimal wire named no page, silently selected
+                // nothing, and the honest readback could never match it.
+                // Other families keep their documented decimal identifier,
+                // byte-identical to the proven pre-repair wire.
+                Step(
+                    name = "part-index-resolve",
+                    wire = OfficePrecisionProtocol.CMD_STATUS,
+                    expect = Expectation.StatusAnswer,
+                    check = StepCheck.StatusResolvePartIndex(partIndex),
+                    timeoutMs = QUERY_TIMEOUT_MS,
+                ),
                 // Fire-and-forget: the pinned producer answers setclientpart
                 // only through the callback-emitted `setpart:` echo, which
                 // carries no ordering proof — so the dispatch is followed by
                 // a synchronous `status:` pull whose `selectedpart` is the
                 // PROVEN postcondition (kit input is processed serially:
-                // getStatus runs after setClientPart).
+                // getStatus runs after setClientPart). The full frame is
+                // built at dispatch time from the identifier THIS run
+                // resolved (OfficePrecisionLedger.wireForDispatch); only the
+                // command head is carried here for error correlation.
                 Step(
                     name = "select-part",
-                    wire = wire,
+                    wire = "setclientpart part=",
                     expect = null,
-                    check = StepCheck.Accept,
+                    check = StepCheck.SendResolvedPartWire,
                     timeoutMs = MUTATION_TIMEOUT_MS,
                 ),
                 Step(
                     name = "part-readback",
                     wire = OfficePrecisionProtocol.CMD_STATUS,
                     expect = Expectation.StatusAnswer,
-                    check = StepCheck.StatusSelectedPartMatches(request.partId),
+                    check = StepCheck.StatusSelectedPartMatchesResolved,
                     timeoutMs = QUERY_TIMEOUT_MS,
                 ),
             )
@@ -411,6 +485,7 @@ internal object OfficePrecisionPlan {
                 )
             }
             steps
+        }
         }
     }
 }

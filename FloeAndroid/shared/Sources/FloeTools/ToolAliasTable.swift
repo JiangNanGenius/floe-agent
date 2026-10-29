@@ -1,1 +1,77 @@
-../../../../FloeAgent/Sources/FloeTools/ToolAliasTable.swift
+// FloeTools — Single source for tool aliases and discovery synonyms.
+// See docs/ARCHITECTURE_LOCAL_SHELL.md §Tool surface: rename aliases live for
+// one release window; capability synonyms are shared by tools.search and
+// skill.search instead of being duplicated per module.
+
+import Foundation
+
+public enum ToolAliasTable {
+    /// Renamed tool → canonical registered name. The runtime resolves an
+    /// exact call to a renamed name before rejecting it, and discovery shows
+    /// the canonical spelling. Entries are removed one minor release after
+    /// the rename ships.
+    public static let renamed: [String: String] = [
+        "presentation.createDeck": "document.presentation.createDeck",
+        "presentation.createInline": "document.presentation.createInline",
+        "task.readPlan": "checklist.readPlan",
+        "task.updatePlan": "checklist.updatePlan",
+        "image.qrGenerate": "image.qr.generate",
+        "image.scanBarcode": "image.barcode.scan",
+        "cloudWorkspace.gitStatus": "cloudWorkspace.git.status",
+        "cloudWorkspace.gitDiff": "cloudWorkspace.git.diff",
+        "cloudWorkspace.gitLog": "cloudWorkspace.git.log",
+        "cloudWorkspace.gitInitialize": "cloudWorkspace.git.initialize",
+        "cloudWorkspace.gitStage": "cloudWorkspace.git.stage",
+        "cloudWorkspace.gitCommit": "cloudWorkspace.git.commit",
+        "cloudWorkspace.gitFetch": "cloudWorkspace.git.fetch",
+        "cloudWorkspace.gitPull": "cloudWorkspace.git.pull",
+        "cloudWorkspace.gitPush": "cloudWorkspace.git.push",
+        "cloudWorkspace.gitBranch": "cloudWorkspace.git.branch"
+    ]
+
+    /// Lowercased query token → capability group. A query containing one of
+    /// these terms expands to the group before falling back to description
+    /// ranking. Shared by ToolDiscovery and SkillManagement.
+    public static let synonyms: [String: [String]] = [
+        "vnc": ["vnc", "远程桌面", "鼠标", "remote desktop"],
+        "executor": ["ssh", "executor", "执行命令", "运行命令"],
+        "hosts": ["主机", "server", "连接配置"],
+        "terminal": ["终端", "terminal", "交互", "telnet", "串口"],
+        "shell": ["shell", "sh", "bash", "linux", "unix", "posix", "python", "python3", "node", "nodejs", "javascript", "pip", "命令", "脚本", "管道", "批量处理", "command", "terminal"],
+        "packages": ["apt", "package", "packages", "包", "安装", "pip", "dpkg", "pkg"],
+        "python": ["python", "numpy", "pillow", "pandas", "scipy", "matplotlib", "数据分析"],
+        "pdf": ["pdf"],
+        "cad": ["cad", "dwg", "dxf", "drawing", "图纸", "图纸助手", "工程图", "二维图", "cad drawing"],
+        "office": ["markdown", "rtf", "富文本", "格式转换", "互转", "office", "word", "excel", "powerpoint", "ppt", "幻灯片", "演示文稿", "表格", "工作簿", "文档"],
+        "http": ["http", "接口", "api", "rest", "请求", "网页接口"],
+        "network": ["network", "网络", "ping", "dns", "http", "端口", "traceroute"],
+        "workspace": ["workspace", "文件", "编辑", "file", "html", "代码"],
+        "image": ["image", "图片", "图像", "照片", "生成图片", "生图", "画图", "createimage", "create image", "text-to-image", "文字识别", "ocr",
+                  "选区", "选取", "蒙版", "mask", "selection", "合并图层", "merge layers", "翻转", "flip", "涂鸦", "手绘", "brush", "画笔"],
+        "canvas": ["canvas", "画布", "生成", "图片"],
+        "media": ["media", "工作台", "workbench", "素材", "工程", "image project", "video project"],
+        "video": ["video", "视频", "视频生成", "生成视频", "影片", "动画", "seedance", "veo",
+                  "时间线", "timeline", "封面", "cover", "字幕", "subtitle", "预设", "preset", "剪辑", "trim", "帧", "timecode"],
+        "memory": ["memory", "记忆", "remember"],
+        "conversation": ["conversation", "history", "chat history", "conversation history", "past task",
+                         "历史", "任务历史", "聊天记录", "会话记录", "对话记录", "过往记录",
+                         "以前", "之前", "上次", "earlier", "查找历史", "过往任务"],
+        "skill": ["skill", "技能"],
+        "browser": ["browser", "浏览器", "网页", "website"],
+        "web": ["web", "网页", "website", "搜索", "search", "查找"],
+        "git": ["git", "仓库", "commit", "repository"],
+        "mail": ["mail", "邮件", "邮箱", "收信", "发信", "imap", "pop3", "smtp"]
+    ]
+
+    /// Canonical spelling for a renamed name; unchanged names pass through.
+    public static func canonical(_ name: String) -> String {
+        if let canonical = renamed[name] { return canonical }
+        // Known historical provider wire spellings only; never guess arbitrary names.
+        return renamed.first { $0.key.replacingOccurrences(of: ".", with: "_") == name }?.value ?? name
+    }
+
+    /// Aliases that currently resolve to `name`, sorted for deterministic output.
+    public static func aliases(of name: String) -> [String] {
+        renamed.compactMap { $0.value == name ? $0.key : nil }.sorted()
+    }
+}

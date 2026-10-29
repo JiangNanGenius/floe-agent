@@ -256,6 +256,30 @@ class OfficePrecisionLedger(
         /** Fresh part observed by this run's pre-effect status pull. */
         var preEffectPartId: String? = null
 
+        /**
+         * The producer's OWN part identifier resolved for this run's
+         * SELECT_SLIDE by the `part-index-resolve` step from its own
+         * synchronous `status:` answer: the braced page GUID carried in the
+         * `parts` witness for presentation/drawing (the pinned Impress
+         * boundary names pages only by that GUID — the C15 decimal wire
+         * named no page), the documented decimal index otherwise. Never
+         * caller-supplied, never a stale cache; the dispatch step and the
+         * readback comparison consume ONLY this run-owned value.
+         */
+        var resolvedPartId: String? = null
+
+        /**
+         * The logical 0-based ordinal of [resolvedPartId] in the SAME
+         * producer `status:` witness that resolved it (presentation/
+         * drawing: the unique `parts[i].part` position proven by the
+         * resolve step; spreadsheet/text: the documented decimal value).
+         * The readback step re-witnesses the shown identifier against its
+         * OWN ordered parts and refuses a drift instead of reusing this
+         * cached value; the caller's requested index is never a proof on
+         * its own.
+         */
+        var resolvedPartIndex: Int? = null
+
         /** Fresh selection acquired by THIS run before paste; never sampled
          * from the host's ambient query/select-all cache. */
         var preEffectEvidence: OfficePrecisionPreEffectEvidence? = null
@@ -450,7 +474,7 @@ class OfficePrecisionLedger(
             OfficePrecisionState.REJECTED,
             failure,
             detail,
-            attestation = "refused-before-dispatch",
+            attestation = OfficePrecisionAttestation.REFUSED_BEFORE_DISPATCH,
             answer = null,
         )
         return ArmDecision.Reject(failure, detail)
@@ -463,6 +487,27 @@ class OfficePrecisionLedger(
         if (step.expect != null) return@synchronized null
         run.attestations.add(step.name + ":sent")
         advanceOrTerminalLocked(run)
+    }
+
+    /**
+     * The EXACT wire the engine must post for step [stepIndex], or null when
+     * the step has no sound wire right now (fail-closed: the engine must
+     * refuse and NEVER post the plan's head-only template or any stale
+     * identifier). Steps other than [OfficePrecisionPlan.StepCheck.SendResolvedPartWire]
+     * dispatch their plan wire unchanged; the SELECT_SLIDE dispatch step
+     * materializes `setclientpart part=<id>` ONLY from [OpRun.resolvedPartId]
+     * — the identifier THIS run resolved from the producer's own synchronous
+     * `status:` witness — through the pinned [OfficePrecisionProtocol.setClientPart]
+     * grammar check, so a caller-supplied, model-supplied or cross-run value
+     * can never reach the kit.
+     */
+    internal fun wireForDispatch(run: OpRun, stepIndex: Int): String? = synchronized(lock) {
+        val step = run.plan.getOrNull(stepIndex) ?: return@synchronized null
+        if (step.check != OfficePrecisionPlan.StepCheck.SendResolvedPartWire) {
+            return@synchronized step.wire
+        }
+        val resolved = run.resolvedPartId ?: return@synchronized null
+        OfficePrecisionProtocol.setClientPart(resolved)
     }
 
     /**
@@ -735,7 +780,20 @@ class OfficePrecisionLedger(
                     // never satisfy the mandatory pre-effect part gate, so
                     // every APPLY_TEXT/SET_CELL_CONTENT would be refused
                     // before its own paste wire.
-                    val captured = pendingCaptureTarget?.let { bindCapturedContextLocked(it, info) }
+                    val captured = pendingCaptureTarget?.let {
+                        bindCapturedContextLocked(
+                            it,
+                            info,
+                            OfficePrecisionProtocol.statusPartOrdinal(
+                                info.docType,
+                                info.selectedPart,
+                                frame.payload?.let { body ->
+                                    OfficePrecisionProtocol.statusPartWitness(body)
+                                },
+                                info.partsCount,
+                            ),
+                        )
+                    }
                     StepOutcome.Answer("status-answer") {
                         if (captured != null) {
                             OfficePrecisionAnswer.TargetCaptured(captured)
@@ -744,6 +802,20 @@ class OfficePrecisionLedger(
                                 docType = info.docType,
                                 partsCount = info.partsCount,
                                 selectedPart = info.selectedPart,
+                                // The logical ordinal is carried ONLY from this
+                                // same validated answer's own ordered parts witness
+                                // (presentation/drawing) or its documented decimal
+                                // (spreadsheet/text) — never re-derived by decimal-
+                                // parsing a braced GUID downstream (the host-boundary
+                                // null that would refuse the saved PPTX verification).
+                                selectedPartIndex = OfficePrecisionProtocol.statusPartOrdinal(
+                                    info.docType,
+                                    info.selectedPart,
+                                    frame.payload?.let { body ->
+                                        OfficePrecisionProtocol.statusPartWitness(body)
+                                    },
+                                    info.partsCount,
+                                ),
                                 widthTwip = info.widthTwip,
                                 heightTwip = info.heightTwip,
                                 viewId = info.viewId,
@@ -827,23 +899,117 @@ class OfficePrecisionLedger(
                 )
             }
         }
-        is OfficePrecisionPlan.StepCheck.StatusSelectedPartMatches -> {
+        is OfficePrecisionPlan.StepCheck.StatusResolvePartIndex -> {
+            val payload = frame.payload
+            val info = payload?.let { OfficePrecisionProtocol.parseDocumentStatus(it) }
+            val family = info?.docType
+            when {
+                info == null || payload == null -> StepOutcome.Fail(
+                    OfficePrecisionFailure.PRODUCER_REJECTED,
+                    "part-index-status-unparseable",
+                )
+                family == "presentation" || family == "drawing" -> {
+                    // The producer's OWN synchronous status names every page
+                    // by its braced GUID (`parts[i].part` — the exact value
+                    // the pinned frontend itself sends back through
+                    // setclientpart). The decimal request index is NEVER
+                    // forwarded to Impress: the pinned core resolves only
+                    // this GUID, a decimal names no page, and the C15 honest
+                    // selectedpart readback could never match it (the real
+                    // first-failure cause). Nothing absent/malformed here is
+                    // guessed or normalised — fail closed BEFORE any effect.
+                    val ids = OfficePrecisionProtocol.parseStatusPartIdentifiers(payload)
+                    val identifier = ids.getOrNull(check.partIndex)
+                    when {
+                        check.partIndex >= ids.size || identifier == null -> StepOutcome.Fail(
+                            OfficePrecisionFailure.TARGET_UNVERIFIED,
+                            if (check.partIndex >= ids.size) "part-index-out-of-range" else "part-id-unresolved",
+                        )
+                        !OfficePrecisionProtocol.isValidGuidPartId(identifier) -> StepOutcome.Fail(
+                            OfficePrecisionFailure.TARGET_UNVERIFIED,
+                            "part-id-unresolved",
+                        )
+                        else -> {
+                            run.resolvedPartId = identifier
+                            run.resolvedPartIndex = check.partIndex
+                            StepOutcome.Answer("part-index-resolved") { null }
+                        }
+                    }
+                }
+                family == "spreadsheet" || family == "text" -> {
+                    // Documented decimal part-index identifier (pinned
+                    // kit/KitHelper.hpp): byte-identical wire and readback
+                    // to the proven pre-repair behaviour for these families.
+                    val requested = run.request.partId
+                    if (requested == null || !OfficePrecisionProtocol.isValidPartId(requested)) {
+                        StepOutcome.Fail(OfficePrecisionFailure.INTERNAL, "decimal-request-part-invalid")
+                    } else {
+                        run.resolvedPartId = requested
+                        // The documented decimal identifier IS the ordinal
+                        // for these families (pinned documentStatus rule;
+                        // byte-identical to the proven pre-repair wire).
+                        run.resolvedPartIndex = requested.toIntOrNull()
+                        StepOutcome.Answer("part-index-decimal") { null }
+                    }
+                }
+                else -> StepOutcome.Fail(
+                    OfficePrecisionFailure.TARGET_UNVERIFIED,
+                    "part-family-unsupported",
+                )
+            }
+        }
+        OfficePrecisionPlan.StepCheck.StatusSelectedPartMatchesResolved -> {
             val info = frame.payload?.let { OfficePrecisionProtocol.parseDocumentStatus(it) }
+            val expected = run.resolvedPartId
             when {
                 info == null -> StepOutcome.Fail(
                     OfficePrecisionFailure.PRODUCER_REJECTED,
                     "status-readback-unparseable",
                 )
-                info.selectedPart == check.partId ->
-                    StepOutcome.Answer("part-readback-matched") {
-                        OfficePrecisionAnswer.SlideSelected(check.partId)
+                expected == null -> StepOutcome.Fail(
+                    OfficePrecisionFailure.INTERNAL,
+                    "resolved-part-absent",
+                )
+                info.selectedPart == expected -> {
+                    // The identifier matched, so the navigation postcondition
+                    // holds; the LOGICAL ordinal is then re-witnessed against
+                    // THIS proven readback answer's own ordered parts (never
+                    // reusing the resolve step's cached status, never decimal-
+                    // parsing a braced GUID downstream — the exact host-boundary
+                    // null that would refuse the saved PPTX verification).
+                    val shownOrdinal = OfficePrecisionProtocol.statusPartOrdinal(
+                        info.docType,
+                        expected,
+                        frame.payload?.let { body ->
+                            OfficePrecisionProtocol.statusPartWitness(body)
+                        },
+                        info.partsCount,
+                    )
+                    when {
+                        shownOrdinal == null -> StepOutcome.Fail(
+                            OfficePrecisionFailure.TARGET_UNVERIFIED,
+                            "part-ordinal-unresolved",
+                        )
+                        run.resolvedPartIndex != null && shownOrdinal != run.resolvedPartIndex ->
+                            StepOutcome.Fail(
+                                OfficePrecisionFailure.TARGET_UNVERIFIED,
+                                "part-ordinal-drift",
+                            )
+                        else -> StepOutcome.Answer("part-readback-matched") {
+                            OfficePrecisionAnswer.SlideSelected(expected, shownOrdinal)
+                        }
                     }
+                }
                 else -> StepOutcome.Fail(
                     OfficePrecisionFailure.TARGET_UNVERIFIED,
                     "part-readback-mismatch",
                 )
             }
         }
+        OfficePrecisionPlan.StepCheck.SendResolvedPartWire -> StepOutcome.Fail(
+            OfficePrecisionFailure.INTERNAL,
+            "dispatch-only-check-never-frame-settled",
+        )
         OfficePrecisionPlan.StepCheck.PreEffectTargetStatus -> {
             val info = frame.payload?.let { OfficePrecisionProtocol.parseDocumentStatus(it) }
             val target = run.contentTarget
@@ -861,6 +1027,27 @@ class OfficePrecisionLedger(
                     StepOutcome.Fail(
                         OfficePrecisionFailure.TARGET_UNVERIFIED,
                         "pre-effect-part-mismatch",
+                    )
+                // A matching GUID is NOT a matching logical position: the
+                // pinned producer may re-order the deck (page inserted or
+                // moved before the shown one) while selectedpart keeps the
+                // SAME byte-exact identifier. Re-derive the ordinal from
+                // THIS fresh synchronous status' own complete, closed,
+                // count-consistent parts witness (same helper as capture/
+                // context/readback) and require it to equal the captured
+                // witnessed ordinal; anything else — drift, a fresh answer
+                // that no longer witnesses a unique ordinal, or a capture
+                // that never witnessed one — refuses BEFORE the pre-effect
+                // selection pull and BEFORE any paste/commit wire, with
+                // zero effect. The later OOXML verifier is never the place
+                // to discover this. Documented decimal families (and DOCX
+                // text) are unchanged: their byte-exact selectedpart IS the
+                // ordinal, so the identity comparison above already proves
+                // the position for them.
+                !preEffectOrdinalWitnessed(info, frame.payload, target) ->
+                    StepOutcome.Fail(
+                        OfficePrecisionFailure.TARGET_UNVERIFIED,
+                        "pre-effect-part-ordinal-drift",
                     )
                 else -> {
                     run.preEffectPartId = info.selectedPart
@@ -1008,6 +1195,46 @@ class OfficePrecisionLedger(
                 )
             }
         }
+    }
+
+    /**
+     * Pre-effect ordinal lineage (part-ordinal84): after the byte-exact
+     * selectedpart identity matched, a presentation/drawing target must
+     * ALSO see its captured witnessed ordinal re-derived from THIS fresh
+     * synchronous status answer's own complete, closed, count-consistent
+     * ordered parts witness. A same-GUID reorder (fresh position differs),
+     * a fresh answer that no longer uniquely witnesses the identifier, or a
+     * capture that never witnessed an ordinal all refuse BEFORE the
+     * pre-effect selection pull and before any paste/commit wire — zero
+     * effect, typed targetUnverified, never left for the later OOXML
+     * verifier to discover. Documented spreadsheet/text families return
+     * true without consulting the witness: their selectedpart identifier IS
+     * the decimal ordinal, so the identity comparison the gate already
+     * performed is the position proof (behaviour byte-identical there).
+     */
+    private fun preEffectOrdinalWitnessed(
+        info: OfficePrecisionProtocol.DocumentStatusInfo,
+        payload: String?,
+        target: OfficePrecisionTarget,
+    ): Boolean {
+        val capturedGuidFamily = target.docType == "presentation" || target.docType == "drawing"
+        if (!capturedGuidFamily) {
+            // Preserve documented decimal/text behavior; a new GUID-family
+            // answer cannot replace the capture's different family.
+            return info.docType != "presentation" && info.docType != "drawing"
+        }
+        // Decide from the CAPTURED family. A fresh text/unknown response
+        // must never bypass the GUID proof, and a changed deck count must
+        // not inherit the old baseline merely because its selected GUID
+        // still occupies the same ordinal.
+        if (info.docType != target.docType || info.partsCount != target.partsCount) return false
+        val fresh = OfficePrecisionProtocol.statusPartOrdinal(
+            info.docType,
+            info.selectedPart,
+            payload?.let { OfficePrecisionProtocol.statusPartWitness(it) },
+            info.partsCount,
+        )
+        return fresh != null && fresh == target.selectedPartIndex
     }
 
     /** Set by the engine while a CAPTURE_TARGET op is armed (handle pre-mint). */
@@ -1305,6 +1532,10 @@ class OfficePrecisionLedger(
             docType = null,
             partsCount = null,
             selectedPart = null,
+            // Bound together with the producer identity when this capture's
+            // own status answer settles (bindCapturedContextLocked): never a
+            // caller value, never a later cached status.
+            selectedPartIndex = null,
             capturedAtElapsedMs = now,
             expiresAtElapsedMs = now + handleTtlMs,
         )
@@ -1333,18 +1564,30 @@ class OfficePrecisionLedger(
      *
      * Nothing here is caller-supplied or model-supplied: the facts come from
      * the native producer's own synchronous answer to this capture's `status`
-     * pull. An evicted or already-consumed record is never resurrected; the
+     * pull, and [witnessedPartIndex] is the logical 0-based ordinal the SAME
+     * answer's ordered parts witness proves for its selectedpart (see
+     * [OfficePrecisionProtocol.statusPartOrdinal]) — identity and ordinal are
+     * bound into ONE immutable record from one validated answer, so the
+     * fenced owner's capture facts, the private Parcel roundtrip and the
+     * host's saved-verification baseline all carry the same witnessed value
+     * for a braced presentation GUID instead of a decimal re-parse that
+     * yields null. Null is honestly retained when THIS answer witnesses no
+     * unique mapping; nothing is guessed to fill it.
+     *
+     * An evicted or already-consumed record is never resurrected; the
      * completed target is still returned so the owner's answer stays
      * truthful about what was measured.
      */
     private fun bindCapturedContextLocked(
         captured: OfficePrecisionTarget,
         info: OfficePrecisionProtocol.DocumentStatusInfo,
+        witnessedPartIndex: Int?,
     ): OfficePrecisionTarget {
         val bound = captured.copy(
             docType = info.docType,
             partsCount = info.partsCount,
             selectedPart = info.selectedPart,
+            selectedPartIndex = witnessedPartIndex,
         )
         val record = handles[captured.handleId] ?: return bound
         if (record.consumed) return bound
@@ -1481,6 +1724,27 @@ class OfficePrecisionLedger(
             // a fresh capture (taken after) stays usable.
             editEpoch++
         }
+        // Dispatch-proof lineage (office-background-repair118). The ledger
+        // records the real dispatch attempt in noteWireDispatchStarted BEFORE
+        // the native call, so run.effectDispatched — not a caller-supplied
+        // label — is the sound fact. A fence re-check legitimately refuses
+        // at a LATER step of a multi-step plan (`mount-ended-before-step`,
+        // the paste-boundary target revalidation) after step 0's
+        // effect-bearing wire was really posted; such a terminal must never
+        // carry the pre-dispatch lineage, because the owner above the binder
+        // uses exactly that token to tell a PROVEN no-effect refusal from a
+        // possible-effect one. Only the lineage label is normalized here:
+        // state, failure, detail, answer and the epoch advance above are
+        // untouched, so no refusal is weakened and no maybe-effect is
+        // reclassified as no-effect.
+        val honestAttestation =
+            if (run.effectDispatched &&
+                attestation == OfficePrecisionAttestation.REFUSED_BEFORE_DISPATCH
+            ) {
+                OfficePrecisionAttestation.REFUSED_AFTER_EFFECT_DISPATCH
+            } else {
+                attestation
+            }
         val contentMutationCompleted =
             run.request.action.effect == OfficePrecisionEffect.CONTENT &&
                 (state == OfficePrecisionState.MUTATION_VERIFIED ||
@@ -1521,7 +1785,7 @@ class OfficePrecisionLedger(
             failure = failure,
             detail = honestDetail?.take(240),
             answer = finalAnswer,
-            attestation = attestation,
+            attestation = honestAttestation,
             submittedAtElapsedMs = run.submittedAt,
             completedAtElapsedMs = now,
         )
@@ -1554,7 +1818,7 @@ class OfficePrecisionLedger(
             OfficePrecisionState.REJECTED,
             failure,
             detail,
-            attestation = "refused-before-dispatch",
+            attestation = OfficePrecisionAttestation.REFUSED_BEFORE_DISPATCH,
             answer = null,
         )
     }

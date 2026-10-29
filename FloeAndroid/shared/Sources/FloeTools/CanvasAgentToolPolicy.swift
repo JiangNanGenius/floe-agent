@@ -1,1 +1,66 @@
-../../../../FloeAgent/Sources/FloeTools/CanvasAgentToolPolicy.swift
+// FloeTools — Capability ceiling for the workspace Canvas Agent.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+import Foundation
+
+/// Builds the exact tool-name ceiling for a Canvas Agent run. The canvas is
+/// a research and composition surface, never an alternate browser, terminal,
+/// or unrestricted workspace agent. Native web retrieval is always bounded
+/// to search/fetch. A remote MCP tool is added only after the server and the
+/// individual tool are both enabled and the user explicitly grants that
+/// server access to canvas runs.
+public enum CanvasAgentToolPolicy {
+    public static let nativeToolNames: Set<String> = [
+        "web.search", "web.fetch",
+        // Notes tools enforce a separate native picker grant per conversation.
+        "notes.read", "notes.search", "notes.edit", "notes.attachFile", "notes.export",
+        // Read-only video candidate catalog. Canvas video execution stays on
+        // canvas.generate so results bind to canvas nodes; video.models lets
+        // the canvas model choose a public candidate itself instead of asking
+        // the user for an internal UUID.
+        "video.models",
+        // Read-only image candidate catalog, same discovery contract as
+        // video.models: canvas image work executes through canvas.generate /
+        // the native image editors so results bind to nodes; image.models
+        // only lists configured routes and their parameter limits. Generation
+        // and editing stay off the canvas ceiling.
+        "image.models",
+        "canvas.getState", "canvas.applyOperations", "canvas.delete",
+        "canvas.assetSearch", "canvas.assetInsert", "canvas.assetImport",
+        "canvas.generate", "canvas.generationStatus",
+        // Design workflow tools (brief/spec/revisions/anchored feedback/
+        // candidate/adopt/reject/restore). They operate on FloeCore's design
+        // project model bound to canvas nodes; adopting is approval-gated.
+        "canvas.designGetState", "canvas.designCapabilities",
+        "canvas.designCreate", "canvas.designUpdateBrief", "canvas.designUpdateSpec",
+        "canvas.designRegisterRevision", "canvas.designAddFeedback",
+        "canvas.designPropose", "canvas.designAdopt", "canvas.designReject",
+        "canvas.designRestore",
+        // Bounded canvas→ordinary-task handoff: transfers ONLY the user's
+        // selected/named materials as verified immutable snapshots to a new
+        // or existing ordinary project+task (idempotent per operationID).
+        // It grants NO execution authority: no Linux, shell, or workspace
+        // write enters the canvas ceiling through this tool; the destination
+        // task runs under its own capabilities and approvals.
+        "canvas.startOrdinaryTask"
+    ]
+
+    public static func allowedToolNames(
+        servers: [MCPServerConfiguration],
+        discoveredTools: [UUID: [MCPDiscoveredTool]]
+    ) -> Set<String> {
+        var names = nativeToolNames
+        for server in servers where server.enabled && server.allowInCanvas {
+            let prefix = server.namespacePrefix + "_"
+            for tool in discoveredTools[server.id] ?? []
+            where !server.disabledRemoteToolNames.contains(tool.remoteName) {
+                names.insert(MCPRemoteToolSource.namespacedName(
+                    prefix: prefix,
+                    remoteName: tool.remoteName
+                ))
+            }
+        }
+        return names
+    }
+}

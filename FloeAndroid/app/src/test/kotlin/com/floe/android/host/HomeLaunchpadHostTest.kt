@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host
 
+import com.floe.android.HomeDraftTransfer
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -67,6 +68,7 @@ class HomeLaunchpadHostTest {
     private class Script {
         var rejectRunStart = false
         var rejectTempStart = false
+        var rejectCreate = false
         var temporary = false
         var modelRows = ""
     }
@@ -139,10 +141,20 @@ class HomeLaunchpadHostTest {
                         correlation, "prefsave",
                         accepted("""{"revision":{"resourceID":"preferences","version":"2"}}"""),
                     )
-                    "op:v1:conversationCreate" -> effectPage(
-                        correlation, "conversationCreate",
-                        accepted("""{"conversationID":"$createdId"}"""),
-                    )
+                    "op:v1:conversationCreate" -> {
+                        if (script.rejectCreate) {
+                            effectPage(
+                                correlation, "conversationCreate",
+                                """{"sequence":1,"kind":"rejected","code":"runtimeUnavailable",""" +
+                                    """"detail":${detail("reason" to "runtime_unavailable")}}""",
+                            )
+                        } else {
+                            effectPage(
+                                correlation, "conversationCreate",
+                                accepted("""{"conversationID":"$createdId"}"""),
+                            )
+                        }
+                    }
                     "op:v1:conversationGet" -> effectPage(
                         correlation, "conversationGet",
                         accepted(
@@ -419,6 +431,232 @@ class HomeLaunchpadHostTest {
         assertNull(host.conversations.activeTemporarySession())
         val payload = exchange.envelopesOf("temp.start").first()["payload"]!!.jsonObject
         assertEquals("keep me", payload["draft"]!!.jsonPrimitive.content)
+        host.stop()
+    }
+
+    /* ============ G05-R3 first use: provider-free fresh ordinary task ============ */
+
+    @Test
+    fun createFreshTaskHandsOffTheDraftAndOpensTheTaskWithoutAnyLaunch() = runBlocking {
+        val script = Script()
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        val draftText = "open my terminal"
+        val store = com.floe.android.FloeFoundation.draftStore
+        HomeDraftTransfer.update(store, draftText)
+        val failure = AtomicReference<String?>(null)
+        // Flag-before-counter publication: await the deterministic CALLBACK
+        // outcome (the route publishes inside the lock, the token-bearing
+        // callback fires right after it), never a fixed assertion order.
+        val consumedOutcome = AtomicReference<Boolean?>(null)
+        val tokenCurrentAtCallback = AtomicReference<Boolean?>(null)
+        val consumed = AtomicInteger(0)
+        host.home.createFreshTask(
+            text = draftText,
+            onDraftConsumed = { token, flag ->
+                // Captured, never asserted on the IO callback thread.
+                tokenCurrentAtCallback.set(host.home.isCurrentHome(token))
+                consumedOutcome.set(flag)
+                consumed.incrementAndGet()
+            },
+            onFailure = { _, reason -> failure.set(reason) },
+        )
+        assertTrue(
+            "the fresh task dispatches exactly one real conversation.create",
+            awaitUntil { exchange.envelopesOf("conversation.create").size == 1 },
+        )
+        assertTrue(
+            "the token-bearing handoff callback fires exactly once with the" +
+                " committed transfer outcome",
+            awaitUntil { consumedOutcome.get() != null },
+        )
+        assertTrue(consumedOutcome.get() == true)
+        assertTrue(tokenCurrentAtCallback.get() == true)
+        assertEquals(1, consumed.get())
+        assertTrue(
+            "the created conversation must own the landed route",
+            awaitUntil { host.conversations.navigationRequest.value != null },
+        )
+        val target = host.conversations.navigationRequest.value
+        assertTrue(
+            "navigation lands on the EXACT created conversation id",
+            target is com.floe.android.design.SidebarSelection.Conversation &&
+                target.conversationId == createdId,
+        )
+        // THE ORDINARY ownership API with the exact draft title; NOTHING is
+        // launched — no run.start, no temp.start, no model request.
+        val payload = exchange.envelopesOf("conversation.create").first()["payload"]!!.jsonObject
+        assertEquals(draftText, payload["title"]!!.jsonPrimitive.content)
+        assertTrue(exchange.envelopesOf("run.start").isEmpty())
+        assertTrue(exchange.envelopesOf("temp.start").isEmpty())
+        // The draft HANDS OFF: HOME_DRAFT is consumed for the EXACT
+        // transferred text under the publish section (never sent).
+        assertNull(failure.get())
+        synchronized(store) { assertEquals("", HomeDraftTransfer.draft(store)) }
+        assertTrue(awaitUntil { !host.home.sending.value })
+        host.stop()
+    }
+
+    @Test
+    fun blankCreateFreshTaskOpensAnEmptyUntitledTaskWithoutTouchingTheDraft() = runBlocking {
+        val script = Script()
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        val store = com.floe.android.FloeFoundation.draftStore
+        HomeDraftTransfer.update(store, "unsent private prompt")
+        val consumed = AtomicInteger(0)
+        host.home.createFreshTask(text = "", onDraftConsumed = { _, _ -> consumed.incrementAndGet() }) { _, _ -> }
+        assertTrue(awaitUntil { host.conversations.navigationRequest.value != null })
+        // A BLANK tap carries no text: the create is the native untitled row
+        // (NO payload) and the unrelated Home draft SURVIVES untouched.
+        assertNull(exchange.envelopesOf("conversation.create").first()["payload"])
+        val target = host.conversations.navigationRequest.value
+        assertTrue(
+            target is com.floe.android.design.SidebarSelection.Conversation &&
+                target.conversationId == createdId,
+        )
+        assertTrue(exchange.envelopesOf("run.start").isEmpty())
+        assertEquals(1, consumed.get())
+        synchronized(store) { assertEquals("unsent private prompt", HomeDraftTransfer.draft(store)) }
+        host.stop()
+    }
+
+    @Test
+    fun createFreshTaskIsRefusedWhileATemporarySendOwnsHome() = runBlocking {
+        val script = Script().apply { temporary = true }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        val freshFailure = AtomicReference<String?>(null)
+        // The temporary send claims the Home request lock synchronously.
+        host.home.send("", "chat", temporary = true) { }
+        host.home.createFreshTask(text = "later", onDraftConsumed = { _, _ -> }) { _, reason -> freshFailure.set(reason) }
+        assertTrue(
+            "the temporary start still runs exactly once",
+            awaitUntil { exchange.envelopesOf("temp.start").size == 1 },
+        )
+        assertTrue(awaitUntil { host.conversations.activeTemporarySession() != null })
+        // One Home-owned transition at a time: the fresh task never slipped
+        // a durable create beside the in-flight temporary, and a silently
+        // refused tap invents no typed failure of its own.
+        assertTrue(exchange.envelopesOf("conversation.create").isEmpty())
+        assertNull(freshFailure.get())
+        // The temporary ceiling is untouched: it opened no ordinary row and
+        // launched no run.
+        assertTrue(exchange.envelopesOf("run.start").isEmpty())
+        host.stop()
+    }
+
+    @Test
+    fun createFreshTaskSurfacesTypedCreateRejectionWithoutNavigation() = runBlocking {
+        val script = Script().apply { rejectCreate = true }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        val failure = AtomicReference<String?>(null)
+        val store = com.floe.android.FloeFoundation.draftStore
+        HomeDraftTransfer.update(store, "keep me")
+        host.home.createFreshTask(text = "keep me", onDraftConsumed = { _, _ -> }) { _, reason -> failure.set(reason) }
+        assertTrue(awaitUntil { failure.get() != null })
+        assertEquals("runtimeUnavailable", failure.get())
+        // A refused create navigates nowhere, launches nothing, and the
+        // draft was NEVER consumed; the Home lock settles exactly once.
+        assertNull(host.conversations.navigationRequest.value)
+        synchronized(store) { assertEquals("keep me", HomeDraftTransfer.draft(store)) }
+        assertTrue(exchange.envelopesOf("run.start").isEmpty())
+        assertTrue(exchange.envelopesOf("temp.start").isEmpty())
+        assertEquals(1, exchange.envelopesOf("conversation.create").size)
+        assertTrue(awaitUntil { !host.home.sending.value })
+        host.stop()
+    }
+
+    @Test
+    fun freshTaskOwnedRouteIsRefusedWhenActualNavigationMovesDuringTheWait() = runBlocking {
+        val script = Script()
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        host.home.createFreshTask(text = "", onDraftConsumed = { _, _ -> }) { _, _ -> }
+        assertTrue(
+            awaitUntil { host.conversations.navigationRequest.value != null },
+        )
+        val target = host.conversations.navigationRequest.value!!
+        // Observation only (NOT a consumed handle): the published route is an
+        // OWNED Home navigation intent — production claim policy untouched;
+        // applyHostNavigation below obtains its OWN claim exactly like the
+        // shell's serial consumer does.
+        val claim = host.home.claimNavigation(target)
+        assertTrue("the fresh task publishes as an OWNED Home navigation",
+            claim is HomeNavigationClaim.Owned)
+        val committed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val applied = host.home.applyHostNavigation(
+            target,
+            waitForAdmission = {
+                // The ACTUAL navigation (New Task press) lands AFTER the
+                // internal claim, exactly while the shell's fence awaits:
+                // it fences the request and withdraws the published intent.
+                host.home.onNavigation(
+                    com.floe.android.design.SidebarSelection.Workbench(
+                        com.floe.android.design.WorkbenchSelection.NEW_TASK,
+                    ),
+                )
+                true
+            },
+            commit = { committed.set(true) },
+        )
+        // The FINAL owned re-check (commitNavigation) sees the invalidated
+        // OwnedNavigation and refuses the stale route: no theft, no commit.
+        assertFalse(applied)
+        assertFalse(committed.get())
+        assertNull(host.conversations.navigationRequest.value)
+        // The durable row itself still exists (history), created exactly once.
+        assertEquals(1, exchange.envelopesOf("conversation.create").size)
+        host.stop()
+    }
+
+    @Test
+    fun lateFreshTaskCreateCannotClearOrHijackANewerHomeRequest() = runBlocking {
+        val script = Script().apply { temporary = true }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        val barrierHits = AtomicInteger(0)
+        val sendingAtTempPublish = AtomicReference<Boolean?>(null)
+        val oldFailure = AtomicReference<String?>(null)
+        // ONE deterministic seam: hit 1 = the old create, right BEFORE its
+        // publish section; hit 2 = the newer temporary, right BEFORE its own
+        // publish. Production never sets this barrier.
+        host.home.admissionPublishBarrier = {
+            when (barrierHits.incrementAndGet()) {
+                1 -> {
+                    // Actual navigation away from Home, then a NEWER
+                    // temporary request claims Home synchronously.
+                    host.home.onNavigation(
+                        com.floe.android.design.SidebarSelection.Workbench(
+                            com.floe.android.design.WorkbenchSelection.NEW_TASK,
+                        ),
+                    )
+                    host.home.send("", "chat", temporary = true) { }
+                }
+                2 -> sendingAtTempPublish.set(host.home.sending.value)
+            }
+        }
+        host.home.createFreshTask(text = "old", onDraftConsumed = { _, _ -> }) { _, reason -> oldFailure.set(reason) }
+        assertTrue(awaitUntil { exchange.envelopesOf("temp.start").size == 1 })
+        assertTrue(
+            "the NEWER temporary request still owned its lock when its own" +
+                " publish ran: the superseded create never cleared it",
+            awaitUntil { sendingAtTempPublish.get() == true },
+        )
+        assertTrue(awaitUntil { host.conversations.activeTemporarySession() != null })
+        assertTrue(
+            "the only published route is the newer temporary's exact target",
+            awaitUntil { host.conversations.navigationRequest.value != null },
+        )
+        val nav = host.conversations.navigationRequest.value
+        assertTrue(
+            "the late create settlement never stole the route",
+            nav is com.floe.android.design.SidebarSelection.Conversation &&
+                nav.conversationId == tempId,
+        )
+        assertNull(oldFailure.get())
+        host.home.admissionPublishBarrier = null
         host.stop()
     }
 

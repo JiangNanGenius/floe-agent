@@ -99,6 +99,10 @@ public final class LinuxShellMailbox: @unchecked Sendable {
         let payload: Data
         var state: State
         var continuation: CheckedContinuation<Data, LinuxShellTransportError>?
+        /// Weak to avoid mailbox -> ticket -> handle -> mailbox retention.
+        /// `complete` marks this handle directly, so a later bounded-ring
+        /// eviction can never erase an already observed host-settled fact.
+        weak var ownerRequest: LinuxShellMailboxRequest?
         enum State {
             case queued
             case claimed
@@ -134,6 +138,15 @@ public final class LinuxShellMailbox: @unchecked Sendable {
     private var queue: [Int64] = []
     private var retired: Set<Int64> = []
     private var retiredOrder: [Int64] = []
+    /// G05-R3 per-ticket HOST-COMPLETION ring: tokens the trusted host actually
+    /// completed/failed through `complete`. This is deliberately NOT physical
+    /// IO settlement: the pump can answer before reconciliation releases its
+    /// grant. `retired` alone cannot distinguish an unclaimed queued retirement
+    /// from a host-completed claim; the first-use rule needs both facts plus
+    /// the host's later physical-release proof. Bounded exactly like `retired`,
+    /// holding tokens only — never payloads, replies, paths or digests.
+    private var hostSettled: Set<Int64> = []
+    private var hostSettledOrder: [Int64] = []
     private var nextToken: Int64 = 1
     private var queuedBytes = 0
     private var epoch: UInt64 = 0
@@ -228,6 +241,8 @@ public final class LinuxShellMailbox: @unchecked Sendable {
         queue.removeAll()
         retired.removeAll()
         retiredOrder.removeAll()
+        hostSettled.removeAll()
+        hostSettledOrder.removeAll()
         queuedBytes = 0
         condition.unlock()
     }
@@ -237,9 +252,43 @@ public final class LinuxShellMailbox: @unchecked Sendable {
     /// Enqueue one typed request and wait (bounded) for the host-settled
     /// reply frame. Bounds are checked BEFORE the queue append; any breach is
     /// a typed rejection and nothing reaches the host.
+    ///
+    /// The continuation this expresses is WAITER completion only: a budget
+    /// expiry or a caller cancellation resumes the waiter while a CLAIMED
+    /// ticket stays live for its real host settlement. A caller that owns a
+    /// grant/receipt across the request must observe the ticket's PHYSICAL
+    /// settlement through [beginRequest]'s handle instead of inferring it from
+    /// this call's return or throw.
     func submit(operation: String, payload: Data,
                             timeoutMillis: Int) async throws -> Data {
+        try await awaitReply(beginRequest(operation: operation, payload: payload),
+                             timeoutMillis: timeoutMillis)
+    }
+
+    /// Enqueue one typed request and return its settlement handle BEFORE any
+    /// wait, so the caller still holds the request's real ownership truth when
+    /// the bounded wait later expires or is cancelled. Same bounds and same
+    /// typed rejections as [submit]; on a breach nothing reaches the host and
+    /// no handle exists.
+    func beginRequest(operation: String, payload: Data) throws -> LinuxShellMailboxRequest {
         let token = try enqueue(operation: operation, payload: payload)
+        condition.lock()
+        let createdEpoch = tickets[token]?.createdEpoch ?? epoch
+        let request = LinuxShellMailboxRequest(mailbox: self, token: token, submittedEpoch: createdEpoch)
+        // Host claims require a continuation and `awaitReply` cannot start
+        // before this handle is returned, so installation cannot lose an early
+        // settlement. Direct sticky marking below makes the physical fact
+        // independent of the bounded retired/hostSettled rings.
+        tickets[token]?.ownerRequest = request
+        condition.unlock()
+        return request
+    }
+
+    /// The SAME bounded wait [submit] always performed, for one handle from
+    /// [beginRequest]. Semantics are unchanged: exactly one resume, the budget
+    /// watchdog and the cancellation handler below are the original ones.
+    func awaitReply(_ request: LinuxShellMailboxRequest, timeoutMillis: Int) async throws -> Data {
+        let token = request.token
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, LinuxShellTransportError>) in
@@ -277,6 +326,65 @@ public final class LinuxShellMailbox: @unchecked Sendable {
             condition.broadcast()
             condition.unlock()
             resume?.resume(throwing: .waitBudgetExpired)
+        }
+    }
+
+    // MARK: Per-ticket physical settlement (G05-R3)
+
+    /// The mailbox's own table truth for one submitted token. `.live` means the
+    /// mailbox still OWNS the ticket (queued or claimed), so the host may still
+    /// be performing the real work; a released waiter never changes this.
+    enum TicketTerminalState: Sendable, Equatable {
+        case live
+        case hostSettled
+        case retiredUnclaimed
+        /// Gone from the table with no recorded terminal (a generation
+        /// fence/close dropped it, or the bounded ring evicted a much older
+        /// terminal). Classification of that absence belongs to the handle,
+        /// which knows the generation it was submitted under.
+        case absent
+    }
+
+    func ticketState(token: Int64) -> TicketTerminalState {
+        condition.lock()
+        defer { condition.unlock() }
+        if let ticket = tickets[token], ticket.state != .settled { return .live }
+        if hostSettled.contains(token) { return .hostSettled }
+        if retired.contains(token) { return .retiredUnclaimed }
+        return .absent
+    }
+
+    /// The live generation truth a handle needs to classify an `.absent`
+    /// ticket. Typed values only.
+    func generationSnapshot() -> (epoch: UInt64, closed: Bool) {
+        condition.lock()
+        defer { condition.unlock() }
+        return (epoch, closed)
+    }
+
+    /// Bounded wait until the mailbox stops owning this ticket. Amortized
+    /// polling on the SAME injectable sleeper as the wait budget (never a
+    /// parked cooperative thread). Answers false on budget expiry and changes
+    /// NOTHING: a budget never fabricates settlement, never stops remote work
+    /// and never detaches ownership.
+    func awaitTicketReleased(token: Int64, timeoutMillis: Int) async -> Bool {
+        let deadlineNanos = UInt64(max(1, timeoutMillis)) &* 1_000_000
+        var waited: UInt64 = 0
+        while waited < deadlineNanos {
+            if ticketState(token: token) != .live { return true }
+            await sleeper(Self.waitPollNanos)
+            waited += Self.waitPollNanos
+        }
+        return ticketState(token: token) != .live
+    }
+
+    /// Records the host's real settlement of one claim (under the lock, from
+    /// [complete]). Bounded exactly like the `retired` ring; tokens only.
+    private func recordHostSettledLocked(_ token: Int64) {
+        hostSettled.insert(token)
+        hostSettledOrder.append(token)
+        while hostSettledOrder.count > LinuxShellMailboxLimits.maximumRetired {
+            hostSettled.remove(hostSettledOrder.removeFirst())
         }
     }
 
@@ -509,8 +617,17 @@ public final class LinuxShellMailbox: @unchecked Sendable {
         while retiredOrder.count > LinuxShellMailboxLimits.maximumRetired {
             retired.remove(retiredOrder.removeFirst())
         }
+        // The HOST-COMPLETED claim record: this exact claim reached the host
+        // and terminated here. Physical IO ownership can still be retained by
+        // the pump; the first-use rule separately requires its release proof.
+        recordHostSettledLocked(claim)
+        let ownerRequest = ticket.ownerRequest
         condition.broadcast()
         condition.unlock()
+        // Sticky per-handle truth, marked AFTER dropping the mailbox lock so
+        // lock ordering stays acyclic. The continuation resumes after this
+        // mark, and a timed-out/cancelled retention observes the same fact.
+        ownerRequest?.noteHostSettled()
         if status == 0 {
             continuation?.resume(returning: data)
         } else {
@@ -612,6 +729,101 @@ public final class LinuxShellMailbox: @unchecked Sendable {
         condition.lock()
         defer { condition.unlock() }
         return (tickets.count, queue.count, epoch, closed)
+    }
+}
+
+// MARK: - Per-request settlement handle (G05-R3)
+
+/// ONE submitted request's HOST-COMPLETION truth, handed back by
+/// `LinuxShellMailbox.beginRequest` before any wait. Host completion is NOT
+/// physical IO settlement: the pump can answer an uncertain reply and keep
+/// its grant/reconciliation alive. The first-use ownership rule combines this
+/// fact with the host's own physical-release observation.
+///
+/// Why this exists: `submit`'s continuation expresses WAITER completion only.
+/// The original discipline (`expireWaiter`, the cancellation handler and
+/// `bind`/`close`) deliberately resumes a waiter while a CLAIMED ticket stays
+/// live for its real host settlement — so a service-owned lane that holds a
+/// scoped workspace grant and a real `.conversation` receipt across the
+/// request must NOT detach them when a wait expires or is cancelled:
+///  * `hostSettled` — the trusted host completed/failed THIS exact claim;
+///  * `retiredUnclaimed` — retired before any claim, so it provably never
+///    reached the host and ownership may be released at once;
+///  * `generationFenced` — the generation it was submitted under is closed or
+///    replaced. This is NOT physical settlement: owned workers and remote
+///    leases stay owned until their real release;
+///  * `unknown` — ring/table absence is not physical settlement;
+///  * `live` — the mailbox still owns it: keep the grant/receipt, wait again.
+/// Tokens and typed states only; never payloads, replies, paths or digests.
+public final class LinuxShellMailboxRequest: @unchecked Sendable {
+
+    public enum Settlement: String, Sendable, Equatable {
+        case live
+        case hostSettled
+        case retiredUnclaimed
+        case generationFenced
+        /// Gone without a recorded terminal while the SAME generation is still
+        /// live (for example a bounded-ring eviction). Never a release proof.
+        case unknown
+    }
+
+    private let mailbox: LinuxShellMailbox
+    public let token: Int64
+    public let submittedEpoch: UInt64
+    private let stateLock = NSLock()
+    private var stickyHostSettled = false
+
+    init(mailbox: LinuxShellMailbox, token: Int64, submittedEpoch: UInt64) {
+        self.mailbox = mailbox
+        self.token = token
+        self.submittedEpoch = submittedEpoch
+    }
+
+    /// Called by `complete` outside the mailbox condition lock. Once this exact
+    /// claim completed on the host, later ring eviction/reset cannot falsify it.
+    fileprivate func noteHostSettled() {
+        stateLock.lock()
+        stickyHostSettled = true
+        stateLock.unlock()
+    }
+
+    private func hasHostSettled() -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return stickyHostSettled
+    }
+
+    public var settlement: Settlement {
+        if hasHostSettled() { return .hostSettled }
+        switch mailbox.ticketState(token: token) {
+        case .live: return .live
+        case .hostSettled:
+            noteHostSettled()
+            return .hostSettled
+        case .retiredUnclaimed: return .retiredUnclaimed
+        case .absent:
+            let generation = mailbox.generationSnapshot()
+            return (generation.closed || generation.epoch != submittedEpoch)
+                ? .generationFenced : .unknown
+        }
+    }
+
+    /// The mailbox still owns this ticket: the host may still be performing
+    /// the real work. Ownership must be retained.
+    public var isLive: Bool { settlement == .live }
+
+    /// Bounded wait for the real transition. True only when the mailbox
+    /// stopped owning the ticket within the budget; false changes nothing
+    /// (never a fabricated settlement, never a stop, never a detach).
+    public func awaitSettled(timeoutMillis: Int) async -> Bool {
+        await mailbox.awaitTicketReleased(token: token, timeoutMillis: timeoutMillis)
+    }
+}
+
+extension LinuxShellMailboxRequest: Equatable {
+    /// Identity equality: one handle describes exactly one submitted ticket of
+    /// exactly one mailbox (never value-equal to another request).
+    public static func == (lhs: LinuxShellMailboxRequest, rhs: LinuxShellMailboxRequest) -> Bool {
+        lhs.mailbox === rhs.mailbox && lhs.token == rhs.token
     }
 }
 

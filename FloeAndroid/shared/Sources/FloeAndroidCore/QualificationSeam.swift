@@ -215,7 +215,7 @@ public func floeGateRelease(_ handle: UnsafeMutableRawPointer?) {
 
 // MARK: - database smoke
 
-/// Mirrors the proven host contract (PersistenceStoreTests): exact 46-chain,
+/// Mirrors the proven host contract (PersistenceStoreTests): exact registered migration chain,
 /// tables, unicode61 FTS measurements, run-event sequences, in-memory
 /// snapshot-call rejection, then a file-backed WAL database on the passed
 /// cache directory exercising the REAL snapshot C APIs (get/cmp/free inside a
@@ -235,7 +235,7 @@ private func databaseSmokeJSON(cacheDirectory: String) -> String {
             report["appliedMigrationCount"] = applied.count
             report["appliedContainsV1"] = applied.contains("v1")
             report["appliedContainsV46"] = applied.contains("v46_task_lifecycle")
-            if applied.count != 47 { failures.append("applied \(applied.count) != 47") }
+            if applied.count != DatabaseManager.currentSchemaVersion { failures.append("applied \(applied.count) != \(DatabaseManager.currentSchemaVersion)") }
             report["appliedContainsV47"] = applied.contains("v47_android_workspace_sources")
             if !applied.contains("v47_android_workspace_sources") { failures.append("missing Android workspace source migration") }
 

@@ -177,6 +177,9 @@ fun DiagnosticsSettingsPage(onOpenPreview: () -> Unit) {
                 },
             )
         }
+        // Full channel only: automatic update switch + manual check. The
+        // Play flavour renders nothing (Play delivers updates itself).
+        com.floe.android.host.update.AppUpdateFeature.SettingsEntry()
         if (proofOpen) {
             LocalRuntimeProofDetailsSheet(app = app, onDismiss = { proofOpen = false })
         }

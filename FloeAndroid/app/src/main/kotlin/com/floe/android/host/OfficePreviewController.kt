@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
+import com.floe.android.MainActivity
+import com.floe.android.core.officeengine.OfficeApprovalNotice
+import com.floe.android.core.officeengine.OfficeApprovalNoticePolicy
 import com.floe.android.core.officeengine.OfficeCloseAck
 import com.floe.android.core.officeengine.OfficeCloseAckPolicy
 import com.floe.android.core.officeengine.OfficeEngine
@@ -76,6 +80,22 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
      */
     private val closeAckBinder: IBinder by lazy { OfficeCloseAck.parentBinder(this::acceptCloseIntent) }
 
+    /**
+     * Parent endpoint of the module's narrow approval-notice capability
+     * (OfficeApprovalNoticePolicy, G05-R3 office-approval107): the FOREGROUND
+     * viewer polls it (read-only, only while resumed) to learn whether its
+     * OWNING conversation currently holds a captured pending approval, so an
+     * Ask-first approval stays reviewable WITHOUT closing the owned document
+     * (the close route correctly retires the context and the operation then
+     * fails stale — device evidence c16 calc-close-context-refusal).
+     * Carried ONLY inside the non-exported viewer Activity's own launch
+     * Intent, for OWNED opens only. The endpoint answers nothing about any
+     * other conversation or operation, and the banner action it feeds never
+     * approves, cancels or replays anything — review always happens in the
+     * existing conversation approval card.
+     */
+    private val approvalNoticeBinder: IBinder by lazy { OfficeApprovalNotice.parentBinder(this::answerApprovalNotice) }
+
     /** lock-protected: the acknowledged close for the current operation. */
     private var ackedClose: OfficeCloseAckPolicy.AckRequest? = null
     /** lock-protected: the single bounded acknowledged-close retirement job.
@@ -87,9 +107,22 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     val viewerNamespace = PlatformLaunchOwnership.mintNamespace()
 
     data class ViewerLaunch(val incarnation: Long, val request: OfficePreviewRequest)
+    /** Bounded App-owned return identity (G05-R3 office-return109): the
+     * EXACT live VIEWING mount — owner conversation, opaque viewer
+     * incarnation and session token — published ONLY at the real claim in
+     * [claimViewer] and cleared automatically by every State reset
+     * (picker/staging/cancel/settle/replacement). This is a navigation
+     * record, not a permission: it grants nothing, decides nothing and
+     * never bypasses an existing ownership/stale-context guard. */
+    data class OwnedViewerReturn(
+        val ownerTaskId: String,
+        val viewerIncarnation: Long,
+        val sessionToken: String,
+    )
     data class State(val picker: Long? = null, val viewer: ViewerLaunch? = null,
                      val staging: Boolean = false, val cancelling: Boolean = false,
-                     val error: String? = null)
+                     val error: String? = null,
+                     val ownedReturn: OwnedViewerReturn? = null)
     private val mutableState = MutableStateFlow(State())
     val state: StateFlow<State> = mutableState
     /** Original failure retained in RAM for explicit diagnostics, never
@@ -107,6 +140,22 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
 
     internal fun clearAiLaunchAdmission(owner: Any) = synchronized(lock) {
         if (aiLaunchAdmission?.owner === owner) aiLaunchAdmission = null
+    }
+
+    /** Host-owned read-only pending-approval lookup the notice endpoint may
+     *  consult (installed by the App wiring; owner-tagged like
+     *  [AiLaunchAdmission]). Returns the pending tool name for the owning
+     *  conversation, or null. The lookup is the ONLY source of the banner
+     *  answer: this controller never invents one. */
+    private class ApprovalNoticeLookup(val owner: Any, val pendingToolName: (String) -> String?)
+    private var approvalNoticeLookup: ApprovalNoticeLookup? = null
+
+    internal fun setApprovalNoticeLookup(owner: Any, pendingToolName: (String) -> String?) = synchronized(lock) {
+        approvalNoticeLookup = ApprovalNoticeLookup(owner, pendingToolName)
+    }
+
+    internal fun clearApprovalNoticeLookup(owner: Any) = synchronized(lock) {
+        if (approvalNoticeLookup?.owner === owner) approvalNoticeLookup = null
     }
 
     private class Operation(
@@ -392,6 +441,38 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     }
 
     /**
+     * Answers ONE engine approval-notice query on a Binder thread: ONLY the
+     * current, un-retired VIEWING operation whose opaque viewer incarnation,
+     * session token AND owner task id all match exactly may be answered
+     * ([approvalNoticeAdmissible]; shape/interface/UID were already enforced
+     * fail-closed by the endpoint). A stale, settled, replaced or non-owned
+     * operation — and any query naming another owner — answers null, so the
+     * banner can never be raised for a closed document or another
+     * conversation. The pending answer itself comes ONLY from the installed
+     * host lookup (read-only, runCatching): this controller never invents
+     * approvals and never touches the approval resolve path.
+     */
+    private fun answerApprovalNotice(query: OfficeApprovalNoticePolicy.Query): String? = synchronized(lock) {
+        val current = active?.takeIf { !it.retired } ?: return null
+        if (!approvalNoticeAdmissible(
+                retired = current.retired,
+                viewEnded = current.viewEnded,
+                phaseViewing = current.phase == Phase.VIEWING,
+                candidateIncarnation = current.id,
+                candidateSessionToken = current.sessionToken,
+                candidateOwnerTaskId = current.ownerTaskId,
+                queryIncarnation = query.viewerIncarnation,
+                queryToken = query.sessionToken,
+                queryOwnerTaskId = query.ownerTaskId,
+            )
+        ) {
+            return null
+        }
+        val lookup = approvalNoticeLookup ?: return null
+        runCatching { lookup.pendingToolName(query.ownerTaskId) }.getOrNull()
+    }
+
+    /**
      * Arms (or re-arms, for a duplicate ack of the same operation) the
      * bounded retirement for ONE exact recorded close-intent. Callers must
      * hold [lock]. Before cancelling or replacing the single global job,
@@ -488,10 +569,98 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         }
         val request = mutableState.value.viewer?.request ?: return null
         op.phase = Phase.VIEWING
+        // G05-R3 office-return109: publish the bounded return identity for the
+        // OWNING conversation's explicit "Back to document" strip — ONLY here,
+        // at the real VIEWING claim, and ONLY while the published request
+        // still names this exact operation's session token. Every State reset
+        // (picker/staging/cancel/settle/replacement) clears it by
+        // construction; the provider-pick route (ownerTaskId null) never has
+        // one. Navigation record only: grants nothing, decides nothing.
+        val returnOwner = op.ownerTaskId
+        mutableState.value = mutableState.value.copy(
+            ownedReturn = if (returnOwner != null && request.sessionToken == op.sessionToken) {
+                OwnedViewerReturn(returnOwner, op.id, request.sessionToken)
+            } else null,
+        )
+        // The approval-notice capability + review target attach ONLY to OWNED
+        // opens (an owning conversation exists to ask about) and ONLY while a
+        // lookup is installed. Both are inert references on this non-exported
+        // launch Intent; the module can display the banner and raise the chat,
+        // but the answer itself is always re-validated here per query.
+        val ownedNotice = op.ownerTaskId != null && approvalNoticeLookup != null
         OfficeEngine.viewerIntent(
             context, request, closeAckBinder, op.id,
             hostSaveChannel = if (op.editable) saveCopy.channel else null,
+            approvalNotice = if (ownedNotice) approvalNoticeBinder else null,
+            reviewComponent = if (ownedNotice) ComponentName(context, MainActivity::class.java) else null,
         )
+    }
+
+    /**
+     * Explicit owned-document return (G05-R3 office-return109). Raises the
+     * SAME already-running viewer Activity named by [target] — no new launch
+     * request, no close, no recreation, no second viewer, no approval-service
+     * change: review stays on the ordinary conversation card and the
+     * document/editContext stay alive underneath.
+     *
+     * How the concrete instance is guaranteed, honestly:
+     *  1. The full identity fence — the established [current(op)] shape
+     *     ([op.ownerCurrent] included, matching IDs alone never prove the
+     *     current owner) — is decided by the single production predicate
+     *     [viewerRestoreAdmissible] (same shape as the established
+     *     [approvalNoticeAdmissible] plus the published-request leg).
+     *  2. The raise's ACTUAL startActivity dispatch runs INSIDE this same
+     *     controller lock. Per the real ActivityStarter behavior (Main
+     *     platform check 2026-10-28), REORDER_TO_FRONT selects the concrete
+     *     ActivityRecord synchronously during startActivity handling, so no
+     *     settle, cancel or new-Operation admission — every one of which
+     *     funnels through this same lock — can interleave between the exact-
+     *     identity proof and Android's record selection. This is dispatch
+     *     linearization, NOT a promise about all later lifecycle events.
+     *  3. If the captured instance is already gone at selection (its own
+     *     finish/close runs outside this lock, by existing design), the
+     *     module's launch validation fails the inert no-request raise closed
+     *     immediately (missing-request finish) — never a remount, never a
+     *     different document presented as a return. Documented residual:
+     *     lifecycle AFTER dispatch proceeds on the ordinary paths (a close
+     *     that begins right after the raise is still honored).
+     * A stop, close, settle, replacement or superseded mount therefore makes
+     * an already-visible stale strip's click either refuse under the fence
+     * (false) or fail closed inertly — never a state change, replay or grant.
+     *
+     * Lock/IPC note: startActivity while holding the lock adds only one
+     * synchronous in-app binder dispatch; no lock holder ever blocks on the
+     * viewer's main thread, and every other consumer of this lock is
+     * in-process.
+     */
+    fun requestOwnedViewerRestore(target: OwnedViewerReturn): Boolean = synchronized(lock) {
+        val op = active
+        if (op == null) false
+        else if (!viewerRestoreAdmissible(
+                retired = op.retired,
+                viewEnded = op.viewEnded,
+                phaseViewing = op.phase == Phase.VIEWING,
+                ownerCurrent = op.ownerCurrent(),
+                candidateIncarnation = op.id,
+                candidateSessionToken = op.sessionToken,
+                candidateOwnerTaskId = op.ownerTaskId,
+                publishedRequestMatches = mutableState.value.viewer?.request?.let {
+                    it.sessionToken == op.sessionToken &&
+                        it.ownerTaskId == op.ownerTaskId &&
+                        it.sessionToken == target.sessionToken &&
+                        it.ownerTaskId == target.ownerTaskId
+                } == true,
+                claimedIncarnation = target.viewerIncarnation,
+                claimedSessionToken = target.sessionToken,
+                claimedOwnerTaskId = target.ownerTaskId,
+            )
+        ) {
+            false
+        } else {
+            runCatching {
+                context.startActivity(OfficeEngine.viewerRestoreIntent(context))
+            }.isSuccess
+        }
     }
 
     fun onViewerResult(incarnation: Long, data: Intent?) {
@@ -783,3 +952,72 @@ internal fun ackedCloseStillOwnsSlot(
     activeIsCandidate && !retired && !viewEnded && phaseViewing &&
         ack != null && ack.viewerIncarnation == candidateIncarnation &&
         ack.sessionToken == candidateSessionToken
+
+/**
+ * Exact-ownership guard of the approval-notice answer (one pure decision,
+ * made while holding the controller lock): a query is answered ONLY when the
+ * candidate is STILL the current operation — un-retired, not view-ended, in
+ * the VIEWING phase — AND the query names this exact incarnation, session
+ * token AND owner task id, AND the operation is OWNED (a null candidate
+ * owner can never match: the provider-pick route carries no conversation to
+ * ask about, mirroring the honest-absence rule of
+ * [OfficePreviewController.ownedOperationSnapshot]). A close, settle,
+ * replacement or supersede therefore answers "not pending" automatically;
+ * JVM-expressible so the regression drives the real production decision.
+ */
+internal fun approvalNoticeAdmissible(
+    retired: Boolean,
+    viewEnded: Boolean,
+    phaseViewing: Boolean,
+    candidateIncarnation: Long,
+    candidateSessionToken: String?,
+    candidateOwnerTaskId: String?,
+    queryIncarnation: Long,
+    queryToken: String,
+    queryOwnerTaskId: String,
+): Boolean =
+    !retired && !viewEnded && phaseViewing &&
+        candidateOwnerTaskId != null &&
+        candidateIncarnation == queryIncarnation &&
+        candidateSessionToken == queryToken &&
+        candidateOwnerTaskId == queryOwnerTaskId
+
+/**
+ * Exact-ownership guard of the explicit owned-document RETURN route
+ * (G05-R3 office-return109; one pure decision made while holding the
+ * controller lock — and the raise's startActivity dispatch then runs under
+ * that SAME lock, see [OfficePreviewController.requestOwnedViewerRestore] —
+ * deliberately the same shape as [approvalNoticeAdmissible] plus the
+ * established owner fence): a raise of the live viewer is admitted ONLY when
+ * the candidate is STILL the current operation — un-retired, not view-ended,
+ * in the VIEWING phase, AND its captured [ownerCurrent] closure still
+ * answers true (matching ids alone never prove the current owner: this is
+ * the same fence [current] applies to the close/notice lanes) — the PUBLISHED
+ * request still names this exact operation AND the caller's captured return
+ * target (owner conversation + opaque incarnation + session token), AND the
+ * operation is OWNED (a null candidate owner can never match: the provider-
+ * pick route has no owning conversation to return to). A stop, close,
+ * settle, replacement, owner-invalidated conversation or supersede therefore
+ * admits nothing; the strip itself disappears with the State reset.
+ * JVM-expressible so the regression drives the REAL production decision
+ * [requestOwnedViewerRestore] passes.
+ */
+internal fun viewerRestoreAdmissible(
+    retired: Boolean,
+    viewEnded: Boolean,
+    phaseViewing: Boolean,
+    ownerCurrent: Boolean,
+    candidateIncarnation: Long,
+    candidateSessionToken: String?,
+    candidateOwnerTaskId: String?,
+    publishedRequestMatches: Boolean,
+    claimedIncarnation: Long,
+    claimedSessionToken: String?,
+    claimedOwnerTaskId: String?,
+): Boolean =
+    !retired && !viewEnded && phaseViewing && ownerCurrent &&
+        publishedRequestMatches &&
+        candidateOwnerTaskId != null && candidateSessionToken != null &&
+        candidateIncarnation == claimedIncarnation &&
+        candidateSessionToken == claimedSessionToken &&
+        candidateOwnerTaskId == claimedOwnerTaskId

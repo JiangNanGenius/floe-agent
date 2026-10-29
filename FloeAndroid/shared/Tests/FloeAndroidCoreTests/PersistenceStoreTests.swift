@@ -22,17 +22,18 @@ final class PersistenceStoreTests: XCTestCase {
     func testMigrationsCompleteExactCurrentVersion() async throws {
         let manager = try await migrated()
         let version = try await manager.userVersion()
-        XCTAssertEqual(version, 47)
+        XCTAssertEqual(version, 48)
         XCTAssertEqual(version, DatabaseManager.currentSchemaVersion)
         let applied = try await manager.appliedMigrations()
         // Every published migration applied, none skipped; identifiers carry
         // their own names (e.g. "v1", "v46_task_lifecycle").
-        XCTAssertEqual(applied.count, 47)
+        XCTAssertEqual(applied.count, 48)
         XCTAssertTrue(applied.contains("v47_android_workspace_sources"))
+        XCTAssertTrue(applied.contains("v48_task_policy_convergence"))
         XCTAssertTrue(applied.contains("v1"))
         XCTAssertTrue(applied.contains("v46_task_lifecycle"))
         // The anchor re-exports the SAME constant (real graph, not a stub).
-        XCTAssertEqual(FloeAndroidCore.schemaVersion, 47)
+        XCTAssertEqual(FloeAndroidCore.schemaVersion, 48)
         _ = try FloeAndroidCore.openInMemoryStore()
     }
 
@@ -233,7 +234,7 @@ final class PersistenceStoreTests: XCTestCase {
         let messages = try await store.messages(conversationID: conversationID)
         XCTAssertEqual(messages.count, 1)
         let version = try await reopened.userVersion()
-        XCTAssertEqual(version, 47)
+        XCTAssertEqual(version, 48)
         try await reopened.close()
         try FileManager.default.removeItem(at: directory)
     }

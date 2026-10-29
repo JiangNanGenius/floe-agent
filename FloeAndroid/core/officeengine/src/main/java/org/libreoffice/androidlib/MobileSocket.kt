@@ -78,6 +78,23 @@ class MobileSocket(private val host: SocketHost) {
          * are never silently dropped and readiness is never implied.
          */
         fun transportFailed(reason: String)
+
+        /**
+         * One page poll XHR reached this host and [write] planned a
+         * non-failure empty/body response, on the WebView network thread.
+         * Arrival evidence for the single-pending-poll gate and heartbeat
+         * bookkeeping (`OfficeTransportPump`): the pump accepts it only after
+         * the CURRENT injection executed, so older pre-freeze XHRs cannot
+         * unlock a still-queued injection. Closed/exhausted 503s do not call
+         * this hook and never masquerade as healthy polling progress.
+         *
+         * Arrival is deliberately NOT a page-consumption or downlink-health
+         * proof for admission purposes: serving a body is a delivery
+         * opportunity, and only reads of the page's OWN transport counters
+         * may corroborate admission freshness. Default no-op: additive,
+         * existing hosts keep their exact behaviour.
+         */
+        fun onPollServed() {}
     }
 
     companion object {
@@ -296,6 +313,17 @@ class MobileSocket(private val host: SocketHost) {
      */
     fun write(): WebResourceResponse {
         val prepared = prepare()
+        // Report arrival only AFTER a non-failure response was actually
+        // planned. A closed/exhausted 503 must not release the session's
+        // injection gate or complete a heartbeat as if polling were healthy.
+        // This remains arrival, not page consumption: the pump additionally
+        // requires the current injection's own execution callback, so an old
+        // pre-freeze XHR cannot unlock a still-queued injection. Called
+        // outside every monitor, before the tail re-arm below.
+        when (prepared) {
+            is Prepared.Closed, is Prepared.Exhausted -> Unit
+            is Prepared.Empty, is Prepared.Body -> host.onPollServed()
+        }
         return when (prepared) {
             is Prepared.Closed -> COWebViewClient.response(503, "Service Unavailable")
             is Prepared.Empty -> emptyResponse()

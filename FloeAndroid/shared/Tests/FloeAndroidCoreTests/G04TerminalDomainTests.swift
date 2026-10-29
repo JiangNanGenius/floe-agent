@@ -27,6 +27,18 @@ final class FakeTerminalTransport: LinuxShellTransport, @unchecked Sendable {
 
     var dispatches: [Dispatch] { lock.lock(); defer { lock.unlock() }; return storedDispatches }
 
+    /// Synchronized replacement/clear for callers that script pages WHILE a
+    /// real reconciliation poll may already be running. Direct `pollScript`
+    /// writes are only used before an operation starts; these take the same
+    /// lock as `shellPoll`'s removeFirst so the array never races.
+    func replacePollScript(_ pages: [LinuxShellPollReply]) {
+        lock.lock(); pollScript = pages; lock.unlock()
+    }
+
+    func clearPollScript() {
+        lock.lock(); pollScript.removeAll(); lock.unlock()
+    }
+
     func record(_ operation: String, _ payload: Data) {
         let object = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any] ?? [:]
         lock.lock(); storedDispatches.append(Dispatch(operation: operation, payload: object)); lock.unlock()

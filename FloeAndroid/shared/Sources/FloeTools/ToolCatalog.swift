@@ -1,1 +1,215 @@
-../../../../FloeAgent/Sources/FloeTools/ToolCatalog.swift
+// FloeTools — Compile-time tool registry.
+
+import Foundation
+import FloeCore
+import Crypto
+
+/// Removed execution names cannot be reactivated by stale or dynamic registration.
+public enum RetiredExecutionTools {
+    public static let names: Set<String> = [
+        "exec.localPython", "exec.javascript", "exec.compatEvaluator", "exec.wasm",
+        "python.packages", "wasm.packages"
+    ]
+
+    public static func contains(_ name: String) -> Bool {
+        let canonical = ToolAliasTable.canonical(name)
+        return names.contains(canonical)
+            || names.contains { $0.replacingOccurrences(of: ".", with: "_") == canonical }
+    }
+}
+
+/// Registry of every tool the agent may invoke. Tools are compiled in;
+/// there is no dynamic loading, download, or plugin mechanism.
+public enum ToolCatalog {
+    /// Type-erased tool descriptor for catalog operations that don't need
+    /// the concrete `Arguments` type.
+    public struct Descriptor: Sendable {
+        public var name: String
+        public var toolDescription: String
+        public var parametersJSON: String
+        public var riskLabels: Set<RiskLabel>
+        public var isSideEffecting: Bool
+        public var effect: ToolEffect
+        public var requiresHostScope: Bool
+        public var prerequisites: [ToolPrerequisite]
+        /// Where this tool may execute: any run, only the main run, or only
+        /// inside a delegated child. Enforced in schema composition AND in
+        /// the canonical dispatcher.
+        public var executionBoundary: ToolExecutionBoundary
+        /// True only for tools whose own side effects are indirect and
+        /// internally serialized (the delegation envelope): the runtime may
+        /// execute an approved call concurrently with sibling parallel-safe
+        /// calls. Direct writes stay batch barriers.
+        public var supportsConcurrentBatchDispatch: Bool
+
+        public init(
+            name: String,
+            toolDescription: String? = nil,
+            parametersJSON: String = #"{"type":"object","additionalProperties":false}"#,
+            riskLabels: Set<RiskLabel>,
+            isSideEffecting: Bool,
+            effect: ToolEffect? = nil,
+            requiresHostScope: Bool? = nil,
+            prerequisites: [ToolPrerequisite] = [],
+            executionBoundary: ToolExecutionBoundary = .any,
+            supportsConcurrentBatchDispatch: Bool = false
+        ) {
+            self.name = name
+            self.toolDescription = toolDescription ?? name
+            self.parametersJSON = Self.validatedSchema(parametersJSON, toolName: name)
+            self.riskLabels = riskLabels
+            self.isSideEffecting = isSideEffecting
+            self.effect = effect ?? (isSideEffecting ? .mutating : .readOnly)
+            self.requiresHostScope = requiresHostScope
+                ?? !riskLabels.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem])
+            self.prerequisites = prerequisites
+            self.executionBoundary = executionBoundary
+            self.supportsConcurrentBatchDispatch = supportsConcurrentBatchDispatch
+        }
+
+        /// Stable identity of the exact authority shown to policy and the
+        /// provider. Approval grants bind to this digest so replacing a
+        /// dynamic runner under the same name cannot inherit old authority.
+        public var authorizationIdentity: String {
+            let risks = riskLabels.map(\.rawValue).sorted().joined(separator: ",")
+            let prerequisiteMaterial = prerequisites.map {
+                "\($0.state)|\($0.resolverToolName ?? "none")|\($0.mayResolveAutomatically)"
+            }.sorted().joined(separator: ",")
+            var material = [
+                name,
+                toolDescription,
+                parametersJSON,
+                risks,
+                isSideEffecting ? "side-effecting" : "read-only",
+                effect.rawValue,
+                requiresHostScope ? "host" : "local",
+                prerequisiteMaterial
+            ]
+            // Boundary flags join the digest only when non-default, so every
+            // ordinary tool keeps its historical authorization identity while
+            // a main-only/child-only or parallel-safe classification is bound
+            // to the exact authority policy approved.
+            if executionBoundary != .any { material.append("boundary:\(executionBoundary.rawValue)") }
+            if supportsConcurrentBatchDispatch { material.append("concurrent-batch") }
+            return SHA256.hash(data: Data(material.joined(separator: "\u{1f}").utf8))
+                .map { String(format: "%02x", $0) }
+                .joined()
+        }
+
+        /// A malformed tool schema must never make every provider request
+        /// fail during JSON encoding. Keep the tool available with a safe,
+        /// permissive object schema and leave an actionable local diagnostic.
+        private static func validatedSchema(_ schema: String, toolName: String) -> String {
+            guard let data = schema.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  let root = object as? [String: Any],
+                  schemaNodeIsValid(root)
+            else {
+                FloeLogger(category: .tools).error(
+                    "toolSchemaInvalid tool=\(toolName) fallback=permissiveObject"
+                )
+                return #"{"type":"object","additionalProperties":true}"#
+            }
+            return schema
+        }
+
+        /// JSON can parse successfully while still placing schema keywords
+        /// under `properties` as though they were property names. Strict
+        /// providers reject the entire request in that case. Validate the
+        /// structural subset used by Floe before a descriptor reaches a wire
+        /// adapter, while keeping support for boolean schemas and combinators.
+        private static func schemaNodeIsValid(_ node: [String: Any]) -> Bool {
+            if let propertiesValue = node["properties"] {
+                guard let properties = propertiesValue as? [String: Any] else { return false }
+                // Validate property values by shape, not by their names. A
+                // tool may legitimately expose fields such as `type` or
+                // `items`; a misplaced `required` array still fails below
+                // because arrays are not valid property schemas.
+                for child in properties.values where !schemaValueIsValid(child) { return false }
+            }
+            if let requiredValue = node["required"] {
+                guard let required = requiredValue as? [Any],
+                      required.allSatisfy({ $0 is String })
+                else { return false }
+            }
+            if let additional = node["additionalProperties"],
+               !schemaValueIsValid(additional) {
+                return false
+            }
+            if let items = node["items"], !schemaValueIsValid(items) { return false }
+            for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+                if let value = node[keyword] {
+                    guard let alternatives = value as? [Any],
+                          alternatives.allSatisfy({ schemaValueIsValid($0) })
+                    else { return false }
+                }
+            }
+            return true
+        }
+
+        private static func schemaValueIsValid(_ value: Any) -> Bool {
+            if value is Bool { return true }
+            if let object = value as? [String: Any] { return schemaNodeIsValid(object) }
+            if let array = value as? [Any] { return array.allSatisfy(schemaValueIsValid) }
+            return false
+        }
+    }
+
+    /// All registered descriptors. Concrete tools register themselves in
+    /// their respective modules (FloeDocuments, FloeImages, FloeSSH, FloeVNC)
+    /// during app startup via `register(_:)`.
+    private static let registry = RegistryStorage()
+
+    private final class RegistryStorage: @unchecked Sendable {
+        private var descriptors: [String: Descriptor] = [:]
+        private var compatibilityNames = Set<String>()
+        private let lock = NSLock()
+
+        func register(_ descriptor: Descriptor, compatibilityOnly: Bool = false) {
+            guard !RetiredExecutionTools.contains(descriptor.name) else { return }
+            lock.lock()
+            descriptors[descriptor.name] = descriptor
+            if compatibilityOnly { compatibilityNames.insert(descriptor.name) } else { compatibilityNames.remove(descriptor.name) }
+            lock.unlock()
+        }
+
+        func descriptor(named name: String) -> Descriptor? {
+            lock.lock()
+            defer { lock.unlock() }
+            return descriptors[ToolAliasTable.canonical(name)]
+        }
+
+        func all() -> [Descriptor] {
+            lock.lock()
+            defer { lock.unlock() }
+            return descriptors.values.filter { !compatibilityNames.contains($0.name) }.sorted { $0.name < $1.name }
+        }
+    }
+
+    /// Registers a tool type. Called once at app startup per tool module.
+    public static func register<T: AgentTool>(_ type: T.Type, compatibilityOnly: Bool = false) {
+        registry.register(Descriptor(
+            name: T.name,
+            toolDescription: T.toolDescription,
+            parametersJSON: T.parametersJSON,
+            riskLabels: T.riskLabels,
+            isSideEffecting: T.isSideEffecting,
+            effect: T.toolEffect,
+            requiresHostScope: T.requiresHostScope,
+            prerequisites: T.prerequisites,
+            executionBoundary: T.executionBoundary,
+            supportsConcurrentBatchDispatch: T.supportsConcurrentBatchDispatch
+        ), compatibilityOnly: compatibilityOnly)
+    }
+
+    /// Looks up a tool descriptor by name. Absent names are rejected before
+    /// reaching the policy engine.
+    public static func descriptor(named name: String) -> Descriptor? {
+        registry.descriptor(named: name)
+    }
+
+    /// Every registered descriptor, sorted by name.
+    public static var allDescriptors: [Descriptor] {
+        registry.all()
+    }
+}

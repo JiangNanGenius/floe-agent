@@ -497,6 +497,7 @@ dependencies {
     "fullImplementation"(project(":feature:phonecontrol"))
     "fullImplementation"(project(":feature:rootsystem"))
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.runner)
 }

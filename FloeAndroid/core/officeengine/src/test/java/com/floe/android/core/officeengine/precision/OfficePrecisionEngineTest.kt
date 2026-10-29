@@ -196,9 +196,34 @@ class OfficePrecisionEngineTest {
         "status: {\"type\":\"text\",\"partscount\":1,\"selectedpart\":\"0\"," +
             "\"width\":11906,\"height\":16838,\"viewid\":0}"
 
+    // Producer-pinned presentation identifiers (Collabora Mobile
+    // 26.04.4.2/937 @2333344185931274f9c49d6c12a408cefcef6844): a
+    // presentation's `selectedpart` is the braced page GUID and each
+    // `parts` entry carries its `part` (kit/KitHelper.hpp documentStatus +
+    // fetchPartsData; the pinned ImpressTileLayer consumes exactly these
+    // fields for its own setclientpart). Decimal selectedpart is NEVER the
+    // presentation wire shape — the old fixtures that showed it were
+    // parroting the wrong algorithm.
+    private val pageGuidA = "{A1A2A3A4-B1B2-C1C2-D1D2-E1E2E3E4E5A0}"
+    private val pageGuidB = "{A1A2A3A4-B1B2-C1C2-D1D2-E1E2E3E4E5B1}"
+    private val pageGuidC = "{A1A2A3A4-B1B2-C1C2-D1D2-E1E2E3E4E5C2}"
+
+    private fun presentationStatus(
+        selected: String,
+        ids: List<String> = listOf(pageGuidA, pageGuidB, pageGuidC),
+    ) = "status: {\"type\":\"presentation\",\"partscount\":${ids.size}," +
+        "\"selectedpart\":\"$selected\",\"width\":10,\"height\":10,\"viewid\":0," +
+        "\"parts\":[" + ids.joinToString(",") {
+        "{\"part\":\"$it\",\"width\":10,\"height\":10,\"mode\":0}"
+    } + "]}"
+
     private fun statusFor(part: String, type: String = "text") =
-        "status: {\"type\":\"$type\",\"partscount\":3,\"selectedpart\":\"$part\"," +
-            "\"width\":10,\"height\":10,\"viewid\":0}"
+        if (type == "presentation" || type == "drawing") {
+            presentationStatus(part)
+        } else {
+            "status: {\"type\":\"$type\",\"partscount\":3,\"selectedpart\":\"$part\"," +
+                "\"width\":10,\"height\":10,\"viewid\":0}"
+        }
 
     /** Drive the production pre-effect status + selection pulls. The apply
      * itself then dispatches paste; no host ledger or verifier prior is set.
@@ -216,9 +241,10 @@ class OfficePrecisionEngineTest {
         prior: String,
         part: String = "0",
         type: String = "text",
+        status: String? = null,
     ) {
         assertEquals("status", host.engineWires.last())
-        feed(engine, statusFor(part, type))
+        feed(engine, status ?: statusFor(part, type))
         assertEquals(OfficePrecisionProtocol.CMD_GET_TEXT_SELECTION, host.engineWires.last())
         feed(engine, "textselectioncontent: $prior")
     }
@@ -374,10 +400,17 @@ class OfficePrecisionEngineTest {
         val host = FakeHost(format = OfficeDocumentFormat.PPTX)
         val engine = OfficePrecisionEngine(host)
         engine.submit(req("cap", OfficePrecisionAction.CAPTURE_TARGET))
-        feed(engine, statusFor("2", "presentation"))
+        feed(engine, statusFor(pageGuidC, "presentation"))
         val target = (engine.readAnswer("cap", "tok", 3L)!!
             .answer as OfficePrecisionAnswer.TargetCaptured).target
-        assertEquals("2", target.selectedPart)
+        // The pinned producer names presentation pages by their braced GUID
+        // (never a decimal index) — the capture binds exactly that witness.
+        assertEquals(pageGuidC, target.selectedPart)
+        // …AND the separately carried logical ordinal from the SAME status
+        // answer's ordered parts witness (page C = position 2), which the
+        // host forwards as facts partIndex for the saved-verification
+        // lineage (pre-84 the host re-parse made this null for every GUID).
+        assertEquals(2, target.selectedPartIndex)
         assertEquals("presentation", target.docType)
         assertEquals(3, target.partsCount)
 
@@ -389,7 +422,7 @@ class OfficePrecisionEngineTest {
         )
         assertEquals("status", host.engineWires.last())
         val wiresAtRefusal = host.engineWires.size
-        feed(engine, statusFor("1", "presentation"))
+        feed(engine, statusFor(pageGuidB, "presentation"))
         val refused = engine.readAnswer("ap-foreign", "tok", 3L)!!
         assertEquals(OfficePrecisionState.FAILED, refused.state)
         assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, refused.failure)
@@ -401,26 +434,124 @@ class OfficePrecisionEngineTest {
         // bound evidence carries the producer-observed part plus both native
         // epochs — never a null guess and never an ambient cached selection.
         engine.submit(req("cap2", OfficePrecisionAction.CAPTURE_TARGET))
-        feed(engine, statusFor("2", "presentation"))
+        feed(engine, statusFor(pageGuidC, "presentation"))
         val target2 = (engine.readAnswer("cap2", "tok", 3L)!!
             .answer as OfficePrecisionAnswer.TargetCaptured).target
-        assertEquals("2", target2.selectedPart)
+        assertEquals(pageGuidC, target2.selectedPart)
         engine.submit(
             req("ap-real", OfficePrecisionAction.APPLY_TEXT, text = "marker", targetHandle = target2.handleId),
         )
-        acquirePreEffect(engine, host, "", part = "2", type = "presentation")
+        acquirePreEffect(engine, host, "", part = pageGuidC, type = "presentation")
         assertTrue(host.engineWires.last().startsWith("paste "))
         feed(engine, "pasteresult: success")
         feed(engine, "textselectioncontent: marker")
         val applied = engine.readAnswer("ap-real", "tok", 3L)!!
         assertEquals(OfficePrecisionState.MUTATION_VERIFIED, applied.state)
         val evidence = (applied.answer as OfficePrecisionAnswer.MutationApplied).preEffectEvidence
-        assertEquals("2", evidence?.partId)
+        assertEquals(pageGuidC, evidence?.partId)
         assertEquals("the actual empty native selection is the insertion baseline", "", evidence?.selectionText)
         assertEquals(0, evidence?.selectionByteCount)
         assertEquals(target2.handleId, evidence?.targetHandle)
         assertEquals(target2.inputEpoch, evidence?.inputEpoch)
         assertEquals(target2.editEpoch, evidence?.editEpoch)
+    }
+
+    /**
+     * Main lineage review (part-ordinal84): a byte-exact GUID match at the
+     * pre-effect status is NOT a position match — the pinned producer can
+     * re-order the deck while keeping the shown page's identifier. The
+     * captured witnessed ordinal must be RE-PROVEN from THIS fresh
+     * synchronous status' own complete, closed, count-consistent ordered
+     * parts witness; otherwise the operation refuses BEFORE the pre-effect
+     * selection pull and before any paste/commit wire, with zero effect —
+     * never left for the later OOXML verifier to discover after the bytes
+     * already moved.
+     */
+    @Test
+    fun capturedPresentationReorderRefusesPreEffectWithZeroEffectWires() {
+        val host = FakeHost(format = OfficeDocumentFormat.PPTX)
+        val engine = OfficePrecisionEngine(host)
+        engine.submit(req("cap", OfficePrecisionAction.CAPTURE_TARGET))
+        feed(engine, presentationStatus(pageGuidB, listOf(pageGuidA, pageGuidB)))
+        val target = (engine.readAnswer("cap", "tok", 3L)!!
+            .answer as OfficePrecisionAnswer.TargetCaptured).target
+        assertEquals(pageGuidB, target.selectedPart)
+        assertEquals(1, target.selectedPartIndex)
+
+        engine.submit(
+            req("ap-reorder", OfficePrecisionAction.APPLY_TEXT, text = "x", targetHandle = target.handleId),
+        )
+        assertEquals("status", host.engineWires.last())
+        val wiresAtRefusal = host.engineWires.size
+        // SAME GUID identity, now witnessed at logical ordinal 0
+        // (the deck reordered: parts [B, A]).
+        feed(engine, presentationStatus(pageGuidB, listOf(pageGuidB, pageGuidA)))
+        val refused = engine.readAnswer("ap-reorder", "tok", 3L)!!
+        assertEquals(OfficePrecisionState.FAILED, refused.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, refused.failure)
+        assertEquals("pre-effect-part-ordinal-drift", refused.detail)
+        // Zero effect: no pre-effect selection pull and no paste wire ever
+        // left the engine for this attempt.
+        assertEquals("refused before the pre-effect selection pull", wiresAtRefusal, host.engineWires.size)
+        assertTrue(host.wires.none { it.startsWith("paste ") })
+
+        // Ordinary UNCHANGED-witness path (control): a fresh capture whose
+        // shown page keeps the same complete ordered witness applies
+        // normally — the fence never disturbs the healthy lineage.
+        engine.submit(req("cap2", OfficePrecisionAction.CAPTURE_TARGET))
+        feed(engine, presentationStatus(pageGuidB, listOf(pageGuidA, pageGuidB)))
+        val target2 = (engine.readAnswer("cap2", "tok", 3L)!!
+            .answer as OfficePrecisionAnswer.TargetCaptured).target
+        assertEquals(1, target2.selectedPartIndex)
+        engine.submit(
+            req("ap-plain", OfficePrecisionAction.APPLY_TEXT, text = "marker", targetHandle = target2.handleId),
+        )
+        acquirePreEffect(engine, host, "", part = pageGuidB, type = "presentation",
+            status = presentationStatus(pageGuidB, listOf(pageGuidA, pageGuidB)))
+        assertTrue(host.engineWires.last().startsWith("paste "))
+        feed(engine, "pasteresult: success")
+        feed(engine, "textselectioncontent: marker")
+        val applied = engine.readAnswer("ap-plain", "tok", 3L)!!
+        assertEquals(OfficePrecisionState.MUTATION_VERIFIED, applied.state)
+        val evidence = (applied.answer as OfficePrecisionAnswer.MutationApplied).preEffectEvidence
+        assertEquals(pageGuidB, evidence?.partId)
+        assertEquals(target2.handleId, evidence?.targetHandle)
+    }
+
+    @Test
+    fun capturedPresentationFamilyOrCountDriftRefusesBeforeEffects() {
+        val capturedStatus = presentationStatus(pageGuidB, listOf(pageGuidA, pageGuidB))
+        val variants = linkedMapOf(
+            "text" to capturedStatus.replace("\"type\":\"presentation\"", "\"type\":\"text\""),
+            "unknown" to capturedStatus.replace("\"type\":\"presentation\"", "\"type\":\"unknown\""),
+            "missing-family" to capturedStatus.replace("\"type\":\"presentation\",", ""),
+            "drawing" to capturedStatus.replace("\"type\":\"presentation\"", "\"type\":\"drawing\""),
+            "count" to presentationStatus(pageGuidB, listOf(pageGuidA, pageGuidB, pageGuidC)),
+        )
+        for ((label, freshStatus) in variants) {
+            assertTrue("$label must change the native answer", freshStatus != capturedStatus)
+            val host = FakeHost(format = OfficeDocumentFormat.PPTX)
+            val engine = OfficePrecisionEngine(host)
+            engine.submit(req("cap-$label", OfficePrecisionAction.CAPTURE_TARGET))
+            feed(engine, capturedStatus)
+            val target = (engine.readAnswer("cap-$label", "tok", 3L)!!
+                .answer as OfficePrecisionAnswer.TargetCaptured).target
+            assertEquals("presentation", target.docType)
+            assertEquals(2, target.partsCount)
+            assertEquals(1, target.selectedPartIndex)
+            val operation = "apply-$label"
+            engine.submit(req(operation, OfficePrecisionAction.APPLY_TEXT,
+                text = "x", targetHandle = target.handleId))
+            assertEquals("status", host.engineWires.last())
+            val before = host.engineWires.size
+            feed(engine, freshStatus)
+            val refused = engine.readAnswer(operation, "tok", 3L)!!
+            assertEquals(label, OfficePrecisionState.FAILED, refused.state)
+            assertEquals(label, OfficePrecisionFailure.TARGET_UNVERIFIED, refused.failure)
+            assertEquals(label, "pre-effect-part-ordinal-drift", refused.detail)
+            assertEquals("$label refused before selection/effect", before, host.engineWires.size)
+            assertTrue(label, host.wires.none { it.startsWith("paste ") })
+        }
     }
 
     @Test
@@ -702,16 +833,37 @@ class OfficePrecisionEngineTest {
         val engine = OfficePrecisionEngine(host)
         engine.submit(req("read", OfficePrecisionAction.QUERY_PRESENTATION_INFO))
         feed(engine, "presentationinfo: {\"slides\":[{\"slideNumber\":1},{\"slideNumber\":2}]}")
+        // Real C15 shape: two slides, scripted "slide 2" (decimal partId "1").
+        // Repaired plan: resolve pull (the view still shows page 1's GUID),
+        // then setclientpart carrying page 2's OWN GUID, then the proven
+        // readback. Pre-repair this dispatched `setclientpart part=1` — a
+        // decimal that names no page in the pinned Impress boundary — the
+        // selection silently landed nowhere and the honest `status:`
+        // readback refused with part-readback-mismatch (the recorded real
+        // first failure).
         engine.submit(req("slide", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
-        feed(engine, statusFor("1", "presentation"))
+        feed(engine, presentationStatus(pageGuidA, listOf(pageGuidA, pageGuidB)))
+        feed(engine, presentationStatus(pageGuidB, listOf(pageGuidA, pageGuidB)))
+        val slid = engine.readAnswer("slide", "tok", 3L)!!
+        assertEquals(OfficePrecisionState.MUTATION_VERIFIED, slid.state)
+        val selected = slid.answer as OfficePrecisionAnswer.SlideSelected
+        assertEquals(pageGuidB, selected.shownPart)
+        assertEquals(1, selected.shownPartIndex)
         engine.submit(req("capture", OfficePrecisionAction.CAPTURE_TARGET))
-        feed(engine, statusFor("1", "presentation"))
+        feed(engine, presentationStatus(pageGuidB, listOf(pageGuidA, pageGuidB)))
         val target = (engine.readAnswer("capture", "tok", 3L)!!
             .answer as OfficePrecisionAnswer.TargetCaptured).target
+        // Full wanted-chain lineage for the real C15 two-slide shape: the
+        // capture at the shown page GUID carries the separately witnessed
+        // ordinal 1 (second page) — the value the App host records and the
+        // OOXML verifier uses to resolve the SECOND ordered slide part.
+        assertEquals(pageGuidB, target.selectedPart)
+        assertEquals(1, target.selectedPartIndex)
         host.wires.clear()
 
         engine.submit(req("apply", OfficePrecisionAction.APPLY_TEXT, text = "marker", targetHandle = target.handleId))
-        acquirePreEffect(engine, host, "", part = "1", type = "presentation")
+        acquirePreEffect(engine, host, "", part = pageGuidB, type = "presentation",
+            status = presentationStatus(pageGuidB, listOf(pageGuidA, pageGuidB)))
         assertEquals(
             listOf(
                 "status",
@@ -727,7 +879,7 @@ class OfficePrecisionEngineTest {
         val evidence = (result.answer as OfficePrecisionAnswer.MutationApplied).preEffectEvidence
         assertEquals("the actual empty native selection is insertion evidence", "", evidence?.selectionText)
         assertEquals(0, evidence?.selectionByteCount)
-        assertEquals("1", evidence?.partId)
+        assertEquals(pageGuidB, evidence?.partId)
         assertEquals(target.handleId, evidence?.targetHandle)
     }
 
@@ -762,11 +914,11 @@ class OfficePrecisionEngineTest {
             val host = FakeHost(format = OfficeDocumentFormat.PPTX)
             val engine = OfficePrecisionEngine(host)
             engine.submit(req("capture", OfficePrecisionAction.CAPTURE_TARGET))
-            feed(engine, statusFor("1", "presentation"))
+            feed(engine, statusFor(pageGuidB, "presentation"))
             val target = (engine.readAnswer("capture", "tok", 3L)!!
                 .answer as OfficePrecisionAnswer.TargetCaptured).target
             engine.submit(req("apply", OfficePrecisionAction.APPLY_TEXT, text = "x", targetHandle = target.handleId))
-            feed(engine, statusFor("0", "presentation"))
+            feed(engine, statusFor(pageGuidA, "presentation"))
             val result = engine.readAnswer("apply", "tok", 3L)!!
             assertEquals(OfficePrecisionState.FAILED, result.state)
             assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, result.failure)
@@ -1098,21 +1250,33 @@ class OfficePrecisionEngineTest {
         val host = FakeHost(format = OfficeDocumentFormat.PPTX)
         val engine = OfficePrecisionEngine(host)
         engine.submit(req("n1", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
-        // Proven-readback plan: fire setclientpart, then pull `status`.
-        assertEquals(listOf("setclientpart part=1", "status"), host.wires)
-        // A perfectly matching setpart CALLBACK echo never settles the op
-        // (frame + elapsed time is not operation proof).
+        // Repaired proven-readback plan: synchronous `status` resolve pull
+        // first, then the setclientpart carrying the PRODUCER's own page
+        // GUID (never the decimal request — the C15 defect: `setclientpart
+        // part=1` named no page and the honest readback mismatched), then
+        // the proving `status` pull.
+        assertEquals(listOf("status"), host.wires)
+        // A stale decimal-carrying setpart CALLBACK echo never settles the
+        // resolve pull (frame + elapsed time is not operation proof).
         feed(engine, "setpart: part=1")
         assertNull(engine.readAnswer("n1", "tok", 3L))
-        // Only the pinned-ordering-proven status readback completes it.
-        feed(
-            engine,
-            "status: {\"type\":\"presentation\",\"partscount\":3,\"selectedpart\":\"1\"," +
-                "\"width\":10,\"height\":10,\"viewid\":0}",
+        feed(engine, statusFor(pageGuidA, "presentation")) // view still page 1
+        assertEquals(
+            listOf("status", "setclientpart part=$pageGuidB", "status"),
+            host.wires,
         )
+        // Even the perfectly matching setpart echo during the readback is
+        // corroboration only.
+        feed(engine, "setpart: part=$pageGuidB")
+        assertNull(engine.readAnswer("n1", "tok", 3L))
+        // Only the pinned-ordering-proven status readback completes it.
+        feed(engine, statusFor(pageGuidB, "presentation"))
         val result = engine.readAnswer("n1", "tok", 3L)!!
         assertEquals(OfficePrecisionState.MUTATION_VERIFIED, result.state)
-        assertEquals("1", (result.answer as OfficePrecisionAnswer.SlideSelected).shownPart)
+        assertEquals(pageGuidB, (result.answer as OfficePrecisionAnswer.SlideSelected).shownPart)
+        // The proven readback answer itself witnesses the shown ordinal —
+        // the delayed callback echo above contributed nothing to it.
+        assertEquals(1, (result.answer as OfficePrecisionAnswer.SlideSelected).shownPartIndex)
 
         // SELECT_ALL_TEXT: the callback TEXT_SELECTION frame never settles;
         // the proven selection readback yields the honest PARTIAL state.
@@ -1146,7 +1310,7 @@ class OfficePrecisionEngineTest {
         // A SELECT_SLIDE dispatched but left UNKNOWN (maybe-effect): the
         // sheet context may have moved, so the earlier capture must die.
         engine.submit(req("n1", OfficePrecisionAction.SELECT_SLIDE, partId = "1"))
-        host.fireLatestTimeout() // part-readback window expires
+        host.fireLatestTimeout() // part-index-resolve window expires
         val unknown = engine.readAnswer("n1", "tok", 3L)!!
         assertEquals(OfficePrecisionState.UNKNOWN, unknown.state)
 

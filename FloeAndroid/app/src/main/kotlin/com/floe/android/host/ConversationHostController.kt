@@ -45,6 +45,8 @@ import com.floe.android.feature.conversation.TaskBulkOperationUi
 import com.floe.android.feature.conversation.TemporaryEndTargetUi
 import com.floe.android.feature.conversation.TemporaryKeepOutcomeUi
 import com.floe.android.feature.conversation.TemporarySessionRef
+import com.floe.android.feature.conversation.TerminalHandoffConflictUi
+import com.floe.android.feature.conversation.TerminalHandoffConsentUi
 import com.floe.android.feature.conversation.ThreadUiState
 import com.floe.android.feature.conversation.TimelineRowUi
 import com.floe.android.feature.providers.ProviderCredentialStateUi
@@ -159,6 +161,21 @@ class ConversationHostController internal constructor(
         privacyVisibleHolder.set(holder)
     }
 
+    /** Narrow read-only join for the owned-Office approval-notice surface
+     * (G05-R3 office-approval107, 2026-10-28): the tool name of the FIRST
+     * captured pending approval of THIS conversation's selected run —
+     * exactly the card the timeline shows — answered ONLY while this
+     * conversation is the one the visible detail surface currently reports,
+     * so the viewer banner appears precisely when routing back to chat
+     * presents this exact approval to review. Host-projected and non-secret
+     * (the same string the card already displays). Grants nothing; the
+     * banner only navigates, and review still happens on this ordinary card. */
+    internal fun approvalNoticeFor(conversationId: String): String? {
+        if (currentVisibleConversationId() != conversationId) return null
+        val entry = holders[conversationId] ?: return null
+        return entry.holder.snapshot.value?.pendingApprovals?.firstOrNull()?.toolName
+    }
+
     /** Inspector presentation requests (host → shell). */
     val inspectorRequest = MutableStateFlow<Pair<InspectorRouteUi, String>?>(null)
 
@@ -174,6 +191,19 @@ class ConversationHostController internal constructor(
     private val launchOutcomeListeners =
         ConcurrentHashMap<Long, (admitted: Boolean, reason: String?) -> Unit>()
     private val eventPumps = ConcurrentHashMap<String, EventPumpHandle>()
+
+    /** Per-surface unregister hook for the live owned-Linux-engine-slot
+     * conflict watch. Registering the watcher is the ONLY view-scoped
+     * resource here (the same pane-scoped idiom the terminal pane uses);
+     * detaching never touches a session. Keyed by conversation + session
+     * epoch so a rebound surface registers its own watch and a stale one is
+     * retired with its holder. */
+    private val terminalConflictWatches = ConcurrentHashMap<String, () -> Unit>()
+
+    /** At most ONE explicit terminal→model handoff per conversation: a second
+     * consent is refused instead of racing the same captured session, and the
+     * latch is released exactly when that handoff settles or refuses. */
+    private val terminalHandoffInFlight = ConcurrentHashMap<String, Boolean>()
 
     /**
      * Per-run live-hint coalescing for the canonical `run.snapshot` refresh:
@@ -790,6 +820,9 @@ class ConversationHostController internal constructor(
             if (temporaryNativeRootEpoch >= 0L) {
                 existing.holder.temporaryNativeRootEpoch = temporaryNativeRootEpoch
             }
+            // Idempotent: a re-resolved surface keeps its existing watch, and a
+            // rebound session (new epoch) registers its own.
+            ensureTerminalConflictWatch(existing)
             return existing.holder
         }
         val epoch = sessionEpochs.incrementAndGet()
@@ -813,13 +846,18 @@ class ConversationHostController internal constructor(
             it.isTemporary = isTemporary
             it.temporaryIncarnationId = incarnationId
         }
-        holders[conversationId] = ConversationFlowHolderEntry(
+        val created = ConversationFlowHolderEntry(
             holder = holder,
             sessionEpoch = epoch,
             isTemporary = isTemporary,
             incarnationId = incarnationId,
             builder = builder,
         )
+        holders[conversationId] = created
+        // The live owned-slot conflict is HOST truth (the terminal owner's own
+        // predicate), not a field on a native run page, so this surface observes
+        // it directly and an approval card can offer the explicit decision.
+        ensureTerminalConflictWatch(created)
         // First-provider/model configuration must not depend on opening the
         // thread first: an admitted configuration surface refreshes the real
         // projection so the composer can send on the very first open.
@@ -851,6 +889,9 @@ class ConversationHostController internal constructor(
         // C09: holder retire ends observation for exactly this conversation
         // (identity-CAS: a replacement surface's watch is never touched).
         closeQueueSettleWatchesFor(conversationId)
+        // Same discipline for the owned-slot conflict watch: detaching is host
+        // resource ownership and never stops or closes a terminal session.
+        releaseTerminalConflictWatches(conversationId)
         queueSettleReconcilesInFlight.remove(conversationId)
         queueSettleRerunRequested.remove(conversationId)
         queueSettleConsumedCursors.keys.filter { it.startsWith("$conversationId/") }
@@ -3280,21 +3321,155 @@ class ConversationHostController internal constructor(
                 }
             }
         }
-        val known = entry.builder.approvalVersion(request.approvalId)
-        if (known != null) {
-            dispatch(known)
+        // The ONE dispatch entry shared by both paths. It is reached at most
+        // once per accepted request, and only after every pre-dispatch fence
+        // held, so the already-proposed command is never dispatched twice and
+        // a failed command is never replayed.
+        fun beginDispatch() {
+            val known = entry.builder.approvalVersion(request.approvalId)
+            if (known != null) {
+                dispatch(known)
+                return
+            }
+            // The requestedAt version exists only on the authoritative snapshot.
+            refreshRunSnapshot(entry, request.runId) { applied ->
+                val version = entry.builder.approvalVersion(request.approvalId)
+                if (applied && version != null) {
+                    dispatch(version)
+                } else {
+                    surfaceError(entry, "approval_version_unavailable")
+                }
+            }
+        }
+
+        val consent = request.terminalHandoff
+        if (consent == null || decision != "allow") {
+            // Ordinary approval-without-conflict: unchanged. A consent can only
+            // ride an allow, so a denial never ends a terminal.
+            beginDispatch()
             return true
         }
-        // The requestedAt version exists only on the authoritative snapshot.
-        refreshRunSnapshot(entry, request.runId) { applied ->
-            val version = entry.builder.approvalVersion(request.approvalId)
-            if (applied && version != null) {
-                dispatch(version)
-            } else {
-                surfaceError(entry, "approval_version_unavailable")
+        return beginTerminalHandoffThenDispatch(entry, request, consent) { beginDispatch() }
+    }
+
+    /**
+     * The explicit human handoff from THIS conversation's own interactive
+     * terminal to the already-proposed model command (Main ruling 2026-10-28).
+     *
+     * It runs BEFORE the existing native approve is called once, so the
+     * ordinary dispatcher never sees an occupied engine slot and nothing has to
+     * be replayed. Authority is reused, never duplicated: the terminal host
+     * closes exactly the captured session and proves the REAL engine-slot
+     * release (lease release through the existing trusted-host drain, not an
+     * accepted stop and not elapsed time), and the approval itself still leaves
+     * through the same `run.approval.resolve` revision/CAS route as an ordinary
+     * allow.
+     *
+     * Every refusal path dispatches NOTHING and publishes one typed code, so the
+     * card stays actionable and the user can decide again explicitly. A session
+     * that replaced the captured one is a DIFFERENT terminal and is never
+     * stopped; another conversation's or another task's work is unreachable
+     * here; a retired/navigated surface is told nothing.
+     *
+     * @return true only when the handoff actually started (the presentation may
+     * latch); false when nothing began.
+     */
+    private fun beginTerminalHandoffThenDispatch(
+        entry: ConversationFlowHolderEntry,
+        request: ApprovalDecisionRequest,
+        consent: TerminalHandoffConsentUi,
+        dispatchOnce: () -> Unit,
+    ): Boolean {
+        val session = ConversationSessionToken(request.conversationId, request.sessionEpoch)
+        val approvalKey = "${request.runId}/${request.approvalId}"
+        fun refuse(code: String): Boolean {
+            // Nothing was dispatched, so the once-only latch must not be taken:
+            // publish the typed refusal and report "not started".
+            entry.holder.applyTerminalHandoffRefusal(session, approvalKey, code)
+            return false
+        }
+        val terminal = host.workspaceTerminal ?: return refuse("hostUnavailable")
+        if (!admitted()) return refuse("notAdmitted")
+        // The capture must still BE the session the user was shown and
+        // consented to. `liveInteractiveTerminal` answers only for a live Root
+        // generation, this host's own handle and an authoritative LIVE
+        // interactive status — so a terminal that already ended, a language/run
+        // session, a replacement token and a foreign conversation all refuse
+        // here without anything being stopped.
+        val capture = terminal.liveInteractiveTerminal(request.conversationId)
+        if (capture == null ||
+            capture.sessionToken != consent.sessionToken ||
+            capture.nativeEpoch != consent.nativeEpoch
+        ) {
+            return refuse("staleCapture")
+        }
+        if (terminalHandoffInFlight.putIfAbsent(request.conversationId, true) != null) {
+            return refuse("handoffAlreadyInFlight")
+        }
+        val ownerConversation = entry.holder.session.conversationId
+        val ownerEpoch = entry.holder.session.sessionEpoch
+        host.scope.launch(host.ioDispatcher) {
+            try {
+                val result = terminal.endCapturedTerminalForHandoff(capture)
+                // Ownership is re-proven AFTER the await: only the surface that
+                // asked is told the outcome, and the approval is dispatched only
+                // while this entry still owns the conversation and the run
+                // domain is still admitted. A late result can never touch a
+                // replacement surface or dispatch into a retired generation.
+                if (!ownCurrentEntry(entry, ownerConversation, ownerEpoch)) return@launch
+                if (result is TerminalHandoffResult.Released && admitted()) {
+                    dispatchOnce()
+                } else {
+                    val code = (result as? TerminalHandoffResult.Refused)?.code ?: "notAdmitted"
+                    entry.holder.applyTerminalHandoffRefusal(session, approvalKey, code)
+                }
+            } finally {
+                terminalHandoffInFlight.remove(request.conversationId, true)
             }
         }
         return true
+    }
+
+    /**
+     * Publishes the live owned-slot conflict fact into one surface so its
+     * approval cards can offer the explicit end-and-run decision. Registration
+     * is the only view-scoped resource; detaching (holder retirement) never
+     * touches a session. A surface without a terminal host simply never sees a
+     * conflict, so its cards stay exactly as before.
+     */
+    private fun ensureTerminalConflictWatch(entry: ConversationFlowHolderEntry) {
+        val terminal = host.workspaceTerminal ?: return
+        val surfaceSession = entry.holder.session
+        val conversationId = surfaceSession.conversationId
+        val key = "$conversationId@${surfaceSession.sessionEpoch}"
+        if (terminalConflictWatches.containsKey(key)) return
+        val detach = terminal.watchSessions(conversationId) {
+            // The snapshot is only a change signal: the AUTHORITATIVE answer
+            // comes from the terminal host's own predicate (live generation,
+            // own captured handle, LIVE interactive status, same session), so
+            // this never projects a `.run` session or a settled phase as a
+            // manual terminal.
+            entry.holder.applyTerminalHandoffConflict(
+                surfaceSession,
+                terminal.liveInteractiveTerminal(conversationId)?.let {
+                    TerminalHandoffConflictUi(it.sessionToken, it.nativeEpoch)
+                },
+            )
+        }
+        val previous = terminalConflictWatches.put(key, detach)
+        previous?.invoke()
+    }
+
+    /** Detaches exactly this conversation's conflict watches. Identity-CAS on
+     * the stored hook, so a replacement surface's watch is never removed. */
+    private fun releaseTerminalConflictWatches(conversationId: String) {
+        terminalConflictWatches.keys
+            .filter { it == conversationId || it.startsWith("$conversationId@") }
+            .forEach { key ->
+                terminalConflictWatches.remove(key)?.let { detach ->
+                    runCatching { detach() }
+                }
+            }
     }
 
     /**
@@ -4044,9 +4219,23 @@ class ConversationHostController internal constructor(
      * row under its REAL CAS version (the snapshot `policyRevision`, never
      * a timestamp guess or locally bumped value) and echoes the actual
      * `appliedToLiveRun` result. Only a human action on the permissions
-     * surface reaches this; imported/model content has no route. Without a
-     * proven revision the update REFUSES (the caller re-reads first) — a
-     * stale or unknown result is never auto-replayed.
+     * surface reaches this; imported/model content has no route. One
+     * human gesture composes AT MOST ONE mutation — a stale or unknown
+     * result is surfaced with its typed code and never auto-replayed.
+     *
+     * Fences: the gesture freezes its mode, session and current run at tap
+     * time, and the per-holder intent sequence makes the LATEST human
+     * intent supersede older queued/in-flight work: a retired, navigated,
+     * epoch-changed, run-changed or superseded settlement can never adopt
+     * a policy mode or invalidate the CAS state that now belongs to
+     * another intent. The latest-intent admission and the projection
+     * mutation execute under ONE monitor, so a newer tap that lands
+     * between the admission test and the mutation still supersedes the
+     * settlement (RuntimeHost settles on ioDispatcher while taps arrive
+     * concurrently). The durable repair for missing policy rows is
+     * native (launch-time materialization + the v48 convergence
+     * migration); this producer only sends revisions the snapshot proved —
+     * never fabricated versions.
      */
     fun updateTaskApprovalMode(
         session: ConversationSessionToken,
@@ -4071,6 +4260,10 @@ class ConversationHostController internal constructor(
             onSettled?.invoke(false, "policyRevisionUnavailable", false)
             return false
         }
+        // Freeze the human intent (mode/session/run captured above); the
+        // sequence makes this gesture the latest intent and lets a newer
+        // tap supersede its queued and in-flight settlement.
+        val intentSeq = entry.nextPolicyGestureIntent()
         host.trackOperation(
             HostCommandRequest(
                 command = "run.policy.update",
@@ -4091,17 +4284,31 @@ class ConversationHostController internal constructor(
                 ),
             ),
         ) { outcome ->
-            val current = holders[session.conversationId]
-            val owned = current != null && current === entry &&
-                !entry.holder.retired &&
-                entry.holder.session.sessionEpoch == session.sessionEpoch
+            // Settlement fences: the ownership/session-epoch check, the
+            // unchanged-run check and the latest-intent admission execute
+            // under ONE monitor together with the projection mutation.
+            // RuntimeHost settles operations on ioDispatcher while a human
+            // tap can concurrently bump the gesture sequence on the UI
+            // thread; a separate locked boolean read would let a newer tap
+            // slip between the read and the mutation and STILL be projected.
+            // Host I/O (snapshot refresh) and the caller callback stay
+            // OUTSIDE the monitor.
+            val fenceCheck = {
+                ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
+                    entry.builder.selectedRunId == runID
+            }
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
                     val applied = outcome.detail["appliedToLiveRun"] == "true"
                     val newVersion = outcome.detail["policyVersion"]
-                    if (owned) {
+                    val admitted = entry.withLatestPolicyGestureIntent(
+                        intentSeq = intentSeq,
+                        check = fenceCheck,
+                    ) {
                         entry.builder.applyPolicyUpdateSettled(mode, newVersion)
                         entry.holder.applyHostSnapshot(entry.builder.build())
+                    }
+                    if (admitted) {
                         // Re-read the authoritative snapshot so subsequent
                         // CAS uses the durable truth (the reply's version is
                         // already adopted; this proves, it does not assume).
@@ -4110,17 +4317,30 @@ class ConversationHostController internal constructor(
                     onSettled?.invoke(true, null, applied)
                 }
                 is HostOperationOutcome.Rejected -> {
-                    if (owned) {
+                    val admitted = entry.withLatestPolicyGestureIntent(
+                        intentSeq = intentSeq,
+                        check = fenceCheck,
+                    ) {
                         entry.builder.invalidatePolicyRevision()
-                        entry.holder.applyHostSnapshot(entry.builder.build())
                         surfaceError(entry, "policy_${outcome.code}")
+                    }
+                    if (admitted) {
+                        // The designed recovery for the still-latest intent:
+                        // invalidate + ONE authoritative re-read, never an
+                        // automatic replay of the rejected gesture.
                         refreshRunSnapshot(entry, runID)
                     }
-                    // A stale refusal is surfaced, never silently replayed.
+                    // A stale refusal is surfaced with its typed code, never
+                    // silently replayed and never applied to another intent.
                     onSettled?.invoke(false, outcome.code, false)
                 }
                 is HostOperationOutcome.Failed -> {
-                    if (owned) surfaceError(entry, "policy_${outcome.code}")
+                    entry.withLatestPolicyGestureIntent(
+                        intentSeq = intentSeq,
+                        check = fenceCheck,
+                    ) {
+                        surfaceError(entry, "policy_${outcome.code}")
+                    }
                     onSettled?.invoke(false, outcome.code, false)
                 }
                 HostOperationOutcome.Cancelled -> onSettled?.invoke(false, "cancelled", false)
@@ -5666,6 +5886,44 @@ class ConversationFlowHolderEntry internal constructor(
             if (issuedSeq <= latestPageAppliedSeq) return false
             latestPageAppliedSeq = issuedSeq
         }
+        apply()
+        true
+    }
+
+    /**
+     * Monotonic identity of the LATEST explicit human permission gesture on
+     * this holder. A gesture's settlement may mutate the shared projection
+     * ONLY while it is still the latest intent: a newer tap supersedes
+     * older queued and in-flight work, so a stale FullAccess decision can
+     * never adopt or invalidate another gesture's CAS state, a replaced
+     * run, or a retired/navigated surface.
+     */
+    private val policyGestureLock = Any()
+    private var policyGestureSeq = 0L
+
+    fun nextPolicyGestureIntent(): Long = synchronized(policyGestureLock) {
+        policyGestureSeq += 1
+        policyGestureSeq
+    }
+
+    /**
+     * Atomically admits ONE settlement-time projection mutation: [apply]
+     * runs ONLY while [intentSeq] is still the latest gesture intent AND
+     * [check] (the ownership/session/run fences) holds — the intent test,
+     * the fence re-check and the mutation happen under ONE monitor, in the
+     * local `withAdmittedMessagePage` pattern. A separate locked boolean
+     * read cannot promise that: RuntimeHost settles operations on
+     * ioDispatcher while a human tap can bump the intent sequence exactly
+     * between the read and the mutation. Host I/O and caller callbacks
+     * stay OUTSIDE this monitor (no holder/state callback re-enters it).
+     */
+    fun withLatestPolicyGestureIntent(
+        intentSeq: Long,
+        check: () -> Boolean,
+        apply: () -> Unit,
+    ): Boolean = synchronized(policyGestureLock) {
+        if (policyGestureSeq != intentSeq) return false
+        if (!check()) return false
         apply()
         true
     }
