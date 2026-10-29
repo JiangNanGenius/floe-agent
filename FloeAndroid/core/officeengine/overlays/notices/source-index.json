@@ -10,7 +10,7 @@
   },
   "noticePage": {
     "path": "notices/index.html",
-    "sha256": "e9696cb9e39db1ba09f575e6cd9e71083107593d54e348246aa2edb502cbd41a",
+    "sha256": "c101f7ce28d31ce22f2e2fdb6dcb0c4a3e290ebce8ebaf9739a6ebe0baca22b2",
     "language": "English and Simplified Chinese",
     "scripting": "None; local static page"
   },
@@ -598,7 +598,7 @@
         "path": "notices/index.html",
         "operation": "add",
         "originalSha256": null,
-        "newSha256": "e9696cb9e39db1ba09f575e6cd9e71083107593d54e348246aa2edb502cbd41a"
+        "newSha256": "c101f7ce28d31ce22f2e2fdb6dcb0c4a3e290ebce8ebaf9739a6ebe0baca22b2"
       },
       {
         "path": "share/theme_definitions/online/arrow-down.svg",
