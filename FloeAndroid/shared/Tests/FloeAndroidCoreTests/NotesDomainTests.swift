@@ -568,4 +568,48 @@ final class NotesBridgeV4Tests: XCTestCase {
             fallbackRequestID: "x")
         XCTAssertEqual(wrongVersion["error"] as? String, "invalidRequest")
     }
+
+    /// The App adapter and the published `floe.notes/4` contract address the
+    /// five closed operations with the `notes.` prefix. The host-test
+    /// spellings remain accepted, but an App `notes.*` request must never
+    /// die in the operation switch (the Alpha15 device failure).
+    func testDocumentedPrefixedOperationsReachTheClosedSwitch() throws {
+        let handshake = BridgeV4.handle(
+            requestData: Data(#"{"version":4,"requestID":"p1","operation":"notes.handshake"}"#.utf8),
+            fallbackRequestID: "p1")
+        XCTAssertEqual(handshake["ok"] as? Bool, true)
+        XCTAssertEqual(handshake["schema"] as? String, "floe.notes/4")
+
+        let status = BridgeV4.handle(
+            requestData: Data(#"{"version":4,"requestID":"p2","operation":"notes.status"}"#.utf8),
+            fallbackRequestID: "p2")
+        XCTAssertEqual(status["ok"] as? Bool, true)
+        XCTAssertEqual(status["protocol"] as? Int, 4)
+
+        // No accepted runtime exists in this unit host. The request must get
+        // past the operation vocabulary and receive the live-root refusal.
+        let bind = BridgeV4.handle(
+            requestData: Data(#"{"version":4,"requestID":"p3","operation":"notes.bind","epoch":9000000001}"#.utf8),
+            fallbackRequestID: "p3")
+        XCTAssertEqual(bind["ok"] as? Bool, false)
+        XCTAssertEqual(bind["error"] as? String, "runtimeUnavailable")
+
+        let command = BridgeV4.handle(
+            requestData: Data(#"{"version":4,"requestID":"p4","operation":"notes.command","epoch":9000000001,"action":"library.summary"}"#.utf8),
+            fallbackRequestID: "p4")
+        XCTAssertEqual(command["ok"] as? Bool, false)
+        XCTAssertEqual(command["error"] as? String, "staleGeneration")
+
+        let poll = BridgeV4.handle(
+            requestData: Data(#"{"version":4,"requestID":"p5","operation":"notes.poll","epoch":9000000001}"#.utf8),
+            fallbackRequestID: "p5")
+        XCTAssertEqual(poll["ok"] as? Bool, false)
+        XCTAssertEqual(poll["error"] as? String, "staleGeneration")
+
+        // The prefix does not widen the closed vocabulary.
+        let unknown = BridgeV4.handle(
+            requestData: Data(#"{"version":4,"requestID":"p6","operation":"notes.exec","epoch":9000000001}"#.utf8),
+            fallbackRequestID: "p6")
+        XCTAssertEqual(unknown["error"] as? String, "unsupportedOperation")
+    }
 }

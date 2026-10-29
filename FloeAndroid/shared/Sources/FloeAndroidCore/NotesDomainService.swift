@@ -239,6 +239,22 @@ public enum BridgeV4 {
         return object
     }
 
+    /// `floe.notes/4` publishes the `notes.*` operation names in the App
+    /// contract, while the first host tests addressed the same five closed
+    /// operations without the prefix. Accept exactly those two spellings;
+    /// no other operation reaches the switch below. This is not a generic
+    /// version/action bypass: the vocabulary remains the same five entries.
+    private static func canonicalOperation(_ operation: String) -> String? {
+        switch operation {
+        case "handshake", "notes.handshake": return "handshake"
+        case "status", "notes.status": return "status"
+        case "bind", "notes.bind": return "bind"
+        case "command", "notes.command": return "command"
+        case "poll", "notes.poll": return "poll"
+        default: return nil
+        }
+    }
+
     public static func handle(requestData: Data, fallbackRequestID: String?) -> [String: Any] {
         guard requestData.count <= maximumRequestBytes else {
             return failure("requestTooLarge")
@@ -247,7 +263,10 @@ public enum BridgeV4 {
               request.version == version else {
             return failure("invalidRequest")
         }
-        switch request.operation {
+        guard let operation = canonicalOperation(request.operation) else {
+            return failure("unsupportedOperation")
+        }
+        switch operation {
         case "handshake":
             return handshake()
         case "status":
