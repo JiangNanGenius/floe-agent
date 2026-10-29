@@ -536,8 +536,26 @@ public struct G02ConversationRevisionReader: RunConversationRevisionReading {
         }
     }
 
+    /// Repair (G06, 2026-10-30): the documented contract is "exists AND
+    /// purpose 'ordinary'". The previous body answered `digest != nil`, which
+    /// also proved a `notes`/`temporary` row at the ordinary wire pre-check
+    /// (the launch writer's own purpose check refused it later, so the leak was
+    /// never an execution path — but the proof was wrong). Read the REAL
+    /// purpose through the same reader; every ordinary row keeps the identical
+    /// answer and every non-ordinary row answers exactly like absence.
     public func ordinaryExists(conversationID: UUID) async throws -> Bool {
-        try await digest(conversationID: conversationID) != nil
+        try await purpose(of: conversationID) == .ordinary
+    }
+
+    /// The row's real durable purpose, or nil when the row is absent.
+    public func purpose(of conversationID: UUID) async throws -> ConversationPurpose? {
+        try await database.reader { db in
+            guard let raw = try String.fetchOne(
+                db,
+                sql: "SELECT purpose FROM conversations WHERE id = ?",
+                arguments: [conversationID.uuidString]) else { return nil }
+            return ConversationPurpose(rawValue: raw)
+        }
     }
 }
 

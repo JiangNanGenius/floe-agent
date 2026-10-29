@@ -145,6 +145,12 @@ public struct RunDomainError: Error, Sendable, Equatable {
         // next fence re-check instead of racing the Stop. Internal machine
         // vocabulary only: no new public command, payload or code.
         case continuationStopped
+        // G06 Notes (2026-10-30, THIRD ledger-counted additive INTERNAL
+        // reason): the accepted generation has no Notes assistant runtime
+        // installed, so a Notes launch cannot be assembled. Ordinary,
+        // temporary and Notes-editing behavior are untouched; the refusal is
+        // a typed needsConfiguration, never a fake ready state.
+        case notesRuntimeUnbound
         case `internal`
     }
     public let code: Code
@@ -481,9 +487,17 @@ public enum RunPayloadReader {
 /// Frozen execution identity of one launch. G02 ordinary only; the RB5
 /// temporary atomic Keep/lifecycle package reuses the SAME command surface
 /// with the RAM store/context seam (exposed, never persisted here).
+///
+/// G06 Notes (2026-10-30): `.notes` is the document-assistant identity. It runs
+/// through the SAME accepted-epoch domain/service/adapter/gate/stores, but its
+/// durable conversation row must have `purpose = 'notes'`, its bundle carries
+/// no intelligence/discovery/taskChecklist/child graph, and its tool ceiling is
+/// the closed three-tool Notes set. It is trusted-internal ONLY: no ordinary
+/// wire grammar can present it.
 public enum RunExecutionIdentity: String, Sendable, Equatable {
     case ordinary
     case temporary
+    case notes
 }
 
 public struct RunStartQuery: Sendable, Equatable {

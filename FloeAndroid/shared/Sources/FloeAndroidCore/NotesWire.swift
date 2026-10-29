@@ -468,4 +468,73 @@ enum NotesEditWire {
             throw NotesDomainError.unsupportedAction("editAction:\(NotesWire.bounded(action, limit: 80))")
         }
     }
+
+    /// Encode a stored conflict-review edit back into the same flat schema the
+    /// Kotlin contract already produces for `document.apply`. Swift's
+    /// synthesized enum encoding is intentionally never exposed on the wire.
+    static func encode(_ edits: [NoteEdit]) throws -> [[String: Any]] {
+        try edits.map(encodeOne)
+    }
+
+    private static func encodeOne(_ edit: NoteEdit) throws -> [String: Any] {
+        switch edit {
+        case .rename(let text):
+            return ["action": "rename", "text": text]
+        case .moveToNotebook(let notebookID):
+            return ["action": "moveToNotebook",
+                    "notebookID": notebookID?.uuidString ?? NSNull()]
+        case .favorite(let isFavorite):
+            return ["action": "favorite", "isFavorite": isFavorite]
+        case .tags(let tags):
+            return ["action": "tags", "tags": tags]
+        case .textSource(let id, let text):
+            return ["action": "textSource", "id": id.uuidString,
+                    "text": text ?? NSNull()]
+        case .insertPage(let page, let index):
+            return ["action": "insertPage", "page": try object(page), "index": index]
+        case .updatePage(let page):
+            return ["action": "updatePage", "page": try object(page)]
+        case .movePage(let pageID, let index):
+            return ["action": "movePage", "pageID": pageID.uuidString, "index": index]
+        case .duplicatePage(let pageID):
+            return ["action": "duplicatePage", "pageID": pageID.uuidString]
+        case .deletePage(let pageID):
+            return ["action": "deletePage", "pageID": pageID.uuidString]
+        case .drawing(let pageID, let resourceID):
+            return ["action": "drawing", "pageID": pageID.uuidString,
+                    "resourceID": resourceID?.uuidString ?? NSNull()]
+        case .upsertElement(let pageID, let element):
+            return ["action": "upsertElement", "pageID": pageID.uuidString,
+                    "element": try object(element)]
+        case .deleteElements(let pageID, let ids):
+            return ["action": "deleteElements", "pageID": pageID.uuidString,
+                    "ids": ids.map(\.uuidString)]
+        case .upsertNode(let node):
+            return ["action": "upsertNode", "node": try object(node)]
+        case .deleteBranch(let nodeID):
+            return ["action": "deleteBranch", "nodeID": nodeID.uuidString]
+        case .upsertConnection(let connection):
+            return ["action": "upsertConnection", "connection": try object(connection)]
+        case .deleteConnection(let connectionID):
+            return ["action": "deleteConnection", "connectionID": connectionID.uuidString]
+        case .replaceMindMap(let nodes, let connections):
+            return ["action": "replaceMindMap",
+                    "nodes": try nodes.map(object),
+                    "connections": try connections.map(object)]
+        case .linkMindMap(let link):
+            return ["action": "linkMindMap", "link": try object(link)]
+        case .unlinkMindMap(let linkID):
+            return ["action": "unlinkMindMap", "linkID": linkID.uuidString]
+        case .replaceOfficeResource(let resourceID):
+            return ["action": "replaceOfficeResource", "resourceID": resourceID.uuidString]
+        case .mindMapLayout(let direction, let summaries):
+            return ["action": "mindMapLayout", "direction": direction,
+                    "summaries": try summaries.map(object)]
+        }
+    }
+
+    private static func object<T: Encodable>(_ value: T) throws -> Any {
+        let data = try NotesWire.encode(value)
+        return try JSONSerialization.jsonObject(with: data)
+    }
 }

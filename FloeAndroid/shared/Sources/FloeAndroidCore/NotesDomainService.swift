@@ -22,19 +22,25 @@ public final class NotesDomainService: @unchecked Sendable {
         "document.markOpened", "document.setFavorite", "document.setTags",
         "document.coverRead", "document.coverApply", "document.cacheOfficePreview",
         "document.editingSnapshot", "document.pageOCRState",
+        "document.cachePageOCR", "document.cacheOfficeText", "document.officeTextState",
+        "document.conflictReviews", "document.conflictReview",
+        "document.saveConflictReview", "document.keepBothConflictVersions",
         "search.query",
         "text.stageBegin", "text.stageAppend", "text.stageCommit", "text.stageAbort",
+        "batch.stageBegin", "batch.stageAppend", "batch.stageCommit", "batch.stageAbort",
         "resource.importBegin", "resource.importAppend", "resource.importCommit",
         "resource.importAbort", "resource.metadata", "resource.read",
         "resource.discardUnreferenced", "resources.collectDeleted",
         "assistant.grantAccess", "assistant.bind", "assistant.revokeAccess",
         "assistant.grants", "assistant.scopedDocuments", "assistant.setFocus",
-        "assistant.runtimeContext",
+        "assistant.runtimeContext", "assistant.thread",
         "archive.export", "archive.exportRead", "archive.exportClose",
         "archive.importBegin", "archive.importAppend", "archive.importCommit",
         "archive.importAbort",
-        "proposal.list",
-    ]
+        "proposal.preview", "proposal.create", "proposal.get", "proposal.list",
+        "proposal.issueGrant", "proposal.apply", "proposal.resolve",
+        "proposal.outbox", "proposal.outboxAck",
+    ] + NotesAssistantActions.all + NotesOCRActions.all
 
     private struct Bound {
         let epoch: UInt64
@@ -110,8 +116,29 @@ public final class NotesDomainService: @unchecked Sendable {
                 throw NotesDomainError.staleGeneration
             }
         }
+        if NotesAssistantActions.handles(action) {
+            // Validate the existing lazy Notes binding without opening its store
+            // for a readiness query. No stale epoch may rebind the assistant.
+            guard hasBoundEpoch(epoch) else { throw NotesDomainError.staleGeneration }
+            return try await NotesAssistantDomain.shared.handle(
+                epoch: epoch, requestID: requestID, action: action, payload: payload)
+        }
+        if NotesOCRActions.handles(action) {
+            guard hasBoundEpoch(epoch) else { throw NotesDomainError.staleGeneration }
+            return try await NotesOCRDomain.shared.handle(
+                epoch: epoch, requestID: requestID, action: action, payload: payload)
+        }
         let engine = try engine(for: epoch)
+        if action == "assistant.thread" {
+            return try await engine.assistantThreadProjection(payload)
+        }
         return try await engine.perform(requestID: requestID, action: action, payload: payload)
+    }
+
+    private func hasBoundEpoch(_ epoch: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return bound?.epoch == epoch
     }
 
     private func liveBootstrapRequired() -> Bool {

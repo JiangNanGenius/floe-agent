@@ -117,4 +117,6 @@ public enum G02DomainExtensionKey {
     /// accepted additive D12/D14 ledger). Registered through the SAME
     /// prebootstrap seam; a failed attach never gates the ordinary base.
     public static let workspace = G02DomainExtensionID("workspace")
+    /// G06 independent Notes assistant; failure never blocks the ordinary base.
+    public static let notes = G02DomainExtensionID("notes")
 }

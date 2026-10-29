@@ -155,6 +155,16 @@ public protocol RunConversationRevisionReading: Sendable {
     /// non-temporary-persistent — purpose 'ordinary') conversation. Purpose
     /// violations answer exactly like absence (RB3 indistinguishability).
     func ordinaryExists(conversationID: UUID) async throws -> Bool
+    /// G06 Notes (additive, defaulted): the row's REAL durable purpose, or nil
+    /// when the row is absent. Only the purpose-aware Notes launch uses this;
+    /// the ordinary wire keeps proving `ordinaryExists` exactly as before.
+    func purpose(of conversationID: UUID) async throws -> ConversationPurpose?
+}
+
+public extension RunConversationRevisionReading {
+    /// Honest default for a reader that predates the Notes purpose port: an
+    /// unknown purpose can never authorize a Notes launch.
+    func purpose(of conversationID: UUID) async throws -> ConversationPurpose? { nil }
 }
 
 // MARK: - Components
@@ -230,6 +240,12 @@ public struct RunDomainComponents: Sendable {
     /// unbound/unreadable keeps the original default — never a fabricated
     /// off-switch or a parallel settings source).
     public var settings: (any SettingsStore)?
+    /// G06 Notes (additive, default nil): the Notes assistant runtime port.
+    /// Bound by the composition root to the ONE process-wide
+    /// `NotesAssistantDomain`. Unbound => a Notes launch refuses
+    /// `needsConfiguration{notesRuntimeUnbound}` BEFORE any effect; ordinary
+    /// and temporary launches never consult it.
+    public var notesRuntime: (any NotesRunRuntimeProviding)?
 
     public init(context: RunIngressContext,
                 durable: RunPersistenceBundle,
@@ -251,7 +267,8 @@ public struct RunDomainComponents: Sendable {
                 adapterFactoryOverride:
                     (@Sendable (ProviderProfile) -> any ProviderAdapter)? = nil,
                 registry: ToolRunnerRegistry = .shared,
-                settings: (any SettingsStore)? = nil) {
+                settings: (any SettingsStore)? = nil,
+                notesRuntime: (any NotesRunRuntimeProviding)? = nil) {
         self.context = context
         self.durable = durable
         self.checkpoints = checkpoints
@@ -271,6 +288,7 @@ public struct RunDomainComponents: Sendable {
         self.adapterFactoryOverride = adapterFactoryOverride
         self.registry = registry
         self.settings = settings
+        self.notesRuntime = notesRuntime
     }
 }
 
@@ -485,6 +503,13 @@ public actor FacadeRunDomain {
     // lanes (`plan.accept` admission, `goal.confirm` / `conversation.compact`
     // quiescence proofs) can observe it; nothing widens its mutation sites.
     internal var ordinaryWireAdmissions: Set<UUID> = []
+
+    /// G06 Notes: short-lived per-conversation launch admission so one
+    /// assistant turn cannot interleave with another. Same lifetime discipline
+    /// as the ordinary reservation (released when the launch pipeline returns,
+    /// never held for a service lifetime), and it participates in NO ordinary
+    /// wire command.
+    internal var notesAdmissions: Set<UUID> = []
 
     // MARK: goal-core batch state (2026-10-21, job-7efd60bb51d14f02)
 
@@ -955,8 +980,13 @@ public actor FacadeRunDomain {
     static func verifyExistingLaunchRow(db: Database, row: Row?,
                                         conversationID: UUID,
                                         expectedRevision: String,
-                                        expectedActivationProof: String? = nil) throws {
-        guard let row, (row["purpose"] as String?) == "ordinary" else {
+                                        expectedActivationProof: String? = nil,
+                                        expectedPurpose: String = "ordinary") throws {
+        // The ORIGINAL ordinary entry keeps the exact `purpose == 'ordinary'`
+        // proof (default argument). A Notes launch passes its own exact
+        // purpose; a row of any other purpose answers exactly like absence and
+        // is never retagged.
+        guard let row, (row["purpose"] as String?) == expectedPurpose else {
             throw RunDomainError(.notFound, .conversationMissing)
         }
         guard ConversationRowRevision.digest(of: row) == expectedRevision else {
@@ -1024,7 +1054,8 @@ public actor FacadeRunDomain {
                       continuationStopPermit: UUID? = nil,
                       expectedActivationProof: String? = nil,
                       preResolvedAttachments: [AttachmentRef]? = nil,
-                      queuedInputProofID: UUID? = nil) async
+                      queuedInputProofID: UUID? = nil,
+                      notesBinding: NotesRunBinding? = nil) async
         -> RunDomainReply {
         let bundle = bundleOverride ?? durable
         let isCreateIntent = conversationID == nil
@@ -1136,6 +1167,44 @@ public actor FacadeRunDomain {
                                 error: RunDomainError(.sessionFenced, .deletingGuarded))
         }
 
+        // 1b. G06 Notes identity admission (trusted-internal only).
+        //     A Notes launch is chat-only, has no goal/plan/P8/discovery/
+        //     Linux/environment/job role, no structured goal, no staged
+        //     attachment and no create intent. Its bundle must be the SAME
+        //     durable stores under the `.notes` identity and its document
+        //     binding must address this exact conversation. Anything else
+        //     refuses BEFORE any durable effect; an ordinary/temporary
+        //     launch can never present this identity, and a Notes bundle can
+        //     never take the ordinary entry.
+        if bundle.identity == .notes {
+            guard let notesBinding,
+                  notesBinding.conversationID == effectiveConversation,
+                  !isCreateIntent,
+                  query.mode == .chat,
+                  query.goalDefinition == nil,
+                  query.requestedEnvironmentID == nil,
+                  query.requestedJobID == nil,
+                  query.stagedAttachmentHandles.isEmpty,
+                  bundle.launches is ExistingConversationRunLaunchStore else {
+                return refuseLaunch(runID: runID,
+                                    error: RunDomainError(.invalidState, .payloadInvalid))
+            }
+            guard components.notesRuntime != nil else {
+                return refuseLaunch(runID: runID,
+                                    error: RunDomainError(.needsConfiguration,
+                                                          .notesRuntimeUnbound))
+            }
+            guard expectedConversationRevision != nil else {
+                return refuseLaunch(runID: runID,
+                                    error: RunDomainError(.staleRevision,
+                                                          .revisionAbsent))
+            }
+        } else if notesBinding != nil {
+            // A document binding on a non-Notes identity is a misroute.
+            return refuseLaunch(runID: runID,
+                                error: RunDomainError(.invalidState, .payloadInvalid))
+        }
+
         // 2. Ingress scan (ORIGINAL scanner first). Captured raw secrets
         //    without the bound vault normalizer are refused BEFORE effects.
         let scanned = RunIngressScan.scan(query.goal)
@@ -1144,7 +1213,7 @@ public actor FacadeRunDomain {
                                 error: RunDomainError(.invalidState, .payloadInvalid))
         }
         if scanned.captureCount > 0, components.credentialNormalizer == nil,
-           bundle.identity == .ordinary {
+           bundle.identity != .temporary {
             return refuseLaunch(runID: runID,
                                 error: RunDomainError(.needsConfiguration, .normalizerUnbound))
         }
@@ -1156,11 +1225,21 @@ public actor FacadeRunDomain {
         //    identity the ORIGINAL EphemeralRunLaunchStore validates inside
         //    prepare (RB5 T1). The ordinary wire never carries a temporary
         //    bundle, so the durable singleton is never a fallback here.
-        if !isCreateIntent, bundle.identity == .ordinary {
+        if !isCreateIntent, bundle.identity == .ordinary || bundle.identity == .notes {
             do {
-                guard try await components.conversationRevisions
-                    .ordinaryExists(conversationID: effectiveConversation) else {
-                    throw RunDomainError(.notFound, .conversationMissing)
+                if bundle.identity == .notes {
+                    // Exact durable purpose proof for the Notes identity: the
+                    // SAME purpose reader, and a purpose violation answers
+                    // exactly like absence (never a staleRevision leak).
+                    guard try await components.conversationRevisions
+                        .purpose(of: effectiveConversation) == .notes else {
+                        throw RunDomainError(.notFound, .conversationMissing)
+                    }
+                } else {
+                    guard try await components.conversationRevisions
+                        .ordinaryExists(conversationID: effectiveConversation) else {
+                        throw RunDomainError(.notFound, .conversationMissing)
+                    }
                 }
             } catch let error as RunDomainError {
                 return refuseLaunch(runID: runID,
@@ -1458,8 +1537,8 @@ public actor FacadeRunDomain {
         request.activatesEmptyOrdinaryHeader = bundle.identity == .ordinary
         let prepared: PreparedRun
         do {
-            if bundle.identity == .ordinary, !isCreateIntent,
-               let expectedConversationRevision {
+            if bundle.identity == .ordinary || bundle.identity == .notes,
+               !isCreateIntent, let expectedConversationRevision {
                 if let intelligenceCommit {
                     // C1 atomic intelligence commit: the accepted plan (+
                     // optional goal) / structured goal row commits inside
@@ -1473,7 +1552,8 @@ public actor FacadeRunDomain {
                         try Self.verifyExistingLaunchRow(
                             db: db, row: row, conversationID: effectiveConversation,
                             expectedRevision: expectedConversationRevision,
-                            expectedActivationProof: expectedActivationProof)
+                            expectedActivationProof: expectedActivationProof,
+                            expectedPurpose: bundle.identity.launchRowPurpose)
                     }, atomicIntelligence: intelligenceCommit)
                 } else {
                     guard let validating = bundle.launches as? any ExistingConversationRunLaunchStore else {
@@ -1483,7 +1563,8 @@ public actor FacadeRunDomain {
                         try Self.verifyExistingLaunchRow(
                             db: db, row: row, conversationID: effectiveConversation,
                             expectedRevision: expectedConversationRevision,
-                            expectedActivationProof: expectedActivationProof)
+                            expectedActivationProof: expectedActivationProof,
+                            expectedPurpose: bundle.identity.launchRowPurpose)
                     })
                 }
             } else {
@@ -1596,7 +1677,8 @@ public actor FacadeRunDomain {
                 gate: gate,
                 workspaceName: prepared.workspace.name,
                 hostToolCeiling: query.hostToolCeiling,
-                environmentID: provenEnvironmentID)
+                environmentID: provenEnvironmentID,
+                notes: notesBinding)
             assemblyPhase = nil
         } catch let error as RunDomainError {
             await markCommittedLaunchAbandoned(runID: prepared.run.id,

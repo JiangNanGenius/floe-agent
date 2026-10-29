@@ -383,9 +383,37 @@ extension FacadeRunDomain {
         gate: CatastrophicActionGate?,
         workspaceName: String?,
         hostToolCeiling: [String]?,
-        environmentID: String?
+        environmentID: String?,
+        notes: NotesRunBinding? = nil
     ) async throws -> ConversationRunService {
         let temporary = bundle.identity == .temporary
+        let isNotes = bundle.identity == .notes
+        if isNotes, notes == nil {
+            // A Notes bundle without its exact document binding can never be
+            // assembled: there would be no scoped tools and no document
+            // authority.
+            throw RunDomainError(.needsConfiguration, .notesRuntimeUnbound)
+        }
+        // G06 Notes: the ONLY tool surface for this run. The registry is
+        // isolated (never `.shared`), so ordinary discovery/execution can
+        // neither see nor run these tools.
+        // The port supplies the closed tool registry + document policy. An
+        // unbound port at this point means the composition is inconsistent
+        // (startNotes already proved it), so the run refuses rather than
+        // running behind the ordinary ceiling.
+        var notesRegistry: ToolRunnerRegistry?
+        if let notes {
+            guard let provider = components.notesRuntime else {
+                throw RunDomainError(.needsConfiguration, .notesRuntimeUnbound)
+            }
+            guard provider.closedToolNames == NotesAssistantToolNames.closed else {
+                throw RunDomainError(.capabilityNotUsable, .notesRuntimeUnbound)
+            }
+            notesRegistry = provider.makeToolRegistry(
+                epoch: epoch, binding: notes, runID: runID,
+                environmentID: environmentID)
+        }
+        let toolAssembly = notesRegistry.map { RunToolAssembly(registry: $0) } ?? tools
         // G03-R3 FIRST-USE boundary: the ORDINARY run awaits the trusted host
         // workspace preflight BEFORE the configuration, tool-ceiling and
         // service snapshots below, so ordinary route discovery reads the REAL
@@ -396,7 +424,7 @@ extension FacadeRunDomain {
         // pair returns instantly, so non-Linux chat is never delayed and a
         // refused/unsettled preflight simply keeps this run's Linux discovery
         // honestly unqualified — never a failed run, never assumed success.
-        if !temporary {
+        if !temporary, !isNotes {
             await linuxWorkspaceFirstUsePreflight(runID: runID,
                                                   conversationID: conversationID,
                                                   environmentID: environmentID)
@@ -430,7 +458,7 @@ extension FacadeRunDomain {
         // allowlist (RunToolAssembly owns the intersection; the runtime
         // STILL re-validates every main/child call for temporary runs).
         let modeRaw = RunLaunchMode(rawValue: mode.rawValue) ?? .chat
-        let ceiling = tools.allowedToolNames(
+        let ceiling = toolAssembly.allowedToolNames(
             taskPolicy: taskPolicy,
             hostCeiling: hostToolCeiling,
             mode: modeRaw,
@@ -453,8 +481,19 @@ extension FacadeRunDomain {
         // The ORIGINAL policy family for the persisted task policy. The
         // service wraps it in the ORIGINAL DynamicApprovalPolicy, so
         // `run.policy.update` mutates the SAME live service policy.
-        let policy = try await assembly.approvalPolicy(for: taskPolicy,
+        let policy: any ApprovalPolicy
+        if let notes, let provider = components.notesRuntime {
+            // Document-assistant policy: the exact live Notes read/edit grant
+            // decides the three closed tools deterministically; everything
+            // else (which cannot appear under the closed ceiling) keeps the
+            // ordinary human policy. Never a model-authored approval.
+            policy = DynamicApprovalPolicy(provider.approvalPolicy(
+                epoch: epoch, binding: notes, runID: runID,
+                environmentID: environmentID))
+        } else {
+            policy = try await assembly.approvalPolicy(for: taskPolicy,
                                                        primaryModel: launch.model)
+        }
         // The vault-backed credential-argument normalizer bound BEFORE any
         // tool argument reaches approval/audit/persistence/execution. nil
         // ONLY for a temporary run (the ORIGINAL RAM-only contract — raw
@@ -488,9 +527,11 @@ extension FacadeRunDomain {
             toolsEnabled: toolsEnabled,
             temporary: temporary,
             environmentID: environmentID)
-        if !temporary {
+        if !temporary, !isNotes {
             // Original persisted conversation/workspace ownership selects this
             // root. No App-root, first-project or temporary-directory fallback.
+            // A Notes run is chat-only: it gets no Linux workspace root and no
+            // job dependency probe (no Linux/environment/job role).
             configuration.workspaceRootURL = await LinuxWorkspaceAuthority.trustedWorkspaceRoot(
                 runID: runID, conversationID: conversationID)
             // PRoot is not a VM; retain the conservative approval class.
@@ -498,7 +539,7 @@ extension FacadeRunDomain {
                 await RuntimeFacadeJobBindings.shared.outstandingRunDependencies(runID: runID)
             }
         }
-        if !temporary, let checklist = bundle.taskChecklist {
+        if !temporary, !isNotes, let checklist = bundle.taskChecklist {
             // Same original provider used by iOS. Temporary runs never
             // receive a durable checklist or inherit one from the owner.
             configuration.planChecklistProvider = {
@@ -507,16 +548,18 @@ extension FacadeRunDomain {
         }
         // The ORIGINAL executor over the run-scoped registry; availability
         // and descriptor authority stay the registry's truth.
-        let executor = CatalogToolExecutor(runners: components.registry)
+        let executor = CatalogToolExecutor(runners: notesRegistry ?? components.registry)
         // Temporary runs never write recovery checkpoints or intelligence /
         // discovery rows (RAM-only retention; goal mode already refused at
         // admission without an intelligence store). Ordinary runs use the
         // generation's reviewed checkpoint store and the bundle's own
         // intelligence/discovery stores.
-        let checkpointStore: (any CheckpointStore)? = temporary ? nil : components.checkpoints
-        let intelligenceStore = temporary ? nil : bundle.intelligence
-        let discoveryStore = temporary ? nil : bundle.discovery
-        let personalizationProvider = temporary ? nil : components.personalizationProvider
+        let checkpointStore: (any CheckpointStore)? =
+            (temporary || isNotes) ? nil : components.checkpoints
+        let intelligenceStore = (temporary || isNotes) ? nil : bundle.intelligence
+        let discoveryStore = (temporary || isNotes) ? nil : bundle.discovery
+        let personalizationProvider =
+            (temporary || isNotes) ? nil : components.personalizationProvider
         let service = ConversationRunService(
             configuration: configuration,
             adapter: adapter,
@@ -536,8 +579,13 @@ extension FacadeRunDomain {
             conversationHistory: history,
             currentUserImages: images,
             runContext: ConversationRunService.RunContext(
-                workspaceName: temporary ? nil : workspaceName,
-                availableToolNames: ceiling),
+                // A Notes run receives the app-generated navigation context as
+                // skill instructions (data + workflow guidance; it grants
+                // nothing) and nothing else: no workspace, plan, goal, memory,
+                // profile, listing or project instructions.
+                workspaceName: (temporary || isNotes) ? nil : workspaceName,
+                availableToolNames: ceiling,
+                skillInstructions: isNotes ? notes?.contextText : nil),
             personalizationProvider: personalizationProvider,
             resourceAccessCleanup: nil)
         // The REAL per-run delegate/subagent wiring: the ORIGINAL
@@ -548,7 +596,7 @@ extension FacadeRunDomain {
         // attach/detach + durable cross-check) — observation only, never a
         // permission channel. Retired ONLY at the real terminal via
         // `tools.retireDelegate(runID:)` in `retire`.
-        let childStore: (any ChildRunStoring)? = temporary ? nil : bundle.childRuns
+        let childStore: (any ChildRunStoring)? = (temporary || isNotes) ? nil : bundle.childRuns
         let runner = SubagentRunner(
             provider: launch.provider,
             model: launch.model,
@@ -561,7 +609,12 @@ extension FacadeRunDomain {
                 await self.handleTracked(event: .childRunChanged(snapshot),
                                          runID: runID)
             })
-        await tools.registerDelegate(runner: runner, for: runID)
+        if !isNotes {
+            // A Notes run never delegates: its ceiling has no delegate tool and
+            // its bundle has no child store. Registering the delegate runner
+            // would also add its descriptor to the isolated registry.
+            await tools.registerDelegate(runner: runner, for: runID)
+        }
         return service
     }
 }

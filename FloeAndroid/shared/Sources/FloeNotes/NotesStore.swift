@@ -71,7 +71,7 @@ public actor NotesStore {
 
     @discardableResult public func createNotebook(title: String) throws -> Notebook {
         defer { publishChange() }
-        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.enter_a_notebook_name")) }
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.enter_a_notebook_name")) }
         let book = Notebook(title: title)
         try database.write { db in try db.execute(sql: "INSERT INTO notebooks VALUES (?, ?)", arguments: [book.id.uuidString, try encoder.encode(book)]) }
         return book
@@ -79,7 +79,7 @@ public actor NotesStore {
 
     public func renameNotebook(_ id: UUID, title: String) throws {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty, title.utf8.count <= 4096 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_notebook_name_is_empty_or")) }
+        guard !title.isEmpty, title.utf8.count <= 4096 else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.the_notebook_name_is_empty_or")) }
         try database.write { db in
             guard let body = try Data.fetchOne(db, sql: "SELECT body FROM notebooks WHERE id=?", arguments: [id.uuidString]) else { throw NoteError.notFound }
             var book = try decoder.decode(Notebook.self, from: body)
@@ -121,9 +121,9 @@ public actor NotesStore {
     }
 
     public func markOpened(_ id: UUID, at date: Date = Date()) throws {
-        guard date.timeIntervalSince1970.isFinite else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.invalid_open_time")) }
+        guard date.timeIntervalSince1970.isFinite else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.invalid_open_time")) }
         try database.write { db in
-            guard try read(id, db: db).deletedAt == nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.restore_the_material_first")) }
+            guard try read(id, db: db).deletedAt == nil else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.restore_the_material_first")) }
             try db.execute(sql: "INSERT INTO document_visits VALUES(?,?) ON CONFLICT(document_id) DO UPDATE SET opened=excluded.opened",
                            arguments: [id.uuidString, date.timeIntervalSince1970])
         }
@@ -131,7 +131,7 @@ public actor NotesStore {
     }
 
     public func recentDocuments(limit: Int = 50) throws -> [NoteDocument] {
-        guard (1...200).contains(limit) else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.invalid_recent_list_count")) }
+        guard (1...200).contains(limit) else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.invalid_recent_list_count")) }
         return try database.read { db in
             try Data.fetchAll(db, sql: """
                 SELECT d.body FROM documents d LEFT JOIN document_visits v ON v.document_id=d.id
@@ -153,7 +153,7 @@ public actor NotesStore {
             for link in root.linkedMindMaps ?? [] {
                 let map = try read(link.documentID, db: db)
                 guard map.kind == .mindMap, map.deletedAt == nil else {
-                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_linked_mind_map_was_moved"))
+                    throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.the_linked_mind_map_was_moved"))
                 }
                 documents.append(map)
             }
@@ -169,7 +169,7 @@ public actor NotesStore {
     /// Atomically imports a root and its independent linked maps. No partial library entries.
     @discardableResult public func createBundle(_ documents: [NoteDocument]) throws -> [NoteDocument] {
         guard !documents.isEmpty, documents.count <= 101,
-              Set(documents.map(\.id)).count == documents.count else { throw NoteError.invalidDocument(FloeL10n.l("notes.notes_store.the_import_document_count_or_identifier")) }
+              Set(documents.map(\.id)).count == documents.count else { throw NoteError.invalidDocument(NoteLocalization.localized("notes.notes_store.the_import_document_count_or_identifier")) }
         let values = documents.map { document in
             var value = document
             value.revision = 1; value.createdAt = Date(); value.updatedAt = value.createdAt; value.deletedAt = nil
@@ -207,7 +207,7 @@ public actor NotesStore {
             try updateReferencesAndSearch(map, db: db)
             let cursor = try Int.fetchOne(db, sql: "SELECT cursor FROM documents WHERE id=?", arguments: [before.id.uuidString]) ?? 0
             try db.execute(sql: "DELETE FROM history WHERE document_id=? AND position>?", arguments: [before.id.uuidString, cursor])
-            try db.execute(sql: "INSERT INTO history VALUES(?,?,?,?,?)", arguments: [before.id.uuidString, cursor + 1, FloeL10n.l("notes.notes_store.link_new_mind_map"), try encoder.encode(before), try encoder.encode(after)])
+            try db.execute(sql: "INSERT INTO history VALUES(?,?,?,?,?)", arguments: [before.id.uuidString, cursor + 1, NoteLocalization.localized("notes.notes_store.link_new_mind_map"), try encoder.encode(before), try encoder.encode(after)])
             try persist(after, cursor: cursor + 1, db: db)
             return map
         }
@@ -215,15 +215,43 @@ public actor NotesStore {
         return map
     }
 
-    @discardableResult public func apply(_ batch: NoteEditBatch, authorizedConversationID: UUID? = nil, reviewedRecovery: (id: UUID, revision: Int)? = nil, resolvingConflictID: UUID? = nil) throws -> NoteDocument {
+    /// Assistant resource-reference guard. A task may attach only:
+    /// * a resource already referenced by the target document,
+    /// * a resource freshly imported by this task for that same document
+    ///   (`ownedByCaller`, tracked by the native service), or
+    /// * a resource referenced by no document at all.
+    /// A resource referenced by another note is a cross-document reference and
+    /// is refused even when its UUID is known. This is the read-only/preview
+    /// counterpart of the same check performed inside `apply`'s write transaction.
+    public func authorizeNewResourceReferences(documentID: UUID, resourceIDs: Set<UUID>,
+                                               ownedByCaller: Set<UUID> = []) throws {
+        try database.read { db in
+            let current = try read(documentID, db: db)
+            for id in resourceIDs.subtracting(current.resourceIDs) {
+                if ownedByCaller.contains(id) { continue }
+                guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?)",
+                                        arguments: [id.uuidString]) == true else {
+                    throw NoteError.resourceUnavailable
+                }
+                let referencedElsewhere = try Bool.fetchOne(db, sql: """
+                    SELECT EXISTS(SELECT 1 FROM resource_refs WHERE resource_id=? AND document_id<>?)
+                    """, arguments: [id.uuidString, documentID.uuidString]) == true
+                guard !referencedElsewhere else {
+                    throw NoteError.invalidOperation("resourceAccessDenied")
+                }
+            }
+        }
+    }
+
+    @discardableResult public func apply(_ batch: NoteEditBatch, authorizedConversationID: UUID? = nil, reviewedRecovery: (id: UUID, revision: Int)? = nil, resolvingConflictID: UUID? = nil, authorizedResourceIDs: Set<UUID>? = nil) throws -> NoteDocument {
         defer { publishChange() }
-        guard !batch.edits.isEmpty, batch.edits.count <= 10_000 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_edit_batch_is_empty_or")) }
+        guard !batch.edits.isEmpty, batch.edits.count <= 10_000 else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.the_edit_batch_is_empty_or")) }
         return try database.write { db in
             // Recheck tool authority inside the same write transaction as its edits.
             // A native revoke while the Agent prepares a batch must win at commit.
             if let conversation = authorizedConversationID {
                 guard try Bool.fetchOne(db, sql: "SELECT can_edit FROM assistant_scopes WHERE conversation_id=? AND document_id=?", arguments: [conversation.uuidString, batch.documentID.uuidString]) == true else {
-                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.this_conversation_is_no_longer_authorized"))
+                    throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.this_conversation_is_no_longer_authorized"))
                 }
             }
             if let request = batch.requestID,
@@ -242,11 +270,11 @@ public actor NotesStore {
             if let reviewedRecovery {
                 let copy = try read(reviewedRecovery.id, db: db)
                 guard copy.revision == reviewedRecovery.revision, copy.deletedAt == nil else {
-                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_recovery_copy_already_has_newer"))
+                    throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.the_recovery_copy_already_has_newer"))
                 }
             }
             let before = try read(batch.documentID, db: db)
-            guard before.deletedAt == nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.restore_the_content_from_trash_first")) }
+            guard before.deletedAt == nil else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.restore_the_content_from_trash_first")) }
             guard before.revision == batch.expectedRevision else { throw NoteError.conflict }
             var after = before
             for edit in batch.edits { try edit.apply(to: &after) }
@@ -258,15 +286,31 @@ public actor NotesStore {
 
             for link in after.linkedMindMaps ?? [] where !(before.linkedMindMaps ?? []).contains(link) {
                 let target = try read(link.documentID, db: db)
-                guard target.kind == .mindMap, target.deletedAt == nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_link_target_is_not_a")) }
+                guard target.kind == .mindMap, target.deletedAt == nil else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.the_link_target_is_not_a")) }
                 if let conversation = authorizedConversationID {
                     guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM assistant_scopes WHERE conversation_id=? AND document_id=?)", arguments: [conversation.uuidString, target.id.uuidString]) == true else {
-                        throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.add_the_mind_map_to_link"))
+                        throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.add_the_mind_map_to_link"))
                     }
                 }
             }
             after.revision += 1; after.updatedAt = Date()
             try after.validate(); try validateResources(after, db: db)
+            // Assistant resource guard in the same write transaction as the
+            // edit: a revoke that lands mid-preparation already failed the
+            // scope check above, and a resource referenced by another note can
+            // never be attached just because its UUID was known.
+            if authorizedConversationID != nil {
+                let introduced = after.resourceIDs.subtracting(before.resourceIDs)
+                for id in introduced {
+                    if authorizedResourceIDs?.contains(id) == true { continue }
+                    let referencedElsewhere = try Bool.fetchOne(db, sql: """
+                        SELECT EXISTS(SELECT 1 FROM resource_refs WHERE resource_id=? AND document_id<>?)
+                        """, arguments: [id.uuidString, before.id.uuidString]) == true
+                    guard !referencedElsewhere else {
+                        throw NoteError.invalidOperation("resourceAccessDenied")
+                    }
+                }
+            }
             let cursor = try Int.fetchOne(db, sql: "SELECT cursor FROM documents WHERE id=?", arguments: [before.id.uuidString]) ?? 0
             try db.execute(sql: "DELETE FROM history WHERE document_id=? AND position>?", arguments: [before.id.uuidString, cursor])
             try db.execute(sql: "INSERT INTO history VALUES(?,?,?,?,?)", arguments: [before.id.uuidString, cursor + 1, batch.title, try encoder.encode(before), try encoder.encode(after)])
@@ -345,11 +389,11 @@ public actor NotesStore {
         return try database.write { db in
             let current = try read(id, db: db)
             guard current.revision == expectedRevision else { throw NoteError.conflict }
-            guard current.deletedAt == nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.restore_the_content_first")) }
+            guard current.deletedAt == nil else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.restore_the_content_first")) }
             let cursor = try Int.fetchOne(db, sql: "SELECT cursor FROM documents WHERE id=?", arguments: [id.uuidString]) ?? 0
             let position = redo ? cursor + 1 : cursor
             guard let data = try Data.fetchOne(db, sql: "SELECT \(redo ? "after" : "before") FROM history WHERE document_id=? AND position=?", arguments: [id.uuidString, position]) else {
-                throw NoteError.invalidOperation(redo ? FloeL10n.l("notes.notes_store.no_edits_to_redo") : FloeL10n.l("notes.notes_store.no_edits_to_undo"))
+                throw NoteError.invalidOperation(redo ? NoteLocalization.localized("notes.notes_store.no_edits_to_redo") : NoteLocalization.localized("notes.notes_store.no_edits_to_undo"))
             }
             var value = try decoder.decode(NoteDocument.self, from: data)
             // History restores content, never rewinds the monotonically increasing revision.
@@ -426,13 +470,13 @@ public actor NotesStore {
             // exist in this exact transaction.
             if let conversation = authorizedConversationID {
                 guard try Bool.fetchOne(db, sql: "SELECT can_edit FROM assistant_scopes WHERE conversation_id=? AND document_id=?", arguments: [conversation.uuidString, documentID.uuidString]) == true else {
-                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.this_conversation_is_no_longer_authorized"))
+                    throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.this_conversation_is_no_longer_authorized"))
                 }
             }
             let value = try decoder.decode(NoteDocument.self, from: raw)
             try value.validate()
             guard value.deletedAt == nil else {
-                throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.restore_the_content_from_trash_first"))
+                throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.restore_the_content_from_trash_first"))
             }
             let resolved: UUID?
             switch command {
@@ -560,7 +604,7 @@ public actor NotesStore {
         try database.write { db in
             let value = try read(id, db: db)
             guard value.revision == expectedRevision else { throw NoteError.conflict }
-            guard value.deletedAt != nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.move_the_content_to_trash_first")) }
+            guard value.deletedAt != nil else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.move_the_content_to_trash_first")) }
             var candidates = value.resourceIDs
             for body in try Data.fetchAll(db, sql: "SELECT before FROM history WHERE document_id=? UNION ALL SELECT after FROM history WHERE document_id=? UNION ALL SELECT body FROM edit_receipts WHERE document_id=?", arguments: [id.uuidString, id.uuidString, id.uuidString]) {
                 candidates.formUnion(try decoder.decode(NoteDocument.self, from: body).resourceIDs)
@@ -648,6 +692,143 @@ public actor NotesStore {
         publishChange()
     }
 
+    /// G06 C5 typed OCR cache write. Shares the exact page identity rule as
+    /// `cachePageOCR` (only the current `visualIndexKey` may update the search
+    /// index) but reports the outcome instead of silently returning. A late
+    /// recognition result is `stale` and writes nothing.
+    public func cachePageOCRResult(documentID: UUID, pageID: UUID, sourceKey: String,
+                                   text: String?, error: String?,
+                                   expectedRevision: Int? = nil) throws -> NoteIndexCacheReceipt {
+        var changed = false
+        let receipt = try database.write { db -> NoteIndexCacheReceipt in
+            guard let raw = try Data.fetchOne(db, sql: "SELECT body FROM documents WHERE id=?",
+                                              arguments: [documentID.uuidString]) else {
+                return NoteIndexCacheReceipt(
+                    status: .failed, documentID: documentID, documentRevision: 0,
+                    sourceKey: sourceKey, reason: "documentUnavailable")
+            }
+            let value = try decoder.decode(NoteDocument.self, from: raw)
+            try value.validate()
+            guard value.deletedAt == nil else {
+                return NoteIndexCacheReceipt(
+                    status: .failed, documentID: documentID, documentRevision: value.revision,
+                    sourceKey: sourceKey, reason: "documentUnavailable")
+            }
+            guard let index = value.pages.firstIndex(where: { $0.id == pageID }) else {
+                return NoteIndexCacheReceipt(
+                    status: .failed, documentID: documentID, documentRevision: value.revision,
+                    sourceKey: sourceKey, reason: "pageNotFound")
+            }
+            let page = value.pages[index]
+            let currentKey = page.visualIndexKey
+            if let expectedRevision, value.revision != expectedRevision {
+                return NoteIndexCacheReceipt(
+                    status: .stale, documentID: documentID, documentRevision: value.revision,
+                    sourceKey: sourceKey, currentKey: currentKey, storedKey: page.ocrSourceKey,
+                    indexed: page.indexedVisualText != nil, textLength: page.ocrText?.count,
+                    error: page.ocrError, retryable: false, reason: "revisionMismatch")
+            }
+            guard currentKey == sourceKey else {
+                return NoteIndexCacheReceipt(
+                    status: .stale, documentID: documentID, documentRevision: value.revision,
+                    sourceKey: sourceKey, currentKey: currentKey, storedKey: page.ocrSourceKey,
+                    indexed: page.indexedVisualText != nil, textLength: page.ocrText?.count,
+                    error: page.ocrError, retryable: false, reason: "sourceChanged")
+            }
+            let bounded = text.map { String($0.prefix(2_000_000)) }
+            if page.ocrSourceKey == sourceKey, page.ocrText == bounded, page.ocrError == error {
+                return NoteIndexCacheReceipt(
+                    status: .unchanged, documentID: documentID, documentRevision: value.revision,
+                    sourceKey: sourceKey, currentKey: currentKey, storedKey: page.ocrSourceKey,
+                    indexed: bounded != nil, textLength: bounded?.count, error: error,
+                    retryable: error != nil)
+            }
+            var updated = value
+            updated.pages[index].ocrSourceKey = sourceKey
+            updated.pages[index].ocrText = bounded
+            updated.pages[index].ocrError = error
+            try db.execute(sql: "UPDATE documents SET body=? WHERE id=?",
+                           arguments: [try encoder.encode(updated), documentID.uuidString])
+            try updateReferencesAndSearch(updated, db: db)
+            changed = true
+            return NoteIndexCacheReceipt(
+                status: .applied, documentID: documentID, documentRevision: updated.revision,
+                sourceKey: sourceKey, currentKey: currentKey, storedKey: sourceKey,
+                indexed: bounded != nil, textLength: bounded?.count, error: error,
+                retryable: error != nil)
+        }
+        if changed { publishChange() }
+        return receipt
+    }
+
+    /// G06 C5 typed Office full-text cache write. The source identity is the
+    /// exact immutable Office resource; after `.replaceOfficeResource` a late
+    /// extraction for the old bytes is `stale` and never labels the new body.
+    public func cacheOfficeTextResult(documentID: UUID, resourceID: UUID,
+                                      text: String?, error: String?,
+                                      expectedRevision: Int? = nil) throws -> NoteIndexCacheReceipt {
+        var changed = false
+        let sourceKey = resourceID.uuidString
+        let receipt = try database.write { db -> NoteIndexCacheReceipt in
+            guard let raw = try Data.fetchOne(db, sql: "SELECT body FROM documents WHERE id=?",
+                                              arguments: [documentID.uuidString]) else {
+                return NoteIndexCacheReceipt(
+                    status: .failed, documentID: documentID, documentRevision: 0,
+                    sourceKey: sourceKey, reason: "documentUnavailable")
+            }
+            let value = try decoder.decode(NoteDocument.self, from: raw)
+            try value.validate()
+            guard value.deletedAt == nil else {
+                return NoteIndexCacheReceipt(
+                    status: .failed, documentID: documentID, documentRevision: value.revision,
+                    sourceKey: sourceKey, reason: "documentUnavailable")
+            }
+            let currentKey = value.officeResourceID?.uuidString
+            if let expectedRevision, value.revision != expectedRevision {
+                return NoteIndexCacheReceipt(
+                    status: .stale, documentID: documentID, documentRevision: value.revision,
+                    sourceKey: sourceKey, currentKey: currentKey,
+                    storedKey: value.officeTextResourceID?.uuidString,
+                    indexed: value.officeTextResourceID == value.officeResourceID && value.officeExtractedText != nil,
+                    textLength: value.officeExtractedText?.count, error: value.officeTextError,
+                    retryable: false, reason: "revisionMismatch")
+            }
+            guard value.officeResourceID == resourceID else {
+                return NoteIndexCacheReceipt(
+                    status: .stale, documentID: documentID, documentRevision: value.revision,
+                    sourceKey: sourceKey, currentKey: currentKey,
+                    storedKey: value.officeTextResourceID?.uuidString,
+                    indexed: value.officeTextResourceID == value.officeResourceID && value.officeExtractedText != nil,
+                    textLength: value.officeExtractedText?.count, error: value.officeTextError,
+                    retryable: false, reason: "sourceChanged")
+            }
+            let bounded = text.map { String($0.prefix(2_000_000)) }
+            if value.officeTextResourceID == resourceID, value.officeExtractedText == bounded,
+               value.officeTextError == error {
+                return NoteIndexCacheReceipt(
+                    status: .unchanged, documentID: documentID, documentRevision: value.revision,
+                    sourceKey: sourceKey, currentKey: currentKey, storedKey: sourceKey,
+                    indexed: bounded != nil, textLength: bounded?.count, error: error,
+                    retryable: error != nil)
+            }
+            var updated = value
+            updated.officeTextResourceID = resourceID
+            updated.officeExtractedText = bounded
+            updated.officeTextError = error
+            try db.execute(sql: "UPDATE documents SET body=? WHERE id=?",
+                           arguments: [try encoder.encode(updated), documentID.uuidString])
+            try updateReferencesAndSearch(updated, db: db)
+            changed = true
+            return NoteIndexCacheReceipt(
+                status: .applied, documentID: documentID, documentRevision: updated.revision,
+                sourceKey: sourceKey, currentKey: currentKey, storedKey: sourceKey,
+                indexed: bounded != nil, textLength: bounded?.count, error: error,
+                retryable: error != nil)
+        }
+        if changed { publishChange() }
+        return receipt
+    }
+
     /// Returns source documents, not synthesized answers. Literal substring matching also supports CJK.
     public func search(_ query: String, limit: Int = 50) throws -> [NoteDocument] {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -668,8 +849,8 @@ public actor NotesStore {
     public func importResource(from source: URL, mediaType: String) throws -> UUID {
         let source = source.standardizedFileURL.resolvingSymlinksInPath()
         let info = try source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        guard info.isRegularFile == true else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.only_regular_files_can_be_imported")) }
-        guard (info.fileSize ?? 0) <= 536_870_912 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.a_single_note_resource_cannot_exceed")) }
+        guard info.isRegularFile == true else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.only_regular_files_can_be_imported")) }
+        guard (info.fileSize ?? 0) <= 536_870_912 else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.a_single_note_resource_cannot_exceed")) }
         let staging = resources.appendingPathComponent(".import-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: staging) }
         try FileManager.default.copyItem(at: source, to: staging)
@@ -678,7 +859,7 @@ public actor NotesStore {
         var hasher = SHA256(); var count = 0
         while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
             count += chunk.count
-            guard count <= 536_870_912 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_resource_exceeds_the_import_limit")) }
+            guard count <= 536_870_912 else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.the_resource_exceeds_the_import_limit")) }
             hasher.update(data: chunk)
         }
         let hash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
@@ -837,11 +1018,54 @@ public actor NotesStore {
     }
 
     public func authorize(conversationID: UUID?, documentID: UUID, editing: Bool) throws {
-        guard let conversationID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.this_task_has_no_selected_note")) }
+        guard let conversationID else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.this_task_has_no_selected_note")) }
         try database.read { db in
             guard let canEdit = try Bool.fetchOne(db, sql: "SELECT can_edit FROM assistant_scopes WHERE conversation_id=? AND document_id=?", arguments: [conversationID.uuidString, documentID.uuidString]),
-                  !editing || canEdit else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.select_this_document_in_notes_and")) }
+                  !editing || canEdit else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.select_this_document_in_notes_and")) }
             guard try read(documentID, db: db).deletedAt == nil else { throw NoteError.notFound }
+        }
+    }
+
+    /// Assistant resource-read guard. A conversation may read bytes that are
+    /// referenced by a document it can currently read, or that it imported
+    /// through an owned stage (`ownedByCaller`). A resource referenced only by
+    /// another note, or an unreferenced resource with no ownership, is denied.
+    /// This is read-only and never grants an edit or attaches a resource.
+    public func authorizeResourceRead(resourceID: UUID, conversationID: UUID,
+                                      documentID: UUID? = nil,
+                                      ownedByCaller: Set<UUID> = []) throws {
+        if ownedByCaller.contains(resourceID) { return }
+        try database.read { db in
+            guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?)",
+                                    arguments: [resourceID.uuidString]) == true else {
+                throw NoteError.resourceUnavailable
+            }
+            if let documentID {
+                guard try Bool.fetchOne(db, sql: """
+                    SELECT EXISTS(SELECT 1 FROM assistant_scopes WHERE conversation_id=? AND document_id=?)
+                    """, arguments: [conversationID.uuidString, documentID.uuidString]) == true,
+                      try read(documentID, db: db).deletedAt == nil else {
+                    throw NoteError.invalidOperation("resourceAccessDenied")
+                }
+                if try Bool.fetchOne(db, sql: """
+                    SELECT EXISTS(SELECT 1 FROM resource_refs WHERE resource_id=? AND document_id=?)
+                    """, arguments: [resourceID.uuidString, documentID.uuidString]) == true {
+                    return
+                }
+                // Not in the target document: only an owned import remains
+                // legal. Another note's reference is never a read grant.
+                throw NoteError.invalidOperation("resourceAccessDenied")
+            }
+            let referencedByReadableDocument = try Bool.fetchOne(db, sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM resource_refs r
+                    JOIN assistant_scopes s ON s.document_id=r.document_id
+                    JOIN documents d ON d.id=r.document_id
+                    WHERE r.resource_id=? AND s.conversation_id=? AND d.deleted IS NULL)
+                """, arguments: [resourceID.uuidString, conversationID.uuidString]) == true
+            guard referencedByReadableDocument else {
+                throw NoteError.invalidOperation("resourceAccessDenied")
+            }
         }
     }
 
@@ -864,10 +1088,10 @@ public actor NotesStore {
     private func validateResources(_ value: NoteDocument, db: Database) throws {
         if let book = value.notebookID,
            try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM notebooks WHERE id=?)", arguments: [book.uuidString]) != true {
-            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_target_notebook_does_not_exist"))
+            throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.the_target_notebook_does_not_exist"))
         }
         for link in value.linkedMindMaps ?? [] {
-            guard try read(link.documentID, db: db).kind == .mindMap else { throw NoteError.invalidDocument(FloeL10n.l("notes.notes_store.the_link_target_is_not_a_2")) }
+            guard try read(link.documentID, db: db).kind == .mindMap else { throw NoteError.invalidDocument(NoteLocalization.localized("notes.notes_store.the_link_target_is_not_a_2")) }
         }
         for id in value.resourceIDs {
             guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?)", arguments: [id.uuidString]) == true else { throw NoteError.resourceUnavailable }

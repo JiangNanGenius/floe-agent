@@ -89,8 +89,9 @@ public enum NoteCoverAssetPolicy {
 /// untouched.
 public enum NotesCoverImageProcessor {
     public static func normalizedCoverData(_ data: Data) throws -> (data: Data, fileExtension: String, mediaType: String) {
-        let invalidAsset = NoteError.invalidOperation(String(localized: "notes.cover.error.invalidAsset",
-                                                             defaultValue: "This image can't be used as a cover"))
+        let invalidAsset = NoteError.invalidOperation(NoteLocalization.text(
+            "notes.cover.error.invalidAsset",
+            fallback: "This image can't be used as a cover"))
         guard NoteCoverAssetPolicy.accepts(byteCount: data.count) else { throw invalidAsset }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -157,8 +158,9 @@ public enum NotesCoverImageProcessor {
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
         guard values.isRegularFile == true, let byteCount = values.fileSize,
               NoteCoverAssetPolicy.accepts(byteCount: byteCount) else {
-            throw NoteError.invalidOperation(String(localized: "notes.cover.error.invalidAsset",
-                                                    defaultValue: "This image can't be used as a cover"))
+            throw NoteError.invalidOperation(NoteLocalization.text(
+                "notes.cover.error.invalidAsset",
+                fallback: "This image can't be used as a cover"))
         }
         return try await importCover(from: url, store: store)
     }

@@ -405,7 +405,11 @@ public final class G02InstalledComposition: @unchecked Sendable {
             // goal-core batch: the SAME original DatabaseManager's shared
             // settings store (semantic-compaction key read only; the cluster
             // already owns this exact store instance).
-            settings: cluster.settingsStore)
+            settings: cluster.settingsStore,
+            // G06 Notes: the ONE process-wide assistant coordinator (closed
+            // tools, document policy, durable purpose.notes threads). It is
+            // the same accepted-epoch domain's port, never a second runtime.
+            notesRuntime: NotesAssistantDomain.shared)
         RunDomainFacade.install(components: runComponents, registry: gen.registry)
 
         // Close the REAL feed/lease cycle with the exact accepted domain
@@ -413,6 +417,11 @@ public final class G02InstalledComposition: @unchecked Sendable {
         if let (runDomain, _) = RunDomainFacade.current(epoch: epoch) {
             feedBinder.bind(domain: runDomain, events: personalizationEvents)
         }
+        // G06 Notes: bind the assistant coordinator to THIS accepted epoch.
+        // Its durable threads/transcripts live in the same stores; the Notes
+        // library root stays owned by the existing NotesDomainService binding
+        // and is only opened by an explicit Notes action.
+        await NotesAssistantDomain.shared.bind(epoch: epoch)
 
         // 7. RB3 conversation history (after RB4: real deletion lifecycle).
         let runHandles = RunDomainFacade.current(epoch: epoch)

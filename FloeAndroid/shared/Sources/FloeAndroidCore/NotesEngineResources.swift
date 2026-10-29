@@ -21,6 +21,18 @@ extension NotesEngine {
         guard expected > 0, expected <= NotesWire.maximumResourceBytes else {
             throw NotesDomainError.invalidPayload("resourceSize")
         }
+        // Optional assistant ownership pair. Both or neither: a stage owned by
+        // one conversation/document is the capability that lets a later
+        // assistant edit reference the imported resource.
+        let ownerConversationID = try payload.uuidOrNil("conversationID")
+        let ownerDocumentID = try payload.uuidOrNil("documentID")
+        guard (ownerConversationID == nil) == (ownerDocumentID == nil) else {
+            throw NotesDomainError.invalidPayload("resourceOwnerPair")
+        }
+        if let ownerConversationID, let ownerDocumentID {
+            try await requireStore().authorize(conversationID: ownerConversationID,
+                                               documentID: ownerDocumentID, editing: true)
+        }
         try FileManager.default.createDirectory(at: incomingRoot, withIntermediateDirectories: true)
         let stageID = UUID().uuidString
         let url = incomingRoot.appendingPathComponent(".import-\(stageID).part")
@@ -32,7 +44,9 @@ extension NotesEngine {
             importStages[stageID] = ResourceImportStage(
                 id: UUID(uuidString: stageID) ?? UUID(), fileName: fileName,
                 mediaType: mediaType, expectedBytes: expected, url: url,
-                handle: handle, receivedBytes: 0)
+                handle: handle, receivedBytes: 0,
+                ownerConversationID: ownerConversationID,
+                ownerDocumentID: ownerDocumentID)
         } catch {
             try? FileManager.default.removeItem(at: url)
             throw NotesDomainError.storageUnavailable
@@ -98,10 +112,20 @@ extension NotesEngine {
             importStages[stageID] = stage
         }
         let store = try requireStore()
+        // A revocation that lands between staging and commit wins: no new
+        // owned resource is created for a conversation that lost its grant.
+        if let conversation = stage.ownerConversationID, let document = stage.ownerDocumentID {
+            try await store.authorize(conversationID: conversation,
+                                      documentID: document, editing: true)
+        }
         do {
             let resourceID = try await store.importResource(from: stage.url,
                                                             mediaType: stage.mediaType)
             let record = try await store.resourceRecord(resourceID)
+            if let conversation = stage.ownerConversationID, let document = stage.ownerDocumentID {
+                recordAuthorityImport(resourceID: resourceID,
+                                      conversationID: conversation, documentID: document)
+            }
             try? FileManager.default.removeItem(at: stage.url)
             importStages.removeValue(forKey: stageID)
             var object: [String: Any] = [
@@ -146,6 +170,20 @@ extension NotesEngine {
                            max(1, try payload.intOrNil("maxBytes") ?? NotesWire.defaultReadBytes))
         guard offset >= 0 else { throw NotesDomainError.invalidPayload("negativeOffset") }
         let store = try requireStore()
+        let conversationID = try payload.uuidOrNil("conversationID")
+        if let conversationID {
+            let documentID = try payload.uuidOrNil("documentID")
+            let owned: Set<UUID>
+            if let documentID {
+                owned = authorityOwnedResources(conversationID: conversationID,
+                                                documentID: documentID)
+            } else {
+                owned = authorityOwnedResources(conversationID: conversationID)
+            }
+            try await store.authorizeResourceRead(
+                resourceID: id, conversationID: conversationID,
+                documentID: documentID, ownedByCaller: owned)
+        }
         let url = try await store.resourceURL(id)
         let total = try Self.fileSize(url)
         if offset >= total {

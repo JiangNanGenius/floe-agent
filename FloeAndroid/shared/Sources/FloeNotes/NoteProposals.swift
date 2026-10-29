@@ -25,18 +25,39 @@ public enum NoteDocumentFingerprint {
 public enum NoteProposalSummary {
     public static func describe(before: NoteDocument, after: NoteDocument) -> String {
         var lines: [String] = []
-        if before.title != after.title { lines.append(FloeL10n.l("notes.note_proposals.title", before.title, after.title)) }
-        if before.isFavorite != after.isFavorite { lines.append(after.isFavorite ? FloeL10n.l("notes.note_proposals.add_to_favorites") : FloeL10n.l("notes.notes_root_view.remove_from_favorites")) }
-        if before.notebookID != after.notebookID { lines.append(FloeL10n.l("notes.note_proposals.move_to_another_notebook")) }
-        if before.tags != after.tags { lines.append(FloeL10n.l("notes.note_proposals.tags", before.tags.joined(separator: "、"), after.tags.joined(separator: "、"))) }
-        if before.officeResourceID != after.officeResourceID { lines.append(FloeL10n.l("notes.note_proposals.replace_office_body_resource")) }
-        if before.engineeringResourceID != after.engineeringResourceID { lines.append(FloeL10n.l("notes.note_proposals.replace_engineering_drawing_resource")) }
+        if before.title != after.title { lines.append(NoteLocalization.format(
+            "notes.note_proposals.title",
+            english: "Title: “%@” → “%@”",
+            chinese: "标题：“%@” → “%@”",
+            before.title, after.title)) }
+        if before.isFavorite != after.isFavorite { lines.append(after.isFavorite
+            ? NoteLocalization.format("notes.note_proposals.add_to_favorites",
+                                      english: "Add to favorites", chinese: "加入收藏")
+            : NoteLocalization.format("notes.notes_root_view.remove_from_favorites",
+                                      english: "Remove from favorites", chinese: "取消收藏")) }
+        if before.notebookID != after.notebookID { lines.append(NoteLocalization.format("notes.note_proposals.move_to_another_notebook",
+                                              english: "Move to another notebook",
+                                              chinese: "移动到其他笔记本")) }
+        if before.tags != after.tags { lines.append(NoteLocalization.format(
+            "notes.note_proposals.tags",
+            english: "Tags: %@ → %@", chinese: "标签：%@ → %@",
+            before.tags.joined(separator: "、"), after.tags.joined(separator: "、"))) }
+        if before.officeResourceID != after.officeResourceID { lines.append(NoteLocalization.format("notes.note_proposals.replace_office_body_resource",
+                                              english: "Replace Office body resource",
+                                              chinese: "替换 Office 正文资源")) }
+        if before.engineeringResourceID != after.engineeringResourceID { lines.append(NoteLocalization.format("notes.note_proposals.replace_engineering_drawing_resource",
+                                              english: "Replace engineering drawing resource",
+                                              chinese: "替换工程图资源")) }
 
         let beforePages = Dictionary(before.pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let afterPages = Dictionary(after.pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let addedPages = after.pages.filter { beforePages[$0.id] == nil }.count
         let removedPages = before.pages.filter { afterPages[$0.id] == nil }.count
-        if addedPages > 0 || removedPages > 0 { lines.append(FloeL10n.l("notes.note_proposals.pages_added_deleted", addedPages, removedPages)) }
+        if addedPages > 0 || removedPages > 0 { lines.append(NoteLocalization.format(
+            "notes.note_proposals.pages_added_deleted",
+            english: "Pages: %@ added, %@ deleted",
+            chinese: "页面：新增 %@，删除 %@",
+            addedPages, removedPages)) }
         var addedElements = 0, updatedElements = 0, removedElements = 0
         var pageStyleChanges = 0
         for page in after.pages {
@@ -56,9 +77,17 @@ public enum NoteProposalSummary {
             removedElements += oldElements.keys.filter { newElements[$0] == nil }.count
         }
         if addedElements > 0 || updatedElements > 0 || removedElements > 0 {
-            lines.append(FloeL10n.l("notes.note_proposals.text_elements_added_changed_deleted", addedElements, updatedElements, removedElements))
+            lines.append(NoteLocalization.format(
+                "notes.note_proposals.text_elements_added_changed_deleted",
+                english: "Text/elements: %@ added, %@ changed, %@ deleted",
+                chinese: "文字/元素：新增 %@，修改 %@，删除 %@",
+                addedElements, updatedElements, removedElements))
         }
-        if pageStyleChanges > 0 { lines.append(FloeL10n.l("notes.note_proposals.page_properties_paper_background_extracted_text", pageStyleChanges)) }
+        if pageStyleChanges > 0 { lines.append(NoteLocalization.format(
+                "notes.note_proposals.page_properties_paper_background_extracted_text",
+                english: "Page properties (paper/background/extracted text): %@ pages modified",
+                chinese: "页面属性（纸张/背景/提取文本）：修改 %@ 页",
+                pageStyleChanges)) }
 
         let beforeNodes = Dictionary(before.nodes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let afterNodes = Dictionary(after.nodes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -67,7 +96,11 @@ public enum NoteProposalSummary {
         var updatedNodes = 0
         for (id, node) in afterNodes where beforeNodes[id] != nil && beforeNodes[id] != node { updatedNodes += 1 }
         if addedNodes > 0 || updatedNodes > 0 || removedNodes > 0 {
-            lines.append(FloeL10n.l("notes.note_proposals.topics_added_changed_deleted", addedNodes, updatedNodes, removedNodes))
+            lines.append(NoteLocalization.format(
+                "notes.note_proposals.topics_added_changed_deleted",
+                english: "Topics: %@ added, %@ changed, %@ deleted",
+                chinese: "主题：新增 %@，修改 %@，删除 %@",
+                addedNodes, updatedNodes, removedNodes))
         }
 
         let beforeEdges = Dictionary(before.connections.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -77,7 +110,11 @@ public enum NoteProposalSummary {
         var updatedEdges = 0
         for (id, edge) in afterEdges where beforeEdges[id] != nil && beforeEdges[id] != edge { updatedEdges += 1 }
         if addedEdges > 0 || updatedEdges > 0 || removedEdges > 0 {
-            lines.append(FloeL10n.l("notes.note_proposals.connections_added_changed_deleted", addedEdges, updatedEdges, removedEdges))
+            lines.append(NoteLocalization.format(
+                "notes.note_proposals.connections_added_changed_deleted",
+                english: "Connections: %@ added, %@ changed, %@ deleted",
+                chinese: "关联线：新增 %@，修改 %@，删除 %@",
+                addedEdges, updatedEdges, removedEdges))
         }
 
         let beforeSummaries = Dictionary((before.summaries ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -87,17 +124,32 @@ public enum NoteProposalSummary {
         var updatedSummaries = 0
         for (id, value) in afterSummaries where beforeSummaries[id] != nil && beforeSummaries[id] != value { updatedSummaries += 1 }
         if addedSummaries > 0 || updatedSummaries > 0 || removedSummaries > 0 {
-            lines.append(FloeL10n.l("notes.note_proposals.summary_added_changed_deleted", addedSummaries, updatedSummaries, removedSummaries))
+            lines.append(NoteLocalization.format(
+                "notes.note_proposals.summary_added_changed_deleted",
+                english: "Summary: %@ added, %@ changed, %@ deleted",
+                chinese: "概要：新增 %@，修改 %@，删除 %@",
+                addedSummaries, updatedSummaries, removedSummaries))
         }
-        if before.mindMapDirection != after.mindMapDirection { lines.append(FloeL10n.l("notes.note_proposals.mind_map_direction_changed")) }
+        if before.mindMapDirection != after.mindMapDirection {
+            lines.append(NoteLocalization.format("notes.note_proposals.mind_map_direction_changed",
+                                                  english: "Mind map direction changed",
+                                                  chinese: "导图方向已修改"))
+        }
 
         let beforeLinks = Dictionary((before.linkedMindMaps ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let afterLinks = Dictionary((after.linkedMindMaps ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let linkDeltas = Set(beforeLinks.keys).symmetricDifference(Set(afterLinks.keys)).count
             + afterLinks.filter { beforeLinks[$0.key] != $0.value }.count
-        if linkDeltas > 0 { lines.append(FloeL10n.l("notes.note_proposals.the_linked_mind_map_was_modified")) }
+        if linkDeltas > 0 {
+            lines.append(NoteLocalization.format("notes.note_proposals.the_linked_mind_map_was_modified",
+                                                  english: "The linked mind map was modified",
+                                                  chinese: "关联导图已修改"))
+        }
 
-        return lines.isEmpty ? FloeL10n.l("notes.note_proposals.no_visible_change") : lines.joined(separator: "\n")
+        return lines.isEmpty
+            ? NoteLocalization.format("notes.note_proposals.no_visible_change",
+                                      english: "No visible change", chinese: "没有可见变化")
+            : lines.joined(separator: "\n")
     }
 }
 
@@ -321,6 +373,10 @@ public actor NoteProposalGrantStore {
     private let timeToLive: TimeInterval
     private let idProvider: @Sendable () -> String
 
+    /// The configured grant lifetime, exposed read-only so a consumer can
+    /// describe the real expiry instead of hard-coding a second constant.
+    public nonisolated var lifetimeSeconds: TimeInterval { timeToLive }
+
     public init(timeToLive: TimeInterval = 300, idProvider: @escaping @Sendable () -> String = {
         (0..<4).map { _ in UUID().uuidString }.joined(separator: "")
     }) {
@@ -331,6 +387,11 @@ public actor NoteProposalGrantStore {
     @discardableResult
     public func issueGrant(proposal: NoteProposal, now: Date = Date()) -> String {
         sweep(now: now)
+        // One live grant per proposal: a second accept replaces the previous
+        // grant, so two editor surfaces can never hold simultaneous authority
+        // to apply the same proposal (which would race the apply receipt and
+        // could record a spurious invalidation after a real acceptance).
+        entries = entries.filter { $0.value.proposalID != proposal.id }
         let id = idProvider()
         entries[id] = Entry(proposalID: proposal.id, documentID: proposal.documentID,
                             revision: proposal.baseRevision, sha256: proposal.baseSHA256,
@@ -469,24 +530,71 @@ public actor NoteProposalStore: NoteProposalPersisting {
 
 // MARK: - Propose / preview / apply service
 
+/// Non-persisted result of validating one edit batch against an exact document
+/// revision. The native Android authority exposes this as `proposal.preview`;
+/// it never writes a proposal or touches the document.
+public struct NoteProposalPreview: Sendable, Equatable {
+    public var documentID: UUID
+    public var baseRevision: Int
+    public var baseSHA256: String
+    public var title: String
+    public var summary: String
+    public var editCount: Int
+    /// Resource identities the validated draft would reference. Native callers
+    /// use this to apply the assistant cross-document resource guard before a
+    /// proposal is persisted; it is not exposed across the proposal read API.
+    public var resourceIDs: Set<UUID>
+
+    public init(documentID: UUID, baseRevision: Int, baseSHA256: String,
+                title: String, summary: String, editCount: Int,
+                resourceIDs: Set<UUID> = []) {
+        self.documentID = documentID
+        self.baseRevision = baseRevision
+        self.baseSHA256 = baseSHA256
+        self.title = title
+        self.summary = summary
+        self.editCount = editCount
+        self.resourceIDs = resourceIDs
+    }
+}
+
 public enum NoteProposalService {
-    public static func propose(document: NoteDocument, title: String, edits: [NoteEdit],
-                               sourceRequestID: String? = nil, origin: NoteProposalOrigin? = nil,
-                               store: any NoteProposalPersisting,
-                               now: Date = Date()) async throws -> NoteProposal {
-        guard !edits.isEmpty else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_proposals.the_proposal_contains_no_edits")) }
+    /// One validation path shared by preview and persist: apply every edit to
+    /// an in-memory copy, validate the complete document, and describe the
+    /// deterministic difference. A proposal can never be built from an
+    /// unchecked model payload.
+    public static func preview(document: NoteDocument, title: String,
+                               edits: [NoteEdit]) throws -> NoteProposalPreview {
+        guard !edits.isEmpty else { throw NoteError.invalidOperation(NoteLocalization.format("notes.note_proposals.the_proposal_contains_no_edits",
+                                                        english: "The proposal contains no edits.",
+                                                        chinese: "提案不包含任何编辑。")) }
         var draft = document
         for edit in edits { try edit.apply(to: &draft) }
         try draft.validate()
-        let proposal = NoteProposal(
+        return NoteProposalPreview(
             documentID: document.id,
             baseRevision: document.revision,
             baseSHA256: NoteDocumentFingerprint.sha256(of: document),
             title: title,
+            summary: NoteProposalSummary.describe(before: document, after: draft),
+            editCount: edits.count,
+            resourceIDs: draft.resourceIDs)
+    }
+
+    public static func propose(document: NoteDocument, title: String, edits: [NoteEdit],
+                               sourceRequestID: String? = nil, origin: NoteProposalOrigin? = nil,
+                               store: any NoteProposalPersisting,
+                               now: Date = Date()) async throws -> NoteProposal {
+        let preview = try preview(document: document, title: title, edits: edits)
+        let proposal = NoteProposal(
+            documentID: preview.documentID,
+            baseRevision: preview.baseRevision,
+            baseSHA256: preview.baseSHA256,
+            title: preview.title,
             sourceRequestID: sourceRequestID,
             origin: origin,
             edits: edits,
-            summary: NoteProposalSummary.describe(before: document, after: draft),
+            summary: preview.summary,
             createdAt: now)
         try await store.save(proposal)
         return proposal
@@ -525,6 +633,7 @@ public enum NoteProposalService {
                              grants: NoteProposalGrantStore,
                              authorizedConversationID: UUID? = nil,
                              expectedEnvironmentID: String? = nil,
+                             authorizedResourceIDs: Set<UUID>? = nil,
                              now: Date = Date()) async throws -> NoteDocument {
         guard let proposal = await proposals.load(proposalID) else { throw NoteError.notFound }
         // Origin ownership is checked before the idempotency receipt: a foreign
@@ -561,7 +670,9 @@ public enum NoteProposalService {
         // A resolved proposal (rejected/invalidated) must be refused BEFORE the
         // grant is reserved, even while its file is still on disk.
         if proposal.isResolved {
-            throw NoteError.invalidOperation(FloeL10n.l("notes.note_proposals.the_proposal_was_rejected_or_expired"))
+            throw NoteError.invalidOperation(NoteLocalization.format("notes.note_proposals.the_proposal_was_rejected_or_expired",
+                                                              english: "The proposal was rejected or expired and was not applied.",
+                                                              chinese: "提案已被拒绝或失效，未应用。"))
         }
         let current = try await store.document(proposal.documentID)
         guard current.revision == proposal.baseRevision,
@@ -577,7 +688,9 @@ public enum NoteProposalService {
         case .reserved:
             break
         case .unknownGrant, .alreadyConsumed, .alreadyReserved, .expired:
-            throw NoteError.invalidOperation(FloeL10n.l("notes.note_proposals.the_proposal_confirmation_is_no_longer"))
+            throw NoteError.invalidOperation(NoteLocalization.format("notes.note_proposals.the_proposal_confirmation_is_no_longer",
+                                                                    english: "The proposal confirmation is no longer valid; confirm again in the editor.",
+                                                                    chinese: "提案确认已失效，请在编辑器中重新确认。"))
         case .documentMismatch, .revisionMismatch, .shaMismatch:
             throw NoteError.conflict
         }
@@ -601,7 +714,8 @@ public enum NoteProposalService {
         let batch = NoteEditBatch(documentID: proposal.documentID, expectedRevision: proposal.baseRevision,
                                   title: proposal.title, edits: proposal.edits, requestID: idempotencyKey)
         do {
-            let value = try await store.apply(batch, authorizedConversationID: authorizedConversationID)
+            let value = try await store.apply(batch, authorizedConversationID: authorizedConversationID,
+                                              authorizedResourceIDs: authorizedResourceIDs)
             await grants.commitReservation(grantID: grantID)
             var applied = proposal
             applied.appliedAt = applied.appliedAt ?? now
@@ -641,7 +755,9 @@ public enum NoteProposalService {
                                outbox: any NoteProposalIntentPersisting,
                                now: Date = Date()) async throws -> NoteProposal? {
         guard decision != .accepted else {
-            throw NoteError.invalidOperation(FloeL10n.l("notes.note_proposals.accepted_proposals_must_be_persisted_through"))
+            throw NoteError.invalidOperation(NoteLocalization.format("notes.note_proposals.accepted_proposals_must_be_persisted_through",
+                                                                    english: "Accepted proposals must be persisted through apply.",
+                                                                    chinese: "接受的提案必须通过 apply 持久化。"))
         }
         guard let proposal = await proposals.load(proposalID) else { return nil }
         if proposal.origin != nil {

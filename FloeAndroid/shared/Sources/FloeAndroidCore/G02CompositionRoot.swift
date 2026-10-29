@@ -519,7 +519,9 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         //     service-owned NotesStore. A stale epoch is a no-op and never
         //     closes a newer generation's store. This runs on every normal or
         //     failed generation retirement, before the runtime DB close.
+        await NotesOCRComposition.detach(epoch: epoch)
         await NotesDomainService.shared.retire(epoch: epoch)
+        await NotesAssistantDomain.shared.unbind(epoch: epoch)
 
         // 1. Fence domain admissions: unregister the synchronous binder keys
         //    FIRST so no new domain command can be admitted. The async

@@ -211,6 +211,110 @@ public struct NoteProposalDeliveryReport: Sendable, Equatable {
 /// transport reports BOTH writes succeeded. A short outbox claim keeps two
 /// concurrent flushes from driving the same intent twice.
 public enum NoteProposalDecisionDelivery {
+    /// Result of making one durable intent final. `deliver` carries the exact
+    /// event to deliver (possibly a sibling terminal intent); `superseded`
+    /// means another durable decision already replaced it; `notReady` means a
+    /// committing acceptance still needs the Notes store to decide.
+    public enum Prepared: Sendable {
+        case deliver(NoteProposalDecisionIntent, repaired: Bool, invalidated: Bool)
+        case superseded
+        case notReady
+    }
+
+    /// Crash-repair one intent without delivering it. This is the shared core
+    /// used by the live transport driver and by the Android `proposal.outbox`
+    /// action, so both agree on receipt-based finalization, re-authorization,
+    /// invalidation and sibling preference. It never marks an intent delivered.
+    public static func prepare(intent: NoteProposalDecisionIntent,
+                               proposals: any NoteProposalPersisting,
+                               store: NotesStore? = nil,
+                               outbox: any NoteProposalIntentPersisting,
+                               now: Date = Date()) async throws -> Prepared {
+        switch (intent.decision, intent.phase) {
+        case (.accepted, .committing):
+            guard let store else { return .notReady }
+            if let receipt = try await store.editReceipt(requestID: intent.commitOperationID,
+                                                         documentID: intent.documentID) {
+                let current = try await finalizeAccepted(intent, revision: receipt.revision,
+                                                         proposals: proposals, outbox: outbox, now: now)
+                return .deliver(current, repaired: true, invalidated: false)
+            } else if let sibling = await supersedingTerminal(for: intent, outbox: outbox) {
+                // A crash between "write terminal outcome" and "supersede the
+                // old intent" (or a rejection that superseded this acceptance)
+                // must never be replayed as a fresh mutation.
+                if var proposal = await proposals.load(intent.proposalID), !proposal.isResolved {
+                    proposal.resolvedDecision = sibling.decision
+                    proposal.resolvedAt = now
+                    try? await proposals.save(proposal)
+                }
+                try await outbox.remove(intent.id)
+                if sibling.isDelivered { return .superseded }
+                return .deliver(sibling, repaired: false, invalidated: true)
+            } else if let proposal = await proposals.load(intent.proposalID), proposal.isResolved {
+                let terminal = try await supersedeWithTerminal(intent, proposal: proposal,
+                                                               proposals: proposals, outbox: outbox, now: now)
+                guard let terminal else { return .superseded }
+                return .deliver(terminal, repaired: false, invalidated: true)
+            } else if let proposal = await proposals.load(intent.proposalID) {
+                do {
+                    // Revalidate the originating task's editing grant before
+                    // any recovered mutation, exactly like the normal path.
+                    try await store.authorize(conversationID: intent.conversationID,
+                                              documentID: intent.documentID, editing: true)
+                } catch {
+                    let current = try await convertToInvalidated(intent, proposal: proposal,
+                                                                 proposals: proposals, outbox: outbox, now: now)
+                    return .deliver(current, repaired: false, invalidated: true)
+                }
+                let document = try await store.document(intent.documentID)
+                if document.revision == intent.baseRevision,
+                   NoteDocumentFingerprint.sha256(of: document) == intent.baseSHA256 {
+                    do {
+                        let value = try await store.apply(NoteEditBatch(
+                            documentID: intent.documentID, expectedRevision: intent.baseRevision,
+                            title: proposal.title, edits: proposal.edits,
+                            requestID: intent.commitOperationID))
+                        let current = try await finalizeAccepted(intent, revision: value.revision,
+                                                                 proposals: proposals, outbox: outbox, now: now)
+                        return .deliver(current, repaired: true, invalidated: false)
+                    } catch {
+                        // A permanent refusal (for example the new cross-note
+                        // resource guard, a missing resource or a concurrent
+                        // revision change) can never succeed on retry. Persist
+                        // a real invalidation instead of leaving the decision
+                        // stuck in `committing` forever. Transient storage
+                        // failures still propagate for a later retry.
+                        guard isPermanentApplyFailure(error) else { throw error }
+                        let current = try await convertToInvalidated(
+                            intent, proposal: proposal,
+                            proposals: proposals, outbox: outbox, now: now)
+                        return .deliver(current, repaired: false, invalidated: true)
+                    }
+                } else {
+                    let current = try await convertToInvalidated(intent, proposal: proposal,
+                                                                 proposals: proposals, outbox: outbox, now: now)
+                    return .deliver(current, repaired: false, invalidated: true)
+                }
+            } else {
+                // The proposal file is gone and there is no receipt: the
+                // acceptance can never be completed. Invalidate it.
+                let current = try await convertToInvalidated(intent, proposal: nil,
+                                                             proposals: proposals, outbox: outbox, now: now)
+                return .deliver(current, repaired: false, invalidated: true)
+            }
+        default:
+            // Rejected/invalidated: repair the proposal's resolved state before
+            // delivery; the intent itself is already final.
+            if let proposal = await proposals.load(intent.proposalID), !proposal.isResolved {
+                var repaired = proposal
+                repaired.resolvedDecision = intent.decision
+                repaired.resolvedAt = intent.updatedAt
+                try? await proposals.save(repaired)
+            }
+            return .deliver(intent, repaired: false, invalidated: false)
+        }
+    }
+
     @discardableResult
     public static func deliverPending(transport: any NoteProposalDecisionTransport,
                                       outbox: any NoteProposalIntentPersisting,
@@ -228,96 +332,22 @@ public enum NoteProposalDecisionDelivery {
                 continue
             }
             do {
-                var current = intent
-                var supersededWithoutEvent = false
-                switch (intent.decision, intent.phase) {
-                case (.accepted, .committing):
-                    guard let store else {
-                        report.pending.append(intent.id)
-                        continue
+                switch try await prepare(intent: intent, proposals: proposals,
+                                         store: store, outbox: outbox, now: now) {
+                case .superseded:
+                    continue
+                case .notReady:
+                    report.pending.append(intent.id)
+                case .deliver(let current, let repaired, let invalidated):
+                    if repaired { report.repaired.append(current.id) }
+                    if invalidated { report.invalidated.append(current.id) }
+                    let event = NoteProposalDecisions.event(for: current)
+                    try await transport.deliver(event)
+                    try await outbox.markDelivered(current.id, at: now)
+                    report.delivered.append(current.id)
+                    if current.decision != .accepted {
+                        try? await proposals.remove(current.proposalID)
                     }
-                    if let receipt = try await store.editReceipt(requestID: intent.commitOperationID,
-                                                                 documentID: intent.documentID) {
-                        current = try await finalizeAccepted(intent, revision: receipt.revision,
-                                                             proposals: proposals, outbox: outbox, now: now)
-                        report.repaired.append(current.id)
-                    } else if let sibling = await supersedingTerminal(for: intent, outbox: outbox) {
-                        // A crash between "write terminal outcome" and "supersede
-                        // the old intent" (or a rejection that superseded this
-                        // acceptance) must never be replayed as a fresh mutation.
-                        if var proposal = await proposals.load(intent.proposalID), !proposal.isResolved {
-                            proposal.resolvedDecision = sibling.decision
-                            proposal.resolvedAt = now
-                            try? await proposals.save(proposal)
-                        }
-                        try await outbox.remove(intent.id)
-                        if sibling.isDelivered {
-                            supersededWithoutEvent = true
-                        } else {
-                            current = sibling
-                            report.invalidated.append(sibling.id)
-                        }
-                    } else if let proposal = await proposals.load(intent.proposalID), proposal.isResolved {
-                        let terminal = try await supersedeWithTerminal(intent, proposal: proposal,
-                                                                       proposals: proposals, outbox: outbox, now: now)
-                        if let terminal {
-                            current = terminal
-                            report.invalidated.append(terminal.id)
-                        } else {
-                            supersededWithoutEvent = true
-                        }
-                    } else if let proposal = await proposals.load(intent.proposalID) {
-                        do {
-                            // Revalidate the originating task's editing grant before
-                            // any recovered mutation, exactly like the normal path.
-                            try await store.authorize(conversationID: intent.conversationID,
-                                                      documentID: intent.documentID, editing: true)
-                        } catch {
-                            current = try await convertToInvalidated(intent, proposal: proposal,
-                                                                     proposals: proposals, outbox: outbox, now: now)
-                            report.invalidated.append(current.id)
-                        }
-                        if current.id == intent.id {
-                            let document = try await store.document(intent.documentID)
-                            if document.revision == intent.baseRevision,
-                               NoteDocumentFingerprint.sha256(of: document) == intent.baseSHA256 {
-                                let value = try await store.apply(NoteEditBatch(
-                                    documentID: intent.documentID, expectedRevision: intent.baseRevision,
-                                    title: proposal.title, edits: proposal.edits,
-                                    requestID: intent.commitOperationID))
-                                current = try await finalizeAccepted(intent, revision: value.revision,
-                                                                     proposals: proposals, outbox: outbox, now: now)
-                                report.repaired.append(current.id)
-                            } else {
-                                current = try await convertToInvalidated(intent, proposal: proposal,
-                                                                         proposals: proposals, outbox: outbox, now: now)
-                                report.invalidated.append(current.id)
-                            }
-                        }
-                    } else {
-                        // The proposal file is gone and there is no receipt: the
-                        // acceptance can never be completed. Invalidate it.
-                        current = try await convertToInvalidated(intent, proposal: nil,
-                                                                 proposals: proposals, outbox: outbox, now: now)
-                        report.invalidated.append(current.id)
-                    }
-                default:
-                    // Rejected/invalidated: repair the proposal's resolved state
-                    // before delivery; the intent itself is already final.
-                    if let proposal = await proposals.load(intent.proposalID), !proposal.isResolved {
-                        var repaired = proposal
-                        repaired.resolvedDecision = intent.decision
-                        repaired.resolvedAt = intent.updatedAt
-                        try? await proposals.save(repaired)
-                    }
-                }
-                if supersededWithoutEvent { continue }
-                let event = NoteProposalDecisions.event(for: current)
-                try await transport.deliver(event)
-                try await outbox.markDelivered(current.id, at: now)
-                report.delivered.append(current.id)
-                if current.decision != .accepted {
-                    try? await proposals.remove(current.proposalID)
                 }
             } catch {
                 try? await outbox.recordFailure(intent.id, reason: error.localizedDescription)
@@ -325,6 +355,17 @@ public enum NoteProposalDecisionDelivery {
             }
         }
         return report
+    }
+
+    /// Errors that cannot become a successful re-apply on a later pass.
+    private static func isPermanentApplyFailure(_ error: Error) -> Bool {
+        guard let error = error as? NoteError else { return false }
+        switch error {
+        case .invalidOperation, .invalidDocument, .resourceUnavailable, .conflict, .notFound:
+            return true
+        case .storageUnavailable:
+            return false
+        }
     }
 
     /// Finds a durable terminal intent (rejected/invalidated) for the same

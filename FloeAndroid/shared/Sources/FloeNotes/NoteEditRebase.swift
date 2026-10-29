@@ -96,7 +96,7 @@ extension NotesStore {
         // batch contract: an empty or oversized batch rejects exactly as
         // `apply` would, even when every edit is already satisfied.
         guard !batch.edits.isEmpty, batch.edits.count <= 10_000 else {
-            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_edit_batch_is_empty_or"))
+            throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_store.the_edit_batch_is_empty_or"))
         }
         let current = try document(base.id)
         if current.revision == base.revision { return try apply(batch) }

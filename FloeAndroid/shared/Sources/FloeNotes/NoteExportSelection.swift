@@ -11,17 +11,17 @@ public enum NoteExportSelection {
 
     public static func pages(of document: NoteDocument, pageIDs: [UUID]?) throws -> [NotePage] {
         guard document.kind == .notebook else {
-            throw NoteError.invalidOperation(FloeL10n.l("notes.note_export_selection.only_note_documents_can_be_exported"))
+            throw NoteError.invalidOperation(NoteLocalization.localized("notes.note_export_selection.only_note_documents_can_be_exported"))
         }
         guard let pageIDs, !pageIDs.isEmpty else {
-            guard !document.pages.isEmpty else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_export.no_pages_to_export")) }
+            guard !document.pages.isEmpty else { throw NoteError.invalidOperation(NoteLocalization.localized("notes.notes_export.no_pages_to_export")) }
             return document.pages
         }
         guard pageIDs.count <= maximumPages else {
-            throw NoteError.invalidOperation(FloeL10n.l("notes.note_export_selection.at_most_pages_can_be_exported", maximumPages))
+            throw NoteError.invalidOperation(NoteLocalization.localized("notes.note_export_selection.at_most_pages_can_be_exported", maximumPages))
         }
         guard Set(pageIDs).count == pageIDs.count else {
-            throw NoteError.invalidOperation(FloeL10n.l("notes.note_export_selection.the_export_page_list_contains_duplicate"))
+            throw NoteError.invalidOperation(NoteLocalization.localized("notes.note_export_selection.the_export_page_list_contains_duplicate"))
         }
         return try pageIDs.map { id in
             guard let page = document.pages.first(where: { $0.id == id }) else { throw NoteError.notFound }
