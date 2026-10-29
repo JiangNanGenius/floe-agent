@@ -4,6 +4,23 @@ import Testing
 
 @Suite("Mac original Skill identities")
 struct MacOriginalSkillTests {
+    @Test("Official localized keys and legacy cached keys remain compatible")
+    func localizedFieldCompatibility() throws {
+        let decoder = JSONDecoder()
+        let current = try decoder.decode(CuratedSkillLocalizedText.self,
+            from: Data(#"{"en":"Weather","zh-Hans":"天气"}"#.utf8))
+        let legacy = try decoder.decode(CuratedSkillLocalizedText.self,
+            from: Data(#"{"en":"Weather","zhHans":"天气"}"#.utf8))
+        #expect(current == legacy)
+        #expect(current.value(preferredLanguages: ["zh-Hans"]) == "天气")
+        let encoded = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: String])
+        #expect(encoded["zh-Hans"] == "天气")
+        #expect(encoded["zhHans"] == nil)
+        #expect(throws: DecodingError.self) {
+            try decoder.decode(CuratedSkillLocalizedText.self,
+                from: Data(#"{"en":"Weather","zh-Hans":"天气","zhHans":"其他"}"#.utf8))
+        }
+    }
     @Test("A Mac receipt never invents Linux archive or review evidence")
     func originalReceipt() throws {
         let request = try SkillHubInstallRequest(id: "original-guide", publicationCommit: String(repeating: "a", count: 40))

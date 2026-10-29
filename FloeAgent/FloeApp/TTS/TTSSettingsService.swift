@@ -455,6 +455,14 @@ final class TTSSettingsService: ObservableObject {
         // An old validation cannot clear the newer intent's in-flight gate.
         guard generation == pendingVoiceGeneration else { return }
         pendingVoiceValidationStarted = false
+        // The revision can also change while the validator itself is
+        // suspended. Drop the abandoned intent before interpreting the
+        // result, so a failure is never reported for a voice the user has
+        // already replaced and no retry can resurrect it.
+        guard pending.revision == defaults.integer(forKey: Self.selectionRevisionKey) else {
+            clearPendingVoice()
+            return
+        }
         switch validation {
         case .deferred:
             return
@@ -474,9 +482,17 @@ final class TTSSettingsService: ObservableObject {
         let stillInstalled = await modelStore.isInstalled(model)
         guard stillInstalled else { return }
         guard generation == pendingVoiceGeneration,
-              let fresh = loadedPendingVoice(), fresh == pending,
-              fresh.revision == defaults.integer(forKey: Self.selectionRevisionKey)
+              let fresh = loadedPendingVoice(), fresh == pending
         else { return }
+        guard fresh.revision == defaults.integer(forKey: Self.selectionRevisionKey) else {
+            // The user changed the channel or the answer voice while the
+            // installed check was suspended. Their later choice is
+            // authoritative; clear the stale intent without substituting
+            // anything. Clearing also bumps the generation so no retry can
+            // resurrect it.
+            clearPendingVoice()
+            return
+        }
         applyPendingVoice(model: model, pending: fresh)
     }
 

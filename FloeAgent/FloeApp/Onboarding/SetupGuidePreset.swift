@@ -127,16 +127,22 @@ enum SetupGuideRoute: String, CaseIterable, Codable, Equatable, Sendable, Identi
     var detailKey: String { "setup.route.\(rawValue).detail" }
 
     /// Routes that need something the user must ask for explicitly: a byte
-    /// transfer, a paid route, a system permission or advanced background
+    /// transfer, a credential, a system permission or advanced background
     /// behaviour. Those are only ever SUGGESTED inside their own section; a
     /// preset never performs them.
+    ///
+    /// Choosing a default image or video *model* is deliberately NOT listed:
+    /// it only routes future requests through an already configured model
+    /// surface. It starts no download, spends no credit by itself and can be
+    /// changed in its own section, exactly like the chat routing choices.
     var requiresExplicitConsent: Bool {
         switch self {
-        case .speechRecognition, .voiceSelection, .localRuntime, .imageCreationModel,
-             .imageEditingModel, .videoCreationModel, .searchProvider, .extendedBackground,
-             .deviceSync, .permissionProfile, .codeConnections, .keepContentCurrent:
+        case .speechRecognition, .voiceSelection, .localRuntime, .searchProvider,
+             .extendedBackground, .deviceSync, .permissionProfile, .codeConnections,
+             .keepContentCurrent:
             return true
         case .chatModel, .generalHelper, .packageReview, .answerReview, .visionHelper,
+             .imageCreationModel, .imageEditingModel, .videoCreationModel,
              .canvasHelper, .recognitionLanguage, .systemVoice, .speechRate,
              .autoReadAnswers, .interruptionControl, .workspaceFolder, .memoryPersonalization:
             return false
@@ -224,6 +230,7 @@ struct SetupGuideDeviceFacts: Equatable, Sendable {
     var canvasVisionModelID: UUID?
     var hasConfiguredProvider = false
     var hasConfiguredImageModel = false
+    var hasConfiguredImageEditingModel = false
     var hasConfiguredVideoModel = false
     var hasConfiguredSearchProvider = false
     var searchProviderCount = 0
@@ -231,7 +238,11 @@ struct SetupGuideDeviceFacts: Equatable, Sendable {
     var installedVoicePackIDs: [String] = []
     var availableVoicePackIDs: [String] = []
     var hasCloudSpeechCredential = false
-    var hasSelectedVoicePack = false
+    /// Any saved answer-voice snapshot: the Apple/system voice, a local pack
+    /// or an online profile. An explicit system voice has an empty modelID, so
+    /// pack/model identity alone cannot tell whether the user already chose a
+    /// channel.
+    var hasSavedVoiceChoice = false
     var enhancedRecognitionInstalled = false
     var workspaces: [String] = []
     var defaultWorkspaceName: String?
@@ -269,7 +280,10 @@ struct SetupGuideDeviceFacts: Equatable, Sendable {
         case .imageCreationModel:
             return imageCapableModelCount > 0
         case .imageEditingModel:
-            return imageCapableModelCount > 0
+            // Editing is its own capability bit: a generation-only endpoint
+            // must never make the preset promise an editing route it cannot
+            // actually fill.
+            return candidates(for: .imageEditing).isEmpty == false
         case .videoCreationModel:
             return videoCapableModelCount > 0
         case .canvasHelper:
@@ -304,14 +318,16 @@ struct SetupGuideDeviceFacts: Equatable, Sendable {
         case .packageReview: packageReviewModelID != nil
         case .answerReview: approvalModelID != nil || answerReviewEnabled != nil
         case .visionHelper: visionModelID != nil
-        case .imageCreationModel, .imageEditingModel: hasConfiguredImageModel
+        case .imageCreationModel: hasConfiguredImageModel
+        case .imageEditingModel: hasConfiguredImageEditingModel
         case .videoCreationModel: hasConfiguredVideoModel
         case .canvasHelper: canvasAssistantModelID != nil || canvasVisionModelID != nil
         case .searchProvider: hasConfiguredSearchProvider
         case .speechRecognition: false
         case .recognitionLanguage: recognitionLanguageCode != nil
-        case .voiceSelection: hasSelectedVoicePack
-        case .systemVoice: false
+        // Any saved answer-voice channel settles both voice routes; a preset
+        // must not switch it back to the system voice or to a pack.
+        case .voiceSelection, .systemVoice: hasSavedVoiceChoice
         case .speechRate: speechRateRatio != nil
         case .autoReadAnswers: autoReadEnabled != nil
         case .interruptionControl: interruptionAllowed != nil
@@ -409,7 +425,26 @@ enum SetupGuidePrefillWriter {
         isUsable: (UUID, SetupGuideModelCapability) -> Bool
     ) -> [SetupGuideRoute] {
         var applied: [SetupGuideRoute] = []
+        // Shared image routing is one preference, not two slots. Only write it
+        // when both image routes resolve to the same model and that model
+        // really serves both operations; otherwise leave the mode alone and
+        // let the user choose in the Creation section.
+        let sharedImageRoutes: [SetupGuideRoute] = [.imageCreationModel, .imageEditingModel]
+        if preferences.auxiliaryImageMode == .shared,
+           preferences.sharedImageModelID == nil,
+           let creation = intents.first(where: { $0.route == .imageCreationModel }),
+           let editing = intents.first(where: { $0.route == .imageEditingModel }),
+           creation.modelID == editing.modelID,
+           isUsable(creation.modelID, .imageGeneration),
+           isUsable(editing.modelID, .imageEditing) {
+            preferences.sharedImageModelID = creation.modelID
+            applied.append(contentsOf: sharedImageRoutes)
+        }
         for intent in intents {
+            if preferences.auxiliaryImageMode == .shared,
+               sharedImageRoutes.contains(intent.route) {
+                continue
+            }
             guard let capability = intent.route.requiredModelCapability,
                   isUsable(intent.modelID, capability) else { continue }
             let slotIsFree: Bool

@@ -424,7 +424,13 @@ final class SetupGuideModel: ObservableObject {
                     hasTools: model.capabilities.contains(.tools),
                     hasApproval: model.supportsApprovalSurface,
                     hasGeneralAuxiliary: model.supportsGeneralAuxiliaryLLM,
-                    hasImageGeneration: model.supportsImageGenerationSurface,
+                    // The preset's save boundary verifies the exact
+                    // capability bit, so the fact must use the same rule: an
+                    // editing-only endpoint never becomes a generation
+                    // candidate, and a generation-only one never becomes an
+                    // editing candidate.
+                    hasImageGeneration: model.supportsImageGenerationSurface
+                        && model.capabilities.contains(.imageGeneration),
                     hasImageEditing: model.supportsImageGenerationSurface
                         && model.capabilities.contains(.imageEditing),
                     hasVideoGeneration: model.supportsVideoGenerationSurface,
@@ -434,8 +440,10 @@ final class SetupGuideModel: ObservableObject {
             }
         facts.hasUsableChatModel = !center.availableAgentModels.isEmpty
         facts.hasVisionModel = !center.visionModels.isEmpty
-        facts.imageCapableModelCount = center.imageModels.count
-        facts.videoCapableModelCount = center.videoModels.count
+        // Counts come from the same capability projection the planner uses, so
+        // "available" can never include a model the save boundary rejects.
+        facts.imageCapableModelCount = facts.models.filter(\.hasImageGeneration).count
+        facts.videoCapableModelCount = facts.models.filter(\.hasVideoGeneration).count
         facts.approvalCapableModelCount = center.approvalModels.count
         facts.hasGeneralHelperModel = !allModels.filter {
             $0.isEnabled && enabledProviderIDs.contains($0.providerID)
@@ -450,6 +458,8 @@ final class SetupGuideModel: ObservableObject {
         facts.canvasVisionModelID = preferences.canvasVisionModelID
         facts.hasConfiguredProvider = center.hasConfiguredProvider
         facts.hasConfiguredImageModel = preferences.imageGenerationModelID != nil
+            || preferences.sharedImageModelID != nil
+        facts.hasConfiguredImageEditingModel = preferences.imageEditingModelID != nil
             || preferences.sharedImageModelID != nil
         facts.hasConfiguredVideoModel = preferences.defaultVideoModelID != nil
 
@@ -468,7 +478,11 @@ final class SetupGuideModel: ObservableObject {
         facts.hasCloudSpeechCredential = speech.configuredProfiles.contains {
             speech.hasCredential(for: $0)
         }
-        facts.hasSelectedVoicePack = speech.snapshot.modelID.isEmpty == false
+        // The save guard is the persisted settings record, not a model id: an
+        // explicit Apple/system voice has an empty modelID and an online
+        // profile may leave it empty too, yet must still be kept.
+        facts.hasSavedVoiceChoice = speech.hasSavedPlaybackPreferences
+            || speech.snapshot.modelID.isEmpty == false
         facts.enhancedRecognitionInstalled = await WhisperModelStore.shared.isInstalled()
 
         let settings = environment.settingsCenter

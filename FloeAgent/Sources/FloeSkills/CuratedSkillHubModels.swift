@@ -90,6 +90,34 @@ public struct CuratedSkillLocalizedText: Codable, Sendable, Equatable, Hashable 
         self.zhHans = zhHans
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case en
+        case zhHans = "zh-Hans"
+        case legacyZhHans = "zhHans"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        en = try values.decode(String.self, forKey: .en)
+        let current = try values.decodeIfPresent(String.self, forKey: .zhHans)
+        let legacy = try values.decodeIfPresent(String.self, forKey: .legacyZhHans)
+        if let current, let legacy, current != legacy {
+            throw DecodingError.dataCorruptedError(forKey: .zhHans, in: values,
+                debugDescription: "Conflicting Simplified Chinese text fields.")
+        }
+        guard let text = current ?? legacy else {
+            throw DecodingError.keyNotFound(CodingKeys.zhHans,
+                .init(codingPath: decoder.codingPath, debugDescription: "Missing Simplified Chinese text."))
+        }
+        zhHans = text
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(en, forKey: .en)
+        try values.encode(zhHans, forKey: .zhHans)
+    }
+
     /// Picks the value for the user's preferred localizations, falling back to
     /// English. Simplified Chinese (`zh*`) selects `zh-Hans`.
     public func value(preferredLanguages: [String]) -> String {

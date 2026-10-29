@@ -243,10 +243,13 @@ struct SetupGuidePresetTests {
     /// One configured model with exactly the metadata a preset may read.
     private func model(id: UUID = UUID(), name: String,
                        chat: Bool = false, vision: Bool = false, tools: Bool = false,
-                       approval: Bool = false, image: Bool = false, edit: Bool = false,
+                       approval: Bool = false, auxiliary: Bool = false,
+                       image: Bool = false, edit: Bool = false,
                        video: Bool = false, hidden: Bool = false) -> SetupGuideModelFact {
         SetupGuideModelFact(id: id, displayName: name, hasChat: chat, hasVision: vision,
-                            hasTools: tools, hasApproval: approval, hasImageGeneration: image,
+                            hasTools: tools, hasApproval: approval,
+                            hasGeneralAuxiliary: auxiliary,
+                            hasImageGeneration: image,
                             hasImageEditing: edit, hasVideoGeneration: video,
                             visibleInPicker: !hidden, isDefaultAgent: false)
     }
@@ -261,6 +264,7 @@ struct SetupGuidePresetTests {
         value.models = models
         value.hasUsableChatModel = models.contains { $0.supports(.chat) }
         value.hasVisionModel = models.contains { $0.supports(.vision) }
+        value.hasGeneralHelperModel = models.contains { $0.supports(.generalAuxiliary) }
         value.imageCapableModelCount = models.filter { $0.supports(.imageGeneration) }.count
         value.videoCapableModelCount = models.filter { $0.supports(.videoGeneration) }.count
         value.approvalCapableModelCount = models.filter { $0.supports(.approval) }.count
@@ -296,18 +300,55 @@ struct SetupGuidePresetTests {
     @Test("A preset never overwrites a choice the user already made")
     func existingChoicesWin() {
         let primary = model(name: "Primary Chat", chat: true, vision: true, tools: true)
-        var configured = facts([primary])
+        let helper = model(name: "General Helper", chat: true, auxiliary: true)
+        var configured = facts([primary, helper])
         configured.defaultAgentModelID = primary.id
         configured.visionModelID = primary.id
         configured.canvasAssistantModelID = primary.id
+        configured.generalHelperModelID = helper.id
         configured.autoReadEnabled = true
+        configured.interruptionAllowed = true
+        configured.memoryProfilePresent = true
         configured.hasConfiguredSearchProvider = true
+        // An already saved answer-voice channel settles the voice route: the
+        // preset must not switch it back to the system voice.
+        configured.hasSavedVoiceChoice = true
+        configured.contentAutoUpdate = true
 
         let plan = SetupGuidePresetPlanner.plan(preset: .everyday, facts: configured)
         #expect(plan.prefilled.isEmpty, "nothing unset remains to fill")
-        #expect(plan.keptExisting.contains(.chatModel))
-        #expect(plan.keptExisting.contains(.visionHelper))
+        for route in [SetupGuideRoute.chatModel, .generalHelper, .visionHelper, .canvasHelper,
+                      .searchProvider, .systemVoice, .autoReadAnswers, .interruptionControl,
+                      .memoryPersonalization, .keepContentCurrent] {
+            #expect(plan.keptExisting.contains(route),
+                    "\(route.rawValue) must keep the user's existing choice")
+        }
+        #expect(plan.unavailable.contains(.deviceSync),
+                "an unavailable route is reported, never silently rewritten")
         #expect(!plan.prefilled.contains(.autoReadAnswers))
+    }
+
+    @Test("A saved system or online voice is kept even with no pack model id")
+    func savedVoiceChannelWithoutModelIDIsKept() {
+        let primary = model(name: "Primary", chat: true)
+        var configured = facts([primary], voice: true)
+        configured.hasSavedVoiceChoice = true
+        configured.availableVoicePackIDs = ["pack-a"]
+
+        // A fresh install may still be offered the system voice.
+        var fresh = facts([primary], voice: true)
+        fresh.availableVoicePackIDs = ["pack-a"]
+        #expect(SetupGuidePresetPlanner.plan(preset: .everyday, facts: fresh)
+                .prefilled.contains(.systemVoice))
+
+        // Any saved voice record (explicit system voice, local pack or online
+        // profile even when its modelID is empty) keeps both voice routes.
+        let everyday = SetupGuidePresetPlanner.plan(preset: .everyday, facts: configured)
+        #expect(everyday.keptExisting.contains(.systemVoice))
+        #expect(!everyday.prefilled.contains(.systemVoice))
+        let voice = SetupGuidePresetPlanner.plan(preset: .voiceConversation, facts: configured)
+        #expect(voice.keptExisting.contains(.voiceSelection))
+        #expect(!voice.prefilled.contains(.voiceSelection))
     }
 
     @Test("An unsupported capability is dropped, not faked")
@@ -350,10 +391,10 @@ struct SetupGuidePresetTests {
         #expect(SetupGuidePresetPlanner.resolvedModelID(for: .visionHelper, facts: configured) == one.id)
     }
 
-    @Test("Routes that need consent are suggested, never pre-filled")
+    @Test("Routes that need consent stay explicit while model routing is prefilled")
     func consentRoutesStayExplicit() {
         let configured = facts(
-            [model(name: "Primary", chat: true, image: true, video: true)],
+            [model(name: "Primary", chat: true, image: true, edit: true, video: true)],
             search: true, runtime: true
         )
         let plan = SetupGuidePresetPlanner.plan(preset: .developmentCreation, facts: configured)
@@ -362,8 +403,25 @@ struct SetupGuidePresetTests {
                     "\(route.rawValue) may not be applied by a preset")
         }
         #expect(plan.suggested.contains(.localRuntime), "the runtime needs an explicit tap")
-        #expect(plan.suggested.contains(.imageCreationModel))
-        #expect(plan.suggested.contains(.searchProvider))
+        #expect(plan.suggested.contains(.keepContentCurrent))
+        // Image and video defaults only route future requests through an
+        // already configured model surface; they start nothing by themselves.
+        #expect(plan.prefilled.contains(.imageCreationModel))
+        #expect(plan.prefilled.contains(.imageEditingModel))
+        #expect(plan.prefilled.contains(.videoCreationModel))
+        // A configured search provider is already the user's decision; making
+        // a new credential-backed provider remains an explicit action.
+        #expect(plan.keptExisting.contains(.searchProvider))
+        #expect(!plan.prefilled.contains(.searchProvider))
+    }
+
+    @Test("A generation-only model cannot promise an editing route")
+    func mediaRoutesRequireTheirExactCapability() {
+        let generationOnly = facts([model(name: "Generator", chat: true, image: true)])
+        let plan = SetupGuidePresetPlanner.plan(preset: .developmentCreation, facts: generationOnly)
+        #expect(plan.prefilled.contains(.imageCreationModel))
+        #expect(!plan.prefilled.contains(.imageEditingModel))
+        #expect(plan.unavailable.contains(.imageEditingModel))
     }
 
     @Test("Voice presets route real voice facts, not generic flags only")
@@ -475,24 +533,86 @@ struct SetupGuidePrefillWriterTests {
     func consentRoutesAreNeverWritten() {
         var preferences = ModelSelectionPreferences()
         let consent: [SetupGuideRoute] = [
-            .speechRecognition, .voiceSelection, .localRuntime, .imageCreationModel,
-            .imageEditingModel, .videoCreationModel, .searchProvider, .extendedBackground,
-            .deviceSync, .permissionProfile, .codeConnections, .keepContentCurrent
+            .speechRecognition, .voiceSelection, .localRuntime, .searchProvider,
+            .extendedBackground, .deviceSync, .permissionProfile, .codeConnections,
+            .keepContentCurrent
         ]
+        for route in consent {
+            #expect(route.requiresExplicitConsent,
+                    "\(route.rawValue) needs an explicit user action")
+        }
         let intents = consent.map { SetupGuidePrefillIntent(route: $0, modelID: chat) }
-        let applied = SetupGuidePrefillWriter.apply(
-            intents.filter { $0.route.requiresExplicitConsent == false },
-            to: &preferences,
-            isUsable: usable(chat)
-        )
-        #expect(applied.isEmpty)
-        // Even if a consent route reached the writer by mistake, the media and
-        // device slots stay untouched.
+        // Even if a consent route reached the writer by mistake, it has no
+        // model slot and writes nothing.
         let forced = SetupGuidePrefillWriter.apply(intents, to: &preferences, isUsable: usable(chat))
+        #expect(forced.isEmpty)
+        #expect(preferences == ModelSelectionPreferences())
+    }
+
+    @Test("Image and video routing choices occupy their own slots when separated")
+    func mediaRoutingPrefillsOwnSlots() {
+        var preferences = ModelSelectionPreferences()
+        preferences.auxiliaryImageMode = .separate
+        let image = UUID()
+        let editor = UUID()
+        let video = UUID()
+        let applied = SetupGuidePrefillWriter.apply(
+            [
+                SetupGuidePrefillIntent(route: .imageCreationModel, modelID: image),
+                SetupGuidePrefillIntent(route: .imageEditingModel, modelID: editor),
+                SetupGuidePrefillIntent(route: .videoCreationModel, modelID: video)
+            ],
+            to: &preferences,
+            isUsable: usable(image, editor, video)
+        )
+        #expect(applied == [.imageCreationModel, .imageEditingModel, .videoCreationModel])
+        #expect(preferences.imageGenerationModelID == image)
+        #expect(preferences.imageEditingModelID == editor)
+        #expect(preferences.defaultVideoModelID == video)
+        // None of these routes can spend credit or start a transfer; they only
+        // record which configured model serves the route.
+        for route in [SetupGuideRoute.imageCreationModel, .imageEditingModel, .videoCreationModel] {
+            #expect(!route.requiresExplicitConsent)
+        }
+    }
+
+    @Test("Shared image routing writes one shared slot, never two")
+    func sharedImageRoutingUsesOneModel() {
+        var preferences = ModelSelectionPreferences()
+        let media = UUID()
+        let applied = SetupGuidePrefillWriter.apply(
+            [
+                SetupGuidePrefillIntent(route: .imageCreationModel, modelID: media),
+                SetupGuidePrefillIntent(route: .imageEditingModel, modelID: media)
+            ],
+            to: &preferences,
+            isUsable: usable(media)
+        )
+        #expect(preferences.auxiliaryImageMode == .shared)
+        #expect(preferences.sharedImageModelID == media)
         #expect(preferences.imageGenerationModelID == nil)
         #expect(preferences.imageEditingModelID == nil)
-        #expect(preferences.defaultVideoModelID == nil)
-        #expect(forced.filter { consent.contains($0) }.isEmpty)
+        #expect(applied == [.imageCreationModel, .imageEditingModel])
+    }
+
+    @Test("Shared image routing never splits two different models across slots")
+    func sharedImageRoutingDoesNotSplitModels() {
+        var preferences = ModelSelectionPreferences()
+        let generation = UUID()
+        let editing = UUID()
+        let applied = SetupGuidePrefillWriter.apply(
+            [
+                SetupGuidePrefillIntent(route: .imageCreationModel, modelID: generation),
+                SetupGuidePrefillIntent(route: .imageEditingModel, modelID: editing)
+            ],
+            to: &preferences,
+            isUsable: usable(generation, editing)
+        )
+        #expect(preferences.auxiliaryImageMode == .shared)
+        #expect(preferences.sharedImageModelID == nil)
+        #expect(preferences.imageGenerationModelID == nil)
+        #expect(preferences.imageEditingModelID == nil)
+        #expect(applied.isEmpty)
     }
 
     @Test("An empty intent list changes nothing")

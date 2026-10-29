@@ -20,7 +20,7 @@ struct SetupGuideLaunchRegressionTests {
         return (environment, model)
     }
 
-    @Test("A synced usable model neither completes an unseen guide nor chooses a default")
+    @Test("A synced usable model may become the default but never completes an unseen guide")
     func configuredModelDoesNotSkipGuide() async throws {
         let (environment, model) = try await configuredEnvironment()
         var preferences = try await environment.configurationStore.preferences()
@@ -32,10 +32,16 @@ struct SetupGuideLaunchRegressionTests {
         await center.reconcileOnboardingForLaunch()
         #expect(center.availableAgentModels.contains(where: { $0.id == model.id }))
         #expect(center.modelPreferences.onboardingStatus == .unseen)
-        #expect(center.modelPreferences.defaultAgentModelID == nil)
+        // Launch reconciliation is model routing, not a setup decision: with
+        // no stored default the existing resolver legitimately repairs it from
+        // the single usable picker model. Only an explicit Finish or Skip may
+        // change the guide's own status.
+        #expect(center.modelPreferences.defaultAgentModelID == model.id)
         let saved = try await environment.configurationStore.preferences()
         #expect(saved.onboardingStatus == .unseen)
-        #expect(saved.defaultAgentModelID == nil)
+        #expect(saved.onboardingStatus != .completed)
+        #expect(saved.onboardingStatus != .skipped)
+        #expect(saved.defaultAgentModelID == model.id)
     }
 
     @Test("Launch preserves explicit completed and skipped choices")
