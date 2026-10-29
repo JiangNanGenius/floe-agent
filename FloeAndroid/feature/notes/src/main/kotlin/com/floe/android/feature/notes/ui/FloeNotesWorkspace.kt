@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -68,7 +69,15 @@ public fun FloeNotesWorkspace(
     }
     BackHandler(enabled = controller.canGoBack()) { controller.goBack() }
 
-    BoxWithConstraints(modifier.fillMaxSize().background(Floe.colors.groupedSurface)) {
+    BoxWithConstraints(
+        modifier
+            .fillMaxSize()
+            .background(Floe.colors.groupedSurface)
+            // The shell already owns the status-bar inset. Notes owns its
+            // bottom edge: without this the phone page footer (and the last
+            // library card) rendered underneath the gesture navigation bar.
+            .navigationBarsPadding(),
+    ) {
         val compact = maxWidth < 600.dp
         val wideLayout = maxWidth >= 1_010.dp
         val libraryWidth = if (maxWidth < 900.dp) 280.dp else 320.dp
@@ -85,6 +94,7 @@ public fun FloeNotesWorkspace(
                     controller = controller,
                     session = active,
                     wide = false,
+                    compact = true,
                     callbacks = callbacks,
                     modifiers = Modifier.fillMaxSize(),
                 )
@@ -110,6 +120,7 @@ public fun FloeNotesWorkspace(
                             controller = controller,
                             session = active,
                             wide = wideLayout,
+                            compact = false,
                             callbacks = callbacks,
                             modifiers = Modifier.fillMaxSize(),
                         )

@@ -1140,10 +1140,19 @@ internal class NotesDocumentSession(
                         pdfFailure = pdfFailures[pageResourceID]
                             ?: NotesFailure("resourceUnavailable", "pdf")
                     } else {
-                        renderedPdf = handle.renderPage(
-                            pdfIndex.coerceIn(0, handle.pageCount - 1),
-                            targetWidthPx.coerceIn(320, 4096),
-                        )
+                        renderedPdf = try {
+                            handle.renderPage(
+                                pdfIndex.coerceIn(0, handle.pageCount - 1),
+                                targetWidthPx.coerceIn(320, 4096),
+                            )
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Throwable) {
+                            // A render failure must be visible as a typed page
+                            // error, never a silently blank page.
+                            pdfFailure = error.toNotesFailure()
+                            null
+                        }
                     }
                 } else if (pageResourceID != null) {
                     background = resources.readAll(

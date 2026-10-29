@@ -106,35 +106,52 @@ internal fun NotesAssistantPanel(
             )
         }
         FloeDivider()
-        Row(
+        // The scope hint belongs with the page/selection pills at the top,
+        // not after the composer. In the compact assistant sheet the bottom
+        // hint was the last child and measured [0,0] (clipped by the sheet);
+        // moving it into this fixed header keeps it visible without touching
+        // the conversation, streaming or Back contracts.
+        Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            val page = session.currentPageIndex
-            NotesPill(
-                if (page != null) {
-                    stringResource(R.string.notes_assistant_context_page, page + 1)
-                } else {
-                    stringResource(R.string.notes_assistant_context_document)
-                },
-                Floe.colors.accent,
-            )
-            if (session.selectedElementIDs.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                val page = session.currentPageIndex
                 NotesPill(
-                    stringResource(
-                        R.string.notes_assistant_context_selection,
-                        session.selectedElementIDs.size,
-                    ),
-                    Floe.colors.secondaryLabel,
+                    if (page != null) {
+                        stringResource(R.string.notes_assistant_context_page, page + 1)
+                    } else {
+                        stringResource(R.string.notes_assistant_context_document)
+                    },
+                    Floe.colors.accent,
+                )
+                if (session.selectedElementIDs.isNotEmpty()) {
+                    NotesPill(
+                        stringResource(
+                            R.string.notes_assistant_context_selection,
+                            session.selectedElementIDs.size,
+                        ),
+                        Floe.colors.secondaryLabel,
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                FloeText(
+                    stringResource(R.string.notes_assistant_scope),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.tertiaryLabel,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            Spacer(Modifier.weight(1f))
             FloeText(
-                stringResource(R.string.notes_assistant_scope),
+                stringResource(R.string.notes_assistant_selection_hint),
                 style = Floe.typography.metadata,
                 color = Floe.colors.tertiaryLabel,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
         }
@@ -316,12 +333,6 @@ internal fun NotesAssistantPanel(
                         )
                     }
                 }
-                FloeText(
-                    stringResource(R.string.notes_assistant_selection_hint),
-                    style = Floe.typography.metadata,
-                    color = Floe.colors.tertiaryLabel,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
-                )
             }
         }
     }

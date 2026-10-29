@@ -220,6 +220,11 @@ internal class NotesWorkspaceController(
         val session = activeSession
         if (session != null && session.assistant.isOpen) {
             session.assistant.close()
+            // Keep the compact assistant sheet's visibility and the toolbar
+            // tint on the same state. System Back still only closes the
+            // assistant and leaves the SAME editor body mounted (the passed
+            // candidate-05 behavior).
+            session.assistantOpen = false
             return true
         }
         if (navigation.isNotEmpty()) {

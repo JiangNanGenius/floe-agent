@@ -717,10 +717,13 @@ internal class NotesLibraryController(
                     pdfPageIndex = index,
                 )
             }
-            pages.chunked(40).forEach { chunk ->
-                val edits = chunk.mapIndexed { offset, page ->
-                    NotesEdit.InsertPage(page, index = current.pages.size + offset)
-                }
+            // A new notebook starts with one native placeholder page. Replace
+            // it with the first PDF page; inserting the PDF after it would
+            // leave an empty cover and shift every imported page by one.
+            importedNotebookPageEdits(
+                placeholderPageID = current.pages.firstOrNull()?.id,
+                pages = pages,
+            ).chunked(40).forEach { edits ->
                 current = service.apply(
                     NotesApplyRequest(
                         documentID = document.id,
@@ -773,18 +776,18 @@ internal class NotesLibraryController(
             height = height,
             backgroundResourceID = resource.resourceID,
         )
-        service.apply(
+        val importedDocument = service.apply(
             NotesApplyRequest(
                 documentID = document.id,
                 expectedRevision = document.revision,
                 title = "Import image",
-                edits = listOf(NotesEdit.InsertPage(page, 0)),
+                edits = importedNotebookPageEdits(document.pages.firstOrNull()?.id, listOf(page)),
                 requestID = UUID.randomUUID().toString(),
             ),
         )
         notice = NotesLibraryNotice.IMPORTED
         load(initial = false)
-        onOpenDocument(document.id, page.id)
+        onOpenDocument(document.id, importedDocument.pages.firstOrNull()?.id)
         return true
     }
 

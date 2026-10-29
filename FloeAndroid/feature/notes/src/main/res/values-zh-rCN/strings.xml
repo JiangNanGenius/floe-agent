@@ -13,6 +13,10 @@
     <string name="notes_sort_updated">编辑日期</string>
     <string name="notes_sort_created">创建日期</string>
     <string name="notes_sort_title">标题</string>
+    <string name="notes_create_blank_note">空白手记</string>
+    <string name="notes_create_office">Office 文档</string>
+    <string name="notes_create_failed_title">无法新建</string>
+    <string name="notes_import_failed_title">无法导入</string>
     <string name="notes_new">新建</string>
     <string name="notes_new_note">手记</string>
     <string name="notes_new_mind_map">思维导图</string>

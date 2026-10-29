@@ -97,7 +97,14 @@ internal object NotesOoxmlTemplates {
      * names/size bombs, `[Content_Types].xml` declares the exact main part and
      * content type, and the main part parses as the expected XML root.
      */
-    fun validate(bytes: ByteArray, kind: NotesOoxmlKind): NotesOoxmlValidation {
+    fun validate(bytes: ByteArray, kind: NotesOoxmlKind): NotesOoxmlValidation =
+        validate(bytes, kind, DocumentBuilderFactory.newInstance())
+
+    internal fun validate(
+        bytes: ByteArray,
+        kind: NotesOoxmlKind,
+        factory: DocumentBuilderFactory,
+    ): NotesOoxmlValidation {
         if (bytes.isEmpty() || bytes.size > MAX_TOTAL_BYTES) return NotesOoxmlValidation.invalid("size")
         val parts = LinkedHashMap<String, ByteArray>()
         var total = 0L
@@ -134,7 +141,7 @@ internal object NotesOoxmlTemplates {
         if (parts.isEmpty()) return NotesOoxmlValidation.invalid("emptyZip")
         val contentTypes = parts["[Content_Types].xml"]
             ?: return NotesOoxmlValidation.invalid("contentTypesMissing")
-        val contentTypesDoc = parseXml(contentTypes)
+        val contentTypesDoc = parseXml(contentTypes, factory)
             ?: return NotesOoxmlValidation.invalid("contentTypesInvalid")
         val overrides = contentTypesDoc.getElementsByTagNameNS(CONTENT_TYPES_NS, "Override")
         var declared = false
@@ -153,7 +160,8 @@ internal object NotesOoxmlTemplates {
             if (!parts.containsKey(required)) return NotesOoxmlValidation.invalid("requiredPart:$required")
         }
         val mainBytes = parts[kind.mainPart] ?: return NotesOoxmlValidation.invalid("mainPartMissing")
-        val mainDoc = parseXml(mainBytes) ?: return NotesOoxmlValidation.invalid("mainPartInvalid")
+        val mainDoc = parseXml(mainBytes, factory)
+            ?: return NotesOoxmlValidation.invalid("mainPartInvalid")
         val root = mainDoc.documentElement ?: return NotesOoxmlValidation.invalid("mainPartInvalid")
         if (root.localName != kind.rootLocalName) return NotesOoxmlValidation.invalid("mainRoot")
         return NotesOoxmlValidation.Valid
@@ -294,11 +302,14 @@ internal object NotesOoxmlTemplates {
         return output.toByteArray()
     }
 
-    private fun parseXml(bytes: ByteArray): org.w3c.dom.Document? {
+    private fun parseXml(bytes: ByteArray, factory: DocumentBuilderFactory): org.w3c.dom.Document? {
         return try {
-            val factory = DocumentBuilderFactory.newInstance()
             factory.isNamespaceAware = true
-            factory.isXIncludeAware = false
+            // Android's platform DocumentBuilderFactory rejects XInclude
+            // configuration even when disabling it (it unconditionally throws
+            // UnsupportedOperationException). XInclude is unsupported and unused
+            // here, so keep this guard best-effort like the SAX features below.
+            runCatching { factory.isXIncludeAware = false }
             factory.setExpandEntityReferences(false)
             runCatching { factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
             runCatching { factory.setFeature("http://xml.org/sax/features/external-general-entities", false) }

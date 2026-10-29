@@ -16,6 +16,10 @@
     <string name="notes_sort_updated">Date Edited</string>
     <string name="notes_sort_created">Date Created</string>
     <string name="notes_sort_title">Title</string>
+    <string name="notes_create_blank_note">Blank Note</string>
+    <string name="notes_create_office">Office</string>
+    <string name="notes_create_failed_title">Couldn’t Create</string>
+    <string name="notes_import_failed_title">Couldn’t Import</string>
     <string name="notes_new">New</string>
     <string name="notes_new_note">Note</string>
     <string name="notes_new_mind_map">Mind Map</string>
