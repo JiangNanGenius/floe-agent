@@ -46,34 +46,17 @@ struct BodyMaterialMap: Equatable {
     var isSRGB: Bool { colorSpace == .srgb }
     var uniformFlag: UInt32 { slot.uniformFlag }
 
-    /// Identity for a slot's bytes. A metadata SHA is used only when its
-    /// recorded byte count still matches, so a stale/edited blob cannot point
-    /// the cache at a different image.
+    /// Identity for a slot's bytes: the verified persisted SHA when it matches,
+    /// otherwise the actual full-content SHA-256 computed once and cached. The
+    /// fallback never samples only a prefix, so blobs that differ outside a
+    /// sample cannot share a GPU cache identity.
     static func identity(for data: Data,
                          metadata: CADMaterialTextureMetadata?) -> String {
-        if let sha = metadata?.sha256, !sha.isEmpty,
-           metadata?.byteCount == data.count {
-            return sha
+        if let verified = metadata?.verifiedDigest(for: data) {
+            return verified
         }
-        return "fnv1a-\(data.count)-\(fingerprint(data))"
-    }
-
-    /// Deterministic FNV-1a over the byte count plus the head, middle and tail
-    /// of the image. Used only when no persisted digest exists; equal images
-    /// give equal identities in every process (unlike Swift's seeded Hasher).
-    static func fingerprint(_ data: Data) -> String {
-        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-        func mix(_ slice: Data) {
-            for byte in slice {
-                hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
-            }
-        }
-        mix(data.prefix(32))
-        if data.count > 96 {
-            mix(data.dropFirst(data.count / 2).prefix(32))
-        }
-        mix(data.suffix(32))
-        return String(hash, radix: 16)
+        return CADMaterialTexture.cachedActualContentDigest(data,
+                                                           assetID: metadata?.assetID)
     }
 }
 

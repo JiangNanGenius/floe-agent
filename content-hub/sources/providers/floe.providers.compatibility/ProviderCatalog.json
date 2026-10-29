@@ -13,6 +13,630 @@
         "api.openai.com"
       ],
       "kind": "openAI",
+      "modelMetadata": {
+        "chatgpt-image-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "gpt-4": {
+          "attachment": true,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "gpt-4-turbo": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "gpt-4.1": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "gpt-4.1-mini": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "gpt-4.1-nano": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "gpt-4o": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "gpt-4o-2024-05-13": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "gpt-4o-2024-08-06": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "gpt-4o-2024-11-20": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "gpt-4o-mini": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "gpt-5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5-mini": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5-nano": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5-pro": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.1": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.2": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.2-chat-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.2-pro": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.3-chat-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "gpt-5.3-codex": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.3-codex-spark": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.4": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.4-mini": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.4-nano": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.4-pro": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.5-pro": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.6": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.6-luna": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.6-sol": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-5.6-terra": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-6-astra": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-6-luna": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-6-sol": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-6.1-sol": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-daybreak-blue-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-daybreak-red-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gpt-image-1": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "gpt-image-1-mini": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "gpt-image-1.5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "gpt-image-2": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "gpt-realtime-2.1": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text"
+          ],
+          "output": [
+            "audio",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "o1": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "o1-pro": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "o3": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "o3-mini": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "o3-pro": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "o4-mini": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "text-embedding-3-small": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        }
+      },
       "models": [
         "chatgpt-image-latest",
         "gpt-4",
@@ -88,6 +712,229 @@
         "api.anthropic.com"
       ],
       "kind": "anthropic",
+      "modelMetadata": {
+        "claude-fable-5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-fable-5-1": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-haiku-4-5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-haiku-4-5-20251001": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-haiku-5-5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-opus-4-5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-opus-4-5-20251101": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-opus-4-6": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-opus-4-7": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-opus-4-8": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-opus-5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-opus-5-5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-sonnet-4-5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-sonnet-4-5-20250929": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-sonnet-4-6": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-sonnet-5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "claude-sonnet-5-5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        }
+      },
       "models": [
         "claude-fable-5",
         "claude-fable-5-1",
@@ -131,6 +978,412 @@
         "generativelanguage.googleapis.com"
       ],
       "kind": "googleGemini",
+      "modelMetadata": {
+        "deep-research-max-preview-04-2026": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deep-research-preview-04-2026": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-2.5-computer-use-preview-10-2025": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-2.5-flash": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-2.5-flash-image": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": false
+        },
+        "gemini-2.5-flash-lite": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-2.5-pro": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3-flash-preview": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3-pro-image": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": false
+        },
+        "gemini-3-pro-image-preview": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": false
+        },
+        "gemini-3.1-flash-image": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": false
+        },
+        "gemini-3.1-flash-image-preview": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": false
+        },
+        "gemini-3.1-flash-lite": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3.1-flash-lite-image": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3.1-flash-lite-preview": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3.1-flash-live-preview": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "audio",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3.1-pro-preview": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3.1-pro-preview-customtools": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3.5-flash": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3.5-flash-lite": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3.6-flash": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3.7-flash": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-3.8-flash": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-4-argon": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-flash-latest": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemini-flash-lite-latest": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemma-4-26b-a4b-it": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "gemma-4-31b-it": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        }
+      },
       "models": [
         "deep-research-max-preview-04-2026",
         "deep-research-preview-04-2026",
@@ -143,6 +1396,41 @@
       ],
       "name": "Google Gemini Images",
       "presetID": "google",
+      "serviceOffers": [
+        {
+          "authStyle": "bearer",
+          "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai",
+          "models": [
+            "deep-research-max-preview-04-2026",
+            "deep-research-preview-04-2026",
+            "gemini-2.5-computer-use-preview-10-2025",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-pro",
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-flash-lite-image",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.1-flash-live-preview",
+            "gemini-3.1-pro-preview",
+            "gemini-3.1-pro-preview-customtools",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.6-flash",
+            "gemini-3.7-flash",
+            "gemini-3.8-flash",
+            "gemini-4-argon",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest",
+            "gemma-4-26b-a4b-it",
+            "gemma-4-31b-it"
+          ],
+          "protocols": [
+            "openai-chat-completions"
+          ],
+          "role": "conversation"
+        }
+      ],
       "toolNameCompatibility": false,
       "unsupportedReason": null,
       "upstreamID": "google",
@@ -168,6 +1456,681 @@
         "dashscope.aliyuncs.com"
       ],
       "kind": "alibabaStudio",
+      "modelMetadata": {
+        "MiniMax-M2.5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "MiniMax/MiniMax-M2.7": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-v4-flash": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-v4-flash-0731": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-v4-pro": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-v4.1-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5.1": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5.2": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5.3": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "kimi-k2-thinking": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "kimi-k2.5": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "kimi-k2.6": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "kimi-k3": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "kimi/kimi-k2.5": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen-image-2.1-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-2.1-turbo": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-3.0": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-3.0-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-plus": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen-vl-max": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "qwen-vl-ocr": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "qwen-vl-plus": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "qwen3-asr-flash": {
+          "attachment": false,
+          "input": [
+            "audio"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "qwen3-coder-flash": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "qwen3-coder-plus": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "qwen3-livetranslate-flash-realtime": {
+          "attachment": false,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "audio",
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "qwen3-max": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3-next-80b-a3b-instruct": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "qwen3-next-80b-a3b-thinking": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3-omni-flash": {
+          "attachment": false,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "audio",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3-omni-flash-realtime": {
+          "attachment": false,
+          "input": [
+            "audio",
+            "image",
+            "text"
+          ],
+          "output": [
+            "audio",
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "qwen3-vl-plus": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.5-122b-a10b": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.5-27b": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.5-35b-a3b": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.5-397b-a17b": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.5-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.5-plus": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.6-27b": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.6-35b-a3b": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.6-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.6-max-preview": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.6-plus": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.7-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.7-max": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.7-plus": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.8-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.8-max": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen3.8-omni-flash": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "siliconflow/deepseek-r1-0528": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "siliconflow/deepseek-v3-0324": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "siliconflow/deepseek-v3.1-terminus": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "siliconflow/deepseek-v3.2": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "wan2.7-image": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan2.7-image-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan3.0-video": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        }
+      },
       "models": [
         "MiniMax-M2.5",
         "MiniMax/MiniMax-M2.7",
@@ -220,8 +2183,27 @@
         "siliconflow/deepseek-v3.1-terminus",
         "siliconflow/deepseek-v3.2"
       ],
-      "name": "Alibaba Cloud DashScope",
+      "name": "Alibaba Cloud · Pay as you go",
       "presetID": "alibaba",
+      "serviceOffers": [
+        {
+          "models": [
+            "qwen-image-2.1-pro",
+            "qwen-image-2.1-turbo",
+            "qwen-image-3.0",
+            "qwen-image-3.0-pro",
+            "wan2.7-image",
+            "wan2.7-image-pro"
+          ],
+          "role": "image"
+        },
+        {
+          "models": [
+            "wan3.0-video"
+          ],
+          "role": "video"
+        }
+      ],
       "toolNameCompatibility": false,
       "unsupportedReason": null,
       "upstreamID": "alibaba",
@@ -244,6 +2226,55 @@
         "api.deepseek.com"
       ],
       "kind": "custom",
+      "modelMetadata": {
+        "deepseek-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-v4-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-v4-flash-vision-exp": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-v4-pro": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        }
+      },
       "models": [
         "deepseek-flash",
         "deepseek-v4-flash",
@@ -275,6 +2306,60 @@
         "api.moonshot.cn"
       ],
       "kind": "custom",
+      "modelMetadata": {
+        "kimi-k2.6": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "kimi-k2.7-code": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "kimi-k2.7-code-highspeed": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "kimi-k3": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        }
+      },
       "models": [
         "kimi-k2.6",
         "kimi-k2.7-code",
@@ -308,6 +2393,221 @@
         "open.bigmodel.cn"
       ],
       "kind": "custom",
+      "modelMetadata": {
+        "glm-4.5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-4.5-air": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-4.5-flash": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-4.5v": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-4.6": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-4.6v": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-4.6v-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-4.7": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-4.7-flash": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-4.7-flashx": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5-turbo": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5.1": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5.2": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5.3": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5.3-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5.3-flashx": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5v-turbo": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        }
+      },
       "models": [
         "glm-4.5",
         "glm-4.5-air",
@@ -353,6 +2653,87 @@
         "api.minimax.io"
       ],
       "kind": "custom",
+      "modelMetadata": {
+        "MiniMax-M2": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "MiniMax-M2.1": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "MiniMax-M2.5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "MiniMax-M2.5-highspeed": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "MiniMax-M2.7": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "MiniMax-M2.7-highspeed": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "MiniMax-M3": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        }
+      },
       "models": [
         "MiniMax-M2",
         "MiniMax-M2.1",
@@ -384,6 +2765,181 @@
         "api.x.ai"
       ],
       "kind": "custom",
+      "modelMetadata": {
+        "grok-4.20-0309-non-reasoning": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "grok-4.20-0309-reasoning": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "grok-4.20-multi-agent-0309": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": false
+        },
+        "grok-4.3": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "grok-4.5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "grok-4.6": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "grok-4.7": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "grok-build-0.1": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "grok-imagine-image": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "image",
+            "pdf"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "grok-imagine-image-quality": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "image",
+            "pdf"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "grok-imagine-video": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "video"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "grok-imagine-video-1.5": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "video"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "grok-imagine-video-1.5-lite": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "video"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        }
+      },
       "models": [
         "grok-4.20-0309-non-reasoning",
         "grok-4.20-0309-reasoning",
@@ -421,6 +2977,186 @@
         "api.groq.com"
       ],
       "kind": "custom",
+      "modelMetadata": {
+        "allam-2-7b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "canopylabs/orpheus-arabic-saudi": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "audio"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "canopylabs/orpheus-v1-english": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "audio"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "groq/compound": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "groq/compound-mini": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "llama-3.1-8b-instant": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "llama-3.3-70b-versatile": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "meta-llama/llama-prompt-guard-2-22m": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "meta-llama/llama-prompt-guard-2-86m": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "openai/gpt-oss-120b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "openai/gpt-oss-20b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "openai/gpt-oss-safeguard-20b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen/qwen3.6-27b": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen/qwen3.8-27b": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "whisper-large-v3": {
+          "attachment": false,
+          "input": [
+            "audio"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "whisper-large-v3-turbo": {
+          "attachment": false,
+          "input": [
+            "audio"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        }
+      },
       "models": [
         "allam-2-7b",
         "canopylabs/orpheus-arabic-saudi",
@@ -462,6 +3198,492 @@
         "api.mistral.ai"
       ],
       "kind": "custom",
+      "modelMetadata": {
+        "codestral-2508": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "codestral-latest": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "devstral-2512": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "devstral-latest": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "devstral-medium-2507": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "devstral-medium-latest": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "devstral-small-2505": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "devstral-small-2507": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "glm-5-2": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "labs-devstral-small-2512": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "labs-leanstral-1-5-1": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "magistral-medium-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "ministral-14b-2512": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "ministral-3b-2512": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "ministral-3b-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "ministral-8b-2512": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "ministral-8b-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "mistral-embed": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "mistral-large-2411": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "mistral-large-2512": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "mistral-large-4": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "mistral-large-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "mistral-medium-2505": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "mistral-medium-2508": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "mistral-medium-2604": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "mistral-medium-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "mistral-nemo": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "mistral-small-2506": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "mistral-small-2603": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "mistral-small-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "open-mistral-7b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "open-mistral-nemo": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "open-mixtral-8x22b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "open-mixtral-8x7b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "pixtral-12b": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "pixtral-large-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "voxtral-mini-latest": {
+          "attachment": false,
+          "input": [
+            "audio"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "voxtral-mini-tts-latest": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "audio"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "voxtral-small-2507": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "voxtral-small-latest": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "zai-glm-5-2": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-glm-5-3": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        }
+      },
       "models": [
         "codestral-2508",
         "codestral-latest",
@@ -528,6 +3750,337 @@
         "api.together.xyz"
       ],
       "kind": "custom",
+      "modelMetadata": {
+        "LiquidAI/LFM2-24B-A2B": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "MiniMaxAI/MiniMax-M2.5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "MiniMaxAI/MiniMax-M2.7": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "MiniMaxAI/MiniMax-M3": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Qwen/Qwen2.5-7B-Instruct-Turbo": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "Qwen/Qwen3-235B-A22B-Instruct-2507-tput": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "Qwen/Qwen3-Coder-Next-FP8": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.5-397B-A17B": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.5-9B": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.6-Plus": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.7-Max": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-R1": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": false
+        },
+        "deepseek-ai/DeepSeek-V3": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V3-1": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V4-Flash-0731": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V4-Pro-0813": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V4.1-Flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "essentialai/Rnj-1-Instruct": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "moonshotai/Kimi-K3": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "nvidia/nemotron-3-ultra-550b-a55b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "openai/gpt-oss-120b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "thinkingmachines/Inkling": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-org/GLM-5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-org/GLM-5.1": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-org/GLM-5.2": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-org/GLM-5.3": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-org/GLM-5.3-Flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        }
+      },
       "models": [
         "LiquidAI/LFM2-24B-A2B",
         "MiniMaxAI/MiniMax-M2.5",
@@ -580,28 +4133,658 @@
         "openrouter.ai"
       ],
       "kind": "custom",
+      "modelMetadata": {
+        "aion-labs/aion-3.5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "aion-labs/aion-3.5-mini": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "anthropic/claude-haiku-5.5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "anthropic/claude-opus-5.5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "anthropic/claude-sonnet-5.5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "cohere/command-a-plus": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek/deepseek-v4.1-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "fireworks/ember-1": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "google/gemini-4-argon": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "google/gemini-nano-banana-2.1": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image",
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "inclusionai/ling-3.0-flash-vl": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "inclusionai/ling-3.1-flash": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "inference-net/schematron-v2-small": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "inference-net/schematron-v2-turbo": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "liquid/lfm-2.5-24b-a2b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "meta/muse-wonder": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "mistralai/mistral-large-4-0": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "nex-agi/nex-n2.5-mini": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": false
+        },
+        "nex-agi/nex-n2.5-pro": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "openai/gpt-6-luna": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "openai/gpt-6-luna-pro": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "openai/gpt-6-sol": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "openai/gpt-6-sol-pro": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "openai/gpt-6.1-sol": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "openai/gpt-6.1-sol-pro": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "perceptron/perceptron-mk1.5": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "prism-ml/ternary-bonsai-2-27b": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen/qwen3.8-max-prime": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "qwen/qwen3.8-omni-flash": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "sakana/fugu-max": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "sakana/fugu-ultra-v2": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "scaledown/extract": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "scaledown/summarize": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "stepfun/step-5-preview": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "unbiased/pareto-26.10-preview": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "unbiased/pareto-26.9": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "upstage/solar-mini4": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "x-ai/grok-4.7": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "xiaomi/mimo-v2.6-flash": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "xiaomi/mimo-v2.6-pro": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "xiaomi/mimo-v2.6-pro-ultraspeed": {
+          "attachment": true,
+          "input": [
+            "audio",
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "z-ai/glm-5.3-flashx": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "z-ai/glm-5.3-prime": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "~deepseek/deepseek-flash-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "~deepseek/deepseek-pro-latest": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "~openai/gpt-astra-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "~openai/gpt-luna-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "~openai/gpt-sol-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "~openai/gpt-terra-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "~unbiased/pareto-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        }
+      },
       "models": [
         "aion-labs/aion-3.5",
         "aion-labs/aion-3.5-mini",
         "anthropic/claude-haiku-5.5",
         "anthropic/claude-opus-5.5",
         "anthropic/claude-sonnet-5.5",
-        "apodex/apodex-1.1-mini:free",
         "cohere/command-a-plus",
         "deepseek/deepseek-v4.1-flash",
         "fireworks/ember-1",
+        "google/gemini-4-argon",
         "google/gemini-nano-banana-2.1",
-        "inception/mercury-2.5",
-        "inclusionai/ling-3.0-flash-sante",
         "inclusionai/ling-3.0-flash-vl",
         "inclusionai/ling-3.1-flash",
         "inference-net/schematron-v2-small",
         "inference-net/schematron-v2-turbo",
+        "liquid/lfm-2.5-24b-a2b",
+        "meta/muse-wonder",
         "mistralai/mistral-large-4-0",
         "nex-agi/nex-n2.5-mini",
         "nex-agi/nex-n2.5-pro",
-        "openai/gpt-6-astra",
-        "openai/gpt-6-astra-pro",
         "openai/gpt-6-luna",
         "openai/gpt-6-luna-pro",
         "openai/gpt-6-sol",
@@ -610,14 +4793,15 @@
         "openai/gpt-6.1-sol-pro",
         "perceptron/perceptron-mk1.5",
         "prism-ml/ternary-bonsai-2-27b",
-        "qwen/qwen3.8-max-0902",
         "qwen/qwen3.8-max-prime",
         "qwen/qwen3.8-omni-flash",
         "sakana/fugu-max",
         "sakana/fugu-ultra-v2",
+        "scaledown/extract",
+        "scaledown/summarize",
         "stepfun/step-5-preview",
-        "unbiased/pareto",
         "unbiased/pareto-26.10-preview",
+        "unbiased/pareto-26.9",
         "upstage/solar-mini4",
         "x-ai/grok-4.7",
         "xiaomi/mimo-v2.6-flash",
@@ -630,7 +4814,8 @@
         "~openai/gpt-astra-latest",
         "~openai/gpt-luna-latest",
         "~openai/gpt-sol-latest",
-        "~openai/gpt-terra-latest"
+        "~openai/gpt-terra-latest",
+        "~unbiased/pareto-latest"
       ],
       "name": "OpenRouter",
       "presetID": "openrouter",
@@ -654,6 +4839,262 @@
         "api.fireworks.ai"
       ],
       "kind": "custom",
+      "modelMetadata": {
+        "accounts/fireworks/models/deepseek-v4p1-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/models/ember-1": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/models/glm-5p3": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/models/glm-5p3-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/models/gpt-oss-120b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/models/inkling": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/models/kimi-k3": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/models/minimax-m3": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/models/nemotron-3-ultra-nvfp4": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/models/qwen3p8-2p4t-a95b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/models/qwen3p8-max": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/routers/deepseek-flash-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/routers/glm-5p3-fast": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/routers/glm-fast-latest": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/routers/glm-flash-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/routers/glm-latest": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/routers/kimi-fast-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/routers/kimi-k3-fast": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/routers/kimi-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/routers/minimax-latest": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "accounts/fireworks/routers/qwen-max-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        }
+      },
       "models": [
         "accounts/fireworks/models/deepseek-v4p1-flash",
         "accounts/fireworks/models/ember-1",
@@ -701,6 +5142,584 @@
         "api.siliconflow.com"
       ],
       "kind": "custom",
+      "modelMetadata": {
+        "MiniMaxAI/MiniMax-M2.5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "MiniMaxAI/MiniMax-M3": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "PaddlePaddle/PaddleOCR-VL-1.5": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": false
+        },
+        "Pro/MiniMaxAI/MiniMax-M2.5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "Pro/deepseek-ai/DeepSeek-V3.2": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Pro/moonshotai/Kimi-K2.5": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Pro/moonshotai/Kimi-K2.6": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Pro/zai-org/GLM-5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Pro/zai-org/GLM-5.1": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.5-122B-A10B": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.5-27B": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.5-35B-A3B": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.5-397B-A17B": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.5-4B": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.5-9B": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.6-27B": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.6-35B-A3B": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "Qwen/Qwen3.8-2.4T-A95B": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V3": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V3.1": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V3.1-Terminus": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V3.2": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V3.2-Exp": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V4-Flash": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V4-Flash-0731": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V4-Pro": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-ai/DeepSeek-V4-Pro-0813": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "google/gemma-4-12B-it": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "google/gemma-4-26B-A4B-it": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "google/gemma-4-31B-it": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "inclusionAI/Ling-flash-2.0": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "meituan-longcat/LongCat-2.0": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "moonshotai/Kimi-K2.5": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "moonshotai/Kimi-K2.6": {
+          "attachment": false,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "moonshotai/Kimi-K2.7-Code": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "moonshotai/Kimi-K3": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "nex-agi/Nex-N2-Pro": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "openai/gpt-oss-120b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "openai/gpt-oss-20b": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "stepfun-ai/Step-3.5-Flash": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "tencent/Hunyuan-A13B-Instruct": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "tencent/Hy3": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-org/GLM-4.5-Air": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": false,
+          "toolCall": true
+        },
+        "zai-org/GLM-5": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-org/GLM-5.1": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-org/GLM-5.2": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-org/GLM-5.3": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-org/GLM-5.3-Flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "zai-org/GLM-5V-Turbo": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        }
+      },
       "models": [
         "MiniMaxAI/MiniMax-M2.5",
         "MiniMaxAI/MiniMax-M3",
@@ -780,6 +5799,206 @@
         "ark.cn-beijing.volces.com"
       ],
       "kind": "volcengineArk",
+      "modelMetadata": {
+        "deepseek-v4-flash-ga-260731": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "deepseek-v4-pro-ga-260813": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-1-6-251015": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-1-6-flash-250828": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-1-6-vision-250815": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-1-8-251228": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-2-0-code-preview-260215": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-2-0-lite-260428": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-2-0-mini-260428": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-2-0-pro-260215": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-2-1-pro-260628": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-2-1-turbo-260628": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-character-260628": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "doubao-seed-evolving": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5-2-260617": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        },
+        "glm-5-3-flash-260828": {
+          "attachment": true,
+          "input": [
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "toolCall": true
+        }
+      },
       "models": [
         "deepseek-v4-flash-ga-260731",
         "deepseek-v4-pro-ga-260813",
@@ -798,7 +6017,7 @@
         "glm-5-2-260617",
         "glm-5-3-flash-260828"
       ],
-      "name": "Volcengine Ark",
+      "name": "Volcengine Ark · Pay as you go",
       "presetID": "volcengine",
       "toolNameCompatibility": false,
       "unsupportedReason": null,
@@ -836,6 +6055,7 @@
         "gemini-3.6-flash",
         "gemini-3.7-flash",
         "gemini-3.8-flash",
+        "gemini-4-argon",
         "gpt-5-mini",
         "gpt-5.3-codex",
         "gpt-5.4",
@@ -1049,12 +6269,11 @@
         "claude-sonnet-4-6@default",
         "claude-sonnet-5-5@default",
         "claude-sonnet-5@default",
+        "codestral-2",
         "deepseek-ai/deepseek-v3.1-maas",
         "deepseek-ai/deepseek-v3.2-maas",
         "gemini-2.5-flash-image",
-        "gemini-2.5-flash-lite",
         "gemini-2.5-flash-tts",
-        "gemini-2.5-pro",
         "gemini-2.5-pro-tts",
         "gemini-3-flash-preview",
         "gemini-3-pro-image",
@@ -1068,6 +6287,7 @@
         "gemini-3.6-flash",
         "gemini-3.7-flash",
         "gemini-3.8-flash",
+        "gemini-4-argon",
         "gemini-nano-banana-2.1",
         "google/gemma-4-26b-a4b-it-maas",
         "moonshotai/kimi-k2-thinking-maas",
@@ -1093,12 +6313,484 @@
       "upstreamIDs": [
         "google-vertex"
       ]
+    },
+    {
+      "aliases": [
+        "火山引擎 Agent Plan",
+        "火山套餐",
+        "Agent Plan"
+      ],
+      "authStyle": "bearer",
+      "availability": "available",
+      "baseURL": "https://ark.cn-beijing.volces.com/api/plan/v3",
+      "defaultProtocol": "openai-chat-completions",
+      "domains": [
+        "ark.cn-beijing.volces.com"
+      ],
+      "kind": "custom",
+      "modelMetadata": {
+        "ark-code-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "deepseek-v4-flash": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ]
+        },
+        "deepseek-v4-pro": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ]
+        },
+        "deepseek-v4.1-flash": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ]
+        },
+        "deepseek-v4.1-flash-economy": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ]
+        },
+        "doubao-seed-2.0-mini": {
+          "attachment": true,
+          "contextTokens": 262144,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ]
+        },
+        "doubao-seed-2.1-lite": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 262144,
+          "output": [
+            "text"
+          ]
+        },
+        "doubao-seed-2.1-pro": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 262144,
+          "output": [
+            "text"
+          ]
+        },
+        "doubao-seed-evolving": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 262144,
+          "output": [
+            "text"
+          ]
+        },
+        "doubao-seedream-5-0-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "doubao-seedream-5.0-flash": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "doubao-seedream-5.0-lite": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "glm-5.3": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "glm-5.3-flash": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ]
+        },
+        "kimi-k2.8-preview": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 1048576,
+          "output": [
+            "text"
+          ]
+        },
+        "kimi-k3": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "kimi-k3.1-pro": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 1048576,
+          "output": [
+            "text"
+          ]
+        }
+      },
+      "models": [
+        "ark-code-latest",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash-economy",
+        "doubao-seed-2.0-mini",
+        "doubao-seed-2.1-lite",
+        "doubao-seed-2.1-pro",
+        "doubao-seed-evolving",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "kimi-k2.8-preview",
+        "kimi-k3",
+        "kimi-k3.1-pro"
+      ],
+      "name": "Volcengine Agent Plan",
+      "presetID": "volcengine-agent-plan",
+      "serviceOffers": [
+        {
+          "models": [
+            "doubao-seedream-5-0-pro",
+            "doubao-seedream-5.0-flash",
+            "doubao-seedream-5.0-lite"
+          ],
+          "role": "image"
+        }
+      ],
+      "toolNameCompatibility": false,
+      "unsupportedReason": null,
+      "upstreamID": "volcengine-agent-plan"
+    },
+    {
+      "aliases": [
+        "阿里云 Token Plan",
+        "百炼 Token Plan",
+        "Token Plan"
+      ],
+      "authStyle": "bearer",
+      "availability": "available",
+      "baseURL": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "defaultProtocol": "openai-chat-completions",
+      "domains": [
+        "token-plan.cn-beijing.maas.aliyuncs.com"
+      ],
+      "kind": "custom",
+      "modelMetadata": {
+        "auto": {
+          "attachment": false,
+          "contextTokens": 1000000,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "deepseek-v4-flash-0731": {
+          "attachment": false,
+          "contextTokens": 1048576,
+          "input": [
+            "text"
+          ],
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "deepseek-v4-pro": {
+          "attachment": false,
+          "contextTokens": 1048576,
+          "input": [
+            "text"
+          ],
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "deepseek-v4-pro-0813": {
+          "attachment": false,
+          "contextTokens": 1048576,
+          "input": [
+            "text"
+          ],
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "deepseek-v4.1-flash": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "deepseek-v4.1-flash-1017": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "glm-5.2": {
+          "attachment": false,
+          "contextTokens": 1048576,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "glm-5.3": {
+          "attachment": false,
+          "contextTokens": 1048576,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "happyhorse-1.1-i2v": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "happyhorse-1.1-t2v": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "qwen-image-3.0-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen3.6-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "qwen3.7-max": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "qwen3.7-plus": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "qwen3.8-flash": {
+          "attachment": true,
+          "contextTokens": 983616,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "qwen3.8-max": {
+          "attachment": true,
+          "contextTokens": 983616,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "wan2.7-image": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan2.7-image-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan3.0-video": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        }
+      },
+      "models": [
+        "auto",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-pro",
+        "deepseek-v4-pro-0813",
+        "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash-1017",
+        "glm-5.2",
+        "glm-5.3",
+        "qwen3.6-flash",
+        "qwen3.7-max",
+        "qwen3.7-plus",
+        "qwen3.8-flash",
+        "qwen3.8-max"
+      ],
+      "name": "Alibaba Cloud Token Plan",
+      "presetID": "alibaba-token-plan",
+      "serviceOffers": [
+        {
+          "models": [
+            "qwen-image-3.0-pro",
+            "wan2.7-image",
+            "wan2.7-image-pro"
+          ],
+          "role": "image"
+        },
+        {
+          "models": [
+            "happyhorse-1.1-i2v",
+            "happyhorse-1.1-t2v",
+            "wan3.0-video"
+          ],
+          "role": "video"
+        }
+      ],
+      "toolNameCompatibility": false,
+      "unsupportedReason": null,
+      "upstreamID": "alibaba-token-plan"
     }
   ],
   "schemaVersion": 1,
   "source": {
-    "documentSHA256": "fa2b8822f1f8c9157f526dc477b86008f73e463414f4e7765ed0ce50006eeef1",
-    "fetchedAt": "2026-10-09T02:10:34Z",
+    "documentSHA256": "4f5cb775b475a8f3dc0253c986223ca8dcd55a21f29ab3e036e397e560879eef",
+    "fetchedAt": "2026-10-15T12:36:41Z",
     "license": "MIT",
     "project": "models.dev",
     "url": "https://models.dev"

@@ -121,6 +121,27 @@ nonisolated struct CADMaterialTextureMetadata: Codable, Equatable, Sendable {
     var orientation: MaterialTextureOrientation
     var sha256: String
     var byteCount: Int
+
+    /// The persisted digest, but only when it actually describes `data`.
+    ///
+    /// Metadata can outlive the bytes it was written for (a re-encoded,
+    /// truncated or swapped asset, or a copied label). A matching byte count is
+    /// not proof: the digest is accepted only when it equals the actual
+    /// SHA-256 of the current content. The actual digest is retained in the
+    /// bounded content cache even when the claim is rejected, so a subsequent
+    /// legacy/stale identity lookup does not hash the same bytes twice.
+    func verifiedDigest(for data: Data) -> String? {
+        guard byteCount == data.count,
+              sha256.count == 64,
+              sha256.unicodeScalars.allSatisfy({ scalar in
+                  (scalar.value >= 48 && scalar.value <= 57)       // 0-9
+                      || (scalar.value >= 65 && scalar.value <= 70) // A-F
+                      || (scalar.value >= 97 && scalar.value <= 102) // a-f
+              })
+        else { return nil }
+        let actual = CADMaterialTexture.cachedActualContentDigest(data, assetID: assetID)
+        return sha256.lowercased() == actual ? actual : nil
+    }
 }
 
 nonisolated struct CADMaterialTexture: Codable, Equatable, Sendable, Identifiable {
@@ -175,6 +196,39 @@ nonisolated struct CADMaterialTexture: Codable, Equatable, Sendable, Identifiabl
 
     static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Actual full-content digest for legacy images (no metadata) and for
+    /// stale/mismatched metadata. The SHA-256 is computed once per exact bytes
+    /// bucket and retained (including when a claimed digest was rejected), so
+    /// the Editor identity fallback never needs a second full hash for the same
+    /// image. Cache hits require full `Data` equality.
+    static func cachedActualContentDigest(_ data: Data, assetID: UUID?) -> String {
+        let key = MaterialContentDigestCache.Key(
+            assetID: assetID,
+            byteCount: data.count,
+            footprint: cacheFootprint(data))
+        if let cached = materialContentDigestCache.digest(for: key, matching: data) {
+            return cached
+        }
+        let digest = Self.digest(data)
+        materialContentDigestCache.store(digest, data: data, for: key)
+        return digest
+    }
+
+    /// Cheap sample used only to choose a candidate cache bucket. It is never
+    /// trusted as an identity; full `Data` equality remains mandatory.
+    static func cacheFootprint(_ data: Data) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        func mix(_ slice: Data) {
+            for byte in slice {
+                hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
+            }
+        }
+        mix(data.prefix(64))
+        if data.count > 192 { mix(data.dropFirst(data.count / 2).prefix(64)) }
+        mix(data.suffix(64))
+        return hash
     }
 }
 
@@ -452,6 +506,69 @@ nonisolated enum CADMaterialLimits {
     static let maximumLibraryBytes = 96 * 1024 * 1024
     static let maximumEncodedRequestBytes = 12 * 1024 * 1024
 }
+
+// MARK: - Actual texture content digest cache
+
+/// Bounded process-local cache of actual SHA-256 digests. The candidate key
+/// `(assetID, byte count, sampled footprint)` only selects a bucket; the
+/// digest is reused **only after full `Data` equality** with the exact retained
+/// bytes. A changed blob therefore misses and is re-hashed instead of
+/// inheriting a stale identity. Both entry count and retained encoded bytes are
+/// bounded, so 128 large textures cannot pin unbounded memory. A single blob
+/// larger than 64 MiB is hashed but not retained.
+private final class MaterialContentDigestCache: @unchecked Sendable {
+    struct Key: Hashable {
+        let assetID: UUID?
+        let byteCount: Int
+        let footprint: UInt64
+    }
+
+    private struct Entry {
+        let data: Data
+        let digest: String
+    }
+
+    private let lock = NSLock()
+    private var entries: [Key: Entry] = [:]
+    private var order: [Key] = []
+    private var retainedBytes = 0
+    /// Retain at most 64 MiB of encoded image bytes (Data is COW, so this is
+    /// usually shared with the document's existing texture bytes) and at most
+    /// 128 distinct texture buckets.
+    private let maximumEntries = 128
+    private let maximumRetainedBytes = 64 * 1024 * 1024
+
+    func digest(for key: Key, matching data: Data) -> String? {
+        lock.lock()
+        let entry = entries[key]
+        lock.unlock()
+        guard let entry, entry.data == data else { return nil }
+        return entry.digest
+    }
+
+    func store(_ digest: String, data: Data, for key: Key) {
+        guard data.count <= maximumRetainedBytes else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        if let replaced = entries.updateValue(Entry(data: data, digest: digest),
+                                              forKey: key) {
+            retainedBytes -= replaced.data.count
+        } else {
+            order.append(key)
+        }
+        retainedBytes += data.count
+        while (entries.count > maximumEntries
+               || retainedBytes > maximumRetainedBytes),
+              let evicted = order.first {
+            order.removeFirst()
+            if let removed = entries.removeValue(forKey: evicted) {
+                retainedBytes -= removed.data.count
+            }
+        }
+    }
+}
+
+private let materialContentDigestCache = MaterialContentDigestCache()
 
 nonisolated enum CADMaterialLibraryCodec {
     /// Decode a persisted library. Corrupt/oversized data yields an empty

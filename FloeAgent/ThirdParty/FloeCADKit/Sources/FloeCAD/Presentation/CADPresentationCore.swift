@@ -70,12 +70,6 @@ nonisolated enum CADPresentationAxes {
                   Float(converted.columns.2.z), 0),
             SIMD4(Float(t.x), Float(t.y), Float(t.z), 1))
     }
-
-    /// World-space model-millimetre point from a body transform.
-    static func worldPoint(_ local: SIMD3<Float>, transform: simd_float4x4) -> SIMD3<Float> {
-        let model = transform * SIMD4(local, 1)
-        return point(SIMD3(model.x, model.y, model.z))
-    }
 }
 
 // MARK: - Texture / material

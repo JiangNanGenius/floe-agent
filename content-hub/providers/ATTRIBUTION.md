@@ -1,8 +1,10 @@
 # Provider catalog attribution
 
-`FloeAgent/FloeApp/Resources/ProviderCatalog.json` is derived from the public
-[models.dev](https://models.dev) catalog (`sst/models.dev`, canonical repository
-`anomalyco/models.dev`), which is distributed under the MIT License.
+`FloeAgent/FloeApp/Resources/ProviderCatalog.json` contains a baseline derived
+from the public [models.dev](https://models.dev) catalog (`sst/models.dev`,
+canonical repository `anomalyco/models.dev`), which is distributed under the MIT
+License, plus reviewed first-party entries and fields declared in
+`curated-overrides.json`.
 
 Floe's import script (`import_models_dev.py`) copies only provider names,
 curated aliases and domains, model identifiers and public documentation links.
@@ -11,6 +13,18 @@ user credentials, and it does not execute upstream code. Floe curates the
 provider set and maps each provider onto its own provider kinds, wire protocols
 and auth styles; unsupported providers are flagged rather than dropped.
 Merged upstream entries are listed per provider in `upstreamIDs`.
+
+## First-party curated entries
+
+`curated-overrides.json` is the single declarative source for reviewed facts
+that are not models.dev data: the official Volcengine Agent Plan and Alibaba
+Cloud Token Plan entries, and the Alibaba pay-as-you-go media role declarations.
+The importer merges it deterministically after the pinned upstream baseline.
+Those entries cite their public official documentation in the override file,
+and `SOURCE.json` records the override revision, digest and the explicit
+statement that they must not be attributed to models.dev. They are Floe's own
+review of public provider documentation, not upstream content, and therefore
+fall outside the models.dev MIT attribution below.
 
 Provenance for the currently committed catalog is recorded in `SOURCE.json`.
 The canonical pin is `documentSHA256`, the SHA-256 of the served

@@ -292,25 +292,21 @@ enum CADPresentationSceneBuilder {
                 unresolvedFaceCount: body.unresolvedFaceCount,
                 analyticBRep: body.analyticBRep))
 
-            // World bounds: transform the eight local corners and convert.
-            var bodyMin = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
-            var bodyMax = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
-            for x in [mesh.boundsMin.x, mesh.boundsMax.x] {
-                for y in [mesh.boundsMin.y, mesh.boundsMax.y] {
-                    for z in [mesh.boundsMin.z, mesh.boundsMax.z] {
-                        let world = CADPresentationAxes.worldPoint(
-                            SIMD3(x, y, z), transform: transform)
-                        bodyMin = simd_min(bodyMin, world)
-                        bodyMax = simd_max(bodyMax, world)
-                    }
-                }
-            }
+            // World bounds: `convertedMesh` and `transform` are both already
+            // in presentation metres, so apply the transform directly. Using
+            // the millimetre corners with the metre transform (or scaling the
+            // translation a second time) collapses every assembly instance
+            // onto the origin and makes Fit frame one plate instead of the
+            // placed layout.
+            let bodyBounds = Self.worldBounds(
+                min: convertedMesh.boundsMin, max: convertedMesh.boundsMax,
+                transform: transform)
             if bounds == nil {
-                bounds = CADPresentationBounds(min: bodyMin, max: bodyMax)
+                bounds = bodyBounds
             } else {
                 bounds = CADPresentationBounds(
-                    min: simd_min(bounds!.min, bodyMin),
-                    max: simd_max(bounds!.max, bodyMax))
+                    min: simd_min(bounds!.min, bodyBounds.min),
+                    max: simd_max(bounds!.max, bodyBounds.max))
             }
         }
 
@@ -328,6 +324,26 @@ enum CADPresentationSceneBuilder {
             issues: issues,
             bounds: bounds,
             materialCount: snapshot.materials.count)
+    }
+
+    /// World-space bounds for one body. `min`/`max` are the converted body
+    /// mesh bounds and `transform` is the converted body matrix; both are in
+    /// presentation metres, so no unit scaling happens here.
+    nonisolated static func worldBounds(min: SIMD3<Float>, max: SIMD3<Float>,
+                                        transform: simd_float4x4) -> CADPresentationBounds {
+        var worldMin = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var worldMax = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        for x in [min.x, max.x] {
+            for y in [min.y, max.y] {
+                for z in [min.z, max.z] {
+                    let world = transform * SIMD4<Float>(x, y, z, 1)
+                    let point = SIMD3(world.x, world.y, world.z)
+                    worldMin = simd_min(worldMin, point)
+                    worldMax = simd_max(worldMax, point)
+                }
+            }
+        }
+        return CADPresentationBounds(min: worldMin, max: worldMax)
     }
 
     nonisolated static func environment(from appearance: CADViewAppearance) -> CADPresentationEnvironment {

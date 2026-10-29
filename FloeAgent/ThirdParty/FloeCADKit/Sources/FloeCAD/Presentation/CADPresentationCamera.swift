@@ -3,11 +3,12 @@
 //  FloeCADKit
 //
 //  Orbit camera for the presentation surface, expressed in RealityKit metres
-//  and +Y up. The ARView camera itself stays at the origin (RealityKit's
-//  non-AR camera is not user-positionable); the presentation moves a single
-//  stage entity by this camera's inverse view transform. Lighting, floor and
-//  products therefore share one coordinate frame and one camera state — no
-//  second scene, no per-body camera adjustments.
+//  and +Y up. The presentation installs one explicit non-AR PerspectiveCamera
+//  at the origin (RealityKit's implicit default camera is not the app's fitted
+//  camera) and moves a single stage entity by this camera's inverse view
+//  transform. Lighting, floor and products therefore share one coordinate
+//  frame and one camera state — no second scene, no per-body camera
+//  adjustments.
 //
 
 #if canImport(SwiftUI) && canImport(RealityKit) && canImport(UIKit)
@@ -39,15 +40,19 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
     }
 
     /// A framing that keeps the whole model visible with a margin. Uses the
-    /// bounding sphere so the fit is rotation-independent.
+    /// bounding sphere so the fit is rotation-independent. When the viewport
+    /// aspect (width / height) is supplied, the tighter of the vertical and
+    /// horizontal fields of view is used, so a portrait viewport does not clip
+    /// a wide model that fit vertically but not horizontally.
     static func fitted(to bounds: CADPresentationBounds?,
-                       fovYDegrees: Float = 60) -> CADPresentationCamera {
+                       fovYDegrees: Float = 60,
+                       aspect: Float? = nil) -> CADPresentationCamera {
         guard let bounds else {
             return CADPresentationCamera(target: .zero, distance: 1,
                                          fovYDegrees: fovYDegrees)
         }
         let radius = max(bounds.radius, 0.002)
-        let halfFov = max(fovYDegrees, 10) * .pi / 360
+        let halfFov = fittedHalfAngle(fovYDegrees: fovYDegrees, aspect: aspect)
         let distance = min(max(radius / max(tan(halfFov), 0.05) * 1.18,
                                radius * 1.6),
                            maximumDistance)
@@ -59,6 +64,17 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
             fovYDegrees: fovYDegrees)
     }
 
+    /// Half-angle the fit must respect. The vertical half-FOV governs a
+    /// landscape/square viewport; a portrait viewport narrows it by its
+    /// aspect so the bounding sphere also fits horizontally.
+    static func fittedHalfAngle(fovYDegrees: Float, aspect: Float?) -> Float {
+        let vertical = max(fovYDegrees, 10) * .pi / 360
+        guard let aspect, aspect.isFinite, aspect > 0, aspect < 1 else {
+            return vertical
+        }
+        return atan(tan(vertical) * aspect)
+    }
+
     var position: SIMD3<Float> {
         let cosElevation = cos(elevationRadians)
         let offset = SIMD3(
@@ -68,9 +84,9 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
         return target + offset * distance
     }
 
-    /// World→camera transform applied to the presentation stage. ARView's
-    /// camera sits at the origin looking down −Z, so this is exactly the
-    /// inverse of the camera-to-world matrix.
+    /// World→camera transform applied to the presentation stage. The explicit
+    /// PerspectiveCamera sits at the anchor origin looking down −Z, so this is
+    /// exactly the inverse of the camera-to-world matrix.
     var stageTransform: simd_float4x4 {
         let eye = position
         let forward = simd_normalize(target - eye)
@@ -120,8 +136,8 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
         distance = min(max(distance / scale, Self.minimumDistance), Self.maximumDistance)
     }
 
-    mutating func fit(_ bounds: CADPresentationBounds?) {
-        self = Self.fitted(to: bounds, fovYDegrees: fovYDegrees)
+    mutating func fit(_ bounds: CADPresentationBounds?, aspect: Float? = nil) {
+        self = Self.fitted(to: bounds, fovYDegrees: fovYDegrees, aspect: aspect)
     }
 
     var isValid: Bool {

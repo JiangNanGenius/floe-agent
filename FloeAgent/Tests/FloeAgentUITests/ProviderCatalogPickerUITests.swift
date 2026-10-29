@@ -117,6 +117,46 @@ final class ProviderCatalogPickerUITests: XCTestCase {
         }
     }
 
+    func testSubscriptionAndAlibabaFormsUseTheirOwnModelCandidates() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let cases = [
+            ("Chat model provider", "volc", "volcengine-agent-plan", "ark-code-latest", true),
+            ("Image generation/editing provider", "volc", "volcengine-agent-plan", "doubao-seedream-5.0-flash", true),
+            ("Image generation/editing provider", "alibaba", "alibabaStudio", "qwen-image-3.0-pro", false),
+            ("Video generation provider", "alibaba", "alibabaStudio", "wan3.0-video", false),
+            ("Image generation/editing provider", "token", "alibaba-token-plan", "qwen-image-3.0-pro", true),
+            ("Video generation provider", "token", "alibaba-token-plan", "wan3.0-video", true),
+        ]
+        for (title, query, presetID, modelID, noDiscovery) in cases {
+            let app = launchApp(iPad: true)
+            openProviderEditor(app, roleTitle: title)
+            tapWhenHittable(app.buttons["providers.supplier_field"], in: app)
+            let search = searchField(in: app)
+            XCTAssertTrue(search.waitForExistence(timeout: 8))
+            search.tap()
+            search.typeText(query)
+            let preset = app.buttons["providers.supplier.preset.\(presetID)"]
+            XCTAssertTrue(preset.waitForExistence(timeout: 8))
+            preset.tap()
+            let notNow = app.buttons["providers.service_offers.not_now"]
+            if notNow.waitForExistence(timeout: 2) { notNow.tap() }
+            dismissKeyboard(app)
+            tapWhenHittable(app.buttons["providers.manage_models"], in: app)
+            let model = app.switches["providers.model.\(modelID)"]
+            for _ in 0..<8 where !model.exists { app.swipeUp() }
+            XCTAssertTrue(model.waitForExistence(timeout: 8),
+                          "The selected billing channel and purpose must offer \(modelID)")
+            if noDiscovery {
+                XCTAssertFalse(app.buttons["providers.refresh_models"].exists,
+                               "A plan without model discovery must not offer a discovery request")
+            }
+            attach(app, "\(presetID)-\(modelID)-candidates")
+            // No credentials, Save, connection test or Generate action.
+            app.terminate()
+        }
+    }
+
     func testMediaProviderFormsReachPrefilledModelsWithoutGeneration() throws {
         XCUIDevice.shared.orientation = .landscapeLeft
         defer { XCUIDevice.shared.orientation = .portrait }

@@ -1630,6 +1630,42 @@
           "reasoning": true,
           "toolCall": true
         },
+        "qwen-image-2.1-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-2.1-turbo": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-3.0": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-3.0-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
         "qwen-plus": {
           "attachment": false,
           "input": [
@@ -2066,6 +2102,33 @@
           ],
           "reasoning": true,
           "toolCall": true
+        },
+        "wan2.7-image": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan2.7-image-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan3.0-video": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
         }
       },
       "models": [
@@ -2120,8 +2183,27 @@
         "siliconflow/deepseek-v3.1-terminus",
         "siliconflow/deepseek-v3.2"
       ],
-      "name": "Alibaba Cloud DashScope",
+      "name": "Alibaba Cloud · Pay as you go",
       "presetID": "alibaba",
+      "serviceOffers": [
+        {
+          "models": [
+            "qwen-image-2.1-pro",
+            "qwen-image-2.1-turbo",
+            "qwen-image-3.0",
+            "qwen-image-3.0-pro",
+            "wan2.7-image",
+            "wan2.7-image-pro"
+          ],
+          "role": "image"
+        },
+        {
+          "models": [
+            "wan3.0-video"
+          ],
+          "role": "video"
+        }
+      ],
       "toolNameCompatibility": false,
       "unsupportedReason": null,
       "upstreamID": "alibaba",
@@ -5935,7 +6017,7 @@
         "glm-5-2-260617",
         "glm-5-3-flash-260828"
       ],
-      "name": "Volcengine Ark",
+      "name": "Volcengine Ark · Pay as you go",
       "presetID": "volcengine",
       "toolNameCompatibility": false,
       "unsupportedReason": null,
@@ -6231,6 +6313,478 @@
       "upstreamIDs": [
         "google-vertex"
       ]
+    },
+    {
+      "aliases": [
+        "火山引擎 Agent Plan",
+        "火山套餐",
+        "Agent Plan"
+      ],
+      "authStyle": "bearer",
+      "availability": "available",
+      "baseURL": "https://ark.cn-beijing.volces.com/api/plan/v3",
+      "defaultProtocol": "openai-chat-completions",
+      "domains": [
+        "ark.cn-beijing.volces.com"
+      ],
+      "kind": "custom",
+      "modelMetadata": {
+        "ark-code-latest": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "deepseek-v4-flash": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ]
+        },
+        "deepseek-v4-pro": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ]
+        },
+        "deepseek-v4.1-flash": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ]
+        },
+        "deepseek-v4.1-flash-economy": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ]
+        },
+        "doubao-seed-2.0-mini": {
+          "attachment": true,
+          "contextTokens": 262144,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ]
+        },
+        "doubao-seed-2.1-lite": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 262144,
+          "output": [
+            "text"
+          ]
+        },
+        "doubao-seed-2.1-pro": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 262144,
+          "output": [
+            "text"
+          ]
+        },
+        "doubao-seed-evolving": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 262144,
+          "output": [
+            "text"
+          ]
+        },
+        "doubao-seedream-5-0-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "doubao-seedream-5.0-flash": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "doubao-seedream-5.0-lite": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "glm-5.3": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "glm-5.3-flash": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ]
+        },
+        "kimi-k2.8-preview": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 1048576,
+          "output": [
+            "text"
+          ]
+        },
+        "kimi-k3": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "kimi-k3.1-pro": {
+          "contextTokens": 1048576,
+          "maxOutputTokens": 1048576,
+          "output": [
+            "text"
+          ]
+        }
+      },
+      "models": [
+        "ark-code-latest",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash-economy",
+        "doubao-seed-2.0-mini",
+        "doubao-seed-2.1-lite",
+        "doubao-seed-2.1-pro",
+        "doubao-seed-evolving",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "kimi-k2.8-preview",
+        "kimi-k3",
+        "kimi-k3.1-pro"
+      ],
+      "name": "Volcengine Agent Plan",
+      "presetID": "volcengine-agent-plan",
+      "serviceOffers": [
+        {
+          "models": [
+            "doubao-seedream-5-0-pro",
+            "doubao-seedream-5.0-flash",
+            "doubao-seedream-5.0-lite"
+          ],
+          "role": "image"
+        }
+      ],
+      "toolNameCompatibility": false,
+      "unsupportedReason": null,
+      "upstreamID": "volcengine-agent-plan"
+    },
+    {
+      "aliases": [
+        "阿里云 Token Plan",
+        "百炼 Token Plan",
+        "Token Plan"
+      ],
+      "authStyle": "bearer",
+      "availability": "available",
+      "baseURL": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "defaultProtocol": "openai-chat-completions",
+      "domains": [
+        "token-plan.cn-beijing.maas.aliyuncs.com"
+      ],
+      "kind": "custom",
+      "modelMetadata": {
+        "auto": {
+          "attachment": false,
+          "contextTokens": 1000000,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "deepseek-v4-flash-0731": {
+          "attachment": false,
+          "contextTokens": 1048576,
+          "input": [
+            "text"
+          ],
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "deepseek-v4-pro": {
+          "attachment": false,
+          "contextTokens": 1048576,
+          "input": [
+            "text"
+          ],
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "deepseek-v4-pro-0813": {
+          "attachment": false,
+          "contextTokens": 1048576,
+          "input": [
+            "text"
+          ],
+          "maxOutputTokens": 393216,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "deepseek-v4.1-flash": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "deepseek-v4.1-flash-1017": {
+          "attachment": true,
+          "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "glm-5.2": {
+          "attachment": false,
+          "contextTokens": 1048576,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "glm-5.3": {
+          "attachment": false,
+          "contextTokens": 1048576,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "happyhorse-1.1-i2v": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "happyhorse-1.1-t2v": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "qwen-image-3.0-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen3.6-flash": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "qwen3.7-max": {
+          "attachment": false,
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "qwen3.7-plus": {
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "qwen3.8-flash": {
+          "attachment": true,
+          "contextTokens": 983616,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "qwen3.8-max": {
+          "attachment": true,
+          "contextTokens": 983616,
+          "input": [
+            "image",
+            "text"
+          ],
+          "maxOutputTokens": 131072,
+          "output": [
+            "text"
+          ],
+          "reasoning": true
+        },
+        "wan2.7-image": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan2.7-image-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan3.0-video": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        }
+      },
+      "models": [
+        "auto",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-pro",
+        "deepseek-v4-pro-0813",
+        "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash-1017",
+        "glm-5.2",
+        "glm-5.3",
+        "qwen3.6-flash",
+        "qwen3.7-max",
+        "qwen3.7-plus",
+        "qwen3.8-flash",
+        "qwen3.8-max"
+      ],
+      "name": "Alibaba Cloud Token Plan",
+      "presetID": "alibaba-token-plan",
+      "serviceOffers": [
+        {
+          "models": [
+            "qwen-image-3.0-pro",
+            "wan2.7-image",
+            "wan2.7-image-pro"
+          ],
+          "role": "image"
+        },
+        {
+          "models": [
+            "happyhorse-1.1-i2v",
+            "happyhorse-1.1-t2v",
+            "wan3.0-video"
+          ],
+          "role": "video"
+        }
+      ],
+      "toolNameCompatibility": false,
+      "unsupportedReason": null,
+      "upstreamID": "alibaba-token-plan"
     }
   ],
   "schemaVersion": 1,

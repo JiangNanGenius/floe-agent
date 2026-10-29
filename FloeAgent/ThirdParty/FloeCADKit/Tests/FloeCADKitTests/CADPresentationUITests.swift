@@ -64,6 +64,51 @@ final class CADPresentationCoordinateTests: XCTestCase {
         XCTAssertEqual(target.y, 0, accuracy: 1e-4)
         XCTAssertEqual(target.z, -camera.distance, accuracy: 1e-3)
     }
+
+    func testPlacementAwareBoundsKeepInstanceOffset() {
+        // Two 100×60×10 mm plates: one at the origin, one 140 mm along X.
+        // `worldBounds` receives the already-converted metre bounds and the
+        // already-converted metre body transform, exactly like the scene
+        // builder. The second instance's 0.14 m offset must survive.
+        let plateMin = SIMD3<Float>(0, 0, -0.06)
+        let plateMax = SIMD3<Float>(0.1, 0.01, 0)
+        let origin = CADPresentationSceneBuilder.worldBounds(
+            min: plateMin, max: plateMax, transform: matrix_identity_float4x4)
+        var placed = matrix_identity_float4x4
+        placed.columns.3 = SIMD4<Float>(0.14, 0, 0, 1)
+        let second = CADPresentationSceneBuilder.worldBounds(
+            min: plateMin, max: plateMax, transform: placed)
+        XCTAssertEqual(origin.min.x, 0, accuracy: 1e-5)
+        XCTAssertEqual(second.min.x, 0.14, accuracy: 1e-5)
+        XCTAssertEqual(second.max.x, 0.24, accuracy: 1e-5)
+
+        let union = CADPresentationBounds(
+            min: simd_min(origin.min, second.min),
+            max: simd_max(origin.max, second.max))
+        XCTAssertEqual(union.size.x, 0.24, accuracy: 1e-5)
+        XCTAssertEqual(union.radius, 0.1237, accuracy: 1e-3)
+        // The fit must frame the whole placement (~253 mm), not one plate
+        // (~119 mm) with the instances collapsed onto each other.
+        let camera = CADPresentationCamera.fitted(to: union)
+        XCTAssertGreaterThan(camera.distance, 0.2)
+    }
+
+    func testPortraitFitRespectsNarrowerHorizontalField() {
+        let bounds = CADPresentationBounds(min: SIMD3(-0.12, -0.03, -0.06),
+                                           max: SIMD3(0.12, 0.03, 0.06))
+        let landscape = CADPresentationCamera.fitted(to: bounds, aspect: 1.6)
+        let portrait = CADPresentationCamera.fitted(to: bounds, aspect: 0.65)
+        XCTAssertGreaterThan(portrait.distance, landscape.distance)
+        // The whole bounding sphere stays inside the narrower horizontal FOV.
+        let angularRadius = asin(min(1, bounds.radius / portrait.distance))
+        let halfVertical = Float(60) * .pi / 360
+        let halfHorizontal = atan(tan(halfVertical) * Float(0.65))
+        XCTAssertLessThan(angularRadius, halfHorizontal)
+        let target = portrait.stageTransform * SIMD4(bounds.center, 1)
+        XCTAssertEqual(target.x, 0, accuracy: 1e-4)
+        XCTAssertEqual(target.y, 0, accuracy: 1e-4)
+        XCTAssertEqual(target.z, -portrait.distance, accuracy: 1e-3)
+    }
 }
 
 @MainActor

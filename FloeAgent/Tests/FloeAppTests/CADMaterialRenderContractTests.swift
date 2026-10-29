@@ -238,8 +238,62 @@ final class CADMaterialRenderContractTests: XCTestCase {
             colorSpace: .srgb, orientation: .topLeft,
             sha256: String(repeating: "0", count: 64), byteCount: image.count)
         let identity = BodyMaterialMap.identity(for: image, metadata: stale)
+        // A stale label falls back to the ACTUAL full-content SHA, not a
+        // sampled FNV prefix, so equal bytes keep one identity and a changed
+        // blob can never reuse the stale digest.
+        XCTAssertEqual(identity, CADMaterialTexture.digest(image))
         XCTAssertNotEqual(identity, stale.sha256)
-        XCTAssertTrue(identity.hasPrefix("fnv1a-\(image.count)-"))
+    }
+
+    /// The Editor identity fallback must be the actual full-content SHA for
+    /// both missing and stale metadata. Changing byte 1024 of a >1 KiB blob
+    /// (outside the former 32-byte head/middle/tail samples) must change both
+    /// identities and neither may keep the old GPU cache identity.
+    func testBodyIdentityChangesWhenBytesChangeOutsideSampledFallback() {
+        var bytes = Data((0..<4096).map { UInt8(truncatingIfNeeded: $0 &* 29 &+ 11) })
+        let stale = CADMaterialTextureMetadata(
+            assetID: UUID(), slot: .baseColor, mimeType: "image/png",
+            colorSpace: .srgb, orientation: .topLeft,
+            sha256: String(repeating: "0", count: 64), byteCount: bytes.count)
+
+        let missingIdentity = BodyMaterialMap.identity(for: bytes, metadata: nil)
+        let staleIdentity = BodyMaterialMap.identity(for: bytes, metadata: stale)
+        XCTAssertEqual(missingIdentity, staleIdentity)
+        XCTAssertEqual(missingIdentity, CADMaterialTexture.digest(bytes))
+
+        bytes[1024] = bytes[1024] ^ 0xFF
+        let changedMissing = BodyMaterialMap.identity(for: bytes, metadata: nil)
+        let changedStale = BodyMaterialMap.identity(for: bytes, metadata: stale)
+        XCTAssertEqual(changedMissing, changedStale)
+        XCTAssertEqual(changedMissing, CADMaterialTexture.digest(bytes))
+        XCTAssertNotEqual(changedMissing, missingIdentity,
+                          "a changed blob must not reuse the old identity")
+        XCTAssertNotEqual(changedStale, staleIdentity,
+                          "a changed blob must not reuse the stale-metadata identity")
+    }
+
+    /// The content-digest cache selects a bucket by immutable asset identity
+    /// (assetID + byte count + sampled footprint) and must still compare the
+    /// exact bytes. A changed blob under the same metadata is re-hashed and
+    /// rejected, never inheriting the old verified verdict.
+    func testVerifiedDigestRejectsChangedBytesUnderSameAssetIdentity() {
+        var bytes = Data((0..<4096).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
+        let digest = CADMaterialTexture.digest(bytes)
+        let metadata = CADMaterialTextureMetadata(
+            assetID: UUID(), slot: .baseColor, mimeType: "image/png",
+            colorSpace: .srgb, orientation: .topLeft,
+            sha256: digest, byteCount: bytes.count)
+        XCTAssertEqual(metadata.verifiedDigest(for: bytes), digest)
+
+        // Byte 1024 also lay outside the former 64-byte head/middle/tail
+        // sample regions. It changes the blob while assetID, claimed digest
+        // and byte count stay identical; only full-Data equality/re-hashing
+        // can distinguish it from the verified bytes.
+        bytes[1024] = bytes[1024] ^ 0xFF
+        XCTAssertNil(metadata.verifiedDigest(for: bytes),
+                     "changed bytes must not reuse the verified verdict")
+        XCTAssertNil(metadata.verifiedDigest(for: bytes),
+                     "the rejected changed blob is cached by its own exact bytes")
     }
 
     // MARK: 4. Unavailable maps / opacity
@@ -349,8 +403,16 @@ final class CADMaterialRenderContractTests: XCTestCase {
             maps: [BodyMaterialMap(slot: .roughness, data: png(.gray),
                                    cacheIdentity: "body-roughness",
                                    colorSpace: .linear, orientation: .topLeft)])
+        // A `.mesh` material is only sampleable when the mesh actually carries
+        // UVs; a map bound to a range without one is deliberately not uploaded
+        // (see testMeshSourceWithoutUVsDropsMapsButKeepsScalars). This fixture
+        // is an imported-mesh shape, so it ships authored UVs.
+        let mesh = triangleMesh(texcoords: [
+            SIMD2<Float>(0, 0), SIMD2<Float>(1, 0),
+            SIMD2<Float>(1, 1), SIMD2<Float>(0, 1),
+        ])
         let drawable = BodyDrawable(
-            id: BodyID(), renderMesh: triangleMesh(), meshRevision: 4,
+            id: BodyID(), renderMesh: mesh, meshRevision: 4,
             modelMatrix: matrix_identity_float4x4,
             baseColor: SIMD4(1, 1, 1, 1),
             material: bodyMaterial,

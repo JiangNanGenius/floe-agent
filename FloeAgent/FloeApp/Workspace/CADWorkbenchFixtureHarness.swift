@@ -143,6 +143,19 @@ struct CADWorkbenchFixtureHarness: View {
                 ProgressView("Preparing CAD fixture…")
             }
         }
+        // Reuse the canonical iPad for a narrow, large-text layout check of
+        // the same production workbench, without creating another Simulator.
+        .frame(maxWidth: ProcessInfo.processInfo.arguments.contains("--ui-test-cad-compact") ? 390 : .infinity)
+        .transformEnvironment(\.horizontalSizeClass) { value in
+            if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-compact") {
+                value = .compact
+            }
+        }
+        .transformEnvironment(\.dynamicTypeSize) { value in
+            if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-large-text") {
+                value = .accessibility1
+            }
+        }
         .accessibilityIdentifier("CADFixtureHarness")
         .task {
             guard document == nil, error == nil else { return }

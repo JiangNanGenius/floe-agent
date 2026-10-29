@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
   "id": "floe.providers.compatibility",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "kind": "providers",
-  "minimumAppVersion": "1.7.0",
+  "minimumAppVersion": "1.7.64",
   "sourceRevision": "",
   "containsScripts": false,
   "requiredCapabilities": [],
   "dependencies": [],
   "releaseNotes": {
-    "zh-Hans": "提供商兼容性映射 + 官方 ProviderCatalog 目录：随包分发经校验的目录文档，安装后由同一签名事务生效。",
-    "en": "Provider compatibility mapping plus the official ProviderCatalog: the validated catalog document ships in-package and activates through the same signed transaction."
+    "zh-Hans": "提供商兼容性映射与官方 ProviderCatalog：新增经审阅的火山引擎 Agent Plan、阿里云 Token Plan 模型与能力条目，并补充阿里云按量服务的图片、视频服务声明。套餐目录只列出已审阅的模型 ID，不声明 /models 列表；目录仍随包分发，经 App 严格校验后由同一签名事务生效。",
+    "en": "Provider compatibility mapping plus the official ProviderCatalog: adds reviewed Volcengine Agent Plan and Alibaba Cloud Token Plan models and capabilities, and declares Alibaba pay-as-you-go image/video roles. Plan entries list reviewed model identifiers only and claim no /models listing; the catalog ships in-package and activates through the same signed transaction after strict app-side validation."
   },
   "privacy": {
     "zh-Hans": "本包不包含 API 密钥、令牌或带凭据的地址；凭据只保存在已批准的凭据存储中。",
@@ -85,6 +85,34 @@
       "supportsModelDiscovery": true
     },
     {
+      "id": "volcengine-agent-plan",
+      "displayName": "Volcengine Agent Plan",
+      "defaultProtocol": "openai-chat-completions",
+      "supportedProtocols": [
+        "openai-chat-completions"
+      ],
+      "authStyle": "bearer",
+      "supportsModelDiscovery": false,
+      "notes": {
+        "zh-Hans": "套餐网关不提供 /models 候选列表；聊天与图片候选仅来自已审阅目录。本轮不提供套餐视频入口。",
+        "en": "The plan gateway exposes no /models candidate listing; chat and image candidates come only from the reviewed catalog. No plan video entry is offered in this update."
+      }
+    },
+    {
+      "id": "alibaba-token-plan",
+      "displayName": "Alibaba Cloud Token Plan",
+      "defaultProtocol": "openai-chat-completions",
+      "supportedProtocols": [
+        "openai-chat-completions"
+      ],
+      "authStyle": "bearer",
+      "supportsModelDiscovery": false,
+      "notes": {
+        "zh-Hans": "Token Plan 使用独立的套餐地址与凭据；聊天、图片和视频候选仅来自已审阅目录，不声明 /models 列表。",
+        "en": "Token Plan uses its own plan endpoint and credentials; chat, image and video candidates come only from the reviewed catalog and claim no /models listing."
+      }
+    },
+    {
       "id": "google-gemini-images",
       "displayName": "Google Gemini Images",
       "defaultProtocol": "openai-chat-completions",
@@ -123,7 +151,7 @@
   ],
   "catalog": "ProviderCatalog.json",
   "catalogNotice": {
-    "zh-Hans": "ProviderCatalog.json 与内置资源一致，且必须通过应用内严格校验后才会生效；目录不包含任何密钥或带凭据的地址。",
-    "en": "ProviderCatalog.json matches the bundled resource and only activates after the app-side strict validation gate; the catalog contains no keys or credential-bearing URLs."
+    "zh-Hans": "ProviderCatalog.json 与内置资源一致，包含 models.dev 基线以及经 Floe 审阅的官方套餐与媒体条目；套餐条目只列出已审阅的模型 ID，不声明 /models 列表。目录不含密钥或带凭据的地址，且必须通过应用内严格校验后才会生效。",
+    "en": "ProviderCatalog.json matches the bundled resource and contains the models.dev baseline plus reviewed official plan and media entries. Plan entries list reviewed model identifiers only and claim no /models listing. The catalog contains no keys or credential-bearing URLs and only activates after the app-side strict validation gate."
   }
 }

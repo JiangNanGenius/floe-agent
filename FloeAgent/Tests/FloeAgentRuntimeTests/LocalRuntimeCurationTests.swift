@@ -52,6 +52,14 @@ struct LocalRuntimeCurationTests {
         return executor
     }
 
+    /// An on-device turn is only final once a visible answer reaches the user.
+    /// A scripted `.completed` with no text is treated as an unfinished turn
+    /// (the runtime requests one continuation), so every deterministic scripted
+    /// run must include an actual final body or the mock will be exhausted.
+    private var finalAnswerScript: [AgentEvent] {
+        [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+    }
+
     @Test("Local geometry edits pin CAD without enabling it in temporary chat")
     func cadIntentKeepsTemporaryCeiling() async throws {
         for temporary in [false, true] {
@@ -62,7 +70,7 @@ struct LocalRuntimeCurationTests {
                 toolDescription: "Inspect and edit CAD documents", parametersJSON: #"{"type":"object","required":["action"],"properties":{"action":{"type":"string"}}}"#,
                 riskLabels: [], isSideEffecting: true)
             let adapter = MockAdapter()
-            adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+            adapter.script = [finalAnswerScript]
             let runtime = FloeAgentRuntime(configuration: .init(provider: provider,
                 model: makeModel(providerID: provider.id), temporaryReadOnly: temporary),
                 adapter: adapter, policy: HumanApprovalPolicy(), executor: mockExecutor)
@@ -86,7 +94,7 @@ struct LocalRuntimeCurationTests {
         let curated = ["web.search", "workspace.readFile", "workspace.listDirectory"]
         let mockExecutor = executor(names: hidden + curated)
         let adapter = MockAdapter()
-        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        adapter.script = [finalAnswerScript]
         let runtime = FloeAgentRuntime(
             configuration: .init(provider: provider, model: makeModel(providerID: provider.id)),
             adapter: adapter,
@@ -110,7 +118,7 @@ struct LocalRuntimeCurationTests {
             "workspace.readFile", "exec.shell", "environment.prepareLinux"
         ])
         let adapter = MockAdapter()
-        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        adapter.script = [finalAnswerScript]
         let runtime = FloeAgentRuntime(
             configuration: .init(provider: provider, model: makeModel(providerID: provider.id)),
             adapter: adapter,
@@ -138,7 +146,7 @@ struct LocalRuntimeCurationTests {
         ]
         let mockExecutor = executor(names: names)
         let adapter = MockAdapter()
-        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        adapter.script = [finalAnswerScript]
         let runtime = FloeAgentRuntime(
             configuration: .init(provider: provider, model: makeModel(providerID: provider.id)),
             adapter: adapter,
@@ -179,7 +187,7 @@ struct LocalRuntimeCurationTests {
             "exec.shell", "environment.prepareLinux"
         ])
         let adapter = MockAdapter()
-        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        adapter.script = [finalAnswerScript]
         let runtime = FloeAgentRuntime(
             configuration: .init(
                 conversationID: conversationID,
@@ -222,7 +230,7 @@ struct LocalRuntimeCurationTests {
             )
         }
         let adapter = MockAdapter()
-        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        adapter.script = [finalAnswerScript]
         let runtime = FloeAgentRuntime(
             configuration: .init(provider: provider, model: makeModel(providerID: provider.id)),
             adapter: adapter,

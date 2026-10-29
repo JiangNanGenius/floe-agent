@@ -125,6 +125,12 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     let cache = CADPresentationResourceCache()
     private let builder: CADPresentationEntityBuilder
     private let anchor = AnchorEntity(world: .zero)
+    /// Explicit non-AR camera. RealityKit expects the app to provide the
+    /// camera in non-AR mode; without one the implicit default camera is what
+    /// renders, so the stage's fitted inverse-view transform does not own the
+    /// visible framing. The observed Present view framed the whole 2 m ground
+    /// plane instead of the fitted model, which is why Fit appeared inert.
+    private let cameraEntity = PerspectiveCamera()
     private var stage: Entity?
     private var camera = CADPresentationCamera()
     private var cameraRestored = false
@@ -164,8 +170,27 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         builder = CADPresentationEntityBuilder(cache: cache)
         super.init()
         arView.backgroundColor = .clear
+        cameraEntity.name = "CADPresentationCamera"
+        cameraEntity.camera.fieldOfViewInDegrees = camera.fovYDegrees
+        cameraEntity.camera.fieldOfViewOrientation = .vertical
+        anchor.addChild(cameraEntity)
         arView.scene.addAnchor(anchor)
         installGestures()
+    }
+
+    /// One place that keeps the camera component and the stage's inverse view
+    /// transform in sync. The camera stays at the anchor origin looking down
+    /// −Z; every orbit/pan/zoom/fit moves the stage by the inverse camera
+    /// matrix, exactly as `CADPresentationCamera.stageTransform` defines.
+    private func applyCamera() {
+        cameraEntity.camera.fieldOfViewInDegrees = camera.fovYDegrees
+        stage?.transform = Transform(matrix: camera.stageTransform)
+    }
+
+    private var viewportAspect: Float? {
+        let size = arView.bounds.size
+        guard size.width > 1, size.height > 1 else { return nil }
+        return Float(size.width / size.height)
     }
 
     // MARK: Attachment
@@ -205,10 +230,11 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             issues = result.issues
             handle?.setIssues(issues)
             if buildKey == nil && !cameraRestored {
-                camera = CADPresentationCamera.fitted(to: scene.bounds)
+                camera = CADPresentationCamera.fitted(
+                    to: scene.bounds, aspect: viewportAspect)
             }
-            camera.fitIfInvalid(scene.bounds)
-            result.stage.transform = Transform(matrix: camera.stageTransform)
+            camera.fitIfInvalid(scene.bounds, aspect: viewportAspect)
+            applyCamera()
             await applyBackground(scene.environment)
             buildKey = token
             handle?.markFailure(nil)
@@ -353,17 +379,17 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         guard saved.isValid else { return }
         camera = saved
         cameraRestored = true
-        stage?.transform = Transform(matrix: camera.stageTransform)
+        applyCamera()
     }
 
     func fit() {
-        camera.fit(currentBounds)
-        stage?.transform = Transform(matrix: camera.stageTransform)
+        camera.fit(currentBounds, aspect: viewportAspect)
+        applyCamera()
     }
 
     private func updateCameraTransform() {
         guard camera.isValid else { return }
-        stage?.transform = Transform(matrix: camera.stageTransform)
+        applyCamera()
     }
 
     // MARK: Gestures
@@ -487,9 +513,10 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
 // MARK: - Camera fit helper
 
 private extension CADPresentationCamera {
-    mutating func fitIfInvalid(_ bounds: CADPresentationBounds?) {
+    mutating func fitIfInvalid(_ bounds: CADPresentationBounds?, aspect: Float?) {
         if !isValid {
-            self = CADPresentationCamera.fitted(to: bounds, fovYDegrees: fovYDegrees)
+            self = CADPresentationCamera.fitted(
+                to: bounds, fovYDegrees: fovYDegrees, aspect: aspect)
         }
     }
 }

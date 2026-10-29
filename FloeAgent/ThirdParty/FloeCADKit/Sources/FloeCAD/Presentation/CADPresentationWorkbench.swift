@@ -456,6 +456,11 @@ public struct CADPresentationWorkbenchView: View {
             // A new package at the same navigation position must not inherit
             // the previous document's Present store, camera or capture handle.
             .id(document.url.standardizedFileURL.path)
+            // Edit's editor view owns this same compact title. Present has no
+            // editor view, so the shared wrapper keeps it in both modes
+            // instead of leaving a blank navigation bar above Present.
+            .navigationTitle(document.name)
+            .navigationBarTitleDisplayMode(.inline)
     }
 }
 

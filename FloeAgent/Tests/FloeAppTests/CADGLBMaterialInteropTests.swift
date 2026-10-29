@@ -149,14 +149,32 @@ final class CADGLBMaterialInteropTests: XCTestCase {
         return try XCTUnwrap(info["index"] as? Int)
     }
 
-    /// Decode straight RGBA from an encoded PNG (ImageIO returns
-    /// premultiplied bitmap bytes; un-premultiply for comparison).
+    /// Decode straight RGBA from an encoded PNG. ImageIO exposes PNG pixels as
+    /// an 8-bit straight-alpha (`CGImageAlphaInfo.last`) image, so its provider
+    /// bytes are read directly; drawing into the premultiplied bitmap context
+    /// used below would quantise RGB against alpha and cannot recover a low-
+    /// alpha colour exactly (the property these tests inspect). Other layouts
+    /// fall back to the context draw + un-premultiply path.
     private func decodedRGBA(_ data: Data) throws
         -> (width: Int, height: Int, pixels: [UInt8]) {
         let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
         let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
         let width = image.width
         let height = image.height
+        if image.bitsPerComponent == 8, image.bitsPerPixel == 32,
+           image.alphaInfo == .last,
+           let raw = image.dataProvider?.data as Data?,
+           raw.count >= image.bytesPerRow * height {
+            var bytes = [UInt8](repeating: 0, count: width * height * 4)
+            for row in 0..<height {
+                let sourceStart = row * image.bytesPerRow
+                let targetStart = row * width * 4
+                bytes.replaceSubrange(
+                    targetStart..<(targetStart + width * 4),
+                    with: raw[sourceStart..<(sourceStart + width * 4)])
+            }
+            return (width, height, bytes)
+        }
         var bytes = [UInt8](repeating: 0, count: width * height * 4)
         var drew = false
         bytes.withUnsafeMutableBytes { buffer in

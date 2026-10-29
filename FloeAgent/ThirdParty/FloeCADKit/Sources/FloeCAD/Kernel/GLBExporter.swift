@@ -714,9 +714,10 @@ nonisolated enum GLBExporter {
 
     /// glTF base-colour alpha also carries opacity. Pack the straight albedo
     /// RGB and the opacity map's luminance into one RGBA PNG. Changing the
-    /// combined alpha must not change the base RGB: ImageIO backgrounds use
-    /// premultiplied bytes, so `rgbaBytes` un-premultiplies and `encodePNG`
-    /// re-premultiplies only for encoding (PNG itself stays straight alpha).
+    /// combined alpha must not change the base RGB: `rgbaBytes` un-premultiplies
+    /// the decoded inputs, and `encodePNG` writes those straight RGB bytes
+    /// directly (`CGImageAlphaInfo.last`) so the encoder never quantises RGB
+    /// against the new, lower alpha.
     private static func packBaseColorWithOpacity(
         base: Data?, baseOrientation: MaterialTextureOrientation,
         baseColorSpace: MaterialTextureColorSpace,
@@ -814,32 +815,18 @@ nonisolated enum GLBExporter {
         return encodePNG(pixels: converted, width: width, height: height)
     }
 
-    /// Encode straight-alpha RGBA pixels as PNG. CGImage bitmap data is
-    /// premultiplied, so premultiply a copy for the provider only; ImageIO
-    /// then writes the straight-alpha PNG glTF expects.
+    /// Encode straight-alpha RGBA pixels as PNG without a premultiplied
+    /// round trip. `CGImage` supports `.last` (straight alpha) bitmap data, so
+    /// ImageIO receives the authored RGB bytes unchanged. Premultiplying for
+    /// the provider and letting ImageIO un-premultiply quantises RGB against
+    /// the (possibly low) combined alpha and visibly shifts the base colour.
     private static func encodePNG(pixels: [UInt8], width: Int, height: Int) -> Data? {
         guard pixels.count == width * height * 4 else { return nil }
-        var premultiplied = pixels
-        var pixel = 0
-        while pixel < premultiplied.count {
-            let a = Int(premultiplied[pixel + 3])
-            if a == 0 {
-                premultiplied[pixel] = 0
-                premultiplied[pixel + 1] = 0
-                premultiplied[pixel + 2] = 0
-            } else if a < 255 {
-                for channel in 0..<3 {
-                    let value = Int(premultiplied[pixel + channel]) * a
-                    premultiplied[pixel + channel] = UInt8((value + 127) / 255)
-                }
-            }
-            pixel += 4
-        }
-        guard let provider = CGDataProvider(data: Data(premultiplied) as CFData),
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
               let image = CGImage(width: width, height: height, bitsPerComponent: 8,
                                   bitsPerPixel: 32, bytesPerRow: width * 4,
                                   space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
                                   provider: provider, decode: nil, shouldInterpolate: false,
                                   intent: .defaultIntent) else { return nil }
         let output = NSMutableData()

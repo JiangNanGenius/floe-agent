@@ -1601,8 +1601,10 @@ struct CadNativeEditToolTests {
         let host = FakeCadHost()
         await host.setThreeDReply(#"{"ok":true,"mutated":true,"revision":5,"change_count":3}"#)
         let tool = CadDocumentTool(host: host)
+        // The caller supplies the revision it read from the document; the
+        // explicit top-level pin must reach the host unchanged.
         let output = try await execute(tool, """
-        {"action":"material","path":"part.floecad","payload":
+        {"action":"material","path":"part.floecad","revision":4,"payload":
          "{\\"action\\":\\"create\\",\\"name\\":\\"Copper\\",\\"color\\":[0.8,0.4,0.2,1.0],\\"metallic\\":1.0}"}
         """, context: makeContext())
         #expect(output.summary.contains("cad.document material"))
@@ -1683,10 +1685,10 @@ struct CadNativeEditToolTests {
         let host = FakeCadHost()
         await host.setThreeDReply(#"{"ok":true,"mutated":true}"#)
         let tool = CadDocumentTool(host: host)
-        let args = try decode("""
+        let args = try decode(#"""
         {"action":"material","path":"part.floecad","payload":
          "{\"action\":\"libraryExport\",\"global\":true}"}
-        """)
+        """#)
         let context = ToolContext(
             runID: UUID(), toolCallID: "call-temp-1", scope: .local,
             workspaceRootURL: URL(fileURLWithPath: "/tmp/workspace"),
@@ -1705,9 +1707,9 @@ struct CadNativeEditToolTests {
 
         // A non-global export only returns JSON bytes; it remains a read.
         await host.setThreeDReply(#"{"ok":true,"library_json":"{}"}"#)
-        let readArgs = try decode("""
+        let readArgs = try decode(#"""
         {"action":"material","path":"part.floecad","payload":"{\"action\":\"libraryExport\"}"}
-        """)
+        """#)
         _ = try await tool.execute(readArgs, context: context)
         #expect(await host.threeDRequests.count == 1)
     }

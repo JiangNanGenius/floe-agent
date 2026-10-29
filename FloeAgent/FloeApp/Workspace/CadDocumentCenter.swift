@@ -2285,6 +2285,18 @@ actor CadDocumentCenter: CadDocumentHost {
         return nil
     }
 
+    /// A `.floecad` package is a DIRECTORY (`manifest.json` + `document.json`
+    /// + `blobs/`), never a regular file. This host-side check only proves the
+    /// exact target exists as a package directory inside the verified canvas
+    /// folder; package-content validation (schema, manifest, blob digests) and
+    /// recovery of an interrupted commit stay in the versioned store.
+    private static func isExistingCanvasPackageDirectory(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path,
+                                            isDirectory: &isDirectory) else { return false }
+        return isDirectory.boolValue
+    }
+
     @MainActor
     private static func validatedCanvasPackage(
         canvasID: UUID, fileName: String
@@ -2316,6 +2328,9 @@ actor CadDocumentCenter: CadDocumentHost {
         guard canonicalPackage.path.hasPrefix(resolvedDirectory.path + "/"),
               canonicalPackage.lastPathComponent == fileName else {
             throw FloeError.unauthorized
+        }
+        guard Self.isExistingCanvasPackageDirectory(canonicalPackage) else {
+            throw FloeError.notFound("Canvas CAD document")
         }
         return TrustedCanvasPackage(canvasID: canvasID,
                                     packageURL: canonicalPackage,
@@ -2382,7 +2397,9 @@ actor CadDocumentCenter: CadDocumentHost {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: canonicalPackage.path,
                                                  isDirectory: &isDirectory),
-                  !isDirectory.boolValue else {
+                  isDirectory.boolValue else {
+                // A real package is a directory; a plain file or a deleted
+                // package fails closed here.
                 throw FloeError.notFound("Canvas CAD document")
             }
             let resolver = WorkspacePathGuard(

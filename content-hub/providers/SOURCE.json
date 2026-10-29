@@ -1,26 +1,42 @@
 {
-  "attributionNotes": [
-    "Provider names, model identifiers and documentation links are derived from the open models.dev catalog (MIT).",
-    "Floe curates, filters and maps the data to its own provider kinds, protocols and auth styles.",
-    "No upstream code, JS SDK content, API keys or user credentials are copied.",
-    "Merged upstream ids are listed in each provider's upstreamIDs field."
-  ],
-  "availableCount": 16,
+  "project": "sst/models.dev",
   "canonicalProject": "anomalyco/models.dev",
-  "documentSHA256": "4f5cb775b475a8f3dc0253c986223ca8dcd55a21f29ab3e036e397e560879eef",
+  "url": "https://models.dev",
   "documentURL": "https://models.dev/api.json",
-  "fetchedAt": "2026-10-15T12:36:41Z",
-  "generatedBy": "content-hub/providers/import_models_dev.py",
   "license": "MIT",
   "licenseURL": "https://github.com/sst/models.dev/blob/dev/LICENSE",
-  "modelEntryCount": 582,
-  "modelMetadataEntryCount": 416,
+  "documentSHA256": "4f5cb775b475a8f3dc0253c986223ca8dcd55a21f29ab3e036e397e560879eef",
+  "fetchedAt": "2026-10-15T12:36:41Z",
   "pinPolicy": "canonical pin is documentSHA256 of the served api.json; the recorded repository revision is informational and not assumed byte-identical to the served response",
-  "project": "sst/models.dev",
-  "providerCount": 20,
   "repositoryRevisionAtFetchTime": "883c97dce87c7557c04afdbb5833c694560615f1",
   "repositoryRevisionDate": "2026-10-15T11:26:58Z",
-  "serviceOfferCount": 1,
+  "providerCount": 22,
+  "availableCount": 18,
   "unsupportedCount": 4,
-  "url": "https://models.dev"
+  "modelEntryCount": 609,
+  "modelMetadataEntryCount": 459,
+  "serviceOfferCount": 6,
+  "serviceOfferModelEntryCount": 39,
+  "generatedBy": "content-hub/providers/import_models_dev.py",
+  "generatedWith": [
+    "content-hub/providers/import_models_dev.py",
+    "content-hub/providers/curated-overrides.json"
+  ],
+  "curatedOverrides": {
+    "path": "content-hub/providers/curated-overrides.json",
+    "sha256": "6b6af390c120e111e3dee8d935440bfb99f49b081f25a4b67d05413fc1e1fbcd",
+    "revision": "2026-10-30.1",
+    "reviewedAt": "2026-10-29T18:25:00Z",
+    "upstreamDocumentSHA256": "4f5cb775b475a8f3dc0253c986223ca8dcd55a21f29ab3e036e397e560879eef",
+    "additionalProviderCount": 2,
+    "patchedProviderCount": 2,
+    "note": "Official plan entries and PAYG media rows come from first-party Floe review, not models.dev. The models.dev documentSHA256 pin covers the upstream baseline only."
+  },
+  "attributionNotes": [
+    "Provider names, model identifiers and documentation links in the upstream baseline are derived from the open models.dev catalog (MIT).",
+    "Floe curates, filters and maps the data to its own provider kinds, protocols and auth styles.",
+    "No upstream code, JS SDK content, API keys or user credentials are copied.",
+    "Merged upstream ids are listed in each provider's upstreamIDs field.",
+    "Official Volcengine Agent Plan / Alibaba Token Plan entries and the patched PAYG media rows are first-party Floe review facts declared in curated-overrides.json; they are not models.dev content."
+  ]
 }

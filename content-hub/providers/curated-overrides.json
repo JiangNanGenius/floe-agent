@@ -1,0 +1,641 @@
+{
+  "schemaVersion": 1,
+  "revision": "2026-10-30.1",
+  "reviewedAt": "2026-10-29T18:25:00Z",
+  "upstreamPin": {
+    "project": "models.dev",
+    "url": "https://models.dev",
+    "documentURL": "https://models.dev/api.json",
+    "documentSHA256": "4f5cb775b475a8f3dc0253c986223ca8dcd55a21f29ab3e036e397e560879eef",
+    "fetchedAt": "2026-10-15T12:36:41Z"
+  },
+  "policy": {
+    "mergeOrder": "pinned models.dev baseline first, then providerPatches keyed by presetID, then additionalProviders in declared order",
+    "officialFacts": "Provider patches and additional provider entries are first-party official Floe review facts. They are not models.dev data and must never be attributed to models.dev.",
+    "noDiscovery": "Plan entries declare reviewed model identifiers only; they do not declare or imply a /models listing capability.",
+    "sourceOfTruth": "This file is the only manual source for catalog overrides. The importer must not hardcode these facts and must not read the generated app catalog."
+  },
+  "provenance": {
+    "alibaba": {
+      "scope": "PAYG media model lists and display-name disambiguation",
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-image-generation-and-editing-api-reference",
+          "usedFor": "Alibaba pay-as-you-go Qwen Image 2.1/3.0 identifiers and image-generation role"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference",
+          "usedFor": "Alibaba pay-as-you-go wan2.7 image and wan3.0 video identifiers"
+        }
+      ],
+      "note": "The upstream models.dev baseline stays authoritative for every unchanged chat model and metadata row."
+    },
+    "volcengine": {
+      "scope": "display-name disambiguation only",
+      "sources": [],
+      "note": "The PAYG model list, metadata and routes are unchanged from the pinned models.dev baseline; only the suffix distinguishes it from Agent Plan."
+    },
+    "volcengine-agent-plan": {
+      "scope": "official Agent Plan chat/image candidates and limits",
+      "tableUpdated": "2026-10-29",
+      "sources": [
+        {
+          "url": "https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-plan-overview",
+          "markdownSHA256": "7f4689e0ef952e80163cc8449a8b7270150a96e240f3bfbe13d3b0e0abe8e06e",
+          "usedFor": "non-retired chat ids, context/output limits, verified image inputs, always-on reasoning, retiring-id exclusions"
+        },
+        {
+          "url": "https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-visual-models",
+          "markdownSHA256": "fd0416c2f2b1933882a4d99597e5a892a4b4b0988b0ddf8631955c4808700a9a",
+          "usedFor": "plan-only Seedream image offer and the explicit absence of a plan video entry"
+        },
+        {
+          "url": "https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-opencode",
+          "htmlSHA256": "02f776d6c2f5ce0365c4a5fac82e4cf18404d8883c5a4eb8253154a0efd01497",
+          "usedFor": "ark-code-latest selector example and documented image-input enablement"
+        }
+      ],
+      "note": "No context/output limit is assigned to ark-code-latest because the official table does not publish one."
+    },
+    "alibaba-token-plan": {
+      "scope": "official Token Plan chat/image/video candidates and limits",
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/token-plan-personal-overview",
+          "usedFor": "Token Plan chat model identifiers and published limits"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/token-plan-multimodal-gen",
+          "usedFor": "Token Plan image and video offers on the plan-specific native route"
+        }
+      ],
+      "note": "PAYG keys, endpoints and models are never merged into this plan entry."
+    }
+  },
+  "providerPatches": {
+    "alibaba": {
+      "name": "Alibaba Cloud · Pay as you go",
+      "serviceOffers": [
+        {
+          "role": "image",
+          "models": [
+            "qwen-image-2.1-pro",
+            "qwen-image-2.1-turbo",
+            "qwen-image-3.0",
+            "qwen-image-3.0-pro",
+            "wan2.7-image",
+            "wan2.7-image-pro"
+          ]
+        },
+        {
+          "role": "video",
+          "models": [
+            "wan3.0-video"
+          ]
+        }
+      ],
+      "modelMetadata": {
+        "qwen-image-2.1-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-2.1-turbo": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-3.0": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-3.0-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan2.7-image": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan2.7-image-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan3.0-video": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        }
+      }
+    },
+    "volcengine": {
+      "name": "Volcengine Ark · Pay as you go"
+    }
+  },
+  "additionalProviders": [
+    {
+      "presetID": "volcengine-agent-plan",
+      "name": "Volcengine Agent Plan",
+      "aliases": [
+        "火山引擎 Agent Plan",
+        "火山套餐",
+        "Agent Plan"
+      ],
+      "kind": "custom",
+      "defaultProtocol": "openai-chat-completions",
+      "baseURL": "https://ark.cn-beijing.volces.com/api/plan/v3",
+      "domains": [
+        "ark.cn-beijing.volces.com"
+      ],
+      "models": [
+        "ark-code-latest",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash-economy",
+        "doubao-seed-2.0-mini",
+        "doubao-seed-2.1-lite",
+        "doubao-seed-2.1-pro",
+        "doubao-seed-evolving",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "kimi-k2.8-preview",
+        "kimi-k3",
+        "kimi-k3.1-pro"
+      ],
+      "availability": "available",
+      "unsupportedReason": null,
+      "upstreamID": "volcengine-agent-plan",
+      "authStyle": "bearer",
+      "toolNameCompatibility": false,
+      "serviceOffers": [
+        {
+          "role": "image",
+          "models": [
+            "doubao-seedream-5-0-pro",
+            "doubao-seedream-5.0-flash",
+            "doubao-seedream-5.0-lite"
+          ]
+        }
+      ],
+      "modelMetadata": {
+        "ark-code-latest": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true
+        },
+        "deepseek-v4-flash": {
+          "output": [
+            "text"
+          ],
+          "contextTokens": 1048576,
+          "maxOutputTokens": 393216
+        },
+        "deepseek-v4-pro": {
+          "output": [
+            "text"
+          ],
+          "contextTokens": 1048576,
+          "maxOutputTokens": 393216
+        },
+        "deepseek-v4.1-flash": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 393216
+        },
+        "deepseek-v4.1-flash-economy": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 393216
+        },
+        "doubao-seed-2.0-mini": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "contextTokens": 262144,
+          "maxOutputTokens": 131072
+        },
+        "doubao-seed-2.1-lite": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 262144
+        },
+        "doubao-seed-2.1-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 262144
+        },
+        "doubao-seed-evolving": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 262144
+        },
+        "glm-5.3": {
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 131072
+        },
+        "glm-5.3-flash": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 131072
+        },
+        "kimi-k2.8-preview": {
+          "output": [
+            "text"
+          ],
+          "contextTokens": 1048576,
+          "maxOutputTokens": 1048576
+        },
+        "kimi-k3": {
+          "output": [
+            "text"
+          ],
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 131072
+        },
+        "kimi-k3.1-pro": {
+          "output": [
+            "text"
+          ],
+          "contextTokens": 1048576,
+          "maxOutputTokens": 1048576
+        },
+        "doubao-seedream-5-0-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "doubao-seedream-5.0-flash": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "doubao-seedream-5.0-lite": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "presetID": "alibaba-token-plan",
+      "name": "Alibaba Cloud Token Plan",
+      "aliases": [
+        "阿里云 Token Plan",
+        "百炼 Token Plan",
+        "Token Plan"
+      ],
+      "kind": "custom",
+      "defaultProtocol": "openai-chat-completions",
+      "baseURL": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "domains": [
+        "token-plan.cn-beijing.maas.aliyuncs.com"
+      ],
+      "models": [
+        "auto",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-pro",
+        "deepseek-v4-pro-0813",
+        "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash-1017",
+        "glm-5.2",
+        "glm-5.3",
+        "qwen3.6-flash",
+        "qwen3.7-max",
+        "qwen3.7-plus",
+        "qwen3.8-flash",
+        "qwen3.8-max"
+      ],
+      "availability": "available",
+      "unsupportedReason": null,
+      "upstreamID": "alibaba-token-plan",
+      "authStyle": "bearer",
+      "toolNameCompatibility": false,
+      "serviceOffers": [
+        {
+          "role": "image",
+          "models": [
+            "qwen-image-3.0-pro",
+            "wan2.7-image",
+            "wan2.7-image-pro"
+          ]
+        },
+        {
+          "role": "video",
+          "models": [
+            "happyhorse-1.1-i2v",
+            "happyhorse-1.1-t2v",
+            "wan3.0-video"
+          ]
+        }
+      ],
+      "modelMetadata": {
+        "auto": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": false,
+          "reasoning": true,
+          "contextTokens": 1000000
+        },
+        "deepseek-v4-flash-0731": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": false,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 393216
+        },
+        "deepseek-v4-pro": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": false,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 393216
+        },
+        "deepseek-v4-pro-0813": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": false,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 393216
+        },
+        "deepseek-v4.1-flash": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "reasoning": true,
+          "contextTokens": 1048576
+        },
+        "deepseek-v4.1-flash-1017": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "reasoning": true,
+          "contextTokens": 1048576
+        },
+        "glm-5.2": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": false,
+          "reasoning": true,
+          "contextTokens": 1048576
+        },
+        "glm-5.3": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": false,
+          "reasoning": true,
+          "contextTokens": 1048576
+        },
+        "happyhorse-1.1-i2v": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "happyhorse-1.1-t2v": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "qwen-image-3.0-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen3.6-flash": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "reasoning": true
+        },
+        "qwen3.7-max": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": false,
+          "reasoning": true
+        },
+        "qwen3.7-plus": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "reasoning": true
+        },
+        "qwen3.8-flash": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "reasoning": true,
+          "contextTokens": 983616,
+          "maxOutputTokens": 131072
+        },
+        "qwen3.8-max": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "text"
+          ],
+          "attachment": true,
+          "reasoning": true,
+          "contextTokens": 983616,
+          "maxOutputTokens": 131072
+        },
+        "wan2.7-image": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan2.7-image-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan3.0-video": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        }
+      }
+    }
+  ]
+}
