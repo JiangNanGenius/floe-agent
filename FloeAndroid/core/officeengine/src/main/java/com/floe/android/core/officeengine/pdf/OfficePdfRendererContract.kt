@@ -26,6 +26,17 @@ object OfficePdfRendererContract {
     const val T_RENDER_PAGE = 3
 
     /**
+     * fd (read-only, verified source) + pageIndex + maxChars + optional
+     * RAM-only password → status + typed bounded page text/regions
+     * ([OfficePdfPageText]). Added 2026-10-30: the SAME isolated parser owns
+     * text extraction, so untrusted PDF bytes are never parsed in the app
+     * process. API 35+ (or the Mainline `framework-pdf` backport, detected by
+     * class presence) supports it; older devices answer
+     * [S_TEXT_UNSUPPORTED] so callers can honestly request OCR.
+     */
+    const val T_PAGE_TEXT = 5
+
+    /**
      * Host → renderer: "I copied (or dropped) the pixels of shmId; the
      * renderer may close its handle." Always the transaction AFTER the
      * render reply has fully returned, which is exactly when the binder
@@ -44,10 +55,31 @@ object OfficePdfRendererContract {
     const val S_INVALID_PDF = 2
 
     /**
-     * PdfRenderer refused: password-protected or unsupported security scheme
-     * (SecurityException). Honest refusal — no auth work in this slice.
+     * PdfRenderer refused an encrypted document and NO password was supplied
+     * (SecurityException): the caller may ask the user for one.
      */
     const val S_PASSWORD = 3
+
+    /**
+     * A password WAS supplied and the platform still refused the document
+     * (SecurityException): wrong password or an unsupported security scheme.
+     * Never a statement about the original file, which is never modified.
+     */
+    const val S_PASSWORD_REJECTED = 6
+
+    /**
+     * The device has no public password-capable renderer (API < 31, or the
+     * Mainline `PdfRendererPreV` module is absent on 31–34). Typed platform
+     * limitation, not a wrong-password guess.
+     */
+    const val S_PASSWORD_UNSUPPORTED = 7
+
+    /**
+     * The platform renderer exposes no text-content API on this device
+     * (API < 31, module absent). The caller must use OCR instead of claiming
+     * an empty text layer.
+     */
+    const val S_TEXT_UNSUPPORTED = 8
 
     /** Renderer backlog bound hit; the host may retry after the current work drains. */
     const val S_BUSY = 4
@@ -75,5 +107,12 @@ object OfficePdfRendererContract {
     fun validZoom(zoomPercent: Int): Boolean =
         zoomPercent in OfficePdfGeometry.MIN_ZOOM_PERCENT..OfficePdfGeometry.MAX_ZOOM_PERCENT
 
-    fun validStatus(status: Int): Boolean = status in S_OK..S_INTERNAL
+    fun validStatus(status: Int): Boolean = status in S_OK..S_TEXT_UNSUPPORTED
+
+    /** True only for the statuses a page-text transaction may legally answer. */
+    fun validTextStatus(status: Int): Boolean = status == S_OK ||
+        status == S_BAD_REQUEST || status == S_INVALID_PDF ||
+        status == S_PASSWORD || status == S_PASSWORD_REJECTED ||
+        status == S_PASSWORD_UNSUPPORTED || status == S_TEXT_UNSUPPORTED ||
+        status == S_BUSY || status == S_INTERNAL
 }

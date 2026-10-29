@@ -112,7 +112,12 @@ sealed class PdfFailure {
     /** Renderer says the bytes are not a parseable PDF. */
     object InvalidPdf : PdfFailure()
 
-    /** Renderer refused: password-protected / unsupported security scheme (honest refusal, no auth work). */
+    /**
+     * The renderer refused for a password/security reason. The host does not
+     * guess whether the password was wrong or the device lacks a password
+     * channel; the caller (Notes media) owns that distinction because it knows
+     * whether it supplied a secret and what this device supports.
+     */
     object PasswordProtected : PdfFailure()
 
     /** Renderer busy (bounded backlog) — the caller may retry once the current work drains. */
@@ -130,6 +135,16 @@ sealed class PdfDocResult {
 sealed class PdfPageResult {
     data class Rendered(val bitmap: Bitmap, val widthPx: Int, val heightPx: Int) : PdfPageResult()
     data class Failed(val failure: PdfFailure) : PdfPageResult()
+}
+
+sealed class PdfTextResult {
+    /** Bounded, source/page-tagged text extracted in the isolated renderer. */
+    data class Page(val page: OfficePdfPageText) : PdfTextResult()
+
+    /** This device's platform renderer has no text-content API; use OCR. */
+    object Unsupported : PdfTextResult()
+
+    data class Failed(val failure: PdfFailure) : PdfTextResult()
 }
 
 class OfficePdfRenderHost(context: Context) {
@@ -169,12 +184,25 @@ class OfficePdfRenderHost(context: Context) {
 
     /** Real page count from the renderer itself (never guessed from file size). */
     fun documentInfo(source: OfficePdfVerifiedSource, onResult: (PdfDocResult) -> Unit) {
+        documentInfo(source, null, onResult)
+    }
+
+    /**
+     * documentInfo with an OPTIONAL RAM-only password (same host/worker/
+     * delivery fence). The caller owns the char array and must keep it valid
+     * until the callback returns; the host never retains or logs it.
+     */
+    fun documentInfo(
+        source: OfficePdfVerifiedSource,
+        password: CharArray?,
+        onResult: (PdfDocResult) -> Unit,
+    ) {
         if (lifetime.isReleased()) return
         val job = runCatching { worker.submit {
             val result: PdfDocResult = try {
                 val b = ensureBinderBlocking()
                 withFd(source) { fd ->
-                    when (val reply = OfficePdfRendererChannel.documentInfo(b, nextId(), fd)) {
+                    when (val reply = OfficePdfRendererChannel.documentInfo(b, nextId(), fd, password)) {
                         is PdfRenderReply.Info -> PdfDocResult.Ready(reply.pageCount)
                         is PdfRenderReply.Refusal -> PdfDocResult.Failed(mapFailure(reply.status))
                         else -> PdfDocResult.Failed(PdfFailure.Transport)
@@ -203,12 +231,26 @@ class OfficePdfRenderHost(context: Context) {
         zoomPercent: Int,
         onResult: (PdfPageResult) -> Unit,
     ) {
+        renderPage(source, pageIndex, zoomPercent, null, onResult)
+    }
+
+    /**
+     * Renders one page of a password-protected document. Same worker,
+     * descriptor, bounding and delivery fences as [renderPage].
+     */
+    fun renderPage(
+        source: OfficePdfVerifiedSource,
+        pageIndex: Int,
+        zoomPercent: Int,
+        password: CharArray?,
+        onResult: (PdfPageResult) -> Unit,
+    ) {
         if (lifetime.isReleased()) return
         val job = runCatching { worker.submit {
             val result: PdfPageResult = try {
                 val b = ensureBinderBlocking()
                 withFd(source) { fd ->
-                    when (val reply = OfficePdfRendererChannel.renderPage(b, nextId(), fd, pageIndex, zoomPercent)) {
+                    when (val reply = OfficePdfRendererChannel.renderPage(b, nextId(), fd, pageIndex, zoomPercent, password)) {
                         is PdfRenderReply.Page -> PdfPageResult.Rendered(reply.bitmap, reply.widthPx, reply.heightPx)
                         is PdfRenderReply.Refusal -> PdfPageResult.Failed(mapFailure(reply.status))
                         else -> PdfPageResult.Failed(PdfFailure.Transport)
@@ -243,6 +285,64 @@ class OfficePdfRenderHost(context: Context) {
         if (previous != null && !previous.isDone && !previous.isCancelled) {
             previous.cancel(false)
         }
+        if (job != null) currentJob = job
+    }
+
+    /**
+     * Extracts one page's bounded text + point-space regions from the SAME
+     * isolated parser. The source shape and the payload identity (page index
+     * + exact snapshot byte length) are re-validated here; a malformed reply
+     * is a transport failure, never an empty text claim.
+     */
+    fun pageText(
+        source: OfficePdfVerifiedSource,
+        pageIndex: Int,
+        password: CharArray?,
+        onResult: (PdfTextResult) -> Unit,
+    ) {
+        if (lifetime.isReleased()) {
+            // Always answer: a suspended caller must not wait forever for a
+            // host that has already been released.
+            onResult(PdfTextResult.Failed(PdfFailure.Transport))
+            return
+        }
+        if (!OfficePdfRendererContract.validPageIndex(pageIndex)) {
+            onResult(PdfTextResult.Failed(PdfFailure.Transport))
+            return
+        }
+        val job = runCatching { worker.submit {
+            val result: PdfTextResult = try {
+                val b = ensureBinderBlocking()
+                withFd(source) { fd ->
+                    when (val reply = OfficePdfRendererChannel.pageText(
+                        b,
+                        nextId(),
+                        fd,
+                        pageIndex,
+                        OfficePdfTextContract.MAX_TEXT_CHARS_PER_PAGE,
+                        password,
+                    )) {
+                        is PdfRenderReply.Text -> {
+                            val page = reply.page
+                            if (OfficePdfTextContract.accept(page, pageIndex, source.expectedBytes)) {
+                                PdfTextResult.Page(page)
+                            } else {
+                                PdfTextResult.Failed(PdfFailure.Transport)
+                            }
+                        }
+                        is PdfRenderReply.Refusal -> when (reply.status) {
+                            OfficePdfRendererContract.S_TEXT_UNSUPPORTED -> PdfTextResult.Unsupported
+                            else -> PdfTextResult.Failed(mapFailure(reply.status))
+                        }
+                        else -> PdfTextResult.Failed(PdfFailure.Transport)
+                    }
+                } ?: PdfTextResult.Failed(PdfFailure.Transport)
+            } catch (_: Throwable) {
+                PdfTextResult.Failed(PdfFailure.Transport)
+            }
+            if (lifetime.isReleased()) return@submit
+            main.post { if (lifetime.mayDeliver()) onResult(result) }
+        } }.getOrNull()
         if (job != null) currentJob = job
     }
 
@@ -330,7 +430,13 @@ class OfficePdfRenderHost(context: Context) {
 
     private fun mapFailure(status: Int): PdfFailure = when (status) {
         OfficePdfRendererContract.S_INVALID_PDF -> PdfFailure.InvalidPdf
+        // Wrong password and "no password channel" are deliberately reported
+        // as one host-level security refusal; Notes media knows whether it
+        // supplied a secret and what this device supports, and returns the
+        // precise typed identity (REJECTED vs UNSUPPORTED).
         OfficePdfRendererContract.S_PASSWORD -> PdfFailure.PasswordProtected
+        OfficePdfRendererContract.S_PASSWORD_REJECTED -> PdfFailure.PasswordProtected
+        OfficePdfRendererContract.S_PASSWORD_UNSUPPORTED -> PdfFailure.PasswordProtected
         OfficePdfRendererContract.S_BUSY -> PdfFailure.Busy
         else -> PdfFailure.Transport
     }

@@ -4,13 +4,11 @@ package com.floe.android.core.officeengine.pdf
 import android.app.Service
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.pdf.PdfRenderer
 import android.os.Binder
 import android.os.IBinder
 import android.os.Parcel
 import android.os.ParcelFileDescriptor
 import android.os.SharedMemory
-import java.io.IOException
 import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -21,7 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The narrow isolated PDF renderer (platform docs for [PdfRenderer]:
+ * The narrow isolated PDF renderer (platform docs for `PdfRenderer`:
  * "If the file comes from an untrusted source, it is recommended to run the
  * renderer in a separate, isolated process with minimum permissions to limit
  * the impact of security vulnerabilities"). Declared in the module manifest
@@ -30,7 +28,8 @@ import java.util.concurrent.atomic.AtomicLong
  * process, which is same-UID crash separation and not a sandbox.
  *
  * Authority boundary (all fail-closed):
- *  - input is ONLY a kernel-duped read-only FD + page index + bounded zoom
+ *  - input is ONLY a kernel-duped read-only FD + page index + bounded zoom OR
+ *    bounded page-text request + an optional RAM-only password char array
  *    (no paths, URIs, package/storage/network authority; an isolated process
  *    holds none by definition). The interface token is enforced on every
  *    transaction, and every transaction's `Binder.getCallingUid()` must
@@ -41,11 +40,11 @@ import java.util.concurrent.atomic.AtomicLong
  *    any user, other isolated processes and invalid/sentinel UIDs are all
  *    refused fail-closed; the service is non-exported so only this app's
  *    own processes can ever hold the binder;
- *  - one serialized worker owns every PdfRenderer: constructor/getPageCount/
- *    openPage/render run OFF the main thread, exactly ONE page open at a
- *    time, and page + renderer + received FD are closed per job. No document
- *    state persists between jobs; an unbound isolated process is killed by
- *    the framework, which is the final backstop for any descriptor;
+ *  - one serialized worker owns every renderer: constructor/getPageCount/
+ *    openPage/render/text run OFF the main thread, exactly ONE page open at
+ *    a time, and page + renderer + received FD are closed per job. No
+ *    document state persists between jobs; an unbound isolated process is
+ *    killed by the framework, which is the final backstop for any descriptor;
  *  - pixel results travel through ONE SharedMemory per successful render.
  *    The binder driver dups a reply fd only while the reply is written back
  *    (after onTransact returns), so the service must NOT close its handle
@@ -56,6 +55,13 @@ import java.util.concurrent.atomic.AtomicLong
  *    host can pin at most that many buffers, the oldest is force-retired
  *    (its mapping then honestly fails host-side validation — never an
  *    unsafe render);
+ *  - text replies are truncated/bounded BEFORE they are written
+ *    ([OfficePdfTextContract]) so one page can never exceed the binder
+ *    budget; the host re-validates every count;
+ *  - passwords are never stored: a received char array is used once to build
+ *    the platform `LoadParams` String inside this disposable isolated
+ *    process and zero-filled immediately; a wrong password is a typed
+ *    [OfficePdfRendererContract.S_PASSWORD_REJECTED], never a document error;
  *  - at most [OfficePdfRendererContract.MAX_INFLIGHT] queued/running jobs
  *    before replying S_BUSY; each job's own finally frees its slot, and a
  *    bounded join timeout answers S_INTERNAL while the worker still runs
@@ -129,6 +135,7 @@ class OfficePdfRendererService : Service() {
             if (code !in setOf(
                     OfficePdfRendererContract.T_DOCUMENT_INFO,
                     OfficePdfRendererContract.T_RENDER_PAGE,
+                    OfficePdfRendererContract.T_PAGE_TEXT,
                     OfficePdfRendererContract.T_RELEASE_SHM,
                 )
             ) {
@@ -151,6 +158,7 @@ class OfficePdfRendererService : Service() {
 
                 is OfficePdfRendererBinder.ParsedRequest.Info -> {
                     if (!tryAcquireSlot()) {
+                        zeroPassword(parsed.password)
                         OfficePdfRendererBinder.writeInfoReply(
                             reply, parsed.requestId, OfficePdfRendererContract.S_BUSY, 0,
                         )
@@ -174,6 +182,7 @@ class OfficePdfRendererService : Service() {
 
                 is OfficePdfRendererBinder.ParsedRequest.Render -> {
                     if (!tryAcquireSlot()) {
+                        zeroPassword(parsed.password)
                         OfficePdfRendererBinder.writePageReply(
                             reply, parsed.requestId, OfficePdfRendererContract.S_BUSY,
                             0, 0, 0L, 0L, null,
@@ -189,7 +198,7 @@ class OfficePdfRendererService : Service() {
                     })
                     val outcome = join(future, OfficePdfRendererContract.RENDER_TIMEOUT_MS)
                     if (outcome.status == OfficePdfRendererContract.S_OK && outcome.shared != null) {
-                        val shmId = registerSharedMemory(outcome.shared!!)
+                        val shmId = registerSharedMemory(outcome.shared)
                         OfficePdfRendererBinder.writePageReply(
                             reply, parsed.requestId, OfficePdfRendererContract.S_OK,
                             outcome.width, outcome.height, outcome.bytes, shmId, outcome.shared,
@@ -206,7 +215,48 @@ class OfficePdfRendererService : Service() {
                     }
                     return true
                 }
+
+                is OfficePdfRendererBinder.ParsedRequest.Text -> {
+                    if (!tryAcquireSlot()) {
+                        zeroPassword(parsed.password)
+                        OfficePdfRendererBinder.writeTextReply(
+                            reply, parsed.requestId, OfficePdfRendererContract.S_BUSY, null,
+                        )
+                        return true
+                    }
+                    val future: Future<JobOutcome> = worker.submit(Callable {
+                        try {
+                            runJob(parsed)
+                        } finally {
+                            inflight.decrementAndGet()
+                        }
+                    })
+                    val outcome = join(future, OfficePdfTextContract.TEXT_TIMEOUT_MS)
+                    OfficePdfRendererBinder.writeTextReply(
+                        reply, parsed.requestId, outcome.status, outcome.text,
+                    )
+                    return true
+                }
             }
+        }
+    }
+
+    private fun zeroPassword(password: CharArray?) {
+        password?.fill('\u0000')
+    }
+
+    /**
+     * Pixel jobs keep the previously qualified legacy `PdfRenderer` path on
+     * API 31–34 when no password is involved (the Mainline `PdfRendererPreV`
+     * class is selected only when it is actually needed: a password or text).
+     * API 35+ stays on the full framework path.
+     */
+    private fun engineKindForPixels(password: CharArray?): OfficePdfEngineKind {
+        val kind = OfficePdfPlatformCapabilities.engineKind()
+        return if (kind == OfficePdfEngineKind.PRE_V && password == null) {
+            OfficePdfEngineKind.LEGACY
+        } else {
+            kind
         }
     }
 
@@ -228,7 +278,7 @@ class OfficePdfRendererService : Service() {
         return try {
             future.get(timeoutMs, TimeUnit.MILLISECONDS)
         } catch (_: Exception) {
-            JobOutcome(OfficePdfRendererContract.S_INTERNAL, 0, 0, 0, 0L, null)
+            JobOutcome(OfficePdfRendererContract.S_INTERNAL)
         }
     }
 
@@ -236,152 +286,235 @@ class OfficePdfRendererService : Service() {
      * Worker-thread result. `shared` is NON-NULL ONLY on S_OK, and in that
      * case ownership transfers to the endpoint (registered for host ack or
      * explicitly closed by the endpoint on a failed write). Every failure
-     * path closes its own buffer inside the job.
+     * path closes its own buffer inside the job. `text` is NON-NULL only on
+     * a successful text job.
      */
     private class JobOutcome(
         val status: Int,
-        val pageCount: Int,
-        val width: Int,
-        val height: Int,
-        val bytes: Long,
-        val shared: SharedMemory?,
+        val pageCount: Int = 0,
+        val width: Int = 0,
+        val height: Int = 0,
+        val bytes: Long = 0L,
+        val shared: SharedMemory? = null,
+        val text: OfficePdfPageText? = null,
     )
-
-    private sealed class Opened {
-        class Ok(val renderer: PdfRenderer) : Opened()
-        object Password : Opened()
-        object Invalid : Opened()
-    }
-
-    private fun openRenderer(fd: ParcelFileDescriptor): Opened = try {
-        Opened.Ok(PdfRenderer(fd))
-    } catch (e: SecurityException) {
-        // PdfRenderer: thrown for a password-protected document or an
-        // unsupported security scheme — honest refusal; no auth work in this
-        // slice. The constructor failed, so WE still own the FD.
-        runCatching { fd.close() }
-        Opened.Password
-    } catch (e: IOException) {
-        runCatching { fd.close() }
-        Opened.Invalid
-    } catch (e: RuntimeException) {
-        runCatching { fd.close() }
-        Opened.Invalid
-    }
 
     private fun runJob(request: OfficePdfRendererBinder.ParsedRequest): JobOutcome =
         when (request) {
             is OfficePdfRendererBinder.ParsedRequest.Info -> runInfo(request)
             is OfficePdfRendererBinder.ParsedRequest.Render -> runRender(request)
+            is OfficePdfRendererBinder.ParsedRequest.Text -> runText(request)
             is OfficePdfRendererBinder.ParsedRequest.Release ->
-                JobOutcome(OfficePdfRendererContract.S_BAD_REQUEST, 0, 0, 0, 0L, null)
+                JobOutcome(OfficePdfRendererContract.S_BAD_REQUEST)
         }
 
+    /**
+     * Opens the real platform engine. The password array is the ONLY secret
+     * input; it is zeroed here on every path after the platform constructor
+     * copied it (the adapter zeroes it even earlier when it builds
+     * LoadParams). No path/log/persistence ever sees it.
+     */
+    private fun openEngine(
+        fd: ParcelFileDescriptor,
+        password: CharArray?,
+        kind: OfficePdfEngineKind,
+    ): OfficePdfEngineOpenResult {
+        val result = try {
+            OfficePdfEngines.open(kind, fd, password)
+        } catch (_: Exception) {
+            runCatching { fd.close() }
+            OfficePdfEngineOpenResult.Invalid
+        } finally {
+            zeroPassword(password)
+        }
+        return result
+    }
+
     private fun runInfo(request: OfficePdfRendererBinder.ParsedRequest.Info): JobOutcome {
-        return when (val opened = openRenderer(request.fd)) {
-            is Opened.Password -> JobOutcome(OfficePdfRendererContract.S_PASSWORD, 0, 0, 0, 0L, null)
-            is Opened.Invalid -> JobOutcome(OfficePdfRendererContract.S_INVALID_PDF, 0, 0, 0, 0L, null)
-            is Opened.Ok -> {
+        val kind = engineKindForPixels(request.password)
+        return when (val opened = openEngine(request.fd, request.password, kind)) {
+            is OfficePdfEngineOpenResult.PasswordRequired ->
+                JobOutcome(OfficePdfRendererContract.S_PASSWORD)
+            is OfficePdfEngineOpenResult.PasswordRejected ->
+                JobOutcome(OfficePdfRendererContract.S_PASSWORD_REJECTED)
+            is OfficePdfEngineOpenResult.PasswordUnsupported ->
+                JobOutcome(OfficePdfRendererContract.S_PASSWORD_UNSUPPORTED)
+            is OfficePdfEngineOpenResult.Invalid ->
+                JobOutcome(OfficePdfRendererContract.S_INVALID_PDF)
+            is OfficePdfEngineOpenResult.Ok -> {
                 try {
-                    val count = runCatching { opened.renderer.pageCount }.getOrDefault(-1)
+                    val count = runCatching { opened.engine.pageCount }.getOrDefault(-1)
                     if (count < 1 || count > OfficePdfRendererContract.MAX_PAGE_INDEX) {
-                        JobOutcome(OfficePdfRendererContract.S_INVALID_PDF, 0, 0, 0, 0L, null)
+                        JobOutcome(OfficePdfRendererContract.S_INVALID_PDF)
                     } else {
-                        JobOutcome(OfficePdfRendererContract.S_OK, count, 0, 0, 0L, null)
+                        JobOutcome(OfficePdfRendererContract.S_OK, pageCount = count)
                     }
-                } catch (e: Exception) {
-                    JobOutcome(OfficePdfRendererContract.S_INTERNAL, 0, 0, 0, 0L, null)
+                } catch (_: Exception) {
+                    JobOutcome(OfficePdfRendererContract.S_INTERNAL)
                 } finally {
-                    runCatching { opened.renderer.close() }
+                    runCatching { opened.engine.close() }
                 }
             }
         }
     }
 
     private fun runRender(request: OfficePdfRendererBinder.ParsedRequest.Render): JobOutcome {
-        return when (val opened = openRenderer(request.fd)) {
-            is Opened.Password -> JobOutcome(OfficePdfRendererContract.S_PASSWORD, 0, 0, 0, 0L, null)
-            is Opened.Invalid -> JobOutcome(OfficePdfRendererContract.S_INVALID_PDF, 0, 0, 0, 0L, null)
-            is Opened.Ok -> renderWith(request, opened.renderer)
+        val kind = engineKindForPixels(request.password)
+        return when (val opened = openEngine(request.fd, request.password, kind)) {
+            is OfficePdfEngineOpenResult.PasswordRequired ->
+                JobOutcome(OfficePdfRendererContract.S_PASSWORD)
+            is OfficePdfEngineOpenResult.PasswordRejected ->
+                JobOutcome(OfficePdfRendererContract.S_PASSWORD_REJECTED)
+            is OfficePdfEngineOpenResult.PasswordUnsupported ->
+                JobOutcome(OfficePdfRendererContract.S_PASSWORD_UNSUPPORTED)
+            is OfficePdfEngineOpenResult.Invalid ->
+                JobOutcome(OfficePdfRendererContract.S_INVALID_PDF)
+            is OfficePdfEngineOpenResult.Ok -> renderWith(request, opened.engine)
         }
     }
 
     private fun renderWith(
         request: OfficePdfRendererBinder.ParsedRequest.Render,
-        renderer: PdfRenderer,
+        engine: OfficePdfEngine,
     ): JobOutcome {
-        var page: PdfRenderer.Page? = null
+        var page: OfficePdfEnginePage? = null
         var bitmap: Bitmap? = null
         var shared: SharedMemory? = null
         var mapped: java.nio.ByteBuffer? = null
-        var rendererClosed = false
-        var outcome = JobOutcome(OfficePdfRendererContract.S_INTERNAL, 0, 0, 0, 0L, null)
+        var engineClosed = false
+        var outcome = JobOutcome(OfficePdfRendererContract.S_INTERNAL)
         try {
-            val pageCount = runCatching { renderer.pageCount }.getOrDefault(-1)
+            val pageCount = runCatching { engine.pageCount }.getOrDefault(-1)
             if (pageCount <= 0 || request.pageIndex >= pageCount) {
-                outcome = JobOutcome(OfficePdfRendererContract.S_BAD_REQUEST, 0, 0, 0, 0L, null)
+                outcome = JobOutcome(OfficePdfRendererContract.S_BAD_REQUEST)
                 return outcome
             }
-            page = renderer.openPage(request.pageIndex)
-            val target = OfficePdfGeometry.renderSize(page.width, page.height, request.zoomPercent)
+            page = engine.openPage(request.pageIndex)
+            val target = OfficePdfGeometry.renderSize(page.widthPt, page.heightPt, request.zoomPercent)
             if (target == null) {
-                outcome = JobOutcome(OfficePdfRendererContract.S_INVALID_PDF, 0, 0, 0, 0L, null)
+                outcome = JobOutcome(OfficePdfRendererContract.S_INVALID_PDF)
                 return outcome
             }
             val created = Bitmap.createBitmap(target.first, target.second, Bitmap.Config.ARGB_8888)
             bitmap = created
-            page.render(created, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            page.render(created, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             val byteCount = created.byteCount.toLong()
             if (!OfficePdfGeometry.validateReply(target.first, target.second, byteCount)) {
-                outcome = JobOutcome(OfficePdfRendererContract.S_INTERNAL, 0, 0, 0, 0L, null)
+                outcome = JobOutcome(OfficePdfRendererContract.S_INTERNAL)
                 return outcome
             }
             val shm = try {
                 SharedMemory.create("floe-pdf-page", byteCount.toInt())
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 null
             }
             if (shm == null) {
-                outcome = JobOutcome(OfficePdfRendererContract.S_INTERNAL, 0, 0, 0, 0L, null)
+                outcome = JobOutcome(OfficePdfRendererContract.S_INTERNAL)
                 return outcome
             }
             shared = shm
             val buffer = try {
                 shm.mapReadWrite()
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 null
             }
             if (buffer == null) {
-                outcome = JobOutcome(OfficePdfRendererContract.S_INTERNAL, 0, 0, 0, 0L, null)
+                outcome = JobOutcome(OfficePdfRendererContract.S_INTERNAL)
                 return outcome
             }
             mapped = buffer
             bitmap.copyPixelsToBuffer(buffer)
             SharedMemory.unmap(buffer)
             mapped = null
-            // ONE page open at a time: close the page BEFORE the renderer;
-            // renderer.close() also releases the received FD.
+            // ONE page open at a time: close the page BEFORE the engine.
             page.close()
             page = null
-            renderer.close()
-            rendererClosed = true
+            engine.close()
+            engineClosed = true
             outcome = JobOutcome(
-                OfficePdfRendererContract.S_OK, 0, target.first, target.second, byteCount, shm,
+                OfficePdfRendererContract.S_OK,
+                width = target.first,
+                height = target.second,
+                bytes = byteCount,
+                shared = shm,
             )
             return outcome
-        } catch (e: Exception) {
-            outcome = JobOutcome(OfficePdfRendererContract.S_INVALID_PDF, 0, 0, 0, 0L, null)
+        } catch (_: Exception) {
+            outcome = JobOutcome(OfficePdfRendererContract.S_INVALID_PDF)
             return outcome
         } finally {
             runCatching { mapped?.let { SharedMemory.unmap(it) } }
             runCatching { page?.close() }
-            if (!rendererClosed) runCatching { renderer.close() }
+            if (!engineClosed) runCatching { engine.close() }
             bitmap?.takeUnless { it.isRecycled }?.recycle()
             // The buffer leaves this process ONLY on S_OK (the endpoint
             // registers it for the host ack). Every other exit closes it HERE
             // so a failed job never pins shared memory.
             if (outcome.status != OfficePdfRendererContract.S_OK) {
                 runCatching { shared?.close() }
+            }
+        }
+    }
+
+    /**
+     * One bounded page-text extraction. Text is extracted in the SAME
+     * isolated process/engine as rendering; on devices without a text-capable
+     * platform renderer the answer is the typed S_TEXT_UNSUPPORTED so the
+     * caller requests OCR instead of receiving a false empty result.
+     */
+    private fun runText(request: OfficePdfRendererBinder.ParsedRequest.Text): JobOutcome {
+        val kind = OfficePdfPlatformCapabilities.engineKind()
+        if (!OfficePdfPlatformCapabilities.textExtractionSupported(kind = kind)) {
+            zeroPassword(request.password)
+            runCatching { request.fd.close() }
+            return JobOutcome(OfficePdfRendererContract.S_TEXT_UNSUPPORTED)
+        }
+        val sourceBytes = runCatching { request.fd.statSize }.getOrDefault(-1L)
+        if (sourceBytes < 1L) {
+            zeroPassword(request.password)
+            runCatching { request.fd.close() }
+            return JobOutcome(OfficePdfRendererContract.S_BAD_REQUEST)
+        }
+        val opened = openEngine(request.fd, request.password, kind)
+        return when (opened) {
+            is OfficePdfEngineOpenResult.PasswordRequired ->
+                JobOutcome(OfficePdfRendererContract.S_PASSWORD)
+            is OfficePdfEngineOpenResult.PasswordRejected ->
+                JobOutcome(OfficePdfRendererContract.S_PASSWORD_REJECTED)
+            is OfficePdfEngineOpenResult.PasswordUnsupported ->
+                JobOutcome(OfficePdfRendererContract.S_PASSWORD_UNSUPPORTED)
+            is OfficePdfEngineOpenResult.Invalid ->
+                JobOutcome(OfficePdfRendererContract.S_INVALID_PDF)
+            is OfficePdfEngineOpenResult.Ok -> {
+                var page: OfficePdfEnginePage? = null
+                var engineClosed = false
+                try {
+                    val pageCount = opened.engine.pageCount
+                    if (pageCount < 1 || request.pageIndex >= pageCount) {
+                        return JobOutcome(OfficePdfRendererContract.S_BAD_REQUEST)
+                    }
+                    page = opened.engine.openPage(request.pageIndex)
+                    val (widthPt, heightPt) = page.widthPt to page.heightPt
+                    val payload = OfficePdfTextContract.build(
+                        pageIndex = request.pageIndex,
+                        pageCount = pageCount,
+                        sourceBytes = sourceBytes,
+                        pageWidthPt = widthPt.toFloat(),
+                        pageHeightPt = heightPt.toFloat(),
+                        lines = page.textLines(),
+                        maxChars = request.maxChars,
+                    ) ?: return JobOutcome(OfficePdfRendererContract.S_INVALID_PDF)
+                    page.close()
+                    page = null
+                    opened.engine.close()
+                    engineClosed = true
+                    JobOutcome(OfficePdfRendererContract.S_OK, text = payload)
+                } catch (_: Exception) {
+                    JobOutcome(OfficePdfRendererContract.S_INTERNAL)
+                } finally {
+                    runCatching { page?.close() }
+                    if (!engineClosed) runCatching { opened.engine.close() }
+                }
             }
         }
     }

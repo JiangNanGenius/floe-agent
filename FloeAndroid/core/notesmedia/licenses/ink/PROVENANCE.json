@@ -1,0 +1,99 @@
+{
+  "schema": "floe.notesmedia.dependency-provenance/1",
+  "verifiedAt": "2026-10-30",
+  "officialMetadata": "https://dl.google.com/dl/android/maven2/androidx/ink/<artifact>/maven-metadata.xml",
+  "group": "androidx.ink",
+  "requestedVersion": "1.0.0",
+  "requestedVersionIsNewestStable": true,
+  "metadataObservation": {
+    "ink-authoring": {
+      "latest": "1.1.0-alpha10",
+      "release": "1.1.0-alpha10",
+      "lastUpdated": "20261021170033",
+      "contains1_0_0": true
+    },
+    "note": "1.1.0-alpha10 is the newest published VERSION, but it is an alpha. 1.0.0 is the newest non-alpha/stable release for the whole atomic androidx.ink group, so all seven consumed artifacts are pinned to 1.0.0."
+  },
+  "license": "Apache-2.0",
+  "licenseText": "licenses/ink/LICENSE.txt (verbatim META-INF/androidx/ink/ink-authoring/LICENSE.txt from the pinned AAR)",
+  "artifacts": {
+    "ink-authoring": {
+      "aar": "ink-authoring.aar",
+      "aarSha256": "801f4611ec91999939f6f847aef7f0ff0da680d43ba3f400b2959bb4efc96ee4",
+      "aarBytes": 221109,
+      "pomSha256": "94b084d93096f14ed24964a2fd173cf95835e9d23df582b20f5ebab8c0613d6d"
+    },
+    "ink-brush": {
+      "aar": "ink-brush.aar",
+      "aarSha256": "97e7619998fdc542975359db6a7891c13d2584ccb31f580012b97e87220b4dba",
+      "aarBytes": 495609,
+      "pomSha256": "1caeaafa0ad55da007d7ccbbd8cb5f794aa4cd3f35d49b0542dbd0928024bd0c"
+    },
+    "ink-geometry": {
+      "aar": "ink-geometry.aar",
+      "aarSha256": "b09964da927e95a16ad29ace8e3b25360746e49a0c301ed364803f61aa8ee0d7",
+      "aarBytes": 117377,
+      "pomSha256": "d3c121dc4c244a488ec8a84192213f7fe7a792db22c15d8ffbb88edfe803650d"
+    },
+    "ink-nativeloader": {
+      "aar": "ink-nativeloader.aar",
+      "aarSha256": "dbf7b7b4c664958f0b13111bf0b4f3da36865dafb1887716ae9e22b755c9b111",
+      "aarBytes": 2016173,
+      "pomSha256": "2cd355fc6af049618f6b091b90cbe83bffb86c484883e5ca7d88a550f8f0cd8d"
+    },
+    "ink-rendering": {
+      "aar": "ink-rendering.aar",
+      "aarSha256": "455f595f29e2d3a82f779e4d819a3d35a5a6fc96d5def6ba773af771014e13f1",
+      "aarBytes": 82603,
+      "pomSha256": "cc8b0e61b20271872c0af6215e3d0c4e2314a8b332dc1672f27f4b90be5fdbe7"
+    },
+    "ink-storage": {
+      "aar": "ink-storage.aar",
+      "aarSha256": "e51a354a3219bc7e3f44e98d908b9f933119bcc381c1f55682fa3e3c7f8829e6",
+      "aarBytes": 23337,
+      "pomSha256": "e70c3c72eadcddab46254e728fa7e4a413b0ebba496acf08403d1dca027abc36"
+    },
+    "ink-strokes": {
+      "aar": "ink-strokes.aar",
+      "aarSha256": "ad7dad298c28bd438df17179078426005e20e7c3f861c5594aa32c07c658cded",
+      "aarBytes": 37663,
+      "pomSha256": "a81bddfbcb68e6dd4029c5effe9f3e9c1fdc84a14f2ec6ea2d0096483c5c2aa2"
+    },
+    "ink-authoring-compose": {
+      "aar": "ink-authoring-compose.aar",
+      "aarSha256": "7ac01aa53d3a01d4a97538a7ababd75aa893e85bc417f9642a1179c69ea22006",
+      "aarBytes": 42962,
+      "pomSha256": "f851417ef87fc567bbffafcff4cefe6e0438e66a69f1a5954749c9a59402c088"
+    }
+  },
+  "resolvedAndroidVariants": {
+    "ink-authoring": "ink-authoring-android:1.0.0",
+    "ink-brush": "ink-brush-android:1.0.0",
+    "ink-geometry": "ink-geometry-android:1.0.0",
+    "ink-nativeloader": "ink-nativeloader-android:1.0.0",
+    "ink-rendering": "ink-rendering-android:1.0.0",
+    "ink-storage": "ink-storage-android:1.0.0",
+    "ink-strokes": "ink-strokes-android:1.0.0",
+    "note": "Gradle resolves the androidx.ink multiplatform modules to their -android AARs (verified by :core:notesmedia:dependencies --configuration debugRuntimeClasspath)."
+  },
+  "newTransitiveRuntimeArtifacts": [
+    {
+      "module": "androidx.graphics:graphics-core",
+      "version": "1.0.4",
+      "license": "Apache-2.0"
+    },
+    {
+      "module": "androidx.fragment:fragment-ktx",
+      "version": "1.5.7",
+      "license": "Apache-2.0",
+      "note": "already present in the app graph; resolved version was not raised by ink"
+    },
+    {
+      "module": "androidx.test.espresso:espresso-idling-resource",
+      "version": "3.5.0",
+      "license": "Apache-2.0",
+      "note": "runtime dependency of androidx.ink:ink-authoring-android (InProgressStrokesView exposes CountingIdlingResource); not test-only here"
+    }
+  ],
+  "16kPageSize": "arm64-v8a/libink.so ships prebuilt; Main's release gate must verify 16 KiB ELF alignment (no source rebuild in this lane)"
+}

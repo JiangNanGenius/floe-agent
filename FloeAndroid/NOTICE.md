@@ -12,6 +12,7 @@ license texts or the final distribution source/notice obligations.
 | --- | --- | --- |
 | Kotlin standard library | https://github.com/JetBrains/kotlin | Apache-2.0 |
 | AndroidX Activity/Core/Compose/Material/icons and transitive AndroidX runtime | https://android.googlesource.com/platform/frameworks/support/ | Apache-2.0; preserve individual file notices |
+| AndroidX Ink 1.0.0 (`ink-authoring`, `ink-brush`, `ink-geometry`, `ink-nativeloader`, `ink-rendering`, `ink-storage`, `ink-strokes`), graphics-core 1.0.4 and espresso-idling-resource 3.5.0 (upstream runtime dependency) | https://android.googlesource.com/platform/frameworks/support/ | Apache-2.0; license and pinned provenance in `core/notesmedia/licenses/ink/` |
 | kotlinx.coroutines | https://github.com/Kotlin/kotlinx.coroutines | Apache-2.0 |
 | Compose Cupertino 3.3.1 (selected for the G01 UI foundation) | https://github.com/RobinPcrd/compose-cupertino/tree/3.3.1 | Apache-2.0; retain upstream NOTICE and contributor lineage |
 | Cupertino Icons font 2.0.0 — source-derived vector glyph data only (generated ImageVector paths; the font binary is not shipped and is not a runtime dependency) | https://github.com/flutter/packages/tree/main/third_party/packages/cupertino_icons | MIT; copyright per the shipped license ("Copyright (c) 2016 Vladimir Kharlampidi"), full text bundled at `assets/legal/cupertino-icons/LICENSE`; pinned inputs and hashes in `FloeAndroid/licenses/cupertino-icons/PROVENANCE.json` |

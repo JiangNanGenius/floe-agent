@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  G06 Notes media module.
+
+  Deliberately empty of components and permissions: this library owns no
+  Activity/Service/Provider, performs no network access and requests no
+  runtime permission. All PDF rendering/printing stays with the existing
+  :core:officeengine isolated renderer and print adapter; all file writes go
+  through caller-supplied staged directories. Main's integration patch adds
+  only the two new transitive dependencies' lock entries and no manifest
+  element.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

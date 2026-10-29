@@ -47,3 +47,6 @@ include(":core:officeengine")
 
 // G06 portable Notes service contracts. UI/media modules join when their concrete entries are ready.
 include(":feature:notescontracts")
+
+// G06 verified Notes PDF/Ink media substrate.
+include(":core:notesmedia")
