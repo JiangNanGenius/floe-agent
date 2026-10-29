@@ -508,6 +508,11 @@ internal class NotesMediaEffects(
             it.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"))
         } ?: request.pageID
         val view = NotesMedia.instrumentedInkCanvas(context)
+        // PageSurface already composes the page background (paper, imported
+        // image or rendered PDF) beneath this authoring view. Painting the
+        // ink layer's default opaque paper colour would cover that background
+        // and make every PDF/image page look blank.
+        view.setPaperColor(Color.TRANSPARENT)
         val document = NotesMedia.createInkDocument(
             documentId = documentID,
             pageKey = request.pageID,

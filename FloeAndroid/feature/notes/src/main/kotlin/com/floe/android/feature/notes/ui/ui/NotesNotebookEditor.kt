@@ -105,6 +105,7 @@ private data class PageResizeDrag(
 internal fun NotesNotebookEditor(
     controller: NotesWorkspaceController,
     session: NotesDocumentSession,
+    compact: Boolean,
     onOpenText: (NoteElement) -> Unit,
     onShowPages: () -> Unit,
     onShowInkOptions: () -> Unit,
@@ -287,48 +288,61 @@ internal fun NotesNotebookEditor(
                     }
                 }
             }
-            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-                val density = LocalDensity.current.density
-                val available = (maxWidth.value - 28f).coerceAtLeast(140f)
-                val fit = (available / page.width.toFloat()).coerceIn(0.2f, 1.4f)
-                val scale = (fit * session.pageZoom).coerceIn(0.2f, 5f)
-                val displayWidth = (page.width * scale).toFloat()
-                val displayHeight = (page.height * scale).toFloat()
-                val targetWidthPx = (page.width * scale * density).toInt().coerceIn(320, 4096)
-                LaunchedEffect(page.id, document.revision, targetWidthPx) {
-                    session.loadArtifacts(page.id, targetWidthPx)
-                }
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(pageScroll)
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Box(
+            // The footer is pinned as an overlay inside the weighted page
+            // viewport. It is measured with the full viewport height instead
+            // of receiving only the leftover after the scroll content, which
+            // had squeezed the row (and its 48dp targets) to a sliver on the
+            // actual phone. The scroll content reserves the footer height so
+            // the last page can still be scrolled clear of it.
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                BoxWithConstraints(Modifier.fillMaxSize()) {
+                    val density = LocalDensity.current.density
+                    val available = (maxWidth.value - 28f).coerceAtLeast(140f)
+                    val fit = (available / page.width.toFloat()).coerceIn(0.2f, 1.4f)
+                    val scale = (fit * session.pageZoom).coerceIn(0.2f, 5f)
+                    val displayWidth = (page.width * scale).toFloat()
+                    val displayHeight = (page.height * scale).toFloat()
+                    val targetWidthPx = (page.width * scale * density).toInt().coerceIn(320, 4096)
+                    LaunchedEffect(page.id, document.revision, targetWidthPx) {
+                        session.loadArtifacts(page.id, targetWidthPx)
+                    }
+                    Column(
                         modifier = Modifier
-                            .padding(14.dp)
-                            .width(displayWidth.dp)
-                            .height(displayHeight.dp),
+                            .fillMaxSize()
+                            .verticalScroll(pageScroll)
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        PageSurface(
-                            controller = controller,
-                            session = session,
-                            page = page,
-                            document = document,
-                            scale = scale,
-                            density = density,
-                            onOpenText = onOpenText,
-                        )
+                        Box(
+                            modifier = Modifier
+                                .padding(14.dp)
+                                .width(displayWidth.dp)
+                                .height(displayHeight.dp),
+                        ) {
+                            PageSurface(
+                                controller = controller,
+                                session = session,
+                                page = page,
+                                document = document,
+                                scale = scale,
+                                density = density,
+                                onOpenText = onOpenText,
+                            )
+                        }
+                        // Reserve the pinned footer so the page can scroll
+                        // above it, not underneath it.
+                        Spacer(Modifier.height(PageFooterHeight))
                     }
                 }
+                PageFooter(
+                    session = session,
+                    page = page,
+                    compact = compact,
+                    onShowPages = onShowPages,
+                    onShowPageMenu = { showPageMenu = true },
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
             }
-            PageFooter(
-                session = session,
-                page = page,
-                onShowPages = onShowPages,
-                onShowPageMenu = { showPageMenu = true },
-            )
         }
     }
 
@@ -827,83 +841,111 @@ private fun NoteElementView(
     }
 }
 
+private val PageFooterHeight = 56.dp
+
 @Composable
 private fun PageFooter(
     session: NotesDocumentSession,
     page: NotePage,
+    compact: Boolean,
     onShowPages: () -> Unit,
     onShowPageMenu: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier = Modifier
+    BoxWithConstraints(
+        modifier
             .fillMaxWidth()
-            .background(Floe.colors.chromeSurface)
-            .padding(horizontal = 8.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+            .background(Floe.colors.chromeSurface),
     ) {
-        NotesIconAction(
-            FloeIcons.ChevronBack,
-            stringResource(R.string.notes_previous_page),
-            {
-                val index = session.currentPageIndex ?: 0
-                val pages = session.document?.pages.orEmpty()
-                if (index > 0) session.setActivePage(pages[index - 1].id)
-            },
-            enabled = (session.currentPageIndex ?: 0) > 0,
-            visualSize = 32.dp,
-        )
-        NotesIconAction(
-            FloeIcons.ChevronForward,
-            stringResource(R.string.notes_next_page),
-            {
-                val index = session.currentPageIndex ?: 0
-                val pages = session.document?.pages.orEmpty()
-                if (index < pages.size - 1) session.setActivePage(pages[index + 1].id)
-            },
-            enabled = (session.currentPageIndex ?: 0) < (session.document?.pages?.size ?: 1) - 1,
-            visualSize = 32.dp,
-        )
-        FloeText(
-            stringResource(
-                R.string.notes_page_of,
-                (session.currentPageIndex ?: 0) + 1,
-                session.document?.pages?.size ?: 0,
-            ),
-            style = Floe.typography.metadata,
-            color = Floe.colors.secondaryLabel,
-        )
-        Spacer(Modifier.weight(1f))
-        NotesIconAction(
-            NotesIcons.Minus,
-            stringResource(R.string.notes_zoom_out),
-            { session.applyPageZoom(session.pageZoom - 0.1f) },
-            visualSize = 32.dp,
-        )
-        FloeText(
-            "${(session.pageZoom * 100).toInt()}%",
-            style = Floe.typography.metadata,
-            color = Floe.colors.secondaryLabel,
-            modifier = Modifier.width(46.dp),
-        )
-        NotesIconAction(
-            FloeIcons.Plus,
-            stringResource(R.string.notes_zoom_in),
-            { session.applyPageZoom(session.pageZoom + 0.1f) },
-            visualSize = 32.dp,
-        )
-        NotesIconAction(
-            NotesIcons.Pages,
-            stringResource(R.string.notes_pages),
-            onShowPages,
-            visualSize = 32.dp,
-        )
-        NotesIconAction(
-            FloeIcons.Ellipsis,
-            stringResource(R.string.notes_paper),
-            onShowPageMenu,
-            visualSize = 32.dp,
-        )
+        val layout = notesPageFooterLayout(compact, maxWidth.value)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = PageFooterHeight)
+                .padding(horizontal = 8.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            NotesIconAction(
+                FloeIcons.ChevronBack,
+                stringResource(R.string.notes_previous_page),
+                {
+                    val index = session.currentPageIndex ?: 0
+                    val pages = session.document?.pages.orEmpty()
+                    if (index > 0) session.setActivePage(pages[index - 1].id)
+                },
+                enabled = (session.currentPageIndex ?: 0) > 0,
+                visualSize = 32.dp,
+            )
+            NotesIconAction(
+                FloeIcons.ChevronForward,
+                stringResource(R.string.notes_next_page),
+                {
+                    val index = session.currentPageIndex ?: 0
+                    val pages = session.document?.pages.orEmpty()
+                    if (index < pages.size - 1) session.setActivePage(pages[index + 1].id)
+                },
+                enabled = (session.currentPageIndex ?: 0) < (session.document?.pages?.size ?: 1) - 1,
+                visualSize = 32.dp,
+            )
+            Box(
+                modifier = if (layout == NotesPageFooterLayout.TIGHT) {
+                    Modifier.weight(1f)
+                } else {
+                    Modifier
+                },
+                contentAlignment = Alignment.Center,
+            ) {
+                FloeText(
+                    stringResource(
+                        R.string.notes_page_of,
+                        (session.currentPageIndex ?: 0) + 1,
+                        session.document?.pages?.size ?: 0,
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (layout == NotesPageFooterLayout.FULL) {
+                Spacer(Modifier.weight(1f))
+            }
+            NotesIconAction(
+                NotesIcons.Minus,
+                stringResource(R.string.notes_zoom_out),
+                { session.applyPageZoom(session.pageZoom - 0.1f) },
+                visualSize = 32.dp,
+            )
+            Box(Modifier.width(46.dp), contentAlignment = Alignment.Center) {
+                FloeText(
+                    "${(session.pageZoom * 100).toInt()}%",
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                    maxLines = 1,
+                )
+            }
+            NotesIconAction(
+                FloeIcons.Plus,
+                stringResource(R.string.notes_zoom_in),
+                { session.applyPageZoom(session.pageZoom + 0.1f) },
+                visualSize = 32.dp,
+            )
+            if (layout == NotesPageFooterLayout.FULL) {
+                NotesIconAction(
+                    NotesIcons.Pages,
+                    stringResource(R.string.notes_pages),
+                    onShowPages,
+                    visualSize = 32.dp,
+                )
+                NotesIconAction(
+                    FloeIcons.Ellipsis,
+                    stringResource(R.string.notes_paper),
+                    onShowPageMenu,
+                    visualSize = 32.dp,
+                )
+            }
+        }
     }
 }
 

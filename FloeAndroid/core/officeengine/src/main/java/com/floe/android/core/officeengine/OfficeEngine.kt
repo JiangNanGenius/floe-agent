@@ -119,6 +119,16 @@ object OfficeEngine {
         hostSaveChannel: android.os.IBinder? = null,
         approvalNotice: android.os.IBinder? = null,
         reviewComponent: android.content.ComponentName? = null,
+        /**
+         * R3 internal Notes save: this App host owns a private working-copy
+         * commit and accepts
+         * [OfficeHostSaveHandoffPolicy.TRANSACTION_INTERNAL_SAVE]. The
+         * viewer then offers "Save and close" on the dirty sheet (real
+         * `.uno:Save` flush, App-owned destination) without a system file
+         * picker; the ordinary Save Copy/export menu is unaffected. Shape
+         * only — the actual capability is the same-UID [hostSaveChannel].
+         */
+        internalSave: Boolean = false,
     ): android.content.Intent =
         OfficePreviewActivity.intentFor(context, request).apply {
             // An IBinder is NOT a Parcelable: it travels through the Bundle's
@@ -148,6 +158,9 @@ object OfficeEngine {
             // its contents and never invents a navigation destination.
             if (reviewComponent != null) {
                 putExtra(OfficeApprovalNoticePolicy.EXTRA_REVIEW_COMPONENT, reviewComponent)
+            }
+            if (internalSave) {
+                putExtra(OfficeHostSaveHandoffPolicy.EXTRA_INTERNAL_SAVE, true)
             }
         }
 

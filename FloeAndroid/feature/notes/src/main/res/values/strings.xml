@@ -16,6 +16,10 @@
     <string name="notes_sort_updated">Date Edited</string>
     <string name="notes_sort_created">Date Created</string>
     <string name="notes_sort_title">Title</string>
+    <string name="notes_create_blank_note">Blank Note</string>
+    <string name="notes_create_office">Office</string>
+    <string name="notes_create_failed_title">Couldn’t Create</string>
+    <string name="notes_import_failed_title">Couldn’t Import</string>
     <string name="notes_new">New</string>
     <string name="notes_new_note">Note</string>
     <string name="notes_new_mind_map">Mind Map</string>
@@ -25,6 +29,21 @@
     <string name="notes_new_office_sheet">Spreadsheet</string>
     <string name="notes_new_office_slides">Presentation</string>
     <string name="notes_import_file">Import File</string>
+    <string name="notes_import_workspace">Import from Floe Workspace</string>
+    <string name="notes_import_workspace_title">Import from Floe Workspace</string>
+    <string name="notes_workspace_choose_file">Choose a file generated in a task workspace.</string>
+    <string name="notes_workspace_no_workspaces">No Task Workspaces</string>
+    <string name="notes_workspace_no_workspaces_body">Open a task’s Files panel to create or add files, then try again.</string>
+    <string name="notes_workspace_empty">No Files</string>
+    <string name="notes_workspace_empty_body">This task workspace has no files yet. Add files in its Files panel, then try again.</string>
+    <string name="notes_workspace_unavailable">Workspace Files Unavailable</string>
+    <string name="notes_workspace_retry_body">The task workspace could not be read right now. Try again in a moment.</string>
+    <string name="notes_workspace_load_more">Load More</string>
+    <string name="notes_workspace_load_more_scopes">Load More Workspaces</string>
+    <string name="notes_workspace_task">Task Workspace</string>
+    <string name="notes_workspace_archived">Archived</string>
+    <string name="notes_workspace_root">Workspace</string>
+    <string name="notes_workspace_refresh">Refresh</string>
     <string name="notes_notebooks">Notebooks</string>
     <string name="notes_all_notebooks">All Notebooks</string>
     <string name="notes_uncategorized">Uncategorized</string>
@@ -263,6 +282,9 @@
     <string name="notes_office_preview_missing">A preview isn’t available. Open the document to view it.</string>
     <string name="notes_office_unsupported">The Office editor isn’t available on this build.</string>
     <string name="notes_office_failed">The Office editor couldn’t be opened.</string>
+    <string name="notes_office_create_prepare_failed">Couldn’t prepare this document. Try again.</string>
+    <string name="notes_office_create_resource_failed">Couldn’t keep this file in Notes. Try again.</string>
+    <string name="notes_office_create_document_failed">Couldn’t add this document to Notes. Try again.</string>
 
     <string name="notes_engineering_read_only">Engineering attachments are read-only.</string>
     <string name="notes_engineering_open">Open Read-Only</string>

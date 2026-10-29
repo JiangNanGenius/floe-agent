@@ -184,16 +184,37 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     private val awaitingSettlementOps = HashSet<String>()
 
     /**
-     * Dirty-sheet "Save Copy and close" state: the export op whose verified
-     * App COPY_SAVED settlement authorizes the close. Native FLUSHED /
-     * UNMODIFIED / ModifiedStatus facts describe the PRIVATE working copy
-     * only and never authorize this close.
+     * External dirty-sheet "Save Copy and close" state: the export op whose
+     * verified App COPY_SAVED settlement authorizes the close. Native
+     * FLUSHED / UNMODIFIED / ModifiedStatus facts describe the PRIVATE
+     * working copy only and never authorize this external close. (The
+     * separate internal Notes lane uses [internalSaveOpId] + the App's
+     * verified working-copy snapshot.)
      */
     private var closeAfterExportOpId: String? = null
 
     /** Busy-cover phases while a close-save is in flight (input frozen). */
-    private enum class CloseSavePhase { EXPORTING, AWAITING_PICKER, AWAITING_APP }
+    private enum class CloseSavePhase { EXPORTING, AWAITING_PICKER, AWAITING_APP, SAVING }
     private var closeSavePhase: CloseSavePhase? by mutableStateOf(null)
+
+    /**
+     * R3 internal Notes save: this mount's App host owns a private
+     * working-copy commit (launch Intent extra). The dirty sheet's primary
+     * action then performs one real `.uno:Save` flush and hands the verified
+     * working-copy facts to that host; no system file picker is involved.
+     * The ordinary "Save Copy" menu keeps the unchanged external SAF path.
+     */
+    private var internalSaveEnabled = false
+
+    /**
+     * The one internal-save op in flight for this mount. Its terminal receipt
+     * is consumed here (never by the external close-save path); a stale or
+     * duplicate receipt after the op settled opens nothing.
+     */
+    private var internalSaveOpId: String? = null
+
+    /** One handoff verification in flight (never two snapshots per op). */
+    private var internalSaveHandoffInFlight = false
 
     /** True once the page reported EDITMODE on at any point in this mount. */
     private var everEnteredEditMode = false
@@ -360,6 +381,12 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         // capability — an inert IBinder reference from our own non-exported
         // launch Intent, used only for the fenced handoff transactions.
         hostSaveChannel = intent.extras?.getBinder(OfficeEngineCommandsPolicy.EXTRA_HOST_SAVE_CHANNEL)
+        // R3 internal destination: the App declares that it owns a private
+        // working-copy commit (Notes). The capability itself is still the
+        // same-UID host save channel; this extra only selects the dirty-sheet
+        // action. Without it everything below behaves exactly as before.
+        internalSaveEnabled = intent.getBooleanExtra(OfficeHostSaveHandoffPolicy.EXTRA_INTERNAL_SAVE, false) &&
+            hostSaveChannel != null
         // G05-R3 approval-notice capability + App-owned review target: same
         // trust model again. Both are present only for OWNED opens; either
         // missing simply means this surface never shows the banner.
@@ -413,6 +440,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                     failure = localFailure,
                     viewerUrl = viewerUrl,
                     editableSession = request?.permission == OfficePermission.EDIT,
+                    internalSaveSession = internalSaveEnabled,
                     editState = editState,
                     diagnosticEvents = diagnosticEvents,
                     busyPhaseKey = closeSavePhase?.let { phase ->
@@ -420,6 +448,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                             CloseSavePhase.EXPORTING -> "exporting"
                             CloseSavePhase.AWAITING_PICKER -> "picker"
                             CloseSavePhase.AWAITING_APP -> "app"
+                            CloseSavePhase.SAVING -> "saving"
                         }
                     } ?: pdfBusyKey?.let { if (it == "export") "pdfExport" else "pdfPrint" },
                     onBack = ::performBack,
@@ -476,10 +505,12 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                     },
                 )
                 // Dirty-close guard (editable mounts): explicit user choice,
-                // honest outcomes only. "Save Copy and close" closes ONLY
-                // after the App's verified COPY_SAVED settlement for that
-                // exact op; export/picker failure, cancellation or UNKNOWN
-                // keeps the editor open with everything retained.
+                // honest outcomes only. An internal-Notes mount offers "Save
+                // and close" (one real flush, App-owned snapshot, no picker);
+                // a generic host keeps "Save Copy and close", which closes
+                // ONLY after the App's verified COPY_SAVED settlement for that
+                // exact op. Failure/cancel/UNKNOWN keeps the editor open with
+                // everything retained.
                 FloeActionSheet(
                     visible = showDirtyCloseSheet,
                     onDismiss = { showDirtyCloseSheet = false },
@@ -488,12 +519,24 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                     Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         FloeText(stringResource(R.string.office_viewer_dirty_title), style = Floe.typography.toolbarTitle)
                         FloeText(
-                            stringResource(R.string.office_viewer_dirty_message),
+                            stringResource(
+                                if (internalSaveEnabled) {
+                                    R.string.office_viewer_dirty_internal_message
+                                } else {
+                                    R.string.office_viewer_dirty_message
+                                },
+                            ),
                             color = Floe.colors.secondaryLabel,
                         )
-                        FloeCapsuleButton(stringResource(R.string.office_action_save_close), onClick = {
-                            startSaveCopy(forClose = true)
-                        })
+                        if (internalSaveEnabled) {
+                            FloeCapsuleButton(stringResource(R.string.office_action_save_note_close), onClick = {
+                                startInternalSaveAndClose()
+                            })
+                        } else {
+                            FloeCapsuleButton(stringResource(R.string.office_action_save_close), onClick = {
+                                startSaveCopy(forClose = true)
+                            })
+                        }
                         FloeCapsuleButton(stringResource(R.string.office_action_discard_close), onClick = ::discardAndClose)
                         FloeCapsuleButton(stringResource(R.string.office_action_keep_editing), onClick = {
                             showDirtyCloseSheet = false
@@ -749,6 +792,14 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
             saveReceipts.add(receipt)
             while (saveReceipts.size > OfficeViewerOutcome.MAX_RECEIPT_DESCRIPTORS) saveReceipts.removeAt(0)
         }
+        // Internal Notes save is its own narrowed lane: never let its
+        // FLUSHED/UNMODIFIED receipt clear the external copy state or show
+        // the working-copy-only "Saved" notice. A duplicate after settlement
+        // opens nothing.
+        if (receipt.opId == internalSaveOpId) {
+            applyInternalSaveReceipt(receipt)
+            return
+        }
         val isCloseSave = closeAfterExportOpId == receipt.opId
         when (receipt.state) {
             OfficeSaveState.SUBMITTED -> Unit // no notice: terminal states speak
@@ -854,6 +905,135 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
             noticeKey = "hostTargetUnavailable"
             noticeDetail = receipt.outputDocumentPath
         }
+    }
+
+    /**
+     * R3 internal Notes save-and-close. One real `WORKING_COPY_FLUSH` on the
+     * existing engine lane (`.uno:Save`, dontTerminateEdit=1) writes the
+     * latest in-memory state to the App-owned working copy; the engine
+     * re-reads and digests it. Only a FLUSHED/UNMODIFIED receipt with real
+     * working-copy facts is offered to the host, which re-verifies and
+     * snapshots the bytes before answering. Accepted -> close; refused,
+     * failed or unknown -> the editor stays open with the working copy and
+     * any recovery data retained. No SAF, URI or path is created here.
+     */
+    private fun startInternalSaveAndClose() {
+        if (closeSavePhase != null || pdfBusyKey != null) return
+        // Never start a working-copy flush underneath an external Save-Copy
+        // picker/settlement: the two destinations must not interleave.
+        if (pendingHandoffOpId != null) return
+        if (synchronized(awaitingSettlementOps) { awaitingSettlementOps.isNotEmpty() }) return
+        val token = request?.sessionToken ?: return
+        if (request?.permission != OfficePermission.EDIT) return
+        val opId = newOpId("internal")
+        val op = OfficeSaveRequest.of(
+            opId = opId,
+            sessionToken = token,
+            generation = nativeGeneration,
+            operation = OfficeSaveOperation.WORKING_COPY_FLUSH,
+            // false = dontSaveIfUnmodified=0: an explicit user save must
+            // produce a real write + verified digest, never a silent skip.
+            saveIfUnmodified = false,
+        ).getOrNull() ?: run {
+            noticeKey = "saveFailed"
+            noticeDetail = "invalid internal save request"
+            return
+        }
+        showDirtyCloseSheet = false
+        internalSaveOpId = opId
+        closeSavePhase = CloseSavePhase.SAVING
+        // No input may land between this freeze and the flush; the busy
+        // cover also absorbs touches.
+        freezeDocumentInput()
+        val receipt = service?.submitSaveOperation(op) ?: run {
+            internalSaveOpId = null
+            abortCloseSave()
+            noticeKey = "saveFailed"
+            noticeDetail = "editor unavailable"
+            return
+        }
+        // A synchronous REJECTED was never dispatched to listeners; apply it
+        // through the same narrowed handler exactly once.
+        if (receipt.state == OfficeSaveState.REJECTED) applyReceipt(receipt)
+    }
+
+    private fun applyInternalSaveReceipt(receipt: OfficeSaveReceipt) {
+        when (receipt.state) {
+            OfficeSaveState.SUBMITTED -> Unit
+            OfficeSaveState.FLUSHED, OfficeSaveState.UNMODIFIED -> {
+                if (internalSaveHandoffInFlight) return
+                val sha = receipt.workingCopySha256
+                val bytes = receipt.workingCopyBytes
+                val format = request?.format?.fileExtension
+                if (sha == null || bytes <= 0L || format == null) {
+                    abortInternalSave("saveFailed", "working copy unavailable")
+                    return
+                }
+                val notice = OfficeHostSaveHandoffPolicy.InternalSaveNotice(
+                    opId = receipt.opId,
+                    sessionToken = receipt.sessionToken,
+                    generation = receipt.generation,
+                    format = format,
+                    workingCopySha256 = sha,
+                    workingCopyBytes = bytes,
+                )
+                internalSaveHandoffInFlight = true
+                // The App re-reads/digests/snapshots its own working copy, so
+                // this bounded verification runs off the main thread; the
+                // busy cover keeps input frozen until the answer arrives.
+                runCatching {
+                    Thread({
+                        val answer = OfficeHostSaveChannel.postInternalSave(hostSaveChannel, notice)
+                        mainHandler.post {
+                            internalSaveHandoffInFlight = false
+                            if (isDestroyed || isFinishing) return@post
+                            if (answer != OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_ACCEPTED &&
+                                answer != OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_UNCHANGED
+                            ) {
+                                if (answer == OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_REFUSED) {
+                                    abortInternalSave("hostTargetUnavailable", null)
+                                } else {
+                                    abortInternalSave("saveFailed", "internalDestinationRejected")
+                                }
+                                return@post
+                            }
+                            // The App verified + snapshotted the exact bytes;
+                            // only now may this mount close. The App commits
+                            // the Note after the Activity result (its own
+                            // Root/revision checks still apply).
+                            internalSaveOpId = null
+                            closeSavePhase = null
+                            noticeKey = null
+                            noticeDetail = null
+                            request?.sessionToken?.let { token ->
+                                service?.requestClose(token, "user-back", userInitiated = true)
+                            }
+                        }
+                    }, "office-internal-save").start()
+                }.onFailure {
+                    internalSaveHandoffInFlight = false
+                    abortInternalSave("saveFailed", "internalSaveUnavailable")
+                }
+            }
+            OfficeSaveState.FAILED, OfficeSaveState.UNKNOWN -> {
+                abortInternalSave(
+                    if (receipt.state == OfficeSaveState.UNKNOWN) "saveUnknown" else "saveFailed",
+                    (receipt.failure?.name ?: "") + (receipt.message?.let { ": $it" } ?: ""),
+                )
+            }
+            OfficeSaveState.CANCELLED, OfficeSaveState.REJECTED ->
+                abortInternalSave("saveFailed", receipt.failure?.name)
+            else -> abortInternalSave("saveFailed", "unexpected internal save state")
+        }
+    }
+
+    private fun abortInternalSave(notice: String, detail: String?) {
+        internalSaveOpId = null
+        internalSaveHandoffInFlight = false
+        closeSavePhase = null
+        unfreezeDocumentInput()
+        noticeKey = notice
+        noticeDetail = detail
     }
 
     /**
@@ -990,6 +1170,8 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
 
     override fun onDestroy() {
         stopApprovalNoticePoll()
+        internalSaveOpId = null
+        internalSaveHandoffInFlight = false
         exportPurposes.clear()
         pdfBusyKey = null
         pdfRenderHost?.release()
@@ -1231,6 +1413,7 @@ private fun OfficeViewerScreen(
     failure: Pair<OfficeFailureCode, String?>?,
     viewerUrl: String?,
     editableSession: Boolean,
+    internalSaveSession: Boolean = false,
     editState: OfficeEditState?,
     diagnosticEvents: List<OfficeSessionDiagnostics.Event>,
     busyPhaseKey: String?,
@@ -1335,7 +1518,11 @@ private fun OfficeViewerScreen(
             )
             FloeText(
                 stringResource(
-                    if (editableSession) R.string.office_viewer_edit_info else R.string.office_viewer_preview_info,
+                    when {
+                        !editableSession -> R.string.office_viewer_preview_info
+                        internalSaveSession -> R.string.office_viewer_edit_note_info
+                        else -> R.string.office_viewer_edit_info
+                    },
                 ),
                 color = Floe.colors.secondaryLabel,
             )
@@ -1550,6 +1737,7 @@ private fun OfficeViewerScreen(
                                 when (busyPhaseKey) {
                                     "picker" -> R.string.office_busy_awaiting_picker
                                     "app" -> R.string.office_busy_awaiting_app
+                                    "saving" -> R.string.office_busy_saving
                                     "pdfExport" -> R.string.office_pdf_busy_export
                                     "pdfPrint" -> R.string.office_pdf_busy_print
                                     else -> R.string.office_busy_exporting

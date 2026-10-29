@@ -66,6 +66,7 @@ class InkCanvasView @JvmOverloads constructor(
 
     private var inputConfig = InkInputConfig()
     private val router = InkPointerRouter { inputConfig }
+    private val parentGesture = InkParentGestureClaim()
 
     private var currentBrush: InkBrushSpec = InkBrushSpec.pen(Color.BLACK)
     private var eraserRadiusPt: Float = 9f
@@ -199,6 +200,7 @@ class InkCanvasView @JvmOverloads constructor(
         router.reset()
         closeGroups()
         lastErasePoint = null
+        releaseParentGesture()
         paperLayer.invalidate()
     }
 
@@ -304,6 +306,7 @@ class InkCanvasView @JvmOverloads constructor(
     }
 
     private fun handleIntent(intent: InkGestureIntent, event: MotionEvent, doc: InkDocument) {
+        applyParentGesture(intent)
         when (intent) {
             is InkGestureIntent.BeginStroke -> {
                 if (selectionMode && samplePointInSelectionMode(event)) {
@@ -415,6 +418,26 @@ class InkCanvasView @JvmOverloads constructor(
             InkGestureIntent.TransformEnd -> paperLayer.invalidate()
 
             InkGestureIntent.Ignored -> Unit
+        }
+    }
+
+    /**
+     * Compose hosts this view through `pointerInteropFilter`. A scrollable page
+     * ancestor otherwise consumes the first MOVE beyond touch slop and the
+     * interop layer forwards ACTION_CANCEL, which silently rolls the stroke back
+     * (a tap still commits; every swipe disappears). Claim the parent stream for
+     * an owned ink gesture and release it on every terminal path.
+     */
+    private fun applyParentGesture(intent: InkGestureIntent) {
+        parentGesture.apply(intent)?.let { disallowIntercept ->
+            parent?.requestDisallowInterceptTouchEvent(disallowIntercept)
+        }
+    }
+
+    /** Releases a claim that is still held (page change/background/detach). */
+    private fun releaseParentGesture() {
+        parentGesture.release()?.let { disallowIntercept ->
+            parent?.requestDisallowInterceptTouchEvent(disallowIntercept)
         }
     }
 

@@ -906,11 +906,38 @@ internal class NotesDocumentSession(
 
     fun commitElementText(element: NoteElement, text: String, markdown: Boolean): NotesTextPlan? {
         val doc = document ?: return null
-        val page = doc.pages.firstOrNull { p -> p.elements.any { it.id == element.id } } ?: return null
-        val plan = planElementTextReplacement(doc, page.id, element, text, markdown, NotesIdSource.random())
+        // The App holds the toolbar-inserted element by its locally minted
+        // lowercase id, while the native store re-encodes every UUID as
+        // Foundation's uppercase `uuidString` in the returned document. A raw
+        // string comparison would drop the target and never send the text, so
+        // resolve the same UUID value against the stored element, or against
+        // the still-queued insert when its response has not been adopted yet.
+        val stored = doc.pages.firstNotNullOfOrNull { page ->
+            page.elements.firstOrNull { sameNoteIdentity(it.id, element.id) }?.let { page to it }
+        }
+        val pending = if (stored == null) {
+            pendingEdits.asReversed()
+                .filterIsInstance<NotesEdit.UpsertElement>()
+                .firstOrNull { sameNoteIdentity(it.element.id, element.id) }
+        } else {
+            null
+        }
+        val pageID = stored?.first?.id ?: pending?.pageID ?: return null
+        val target = stored?.second ?: pending?.element ?: return null
+        val plan = planElementTextReplacement(doc, pageID, target, text, markdown, NotesIdSource.random())
         if (plan.edits.isEmpty()) return null
-        requestEdits(plan.edits, "Edit text")
+        // A refused queue (read-only/root-stopping) must keep the editor's
+        // draft and its truthful failure state instead of dismissing as saved.
+        if (!requestEdits(plan.edits, "Edit text")) return null
         return plan
+    }
+
+    /** UUID values are case-insensitive; native `UUID.uuidString` is uppercase. */
+    private fun sameNoteIdentity(left: String, right: String): Boolean {
+        if (left == right) return true
+        val leftValue = runCatching { UUID.fromString(left) }.getOrNull() ?: return false
+        val rightValue = runCatching { UUID.fromString(right) }.getOrNull() ?: return false
+        return leftValue == rightValue
     }
 
     fun insertText(text: String, markdown: Boolean = false): NotesTextPlan? {
@@ -1113,10 +1140,19 @@ internal class NotesDocumentSession(
                         pdfFailure = pdfFailures[pageResourceID]
                             ?: NotesFailure("resourceUnavailable", "pdf")
                     } else {
-                        renderedPdf = handle.renderPage(
-                            pdfIndex.coerceIn(0, handle.pageCount - 1),
-                            targetWidthPx.coerceIn(320, 4096),
-                        )
+                        renderedPdf = try {
+                            handle.renderPage(
+                                pdfIndex.coerceIn(0, handle.pageCount - 1),
+                                targetWidthPx.coerceIn(320, 4096),
+                            )
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Throwable) {
+                            // A render failure must be visible as a typed page
+                            // error, never a silently blank page.
+                            pdfFailure = error.toNotesFailure()
+                            null
+                        }
                     }
                 } else if (pageResourceID != null) {
                     background = resources.readAll(

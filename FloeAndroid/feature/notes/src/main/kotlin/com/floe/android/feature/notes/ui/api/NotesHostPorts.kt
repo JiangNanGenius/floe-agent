@@ -693,6 +693,12 @@ public class NotesHostPorts(
      */
     public val recovery: NotesRecoveryStore,
     public val indexing: NotesIndexingPort? = null,
+    /**
+     * Optional real task-workspace file source. Null when the App has not
+     * wired the platform adapter; the library then hides the workspace import
+     * row instead of showing a placeholder that cannot work.
+     */
+    public val workspaceImport: NotesWorkspaceImportPort? = null,
 )
 
 public enum class NotesSettingsTarget { MODELS, GENERAL }

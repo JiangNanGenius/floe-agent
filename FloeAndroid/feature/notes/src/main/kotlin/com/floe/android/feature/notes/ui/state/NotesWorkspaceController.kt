@@ -3,6 +3,7 @@ package com.floe.android.feature.notes.ui.state
 
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.floe.android.feature.notes.NoteDocument
@@ -93,7 +94,14 @@ internal class NotesWorkspaceController(
     var officeIndexBusy by mutableStateOf(false)
         private set
 
-    private val sessions = mutableMapOf<String, NotesDocumentSession>()
+    /**
+     * Snapshot-observable: `activeSession` is read by the workspace composable,
+     * and inserting a session must invalidate that read even when
+     * `activeDocumentID` already equals the opened id (cold reopen restores the
+     * last active id before the session exists). A plain map leaves the restored
+     * document invisible behind the "Select a Note" placeholder.
+     */
+    private val sessions = mutableStateMapOf<String, NotesDocumentSession>()
     private val officeIndexJobs = mutableMapOf<String, Job>()
     private var started = false
     private var eventCursor = 0L
@@ -212,6 +220,11 @@ internal class NotesWorkspaceController(
         val session = activeSession
         if (session != null && session.assistant.isOpen) {
             session.assistant.close()
+            // Keep the compact assistant sheet's visibility and the toolbar
+            // tint on the same state. System Back still only closes the
+            // assistant and leaves the SAME editor body mounted (the passed
+            // candidate-05 behavior).
+            session.assistantOpen = false
             return true
         }
         if (navigation.isNotEmpty()) {

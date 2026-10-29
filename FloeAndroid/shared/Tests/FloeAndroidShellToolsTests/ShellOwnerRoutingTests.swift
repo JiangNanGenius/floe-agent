@@ -148,6 +148,38 @@ final class ShellOwnerRoutingTests: XCTestCase {
         XCTAssertEqual(transport.recordedCancelCount, 1, "the owner's close requested the engine stop exactly once")
     }
 
+    func testManualStopKeepsTheEntryOwnedUntilTheOwnersExchangeSettlesIt() async throws {
+        // G06 workspace-sync31: a manual Close is a stop REQUEST. The entry and
+        // its operation lease must stay owned until the OWNER's exchange sees
+        // the real terminal (the only carrier of the runtime workspace export
+        // receipt). `close(sessionID:)` must NOT be used: it removes the entry
+        // and schedules a detached reconciliation that consumes the receipt.
+        let (_, center, _, transport, root) = try makeFixture()
+        let runID = UUID()
+        let opened = try await center.open(command: "", cwd: ".", environment: [:],
+                                           columns: 80, rows: 24, runID: runID, rootURL: root,
+                                           cancellation: nil, clientSessionID: "run:parent")
+        let stopped = await center.requestStopForSettlement(sessionID: opened.sessionID,
+                                                            runID: runID,
+                                                            clientSessionID: "run:parent")
+        XCTAssertEqual(stopped, .applied)
+        XCTAssertEqual(transport.recordedCancelCount, 1, "exactly one owned stop request")
+        // The fake's stop-driven release is the same released shape as the
+        // production terminal: Cancelled + the synced workspace receipt.
+        let settled = try await center.exchange(sessionID: opened.sessionID, input: nil,
+                                                waitMs: 100, maxBytes: 4096, runID: runID,
+                                                cancellation: nil, clientSessionID: "run:parent")
+        XCTAssertFalse(settled.alive)
+        XCTAssertTrue(settled.cancelled, "the stop terminal is the engine's Cancelled kind")
+        XCTAssertEqual(settled.workspaceStatus, "synced",
+                       "the owner's exchange carries the runtime workspace export receipt")
+        let again = await center.requestStopForSettlement(sessionID: opened.sessionID,
+                                                          runID: runID,
+                                                          clientSessionID: "run:parent")
+        XCTAssertEqual(again, .notFound, "the real terminal removed the entry exactly once")
+        XCTAssertEqual(transport.recordedCancelCount, 1, "a settled session is never stopped twice")
+    }
+
     func testSecondEngineWorkloadIsRefusedHonestly() async throws {
         let (service, center, _, transport, root) = try makeFixture()
         transport.pollScript = { session, cursor, nth in

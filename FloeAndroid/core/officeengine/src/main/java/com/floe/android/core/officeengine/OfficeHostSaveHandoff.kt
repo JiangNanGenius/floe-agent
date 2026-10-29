@@ -20,8 +20,10 @@ import android.os.Process
  *
  * Everything crossing this boundary is inert data: an opaque op id, the
  * session identity, a format token, a suggested display name, a result code,
- * a URI string and platform flag bits. The module does not resolve, grant,
- * persist or interpret any of it.
+ * a URI string, platform flag bits and (for the internal Notes destination)
+ * the exact post-flush working-copy digest/byte count. The module does not
+ * resolve, grant, persist or interpret any of it. The internal transaction
+ * carries NO path or URI: the App re-verifies its own working copy.
  */
 object OfficeHostSaveHandoffPolicy {
 
@@ -39,8 +41,42 @@ object OfficeHostSaveHandoffPolicy {
     /** Engine→App: live edit/dirty/undo state snapshot for the exact mount. */
     const val TRANSACTION_EDIT_STATE = 5
 
-    /** Receipt/edit-state parcel schema version (first field of those payloads). */
+    /**
+     * Engine→App (R3 internal-notes save): one explicit "save and return"
+     * flush completed for the exact op, with the just-verified working-copy
+     * digest that THIS App-owned working copy must still match. The App
+     * snapshots and verifies the bytes before answering, exactly like the
+     * external COPY_SAVED settlement; the engine closes only after the
+     * answer. This is a destination handoff for an App-owned internal
+     * output — never a user/provider URI and never a "saved to Notes" claim
+     * by the module. It is used only for mounts whose launch Intent carries
+     * [EXTRA_INTERNAL_SAVE]; the generic SAF Save-Copy path is unchanged.
+     */
+    const val TRANSACTION_INTERNAL_SAVE = 6
+
+    /**
+     * Viewer launch-Intent extra: this mount's App host owns an internal
+     * working-copy commit and explicitly supports
+     * [TRANSACTION_INTERNAL_SAVE]. With it, an edited document's dirty
+     * close sheet offers "Save and close" (no system file picker) and the
+     * ordinary "Save Copy" menu remains the optional external export.
+     */
+    const val EXTRA_INTERNAL_SAVE = "com.floe.android.office.INTERNAL_SAVE"
+
+    /** Receipt/edit-state/internal-save parcel schema version (first field). */
     const val SCHEMA_VERSION = 1
+
+    /**
+     * Internal-save replies. Positive answers authorize the viewer to close
+     * (the App either snapshotted new bytes or proved the working copy still
+     * equals the base). A typed negative answer keeps the editor open with
+     * the working copy retained; [INTERNAL_SAVE_REFUSED] is also the
+     * transport/missing-channel answer.
+     */
+    const val INTERNAL_SAVE_ACCEPTED = 1
+    const val INTERNAL_SAVE_UNCHANGED = 2
+    const val INTERNAL_SAVE_REJECTED = -1
+    const val INTERNAL_SAVE_REFUSED = 0
 
     const val MAX_OP_ID_CHARS = 64
     const val MAX_URI_CHARS = 4096
@@ -65,7 +101,26 @@ object OfficeHostSaveHandoffPolicy {
         val resultFlags: Int,
     )
 
+    /**
+     * One completed internal-save flush: the op identity plus the exact
+     * working-copy facts the engine re-read after its real `.uno:Save` ack.
+     * No path crosses this boundary: the App already owns the working copy
+     * and re-verifies it against these facts before importing anything.
+     */
+    data class InternalSaveNotice(
+        val opId: String,
+        val sessionToken: String,
+        val generation: Long,
+        val format: String,
+        val workingCopySha256: String,
+        val workingCopyBytes: Long,
+    )
+
     private val OP_ID_REGEX = Regex("^[A-Za-z0-9_-]{1,64}$")
+    private val SHA256_REGEX = Regex("^[0-9a-f]{64}$")
+
+    /** The only working-copy formats an internal Notes commit may carry. */
+    val INTERNAL_SAVE_FORMATS: Set<String> = setOf("docx", "xlsx", "pptx")
 
     fun validOpId(opId: String?): Boolean =
         opId != null && OP_ID_REGEX.matches(opId)
@@ -101,6 +156,29 @@ object OfficeHostSaveHandoffPolicy {
         !validUriString(uriString) -> null
         else -> PickResult(opId!!, token!!, generation, resultCode, uriString, flags)
     }
+
+    fun validateInternalSave(
+        opId: String?,
+        token: String?,
+        generation: Long?,
+        format: String?,
+        workingCopySha256: String?,
+        workingCopyBytes: Long?,
+    ): InternalSaveNotice? = when {
+        !validOpId(opId) || !validToken(token) || generation == null || generation < 1L -> null
+        format == null || format !in INTERNAL_SAVE_FORMATS -> null
+        workingCopySha256 == null || !SHA256_REGEX.matches(workingCopySha256) -> null
+        workingCopyBytes == null || workingCopyBytes < 1L ||
+            workingCopyBytes > OfficeRequestPolicy.MAX_STAGED_BYTES -> null
+        else -> InternalSaveNotice(
+            opId = opId!!,
+            sessionToken = token!!,
+            generation = generation,
+            format = format,
+            workingCopySha256 = workingCopySha256,
+            workingCopyBytes = workingCopyBytes,
+        )
+    }
 }
 
 /**
@@ -132,6 +210,15 @@ object OfficeHostSaveChannel {
         onPickResult: (OfficeHostSaveHandoffPolicy.PickResult) -> Boolean,
         onReceipt: (OfficeSaveReceipt) -> Unit = {},
         onEditState: (OfficeEditState) -> Unit = {},
+        /**
+         * Optional App-owned internal destination. Called synchronously on a
+         * Binder thread after a genuine FLUSHED/UNMODIFIED receipt for the
+         * exact [OfficeHostSaveHandoffPolicy.InternalSaveNotice]. The App
+         * MUST re-read/digest/snapshot its own working copy and return true
+         * only after the bytes match; false keeps the editor open.
+         */
+        onInternalSave: (OfficeHostSaveHandoffPolicy.InternalSaveNotice) -> Int =
+            { OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_REFUSED },
     ): IBinder = object : Binder() {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
             if (code !in setOf(
@@ -139,6 +226,7 @@ object OfficeHostSaveChannel {
                     OfficeHostSaveHandoffPolicy.TRANSACTION_DELIVER_PICK_RESULT,
                     OfficeHostSaveHandoffPolicy.TRANSACTION_SAVE_RECEIPT,
                     OfficeHostSaveHandoffPolicy.TRANSACTION_EDIT_STATE,
+                    OfficeHostSaveHandoffPolicy.TRANSACTION_INTERNAL_SAVE,
                 )
             ) {
                 return super.onTransact(code, data, reply, flags)
@@ -187,6 +275,26 @@ object OfficeHostSaveChannel {
                     val state = readEditState(data)
                     if (state != null) runCatching { onEditState(state) }
                     reply?.writeInt(if (state != null) 1 else 0)
+                }
+
+                OfficeHostSaveHandoffPolicy.TRANSACTION_INTERNAL_SAVE -> {
+                    val notice = readInternalSave(data)
+                    // Fail closed: no notice, a throwing verifier or an
+                    // explicit refusal keeps the editor open with the
+                    // working copy retained. Only the two positive replies
+                    // (accepted/unchanged) authorize the close.
+                    val answer = if (notice == null) {
+                        OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_REFUSED
+                    } else {
+                        runCatching { onInternalSave(notice) }
+                            .getOrDefault(OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_REJECTED)
+                            .takeIf {
+                                it == OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_ACCEPTED ||
+                                    it == OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_UNCHANGED
+                            }
+                            ?: OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_REJECTED
+                    }
+                    reply?.writeInt(answer)
                 }
             }
             return true
@@ -287,6 +395,49 @@ object OfficeHostSaveChannel {
         }
     }
 
+    /**
+     * Pushes one verified internal-save notice to the App host. True only
+     * when the App verified and snapshotted the exact bytes for this op.
+     * Any transport/shape/refusal problem is false; the caller keeps the
+     * editor open and retains the working copy.
+     */
+    @JvmStatic
+    fun postInternalSave(
+        channel: IBinder?,
+        notice: OfficeHostSaveHandoffPolicy.InternalSaveNotice,
+    ): Int {
+        if (channel == null || !channel.pingBinder()) {
+            return OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_REFUSED
+        }
+        if (OfficeHostSaveHandoffPolicy.validateInternalSave(
+                notice.opId,
+                notice.sessionToken,
+                notice.generation,
+                notice.format,
+                notice.workingCopySha256,
+                notice.workingCopyBytes,
+            ) == null
+        ) return OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_REJECTED
+        val data = Parcel.obtain()
+        val reply = Parcel.obtain()
+        return try {
+            data.writeInterfaceToken(OfficeHostSaveHandoffPolicy.DESCRIPTOR)
+            writeInternalSave(data, notice)
+            val transacted = channel.transact(
+                OfficeHostSaveHandoffPolicy.TRANSACTION_INTERNAL_SAVE,
+                data,
+                reply,
+                0,
+            )
+            if (transacted) reply.readInt() else OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_REFUSED
+        } catch (e: Exception) {
+            OfficeHostSaveHandoffPolicy.INTERNAL_SAVE_REFUSED
+        } finally {
+            reply.recycle()
+            data.recycle()
+        }
+    }
+
     /** Pushes one live edit-state snapshot to the App host. */
     @JvmStatic
     fun postEditState(channel: IBinder?, state: OfficeEditState): Boolean {
@@ -378,6 +529,36 @@ object OfficeHostSaveChannel {
                 attestation = attestation,
                 submittedAtElapsedMs = submittedAtElapsedMs,
                 completedAtElapsedMs = completedAtElapsedMs,
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun writeInternalSave(
+        parcel: Parcel,
+        notice: OfficeHostSaveHandoffPolicy.InternalSaveNotice,
+    ) {
+        parcel.writeInt(OfficeHostSaveHandoffPolicy.SCHEMA_VERSION)
+        parcel.writeString(notice.opId)
+        parcel.writeString(notice.sessionToken)
+        parcel.writeLong(notice.generation)
+        parcel.writeString(notice.format)
+        parcel.writeString(notice.workingCopySha256)
+        parcel.writeLong(notice.workingCopyBytes)
+    }
+
+    /** Single ordered reader; field order must match [writeInternalSave] exactly. */
+    private fun readInternalSave(parcel: Parcel): OfficeHostSaveHandoffPolicy.InternalSaveNotice? {
+        return try {
+            if (parcel.readInt() != OfficeHostSaveHandoffPolicy.SCHEMA_VERSION) return null
+            OfficeHostSaveHandoffPolicy.validateInternalSave(
+                opId = parcel.readString(),
+                token = parcel.readString(),
+                generation = parcel.readLong(),
+                format = parcel.readString(),
+                workingCopySha256 = parcel.readString(),
+                workingCopyBytes = parcel.readLong(),
             )
         } catch (e: Exception) {
             null

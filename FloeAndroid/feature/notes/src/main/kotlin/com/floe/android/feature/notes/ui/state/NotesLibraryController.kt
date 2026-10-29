@@ -30,7 +30,9 @@ import com.floe.android.feature.notes.ui.api.NotesPdfHandle
 import com.floe.android.feature.notes.ui.api.NotesPdfOpenOutcome
 import com.floe.android.feature.notes.ui.api.NotesPdfOpenRequest
 import com.floe.android.feature.notes.ui.api.NotesPickedFile
+import com.floe.android.feature.notes.ui.api.NotesPortFailure
 import com.floe.android.feature.notes.ui.api.NotesPortFailureException
+import com.floe.android.feature.notes.ui.api.NotesWorkspaceScope
 import com.floe.android.feature.notes.ui.presentation.NotesFailure
 import com.floe.android.feature.notes.ui.presentation.NotesLibraryCounts
 import com.floe.android.feature.notes.ui.presentation.NotesEditReceipt
@@ -265,21 +267,49 @@ internal class NotesLibraryController(
         busy = true
         failure = null
         var picked: NotesPickedFile? = null
+        // Stable phase codes keep the exact failed step observable in the
+        // create sheet and its typed UI readback. Only stable failure codes
+        // travel in detail; no path, byte, model or note content is added.
+        fun phaseFailed(code: String, cause: Throwable? = null, underlying: String? = null) {
+            failure = NotesFailure(code, underlying ?: cause?.toNotesFailure()?.code)
+        }
         return try {
-            when (val outcome = ports.office.createBlank(NotesOfficeCreateBlankRequest(title, kind))) {
+            val outcome = try {
+                ports.office.createBlank(NotesOfficeCreateBlankRequest(title, kind))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                phaseFailed("officeCreatePrepareFailed", cause = error)
+                return false
+            }
+            when (outcome) {
                 is NotesOfficeBlankOutcome.Created -> {
                     picked = outcome.file
-                    val imported = importPickedAsResource(outcome.file)
-                    val created = service.createDocument(
-                        NotesCreateDocument(
-                            kind = NoteDocumentKind.OFFICE,
-                            title = title,
-                            notebookID = selectedNotebookID,
-                            documentID = UUID.randomUUID().toString(),
-                            resourceID = imported.resourceID,
-                            fileName = outcome.file.fileName,
-                        ),
-                    )
+                    val imported = try {
+                        importPickedAsResource(outcome.file)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        phaseFailed("officeCreateResourceFailed", cause = error)
+                        return false
+                    }
+                    val created = try {
+                        service.createDocument(
+                            NotesCreateDocument(
+                                kind = NoteDocumentKind.OFFICE,
+                                title = title,
+                                notebookID = selectedNotebookID,
+                                documentID = UUID.randomUUID().toString(),
+                                resourceID = imported.resourceID,
+                                fileName = outcome.file.fileName,
+                            ),
+                        )
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        phaseFailed("officeCreateDocumentFailed", cause = error)
+                        return false
+                    }
                     load(initial = false)
                     onOpenDocument(created.id, null)
                     true
@@ -289,7 +319,7 @@ internal class NotesLibraryController(
                     false
                 }
                 is NotesOfficeBlankOutcome.Failed -> {
-                    failure = outcome.failure.toNotesFailure()
+                    phaseFailed("officeCreatePrepareFailed", underlying = outcome.failure.code)
                     false
                 }
             }
@@ -538,6 +568,42 @@ internal class NotesLibraryController(
         }
     }
 
+    /**
+     * Import one file that the user explicitly chose in the real Floe task
+     * workspace chooser.
+     *
+     * The workspace port owns the read handle (bounded chunks, native owner
+     * fence, idempotent close). The SAME [importPicked] pipeline copies the
+     * bytes into the independent Notes store; a workspace path or URI never
+     * enters Notes. The original workspace file is never modified.
+     */
+    suspend fun importWorkspaceFile(
+        scope: NotesWorkspaceScope,
+        relativePath: String,
+        notebookID: String? = selectedNotebookID,
+    ): Boolean {
+        val port = ports.workspaceImport
+        if (port == null) {
+            failure = NotesFailure(NotesPortFailure.UNAVAILABLE, "workspaceImportUnavailable")
+            return false
+        }
+        var picked: NotesPickedFile? = null
+        busy = true
+        failure = null
+        return try {
+            picked = port.open(scope, relativePath)
+            importPicked(picked, notebookID)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            failure = error.toNotesFailure()
+            false
+        } finally {
+            picked?.let { runCatching { it.close() } }
+            busy = false
+        }
+    }
+
     suspend fun importKind(kind: NotesImportKind, notebookID: String? = selectedNotebookID): Boolean {
         var picked: NotesPickedFile? = null
         busy = true
@@ -689,10 +755,13 @@ internal class NotesLibraryController(
                     pdfPageIndex = index,
                 )
             }
-            pages.chunked(40).forEach { chunk ->
-                val edits = chunk.mapIndexed { offset, page ->
-                    NotesEdit.InsertPage(page, index = current.pages.size + offset)
-                }
+            // A new notebook starts with one native placeholder page. Replace
+            // it with the first PDF page; inserting the PDF after it would
+            // leave an empty cover and shift every imported page by one.
+            importedNotebookPageEdits(
+                placeholderPageID = current.pages.firstOrNull()?.id,
+                pages = pages,
+            ).chunked(40).forEach { edits ->
                 current = service.apply(
                     NotesApplyRequest(
                         documentID = document.id,
@@ -745,18 +814,18 @@ internal class NotesLibraryController(
             height = height,
             backgroundResourceID = resource.resourceID,
         )
-        service.apply(
+        val importedDocument = service.apply(
             NotesApplyRequest(
                 documentID = document.id,
                 expectedRevision = document.revision,
                 title = "Import image",
-                edits = listOf(NotesEdit.InsertPage(page, 0)),
+                edits = importedNotebookPageEdits(document.pages.firstOrNull()?.id, listOf(page)),
                 requestID = UUID.randomUUID().toString(),
             ),
         )
         notice = NotesLibraryNotice.IMPORTED
         load(initial = false)
-        onOpenDocument(document.id, page.id)
+        onOpenDocument(document.id, importedDocument.pages.firstOrNull()?.id)
         return true
     }
 
@@ -789,7 +858,7 @@ internal class NotesLibraryController(
         )
         val plan: NotesTextPlan = planTextInsertion(
             document = document,
-            pageID = null,
+            pageID = document.pages.firstOrNull()?.id,
             text = text,
             markdown = picked.fileName.substringAfterLast('.', "").lowercase() == "md",
         )

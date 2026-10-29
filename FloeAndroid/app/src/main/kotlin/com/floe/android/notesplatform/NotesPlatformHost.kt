@@ -13,6 +13,7 @@ import com.floe.android.feature.notes.ui.api.NotesIndexingPort
 import com.floe.android.feature.notes.ui.api.NotesMediaPort
 import com.floe.android.feature.notes.ui.api.NotesOfficePort
 import com.floe.android.feature.notes.ui.api.NotesResourceReader
+import com.floe.android.feature.notes.ui.api.NotesWorkspaceImportPort
 import com.floe.android.feature.notes.ui.presentation.NotesPresentationStore
 import com.floe.android.feature.notes.ui.presentation.NotesRecoveryStore
 import com.floe.android.feature.notes.ui.presentation.SharedPreferencesNotesPresentationStore
@@ -56,6 +57,11 @@ class NotesPlatformHost internal constructor(
      * single canonical identity for the copy.
      */
     public val chatTransferRecovery: NotesRecoveryStore,
+    /**
+     * Optional real task-workspace file source. The SAME object participates
+     * in the Notes root-stop gate; it is not a parallel file authority.
+     */
+    public val workspaceImport: NotesWorkspaceImportPort?,
     public val activityBroker: NotesPlatformActivityBroker,
     private val mediaEffects: NotesMediaEffects,
     private val officeEffects: NotesOfficeEffects,
@@ -83,7 +89,24 @@ class NotesPlatformHost internal constructor(
         presentation = presentation,
         recovery = recovery,
         indexing = indexing,
+        workspaceImport = workspaceImport,
     )
+
+    /**
+     * Existing Notes root-stop gate for the workspace read lane. The caller
+     * runs it BEFORE the native root epoch changes; a false result keeps the
+     * same root and must be re-armed with [abortRootStop].
+     */
+    suspend fun prepareForRootStop(epoch: Long): Boolean =
+        workspaceImport?.prepareForRootStop(epoch) ?: true
+
+    suspend fun abortRootStop(epoch: Long) {
+        workspaceImport?.abortRootStop(epoch)
+    }
+
+    suspend fun resumeAfterRootChange(epoch: Long) {
+        workspaceImport?.resumeAfterRootChange(epoch)
+    }
 
     /**
      * The media module's actual PDF export route. The current writer is a
@@ -114,6 +137,7 @@ class NotesPlatformHost internal constructor(
         runCatching { mediaEffects.close() }
         runCatching { officeEffects.close() }
         runCatching { exchangeEffects.close() }
+        runCatching { workspaceImport?.close() }
         runCatching { recoveryStore.close() }
         runCatching { chatRecoveryStore.close() }
     }
@@ -135,6 +159,7 @@ suspend fun createNotesPlatformHost(
     activityBroker: NotesPlatformActivityBroker = NotesPlatformActivityBroker(),
     ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     passwordProvider: NotesPdfPasswordProvider? = null,
+    workspaceImport: NotesWorkspaceImportPort? = null,
 ): NotesPlatformHost {
     require(context.applicationContext != null)
     val application = context.applicationContext
@@ -186,6 +211,7 @@ suspend fun createNotesPlatformHost(
         presentation = presentation,
         recovery = recovery,
         chatTransferRecovery = chatTransferRecovery,
+        workspaceImport = workspaceImport,
         activityBroker = activityBroker,
         mediaEffects = media,
         officeEffects = office,

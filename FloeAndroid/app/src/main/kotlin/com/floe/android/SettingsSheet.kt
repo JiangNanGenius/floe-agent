@@ -303,6 +303,11 @@ fun SettingsSheet(
                 } else {
                     Column(Modifier.fillMaxSize()) {
                         SheetToolbar(
+                            title = if (compactDetailOpen) {
+                                settingsTitle(active)
+                            } else {
+                                stringResource(R.string.settings)
+                            },
                             compactDetail = compactDetailOpen,
                             onDone = onDismiss,
                             onBack = { compactDetailOpen = false },
@@ -315,7 +320,7 @@ fun SettingsSheet(
                                         .fillMaxSize()
                                         .background(Floe.colors.groupedSurface),
                                 ) {
-                                    SettingsDetailHeader(title = settingsTitle(active))
+                                    Spacer(Modifier.height(8.dp))
                                     Box(Modifier.fillMaxWidth().weight(1f)) {
                                         slot(hostGeometry, Modifier.fillMaxSize())
                                     }
@@ -326,7 +331,7 @@ fun SettingsSheet(
                                         .fillMaxSize()
                                         .background(Floe.colors.groupedSurface),
                                 ) {
-                                    SettingsDetailHeader(title = settingsTitle(active))
+                                    Spacer(Modifier.height(8.dp))
                                     Box(Modifier.fillMaxWidth().weight(1f)) {
                                         SkillsSettingsPage(runtimeHost)
                                     }
@@ -337,7 +342,7 @@ fun SettingsSheet(
                                         .fillMaxSize()
                                         .background(Floe.colors.groupedSurface),
                                 ) {
-                                    SettingsDetailHeader(title = settingsTitle(active))
+                                    Spacer(Modifier.height(8.dp))
                                     Column(
                                         Modifier
                                             .fillMaxWidth()
@@ -442,6 +447,7 @@ private fun SettingsDetailHeader(
 
 @Composable
 private fun SheetToolbar(
+    title: String,
     compactDetail: Boolean,
     onDone: () -> Unit,
     onBack: () -> Unit,
@@ -467,9 +473,14 @@ private fun SheetToolbar(
             )
         }
         FloeText(
-            stringResource(R.string.settings),
+            // iOS compact uses the pushed section's navigation title; the
+            // category name must not be duplicated as a second large title
+            // inside the form.
+            title,
             style = Floe.typography.title,
             color = colors.label,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).padding(start = if (compactDetail) 0.dp else 8.dp),
         )
         FloeDoneButton(onDone)

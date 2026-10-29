@@ -268,6 +268,10 @@ public struct ShellExchangeResult: Sendable, Equatable {
     public var terminalOutput: Data?
     public var alive: Bool
     public var exitCode: Int32?
+    /// Engine truth: this terminal came from a PROVEN STOP (Cancelled), not a
+    /// process that exited on its own. A stopped session is not an "exited"
+    /// one even when the cancelled terminal carries an exit code.
+    public var cancelled: Bool
     /// Recoverable session failure text (e.g. unread-output overflow): the
     /// session ended deliberately; the owner surfaces this and the user can
     /// reconnect to continue.
@@ -278,15 +282,23 @@ public struct ShellExchangeResult: Sendable, Equatable {
     public var bytesRead: Int
     /// Cumulative bytes accepted onto the session's input descriptor.
     public var bytesWritten: Int
+    /// The runtime's OWN workspace export result for this released session
+    /// (`synced`/`conflict`/`aborted`/`error`/`unknown`). The engine publishes
+    /// `leaseReleased` only AFTER its whole-UID stop proof and export, so a
+    /// released page carries the real receipt. nil means no receipt was
+    /// observed (unknown) — never a synthesized success.
+    public var workspaceStatus: String?
 
-    public init(output: String, alive: Bool, exitCode: Int32? = nil, terminalOutput: Data? = nil, failure: String? = nil, bytesRead: Int = 0, bytesWritten: Int = 0) {
+    public init(output: String, alive: Bool, exitCode: Int32? = nil, cancelled: Bool = false, terminalOutput: Data? = nil, failure: String? = nil, bytesRead: Int = 0, bytesWritten: Int = 0, workspaceStatus: String? = nil) {
         self.output = output
         self.alive = alive
         self.exitCode = exitCode
+        self.cancelled = cancelled
         self.terminalOutput = terminalOutput
         self.failure = failure
         self.bytesRead = bytesRead
         self.bytesWritten = bytesWritten
+        self.workspaceStatus = workspaceStatus
     }
 }
 
@@ -307,11 +319,22 @@ public protocol LocalShellBackend: Sendable {
     func closeSession(sessionID: String) async
     func signalSession(sessionID: String, signal: ShellSignal) async
     func resizeSession(sessionID: String, columns: Int, rows: Int) async
+    /// Requests the engine's owned stop while the CALLER keeps observing the
+    /// SAME session entry to its real terminal. Unlike `signalSession(...,
+    /// .terminate)` the production implementation schedules NO detached
+    /// reconciliation, so the caller's own exchange receives the released
+    /// terminal together with the runtime workspace export receipt.
+    func requestStopForSettlement(sessionID: String) async
 }
 
 public extension LocalShellBackend {
     func signalSession(sessionID: String, signal: ShellSignal) async {}
     func resizeSession(sessionID: String, columns: Int, rows: Int) async {}
+    /// Default keeps the historical signal semantics for test/fake backends;
+    /// the production backend overrides it to preserve the caller's poll.
+    func requestStopForSettlement(sessionID: String) async {
+        await signalSession(sessionID: sessionID, signal: .terminate)
+    }
 }
 
 /// Honest failure when the app has not injected a shell engine (for example

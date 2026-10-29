@@ -165,6 +165,71 @@ final class G04TerminalDomainTests: XCTestCase {
                        Data("\u{1B}[31msecret-prompt\u{1B}[0m\r\n".utf8))
     }
 
+    func testReleasedExchangeCarriesTheRuntimeWorkspaceReceipt() async throws {
+        // A manual Close may only settle after the engine's REAL terminal;
+        // that released page is the ONLY carrier of the runtime's workspace
+        // export receipt. A live page must never fabricate one.
+        let transport = FakeTerminalTransport()
+        let backend = AndroidLinuxShellBackend(
+            transport: transport,
+            readiness: LinuxShellInjectedReadiness { true },
+            configuration: AndroidLinuxShellBackend.Configuration(pollIntervalNanos: 1_000_000))
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("floe-term-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runID = UUID()
+        let open = try await backend.openSession(ShellOpenRequest(
+            command: "", cwd: ".", rootURL: root, environment: [:], columns: 80, rows: 24,
+            gateTimeout: 2, sessionID: runID.uuidString.lowercased(), runID: runID,
+            toolEnvironment: nil, conversationID: runID, prepareLinuxIfMissing: false),
+            cancellation: nil)
+        transport.pollScript = [
+            LinuxShellPollReply(sessionID: "engine-session-1", mergedOutput: Data(),
+                                cursor: 0, gapBytes: 0, more: false, droppedBytes: 0,
+                                state: .running, leaseReleased: false),
+            LinuxShellPollReply(sessionID: "engine-session-1", mergedOutput: Data(),
+                                cursor: 0, gapBytes: 0, more: false, droppedBytes: 0,
+                                state: .terminated, leaseReleased: true,
+                                cancelled: true, stopReason: "user-stop",
+                                workspaceStatus: "synced"),
+        ]
+        let live = try await backend.exchangeSession(ShellExchangeRequest(
+            sessionID: open.sessionID, input: nil, waitMs: 60, maxBytes: 64 * 1024),
+            cancellation: nil)
+        XCTAssertTrue(live.alive)
+        XCTAssertNil(live.workspaceStatus, "a live page must not carry an export receipt")
+        let settled = try await backend.exchangeSession(ShellExchangeRequest(
+            sessionID: open.sessionID, input: nil, waitMs: 60, maxBytes: 64 * 1024),
+            cancellation: nil)
+        XCTAssertFalse(settled.alive)
+        XCTAssertTrue(settled.cancelled, "the isolated stop terminal is the engine's Cancelled kind")
+        XCTAssertEqual(settled.workspaceStatus, "synced",
+                       "the released terminal must carry the runtime's OWN export receipt")
+    }
+
+    func testManualCloseSettlementRequiresARealSyncedExportReceipt() {
+        XCTAssertEqual(G04TerminalStore.settledPhase(closeRequested: true, cancelled: true,
+                                                    exitCode: 0, workspaceStatus: "synced"), .closed,
+                       "a real stop plus synced export is the only settled close, even when the cancelled terminal reports an exit code")
+        for status in [nil, "error", "conflict", "aborted", "unknown"] {
+            XCTAssertEqual(G04TerminalStore.settledPhase(closeRequested: true, cancelled: true,
+                                                         exitCode: nil, workspaceStatus: status), .fault,
+                           "no fake closed without a synced export receipt: \(String(describing: status))")
+        }
+        XCTAssertEqual(G04TerminalStore.settledPhase(closeRequested: true, cancelled: false,
+                                                    exitCode: 0, workspaceStatus: "synced"), .exited,
+                       "a real exit that raced the close keeps the exit truth")
+        XCTAssertEqual(G04TerminalStore.settledPhase(closeRequested: false, cancelled: false,
+                                                    exitCode: nil, workspaceStatus: "synced"), .stopped,
+                       "an engine-proven non-close stop keeps the stopped phase")
+        XCTAssertEqual(G04TerminalStore.settledPhase(closeRequested: false, cancelled: true,
+                                                    exitCode: nil, workspaceStatus: "synced"), .stopped)
+        XCTAssertEqual(G04TerminalStore.closeExportFaultToken(nil), "workspaceExportUnconfirmed")
+        XCTAssertEqual(G04TerminalStore.closeExportFaultToken("conflict"), "workspaceExportConflict")
+        XCTAssertEqual(G04TerminalStore.closeExportFaultToken("aborted"), "workspaceExportAborted")
+        XCTAssertEqual(G04TerminalStore.closeExportFaultToken("error"), "workspaceExportFailed")
+    }
+
     // MARK: Host mailbox bounds + closed grammar
 
     func testMailboxRefusesBeforeQueueing() {

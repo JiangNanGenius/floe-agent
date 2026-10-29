@@ -18,15 +18,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,6 +39,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -46,11 +49,13 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
+import com.floe.android.design.FloeActionSheet
 import com.floe.android.design.FloeActivityIndicator
 import com.floe.android.design.FloeCapsuleAction
 import com.floe.android.design.FloeConfirmDialog
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
+import com.floe.android.design.FloeInfoDialog
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloePlainFormField
 import com.floe.android.design.FloePrimaryAction
@@ -58,11 +63,9 @@ import com.floe.android.design.FloeSearchField
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeUnavailableView
 import com.floe.android.design.IconGlyph
-import com.floe.android.feature.notes.NoteDocumentKind
 import com.floe.android.feature.notes.NoteDocumentSummary
 import com.floe.android.feature.notes.ui.NotesIcons
 import com.floe.android.feature.notes.ui.R
-import com.floe.android.feature.notes.ui.api.NotesOfficeBlankKind
 import com.floe.android.feature.notes.ui.presentation.NotesFailure
 import com.floe.android.feature.notes.ui.presentation.NotesLibraryFilter
 import com.floe.android.feature.notes.ui.presentation.NotesSortOrder
@@ -78,7 +81,10 @@ internal fun NotesLibraryPane(
 ) {
     val library = controller.library
     val scope = rememberCoroutineScope()
-    var createOpen by remember { mutableStateOf(false) }
+    var createStage by remember { mutableStateOf<NotesCreateStage>(NotesCreateStage.Closed) }
+    var workspaceImportOpen by remember { mutableStateOf(false) }
+    var pendingCreate by remember { mutableStateOf<NotesCreateRequest?>(null) }
+    var failureDialog by remember { mutableStateOf<NotesFailureDialog?>(null) }
     var sortOpen by remember { mutableStateOf(false) }
     var actionsTarget by remember { mutableStateOf<NoteDocumentSummary?>(null) }
     var renameTarget by remember { mutableStateOf<NoteDocumentSummary?>(null) }
@@ -88,6 +94,32 @@ internal fun NotesLibraryPane(
     var deleteTarget by remember { mutableStateOf<NoteDocumentSummary?>(null) }
     var newNotebookName by remember { mutableStateOf<String?>(null) }
     var renameNotebookID by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(pendingCreate) {
+        val request = pendingCreate ?: return@LaunchedEffect
+        val created = when (request.kind) {
+            NotesCreateKind.NOTEBOOK -> library.createNotebook(request.title) != null
+            else -> {
+                val documentKind = request.kind.documentKind()
+                val officeKind = request.kind.officeKind()
+                when {
+                    documentKind != null -> library.createDocument(documentKind, request.title) != null
+                    officeKind != null -> library.createOfficeBlank(officeKind, request.title)
+                    else -> false
+                }
+            }
+        }
+        pendingCreate = null
+        if (!created) {
+            val failure = library.failure
+            if (failure != null) {
+                library.clearFailure()
+                if (failure.code != NotesFailure.CANCELLED) {
+                    failureDialog = NotesFailureDialog(R.string.notes_create_failed_title, failure)
+                }
+            }
+        }
+    }
 
     Column(modifiers.fillMaxSize().background(Floe.colors.groupedSurface)) {
         NotesToolbar(
@@ -117,7 +149,8 @@ internal fun NotesLibraryPane(
                 NotesIconAction(
                     FloeIcons.Plus,
                     stringResource(R.string.notes_new),
-                    { createOpen = true },
+                    { createStage = NotesCreateStage.Menu },
+                    enabled = !library.busy && pendingCreate == null,
                 )
             },
         )
@@ -230,7 +263,8 @@ internal fun NotesLibraryPane(
                         {
                             FloePrimaryAction(
                                 label = stringResource(R.string.notes_create),
-                                onClick = { createOpen = true },
+                                onClick = { createStage = NotesCreateStage.Menu },
+                                enabled = !library.busy && pendingCreate == null,
                             )
                         }
                     }
@@ -299,11 +333,65 @@ internal fun NotesLibraryPane(
         }
     }
 
-    NotesCreateSheet(
-        visible = createOpen,
-        controller = controller,
-        onDismiss = { createOpen = false },
+    NotesCreateFlowSheet(
+        stage = createStage,
+        busy = library.busy || pendingCreate != null,
+        onDismiss = { createStage = NotesCreateStage.Closed },
+        onBackToMenu = { createStage = NotesCreateStage.Menu },
+        onPickKind = { kind -> createStage = NotesCreateStage.Naming(kind) },
+        onPickOffice = { createStage = NotesCreateStage.OfficeMenu },
+        onImportWorkspace = if (controller.ports.workspaceImport != null) {
+            {
+                createStage = NotesCreateStage.Closed
+                workspaceImportOpen = true
+            }
+        } else {
+            null
+        },
+        onImportFile = {
+            createStage = NotesCreateStage.Closed
+            scope.launch {
+                val imported = library.importAny()
+                if (!imported) {
+                    val failure = library.failure
+                    if (failure != null) {
+                        library.clearFailure()
+                        if (failure.code != NotesFailure.CANCELLED) {
+                            failureDialog = NotesFailureDialog(R.string.notes_import_failed_title, failure)
+                        }
+                    }
+                }
+            }
+        },
+        onCreate = { kind, title ->
+            notesCreateRequest(kind, title)?.let { request ->
+                createStage = NotesCreateStage.Closed
+                pendingCreate = request
+            }
+        },
     )
+    val workspacePort = controller.ports.workspaceImport
+    if (workspaceImportOpen && workspacePort != null) {
+        NotesWorkspaceImportSheet(
+            port = workspacePort,
+            onDismiss = { workspaceImportOpen = false },
+            onPick = { workspaceScope, relativePath ->
+                workspaceImportOpen = false
+                scope.launch {
+                    val imported = library.importWorkspaceFile(workspaceScope, relativePath)
+                    if (!imported) {
+                        val failure = library.failure
+                        if (failure != null) {
+                            library.clearFailure()
+                            if (failure.code != NotesFailure.CANCELLED) {
+                                failureDialog = NotesFailureDialog(R.string.notes_import_failed_title, failure)
+                            }
+                        }
+                    }
+                }
+            },
+        )
+    }
     NotesSortSheet(
         visible = sortOpen,
         current = library.sort,
@@ -395,7 +483,20 @@ internal fun NotesLibraryPane(
             )
         }
     }
+    failureDialog?.let { dialog ->
+        FloeInfoDialog(
+            title = stringResource(dialog.titleRes),
+            message = NotesFailureText(dialog.failure),
+            confirmLabel = stringResource(R.string.notes_ok),
+            onDismiss = { failureDialog = null },
+        )
+    }
 }
+
+private data class NotesFailureDialog(
+    val titleRes: Int,
+    val failure: NotesFailure,
+)
 
 @Composable
 private fun FilterChipFor(
@@ -590,141 +691,229 @@ private fun CoverBox(
     }
 }
 
-private enum class NotesCreateKind { NOTE, MIND_MAP, NOTEBOOK, WORD, SHEET, SLIDES, IMPORT }
+@Composable
+private fun NotesCreateFlowSheet(
+    stage: NotesCreateStage,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onBackToMenu: () -> Unit,
+    onPickKind: (NotesCreateKind) -> Unit,
+    onPickOffice: () -> Unit,
+    onImportWorkspace: (() -> Unit)?,
+    onImportFile: () -> Unit,
+    onCreate: (NotesCreateKind, String) -> Unit,
+) {
+    if (stage == NotesCreateStage.Closed) return
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    fun close() {
+        focusManager.clearFocus()
+        keyboard?.hide()
+        onDismiss()
+    }
+    fun back() {
+        focusManager.clearFocus()
+        keyboard?.hide()
+        onBackToMenu()
+    }
+    FloeActionSheet(
+        visible = true,
+        onDismiss = { close() },
+        maxCardWidth = 520.dp,
+        maxCardHeightFraction = 0.86f,
+    ) {
+        when (stage) {
+            NotesCreateStage.Closed -> Unit
+            NotesCreateStage.Menu -> NotesCreateMenuContent(
+                title = stringResource(R.string.notes_new),
+                rows = listOfNotNull(
+                    NotesCreateMenuRow(
+                        label = stringResource(R.string.notes_create_blank_note),
+                        icon = NotesIcons.NewNote,
+                        onClick = { onPickKind(NotesCreateKind.NOTE) },
+                    ),
+                    NotesCreateMenuRow(
+                        label = stringResource(R.string.notes_new_mind_map),
+                        icon = NotesIcons.MindMap,
+                        onClick = { onPickKind(NotesCreateKind.MIND_MAP) },
+                    ),
+                    NotesCreateMenuRow(
+                        label = stringResource(R.string.notes_new_notebook),
+                        icon = FloeIcons.Folder,
+                        onClick = { onPickKind(NotesCreateKind.NOTEBOOK) },
+                    ),
+                    NotesCreateMenuRow(
+                        label = stringResource(R.string.notes_create_office),
+                        icon = NotesIcons.Document,
+                        trailingChevron = true,
+                        onClick = onPickOffice,
+                    ),
+                    onImportWorkspace?.let { importWorkspace ->
+                        NotesCreateMenuRow(
+                            label = stringResource(R.string.notes_import_workspace),
+                            icon = FloeIcons.Folder,
+                            onClick = importWorkspace,
+                        )
+                    },
+                    NotesCreateMenuRow(
+                        label = stringResource(R.string.notes_import_file),
+                        icon = NotesIcons.Import,
+                        onClick = onImportFile,
+                    ),
+                ),
+            )
+
+            NotesCreateStage.OfficeMenu -> NotesCreateMenuContent(
+                title = stringResource(R.string.notes_create_office),
+                onBack = { back() },
+                rows = listOf(
+                    NotesCreateMenuRow(
+                        label = stringResource(R.string.notes_new_office_word),
+                        icon = NotesIcons.Document,
+                        onClick = { onPickKind(NotesCreateKind.WORD) },
+                    ),
+                    NotesCreateMenuRow(
+                        label = stringResource(R.string.notes_new_office_sheet),
+                        icon = NotesIcons.Document,
+                        onClick = { onPickKind(NotesCreateKind.SHEET) },
+                    ),
+                    NotesCreateMenuRow(
+                        label = stringResource(R.string.notes_new_office_slides),
+                        icon = NotesIcons.Document,
+                        onClick = { onPickKind(NotesCreateKind.SLIDES) },
+                    ),
+                ),
+            )
+
+            is NotesCreateStage.Naming -> NotesCreateNamingContent(
+                kind = stage.kind,
+                busy = busy,
+                onCancel = { close() },
+                onCreate = { title ->
+                    focusManager.clearFocus()
+                    keyboard?.hide()
+                    onCreate(stage.kind, title)
+                },
+            )
+        }
+    }
+}
+
+private data class NotesCreateMenuRow(
+    val label: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val trailingChevron: Boolean = false,
+    val onClick: () -> Unit,
+)
 
 @Composable
-private fun NotesCreateSheet(
-    visible: Boolean,
-    controller: NotesWorkspaceController,
-    onDismiss: () -> Unit,
+private fun NotesCreateMenuContent(
+    title: String,
+    rows: List<NotesCreateMenuRow>,
+    onBack: (() -> Unit)? = null,
 ) {
-    if (!visible) return
-    val library = controller.library
-    val scope = rememberCoroutineScope()
-    var kind by remember(visible) { mutableStateOf<NotesCreateKind?>(null) }
-    var title by remember(visible) { mutableStateOf("") }
-    var saving by remember(visible) { mutableStateOf(false) }
-    var localFailure by remember(visible) { mutableStateOf<NotesFailure?>(null) }
-    val options = listOf(
-        NotesCreateKind.NOTE to (R.string.notes_new_note to NotesIcons.NewNote),
-        NotesCreateKind.MIND_MAP to (R.string.notes_new_mind_map to NotesIcons.MindMap),
-        NotesCreateKind.NOTEBOOK to (R.string.notes_new_notebook to FloeIcons.Folder),
-        NotesCreateKind.WORD to (R.string.notes_new_office_word to NotesIcons.Document),
-        NotesCreateKind.SHEET to (R.string.notes_new_office_sheet to NotesIcons.Document),
-        NotesCreateKind.SLIDES to (R.string.notes_new_office_slides to NotesIcons.Document),
-        NotesCreateKind.IMPORT to (R.string.notes_create_import to NotesIcons.Import),
-    )
-    com.floe.android.design.FloeActionSheet(
-        visible = visible,
-        onDismiss = { if (!saving) onDismiss() },
-        maxCardWidth = 560.dp,
-        maxCardHeightFraction = 0.9f,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            FloeText(stringResource(R.string.notes_new), style = Floe.typography.title)
-            options.forEach { (value, pair) ->
+    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (onBack != null) {
+                NotesIconAction(
+                    FloeIcons.ChevronBack,
+                    stringResource(R.string.notes_back),
+                    onBack,
+                    visualSize = 32.dp,
+                )
+            }
+            FloeText(
+                title,
+                style = Floe.typography.section,
+                modifier = Modifier.weight(1f).padding(start = if (onBack != null) 4.dp else 8.dp),
+            )
+        }
+        FloeDivider()
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            rows.forEach { row ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 50.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (kind == value) Floe.colors.accentFillFaint else Color.Transparent)
-                        .clickable(enabled = !saving) { kind = value }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .heightIn(min = 52.dp)
+                        .clickable(role = Role.Button, onClick = row.onClick)
+                        .padding(horizontal = 20.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    IconGlyph(pair.second, if (kind == value) Floe.colors.accent else Floe.colors.secondaryLabel, 22.dp)
+                    IconGlyph(row.icon, Floe.colors.secondaryLabel, 22.dp)
                     FloeText(
-                        stringResource(pair.first),
+                        row.label,
                         style = Floe.typography.body,
                         modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    if (kind == value && value != NotesCreateKind.IMPORT) {
-                        IconGlyph(FloeIcons.Checkmark, Floe.colors.accent, 18.dp)
+                    if (row.trailingChevron) {
+                        IconGlyph(FloeIcons.ChevronForward, Floe.colors.tertiaryLabel, 16.dp)
                     }
                 }
-            }
-            if (kind != null && kind != NotesCreateKind.IMPORT) {
-                FloePlainFormField(
-                    label = stringResource(R.string.notes_name_placeholder),
-                    value = title,
-                    onValueChange = { title = it },
-                    enabled = !saving,
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                )
-            }
-            (localFailure ?: library.failure)?.let { failure ->
-                FloeText(
-                    NotesFailureText(failure),
-                    style = Floe.typography.metadata,
-                    color = Floe.colors.destructive,
-                )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (saving) FloeActivityIndicator()
-                FloeCapsuleAction(
-                    stringResource(R.string.notes_cancel),
-                    onClick = { if (!saving) onDismiss() },
-                    enabled = !saving,
-                )
-                FloeCapsuleAction(
-                    if (kind == NotesCreateKind.IMPORT) {
-                        stringResource(R.string.notes_import_choose)
-                    } else {
-                        stringResource(R.string.notes_create)
-                    },
-                    onClick = {
-                        val selected = kind
-                        if (selected != null &&
-                            (selected == NotesCreateKind.IMPORT || title.trim().isNotEmpty())
-                        ) {
-                            saving = true
-                            localFailure = null
-                            val choice = selected
-                            scope.launch {
-                            val trimmed = title.trim()
-                            val ok = when (choice) {
-                                NotesCreateKind.NOTE -> library.createDocument(
-                                    NoteDocumentKind.NOTEBOOK,
-                                    trimmed,
-                                ) != null
-                                NotesCreateKind.MIND_MAP -> library.createDocument(
-                                    NoteDocumentKind.MIND_MAP,
-                                    trimmed,
-                                ) != null
-                                NotesCreateKind.NOTEBOOK -> library.createNotebook(trimmed) != null
-                                NotesCreateKind.WORD -> library.createOfficeBlank(
-                                    NotesOfficeBlankKind.WORD,
-                                    trimmed,
-                                )
-                                NotesCreateKind.SHEET -> library.createOfficeBlank(
-                                    NotesOfficeBlankKind.SHEET,
-                                    trimmed,
-                                )
-                                NotesCreateKind.SLIDES -> library.createOfficeBlank(
-                                    NotesOfficeBlankKind.SLIDES,
-                                    trimmed,
-                                )
-                                NotesCreateKind.IMPORT -> library.importAny()
-                            }
-                                saving = false
-                                if (ok) onDismiss() else localFailure = library.failure
-                            }
-                        }
-                    },
-                    enabled = !saving && (kind == NotesCreateKind.IMPORT ||
-                        (kind != null && title.trim().isNotEmpty())),
-                )
             }
         }
     }
 }
+
+@Composable
+private fun NotesCreateNamingContent(
+    kind: NotesCreateKind,
+    busy: Boolean,
+    onCancel: () -> Unit,
+    onCreate: (String) -> Unit,
+) {
+    var title by remember(kind) { mutableStateOf("") }
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FloeText(
+                NotesCreateKindTitle(kind),
+                style = Floe.typography.section,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (busy) FloeActivityIndicator(Modifier.padding(horizontal = 4.dp))
+            FloeCapsuleAction(
+                stringResource(R.string.notes_cancel),
+                onClick = onCancel,
+            )
+            Spacer(Modifier.width(8.dp))
+            FloeCapsuleAction(
+                stringResource(R.string.notes_create),
+                onClick = { notesCreateRequest(kind, title)?.let { onCreate(it.title) } },
+                enabled = !busy && title.trim().isNotEmpty(),
+                tint = Floe.colors.accent,
+            )
+        }
+        FloePlainFormField(
+            label = stringResource(R.string.notes_name_placeholder),
+            value = title,
+            onValueChange = { title = it },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        )
+    }
+}
+
+@Composable
+private fun NotesCreateKindTitle(kind: NotesCreateKind): String = stringResource(
+    when (kind) {
+        NotesCreateKind.NOTE -> R.string.notes_create_blank_note
+        NotesCreateKind.MIND_MAP -> R.string.notes_new_mind_map
+        NotesCreateKind.NOTEBOOK -> R.string.notes_new_notebook
+        NotesCreateKind.WORD -> R.string.notes_new_office_word
+        NotesCreateKind.SHEET -> R.string.notes_new_office_sheet
+        NotesCreateKind.SLIDES -> R.string.notes_new_office_slides
+    },
+)
 
 @Composable
 private fun NotesSortSheet(

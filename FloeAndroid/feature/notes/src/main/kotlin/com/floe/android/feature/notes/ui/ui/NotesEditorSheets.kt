@@ -107,18 +107,69 @@ internal fun NotesTextEditorSheet(
     var text by remember(element.id) { mutableStateOf(initial) }
     var markdown by remember(element.id) { mutableStateOf(element.isMarkdown) }
     var preview by remember(element.id) { mutableStateOf(false) }
+    // iOS presents this as a medium/large sheet. FloeActionSheet has no
+    // drag detents, so the header exposes the same two sizes explicitly:
+    // medium by default, large when the user asks for more writing room.
+    var expanded by remember(element.id) { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf(false) }
+    fun requestClose() {
+        if (!saving) onDismiss()
+    }
+    fun save() {
+        if (!saving && text.trim().isNotEmpty()) {
+            saving = true
+            failed = false
+            val ok = onSave(text, markdown)
+            saving = false
+            if (ok) onDismiss() else failed = true
+        }
+    }
     FloeActionSheet(
         visible = true,
-        onDismiss = { if (!saving) onDismiss() },
+        onDismiss = { requestClose() },
         maxCardWidth = 760.dp,
-        maxCardHeightFraction = 0.92f,
+        // Medium is the default; expanded is the large detent. The sheet
+        // still receives the dialog's safeDrawing insets, so the header,
+        // field and actions stay above the keyboard and navigation bar.
+        maxCardHeightFraction = if (expanded) 0.92f else 0.66f,
     ) {
         Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                FloeText(stringResource(R.string.notes_text_editor_title), style = Floe.typography.title)
-                Spacer(Modifier.weight(1f))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FloeCapsuleAction(
+                    stringResource(R.string.notes_cancel),
+                    onClick = { requestClose() },
+                    enabled = !saving,
+                )
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    FloeText(
+                        stringResource(R.string.notes_text_editor_title),
+                        style = Floe.typography.section,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                NotesIconAction(
+                    FloeIcons.ChevronUpDown,
+                    stringResource(R.string.notes_text_resize),
+                    { expanded = !expanded },
+                    visualSize = 32.dp,
+                )
+                FloeCapsuleAction(
+                    stringResource(R.string.notes_save),
+                    onClick = { save() },
+                    enabled = !saving && text.trim().isNotEmpty(),
+                    tint = Floe.colors.accent,
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
                 Box(Modifier.width(190.dp)) {
                     FloeSegmented(
                         options = listOf(
@@ -181,31 +232,6 @@ internal fun NotesTextEditorSheet(
                     stringResource(R.string.notes_save_failed),
                     style = Floe.typography.metadata,
                     color = Floe.colors.destructive,
-                )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (saving) FloeActivityIndicator()
-                FloeCapsuleAction(
-                    stringResource(R.string.notes_cancel),
-                    onClick = { if (!saving) onDismiss() },
-                    enabled = !saving,
-                )
-                FloeCapsuleAction(
-                    stringResource(R.string.notes_save),
-                    onClick = {
-                        if (!saving && text.trim().isNotEmpty()) {
-                            saving = true
-                            failed = false
-                            val ok = onSave(text, markdown)
-                            saving = false
-                            if (ok) onDismiss() else failed = true
-                        }
-                    },
-                    enabled = !saving && text.trim().isNotEmpty(),
                 )
             }
         }

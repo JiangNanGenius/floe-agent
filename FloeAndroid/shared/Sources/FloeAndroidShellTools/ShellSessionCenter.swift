@@ -245,7 +245,7 @@ public actor ShellSessionCenter {
             throw error
         }
         guard sessions[sessionID]?.schedulerID == entry.schedulerID else {
-            return ShellExchangeResult(output: "", alive: false, exitCode: result.exitCode, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
+            return ShellExchangeResult(output: "", alive: false, exitCode: result.exitCode, cancelled: result.cancelled, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten, workspaceStatus: result.workspaceStatus)
         }
         entry.alive = result.alive
         entry.expiresAt = Date().addingTimeInterval(configuration.sessionLifetime)
@@ -260,7 +260,7 @@ public actor ShellSessionCenter {
         } else {
             await closeUnchecked(sessionID: sessionID)
         }
-        return ShellExchangeResult(output: cleanOutput, alive: result.alive, exitCode: result.exitCode, terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.output.utf8)) : nil, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
+        return ShellExchangeResult(output: cleanOutput, alive: result.alive, exitCode: result.exitCode, cancelled: result.cancelled, terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.output.utf8)) : nil, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten, workspaceStatus: result.workspaceStatus)
     }
 
     /// Closes the caller's own session. `ownerMismatch` means a live session
@@ -293,6 +293,25 @@ public actor ShellSessionCenter {
         guard let entry = sessions[sessionID], entry.runID == runID else { return .notFound }
         guard entry.clientSessionID == clientSessionID else { return .ownerMismatch }
         await backend.signalSession(sessionID: sessionID, signal: signal)
+        return .applied
+    }
+
+    /// Requests the caller's own engine stop while KEEPING this center's
+    /// entry: only the caller's next `exchange` observes the real terminal
+    /// (and the runtime workspace export receipt). The manual Close path must
+    /// NOT use `close(sessionID:)` for this: that removes the entry and
+    /// schedules a detached reconciliation which would consume the terminal
+    /// settlement the close has to report before the operation lease ends.
+    /// A stop is still a REQUEST; nothing is reported as released here.
+    @discardableResult
+    public func requestStopForSettlement(
+        sessionID: String,
+        runID: UUID,
+        clientSessionID: String? = nil
+    ) async -> AccessOutcome {
+        guard let entry = sessions[sessionID], entry.runID == runID else { return .notFound }
+        guard entry.clientSessionID == clientSessionID else { return .ownerMismatch }
+        await backend.requestStopForSettlement(sessionID: sessionID)
         return .applied
     }
 

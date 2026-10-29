@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import com.floe.android.FloeApplication
 import com.floe.android.R
 import com.floe.android.design.*
+import com.floe.android.terminalWorkspaceMappingPending
 import io.github.robinpcrd.cupertino.section.SectionItem
 
 /** Uses the same second-level modal and Floe components as other settings. */
@@ -101,16 +102,53 @@ fun LocalRuntimeSettingsCard() {
                     }
                     // Truthful task-execution state: ONE bounded observation
                     // of the ORIGINAL readiness authority per open (no idle
-                    // polling); unproven stays the honest pending copy.
-                    var taskReady by remember { mutableStateOf(false) }
-                    LaunchedEffect(state.phase) {
-                        taskReady = app.linuxTaskExecutionReady()
+                    // polling), plus one more after the system permission
+                    // activity returns. A not-ready answer also reads the SAME
+                    // closed stage authority Diagnostics opens, so the copy
+                    // names the ONE real next step instead of a dead end: when
+                    // every prerequisite is live and only this task's receipt-
+                    // backed workspace facts are still missing, the terminal's
+                    // own run-less first-use preparation produces them.
+                    var taskState by remember { mutableStateOf(LocalRuntimeTaskState.UNVERIFIED) }
+                    LaunchedEffect(state.phase, state.localNetworkPermissionNeeded, state.pendingIntent != null) {
+                        val ready = app.linuxTaskExecutionReady()
+                        taskState = localRuntimeTaskState(ready,
+                            if (ready) null else app.linuxTaskExecutionDiagnostic())
                     }
-                    FloeText(stringResource(if (taskReady) R.string.linux_environment_tools_ready
-                        else R.string.linux_environment_tools_pending),
-                        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                    FloeText(stringResource(when (taskState) {
+                        LocalRuntimeTaskState.READY -> R.string.linux_environment_tools_ready
+                        LocalRuntimeTaskState.PREPARING_WORKSPACE ->
+                            R.string.linux_environment_tools_prepare_terminal
+                        LocalRuntimeTaskState.UNVERIFIED -> R.string.linux_environment_tools_pending
+                    }), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
                 }
             }
         }
     }
 }
+
+/**
+ * COPY-ONLY projection of the ORIGINAL local-task readiness authority for the
+ * Settings card. It qualifies nothing, gates nothing and writes nothing: the
+ * boolean still comes from `linuxTaskExecutionReady()` (the seven-fact live
+ * ingress), and [diagnostic] is the SAME closed stage token the Diagnostics
+ * surface reads (`ready` | `lane:unbound` | `status:unreadable` |
+ * `<cause>|refusal:<closed>|stage:<closed>`).
+ *
+ * [PREPARING_WORKSPACE] is returned ONLY for the exact stage shape the
+ * terminal's own first-use classifier already accepts: every prerequisite is
+ * live, only this task's receipt-backed `workspaceMappingSynced` /
+ * `leaseAuthorityQualified` facts are missing, and no attempt failed for this
+ * generation (both attempt tokens empty). Everything else — a missing
+ * prerequisite, an unbound lane, an unreadable status, a failed attempt,
+ * unknown text — stays [UNVERIFIED] and keeps the existing setup-neutral copy,
+ * so this function can never turn an unproven lane into an actionable promise.
+ */
+internal enum class LocalRuntimeTaskState { READY, PREPARING_WORKSPACE, UNVERIFIED }
+
+internal fun localRuntimeTaskState(ready: Boolean, diagnostic: String?): LocalRuntimeTaskState =
+    when {
+        ready -> LocalRuntimeTaskState.READY
+        terminalWorkspaceMappingPending(diagnostic) -> LocalRuntimeTaskState.PREPARING_WORKSPACE
+        else -> LocalRuntimeTaskState.UNVERIFIED
+    }

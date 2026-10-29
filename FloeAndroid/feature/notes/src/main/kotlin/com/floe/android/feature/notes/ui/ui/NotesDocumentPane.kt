@@ -78,6 +78,7 @@ internal fun NotesDocumentPane(
     controller: NotesWorkspaceController,
     session: NotesDocumentSession,
     wide: Boolean,
+    compact: Boolean,
     callbacks: NotesWorkspaceCallbacks,
     modifiers: Modifier = Modifier,
 ) {
@@ -167,12 +168,17 @@ internal fun NotesDocumentPane(
                         { scope.launch { session.undo(redo = false) } },
                         enabled = session.canUndo && session.pendingEditCount == 0,
                     )
-                    NotesIconAction(
-                        NotesIcons.Redo,
-                        stringResource(R.string.notes_redo),
-                        { scope.launch { session.undo(redo = true) } },
-                        enabled = session.canRedo && session.pendingEditCount == 0,
-                    )
+                    // iOS keeps redo out of the compact header; the title
+                    // needs the width. Redo remains available from the
+                    // keyboard shortcut and reappears when it is actionable.
+                    if (!compact || session.canRedo) {
+                        NotesIconAction(
+                            NotesIcons.Redo,
+                            stringResource(R.string.notes_redo),
+                            { scope.launch { session.undo(redo = true) } },
+                            enabled = session.canRedo && session.pendingEditCount == 0,
+                        )
+                    }
                     NotesIconAction(
                         FloeIcons.ChatRole,
                         stringResource(R.string.notes_assistant),
@@ -221,6 +227,7 @@ internal fun NotesDocumentPane(
                         NoteDocumentKind.NOTEBOOK -> NotesNotebookEditor(
                             controller = controller,
                             session = session,
+                            compact = compact,
                             onOpenText = { element -> textTarget = element },
                             onShowPages = { showPages = true },
                             onShowInkOptions = { showInkOptions = true },
