@@ -263,6 +263,9 @@
     <string name="notes_office_preview_missing">A preview isn’t available. Open the document to view it.</string>
     <string name="notes_office_unsupported">The Office editor isn’t available on this build.</string>
     <string name="notes_office_failed">The Office editor couldn’t be opened.</string>
+    <string name="notes_office_create_prepare_failed">Couldn’t prepare this document. Try again.</string>
+    <string name="notes_office_create_resource_failed">Couldn’t keep this file in Notes. Try again.</string>
+    <string name="notes_office_create_document_failed">Couldn’t add this document to Notes. Try again.</string>
 
     <string name="notes_engineering_read_only">Engineering attachments are read-only.</string>
     <string name="notes_engineering_open">Open Read-Only</string>

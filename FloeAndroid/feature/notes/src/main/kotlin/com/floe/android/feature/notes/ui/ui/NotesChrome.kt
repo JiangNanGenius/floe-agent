@@ -244,6 +244,9 @@ internal fun NotesFailureText(failure: NotesFailure): String = when (failure.cod
     "cancelled" -> stringResource(R.string.notes_failure_cancelled)
     "permissionDenied" -> stringResource(R.string.notes_failure_permission)
     "portUnavailable" -> stringResource(R.string.notes_failure_port_unavailable)
+    "officeCreatePrepareFailed" -> stringResource(R.string.notes_office_create_prepare_failed)
+    "officeCreateResourceFailed" -> stringResource(R.string.notes_office_create_resource_failed)
+    "officeCreateDocumentFailed" -> stringResource(R.string.notes_office_create_document_failed)
     else -> stringResource(R.string.notes_failure_generic)
 }
 

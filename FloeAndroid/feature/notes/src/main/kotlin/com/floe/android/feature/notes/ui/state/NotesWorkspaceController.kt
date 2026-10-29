@@ -3,6 +3,7 @@ package com.floe.android.feature.notes.ui.state
 
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.floe.android.feature.notes.NoteDocument
@@ -93,7 +94,14 @@ internal class NotesWorkspaceController(
     var officeIndexBusy by mutableStateOf(false)
         private set
 
-    private val sessions = mutableMapOf<String, NotesDocumentSession>()
+    /**
+     * Snapshot-observable: `activeSession` is read by the workspace composable,
+     * and inserting a session must invalidate that read even when
+     * `activeDocumentID` already equals the opened id (cold reopen restores the
+     * last active id before the session exists). A plain map leaves the restored
+     * document invisible behind the "Select a Note" placeholder.
+     */
+    private val sessions = mutableStateMapOf<String, NotesDocumentSession>()
     private val officeIndexJobs = mutableMapOf<String, Job>()
     private var started = false
     private var eventCursor = 0L

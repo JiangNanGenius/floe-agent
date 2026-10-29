@@ -260,6 +260,9 @@
     <string name="notes_office_preview_missing">没有可用预览。打开文档即可查看。</string>
     <string name="notes_office_unsupported">此构建不支持 Office 编辑器。</string>
     <string name="notes_office_failed">无法打开 Office 编辑器。</string>
+    <string name="notes_office_create_prepare_failed">无法准备此文档。请重试。</string>
+    <string name="notes_office_create_resource_failed">无法将此文件保存在手记中。请重试。</string>
+    <string name="notes_office_create_document_failed">无法将此文档添加到手记。请重试。</string>
 
     <string name="notes_engineering_read_only">工程附件是只读的。</string>
     <string name="notes_engineering_open">以只读方式打开</string>

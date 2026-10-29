@@ -265,21 +265,49 @@ internal class NotesLibraryController(
         busy = true
         failure = null
         var picked: NotesPickedFile? = null
+        // Stable phase codes keep the exact failed step observable in the
+        // create sheet and its typed UI readback. Only stable failure codes
+        // travel in detail; no path, byte, model or note content is added.
+        fun phaseFailed(code: String, cause: Throwable? = null, underlying: String? = null) {
+            failure = NotesFailure(code, underlying ?: cause?.toNotesFailure()?.code)
+        }
         return try {
-            when (val outcome = ports.office.createBlank(NotesOfficeCreateBlankRequest(title, kind))) {
+            val outcome = try {
+                ports.office.createBlank(NotesOfficeCreateBlankRequest(title, kind))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                phaseFailed("officeCreatePrepareFailed", cause = error)
+                return false
+            }
+            when (outcome) {
                 is NotesOfficeBlankOutcome.Created -> {
                     picked = outcome.file
-                    val imported = importPickedAsResource(outcome.file)
-                    val created = service.createDocument(
-                        NotesCreateDocument(
-                            kind = NoteDocumentKind.OFFICE,
-                            title = title,
-                            notebookID = selectedNotebookID,
-                            documentID = UUID.randomUUID().toString(),
-                            resourceID = imported.resourceID,
-                            fileName = outcome.file.fileName,
-                        ),
-                    )
+                    val imported = try {
+                        importPickedAsResource(outcome.file)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        phaseFailed("officeCreateResourceFailed", cause = error)
+                        return false
+                    }
+                    val created = try {
+                        service.createDocument(
+                            NotesCreateDocument(
+                                kind = NoteDocumentKind.OFFICE,
+                                title = title,
+                                notebookID = selectedNotebookID,
+                                documentID = UUID.randomUUID().toString(),
+                                resourceID = imported.resourceID,
+                                fileName = outcome.file.fileName,
+                            ),
+                        )
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        phaseFailed("officeCreateDocumentFailed", cause = error)
+                        return false
+                    }
                     load(initial = false)
                     onOpenDocument(created.id, null)
                     true
@@ -289,7 +317,7 @@ internal class NotesLibraryController(
                     false
                 }
                 is NotesOfficeBlankOutcome.Failed -> {
-                    failure = outcome.failure.toNotesFailure()
+                    phaseFailed("officeCreatePrepareFailed", underlying = outcome.failure.code)
                     false
                 }
             }
