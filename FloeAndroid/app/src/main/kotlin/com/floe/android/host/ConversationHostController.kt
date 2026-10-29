@@ -60,6 +60,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -77,6 +78,9 @@ import kotlinx.serialization.json.longOrNull
  * reader can legally return.
  */
 private const val MAXIMUM_CONTENT_CHUNKS = 128
+
+/** Bounded wait for the App-owned Notes platform (store/recovery) to open. */
+private const val NOTES_PLATFORM_WAIT_MILLIS = 15_000L
 
 
 /**
@@ -184,6 +188,37 @@ class ConversationHostController internal constructor(
 
     /** Temporary navigation fence (TMP-NAV-2). */
     val tempFence = TemporaryNavigationFence(host)
+
+    /**
+     * Explicit settled-reply "Save to Notes" copies. It owns its own
+     * independent notebook document, durable recovery records and root/owner
+     * fence; it is App-lifetime (like the conversation host) because a save is
+     * an explicit copy that must finish even after the chat surface is left.
+     */
+    internal val notesChatTransfers = com.floe.android.host.noteschattransfer.NotesChatTransferController(
+        scope = host.scope,
+        targets = { awaitNotesTransferTargets() },
+        currentRootEpoch = { host.nativeRootEpoch() },
+    )
+
+    private suspend fun awaitNotesTransferTargets():
+        com.floe.android.host.noteschattransfer.NotesChatTransferTargets? {
+        val app = host.appContext as? FloeApplication ?: return null
+        app.ensureNotesPlatform()
+        val ready = kotlinx.coroutines.withTimeoutOrNull(NOTES_PLATFORM_WAIT_MILLIS) {
+            app.notesPlatform.first {
+                it is com.floe.android.NotesPlatformLoadState.Ready ||
+                    it is com.floe.android.NotesPlatformLoadState.Failed
+            }
+        } as? com.floe.android.NotesPlatformLoadState.Ready ?: return null
+        val service = runCatching { app.notesHost.service }.getOrNull() ?: return null
+        return com.floe.android.host.noteschattransfer.NotesChatTransferTargets(
+            service = service,
+            // The dedicated chat-copy journal: ordinary editor recovery can
+            // never list, overwrite or delete a chatMessageSave:* record.
+            recovery = ready.host.chatTransferRecovery,
+        )
+    }
 
     private val holders = ConcurrentHashMap<String, ConversationFlowHolderEntry>()
     private val sessionEpochs = AtomicLong(0)
@@ -5793,10 +5828,45 @@ class ConversationHostController internal constructor(
         // No TTS backend in G02.
     }
 
+    /**
+     * Explicit user copy of one SETTLED reply into an independent notebook
+     * document.
+     *
+     * Admission is exact-owner: the holder entry must still be the current
+     * one for this conversation, its session token (including the session
+     * epoch) must be the caller's, the entry must not be temporary and the
+     * live native Root epoch must still be the one the UI is presenting.
+     * A temporary session is refused here even if the UI hides the action, so
+     * a forged callback cannot escape the text-only ceiling.
+     *
+     * True means the transfer was ADMITTED/QUEUED (or was already queued for
+     * the same reply) — never "saved". The real Saving/Saved(documentID)/
+     * Failed state is [notesChatTransfers].
+     */
     override fun saveMessageToNotes(
         session: ConversationSessionToken,
         text: String,
-    ): Boolean = false
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.session != session) return false
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return false
+        if (entry.builder.isTemporary) return false
+        if (entry.holder.retired) return false
+        if (text.isBlank()) return false
+        val rootEpoch = host.nativeRootEpoch() ?: return false
+        val owner = com.floe.android.host.noteschattransfer.NotesChatTransferOwner(
+            conversationID = session.conversationId,
+            sessionEpoch = session.sessionEpoch,
+            temporary = entry.builder.isTemporary,
+            rootEpoch = rootEpoch,
+        )
+        return when (notesChatTransfers.admit(owner, text)) {
+            com.floe.android.host.noteschattransfer.NotesChatTransferAdmission.STARTED,
+            com.floe.android.host.noteschattransfer.NotesChatTransferAdmission.ALREADY_PENDING,
+            com.floe.android.host.noteschattransfer.NotesChatTransferAdmission.ALREADY_SAVED -> true
+            else -> false
+        }
+    }
 }
 
 /**

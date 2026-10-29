@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Application owner for the product-UID credential gateway, the RB-1 native
@@ -67,6 +68,155 @@ class FloeApplication : Application() {
     /** Application-owned, lazy Notes authority adapter; ordinary chat never opens the library. */
     internal lateinit var notesHost: com.floe.android.host.notes.NotesHostController
         private set
+    internal val notesPdfPasswords = com.floe.android.notesplatform.NotesPdfPasswordPromptBroker {
+        (runtimeHost?.nativeRootEpoch() ?: 0L) > 0L && isActivityInForeground()
+    }
+    internal fun cancelNotesPasswordPrompt() = notesPdfPasswords.cancelPending()
+
+    @Volatile
+    internal var notesOcrHost: com.floe.android.host.notesocr.NotesOcrHost? = null
+        private set
+
+    private val notesLifecycleMutex = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var notesStopping = false
+    private var notesAcceptedEpoch = 0L
+    private val notesPlatformLock = Any()
+    private var notesPlatformJob: kotlinx.coroutines.Job? = null
+    private val notesPlatformState = MutableStateFlow<NotesPlatformLoadState>(NotesPlatformLoadState.Idle)
+    internal val notesPlatform: StateFlow<NotesPlatformLoadState> = notesPlatformState
+
+    /** App lifetime, lazy on first Notes use; no native store or Linux bootstrap here. */
+    internal fun ensureNotesPlatform() {
+        val pending = synchronized(notesPlatformLock) {
+            if (notesPlatformState.value is NotesPlatformLoadState.Ready || notesPlatformJob != null) return
+            notesPlatformState.value = NotesPlatformLoadState.Loading
+            hostScope.launch(Dispatchers.IO, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+                try {
+                    notesLifecycleMutex.withLock {
+                        if (notesStopping) {
+                            notesPlatformState.value = NotesPlatformLoadState.Idle
+                            return@withLock
+                        }
+                        val host = runtimeHost ?: error("notesHostUnavailable")
+                        val platform = com.floe.android.notesplatform.createNotesPlatformHost(
+                            this@FloeApplication, notesHost.service, hostScope,
+                            passwordProvider = notesPdfPasswords,
+                        )
+                        try {
+                            platform.presentation.loadWorkspace()
+                            val ocr = com.floe.android.host.notesocr.createNotesOcrHost(
+                                service = notesHost.service,
+                                media = platform.media,
+                                transport = com.floe.android.host.notesocr.NotesOcrTransport {
+                                    com.floe.android.host.notes.SwiftNotesTransport.exchange(it)
+                                },
+                                epochProvider = { runtimeHost?.nativeRootEpoch()?.takeIf { it > 0L } },
+                            )
+                            val assistant = com.floe.android.host.notesruntime.notesAssistantHost(
+                                notesHost = notesHost,
+                                commandClient = host.commandClient,
+                                hostScope = hostScope,
+                                epochProvider = { runtimeHost?.nativeRootEpoch()?.takeIf { it > 0L } ?: 0L },
+                            )
+                            val ports = platform.hostPorts(assistant = assistant, indexing = ocr)
+                            val session = com.floe.android.feature.notes.ui.state.createNotesWorkspaceSession(
+                                notesHost.service, ports,
+                            )
+                            notesOcrHost = ocr
+                            notesAcceptedEpoch = runtimeHost?.nativeRootEpoch() ?: 0L
+                            notesPlatformState.value = NotesPlatformLoadState.Ready(
+                                platform, NotesWorkspaceBinding(ports, session, assistant),
+                            )
+                        } catch (error: Throwable) {
+                            platform.close()
+                            throw error
+                        }
+                    }
+                    // First initialization also discovers durable chat-copy recovery. It is
+                    // outside the lock: the transfer target waits for Ready above.
+                    if (notesPlatformState.value is NotesPlatformLoadState.Ready && !notesStopping) {
+                        runtimeHost?.conversations?.notesChatTransfers?.resume()
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    if (notesPlatformState.value !is NotesPlatformLoadState.Ready) notesPlatformState.value = NotesPlatformLoadState.Idle
+                    throw cancelled
+                } catch (_: Throwable) {
+                    // No note content, file paths or raw errors enter product copy/logs.
+                    if (notesPlatformState.value !is NotesPlatformLoadState.Ready) {
+                        notesPlatformState.value = NotesPlatformLoadState.Failed
+                    }
+                } finally {
+                    synchronized(notesPlatformLock) { notesPlatformJob = null }
+                }
+            }.also { notesPlatformJob = it }
+        }
+        pending.start()
+    }
+
+    /** Shared with lazy construction: retirement cannot overtake a newly created editor. */
+    private suspend fun prepareNotesForRootStop(): Boolean = notesLifecycleMutex.withLock {
+        notesStopping = true
+        val epoch = runtimeHost?.nativeRootEpoch() ?: 0L
+        val ready = notesPlatformState.value as? NotesPlatformLoadState.Ready
+        var canRetire = false
+        try {
+            val editorOK = kotlinx.coroutines.withContext(Dispatchers.Main.immediate) {
+                ready?.workspace?.session?.prepareForRootStop()?.canRetire != false
+            }
+            if (!editorOK) return@withLock false
+            if (epoch > 0L) {
+                if (ready?.workspace?.assistant?.prepareForRootStop(epoch)?.canRetire == false) return@withLock false
+                if (notesOcrHost?.prepareForRootStop(epoch)?.canRetire == false) return@withLock false
+            }
+            if (runtimeHost?.conversations?.notesChatTransfers?.prepareForRootStop(epoch)?.canRetire == false) {
+                return@withLock false
+            }
+            canRetire = true
+            true
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            false
+        } finally {
+            if (!canRetire) {
+                // A refused local drain keeps the SAME accepted root. Re-arm all
+                // owners, including when a later gate or recovery fsync failed.
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                    if (epoch > 0L && runtimeHost?.nativeRootEpoch() == epoch) {
+                        runCatching { ready?.workspace?.assistant?.abortRootStop(epoch) }
+                        runCatching { notesOcrHost?.abortRootStop(epoch) }
+                        runtimeHost?.conversations?.notesChatTransfers?.abortRootStop(epoch)
+                    }
+                    runCatching {
+                        kotlinx.coroutines.withContext(Dispatchers.Main.immediate) {
+                            ready?.workspace?.session?.abortRootStop()
+                        }
+                    }
+                    notesStopping = false
+                }
+            }
+        }
+    }
+
+    private suspend fun resumeNotesAfterRootChange(epoch: Long) = notesLifecycleMutex.withLock {
+        if (notesAcceptedEpoch == epoch && !notesStopping) return@withLock
+        if (runtimeHost?.nativeRootEpoch() != epoch) return@withLock
+        val ready = notesPlatformState.value as? NotesPlatformLoadState.Ready
+        ready?.workspace?.assistant?.resumeAfterRootChange(epoch)
+        notesOcrHost?.resumeAfterRootChange(epoch)
+        kotlinx.coroutines.withContext(Dispatchers.Main.immediate) {
+            ready?.workspace?.session?.resumeAfterRootChange()
+        }
+        notesAcceptedEpoch = epoch
+        notesStopping = false
+        if (ready != null) runtimeHost?.conversations?.notesChatTransfers?.resume()
+    }
+
+    private fun cancelPendingNotesLaunches() {
+        notesPdfPasswords.cancelPending()
+        (notesPlatformState.value as? NotesPlatformLoadState.Ready)?.host?.cancelPendingLaunches()
+    }
+
     // G03-R3: app-owned Core->runtime-UID workspace-copy cleanup pump. It is
     // bound at the SAME actual accepted native Root epoch as the shell pump
     // and stays serviceable while shell/model admission is fenced.
@@ -190,6 +340,7 @@ class FloeApplication : Application() {
         )
         this.runtimeCoordinator = runtimeCoordinator
         runtimeCoordinator.localRuntimeDrain = {
+            cancelPendingNotesLaunches()
             // Retirement ordering (host contract): the shell/jobs mailbox is
             // drained FIRST so Core owned-work/CoreIO really settles, THEN
             // the cleanup pump services remaining runtime-UID wipe
@@ -203,7 +354,8 @@ class FloeApplication : Application() {
                 (workspaceTerminal.boundNativeEpoch == 0L || workspaceTerminal.stopAndJoin(workspaceTerminal.boundNativeEpoch, 5_000)) &&
                 linuxShell.stopAndDrain(linuxShell.boundNativeEpoch) &&
                 (linuxCleanup.boundNativeEpoch == 0L ||
-                    linuxCleanup.drainAndStop(linuxCleanup.boundNativeEpoch))
+                    linuxCleanup.drainAndStop(linuxCleanup.boundNativeEpoch)) &&
+                prepareNotesForRootStop()
         }
         runtimeCoordinator.start()
         // G02 App host binding: data-only creation; commands stay off-main.
@@ -293,6 +445,7 @@ class FloeApplication : Application() {
                         startBrowserLane(epoch)
                         runtimeHost?.workspaceActions?.scene(activityForeground)
                         startLinuxLanes(epoch)
+                        resumeNotesAfterRootChange(epoch)
                     }
                 }
                 if (!firstStart) {
@@ -344,6 +497,7 @@ class FloeApplication : Application() {
                     }
                 }
             } else if (capability is RuntimeBootstrapCapability.Stopped) {
+                cancelPendingNotesLaunches()
                 // The coordinator published this only after actual native
                 // owner/store drain, including the local-runtime gate.
                 foregroundObservation?.cancel()

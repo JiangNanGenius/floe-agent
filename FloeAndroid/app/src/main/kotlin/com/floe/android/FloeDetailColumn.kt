@@ -81,7 +81,7 @@ fun FloeDetailColumn(
                 )
             }
             is SidebarSelection.More -> when (selection.destination) {
-                MoreDestination.NOTES -> FloePlaceholderPage(stringResource(R.string.notes), FloeIcons.BookPages, stringResource(R.string.workspace_later_update), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
+                MoreDestination.NOTES -> NotesDestination(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact, onOpenSettingsSection)
                 MoreDestination.CREATIVE -> FloePlaceholderPage(stringResource(R.string.creative), FloeIcons.Creative, stringResource(R.string.workspace_later_update), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
                 // Skills opens the Settings sheet at the Skills section
                 // (handled in the shell's select); a direct route here shows

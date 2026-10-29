@@ -20,6 +20,8 @@
     <string name="action_view">查看</string>
     <string name="action_back">返回</string>
     <string name="action_read_aloud">朗读</string>
+    <string name="action_save_to_notes">保存到笔记</string>
+    <string name="action_save_to_notes_failed">暂时无法保存到笔记，请重试。</string>
     <string name="dismiss_error">关闭</string>
     <string name="loading_cd">加载中</string>
     <string name="show_more_output">显示更多</string>

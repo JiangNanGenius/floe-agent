@@ -39,5 +39,10 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+        <provider
+            android:name="com.floe.android.notesplatform.NotesShareProvider"
+            android:authorities="${applicationId}.notes.exports"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

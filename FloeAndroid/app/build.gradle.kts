@@ -476,6 +476,8 @@ dependencies {
     implementation(project(":feature:providers"))
     implementation(project(":feature:settings"))
     implementation(project(":feature:notescontracts"))
+    implementation(project(":core:notesmedia"))
+    implementation(project(":feature:notes"))
     // G04 service/presentation modules; owner-bound host adapters gate use.
     implementation(project(":core:safgateway"))
     implementation(project(":core:officeengine"))

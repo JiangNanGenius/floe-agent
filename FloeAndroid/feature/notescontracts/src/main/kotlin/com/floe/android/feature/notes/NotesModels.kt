@@ -438,6 +438,14 @@ data class NotesProposalSummary(
     val title: String,
     val summary: String,
     val createdAt: Double,
+    // Additive G06 C5 fields. Defaults keep C1 consumers source-compatible.
+    val baseSHA256: String = "",
+    val editCount: Int = 0,
+    val status: String = "pending",
+    val requiresUserConfirmation: Boolean = true,
+    val originConversationID: String? = null,
+    val appliedRevision: Int? = null,
+    val resolvedDecision: String? = null,
 )
 
 enum class NotesTextWriteMode(val wire: String) {
@@ -513,9 +521,368 @@ data class NotesPageOCRState(
     val ocrSourceKey: String? = null,
     val ocrText: String? = null,
     val ocrError: String? = null,
+    // Additive C5 fields: native-derived retry metadata only.
+    val indexed: Boolean = current,
+    val needsVisualIndex: Boolean = false,
+    val retryable: Boolean = false,
 ) {
     init {
         require(documentID.isNotBlank() && pageID.isNotBlank()) { "OCR page identity" }
         require(visualIndexKey.isNotBlank()) { "visual index key" }
+    }
+}
+
+// MARK: - G06 C5 proposal authority (additive)
+
+/**
+ * Full native proposal projection. It deliberately never carries the
+ * model-authored proposal text or the raw edit list: [summary] is the
+ * deterministic human-visible difference, and application happens natively
+ * through a single-use editor grant.
+ */
+data class NotesProposal(
+    val id: String,
+    val documentID: String,
+    val baseRevision: Int,
+    val baseSHA256: String,
+    val title: String,
+    val summary: String,
+    val editCount: Int,
+    val createdAt: Double,
+    val status: String,
+    val requiresUserConfirmation: Boolean,
+    val originConversationID: String? = null,
+    val environmentID: String? = null,
+    val appliedRevision: Int? = null,
+    val resolvedDecision: String? = null,
+    val resolvedAt: Double? = null,
+) {
+    init {
+        require(id.isNotBlank() && documentID.isNotBlank()) { "proposal identity" }
+        require(baseRevision >= 0) { "proposal base revision" }
+        require(baseSHA256.length == 64 && baseSHA256.all { it in "0123456789abcdef" }) {
+            "proposal fingerprint"
+        }
+        require(editCount >= 0) { "proposal edit count" }
+        require(appliedRevision == null || appliedRevision >= 0) { "applied revision" }
+    }
+
+    val isPending: Boolean get() = status == "pending"
+}
+
+data class NotesProposalPreview(
+    val documentID: String,
+    val baseRevision: Int,
+    val baseSHA256: String,
+    val title: String,
+    val summary: String,
+    val editCount: Int,
+    val requiresUserConfirmation: Boolean = true,
+) {
+    init {
+        require(documentID.isNotBlank()) { "preview document" }
+        require(baseRevision >= 0) { "preview revision" }
+        require(baseSHA256.length == 64 && baseSHA256.all { it in "0123456789abcdef" }) {
+            "preview fingerprint"
+        }
+        require(editCount >= 0) { "preview edit count" }
+    }
+}
+
+data class NotesProposalRequest(
+    val documentID: String,
+    val expectedRevision: Int,
+    val title: String,
+    val edits: List<NotesEdit>,
+    /** Assistant origin. Present means native read-grant and origin checks apply. */
+    val conversationID: String? = null,
+    val environmentID: String? = null,
+    /** Provenance only; never reused as the apply idempotency key. */
+    val sourceRequestID: String? = null,
+) {
+    init {
+        require(documentID.isNotBlank()) { "proposal document" }
+        require(expectedRevision >= 0) { "proposal revision" }
+        require(title.isNotBlank() && title.encodeToByteArray().size <= 512) { "proposal title" }
+        require(edits.isNotEmpty() && edits.size <= NotesProtocol.MAX_EDITS) { "proposal edits" }
+        require(environmentID == null || conversationID != null) {
+            "an environment requires a conversation origin"
+        }
+        require(sourceRequestID == null ||
+            sourceRequestID.encodeToByteArray().size <= 256) { "proposal source request" }
+    }
+}
+
+data class NotesProposalApplyRequest(
+    val proposalID: String,
+    val documentID: String,
+    /** Minted by the interactive editor's accept control; never by a model tool. */
+    val grantID: String,
+    val conversationID: String? = null,
+    val environmentID: String? = null,
+) {
+    init {
+        require(proposalID.isNotBlank() && documentID.isNotBlank() && grantID.isNotBlank()) {
+            "proposal apply identity"
+        }
+        require(environmentID == null || conversationID != null) {
+            "an environment requires a conversation origin"
+        }
+    }
+}
+
+data class NotesProposalApplyResult(
+    val document: NoteDocument,
+    val proposalID: String,
+    val documentID: String,
+    val appliedRevision: Int,
+    val replayed: Boolean,
+    val status: String,
+)
+
+data class NotesProposalGrant(
+    val grantID: String,
+    val proposalID: String,
+    val documentID: String,
+    val baseRevision: Int,
+    val baseSHA256: String,
+    val expiresInSeconds: Long,
+) {
+    init {
+        require(grantID.isNotBlank()) { "grant id" }
+        require(expiresInSeconds > 0) { "grant lifetime" }
+    }
+}
+
+enum class NoteProposalDecision(val wire: String) {
+    ACCEPTED("accepted"), REJECTED("rejected"), INVALIDATED("invalidated");
+
+    companion object {
+        fun fromWire(value: String): NoteProposalDecision? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+data class NotesProposalResolveRequest(
+    val proposalID: String,
+    val decision: NoteProposalDecision,
+    val documentID: String? = null,
+    val conversationID: String? = null,
+    val environmentID: String? = null,
+) {
+    init {
+        require(proposalID.isNotBlank()) { "proposal id" }
+        require(decision != NoteProposalDecision.ACCEPTED) {
+            "acceptance must commit through applyProposal"
+        }
+        require(environmentID == null || conversationID != null) {
+            "an environment requires a conversation origin"
+        }
+    }
+}
+
+/**
+ * One durable decision that the runtime may deliver to [conversationID].
+ * `ready == false` means native crash-repair could not finalize it yet; it must
+ * not be delivered or acknowledged. [content] is structured user-decision text,
+ * never model-authored proposal content.
+ */
+data class NotesProposalDecisionEnvelope(
+    val intentID: String,
+    val eventID: String,
+    val proposalID: String,
+    val documentID: String,
+    val conversationID: String,
+    val decision: NoteProposalDecision,
+    val baseRevision: Int,
+    val baseSHA256: String,
+    val phase: String,
+    val ready: Boolean,
+    val content: String,
+    val environmentID: String? = null,
+    val revision: Int? = null,
+    val lastFailure: String? = null,
+    val createdAt: Double = 0.0,
+    val updatedAt: Double = 0.0,
+) {
+    init {
+        require(intentID.isNotBlank() && eventID.isNotBlank()) { "decision identity" }
+        require(proposalID.isNotBlank() && documentID.isNotBlank() && conversationID.isNotBlank()) {
+            "decision scope"
+        }
+    }
+
+    val deliverable: Boolean get() = ready && phase == "recorded"
+}
+
+data class NotesProposalOutboxPage(
+    val decisions: List<NotesProposalDecisionEnvelope>,
+    val total: Int,
+    val truncated: Boolean,
+)
+
+data class NotesProposalDecisionAck(
+    val eventID: String,
+    val proposalID: String,
+    val decision: NoteProposalDecision,
+    val deliveredAt: Double,
+    val alreadyDelivered: Boolean,
+)
+
+// MARK: - G06 C5 source-bound index cache (additive)
+
+enum class NotesIndexCacheStatus(val wire: String) {
+    APPLIED("applied"), UNCHANGED("unchanged"), STALE("stale"), FAILED("failed");
+
+    companion object {
+        fun fromWire(value: String): NotesIndexCacheStatus? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+/**
+ * Typed result of one OCR / Office-text cache write. A stale result is a
+ * successful action result (not a transport error) and never modified the
+ * document or search index; [retryable] is true for a stored provider error
+ * and false for a stale source identity.
+ */
+data class NotesIndexCacheReceipt(
+    val status: NotesIndexCacheStatus,
+    val documentID: String,
+    val documentRevision: Int,
+    val sourceKey: String,
+    val indexed: Boolean,
+    val retryable: Boolean,
+    val currentKey: String? = null,
+    val storedKey: String? = null,
+    val textLength: Int? = null,
+    val error: String? = null,
+    val reason: String? = null,
+) {
+    init {
+        require(documentID.isNotBlank() && sourceKey.isNotBlank()) { "cache identity" }
+        require(documentRevision >= 0) { "cache revision" }
+        require(textLength == null || textLength >= 0) { "cache text length" }
+    }
+
+    val applied: Boolean get() = status == NotesIndexCacheStatus.APPLIED
+    val stale: Boolean get() = status == NotesIndexCacheStatus.STALE
+}
+
+data class NotesPageOCRRequest(
+    val documentID: String,
+    val pageID: String,
+    /** Opaque value returned by [NotesService.pageOCRState]; never computed locally. */
+    val sourceKey: String,
+    val text: String? = null,
+    val error: String? = null,
+    val expectedRevision: Int? = null,
+    /** Assistant origin; native requires a live read grant when present. */
+    val conversationID: String? = null,
+) {
+    init {
+        require(documentID.isNotBlank() && pageID.isNotBlank()) { "OCR cache page identity" }
+        require(sourceKey.isNotBlank()) { "OCR source key" }
+        require(expectedRevision == null || expectedRevision >= 0) { "OCR revision fence" }
+    }
+}
+
+data class NotesOfficeTextRequest(
+    val documentID: String,
+    val sourceResourceID: String,
+    val text: String? = null,
+    val error: String? = null,
+    val expectedRevision: Int? = null,
+    /** Assistant origin; native requires a live read grant when present. */
+    val conversationID: String? = null,
+) {
+    init {
+        require(documentID.isNotBlank() && sourceResourceID.isNotBlank()) {
+            "Office cache identity"
+        }
+        require(expectedRevision == null || expectedRevision >= 0) { "Office revision fence" }
+    }
+}
+
+data class NotesOfficeTextState(
+    val documentID: String,
+    val revision: Int,
+    val current: Boolean,
+    val retryable: Boolean,
+    val sourceResourceID: String? = null,
+    val sourceKey: String? = null,
+    val cachedResourceID: String? = null,
+    val textLength: Int? = null,
+    val error: String? = null,
+)
+
+// MARK: - G06 C5 conflict reviews (additive)
+
+data class NotesConflictReviewSummary(
+    val id: String,
+    val documentID: String,
+    val currentRevision: Int,
+    val currentTitle: String,
+    val copyDocumentID: String,
+    val copyRevision: Int,
+    val copyTitle: String,
+    val title: String,
+    val editCount: Int,
+) {
+    init {
+        require(id.isNotBlank() && documentID.isNotBlank() && copyDocumentID.isNotBlank()) {
+            "conflict review identity"
+        }
+        require(documentID != copyDocumentID) { "a review needs two independent documents" }
+        require(currentRevision >= 0 && copyRevision >= 0) { "conflict review revisions" }
+        require(editCount >= 0) { "conflict review edit count" }
+    }
+}
+
+data class NotesConflictReviewPage(
+    val reviews: List<NotesConflictReviewSummary>,
+    val total: Int,
+    val truncated: Boolean,
+)
+
+/** Full prior-edit review; replacement/keep-both always retains [copy]. */
+data class NoteEditConflict(
+    val id: String,
+    val current: NoteDocument,
+    val copy: NoteDocument,
+    val edits: List<NotesEdit>,
+    val title: String,
+) {
+    init {
+        require(id.isNotBlank()) { "conflict review id" }
+        require(current.id != copy.id) { "a review needs two independent documents" }
+        require(edits.isNotEmpty() && edits.size <= NotesProtocol.MAX_EDITS) {
+            "conflict review edits"
+        }
+    }
+}
+
+data class NotesConflictReviewRequest(
+    val documentID: String,
+    val expectedRevision: Int,
+    val copyDocumentID: String,
+    val expectedCopyRevision: Int,
+    val title: String,
+    val edits: List<NotesEdit>,
+    val reviewID: String? = null,
+    /** Assistant origin; native requires a live read grant on both documents. */
+    val conversationID: String? = null,
+) {
+    init {
+        require(documentID.isNotBlank() && copyDocumentID.isNotBlank()) {
+            "conflict review identity"
+        }
+        require(documentID != copyDocumentID) { "a review needs two independent documents" }
+        require(expectedRevision >= 0 && expectedCopyRevision >= 0) { "conflict review revisions" }
+        require(title.isNotBlank() && title.encodeToByteArray().size <= 512) {
+            "conflict review title"
+        }
+        require(edits.isNotEmpty() && edits.size <= NotesProtocol.MAX_EDITS) {
+            "conflict review edits"
+        }
+        require(reviewID == null || reviewID.isNotBlank()) { "conflict review id" }
     }
 }

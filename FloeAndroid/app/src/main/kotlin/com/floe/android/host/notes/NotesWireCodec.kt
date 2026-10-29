@@ -33,6 +33,20 @@ import com.floe.android.feature.notes.NotesDocumentPage
 import com.floe.android.feature.notes.NotesEvent
 import com.floe.android.feature.notes.NotesEventBatch
 import com.floe.android.feature.notes.NotesLibrarySummary
+import com.floe.android.feature.notes.NoteEditConflict
+import com.floe.android.feature.notes.NoteProposalDecision
+import com.floe.android.feature.notes.NotesConflictReviewPage
+import com.floe.android.feature.notes.NotesConflictReviewSummary
+import com.floe.android.feature.notes.NotesIndexCacheReceipt
+import com.floe.android.feature.notes.NotesIndexCacheStatus
+import com.floe.android.feature.notes.NotesOfficeTextState
+import com.floe.android.feature.notes.NotesProposal
+import com.floe.android.feature.notes.NotesProposalApplyResult
+import com.floe.android.feature.notes.NotesProposalDecisionAck
+import com.floe.android.feature.notes.NotesProposalDecisionEnvelope
+import com.floe.android.feature.notes.NotesProposalGrant
+import com.floe.android.feature.notes.NotesProposalOutboxPage
+import com.floe.android.feature.notes.NotesProposalPreview
 import com.floe.android.feature.notes.NotesProposalSummary
 import com.floe.android.feature.notes.NotesEdit
 import com.floe.android.feature.notes.NotesException
@@ -601,8 +615,234 @@ internal object NotesWireCodec {
                 title = proposal.requiredString("title"),
                 summary = proposal.string("summary") ?: "",
                 createdAt = proposal.double("createdAt") ?: 0.0,
+                baseSHA256 = proposal.string("baseSHA256") ?: "",
+                editCount = proposal.int("editCount") ?: 0,
+                status = proposal.string("status") ?: "pending",
+                requiresUserConfirmation = proposal.bool("requiresUserConfirmation") ?: true,
+                originConversationID = proposal.string("originConversationID"),
+                appliedRevision = proposal.int("appliedRevision"),
+                resolvedDecision = proposal.string("resolvedDecision"),
             )
         }.orEmpty()
+
+    fun decodeProposal(element: JsonElement?): NotesProposal {
+        val p = element as? JsonObject ?: fail("proposal")
+        return NotesProposal(
+            id = p.requiredString("id"),
+            documentID = p.requiredString("documentID"),
+            baseRevision = p.int("baseRevision") ?: fail("proposal.baseRevision"),
+            baseSHA256 = p.requiredString("baseSHA256"),
+            title = p.requiredString("title"),
+            summary = p.string("summary") ?: "",
+            editCount = p.int("editCount") ?: fail("proposal.editCount"),
+            createdAt = p.double("createdAt") ?: 0.0,
+            status = p.string("status") ?: "pending",
+            requiresUserConfirmation = p.bool("requiresUserConfirmation") ?: true,
+            originConversationID = p.string("originConversationID"),
+            environmentID = p.string("environmentID"),
+            appliedRevision = p.int("appliedRevision"),
+            resolvedDecision = p.string("resolvedDecision"),
+            resolvedAt = p.double("resolvedAt"),
+        )
+    }
+
+    fun decodeProposalPreview(element: JsonElement?): NotesProposalPreview {
+        val p = element as? JsonObject ?: fail("preview")
+        return NotesProposalPreview(
+            documentID = p.requiredString("documentID"),
+            baseRevision = p.int("baseRevision") ?: fail("preview.baseRevision"),
+            baseSHA256 = p.requiredString("baseSHA256"),
+            title = p.requiredString("title"),
+            summary = p.string("summary") ?: "",
+            editCount = p.int("editCount") ?: fail("preview.editCount"),
+            requiresUserConfirmation = p.bool("requiresUserConfirmation") ?: true,
+        )
+    }
+
+    fun decodeProposalGrant(element: JsonElement?): NotesProposalGrant {
+        val g = element as? JsonObject ?: fail("grant")
+        return NotesProposalGrant(
+            grantID = g.requiredString("grantID"),
+            proposalID = g.requiredString("proposalID"),
+            documentID = g.requiredString("documentID"),
+            baseRevision = g.int("baseRevision") ?: fail("grant.baseRevision"),
+            baseSHA256 = g.requiredString("baseSHA256"),
+            expiresInSeconds = g.long("expiresInSeconds") ?: fail("grant.expiresInSeconds"),
+        )
+    }
+
+    fun decodeProposalApply(o: JsonObject): NotesProposalApplyResult {
+        val result = o.obj("result") ?: fail("proposalApply.result")
+        return NotesProposalApplyResult(
+            document = decodeDocument(o["document"]),
+            proposalID = result.requiredString("proposalID"),
+            documentID = result.requiredString("documentID"),
+            appliedRevision = result.int("appliedRevision") ?: fail("proposalApply.appliedRevision"),
+            replayed = result.bool("replayed") ?: false,
+            status = result.string("status") ?: "applied",
+        )
+    }
+
+    fun decodeProposalOutbox(o: JsonObject): NotesProposalOutboxPage {
+        val decisions = o.array("decisions")?.map { element ->
+            val d = element as? JsonObject ?: fail("decision")
+            NotesProposalDecisionEnvelope(
+                intentID = d.requiredString("intentID"),
+                eventID = d.requiredString("eventID"),
+                proposalID = d.requiredString("proposalID"),
+                documentID = d.requiredString("documentID"),
+                conversationID = d.requiredString("conversationID"),
+                decision = NoteProposalDecision.fromWire(d.requiredString("decision"))
+                    ?: fail("decision.decision"),
+                baseRevision = d.int("baseRevision") ?: fail("decision.baseRevision"),
+                baseSHA256 = d.requiredString("baseSHA256"),
+                phase = d.requiredString("phase"),
+                ready = d.bool("ready") ?: false,
+                content = d.string("content") ?: "",
+                environmentID = d.string("environmentID"),
+                revision = d.int("revision"),
+                lastFailure = d.string("lastFailure"),
+                createdAt = d.double("createdAt") ?: 0.0,
+                updatedAt = d.double("updatedAt") ?: 0.0,
+            )
+        }.orEmpty()
+        return NotesProposalOutboxPage(
+            decisions = decisions,
+            total = o.int("total") ?: decisions.size,
+            truncated = o.bool("truncated") ?: false,
+        )
+    }
+
+    fun decodeDecisionAck(element: JsonElement?): NotesProposalDecisionAck {
+        val a = element as? JsonObject ?: fail("ack")
+        return NotesProposalDecisionAck(
+            eventID = a.requiredString("eventID"),
+            proposalID = a.requiredString("proposalID"),
+            decision = NoteProposalDecision.fromWire(a.requiredString("decision"))
+                ?: fail("ack.decision"),
+            deliveredAt = a.double("deliveredAt") ?: 0.0,
+            alreadyDelivered = a.bool("alreadyDelivered") ?: false,
+        )
+    }
+
+    fun decodeIndexCacheReceipt(element: JsonElement?): NotesIndexCacheReceipt {
+        val c = element as? JsonObject ?: fail("cache")
+        return NotesIndexCacheReceipt(
+            status = NotesIndexCacheStatus.fromWire(c.requiredString("status"))
+                ?: fail("cache.status"),
+            documentID = c.requiredString("documentID"),
+            documentRevision = c.int("documentRevision") ?: fail("cache.documentRevision"),
+            sourceKey = c.requiredString("sourceKey"),
+            indexed = c.bool("indexed") ?: false,
+            retryable = c.bool("retryable") ?: false,
+            currentKey = c.string("currentKey"),
+            storedKey = c.string("storedKey"),
+            textLength = c.int("textLength"),
+            error = c.string("error"),
+            reason = c.string("reason"),
+        )
+    }
+
+    fun decodeOfficeTextState(element: JsonElement?): NotesOfficeTextState {
+        val s = element as? JsonObject ?: fail("state")
+        return NotesOfficeTextState(
+            documentID = s.requiredString("documentID"),
+            revision = s.int("revision") ?: fail("state.revision"),
+            current = s.bool("current") ?: false,
+            retryable = s.bool("retryable") ?: false,
+            sourceResourceID = s.string("sourceResourceID"),
+            sourceKey = s.string("sourceKey"),
+            cachedResourceID = s.string("cachedResourceID"),
+            textLength = s.int("textLength"),
+            error = s.string("error"),
+        )
+    }
+
+    fun decodeConflictSummary(element: JsonElement?): NotesConflictReviewSummary {
+        val r = element as? JsonObject ?: fail("review")
+        return NotesConflictReviewSummary(
+            id = r.requiredString("id"),
+            documentID = r.requiredString("documentID"),
+            currentRevision = r.int("currentRevision") ?: fail("review.currentRevision"),
+            currentTitle = r.string("currentTitle") ?: "",
+            copyDocumentID = r.requiredString("copyDocumentID"),
+            copyRevision = r.int("copyRevision") ?: fail("review.copyRevision"),
+            copyTitle = r.string("copyTitle") ?: "",
+            title = r.string("title") ?: "",
+            editCount = r.int("editCount") ?: 0,
+        )
+    }
+
+    fun decodeConflictPage(o: JsonObject): NotesConflictReviewPage {
+        val reviews = o.array("reviews")?.map { decodeConflictSummary(it) }.orEmpty()
+        return NotesConflictReviewPage(
+            reviews = reviews,
+            total = o.int("total") ?: reviews.size,
+            truncated = o.bool("truncated") ?: false,
+        )
+    }
+
+    fun decodeConflictReview(element: JsonElement?): NoteEditConflict {
+        val r = element as? JsonObject ?: fail("review")
+        return NoteEditConflict(
+            id = r.requiredString("id"),
+            current = decodeDocument(r["current"]),
+            copy = decodeDocument(r["copy"]),
+            edits = decodeEdits(r["edits"]),
+            title = r.string("title") ?: "",
+        )
+    }
+
+    // MARK: - Stored conflict edits (same flat schema as requests)
+
+    fun decodeEdits(element: JsonElement?): List<NotesEdit> {
+        val array = element as? JsonArray ?: fail("edits")
+        return array.map { decodeEdit(it) }
+    }
+
+    private fun decodeEdit(element: JsonElement): NotesEdit {
+        val o = element as? JsonObject ?: fail("edit")
+        return when (o.requiredString("action")) {
+            "rename" -> NotesEdit.Rename(o.requiredString("text"))
+            "moveToNotebook" -> NotesEdit.MoveToNotebook(o.string("notebookID"))
+            "favorite" -> NotesEdit.Favorite(o.bool("isFavorite") ?: fail("edit.isFavorite"))
+            "tags" -> NotesEdit.Tags(o.strings("tags"))
+            "textSource" -> NotesEdit.TextSource(
+                id = o.requiredString("id"), text = o.string("text"))
+            "insertPage" -> NotesEdit.InsertPage(
+                page = decodePage(o["page"] ?: fail("edit.page")),
+                index = o.int("index") ?: fail("edit.index"))
+            "updatePage" -> NotesEdit.UpdatePage(decodePage(o["page"] ?: fail("edit.page")))
+            "movePage" -> NotesEdit.MovePage(
+                pageID = o.requiredString("pageID"), index = o.int("index") ?: fail("edit.index"))
+            "duplicatePage" -> NotesEdit.DuplicatePage(o.requiredString("pageID"))
+            "deletePage" -> NotesEdit.DeletePage(o.requiredString("pageID"))
+            "drawing" -> NotesEdit.Drawing(
+                pageID = o.requiredString("pageID"), resourceID = o.string("resourceID"))
+            "upsertElement" -> NotesEdit.UpsertElement(
+                pageID = o.requiredString("pageID"),
+                element = decodeElement(o["element"] ?: fail("edit.element")))
+            "deleteElements" -> NotesEdit.DeleteElements(
+                pageID = o.requiredString("pageID"), ids = o.strings("ids"))
+            "upsertNode" -> NotesEdit.UpsertNode(
+                decodeNode(o["node"] ?: fail("edit.node")))
+            "deleteBranch" -> NotesEdit.DeleteBranch(o.requiredString("nodeID"))
+            "upsertConnection" -> NotesEdit.UpsertConnection(
+                decodeConnection(o["connection"] ?: fail("edit.connection")))
+            "deleteConnection" -> NotesEdit.DeleteConnection(o.requiredString("connectionID"))
+            "replaceMindMap" -> NotesEdit.ReplaceMindMap(
+                nodes = o.array("nodes")?.map { decodeNode(it) }.orEmpty(),
+                connections = o.array("connections")?.map { decodeConnection(it) }.orEmpty())
+            "linkMindMap" -> NotesEdit.LinkMindMap(
+                decodeLink(o["link"] ?: fail("edit.link")))
+            "unlinkMindMap" -> NotesEdit.UnlinkMindMap(o.requiredString("linkID"))
+            "replaceOfficeResource" -> NotesEdit.ReplaceOfficeResource(o.requiredString("resourceID"))
+            "mindMapLayout" -> NotesEdit.MindMapLayout(
+                direction = o.int("direction") ?: fail("edit.direction"),
+                summaries = o.array("summaries")?.map { decodeMindMapSummary(it) }.orEmpty())
+            else -> fail("edit.action")
+        }
+    }
 
     fun decodeBase64(value: String): ByteArray =
         if (value.isEmpty()) ByteArray(0) else java.util.Base64.getDecoder().decode(value)

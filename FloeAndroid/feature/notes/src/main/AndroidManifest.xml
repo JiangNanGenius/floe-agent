@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- G06 Notes presentation module. No permissions, providers, activities or
+     services are declared here: the App host owns runtime, SAF and Office
+     effects. This module contains UI and presentation controllers only. -->
+<manifest />

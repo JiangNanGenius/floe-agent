@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +52,7 @@ import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloeText
 import com.floe.android.design.IconGlyph
 import androidx.compose.ui.graphics.vector.ImageVector
+import kotlinx.coroutines.delay
 
 /* ------------------------------ presentation glue ----------------------------- */
 
@@ -348,7 +350,14 @@ internal fun AttachmentChipRow(
 private fun AssistantRow(row: TimelineRowUi.AssistantMessage, holder: ConversationFlowHolder, modifier: Modifier) {
     val copyLabel = stringResource(R.string.action_copy)
     val readAloudLabel = stringResource(R.string.action_read_aloud)
+    val saveToNotesLabel = stringResource(R.string.action_save_to_notes)
+    val saveToNotesFailed = stringResource(R.string.action_save_to_notes_failed)
     val assistantRole = stringResource(R.string.role_assistant)
+    // The host state is the authority: a temporary session never offers a
+    // persistent copy, and an unknown projection keeps the affordance hidden
+    // until the real state arrives. The host re-checks the same facts.
+    val persistentSession = holder.snapshot.value?.isTemporary == false
+    var saveNotice by remember(row.rowId) { mutableStateOf<String?>(null) }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -401,6 +410,38 @@ private fun AssistantRow(row: TimelineRowUi.AssistantMessage, holder: Conversati
                     FloeText(readAloudLabel, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
                 }
             }
+            if (persistentSession && row.text.isNotBlank()) {
+                // Explicit user copy into an independent note. A true holder
+                // result is ADMISSION only; the real Saving/Saved/Failed state
+                // is surfaced by the App from the host transfer controller, so
+                // this row never claims the note was saved.
+                Box(
+                    modifier = Modifier
+                        .heightIn(min = FloeLayout.MinimumTarget)
+                        .clickable {
+                            val result = holder.saveMessageToNotes(row.text)
+                            if (result !is ConversationFlowResult.Accepted) {
+                                saveNotice = saveToNotesFailed
+                            }
+                        }
+                        .semantics { contentDescription = saveToNotesLabel },
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    FloeText(saveToNotesLabel, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                }
+            }
+        }
+        saveNotice?.let { notice ->
+            LaunchedEffect(notice) {
+                delay(4_000)
+                saveNotice = null
+            }
+            FloeText(
+                notice,
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
         }
     }
 }

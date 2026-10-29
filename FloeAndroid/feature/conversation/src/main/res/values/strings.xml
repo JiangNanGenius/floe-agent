@@ -21,6 +21,8 @@
     <string name="action_view">View</string>
     <string name="action_back">Back</string>
     <string name="action_read_aloud">Read aloud</string>
+    <string name="action_save_to_notes">Save to Notes</string>
+    <string name="action_save_to_notes_failed">Couldn\'t start saving to Notes. Try again.</string>
     <string name="dismiss_error">Dismiss</string>
     <string name="loading_cd">Loading</string>
     <string name="show_more_output">Show more</string>

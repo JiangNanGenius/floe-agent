@@ -6,8 +6,13 @@ import com.floe.android.feature.notes.ImportedResource
 import com.floe.android.feature.notes.NoteCoverState
 import com.floe.android.feature.notes.NoteDocument
 import com.floe.android.feature.notes.NoteDocumentSummary
+import com.floe.android.feature.notes.NoteEditConflict
 import com.floe.android.feature.notes.NoteHistoryState
 import com.floe.android.feature.notes.NotesPageOCRState
+import com.floe.android.feature.notes.NotesPageOCRRequest
+import com.floe.android.feature.notes.NotesOfficeTextRequest
+import com.floe.android.feature.notes.NotesOfficeTextState
+import com.floe.android.feature.notes.NotesIndexCacheReceipt
 import com.floe.android.feature.notes.NoteResourceChunk
 import com.floe.android.feature.notes.NoteResourceRecord
 import com.floe.android.feature.notes.Notebook
@@ -16,7 +21,11 @@ import com.floe.android.feature.notes.NotesArchiveExport
 import com.floe.android.feature.notes.NotesArchiveHandle
 import com.floe.android.feature.notes.NotesArchiveImport
 import com.floe.android.feature.notes.NotesApplyRequest
+import com.floe.android.feature.notes.NotesAtomicBatchService
 import com.floe.android.feature.notes.NotesBinding
+import com.floe.android.feature.notes.NotesConflictReviewPage
+import com.floe.android.feature.notes.NotesConflictReviewRequest
+import com.floe.android.feature.notes.NotesConflictReviewSummary
 import com.floe.android.feature.notes.NotesCoverRequest
 import com.floe.android.feature.notes.NotesCreateDocument
 import com.floe.android.feature.notes.NotesDocumentPage
@@ -25,6 +34,15 @@ import com.floe.android.feature.notes.NotesEventBatch
 import com.floe.android.feature.notes.NotesException
 import com.floe.android.feature.notes.NotesLibrarySummary
 import com.floe.android.feature.notes.NotesProtocol
+import com.floe.android.feature.notes.NotesProposal
+import com.floe.android.feature.notes.NotesProposalApplyRequest
+import com.floe.android.feature.notes.NotesProposalApplyResult
+import com.floe.android.feature.notes.NotesProposalDecisionAck
+import com.floe.android.feature.notes.NotesProposalGrant
+import com.floe.android.feature.notes.NotesProposalOutboxPage
+import com.floe.android.feature.notes.NotesProposalPreview
+import com.floe.android.feature.notes.NotesProposalRequest
+import com.floe.android.feature.notes.NotesProposalResolveRequest
 import com.floe.android.feature.notes.NotesProposalSummary
 import com.floe.android.feature.notes.NotesResourceImport
 import com.floe.android.feature.notes.NotesSaveMessage
@@ -67,7 +85,7 @@ class NotesHostService(
     private val transport: NotesTransport,
     private val epochProvider: () -> Long?,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-) : NotesService {
+) : NotesService, NotesAtomicBatchService {
     private val bindMutex = Mutex()
     private var boundEpoch: Long? = null
     private var binding: NotesBinding? = null
@@ -190,16 +208,162 @@ class NotesHostService(
     }
 
     override suspend fun apply(request: NotesApplyRequest): NoteDocument = withContext(ioDispatcher) {
-        val payload = buildJsonObject {
+        NotesWireCodec.decodeDocument(perform("document.apply", applyPayload(request))["document"])
+    }
+
+    /**
+     * Whole-plan apply. Below [NotesProtocol.MAX_ATOMIC_INLINE_EDIT_BYTES] the
+     * exact serialized plan travels as one ordinary `document.apply`; above it
+     * the same closed edit array is staged in [NotesProtocol.CHUNK_BYTES]
+     * chunks and committed once through `batch.stageCommit`. Either way the
+     * native store commits one revision/undo/receipt, never a sequence of
+     * per-chunk edits.
+     */
+    override suspend fun applyAtomically(request: NotesApplyRequest): NoteDocument =
+        withContext(ioDispatcher) {
+            val receipt = request.requestID ?: UUID.randomUUID().toString()
+            val effective = if (request.requestID == null) request.copy(requestID = receipt) else request
+            val serialized = NotesWireCodec.encodeEdits(effective.edits).toString().encodeToByteArray()
+            if (serialized.size <= NotesProtocol.MAX_ATOMIC_INLINE_EDIT_BYTES) {
+                return@withContext apply(effective)
+            }
+            if (serialized.size > NotesProtocol.MAX_STAGED_EDIT_BATCH_BYTES) {
+                throw NotesException("requestTooLarge", "editBatch", retryable = false)
+            }
+            commitStagedEditBatch(effective, receipt, serialized)
+        }
+
+    private fun applyPayload(request: NotesApplyRequest): JsonObject = buildJsonObject {
+        put("documentID", request.documentID)
+        put("expectedRevision", request.expectedRevision)
+        put("title", request.title)
+        request.requestID?.let { put("requestID", it) }
+        request.baseRevision?.let { put("baseRevision", it) }
+        request.conversationID?.let { put("conversationID", it) }
+        request.resolvingConflictID?.let { put("resolvingConflictID", it) }
+        request.reviewedCopyID?.let { put("reviewedCopyID", it) }
+        request.reviewedCopyRevision?.let { put("reviewedCopyRevision", it) }
+        put("edits", NotesWireCodec.encodeEdits(request.edits))
+    }
+
+    private data class StagedEditBatch(val stageID: String, val chunkBytes: Int)
+
+    private suspend fun commitStagedEditBatch(
+        request: NotesApplyRequest,
+        receipt: String,
+        serialized: ByteArray,
+    ): NoteDocument {
+        var stage = beginEditBatch(request, receipt, serialized.size.toLong())
+        try {
+            appendEditBatch(stage, serialized)
+        } catch (cancelled: CancellationException) {
+            abortEditBatchQuietly(stage.stageID)
+            throw cancelled
+        } catch (error: Throwable) {
+            abortEditBatchQuietly(stage.stageID)
+            throw error
+        }
+
+        var lastFailure: Throwable? = null
+        var attempt = 0
+        var restaged = false
+        while (true) {
+            attempt += 1
+            try {
+                return commitEditBatch(stage.stageID)
+            } catch (cancelled: CancellationException) {
+                // A dispatched commit may already have landed. Do not abort as
+                // if the bytes had never been sent; the caller retains the
+                // whole intent and reconciles with this exact receipt.
+                throw cancelled
+            } catch (error: Throwable) {
+                lastFailure = error
+                val failure = error as? NotesException
+                if (failure?.code == "stageNotFound" && !restaged) {
+                    // The native engine retired/restarted or the stage expired
+                    // after an uncertain dispatch. Re-stage identical bytes and
+                    // commit the same receipt; the store's edit receipt makes
+                    // an already-committed plan a no-op. This is the only
+                    // re-stage allowed for one call.
+                    restaged = true
+                    val replacement = beginEditBatch(request, receipt, serialized.size.toLong())
+                    stage = replacement
+                    try {
+                        appendEditBatch(replacement, serialized)
+                    } catch (cancelled: CancellationException) {
+                        abortEditBatchQuietly(replacement.stageID)
+                        throw cancelled
+                    } catch (appendError: Throwable) {
+                        abortEditBatchQuietly(replacement.stageID)
+                        throw appendError
+                    }
+                    continue
+                }
+                // One bounded retry for an uncertain/torn response of the same
+                // stage+receipt; anything else is a real refusal.
+                if (failure?.retryable == true && attempt == 1) continue
+                break
+            }
+        }
+        abortEditBatchQuietly(stage.stageID)
+        throw lastFailure ?: NotesException("internal", "editBatchCommit")
+    }
+
+    private suspend fun beginEditBatch(
+        request: NotesApplyRequest,
+        receipt: String,
+        byteCount: Long,
+    ): StagedEditBatch {
+        val response = perform("batch.stageBegin", buildJsonObject {
             put("documentID", request.documentID)
             put("expectedRevision", request.expectedRevision)
+            put("byteCount", byteCount)
             put("title", request.title)
-            request.requestID?.let { put("requestID", it) }
+            put("requestID", receipt)
             request.baseRevision?.let { put("baseRevision", it) }
             request.conversationID?.let { put("conversationID", it) }
-            put("edits", NotesWireCodec.encodeEdits(request.edits))
+            request.resolvingConflictID?.let { put("resolvingConflictID", it) }
+            request.reviewedCopyID?.let { put("reviewedCopyID", it) }
+            request.reviewedCopyRevision?.let { put("reviewedCopyRevision", it) }
+        })
+        val total = response.long("totalBytes") ?: byteCount
+        if (total != byteCount) throw NotesException("invalidResponse", "stageSize")
+        val serverChunk = response.int("chunkBytes") ?: NotesProtocol.CHUNK_BYTES
+        val chunkBytes = serverChunk.coerceIn(1, NotesProtocol.CHUNK_BYTES)
+        return StagedEditBatch(response.requiredString("stageID"), chunkBytes)
+    }
+
+    private suspend fun appendEditBatch(stage: StagedEditBatch, serialized: ByteArray) {
+        var offset = 0
+        while (offset < serialized.size) {
+            val size = minOf(stage.chunkBytes, serialized.size - offset)
+            val chunk = serialized.copyOfRange(offset, offset + size)
+            val response = perform("batch.stageAppend", buildJsonObject {
+                put("stageID", stage.stageID)
+                put("offset", offset.toLong())
+                put("dataBase64", NotesWireCodec.encodeBase64(chunk))
+            })
+            offset += size
+            val received = response.long("receivedBytes")
+                ?: throw NotesException("invalidResponse", "stageProgress")
+            if (received != offset.toLong()) {
+                throw NotesException("invalidResponse", "stageOffset")
+            }
         }
-        NotesWireCodec.decodeDocument(perform("document.apply", payload)["document"])
+    }
+
+    private suspend fun commitEditBatch(stageID: String): NoteDocument =
+        NotesWireCodec.decodeDocument(perform("batch.stageCommit", buildJsonObject {
+            put("stageID", stageID)
+        })["document"])
+
+    private suspend fun abortEditBatchQuietly(stageID: String) {
+        try {
+            perform("batch.stageAbort", buildJsonObject { put("stageID", stageID) })
+        } catch (_: Throwable) {
+            // Best effort: root retirement also removes this engine's staging
+            // files, and the caller already holds the real failure.
+        }
     }
 
     override suspend fun undo(documentID: String, expectedRevision: Int, redo: Boolean): NoteDocument =
@@ -327,6 +491,9 @@ class NotesHostService(
                 ocrSourceKey = response.string("ocrSourceKey"),
                 ocrText = response.string("ocrText"),
                 ocrError = response.string("ocrError"),
+                indexed = response.bool("indexed") ?: (response.bool("current") ?: false),
+                needsVisualIndex = response.bool("needsVisualIndex") ?: false,
+                retryable = response.bool("retryable") ?: false,
             )
         }
 
@@ -363,10 +530,32 @@ class NotesHostService(
         mediaType: String,
         byteCount: Long,
     ): NotesResourceImport = withContext(ioDispatcher) {
+        beginResourceImportInternal(fileName, mediaType, byteCount, null, null)
+    }
+
+    override suspend fun beginOwnedResourceImport(
+        fileName: String,
+        mediaType: String,
+        byteCount: Long,
+        conversationID: String,
+        documentID: String,
+    ): NotesResourceImport = withContext(ioDispatcher) {
+        beginResourceImportInternal(fileName, mediaType, byteCount, conversationID, documentID)
+    }
+
+    private suspend fun beginResourceImportInternal(
+        fileName: String,
+        mediaType: String,
+        byteCount: Long,
+        conversationID: String?,
+        documentID: String?,
+    ): NotesResourceImport {
         val response = perform("resource.importBegin", buildJsonObject {
             put("fileName", fileName); put("mediaType", mediaType); put("byteCount", byteCount)
+            conversationID?.let { put("conversationID", it) }
+            documentID?.let { put("documentID", it) }
         })
-        ResourceImportSession(
+        return ResourceImportSession(
             stageID = response.requiredString("stageID"),
             chunkBytes = response.int("chunkBytes") ?: NotesProtocol.CHUNK_BYTES,
             totalBytes = response.long("totalBytes") ?: byteCount,
@@ -389,6 +578,23 @@ class NotesHostService(
             }
             NotesWireCodec.decodeResourceChunk(perform("resource.read", payload))
         }
+
+    override suspend fun readAssistantResource(
+        resourceID: String,
+        offset: Long,
+        conversationID: String,
+        documentID: String?,
+        maxBytes: Int,
+    ): NoteResourceChunk = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            put("resourceID", resourceID)
+            put("offset", offset)
+            put("maxBytes", maxBytes)
+            put("conversationID", conversationID)
+            documentID?.let { put("documentID", it) }
+        }
+        NotesWireCodec.decodeResourceChunk(perform("resource.read", payload))
+    }
 
     override suspend fun discardUnreferencedResource(resourceID: String): Boolean =
         withContext(ioDispatcher) {
@@ -494,6 +700,210 @@ class NotesHostService(
             NotesWireCodec.decodeProposals(perform("proposal.list", payload))
         }
 
+    // MARK: - Proposal authority
+
+    private fun proposalPayload(request: NotesProposalRequest): JsonObject = buildJsonObject {
+        put("documentID", request.documentID)
+        put("expectedRevision", request.expectedRevision)
+        put("title", request.title)
+        put("edits", NotesWireCodec.encodeEdits(request.edits))
+        request.sourceRequestID?.let { put("sourceRequestID", it) }
+        request.conversationID?.let { put("conversationID", it) }
+        request.environmentID?.let { put("environmentID", it) }
+    }
+
+    override suspend fun previewProposal(request: NotesProposalRequest): NotesProposalPreview =
+        withContext(ioDispatcher) {
+            NotesWireCodec.decodeProposalPreview(
+                perform("proposal.preview", proposalPayload(request))["preview"])
+        }
+
+    override suspend fun propose(request: NotesProposalRequest): NotesProposal =
+        withContext(ioDispatcher) {
+            NotesWireCodec.decodeProposal(
+                perform("proposal.create", proposalPayload(request))["proposal"])
+        }
+
+    override suspend fun proposals(
+        documentID: String?,
+        conversationID: String?,
+        environmentID: String?,
+        limit: Int,
+    ): List<NotesProposalSummary> = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            documentID?.let { put("documentID", it) }
+            conversationID?.let { put("conversationID", it) }
+            environmentID?.let { put("environmentID", it) }
+            put("limit", limit)
+        }
+        NotesWireCodec.decodeProposals(perform("proposal.list", payload))
+    }
+
+    override suspend fun proposal(
+        proposalID: String,
+        documentID: String,
+        conversationID: String?,
+        environmentID: String?,
+    ): NotesProposal = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            put("proposalID", proposalID)
+            put("documentID", documentID)
+            conversationID?.let { put("conversationID", it) }
+            environmentID?.let { put("environmentID", it) }
+        }
+        NotesWireCodec.decodeProposal(perform("proposal.get", payload)["proposal"])
+    }
+
+    override suspend fun issueProposalGrant(
+        proposalID: String,
+        documentID: String,
+    ): NotesProposalGrant = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            put("proposalID", proposalID); put("documentID", documentID)
+        }
+        NotesWireCodec.decodeProposalGrant(perform("proposal.issueGrant", payload)["grant"])
+    }
+
+    override suspend fun applyProposal(
+        request: NotesProposalApplyRequest,
+    ): NotesProposalApplyResult = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            put("proposalID", request.proposalID)
+            put("documentID", request.documentID)
+            put("grantID", request.grantID)
+            request.conversationID?.let { put("conversationID", it) }
+            request.environmentID?.let { put("environmentID", it) }
+        }
+        NotesWireCodec.decodeProposalApply(perform("proposal.apply", payload))
+    }
+
+    override suspend fun resolveProposal(
+        request: NotesProposalResolveRequest,
+    ): NotesProposal = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            put("proposalID", request.proposalID)
+            put("decision", request.decision.wire)
+            request.documentID?.let { put("documentID", it) }
+            request.conversationID?.let { put("conversationID", it) }
+            request.environmentID?.let { put("environmentID", it) }
+        }
+        NotesWireCodec.decodeProposal(perform("proposal.resolve", payload)["proposal"])
+    }
+
+    override suspend fun decisionOutbox(
+        conversationID: String?,
+        limit: Int,
+    ): NotesProposalOutboxPage = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            conversationID?.let { put("conversationID", it) }
+            put("limit", limit)
+        }
+        NotesWireCodec.decodeProposalOutbox(perform("proposal.outbox", payload))
+    }
+
+    override suspend fun acknowledgeDecision(
+        intentID: String,
+        eventID: String,
+    ): NotesProposalDecisionAck = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            put("intentID", intentID); put("eventID", eventID)
+        }
+        NotesWireCodec.decodeDecisionAck(perform("proposal.outboxAck", payload)["ack"])
+    }
+
+    // MARK: - Source-bound index cache
+
+    override suspend fun cachePageOCR(request: NotesPageOCRRequest): NotesIndexCacheReceipt =
+        withContext(ioDispatcher) {
+            val payload = buildJsonObject {
+                put("documentID", request.documentID)
+                put("pageID", request.pageID)
+                put("sourceKey", request.sourceKey)
+                request.text?.let { put("text", it) }
+                request.error?.let { put("error", it) }
+                request.expectedRevision?.let { put("expectedRevision", it) }
+                request.conversationID?.let { put("conversationID", it) }
+            }
+            NotesWireCodec.decodeIndexCacheReceipt(
+                perform("document.cachePageOCR", payload)["cache"])
+        }
+
+    override suspend fun cacheOfficeText(request: NotesOfficeTextRequest): NotesIndexCacheReceipt =
+        withContext(ioDispatcher) {
+            val payload = buildJsonObject {
+                put("documentID", request.documentID)
+                put("sourceResourceID", request.sourceResourceID)
+                request.text?.let { put("text", it) }
+                request.error?.let { put("error", it) }
+                request.expectedRevision?.let { put("expectedRevision", it) }
+                request.conversationID?.let { put("conversationID", it) }
+            }
+            NotesWireCodec.decodeIndexCacheReceipt(
+                perform("document.cacheOfficeText", payload)["cache"])
+        }
+
+    override suspend fun officeTextState(documentID: String): NotesOfficeTextState =
+        withContext(ioDispatcher) {
+            NotesWireCodec.decodeOfficeTextState(
+                perform("document.officeTextState", buildJsonObject {
+                    put("documentID", documentID)
+                })["state"])
+        }
+
+    // MARK: - Conflict reviews
+
+    override suspend fun conflictReviews(
+        documentID: String?,
+        conversationID: String?,
+        limit: Int,
+    ): NotesConflictReviewPage = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            documentID?.let { put("documentID", it) }
+            conversationID?.let { put("conversationID", it) }
+            put("limit", limit)
+        }
+        NotesWireCodec.decodeConflictPage(perform("document.conflictReviews", payload))
+    }
+
+    override suspend fun conflictReview(
+        reviewID: String,
+        conversationID: String?,
+    ): NoteEditConflict = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            put("reviewID", reviewID)
+            conversationID?.let { put("conversationID", it) }
+        }
+        NotesWireCodec.decodeConflictReview(perform("document.conflictReview", payload)["review"])
+    }
+
+    override suspend fun saveConflictReview(
+        request: NotesConflictReviewRequest,
+    ): NotesConflictReviewSummary = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            request.reviewID?.let { put("reviewID", it) }
+            put("documentID", request.documentID)
+            put("expectedRevision", request.expectedRevision)
+            put("copyDocumentID", request.copyDocumentID)
+            put("expectedCopyRevision", request.expectedCopyRevision)
+            put("title", request.title)
+            put("edits", NotesWireCodec.encodeEdits(request.edits))
+            request.conversationID?.let { put("conversationID", it) }
+        }
+        NotesWireCodec.decodeConflictSummary(perform("document.saveConflictReview", payload)["review"])
+    }
+
+    override suspend fun keepBothConflictVersions(
+        reviewID: String,
+        conversationID: String?,
+    ): Unit = withContext(ioDispatcher) {
+        val payload = buildJsonObject {
+            put("reviewID", reviewID)
+            conversationID?.let { put("conversationID", it) }
+        }
+        perform("document.keepBothConflictVersions", payload)
+        Unit
+    }
+
     override suspend fun pollEvents(cursor: Long, limit: Int): NotesEventBatch =
         withContext(ioDispatcher) {
             val epoch = ensureBound()
@@ -545,6 +955,35 @@ class NotesHostService(
             epoch = epoch, action = action, payload = payload)
         return exchange(request)
     }
+
+    /**
+     * Trusted in-process command channel for the Application-owned Notes
+     * assistant host.
+     *
+     * This is the EXACT existing `floe.notes/4` path used by every typed
+     * method above: `ensureBound()` (epoch-exact lazy bind) → the real v4
+     * envelope builder → the frozen bridge transport → the real response
+     * decoder. No second codec, HTTP client, second store or SwiftCore call
+     * site is introduced. A typed native refusal is returned as the SAME
+     * `{ok:false,error,reason,retryable}` object the wire carries (instead of
+     * an exception) so the assistant host maps it with its closed failure
+     * vocabulary; cancellation still propagates.
+     */
+    internal suspend fun commandObject(action: String, payload: JsonObject): JsonObject =
+        withContext(ioDispatcher) {
+            try {
+                perform(action, payload)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: NotesException) {
+                buildJsonObject {
+                    put("ok", false)
+                    put("error", error.code)
+                    error.reason?.let { put("reason", it) }
+                    put("retryable", error.retryable)
+                }
+            }
+        }
 
     private fun exchange(request: JsonObject): JsonObject {
         val text = request.toString()
@@ -720,11 +1159,26 @@ class NotesHostController(
     transport: NotesTransport = SwiftNotesTransport,
     ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
-    val service: NotesService = NotesHostService(
+    /**
+     * The ONE concrete adapter. It stays behind [service] for ordinary typed
+     * callers; the trusted in-process channel below uses the same instance
+     * and therefore the same epoch bind and v4 transport.
+     */
+    private val adapter: NotesHostService = NotesHostService(
         transport = transport,
         epochProvider = epochProvider,
         ioDispatcher = ioDispatcher,
     )
+
+    val service: NotesService get() = adapter
+
+    /**
+     * Trusted host-to-host command for the Application-owned Notes assistant.
+     * It is `internal` to the App module: no feature module, model tool or
+     * public caller can reach a raw exec alias through it.
+     */
+    internal suspend fun commandObject(action: String, payload: JsonObject): JsonObject =
+        adapter.commandObject(action, payload)
 
     suspend fun bindCurrent(): NotesBinding {
         val epoch = epochProvider()

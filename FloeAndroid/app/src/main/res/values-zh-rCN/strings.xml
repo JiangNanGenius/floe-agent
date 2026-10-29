@@ -463,4 +463,16 @@
     <string name="run_pdf_print_gone">打印前文件已不可用。</string>
     <string name="office_return_title">返回 %1$s</string>
     <string name="office_return_action">打开</string>
+    <string name="notes_pdf_unlock_title">解锁 PDF</string>
+    <string name="notes_pdf_unlock_open">打开</string>
+    <string name="notes_pdf_unlock_password">密码</string>
+    <string name="notes_pdf_unlock_show">显示密码</string>
+    <string name="notes_pdf_unlock_hide">隐藏密码</string>
+    <string name="notes_open_loading">正在打开手记…</string>
+    <string name="notes_open_failed">无法打开手记，请重试。</string>
+    <string name="notes_copy_saving">正在保存到手记…</string>
+    <string name="notes_copy_saved">已保存到手记</string>
+    <string name="notes_copy_failed">未能保存到手记，副本已保留，可重试。</string>
+    <string name="notes_copy_failed_unkept">未能保存到手记，请重试。</string>
+    <string name="notes_copy_dismiss">关闭</string>
 </resources>

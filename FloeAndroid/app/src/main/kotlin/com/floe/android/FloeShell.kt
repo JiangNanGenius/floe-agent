@@ -126,6 +126,13 @@ private fun FloeShellContent(
     val application = androidx.compose.ui.platform.LocalContext.current.applicationContext as? FloeApplication
     val officePreviews = application?.officePreviews
     if (officePreviews != null) OfficePreviewEffect(officePreviews, themeMode)
+    if (application != null) {
+        NotesPdfPasswordDialog(application.notesPdfPasswords)
+        val notesPlatform by application.notesPlatform.collectAsState()
+        (notesPlatform as? NotesPlatformLoadState.Ready)?.host?.let {
+            com.floe.android.notesplatform.NotesPlatformEffectHost(it)
+        }
+    }
     var officeNavigationGeneration by remember { mutableLongStateOf(0L) }
     // G02 selection persistence contract: the SAVED key carries ONLY
     // durable/ordinary selections. A live temporary surface is RAM truth
@@ -146,6 +153,11 @@ private fun FloeShellContent(
     var selection: SidebarSelection by remember {
         mutableStateOf(restoredShellSelection(selectionKey, liveTemporaryIdAtRestore))
     }
+    LaunchedEffect(application, selection) {
+        if (selection == SidebarSelection.More(MoreDestination.NOTES)) {
+            application?.ensureNotesPlatform()
+        }
+    }
 
     /** The EXACT (conversation id, holder instance) the visible detail
      * surface currently binds, reported by the conversation destination
@@ -163,6 +175,7 @@ private fun FloeShellContent(
      * surface always updates; the persisted key follows ONLY for durable/
      * ordinary targets, so a live temporary id never reaches saved state. */
     fun commitVisibleSelection(next: SidebarSelection) {
+        if (selection != next) application?.cancelNotesPasswordPrompt()
         selection = next
         // The exact holder binding belongs to the PREVIOUS visible surface;
         // the conversation destination re-reports after composing the next.
@@ -714,6 +727,14 @@ private fun FloeShellContent(
                         .background(Floe.colors.readingSurface),
                 ) { FloeInspectorPane(route = route, onDismiss = { inspectorRoute = null }, runtimeHost = runtimeHost) }
             }
+        }
+
+        runtimeHost?.conversations?.notesChatTransfers?.let { transfers ->
+            NotesChatTransferNotice(
+                transfers,
+                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding()
+                    .padding(16.dp).widthIn(max = 560.dp),
+            )
         }
 
         SettingsSheet(

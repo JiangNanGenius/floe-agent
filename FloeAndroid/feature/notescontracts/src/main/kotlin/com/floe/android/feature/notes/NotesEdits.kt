@@ -86,12 +86,29 @@ data class NotesApplyRequest(
     val baseRevision: Int? = null,
     /** Assistant path only; the store re-checks the grant inside its transaction. */
     val conversationID: String? = null,
+    /**
+     * UI-only atomic conflict resolution. All three fields must be supplied
+     * together; the native store revalidates the review, both revisions and
+     * the copy's unchanged bytes in one transaction. This never overwrites a
+     * newer document silently.
+     */
+    val resolvingConflictID: String? = null,
+    val reviewedCopyID: String? = null,
+    val reviewedCopyRevision: Int? = null,
 ) {
     init {
         require(documentID.isNotBlank()) { "document id" }
         require(expectedRevision >= 0) { "expected revision" }
         require(edits.isNotEmpty() && edits.size <= NotesProtocol.MAX_EDITS) { "edit count" }
         require(baseRevision == null || conversationID == null) { "assistant edits never use UI rebase" }
+        val conflictFields = listOf(resolvingConflictID, reviewedCopyID, reviewedCopyRevision)
+        require(conflictFields.all { it == null } || conflictFields.all { it != null }) {
+            "conflict resolution requires review, copy and copy revision together"
+        }
+        require(resolvingConflictID == null || (conversationID == null && baseRevision == null)) {
+            "conflict resolution is UI-only and never a rebase"
+        }
+        require(reviewedCopyRevision == null || reviewedCopyRevision >= 0) { "copy revision" }
     }
 }
 

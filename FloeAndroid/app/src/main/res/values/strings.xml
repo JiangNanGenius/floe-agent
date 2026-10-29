@@ -463,4 +463,16 @@
     <string name="run_pdf_print_gone">The file became unavailable before printing.</string>
     <string name="office_return_title">Back to %1$s</string>
     <string name="office_return_action">Open</string>
+    <string name="notes_pdf_unlock_title">Unlock PDF</string>
+    <string name="notes_pdf_unlock_open">Open</string>
+    <string name="notes_pdf_unlock_password">Password</string>
+    <string name="notes_pdf_unlock_show">Show password</string>
+    <string name="notes_pdf_unlock_hide">Hide password</string>
+    <string name="notes_open_loading">Opening Notes…</string>
+    <string name="notes_open_failed">Couldn’t open Notes. Try again.</string>
+    <string name="notes_copy_saving">Saving to Notes…</string>
+    <string name="notes_copy_saved">Saved to Notes</string>
+    <string name="notes_copy_failed">Couldn’t save to Notes. Your copy is kept for retry.</string>
+    <string name="notes_copy_failed_unkept">Couldn’t save to Notes. Try again.</string>
+    <string name="notes_copy_dismiss">Dismiss</string>
 </resources>
