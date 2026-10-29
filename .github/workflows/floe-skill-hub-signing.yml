@@ -1,48 +1,49 @@
-name: floe-skill-hub-signing
-# DATA-ONLY publication signing bridge (prepared patch; DO NOT enable before
-# the root pins the reviewed tooling commit below and the launch gate is
-# genuinely satisfied).
+name: floe-skill-hub-macos-original-signing
+# TEMPLATE for the EXISTING registered App workflow path
+# `.github/workflows/floe-skill-hub-signing.yml`. Root installs this file on a
+# DEDICATED IMMUTABLE APP TRANSPORT COMMIT/TAG and dispatches that tag; App
+# main (and any App worktree) is never updated by this template.
 #
-# What this workflow does: it fetches ONLY two read-only snapshots of the
-# public-facing content repository JiangNanGenius/floe-skill-hub — the
-# reviewed trusted tooling T at a LITERAL pinned commit and the claimed data
-# commit S/X at the dispatch input (40-hex, exact object fetch) — and runs
-# one fixed helper from T (`scripts/sign_publication.py`, Python isolated
-# mode, current directory outside the data checkout). It signs review-record
-# envelopes or the gated release catalogs with the existing official signing
-# secret and uploads the result as a run ARTIFACT only.
+# Candidate-only data signing for the reserved macOS original Skill channel:
+#   * verify (read-only, no secret) fetches T (literal reviewed Hub tooling),
+#     S (the exact candidate Hub commit carrying macos/catalog.json), B (the
+#     CURRENT official default branch with FULL first-parent history) and
+#     every declared upstream repository/commit; it stages exact upstream
+#     bytes and uploads ONLY the tiny public-safe verification.json receipt;
+#   * sign (the ONLY step that sees FLOE_SKILL_HUB_SIGNING_KEY) downloads that
+#     tiny receipt outside T/S/B, binds it to the verify job's exact SHA-256
+#     and rederives every T/S/B, floor, feed and per-entry manifest identity
+#     BEFORE reading the key. It then repeats the producer/floor/full-history
+#     validation, re-resolves official main one last time, signs the EXACT S
+#     feed bytes and uploads macos/catalog.json + macos/catalog.json.sig plus
+#     an authenticated candidate-only receipt as a run artifact.
 #
-# What this workflow must never do: execute/import/install anything from the
-# data checkout; run any candidate scripts, entrypoints or hooks; carry
-# write, PR, push, release, approval or environment permissions; persist the
-# GitHub token into any checkout; read any secret outside the final signing
-# step; mutate either repository; or touch the legacy skill-hub pipeline.
-# Mode semantics: the reviews mode signs stage-honest review-record
-# envelopes for content that is packaged+reviewed on a staging branch (this
-# is BEFORE catalog qualification flags and promotes nothing); catalog
-# publication signing refuses unless the launch gate is genuinely satisfied
-# (>=40 unique qualified iOS offers, all nine pinned mandatory deep
-# adaptations present in both feeds with guest-qualified script bindings,
-# exact Android coverage). The signing key value never appears in logs or in
-# the canonical receipt (only the key ID).
+# History is the official default branch's FIRST-PARENT publication spine;
+# candidate-branch intermediate commits are not publication. Actual
+# publication must atomically copy a signed macos/catalog.json/.sig pair onto
+# official main, never merge an unsigned intermediate candidate history.
 #
-# Integration boundary: this file lives in the ORIGINAL App repository
-# (JiangNanGenius/floe-agent) because that is where the existing
-# FLOE_SKILL_HUB_SIGNING_KEY secret lives; it consumes only the standalone
-# Hub repository as data. Application and enabling belong to the repository
-# owner exclusively.
+# This workflow publishes nothing: no push, no tag, no release, no install
+# offer, no production feed. `contents: read` only. It shares the existing
+# `floe-skill-hub-signing` concurrency group so it can never run beside the
+# other users of the same secret. No new secret, token or trust root is used.
+#
+# Required Root renderings (deliberately non-hex placeholder):
+#   TOOLING_COMMIT = the exact reviewed 40-hex Hub tooling commit that
+#                    contains scripts/sign_macos_original.py, the real
+#                    scripts/macos_original.py producer and the reviewed
+#                    signing bridge/hubcore files.
+# Dispatch inputs are shapechecked and passed only through environment
+# variables/argv; no dispatch input is interpolated as a shell expression.
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: Fixed data-only signing operation
-        type: choice
+      data_commit:
+        description: 40-hex official Hub candidate commit carrying macos/catalog.json
         required: true
-        options:
-          - reviews
-          - catalog
-      source_commit:
-        description: 40-hex JiangNanGenius/floe-skill-hub commit — S (reviews) or X (catalog)
+        type: string
+      minimum_app_version:
+        description: Root-confirmed exact minimum App version floor (never 0.0.0)
         required: true
         type: string
 
@@ -55,42 +56,59 @@ concurrency:
 
 env:
   HUB_REPOSITORY: JiangNanGenius/floe-skill-hub
-  # NON-DISPATCHABLE until the root substitutes the exact reviewed 40-hex
-  # tooling commit HERE (after the bridge code lands on the Hub default
-  # branch and the root has verified that commit):
-  TOOLING_COMMIT: 647d8a7e59c8020d297a01a8c42382bcde46fb2c
+  HUB_ORIGIN: https://github.com/JiangNanGenius/floe-skill-hub.git
+  # One-time Root-rendered literal. The preflight refuses anything else.
+  TOOLING_COMMIT: "fbaeae07451413264c890b57f006d33f1c1e8f1f"
+  PYTHON_VERSION: "3.11"
+  CRYPTOGRAPHY_PIN: "cryptography==46.0.6"
+  PYTHONDONTWRITEBYTECODE: "1"
+  MACOS_CHANNEL: "macos-original"
+  DATA_COMMIT: ${{ inputs.data_commit }}
+  MINIMUM_APP_VERSION: ${{ inputs.minimum_app_version }}
 
 jobs:
-  sign:
+  verify:
     runs-on: ubuntu-latest
-    # Artifact upload uses the runner-provided ACTIONS_RUNTIME_TOKEN.
-    # Inherit contents: read; no job-level GITHUB_TOKEN write scope is needed.
-    timeout-minutes: 15
-    env:
-      MODE: ${{ inputs.mode }}
-      SOURCE_COMMIT: ${{ inputs.source_commit }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      baseline_commit: ${{ steps.baseline.outputs.commit }}
+      verification_sha256: ${{ steps.verify.outputs.sha256 }}
     steps:
-      - name: Preflight guards (pin substituted, fixed input shapes, mode whitelist)
+      - name: Preflight (literal pin rendered, fixed input shapes, floor present)
         run: |
           set -euo pipefail
+          if [[ "$TOOLING_COMMIT" == "TOOLING_PENDING_ROOT_REVIEW" ]]; then
+            echo "TOOLING_COMMIT is the template placeholder; Root must render" \
+                 "the exact reviewed 40-hex Hub tooling commit." >&2
+            exit 1
+          fi
           if [[ ! "$TOOLING_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
             echo "TOOLING_COMMIT must be exactly 40 lowercase hex" >&2
             exit 1
           fi
-          if [[ ! "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "source_commit must be exactly 40 lowercase hex" >&2
+          if [[ ! "$DATA_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "data_commit must be exactly 40 lowercase hex" >&2
             exit 1
           fi
-          if [[ "$MODE" != "reviews" && "$MODE" != "catalog" ]]; then
-            echo "mode must be reviews or catalog" >&2
+          if [[ ! "$MINIMUM_APP_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "minimum_app_version must be a strict semantic version" >&2
             exit 1
           fi
-      # Action refs pinned to the same immutable commits used by the existing
-      # Hub catalog workflow:
-      #   actions/checkout       v4.4.0 -> 11d5960a326750d5838078e36cf38b85af677262
-      #   actions/setup-python   v5.6.0 -> a26af69be951a213d495a4c3e4e4022e16d87065
-      #   actions/upload-artifact v4.6.2 -> ea165f8d65b6e75b540449e92b4886f43607fa02
-      - name: Check out the reviewed tooling T at the literal pinned commit
+          if [[ "$MINIMUM_APP_VERSION" == "0.0.0" ]]; then
+            echo "minimum_app_version must be the Root-confirmed capable App" \
+                 "version, not an all-zero placeholder" >&2
+            exit 1
+          fi
+
+      # Pinned immutable action commits (same reviewed SHAs as the existing
+      # data-only signing workflow):
+      #   actions/checkout          v4.4.0 -> 11d5960a326750d5838078e36cf38b85af677262
+      #   actions/setup-python      v5.6.0 -> a26af69be951a213d495a4c3e4e4022e16d87065
+      #   actions/upload-artifact   v4.6.2 -> ea165f8d65b6e75b540449e92b4886f43607fa02
+      #   actions/download-artifact v4.3.0 -> d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - name: Check out reviewed tooling T at the literal pinned commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: JiangNanGenius/floe-skill-hub
@@ -98,24 +116,8 @@ jobs:
           path: tooling
           fetch-depth: 1
           persist-credentials: false
-      - name: Fetch the exact data snapshot S/X at the claimed commit (tokenless, public)
-        env:
-          GIT_CONFIG_GLOBAL: /dev/null
-          GIT_CONFIG_SYSTEM: /dev/null
-          GIT_TERMINAL_PROMPT: "0"
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/data-work"
-          cd "$RUNNER_TEMP/data-work"
-          git init --quiet data
-          git -C data -c gc.auto=0 remote add origin https://github.com/JiangNanGenius/floe-skill-hub.git
-          git -C data -c gc.auto=0 fetch --depth 1 --no-tags origin "$SOURCE_COMMIT"
-          git -C data -c core.hooksPath=/nonexistent-signing-bridge-hooks \
-                    -c core.fsmonitor=false \
-                    checkout --quiet --detach FETCH_HEAD
-          test "$(git -C data rev-parse HEAD)" = "$SOURCE_COMMIT"
-          mv data "$GITHUB_WORKSPACE/data"
-      - name: Verify tooling pin identity
+
+      - name: Verify the tooling pin identity
         env:
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_CONFIG_SYSTEM: /dev/null
@@ -129,28 +131,253 @@ jobs:
             *) echo "unexpected tooling origin: $origin" >&2; exit 1 ;;
           esac
           test -z "$(git -C tooling -c core.fsmonitor=false status --porcelain --untracked-files=all)"
+
+      - name: Fetch the exact candidate snapshot S at data_commit (tokenless public)
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/data-work"
+          cd "$RUNNER_TEMP/data-work"
+          git init --quiet data
+          git -C data remote add origin "$HUB_ORIGIN"
+          git -C data -c gc.auto=0 fetch --depth 1 --no-tags origin "$DATA_COMMIT"
+          git -C data -c core.hooksPath=/nonexistent-macos-signer-hooks \
+                    -c core.fsmonitor=false checkout --quiet --detach FETCH_HEAD
+          test "$(git -C data rev-parse HEAD)" = "$DATA_COMMIT"
+          mv data "$GITHUB_WORKSPACE/data"
+
+      - name: Fetch the full official default-branch baseline B (tokenless public)
+        id: baseline
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/baseline-work"
+          cd "$RUNNER_TEMP/baseline-work"
+          git init --quiet baseline
+          git -C baseline remote add origin "$HUB_ORIGIN"
+          git -C baseline -c gc.auto=0 fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main
+          BASELINE="$(git -C baseline rev-parse refs/remotes/origin/main)"
+          [[ "$BASELINE" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "official main did not resolve to a 40-hex commit" >&2; exit 1; }
+          git -C baseline -c core.hooksPath=/nonexistent-macos-signer-hooks \
+                    -c core.fsmonitor=false checkout --quiet --detach "$BASELINE"
+          test "$(git -C baseline rev-parse HEAD)" = "$BASELINE"
+          test "$(git -C baseline rev-parse --is-shallow-repository)" = "false"
+          mv baseline "$GITHUB_WORKSPACE/baseline"
+          echo "commit=$BASELINE" >> "$GITHUB_OUTPUT"
+          echo "BASELINE_COMMIT=$BASELINE" >> "$GITHUB_ENV"
+
       - name: Set up the pinned interpreter
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
+
       - name: Install the pinned signing library (fixed dependency, never candidate code)
-        run: python3 -m pip install --disable-pip-version-check cryptography==46.0.6
-      - name: Data-only signing bridge (the ONLY step that sees the secret)
-        env:
-          FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
+        run: python3 -m pip install --disable-pip-version-check "$CRYPTOGRAPHY_PIN"
+
+      - name: Plan the exact upstream fetch list from the candidate declaration
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP"
-          python3 -I "$GITHUB_WORKSPACE/tooling/scripts/sign_publication.py" \
-            --mode "$MODE" \
-            --source-commit "$SOURCE_COMMIT" \
-            --data "$GITHUB_WORKSPACE/data" \
+          python3 -I "$GITHUB_WORKSPACE/tooling/scripts/sign_macos_original.py" plan \
             --tooling "$GITHUB_WORKSPACE/tooling" \
-            --out "$RUNNER_TEMP/bridge-out"
-      - name: Upload the signed artifact bundle (no repository push, no release)
+            --data "$GITHUB_WORKSPACE/data" \
+            --source-commit "$DATA_COMMIT" \
+            --out "$RUNNER_TEMP/macos-plan"
+
+      - name: Fetch and stage the exact upstream bytes (public, no secret)
+        run: |
+          set -euo pipefail
+          python3 -I "$GITHUB_WORKSPACE/tooling/scripts/sign_macos_original.py" fetch \
+            --plan "$RUNNER_TEMP/macos-plan/plan.json" \
+            --stage "$RUNNER_TEMP/macos-upstream" \
+            --observed "$RUNNER_TEMP/macos-observed.json"
+
+      - name: Revalidate T/S/B, floor, manifest and full signed history; verify staged bytes
+        id: verify
+        run: |
+          set -euo pipefail
+          python3 -I "$GITHUB_WORKSPACE/tooling/scripts/sign_macos_original.py" verify \
+            --tooling "$GITHUB_WORKSPACE/tooling" \
+            --data "$GITHUB_WORKSPACE/data" \
+            --source-commit "$DATA_COMMIT" \
+            --baseline "$GITHUB_WORKSPACE/baseline" \
+            --baseline-commit "$BASELINE_COMMIT" \
+            --minimum-app-version "$MINIMUM_APP_VERSION" \
+            --stage "$RUNNER_TEMP/macos-upstream" \
+            --observed "$RUNNER_TEMP/macos-observed.json" \
+            --out "$RUNNER_TEMP/macos-verify"
+          SHA="$(sha256sum "$RUNNER_TEMP/macos-verify/verification.json" | awk '{print $1}')"
+          [[ "$SHA" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "verification receipt digest is invalid" >&2; exit 1; }
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ONLY the tiny verification receipt (no staged upstream bytes)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: floe-skill-hub-signing-${{ inputs.mode }}
-          path: ${{ runner.temp }}/bridge-out
+          name: floe-skill-hub-macos-original-verification
+          path: ${{ runner.temp }}/macos-verify/verification.json
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      BASELINE_COMMIT: ${{ needs.verify.outputs.baseline_commit }}
+    steps:
+      - name: Preflight (literal pin rendered, fixed input shapes, floor present)
+        run: |
+          set -euo pipefail
+          if [[ "$TOOLING_COMMIT" == "TOOLING_PENDING_ROOT_REVIEW" ]]; then
+            echo "TOOLING_COMMIT is the template placeholder; Root must render" \
+                 "the exact reviewed 40-hex Hub tooling commit." >&2
+            exit 1
+          fi
+          if [[ ! "$TOOLING_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "TOOLING_COMMIT must be exactly 40 lowercase hex" >&2
+            exit 1
+          fi
+          if [[ ! "$DATA_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "data_commit must be exactly 40 lowercase hex" >&2
+            exit 1
+          fi
+          if [[ ! "$MINIMUM_APP_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "minimum_app_version must be a strict semantic version" >&2
+            exit 1
+          fi
+          if [[ "$MINIMUM_APP_VERSION" == "0.0.0" ]]; then
+            echo "minimum_app_version must be the Root-confirmed capable App" \
+                 "version, not an all-zero placeholder" >&2
+            exit 1
+          fi
+          if [[ ! "$BASELINE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "the verify job did not supply a 40-hex baseline commit" >&2
+            exit 1
+          fi
+
+      - name: Check out reviewed tooling T at the literal pinned commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: JiangNanGenius/floe-skill-hub
+          ref: ${{ env.TOOLING_COMMIT }}
+          path: tooling
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify the tooling pin identity
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_SYSTEM: /dev/null
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test "$(git -C tooling rev-parse HEAD)" = "$TOOLING_COMMIT"
+          origin="$(git -C tooling remote get-url origin)"
+          case "$origin" in
+            https://github.com/JiangNanGenius/floe-skill-hub|https://github.com/JiangNanGenius/floe-skill-hub.git) ;;
+            *) echo "unexpected tooling origin: $origin" >&2; exit 1 ;;
+          esac
+          test -z "$(git -C tooling -c core.fsmonitor=false status --porcelain --untracked-files=all)"
+
+      - name: Fetch the exact candidate snapshot S at data_commit (tokenless public)
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/data-work"
+          cd "$RUNNER_TEMP/data-work"
+          git init --quiet data
+          git -C data remote add origin "$HUB_ORIGIN"
+          git -C data -c gc.auto=0 fetch --depth 1 --no-tags origin "$DATA_COMMIT"
+          git -C data -c core.hooksPath=/nonexistent-macos-signer-hooks \
+                    -c core.fsmonitor=false checkout --quiet --detach FETCH_HEAD
+          test "$(git -C data rev-parse HEAD)" = "$DATA_COMMIT"
+          mv data "$GITHUB_WORKSPACE/data"
+
+      - name: Fetch the full official default-branch baseline B at the verified pin
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/baseline-work"
+          cd "$RUNNER_TEMP/baseline-work"
+          git init --quiet baseline
+          git -C baseline remote add origin "$HUB_ORIGIN"
+          git -C baseline -c gc.auto=0 fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main
+          LATEST="$(git -C baseline rev-parse refs/remotes/origin/main)"
+          test "$LATEST" = "$BASELINE_COMMIT" || {
+            echo "official main moved after the verify job; refusing a stale history baseline" >&2;
+            exit 1; }
+          git -C baseline -c core.hooksPath=/nonexistent-macos-signer-hooks \
+                    -c core.fsmonitor=false checkout --quiet --detach "$BASELINE_COMMIT"
+          test "$(git -C baseline rev-parse HEAD)" = "$BASELINE_COMMIT"
+          test "$(git -C baseline rev-parse --is-shallow-repository)" = "false"
+          mv baseline "$GITHUB_WORKSPACE/baseline"
+
+      - name: Download ONLY the tiny verification receipt outside T/S/B
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: floe-skill-hub-macos-original-verification
+          path: ${{ runner.temp }}/macos-verification
+
+      - name: Set up the pinned interpreter
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the pinned signing library (fixed dependency, never candidate code)
+        run: python3 -m pip install --disable-pip-version-check "$CRYPTOGRAPHY_PIN"
+
+      - name: Hold — official main must still equal the verified history baseline
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          LATEST="$(git ls-remote "$HUB_ORIGIN" refs/heads/main | awk '{print $1}')"
+          [[ "$LATEST" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "official main did not resolve to a 40-hex commit" >&2; exit 1; }
+          test "$LATEST" = "$BASELINE_COMMIT" || {
+            echo "official main moved before signing; refusing a stale history baseline" >&2;
+            exit 1; }
+
+      - name: Sign the exact candidate feed with the existing production identity
+        env:
+          FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
+          VERIFICATION_SHA256: ${{ needs.verify.outputs.verification_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -I "$GITHUB_WORKSPACE/tooling/scripts/sign_macos_original.py" sign \
+            --tooling "$GITHUB_WORKSPACE/tooling" \
+            --data "$GITHUB_WORKSPACE/data" \
+            --source-commit "$DATA_COMMIT" \
+            --baseline "$GITHUB_WORKSPACE/baseline" \
+            --baseline-commit "$BASELINE_COMMIT" \
+            --minimum-app-version "$MINIMUM_APP_VERSION" \
+            --verification-receipt "$RUNNER_TEMP/macos-verification/verification.json" \
+            --verification-sha256 "$VERIFICATION_SHA256" \
+            --out "$RUNNER_TEMP/macos-signing-out"
+
+      - name: Upload the candidate-only signed artifact (no push, no release)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: floe-skill-hub-macos-original-candidate
+          path: ${{ runner.temp }}/macos-signing-out
           if-no-files-found: error
           retention-days: 30
