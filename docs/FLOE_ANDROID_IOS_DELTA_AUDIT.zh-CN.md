@@ -59,3 +59,129 @@
 | 功能差异盘点 | 待执行；此文档建立流程，不宣称已完成源码审计或全功能对齐 |
 
 后续每条正式记录保留比较区间、差异来源、安卓现状与验证层级、影响和下一目标调整，历史记录不覆盖。
+
+## 2026-10-27 增量盘点（截至 `def77893`）
+
+本次比较上次盘点目标 `ab825370e3253285e777f4970ee993f73aeef95a` 与已提交主线 `def7789317521fd00f3da62676420e5217e6041d`；GitHub main 与本地对象一致，G05-R2 合入点 `8a42db21` 是本次目标的祖先。区间为 140 个提交，其中 67 个触及 iOS 代码。这里只记录提交源码差异，不能据此宣称 Android App 或设备验收。
+
+安卓参照为固定源码 `a92c75ba`、公开 Alpha13／构建15，以及已整合但未重新构建的目录导入修复和 Office 源码链接修正。C07 是已安装、未发布的 Alpha14／构建16候选；保存修复仍在进行，不能把代码整合视为编辑闭环通过。当前主线后续若继续推进，大目标收尾时只需补查 `def77893` 之后的增量。
+
+| ID | iOS 新落地 | 安卓现状 | 差距与归属 | 优先级 |
+| --- | --- | --- | --- | --- |
+| IOS-D19 | Skill Hub 精选市场：特色轮播/分类货架/编辑封面、宿主区分远程浏览、不可变版本远程安装、只读容器、批量选择（71761f26/84e34641/9d8414bc/672e530c；CuratedSkillHub*、SkillWorkspaceInstall*、SkillHubDiscoveryView） | SkillsHubPage 仅镜像旧 SkillsView 分段；canonical shared FloeSkills 无上述文件 | 完整市场 UX＋远程签名安装链；安卓 Hub 频道以真实签名发布为开启前置；G02 范围后续→G11，关联 D16 | P1 |
+| IOS-D20 | dependency-v1 依赖供给：dependencies.json schemaVersion 1 公开合同（docs/skills/）、签名 pip 哈希闭包经真实 requirements 输入、精确 apt 钉版、显式 Linux 环境、调用门控 | 安卓零处理；PRoot 与 TinyEMU guest 发行版/ABI 映射不同 | schema 合同对齐＋安卓等效安装时供给；Office/技能依赖消费前核对；G03 后续＋G11 | P1 |
+| IOS-D21 | MCP 服务创建向导＋捆绑 node-http 1.0.3 模板/合同/来源 | 仅有 MCP HTTP 传输与连接器页；无作者化；iOS 侧长构建资格尚未全 PASS | 待 iOS 资格收敛后排等效；G11/G13 | P2 |
+| IOS-D22 | 无限时长执行、单一可取消时长提醒、本地化提醒文案、Live Activities（LongRunDurationReminder、TaskActivityAttributes、TaskLiveActivityCoordinator） | 已有原生 RunForegroundService、任务租约、可停止通知及自有工作唤醒接线；本轮未重验前台通知体验。尚缺新的单一时长提醒；Live Activity 呈现需安卓等效 | 复用已有前台生命周期，补充单一／可取消／不自动续提醒合同；调度适配归 G11，呈现归 G14；关联 D12 | P1 合同/P2 呈现 |
+| IOS-D23 | 后台下载/唤醒结算硬化：取消声明持久结算、唤醒前 drain、重放保留、冷刷新围栏（BackgroundWorkSession、BackgroundDownloadEventSettlement） | 已有任务及前台生命周期；本次源码检查未见 WorkManager／AlarmManager 调度适配 | 为 D06/D11/D12 补充合同证据；实装 G11 | P1（接线前冻结语义） |
+| IOS-D24 | 供应商模型表单适配器：chat/图像/视频、区域保留、角色本地化、紧凑弹层（ProviderFormSpec） | G02 已有模型配置与凭据存储，无适配器表单 | 设置规格对齐；关联 D18；G02 后续→G09/G11/G14 | P1 |
+| IOS-D25 | 相册保存动作先认领再异步授权、可操作权限/格式错误 | 属 G09 未实现面 | MediaStore 等效＋真实错误文案，不以命令成功冒充交付 | P2 |
+| IOS-D26 | 工具结果分页/捕获存储/清理队列、空背景输出即完整首页（ToolResultPagingTool、ToolResultCaptureStore） | 共享谱系 8e7857b0 基线无此文件 | 按 SHARED_SOURCE_PINS 流程评审后再消费；扩展 D04 合同面 | P1（相关接线前） |
+| IOS-D27 | 侧栏/composer/长按内联选择、滚动命中稳定、迁移 V53/V54 | 安卓自有实现保留 | 呈现打磨归 G14，查漏 G11；V53/V54 仅 iOS 历史库漂移留痕 | P2 |
+| IOS-D28 | TinyEMU 9P 元数据保留、guest 描述符诊断、loopback 每次客体启动供给、受信组件边界 | PRoot 语义另立（§4），os.fstat ENOENT 各自保留为已知限制 | 实现机制不照搬；文件元数据、guest 诊断和本地连接的等效行为仍须核对 | 记录 |
+
+### 本轮边界与后续顺序
+
+- 此区间未发现 Office／手记／PDF 编辑保存代码的变更；名称含 Office 的新增素材属于 Skill Hub 封面。G05-R3 仍完成三格式代表性 App 编辑、保存、重开与成果交付，统一验证当前修复并发布阶段 APK。
+- D19／D20／D26 在所属目标接线前核对公开合同并复用已有环境、安装与生命周期能力。内置 Office 引擎当前不消费新的 Skill 依赖供给 schema，不因此扩大本轮发行范围。
+- D22 的安卓现状已由主审校正：`:core:runlifecycle` 已被 App 引用，manifest 注册 `RunForegroundService`，`FloeApplication`、会话和本地 Shell 连接任务租约。后续补差不能重复从零实现前台服务。源码接线不等于本轮重新通过其设备体验验收。
+- IOS-D01..D18、183 项操作、85 个工作包及已有 G04 操作台账保持原编号和范围；新增 D19..D28 追加，不以缺少现成组件为由删除需求。
+- 原生 IDE／编辑、文档预览、图标／布局／菜单、无障碍及手机控制、通知／后台／调度、GitHub 更新／ADB／Root／网络能力、新旧安卓及平板支持全部保留。未进入本次固定主线的工作树候选不作为已落地能力，收尾时再按真实提交补查。
+
+
+
+## 2026-10-28 增量检查点
+
+本段仅追加主线源码差异。安卓C12候选的实际安装、数据保留和文档预览已验证，但实际DOCX成果发布仍被独立修改范围证明拦下，修复中、尚未发行；不能用本段源码核对或419项检查替代App闭环验收。
+
+比较基线：上次已验收盘点目标 `def7789317521fd00f3da62676420e5217e6041d`（上次已验收盘点，IOS-D19..D28 已合入 `docs/FLOE_ANDROID_IOS_DELTA_AUDIT.zh-CN.md`）→ 本次主线检查点 `456db1795e66d7c7889eef0ea046f20f59a95f44`（2026-10-28T00:44:53+11:00，本地 `origin/main` 读回一致，祖先关系核验通过）。区间共 **36 个提交**，其中 25 个触及 `FloeAgent/FloeApp|Sources|Tests`，iOS 侧 **61 个文件 +10769/−1741**；无 FloeWidgets、Resources、`.github`、scripts、skill-hub/content-hub 改动。安卓合格源仍为冻结 C12（`8ce0c8aa`，tree `249e43d3…`）；本区间 C08–C12 批次与 主集成 的 saved-content 修复已落入 main 的 `FloeAndroid/` 路径（19 文件 +2187/−155；`OfficePrecisionLedger.kt` 与 C12 逐字节一致），但**规范源选择与 App/设备验收仍归 主集成**。
+
+### 对本次区间的结论
+
+- 区间内**零提交触及 iOS Office/手记/PDF/保存合同路径**（`git diff -- FloeAgent | grep -iE 'office|notes|pdf'` 为空）：G05-R3 的 iOS 侧合同基线不变，不新增任何阻断。
+- `project.yml@456db179 = 1.7.61/302`（版本号由 2cfc74df 携带），Feather 源记录 79b27884、1.7.61/302 发行注记与 build302 审阅记录均已入 main——即 gap34 时点"302 未落地"的提示已过时；但**源码落地不等于编译、Apple 处理或设备可用**，发布动作与验收仍全部在 主集成。
+- 真正新增的用户可见能力仅一项：**会话置顶（IOS-D29）**。其余全部是既有行 IOS-D06/D08/D10/D19/D27 的补强证据，**不发明新功能清单、不重置既有 183 项操作与 85 个工作包**。
+- gap34 已验收的更正继续有效：安卓既有 `RunForegroundService`（specialUse/wakelock/notifications，绑定于 FloeApplication/RunForegroundBinding/LinuxShellPump），本区间无任何相反证据；D20/D21/D24/D25/D26/D28 无新证据。
+
+### 新增差异行（编号接续 D28，不重置旧行）
+
+| ID | iOS 新落地 | 安卓现状 | 差距与归属 | 优先级 |
+| --- | --- | --- | --- | --- |
+| IOS-D29 | 会话置顶：V55 迁移 `pinned_at`（纯 ADD COLUMN，无回填；置顶组内最新置顶排最前，其余保持 updated_at 序；持久在会话行上，改名/归档/恢复/工作区移动保留置顶；临时会话晋升默认未置顶）——2cfc74df：`Migrations/V55ConversationPinning.swift`、`ConversationListView`(+167)、`ConversationCenter`(±132)、`ConversationStore`/`DatabaseManager`；`ConversationPinningTests`/`ConversationPinningStoreTests`（已写未由本审计运行） | canonical 安卓 app+shared 检索 `pinned/置顶` 仅命中打包/许可文件；`FloeSidebar.kt`/`ConversationProjections.kt` 无置顶概念 | 安卓对话列表/侧栏持久置顶等效（分组内排序、历史零回填解码、晋升未置顶语义）；G02 对话工作区范围后续 → G11 查漏 → G14 呈现收口；与 D27 同族但属用户可见持久能力，独立成行 | P2（非 G05 阻断） |
+
+### 既有行的补强证据（不另起新行）
+
+- **IOS-D19（Skill Hub 市场与远程安装）**：7ca58d58 经不可变公共端点取回已验证官方包（`SourceControlCenter.swift` +309、`SkillHubPublicTransportTests` +417）；9e5e27a6 目录刷新失败仍保留已验证目录可用（`SkillsCenter` +239、`SkillHubStoreFlowTests` +360）；2cfc74df 新增 `SkillHubDetailView/DownloadPanel/InstallService`，2a99be67/12fcdb1a/18275818/6f789420 收尾安装服务 actor 隔离、取消/校验传播与原生导航挂载。安卓差距本体不变（无精选市场 UX 与远程签名安装 App 链；Hub 频道仍以真实签名发布为前置）。注意源谱系差：main 的 `FloeAndroid/shared/.../FloeSkills` 已含 6940f196 时代 `CuratedSkillHub*` 同步，而合格 capsule 血统仍只有 `OfficialSkillHub.swift`/`SkillInstallStagingService.swift`——以 主集成 的规范源决定为准。
+- **IOS-D08（临时/会话工具边界合同）**：2cfc74df 重写 `TemporaryChatToolPolicy`：临时会话上限从"仅公开网页"扩为两族（公开网页三件 + 六个已编译基础设备只读 apple.calendar/reminders/maps/home/watch/location，且仅用既有授权、绝不消耗系统唯一授权弹窗；`LocationServicesCenter` 新增 `allowsAuthorizationRequest` 门；`AppleSystemTools` 对临时读改为授权状态检查）。同时删除 `ChatToolPolicy.swift` 与其 345 行测试：普通文本/语音聊天不再有额外 chat-only 上限（AGENTS.md 不变量随该提交改写）。5d1a7690 让 AgentRuntime 先报临时工具边界再给泛化拒绝。安卓共享谱系仍持旧"仅公开网页"版本且从未有 `ChatToolPolicy`——消费前按 SHARED_SOURCE_PINS 逐项评审的既有要求由此具体化。
+- **IOS-D10（预览/浏览器生命周期）**：f9212ca9 运行终端"浏览器打开就绪 Web 服务"动作：已提交/在跑的 `exec.localService` 作业经运行终端点击时重解析就绪端点并打开应用内浏览器，`BrowserURLPolicy` 按作业所有者授权/回收（`IDELanguageRunView`/`IDEWebServiceView`/`IDEWorkbenchState` 等 +800 行；`IDERunWebPreviewTests/UITests` 本次源码审计未运行）。安卓仅有 RunOutput PDF 预览/外启与个别 ACTION_VIEW 点，无 Web 服务预览入口——属 D10 义务的新入口面，不另立行。
+- **IOS-D06（连续语音合同）**：2cfc74df 语音重复句折叠与每任务每句自动提交前幂等锚（`VoiceConversationView/Coordinator/Semantics`）；537fdaa5 修复回放碎片并在整段被拦截时同步围栏空规范化草稿（`VoiceBargeInSafetyTests` +66）。仍按 D06：先冻结音频会话/生命周期合同再排等效。
+- **IOS-D27（呈现打磨）**：c25238e7 编辑态导航栏呈现多选（`InlineConversationSelection` +316/−184 等）、bc470a31 窄侧栏动作可见、8d88e9c1 标题按可见宽度自适应、1d8c3318 手势对已落位自有行、5ee1218e 受限 composer 回流不替换编辑面（`ComposerEditingPrimitives`/`ComposerReturnField` +337）及 fe75532a/451e7aa3/dce4c260/978d0703 测试与采集工具。V55 置顶属 D29 能力行，不归此行。
+- **纯测试/记录类提交**（无独立差异行）：a888c0ac、720ed1fc、e3a049d5、2dba117b、5e750d28、b6897c6f、2642c474、79b27884，以及安卓批次 eef5d7f8/b5cf497b/029c50a7/b9c24f5e/8ce0c8aa/456db179 与合并 7b431db8/d4688cbb/0e414eea。
+
+### 对下一目标顺序的影响
+
+1. **G05-R3 范围不变**：仍为实际 Office 编辑/保存/输出/重开、新 APK、干净预发布与源码回读；本区间 iOS 增量不扩发本轮。
+2. 编号继续追加：D29 为唯一新行；D06/D08/D10/D19/D27 只补证据。183 项操作、85 个工作包、24 项 G04 操作与 D01..D28 均不重置；用户完整安卓范围全部保留，新增均为补充而非替换。
+3. 下一次大目标收尾的核对锚点为 `456db1795e66d7c7889eef0ea046f20f59a95f44`；届时若主线再有前进，只比较该 SHA 之后的增量。
+
+诚实边界：以上均为提交源码与 canonical 源静态证据；本核查未运行任何构建、测试、设备或发布动作，iOS 302 批内新增测试套件为仅按源码记载，运行状态未在本审计重验。
+
+共同合同补充：iOS临时设备只读的新增源码属于待评审差异，安卓当前仍按已冻结上限运行；消费前先核对当前用户与仓库约束，不自动扩大工具或授权范围。
+
+## 2026-10-28：iOS 源码增量与 Android Skill Hub 对齐
+
+> 本节只读源码盘点，不含任何编译、设备或发布声明。
+
+### 增量检查点（接续 checkpoint86）
+
+- 基线链：`def77893`（已验收，D19..D28 合入）→ `456db179`（ios-gap56 已验收，新增 D29）→ `83d46e4368e0b5cb619932e04103c29c819912e6`（ios-gap-checkpoint86 证明 456db..83d46e 对 `FloeAgent`/`skill-hub`/`capability-hub`/`ios-wheelhouse` 零差异）→ 本节。
+- **已发布增量：零**。fetch 后 `origin/main` 仍等于 `83d46e`（2026-10-28T07:03:49+11:00）。
+- 核对的 iOS 开发分支 HEAD=`98fea137669b34abc73db0fabb9000e511f43eef`，分支 `codex/skill-onboarding-20261028`：**尚未合入所核对的 `origin/main`，远端分支未见该提交**；工作树干净（`status --porcelain` 空）。`83d46e..98fea137` 共 19 个提交、62 文件 +20543/−832；`skill-hub/`、`capability-hub/`、`ios-wheelhouse/` 路径零改动；`FloeAgent/FloeApp` 触及目录为 App/Browser/Content/Execution/Onboarding/Remote/Resources/Settings/Skills/TTS/Voice，**触及 Office/Notes/PDF/Canvas 路径的提交为 0**（G05-R3 边界不变，无新阻断）。
+- 版本事实（仅源码存在）：`project.yml` 在此**本地分支**上 1.7.61/302 → **1.7.62/303**，并附带 build303 release notes/REVIEW_NOTES 记录。本审计未核对 303 的编译、上传或分发状态，不能据 Git 分支状态断言这些步骤未完成；G05 收尾边界不变。
+
+#### 新增差异行（编号接续 D29）
+
+| 编号 | iOS 侧新增能力（证据） | 安卓现状 | 差距与归属 | 优先级 |
+| --- | --- | --- | --- | --- |
+| IOS-D30 | 完整原生初始设置向导与不阻塞资源准备：`Onboarding/SetupGuide*`（6 个新文件 +3142）、`SetupResourceModel/Preparation`（+1058）、`OnboardingView` 重写（±680）、`Localizable.xcstrings` +4964、`EnvironmentManagerView` ±172、`LocalModelsSettingsView`/`TTSSettingsService`/`WhisperModelStore` 接线；f476ae89/57a7032e/1f6612a7/ec6495f7/eed3228b/16f2ab34/e182aabc/98fea137；`SetupGuideUITests`/`SetupGuideRegressionTests`/`SetupDownloadOwnerTests` 等（已写、本审计未运行） | canonical C15 安卓源无 Onboarding/SetupGuide 任何对应面（app/shared 检索仅命中设置/隐私既有实现）；模型配置走 G02 设置路径 | 安卓首启引导/预设选择/资源下载编排等效（含取消/延迟落盘围栏语义）；按后续 G14/G11 评审，不入 G05；沿用安卓不做本地大模型的范围，仅迁移适用的云端配置、权限和资源准备 | P2（非 G05 阻断） |
+
+#### 既有行补强证据（不另起新行）
+
+- **IOS-D19（Skill Hub 市场与远程安装）**：`83d46e..98fea137` 新增共享模块 `FloeSkills/SkillHubShowcase.swift`（+569，全新）与 App 侧 `SkillHubMediaCenter/MediaView`（+848）、`SkillHubDetailView`(+53)/`DiscoveryView`/`SkillsCenter` 画廊接线；fba6ddf3/8cfa9ac3 出版物绑定封面与旧任务让位；9e276a58 安装经既有任务审批生命周期续跑（`ToolContext`、`AgentRuntime`、`SkillWorkspaceInstallTool`）；611a954d 画廊控件本地化。**规范安卓源差距不变且已独立核实**：C15 capsule 的 `shared/Sources/FloeSkills` 无 `CuratedSkillHub*`/`SkillHubShowcase`，Kotlin 侧无 Hub 客户端（见下方兼容性清单）。Curated 协议本身已预留安卓商店频道（`CuratedSkillChannel = { ios, android }`，频道根 `android/catalog.json`，iOS 主线 `CuratedSkillHubModels.swift:19-22、98fea 同`；`CuratedSkillHub.swift:124-133`），但所查仓库路径未包含 android schema-3 feed；独立 Skill Hub 仓库的在线发布状态未核对，iOS App 硬连线 `channel: .ios`（`SkillsCenter.swift:94/106/121/333`）。
+- **IOS-D06（语音合同）**：e47cd1e3 待提交语音选择的幂等保留与进度快照一致性；eed3228b 缺失资源语音预览/下载状态本地化——D06 冻结音频合同前先照此补核。
+- **IOS-D10（预览/浏览器生命周期）**：a5be00de 集成已验证的浏览器文件导出合同与事务（`BrowserStagedExportServiceTests` 已写未运行）——D10 义务的新出口面，不另立行。
+
+### 安卓 Skill Hub 实际兼容清单（canonical C15 capsule 源码事实，行号为据）
+
+> 独立于早前基于过期 `Root/FloeAndroid` 的报告重做；下表全部来自 C15 规范源逐文件核对。capsule 的 `SOURCE_SNAPSHOT.json` 把共享 Swift 输入钉在 iOS 侧 `12e36ba7b41d24634526ea55568fe88e4de26745`（2026-10-22）：`shared/Sources/FloeSkills` 为 19 个指向该钉定快照的相对符号链接镜像 + 2 个 capsule 自有常规文件（BundledDomainSkills/ContentPackageCodec）；C15 提交 `e00925af` 已核验为 `origin/main@83d46e` 的祖先（安卓 Kotlin 侧修复，触及 Hub 源为零）。
+
+1. **模型谱系＝旧官方目录面**：2026-10-22 钉定快照本身不含任何 `CuratedSkillHub*`（4 件套在 2026-10-26 的 6940f196 才进入 iOS 主线，晚于 10-22 钉定），capsule 有效输入即 `OfficialSkillHub.swift`/`SignedContentFeed.swift` 谱系（schema-2 `skill-hub/catalog.json`+`catalog.sig`），亦无 `SkillHubShowcase.swift`。
+2. **客户端/发现＝宿主投影**：`feature/integrations/SkillsHubPage.kt` 逐段镜像旧 iOS `SkillsView`（分段卡片/启停/更新/删除），可用性完全来自宿主投影，无独立 Hub 客户端；无 Curated 画廊/精选/媒体面。
+3. **目录刷新已接线但按设计 fail-closed**：`RuntimeFacadeSkillsService.swift:779-795` 复刻原 `refreshOfficialCatalog`（小时闸、不可变 commit、编译内信任根、失败保留旧缓存）；但 `:791-792` 先取 `validatedAppVersion(hostContext.appVersion())`，而 `G02ProviderImplementations.swift:398-402` 的 `appVersion()` **硬编码 nil**（注释明示"受信宿主在集成时绑定真实语义版本"），故当前所有目录/升级流抛 `.appVersionUnbound` → `needsConfiguration`（`:2579-2580`）。传输层已经由 `SkillsRemoteTransportComposition.makePublicHubTransport()` 组成进 `G02DomainServices.swift:298-304`（`RuntimeFacadeSkillsTransport.swift:193-203`；文件头"NOT registered"为候选期陈旧标注）。
+4. **平台判定**：capsule `SkillPlatform` 仅 {ios, macos, linux}（`shared/.../SkillModels.swift:18-22`），安卓运行时环境投影为 `platform: .linux, supportsJavaScriptCore: false, hasRemoteExecutionHost: false`（`RuntimeFacadeSkillsService.swift:2046-2053/2090-2098`）；`SkillCompatibility.evaluate` 以 `package.supportedPlatforms.contains(environment.platform)` 判不符。所查仓库包样例 manifest 声明 `platforms: ["ios"]`（`skill-hub/sources/*/floe.json`），故官方包在安卓上会诚实判 `.unsupportedPlatform(linux)`——即便版本绑定后也不会"顺带可用"。iOS 主线已为 `SkillPlatform` 增补 additive `android` case（98fea137 `SkillModels.swift:28-30` 注释：未列该值的 manifest 不变，旧构建对新值 fail-closed）；capsule 尚无此 case。
+5. **安卓版本域≠iOS SemVer 域，禁止假定等价**：APK 身份为 `floe.version.code=16` / `floe.version.name=0.1.0-alpha.14`（capsule `gradle.properties:14-15`），运行时互证绑定 `versionName/versionCode` token（`core/runtimeipc/.../RuntimePeerProof.kt:62-67`）。capsule 版本闸只接受"数字+点、≥2 段、≤64 字节"（`RuntimeFacadeSkillsService.swift:2292-2298`），原始 `0.1.0-alpha.14` 不过校验；宿主绑定时须选域内投影（如 `0.1.0`）。而 iOS 域目录条目 `minimumAppVersion` 为 1.x（schema-2 catalog，如 floe-pdf 1.5.3；iOS 组件域 `minimumCapableAppVersion = "1.7.60"`，`SkillDependency.swift:25/177`；schema-3 要求严格 X.Y.Z 并对打包条目强制该字段，`CuratedSkillHubModels.swift:655-670`，比较用 `SignedContentVersion`，定义于 `SignedContentFeed.swift:25`）。数值比较跨域会把 `0.1.0 < 1.5.3` 判为全量不兼容——**正确路径是给安卓频道按安卓域书写下限**，仓库已有先例：`skill-hub/android/guides.json`（schema 1、`platform: "android"`、`minimumAppVersion: "0.1.0"`）与 `build_android.py`（"从不按 OS 名推断二进制/脚本兼容"，guide-only；脚本包需另行作者化/资格）。
+6. **映射要求（供 D19 收口）**：安卓 Hub 等效需 ① 在受信集成处绑定安卓域 appVersion（或显式扩展域验证器）；② 发布 android schema-3 频道 feed（协议路径/前缀 `android/` 与 installPlatforms-含频道校验已就绪，`CuratedSkillHubModels.swift:848/936`）或在 capsule 引入 Curated 谱系；③ 包 manifest 增列 `android` 平台并复核 capability 集（capsule 无 localPython/localJavaScript）；④ 执行 OS 枚举当前不含 android（`CuratedSkillHubModels.swift:866` 允许 linux/macos/ios，安卓脚本包若经 PRoot 执行仍以 linux+证据映射，需集成时明确，勿静默复用）。注意：把 capsule 快照在后续升级时重新钉到更新 iOS只会自动带入 Curated*/`SkillPlatform.android` 等共享协议输入；Kotlin 客户端、画廊 UI 与 appVersion 绑定接缝仍需另行作者化，不因重钉出现。
+
+### 下一收尾锚点
+
+- G05-R3 实际收尾时：先读回 then-live `origin/main`——若仍为 `83d46e`，已发布增量继续为零；再判断 `codex/skill-onboarding-20261028`（98fea137，含 1.7.62/303 与 D30 素材）是否已合入，若有则仅按本节方法对合入后主线做增量。源码存在 ≠ 编译 ≠ 上传 ≠ 设备安装。
+
+本轮保持已固定的 Android 原生输入；上述 Skill Hub 协议和设置向导差距纳入后续目标，不能通过在 G05 中整体刷新共享快照或冒用 iOS 版本号来消除。脚本能力仍应复用统一 Linux 环境与现有执行服务。
+
+
+
+### 2026-10-28 发布前增量检查点（非 G05 收尾结论）
+
+再次读取远端后，`origin/main` 从 `83d46e4368e0b5cb619932e04103c29c819912e6` 更新至 `e528e444b462a7c3f03346fb3fe53af836885d2a`。区间仅修改 `.github/workflows/floe-skill-hub-auto-publication.yml`；`FloeAgent/`、`skill-hub/`、`capability-hub/`、`ios-wheelhouse/` 的源码差异均为零。iOS 活动工作树 HEAD 仍为 `98fea137669b34abc73db0fabb9000e511f43eef`，尚未成为该远端 main 的祖先；既有 IOS-D01..D30 编号及后续归属保持不变。本检查不代表 Android Hub 客户端已完成，也不代表 iOS 的编译或分发状态。
+
+G05-R3 当前仍在修复后的统一编译及 App 验收阶段，实际大目标收尾时再次读取主线，只补查此检查点之后的增量。
+
+### 2026-10-29 C19 公共源推送后的增量检查点
+
+再次读取远端后，`origin/main` 从 `e528e444b462a7c3f03346fb3fe53af836885d2a` 前进至 `5ed31c1628f83877b3ce3969d9b34b34e65f79b6`（C19 公共源，已由 GitHub API 独立读回；尚无 tag 或 Release）。区间共 **3 个提交**：`1312beb9` 仅把 Feather 源发布工作流按 App 标签命名空间守护；`48c5771` 与 `5ed31c1` 只修改 `FloeAndroid/`（Alpha14 自更新、Office 传输与任务策略修复，以及冷开 Full access 解码）。**`FloeAgent/` 的 iOS 源码差异为零**，没有新的 iOS 能力、界面或合同变化；IOS-D01..D30 编号与后续归属不变，本检查不新增差异行，也不重启全审计。
+
+最新 iOS 正式发行仍为 `v1.7.61`（build 302）；Android 尚无 Alpha14 公开 Release，本次推送只改变 Android 源码与一条 Feather 守护工作流。G05-R3 实际收尾时仍以届时的 live `origin/main` 为锚点，只补查本检查点之后的 iOS 内容增量；本地未合并的 iOS 工作树不属于公开基线。
+
+
+### 2026-10-29 G06 启动参照
+
+最新公开主线从 `5ed31c1628f83877b3ce3969d9b34b34e65f79b6` 前进至 `96cd41c92ad20a8070776887ccbf3a3967e7d8a3`，新增提交属于云端 Skill Hub 签名转发基础设施；`FloeAgent/FloeApp` 与 `FloeAgent/Sources` 差异为零。本轮按该公开源固定手记参照，复用 FloeNotes 的资料、编辑、资源、导图与归档模型，新增 Android 宿主、编辑界面、PDF/笔迹和助手适配。保持 IOS-D01..D30 身份及既有后续范围；不将未合入 iOS 工作树视为公开基线，不整体刷新已验证安卓原生输入。
