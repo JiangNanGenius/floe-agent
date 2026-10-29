@@ -386,17 +386,16 @@ final class ProviderCatalogPickerUITests: XCTestCase {
         attach(app, "11-iphone-adaptive-sheet")
 
         // Cancel/dismiss returns to the same editor form without side effects.
-        // While the iPhone system search bar is active it occupies the
-        // navigation bar, hiding the toolbar Cancel item; the standard sheet
-        // drag is the dismissal path there. Assert the same outcome (the form
-        // returns, nothing is saved) rather than a particular chrome control.
+        // This compact-navigation check reuses an iPad: its supplier picker
+        // remains a native anchored popover. When search hides its toolbar,
+        // dismiss by tapping neutral editor space outside the popover. A
+        // whole-app sheet drag would dismiss the OUTER provider editor too.
+        // Assert that the same unsaved form remains mounted.
         let cancel = app.buttons["providers.catalog.cancel"]
         if cancel.exists {
             cancel.tap()
         } else {
-            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.06))
-            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
-            start.press(forDuration: 0.05, thenDragTo: end)
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
         }
         XCTAssertTrue(app.textFields["providers.display_name"].waitForExistence(timeout: 8))
         attach(app, "12-iphone-form-after-cancel")
