@@ -19,17 +19,47 @@ enum MossSpeechPreparation {
     /// Plans complete blank-line paragraphs. Ineligible paragraphs are
     /// returned byte-identical. The caller still owns Markdown/URL projection
     /// and sentence segmentation.
+    struct CaptionEdit: Sendable {
+        let source: NSRange
+        let spoken: NSRange
+    }
+
+    struct ParagraphProjection: Sendable {
+        let spoken: String
+        let edits: [CaptionEdit]
+    }
+
     static func prepareParagraphs(_ text: String, engine: String?) -> String {
-        guard isMossEngine(engine), !text.isEmpty else { return text }
-        let paragraphs = text.components(separatedBy: "\n\n")
-        return paragraphs.map { paragraph in
+        paragraphProjection(text, engine: engine).spoken
+    }
+
+    static func paragraphProjection(_ text: String, engine: String?) -> ParagraphProjection {
+        guard isMossEngine(engine), !text.isEmpty else {
+            return ParagraphProjection(spoken: text, edits: [])
+        }
+        var sourceOffset = 0
+        var spokenOffset = 0
+        var edits: [CaptionEdit] = []
+        let paragraphs = text.components(separatedBy: "\n\n").map { paragraph -> String in
             let trimmed = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return paragraph }
             let plan = MossProsodyPlanner.flatPause(trimmed)
-            guard plan.eligible, let range = paragraph.range(of: trimmed) else { return paragraph }
-            return String(paragraph[..<range.lowerBound]) + plan.spoken
-                + String(paragraph[range.upperBound...])
-        }.joined(separator: "\n\n")
+            var prepared = paragraph
+            if plan.eligible, let range = paragraph.range(of: trimmed) {
+                let prefix = String(paragraph[..<range.lowerBound])
+                prepared = prefix + plan.spoken + String(paragraph[range.upperBound...])
+                edits.append(contentsOf: plan.edits.map { edit in
+                    CaptionEdit(
+                        source: NSRange(location: sourceOffset + prefix.utf16.count + edit.sourceUTF16Start,
+                                        length: edit.sourceUTF16Length),
+                        spoken: NSRange(location: spokenOffset + prefix.utf16.count + edit.spokenUTF16Start,
+                                        length: edit.spokenUTF16Length))
+                })
+            }
+            sourceOffset += paragraph.utf16.count + 2
+            spokenOffset += prepared.utf16.count + 2
+            return prepared
+        }
+        return ParagraphProjection(spoken: paragraphs.joined(separator: "\n\n"), edits: edits)
     }
 }
 

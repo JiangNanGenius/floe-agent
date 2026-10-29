@@ -730,6 +730,7 @@ final class VoiceSpeechProjectionContext: @unchecked Sendable {
     private var mossEngine: Bool
     private var captionSource = ""
     private var captionProjection: SpeechTextProjection?
+    private var captionProsodyEdits: [MossSpeechPreparation.CaptionEdit] = []
 
     init(_ snapshot: TTSSettingsSnapshot, mossEngine: Bool = false) {
         self.snapshot = snapshot
@@ -746,6 +747,7 @@ final class VoiceSpeechProjectionContext: @unchecked Sendable {
             self.mossEngine = mossEngine
             captionSource = ""
             captionProjection = nil
+            captionProsodyEdits = []
         }
     }
 
@@ -756,22 +758,25 @@ final class VoiceSpeechProjectionContext: @unchecked Sendable {
         // Keep a plain source coordinate system for captions. Local URL
         // pronunciation and MOSS pause punctuation belong only to synthesis.
         let source = AnswerSpeechText.spokenText(text, destination: .cloud)
-        let prepared = MossSpeechPreparation.prepareParagraphs(
-            source,
-            engine: isMoss ? MossSpeechPreparation.mossEngine : nil)
+        let prosody = MossSpeechPreparation.paragraphProjection(
+            source, engine: isMoss ? MossSpeechPreparation.mossEngine : nil)
+        let prepared = prosody.spoken
         let projection = SpeechAnswerProjection.project(
             prepared, destination: AnswerSpeechText.destination(for: currentSnapshot, text: prepared))
         lock.withLock {
             captionSource = source
             captionProjection = projection
+            captionProsodyEdits = prosody.edits
         }
         return AnswerSpeechText.spokenText(prepared, settings: currentSnapshot)
     }
 
     func caption(for spokenUnit: String) -> String {
         guard !spokenUnit.isEmpty else { return "" }
-        let (source, projection) = lock.withLock { (captionSource, captionProjection) }
-        guard let projection, source.utf16.count == projection.sourceText.utf16.count else { return spokenUnit }
+        let (source, projection, prosodyEdits) = lock.withLock {
+            (captionSource, captionProjection, captionProsodyEdits)
+        }
+        guard let projection else { return spokenUnit }
         let spoken = projection.spokenText as NSString
         let unit = spoken.range(of: spokenUnit)
         guard unit.location != NSNotFound else { return spokenUnit }
@@ -798,7 +803,7 @@ final class VoiceSpeechProjectionContext: @unchecked Sendable {
                 sourceCursor = span.sourceUTF16Start + span.sourceUTF16Length
                 spokenCursor = end
             }
-            return literalBoundary(offset, sourceCursor, original.length, spokenCursor, spoken.length)
+            return literalBoundary(offset, sourceCursor, prepared.length, spokenCursor, spoken.length)
         }
         func literalBoundary(_ offset: Int, _ sourceStart: Int, _ sourceEnd: Int,
                              _ spokenStart: Int, _ spokenEnd: Int) -> Int {
@@ -808,8 +813,19 @@ final class VoiceSpeechProjectionContext: @unchecked Sendable {
             let trimmedPrefix = max(0, leading(sourceRun) - leading(spokenRun))
             return min(sourceEnd, sourceStart + trimmedPrefix + max(0, offset - spokenStart))
         }
-        let start = min(original.length, max(0, boundary(unit.location, upper: false)))
-        let end = min(original.length, max(start, boundary(NSMaxRange(unit), upper: true)))
+        func restoreProsody(_ offset: Int, upper: Bool) -> Int {
+            var delta = 0
+            for edit in prosodyEdits {
+                if offset <= edit.spoken.location { return offset + delta }
+                if offset < NSMaxRange(edit.spoken) {
+                    return upper ? NSMaxRange(edit.source) : edit.source.location
+                }
+                delta = NSMaxRange(edit.source) - NSMaxRange(edit.spoken)
+            }
+            return offset + delta
+        }
+        let start = min(original.length, max(0, restoreProsody(boundary(unit.location, upper: false), upper: false)))
+        let end = min(original.length, max(start, restoreProsody(boundary(NSMaxRange(unit), upper: true), upper: true)))
         return original.substring(with: NSRange(location: start, length: end - start))
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
