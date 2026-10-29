@@ -532,6 +532,7 @@ struct SetupGuidePrefillWriterTests {
     @Test("Routes that need consent are never written by a preset")
     func consentRoutesAreNeverWritten() {
         var preferences = ModelSelectionPreferences()
+        let original = preferences
         let consent: [SetupGuideRoute] = [
             .speechRecognition, .voiceSelection, .localRuntime, .searchProvider,
             .extendedBackground, .deviceSync, .permissionProfile, .codeConnections,
@@ -546,7 +547,7 @@ struct SetupGuidePrefillWriterTests {
         // model slot and writes nothing.
         let forced = SetupGuidePrefillWriter.apply(intents, to: &preferences, isUsable: usable(chat))
         #expect(forced.isEmpty)
-        #expect(preferences == ModelSelectionPreferences())
+        #expect(preferences == original)
     }
 
     @Test("Image and video routing choices occupy their own slots when separated")
