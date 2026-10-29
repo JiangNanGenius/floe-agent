@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
@@ -143,7 +144,15 @@ fun IconGlyph(
     )
 }
 
-/** Centered inline toolbar (iOS navigation bar): title in the middle, slots both sides. */
+/**
+ * Inline toolbar (iOS navigation bar): title plus leading/trailing slots.
+ *
+ * The title keeps its normal centred position where it fits and is clamped
+ * into the measured free span otherwise, ellipsized only at that span's
+ * width. The old fixed 96dp inset ignored wider real groups; widths now come
+ * from the measured groups, not device pixels, so no accessory is covered.
+ * Short and static toolbars keep their existing centred look.
+ */
 @Composable
 fun FloeToolbar(
     title: String,
@@ -154,32 +163,74 @@ fun FloeToolbar(
     showHairline: Boolean = false,
 ) {
     Column(modifier.background(background)) {
-        Box(
+        Layout(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(FloeLayout.ToolbarHeight),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (navigation != null) {
-                Row(
-                    modifier = Modifier.align(Alignment.CenterStart).padding(start = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    content = navigation,
+            content = {
+                if (navigation != null) {
+                    Row(
+                        modifier = Modifier.padding(start = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = navigation,
+                    )
+                } else {
+                    Spacer(Modifier)
+                }
+                FloeText(
+                    text = title,
+                    style = Floe.typography.toolbarTitle,
+                    color = Floe.colors.label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-            }
-            FloeText(
-                text = title,
-                style = Floe.typography.toolbarTitle,
-                color = Floe.colors.label,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 96.dp),
+                if (actions != null) {
+                    Row(
+                        modifier = Modifier.padding(end = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = actions,
+                    )
+                } else {
+                    Spacer(Modifier)
+                }
+            },
+        ) { measurables, constraints ->
+            val sideConstraints = constraints.copy(minWidth = 0, minHeight = 0)
+            val navigationPlaceable = measurables[0].measure(sideConstraints)
+            val actionsPlaceable = measurables[2].measure(sideConstraints)
+            val gap = 8.dp.roundToPx()
+            // Keep the 8dp chrome margin when there is no leading control;
+            // otherwise the title starts just after the measured leading row.
+            val leadingInset = maxOf(navigationPlaceable.width, gap)
+            val trailingInset = maxOf(actionsPlaceable.width, gap)
+            val freeStart = leadingInset + gap
+            val freeEnd = (constraints.maxWidth - trailingInset - gap)
+                .coerceAtLeast(freeStart)
+            val freeWidth = (freeEnd - freeStart).coerceAtLeast(0)
+            val titlePlaceable = measurables[1].measure(
+                sideConstraints.copy(maxWidth = freeWidth),
             )
-            if (actions != null) {
-                Row(
-                    modifier = Modifier.align(Alignment.CenterEnd).padding(end = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    content = actions,
+            // Keep the normal centre, clamped into the measured free span:
+            // a medium title shifts only as far as needed, and a fully
+            // ellipsized title lands at freeStart. The maxWidth above already
+            // guarantees the title cannot reach either accessory group.
+            val centeredX = (constraints.maxWidth - titlePlaceable.width) / 2
+            val maxTitleX = (freeEnd - titlePlaceable.width).coerceAtLeast(freeStart)
+            val titleX = centeredX.coerceIn(freeStart, maxTitleX)
+            layout(constraints.maxWidth, constraints.maxHeight) {
+                // placeRelative mirrors the old CenterStart/CenterEnd Box
+                // alignment in RTL without a second geometry branch.
+                navigationPlaceable.placeRelative(
+                    0,
+                    (constraints.maxHeight - navigationPlaceable.height) / 2,
+                )
+                titlePlaceable.placeRelative(
+                    titleX,
+                    (constraints.maxHeight - titlePlaceable.height) / 2,
+                )
+                actionsPlaceable.placeRelative(
+                    constraints.maxWidth - actionsPlaceable.width,
+                    (constraints.maxHeight - actionsPlaceable.height) / 2,
                 )
             }
         }

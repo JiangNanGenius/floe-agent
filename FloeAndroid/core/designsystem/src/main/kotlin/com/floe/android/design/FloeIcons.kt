@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.graphics.vector.group
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
@@ -132,6 +133,11 @@ object FloeIcons {
 
     /** iOS sidebar.left — collapse/expand the task list (Cupertino "sidebar_left"). */
     val SidebarToggle: ImageVector = glyphIcon("floe.sidebar", "sidebar_left")
+
+    /** iOS sidebar.right — the same generated outline mirrored in its 24x24 viewport. */
+    val SidebarTrailing: ImageVector = icon("floe.sidebar_trailing") {
+        group(scaleX = -1f, pivotX = 12f) { glyph("sidebar_left") }
+    }
 
     /** iOS bubble.left — conversations / temporary chat (Cupertino "bubble_left"). */
     val Bubble: ImageVector = glyphIcon("floe.bubble", "bubble_left")
