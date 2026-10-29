@@ -544,7 +544,8 @@ private fun StatusRow(event: RunEventUi, modifier: Modifier) {
 }
 
 /** ⇄ ToolCallCardView via StepGroupView pairing: one disclosure owns the
- * exact input, approval outcome, recorded output and duration. */
+ * exact input, approval outcome, recorded output and duration. A pending
+ * approval is a sibling of the disclosure, never content inside its fold. */
 @Composable
 internal fun ToolRow(
     event: RunEventUi,
@@ -564,41 +565,45 @@ internal fun ToolRow(
     val presentation = FloeToolStatusPresentation.forStatus(status)
     val summary = resultSummaryOverride ?: tool.resultSummary ?: tool.inputSummary.orEmpty()
     val expanded = holder.toolCardExpanded(event)
-    FloeToolCard(
-        toolName = tool.toolName,
-        statusIcon = floeToolIcon(presentation.iconKey),
-        statusLabel = stringResource(toolStatusTitleKey(presentation.titleKey)),
-        statusColor = floeStatusColor(presentation.colorRole),
-        summary = summary,
-        inputSummary = tool.inputSummary,
-        approvalSummary = approvalSummary ?: tool.approvalSummary,
-        decisionSummary = decisionSummary,
-        durationSeconds = tool.durationSeconds,
-        artifacts = tool.artifacts,
-        expanded = expanded,
-        onToggleExpanded = { holder.toggleToolCard(event.id) },
-        modifier = modifier,
-        onOpenArtifactPreview = { artifactId -> holder.openRichArtifactPreview(artifactId) },
-    ) {
-        // Below-fold extras that the iOS card places inside details.
-        if (childRun != null) {
-            DelegateCardRow(
-                child = childRun,
-                onView = { holder.openChildRun(childRun.id) },
-            )
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        FloeToolCard(
+            toolName = tool.toolName,
+            statusIcon = floeToolIcon(presentation.iconKey),
+            statusLabel = stringResource(toolStatusTitleKey(presentation.titleKey)),
+            statusColor = floeStatusColor(presentation.colorRole),
+            summary = summary,
+            inputSummary = tool.inputSummary,
+            approvalSummary = approvalSummary ?: tool.approvalSummary,
+            decisionSummary = decisionSummary,
+            durationSeconds = tool.durationSeconds,
+            artifacts = tool.artifacts,
+            expanded = expanded,
+            onToggleExpanded = { holder.toggleToolCard(event.id) },
+            modifier = Modifier,
+            onOpenArtifactPreview = { artifactId -> holder.openRichArtifactPreview(artifactId) },
+        ) {
+            // Below-fold extras that the iOS card places inside details.
+            if (childRun != null) {
+                DelegateCardRow(
+                    child = childRun,
+                    onView = { holder.openChildRun(childRun.id) },
+                )
+            }
+            if (isLive && status == "running") {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    FloeActivityIndicator()
+                    FloeText(stringResource(R.string.tool_status_running), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                }
+            }
         }
+        // The decision surface stays outside the card's fold; identity and
+        // dispatch are unchanged.
         pendingApprovalCard?.let { card ->
             ConversationApprovalRow(
                 card = card,
                 holder = holder,
                 onResolve = { c, allow -> onResolveApproval?.invoke(c, allow) ?: holder.resolveApproval(c, allow) },
             )
-        }
-        if (isLive && status == "running") {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                FloeActivityIndicator()
-                FloeText(stringResource(R.string.tool_status_running), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-            }
         }
     }
 }
@@ -907,8 +912,8 @@ private fun groupStateStringKey(key: String): Int = when (key) {
 /* --------------------------- tool card (feature) --------------------------- */
 
 /** ⇄ ToolCallCardView: header fold + evidence sections with monospaced
- * typography, duration, artifacts and the below-fold slot for delegate /
- * approval / live activity extras. */
+ * typography, duration, artifacts and the below-fold delegate/live extras.
+ * A pending approval is rendered by ToolRow as this card's sibling. */
 @Composable
 internal fun FloeToolCard(
     toolName: String,
