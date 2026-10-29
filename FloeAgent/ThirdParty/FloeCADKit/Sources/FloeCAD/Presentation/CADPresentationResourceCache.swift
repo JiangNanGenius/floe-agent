@@ -14,7 +14,6 @@
 import CoreGraphics
 import Foundation
 import ImageIO
-import RealityFoundation
 import RealityKit
 import UIKit
 import simd

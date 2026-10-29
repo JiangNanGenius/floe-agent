@@ -873,10 +873,10 @@ public final class CADMaterialService {
                         "requery_required",
                         "face_signatures must include face \(index). Re-query query kind=faces and copy the current row.")
                 }
-                guard let face = candidates.first(where: { $0.index == index }),
-                      let actual = face.signature else {
+                guard let face = candidates.first(where: { $0.index == index }) else {
                     return Self.fail("unknown_face", "No analytic face \(index) on '\(body.name)'.")
                 }
+                let actual = face.signature
                 let score = CADFaceMaterialResolver.score(reference, actual) ?? 0
                 if score < CADFaceMaterialResolver.matchThreshold {
                     return Self.fail(

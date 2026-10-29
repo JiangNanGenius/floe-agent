@@ -732,8 +732,8 @@ nonisolated enum GLBExporter {
         // base texture + scalar opacity instead of inventing new pixels.
         if base != nil, baseImage == nil { return nil }
         guard let opacityImage else { return nil }
-        let width = min(max(baseImage?.width ?? 0, opacityImage?.width ?? 0), 2048)
-        let height = min(max(baseImage?.height ?? 0, opacityImage?.height ?? 0), 2048)
+        let width = min(max(baseImage?.width ?? 0, opacityImage.width), 2048)
+        let height = min(max(baseImage?.height ?? 0, opacityImage.height), 2048)
         guard width > 0, height > 0 else { return nil }
         let basePixels = baseImage.flatMap {
             rgbaBytes($0, width: width, height: height, orientation: baseOrientation)

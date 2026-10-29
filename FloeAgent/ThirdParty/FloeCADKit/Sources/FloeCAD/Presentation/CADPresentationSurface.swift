@@ -15,7 +15,6 @@
 #if canImport(SwiftUI) && canImport(RealityKit) && canImport(UIKit)
 import Foundation
 import Observation
-import RealityFoundation
 import RealityKit
 import SwiftUI
 import UIKit

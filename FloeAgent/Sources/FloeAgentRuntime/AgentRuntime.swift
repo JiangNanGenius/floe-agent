@@ -2368,7 +2368,7 @@ public actor FloeAgentRuntime {
             if !evidence.isEmpty {
                 contentMessages.append(ProviderMessage(
                     role: "user",
-                    content: [.text("Verified visual evidence for the immediately preceding tool results (browser, VNC, or generated images). Use the corresponding result's coordinates, revision and screenshot hash; no extra observation is needed while that evidence remains fresh.")] + evidence
+                    content: [.text("Verified visual evidence for the immediately preceding tool results (browser, VNC, generated images, or CAD viewport renders). Use the corresponding result's coordinates, revision and screenshot or render hash; no extra observation is needed while that evidence remains fresh.")] + evidence
                 ))
             }
         }
@@ -2669,7 +2669,8 @@ public actor FloeAgentRuntime {
               artifact.byteCount <= ProviderImageEvidencePolicy.maximumImageBytes,
               (artifact.relativePath.hasPrefix("BrowserArtifacts/")
                 || artifact.relativePath.hasPrefix("GeneratedImages/")
-                || artifact.relativePath.hasPrefix("VNCArtifacts/")),
+                || artifact.relativePath.hasPrefix("VNCArtifacts/")
+                || artifact.relativePath.hasPrefix("CADViewportArtifacts/")),
               !artifact.relativePath.split(separator: "/").contains("..")
         else { return nil }
         let url = root.appendingPathComponent(artifact.relativePath)

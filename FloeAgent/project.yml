@@ -1175,6 +1175,7 @@ targets:
       - path: Tests/FloeProvidersTests/ProviderCatalogTests.swift
       - path: Tests/FloeProvidersTests/AgentPlanCatalogTests.swift
       - path: Tests/FloeProvidersTests/ProviderConnectionProbeTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ProviderImageEvidenceTests.swift
       - path: Tests/FloeProvidersTests/SubscriptionRouteTests.swift
       - path: Tests/FloeProvidersTests/LocalModelToolPolicyTests.swift
       - path: Tests/FloeLocalModelsTests/LocalCADAdmissionTests.swift

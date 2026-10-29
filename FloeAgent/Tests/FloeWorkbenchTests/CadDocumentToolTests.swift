@@ -1607,8 +1607,9 @@ struct CadNativeEditToolTests {
         """, context: makeContext())
         #expect(output.summary.contains("cad.document material"))
         let requests = await host.threeDRequests
+        let lastRequest = try #require(requests.last)
         let request = try #require((try JSONSerialization.jsonObject(
-            with: Data(try #require(requests.last).utf8))) as? [String: Any])
+            with: Data(lastRequest.utf8))) as? [String: Any])
         #expect(request["kind"] as? String == "material")
         #expect(request["revision"] as? Int == 4,
                 "the optional revision pin must be forwarded, not dropped")
@@ -1637,8 +1638,9 @@ struct CadNativeEditToolTests {
          "{\\"action\\":\\"update\\",\\"feature_id\\":\\"\(feature)\\",\\"changes\\":{\\"distance\\":12.5}}"}
         """, context: makeContext())
         let requests = await host.threeDRequests
+        let lastRequest = try #require(requests.last)
         let request = try #require((try JSONSerialization.jsonObject(
-            with: Data(try #require(requests.last).utf8))) as? [String: Any])
+            with: Data(lastRequest.utf8))) as? [String: Any])
         #expect(request["kind"] as? String == "parameters")
 
         let missing = try decode("""

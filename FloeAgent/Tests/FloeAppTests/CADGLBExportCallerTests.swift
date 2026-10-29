@@ -57,7 +57,8 @@ final class CADGLBExportCallerTests: XCTestCase {
         """)
         let bodyID = try XCTUnwrap((extrude["producedBodyIDs"] as? [String])?.first
             ?? (extrude["changedBodyIDs"] as? [String])?.first)
-        return try XCTUnwrap(BodyID(raw: UUID(uuidString: bodyID)))
+        let bodyUUID = try XCTUnwrap(UUID(uuidString: bodyID))
+        return BodyID(raw: bodyUUID)
     }
 
     private func jsonChunk(_ glb: Data) throws -> [String: Any] {

@@ -2389,7 +2389,7 @@ actor CadDocumentCenter: CadDocumentHost {
                 rootURL: root,
                 maxReadBytes: maximumDocumentBytes + 1024,
                 maxWriteBytes: maximumDocumentBytes + 1024,
-                mounts: [])
+                mounts: [:])
             let key = CadDocumentIdentity.sessionKey(
                 environmentID: access.environmentID,
                 ownerKind: "canvas",

@@ -16,7 +16,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import XCTest
-import FloeCAD
+@testable import FloeCAD
 @testable import FloeApp
 import FloePersistence
 import FloeCore

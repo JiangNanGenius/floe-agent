@@ -12,7 +12,6 @@
 
 #if canImport(SwiftUI) && canImport(RealityKit) && canImport(UIKit)
 import Foundation
-import RealityFoundation
 import RealityKit
 import UIKit
 import simd

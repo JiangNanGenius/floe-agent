@@ -92,4 +92,66 @@ struct ProviderImageEvidenceTests {
         try Data("tampered".utf8).write(to: root.appendingPathComponent(tampered.relativePath), options: .atomic)
         #expect(FloeAgentRuntime.providerImageEvidence(tampered, root: root) == nil)
     }
+
+    @Test func realCADViewportPNGAttachesWithExactMIME() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let relative = "CADViewportArtifacts/\(UUID().uuidString)/\(FloeDigest.sha256Hex(png)).png"
+        let url = root.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try png.write(to: url, options: .atomic)
+        let reference = ToolArtifactReference(
+            id: UUID(), relativePath: relative, mimeType: "image/png",
+            byteCount: png.count, sha256: FloeDigest.sha256Hex(png)
+        )
+        guard case .imageData(let attachedMIME, let base64)? =
+                FloeAgentRuntime.providerImageEvidence(reference, root: root) else {
+            Issue.record("expected CAD viewport PNG evidence")
+            return
+        }
+        #expect(attachedMIME == "image/png")
+        #expect(Data(base64Encoded: base64) == png)
+    }
+
+    @Test func cadViewportEvidenceRejectsWrongSHAWrongMIMESpoofAndTraversal() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("CADViewportArtifacts/run-1", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        // A real PNG whose retained bytes no longer match the declared digest.
+        let wrongSHA = ToolArtifactReference(
+            id: UUID(), relativePath: "CADViewportArtifacts/run-1/wrong-sha.png",
+            mimeType: "image/png", byteCount: png.count, sha256: FloeDigest.sha256Hex(jpeg)
+        )
+        try png.write(to: directory.appendingPathComponent("wrong-sha.png"), options: .atomic)
+        #expect(FloeAgentRuntime.providerImageEvidence(wrongSHA, root: root) == nil)
+
+        // PNG bytes declared as JPEG.
+        let wrongMIME = ToolArtifactReference(
+            id: UUID(), relativePath: "CADViewportArtifacts/run-1/wrong-mime.png",
+            mimeType: "image/jpeg", byteCount: png.count, sha256: FloeDigest.sha256Hex(png)
+        )
+        try png.write(to: directory.appendingPathComponent("wrong-mime.png"), options: .atomic)
+        #expect(FloeAgentRuntime.providerImageEvidence(wrongMIME, root: root) == nil)
+
+        // GIF bytes declared as PNG.
+        let spoof = ToolArtifactReference(
+            id: UUID(), relativePath: "CADViewportArtifacts/run-1/spoof.png",
+            mimeType: "image/png", byteCount: gif.count, sha256: FloeDigest.sha256Hex(gif)
+        )
+        try gif.write(to: directory.appendingPathComponent("spoof.png"), options: .atomic)
+        #expect(FloeAgentRuntime.providerImageEvidence(spoof, root: root) == nil)
+
+        // A path that escapes the CAD namespace never attaches, even when the
+        // bytes and digest are real.
+        let traversal = ToolArtifactReference(
+            id: UUID(), relativePath: "CADViewportArtifacts/run-1/../secret.png",
+            mimeType: "image/png", byteCount: png.count, sha256: FloeDigest.sha256Hex(png)
+        )
+        try png.write(to: root.appendingPathComponent("CADViewportArtifacts/secret.png"),
+                      options: .atomic)
+        #expect(FloeAgentRuntime.providerImageEvidence(traversal, root: root) == nil)
+    }
 }
