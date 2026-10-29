@@ -79,7 +79,10 @@ upstream sync can rebase instead of re-deriving the patches.
     `prewarmBrepSerialization`, `buildSavePayload`; autosave now runs
     off-main. `ModelContext.save()` remains for tests/explicit close.
 
-## Known deviations / open items
+## Original extraction gaps (historical)
+
+The first two items below describe the original extraction, not the current
+integration; the dated updates supersede them. The missing Catalyst slice remains.
 
 - Upstream UI strings are English; Floe bilingual resources for the workbench
   have not been added yet (acceptance gap, see docs page).
@@ -101,3 +104,9 @@ actual PBR factors, embedded image resources and a millimetre-to-metre root tran
 PNG uses the active renderer. Legacy geometry remains readable when optional
 appearance resources cannot be used. Upstream licenses and the OCCT relink route
 remain unchanged. Validation and release status belong to the build-specific records.
+
+Presentation uses an explicit non-AR camera, metre-space placed-instance bounds
+and viewport-aware fitting. The shared inline title survives Edit/Present changes.
+Texture cache identities use the complete content digest with bounded exact-byte
+reuse; stale metadata and small image edits cannot alias another texture. GLB PNG
+packing preserves straight-alpha RGB without a lossy premultiplication round trip.

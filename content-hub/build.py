@@ -64,6 +64,11 @@ def validate_version(value):
     return value
 
 
+def version_tuple(value):
+    validate_version(value)
+    return tuple(int(component) for component in value.split("."))
+
+
 def validate_id(value):
     if not isinstance(value, str) or not ID_PATTERN.fullmatch(value):
         raise ContentError(f"invalid stable dotted id: {value!r}")
@@ -332,6 +337,116 @@ def check(root, package_root, prefix, public_key_path):
     if len(set(identifiers)) != len(identifiers):
         raise ContentError("duplicate index entries")
     return index
+
+
+def validate_staged_sources(entries, published_entries, required_ids, staged_ids=(), staged_versions=None):
+    """Validate current sources against a verified signed feed.
+
+    ``required_ids`` must appear in the feed. ``staged_ids`` may contain new
+    source ids that are not published yet. ``staged_versions`` maps an existing
+    id to ``(published_version, candidate_version)``: while the feed retains
+    the published version the source may carry only the approved newer
+    candidate, and once the feed carries the candidate its entry must equal the
+    source entry exactly. All other entries must match the feed without any
+    drift. Returns the entries that belong in the signed feed, sorted by id.
+
+    This is the pre-signing counterpart of :func:`check`: a signed feed behind
+    an explicitly approved candidate is valid staging, never published latest,
+    and a same-version rewrite or downgrade is refused.
+    """
+    required = set(required_ids)
+    staged_new = set(staged_ids)
+    staged = dict(staged_versions or {})
+    if required & staged_new:
+        raise ContentError("an id cannot be both required and staged as new")
+    for identifier, pair in staged.items():
+        if identifier not in required:
+            raise ContentError(f"{identifier}: only an existing required id may have a staged version")
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            raise ContentError(f"{identifier}: staged version must be (published, candidate)")
+        published_version, candidate_version = pair
+        if version_tuple(candidate_version) <= version_tuple(published_version):
+            raise ContentError(f"{identifier}: staged candidate {candidate_version} must be newer than published {published_version}")
+
+    source_by_id = {}
+    for entry in entries:
+        identifier = entry.get("id")
+        if identifier in source_by_id:
+            raise ContentError(f"duplicate source id: {identifier}")
+        source_by_id[identifier] = entry
+    published_by_id = {}
+    for entry in published_entries:
+        identifier = entry.get("id")
+        if identifier in published_by_id:
+            raise ContentError(f"duplicate published id: {identifier}")
+        published_by_id[identifier] = entry
+
+    expected_sources = required | staged_new
+    if set(source_by_id) != expected_sources:
+        missing = sorted(expected_sources - set(source_by_id))
+        unknown = sorted(set(source_by_id) - expected_sources)
+        raise ContentError(f"source ids do not match the approved set; missing={missing}, unknown={unknown}")
+    if not required <= set(published_by_id):
+        raise ContentError(f"signed feed is missing required ids: {sorted(required - set(published_by_id))}")
+    unknown_published = sorted(set(published_by_id) - set(source_by_id))
+    if unknown_published:
+        raise ContentError(f"signed feed contains ids absent from sources: {unknown_published}")
+
+    feed_entries = []
+    for identifier in sorted(source_by_id):
+        source = source_by_id[identifier]
+        published = published_by_id.get(identifier)
+        if published is None:
+            if identifier not in staged_new:
+                raise ContentError(f"{identifier}: required package is absent from the signed feed")
+            continue
+        if identifier not in staged:
+            if source != published:
+                raise ContentError(
+                    f"{identifier}: source differs from signed {published.get('version')} "
+                    "without an approved staged version bump"
+                )
+            feed_entries.append(source)
+            continue
+
+        expected_published, candidate_version = staged[identifier]
+        if source.get("version") != candidate_version:
+            raise ContentError(
+                f"{identifier}: source version {source.get('version')} "
+                f"is not the approved staged candidate {candidate_version}"
+            )
+        feed_version = published.get("version")
+        if feed_version == candidate_version:
+            if source != published:
+                raise ContentError(f"{identifier}: promoted {candidate_version} source differs from the signed feed")
+            feed_entries.append(source)
+        elif feed_version == expected_published:
+            feed_entries.append(published)
+        else:
+            raise ContentError(
+                f"{identifier}: signed feed version {feed_version} is neither the pinned "
+                f"published {expected_published} nor the approved candidate {candidate_version}"
+            )
+    return sorted(feed_entries, key=lambda entry: entry["id"])
+
+
+def check_staged(root, package_root, prefix, public_key_path, required_ids, staged_ids=(), staged_versions=None):
+    """Read-only staged-source plus signed-feed verification.
+
+    Verifies the checked-in signed feed with its pinned key and every archive
+    it references, validates the current sources against the approved staging
+    state, requires each current source package (including a newer candidate)
+    to be committed with exactly the deterministic archive bytes, and requires
+    index.json to remain the canonical feed for the published entries.
+    """
+    index = check(root, package_root, prefix, public_key_path)
+    entries, packages = plan(root / "sources", prefix)
+    feed_entries = validate_staged_sources(entries, index["entries"], required_ids, staged_ids, staged_versions)
+    write_packages(root, packages, check=True)
+    payload = build_index(feed_entries, root, sign=False)
+    if payload != (root / "index.json").read_bytes():
+        raise ContentError("signed index is not the canonical feed for the current sources and staging state")
+    return dict(index=index, entries=entries, packages=packages, feed_entries=feed_entries)
 
 
 def signing_key():

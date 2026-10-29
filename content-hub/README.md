@@ -28,6 +28,25 @@ content-hub/
 
 `<kind>` is one of `prompts`, `providers`, `models`, `help`, `templates`.
 
+### Provider model catalog / 模型目录
+
+`providers/curated-overrides.json` records reviewed official plan and media facts
+separately from the pinned models.dev baseline. The importer merges these declarations
+deterministically; the bundled, canonical and content-package catalogs must agree.
+`--check-offline` checks their local consistency and explicitly does not verify the
+upstream network snapshot.
+
+`floe.providers.compatibility` 1.1.2 requires App 1.7.64 and is a staged content
+candidate. Its source and archive are checked independently of the existing signed
+feed; publishing a new App does not replace the old feed's signature. The App bundles
+the same reviewed model catalog, so these entries do not require a separate download.
+
+`providers/curated-overrides.json` 单独记录经核对的官方套餐及媒体模型资料，
+与固定的 models.dev 基线按确定规则合并；内置、规范目录和内容包正文保持一致。
+`--check-offline` 只检查本地一致性，不代替上游原始快照校验。
+兼容目录 1.1.2 的最低 App 版本为 1.7.64，目前是候选内容包；源文件与归档独立校验，
+已发布目录的签名仍保留。App 内置相同模型目录，使用这些条目不需要另行下载。
+
 ## Index schema / 索引结构
 
 Canonical JSON (sorted keys, compact separators, UTF-8, `ensure_ascii=False`):
