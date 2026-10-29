@@ -133,6 +133,12 @@ struct ImageAdapterTests {
         #expect(factory.adapter(for: provider(kind: .volcengineArk)) is VolcengineImageAdapter)
         #expect(factory.adapter(for: provider(kind: .alibabaStudio)) is AlibabaImageAdapter)
         #expect(factory.adapter(for: provider(kind: .googleGemini)) is GoogleGeminiImageAdapter)
+        let agentPlan = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://ark.cn-beijing.volces.com/api/plan/v3")!
+        )
+        #expect(factory.adapter(for: agentPlan) is VolcengineImageAdapter)
         // Anthropic and local expose no remote image adapter; ordinary custom
         // endpoints expose none either.
         #expect(factory.adapter(for: provider(kind: .anthropic)) == nil)
@@ -183,6 +189,8 @@ struct ImageAdapterTests {
         #expect(ark.maximumSourceImages(for: .edit, modelRemoteID: "doubao-seedream-5-0") == 10)
         #expect(alibaba.maximumSourceImages(for: .edit, modelRemoteID: "wan2.7-image") == 9)
         #expect(alibaba.maximumSourceImages(for: .edit, modelRemoteID: "qwen-image-3") == 3)
+        #expect(alibaba.maximumSourceImages(for: .edit, modelRemoteID: "qwen-image-2.1-pro") == 10)
+        #expect(alibaba.maximumSourceImages(for: .edit, modelRemoteID: "qwen-image-2.1-turbo") == 10)
         #expect(google.maximumSourceImages(for: .edit, modelRemoteID: "gemini-2.5-flash-image") == 3)
         #expect(openai.maximumOutputImages(modelRemoteID: "gpt-image-2") == 4)
         #expect(ark.maximumOutputImages(modelRemoteID: "doubao-seedream-5-0") == 4)
@@ -454,6 +462,75 @@ struct ImageAdapterTests {
         #expect(try ImageGenerationPresetResolver.nativeSize(provider: .volcengineArk, modelRemoteID: "doubao-seedream-5-0-lite-260128", operation: .generate, selection: .init(aspectRatio: "1:1", resolution: "3K")) == "3072x3072")
     }
 
+    @Test("Agent Plan Seedream 5 pro/flash use their documented single-image family limits")
+    func agentPlanSeedream5FamilyLimits() throws {
+        let plan = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://ark.cn-beijing.volces.com/api/plan/v3")!
+        )
+        let adapter = VolcengineImageAdapter()
+        for remoteID in ["doubao-seedream-5-0-pro", "doubao-seedream-5.0-flash"] {
+            #expect(adapter.maximumOutputImages(modelRemoteID: remoteID) == 1)
+            let model = ModelProfile(
+                providerID: plan.id,
+                remoteModelID: remoteID,
+                displayName: remoteID,
+                limits: .init(contextTokens: 0, maxOutputTokens: 0),
+                capabilities: [.imageGeneration, .imageEditing]
+            )
+            let contract = ImageGenerationPresetResolver.parameterContract(
+                provider: plan, model: model, operation: .generate
+            )
+            #expect(contract.verifiedModel, "\(remoteID) must be a verified plan model")
+            #expect(contract.resolution == ["1K", "1.5K", "2K"])
+            #expect(contract.maximumCount == 1)
+            try ImageGenerationPresetResolver.validateSelection(
+                .init(aspectRatio: "1:1", resolution: "2K"),
+                provider: plan, model: model, operation: .generate,
+                count: 1, referenceCount: 0
+            )
+            #expect(throws: RemoteImageError.self) {
+                try ImageGenerationPresetResolver.validateSelection(
+                    .init(aspectRatio: "1:1", resolution: "4K"),
+                    provider: plan, model: model, operation: .generate,
+                    count: 1, referenceCount: 0
+                )
+            }
+            #expect(throws: RemoteImageError.self) {
+                try ImageGenerationPresetResolver.validateSelection(
+                    .init(aspectRatio: "1:1", resolution: "2K"),
+                    provider: plan, model: model, operation: .generate,
+                    count: 2, referenceCount: 0
+                )
+            }
+            #expect(try ImageGenerationPresetResolver.nativeSize(
+                provider: .volcengineArk, modelRemoteID: remoteID,
+                operation: .generate,
+                selection: .init(aspectRatio: "1:1", resolution: "1.5K")
+            ) == "1536x1536")
+        }
+
+        let lite = ModelProfile(
+            providerID: plan.id,
+            remoteModelID: "doubao-seedream-5.0-lite",
+            displayName: "doubao-seedream-5.0-lite",
+            limits: .init(contextTokens: 0, maxOutputTokens: 0),
+            capabilities: [.imageGeneration, .imageEditing]
+        )
+        let liteContract = ImageGenerationPresetResolver.parameterContract(
+            provider: plan, model: lite, operation: .generate
+        )
+        #expect(liteContract.verifiedModel)
+        #expect(liteContract.resolution == ["2K", "3K", "4K"])
+        #expect(liteContract.maximumCount == 4)
+        try ImageGenerationPresetResolver.validateSelection(
+            .init(aspectRatio: "1:1", resolution: "4K"),
+            provider: plan, model: lite, operation: .generate,
+            count: 4, referenceCount: 0
+        )
+    }
+
     @Test("Provider preset resolver never sends an aspect label as native size")
     func providerPresetResolution() throws {
         let ark = try ImageGenerationPresetResolver.nativeSize(
@@ -588,7 +665,7 @@ struct ImageAdapterTests {
                     operation: .edit,
                     prompt: "make it warmer",
                     sourceImages: (0..<5).map {
-                        Data([0x89, 0x50, 0x4E, 0x47, UInt8($0)])
+                        Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, UInt8($0)])
                     },
                     modelRemoteID: "wan2.7-image"
                 ),
@@ -613,6 +690,90 @@ struct ImageAdapterTests {
         #expect(content.dropFirst().allSatisfy {
             ($0["image"] as? String)?.hasPrefix("data:image/png;base64,") == true
         })
+    }
+
+    @Test("Qwen Image 3.0 editing uses images/generations with the image extension field")
+    func alibabaQwenImage3OpenAICompatibleEditing() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let output = Data([0x89, 0x50, 0x4E, 0x47, 0x10, 0x20])
+        ImageAdapterURLProtocol.prepare([
+            .init(statusCode: 200, body: try JSONSerialization.data(withJSONObject: [
+                "data": [["b64_json": output.base64EncodedString()]]
+            ]))
+        ])
+        let source = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01])
+        let profile = ProviderProfile(
+            kind: .alibabaStudio,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!
+        )
+        let result = try await AlibabaImageAdapter(session: session).perform(
+            RemoteImageRequest(
+                operation: .edit,
+                prompt: "make it warmer",
+                sourceImages: [source],
+                modelRemoteID: "qwen-image-3.0-pro"
+            ),
+            provider: profile,
+            credentials: ProviderCredentials(apiKey: "test-key")
+        )
+        #expect(result.images == [output])
+        let request = try #require(ImageAdapterURLProtocol.snapshotRequests().first)
+        #expect(request.url?.path == "/compatible-mode/v1/images/generations")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        let body = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["model"] as? String == "qwen-image-3.0-pro")
+        #expect(json["prompt"] as? String == "make it warmer")
+        #expect((json["size"] as? String)?.contains("x") == true)
+        let images = try #require(json["image"] as? [String])
+        #expect(images.count == 1)
+        #expect(images.first?.hasPrefix("data:image/png;base64,") == true)
+        #expect(json["input"] == nil)
+        #expect(json["parameters"] == nil)
+    }
+
+    @Test("Token Plan images use the native multimodal route even for Qwen Image 3.0")
+    func tokenPlanImageUsesNativeMultimodalRoute() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        ImageAdapterURLProtocol.prepare([
+            .init(statusCode: 200, body: Data(#"{"output":{"choices":[{"message":{"content":[]}}]}}"#.utf8))
+        ])
+        let profile = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")!
+        )
+        await #expect(throws: RemoteImageError.self) {
+            _ = try await AlibabaImageAdapter(session: session).perform(
+                RemoteImageRequest(
+                    operation: .edit,
+                    prompt: "paint it blue",
+                    sourceImages: [Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x02])],
+                    modelRemoteID: "qwen-image-3.0-pro"
+                ),
+                provider: profile,
+                credentials: ProviderCredentials(apiKey: "test-key")
+            )
+        }
+        let request = try #require(ImageAdapterURLProtocol.snapshotRequests().first)
+        #expect(request.url?.path == "/api/v1/services/aigc/multimodal-generation/generation")
+        #expect(request.value(forHTTPHeaderField: "X-DashScope-Async") == nil)
+        let body = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let parameters = try #require(json["parameters"] as? [String: Any])
+        #expect(parameters["enable_interleave"] == nil)
+        let input = try #require(json["input"] as? [String: Any])
+        let messages = try #require(input["messages"] as? [[String: Any]])
+        let content = try #require(messages.first?["content"] as? [[String: Any]])
+        #expect(content.first?["text"] as? String == "paint it blue")
+        #expect(content.dropFirst().first?["image"] as? String != nil)
     }
 
     @Test("Alibaba legacy image models use the image-synthesis protocol")

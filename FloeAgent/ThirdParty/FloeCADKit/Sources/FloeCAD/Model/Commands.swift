@@ -415,13 +415,23 @@ struct RemoveSketchDimensionCommand: DocumentCommand {
     }
 }
 
-/// Drag-edit of a sketch entity (endpoint/center/body moves). Coalesced with
-/// `session.amend` during the drag, like TransformBodiesCommand.
+/// Edit of one sketch entity's geometry (endpoint/center/body drags, and the
+/// typed circle-radius parameter update). Drags are coalesced with
+/// `session.amend`; typed edits ride `performWithSketchRebuild` so the sketch
+/// change and every dependent feature rebuild are ONE undo step.
 struct UpdateSketchEntityCommand: DocumentCommand {
-    let title = "Move"
+    var title: String = "Move"
     let sketchID: SketchID
     let before: SketchEntity
     let after: SketchEntity
+
+    init(title: String = "Move", sketchID: SketchID,
+         before: SketchEntity, after: SketchEntity) {
+        self.title = title
+        self.sketchID = sketchID
+        self.before = before
+        self.after = after
+    }
 
     private func replace(_ entity: SketchEntity, in document: inout DesignDocument) {
         guard let sketchIndex = document.sketches.firstIndex(where: { $0.id == sketchID }),
@@ -1544,6 +1554,7 @@ struct ResizePrimitiveCommand: DocumentCommand {
         // its material (2026-08-25 review round 2).
         rebuilt.isHidden = old.isHidden
         rebuilt.material = old.material
+        rebuilt.materialFaceBindings = old.materialFaceBindings
         // Rebuild the analytic B-rep too, mirroring FeatureGraph.evalPrimitive:
         // resizing an OCCT-rendered cylinder must not degrade it to the 48-gon
         // Euclid mesh (2026-08-25 review, C4). Curved primitives take the OCCT
@@ -1604,6 +1615,60 @@ struct SetMaterialCommand: DocumentCommand {
             }
         }
     }
+}
+
+/// Rich material state per body: the applied body-level appearance AND its
+/// stable per-face binding snapshots. One command covers both so a material
+/// edit (including a face reassignment) is a single undo step.
+struct SetMaterialAppearanceCommand: DocumentCommand {
+    struct Snapshot: Sendable, Equatable {
+        var material: BodyMaterialSpec?
+        var faceBindings: [CADFaceMaterialBinding]
+    }
+
+    let title: String
+    let before: [BodyID: Snapshot]
+    let after: [BodyID: Snapshot]
+
+    init(title: String = "Material", bodyIDs: Set<BodyID>,
+         after: [BodyID: Snapshot], document: DesignDocument) {
+        self.title = title
+        var before: [BodyID: Snapshot] = [:]
+        for body in document.bodies where bodyIDs.contains(body.id) {
+            before[body.id] = Snapshot(material: body.material,
+                                       faceBindings: body.materialFaceBindings)
+        }
+        self.before = before
+        self.after = after
+    }
+
+    func apply(to document: inout DesignDocument) {
+        for (id, snapshot) in after {
+            guard let index = document.bodyIndex(of: id) else { continue }
+            document.bodies[index].material = snapshot.material
+            document.bodies[index].materialFaceBindings = snapshot.faceBindings
+        }
+    }
+
+    func revert(in document: inout DesignDocument) {
+        for (id, snapshot) in before {
+            guard let index = document.bodyIndex(of: id) else { continue }
+            document.bodies[index].material = snapshot.material
+            document.bodies[index].materialFaceBindings = snapshot.faceBindings
+        }
+    }
+}
+
+/// Replaces the document material library as one undoable step. The library is
+/// a document column (custom materials are reusable across documents only by
+/// explicit export/import); applied body snapshots are independent of it.
+struct SetMaterialLibraryDataCommand: DocumentCommand {
+    let title = "Material Library"
+    let before: Data?
+    let after: Data?
+
+    func apply(to document: inout DesignDocument) { document.materialLibraryData = after }
+    func revert(in document: inout DesignDocument) { document.materialLibraryData = before }
 }
 
 // MARK: - Inserted images (plan §B10)

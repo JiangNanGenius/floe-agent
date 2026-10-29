@@ -52,6 +52,24 @@ final class UndoStack {
         undoCommands.append(command)
     }
 
+    /// Exact history snapshot used around a speculative edit and a failed
+    /// save. Restoring it does NOT touch the document; the caller restores the
+    /// matching document value. This preserves a pre-existing redo history
+    /// instead of letting a rejected edit become redoable.
+    nonisolated struct Checkpoint {
+        fileprivate let undo: [DocumentCommand]
+        fileprivate let redo: [DocumentCommand]
+    }
+
+    func checkpoint() -> Checkpoint {
+        Checkpoint(undo: undoCommands, redo: redoCommands)
+    }
+
+    func restore(_ checkpoint: Checkpoint) {
+        undoCommands = checkpoint.undo
+        redoCommands = checkpoint.redo
+    }
+
     func reset() {
         undoCommands.removeAll()
         redoCommands.removeAll()

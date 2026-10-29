@@ -177,7 +177,7 @@ final class ContentUpdateCenter: ObservableObject {
     /// immutable. Only actually bundled, consumed kinds appear here; no
     /// package is invented for unconsumed types.
     nonisolated static let builtInBaselines: [String: String] = [
-        providerPackageID: "1.1.1",
+        providerPackageID: "1.1.2",
         promptsPackageID: builtInPromptsVersion,
         searchProviderPackageID: builtInSearchProvidersVersion
     ]

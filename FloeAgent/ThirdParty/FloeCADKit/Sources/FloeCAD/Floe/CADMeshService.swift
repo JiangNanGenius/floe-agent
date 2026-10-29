@@ -490,11 +490,26 @@ public final class CADMeshService {
         }
         var color: SIMD4<Double>?
         if let rawColor = args["color"] {
-            guard let values = Self.doubles(rawColor), values.count == 3 || values.count == 4,
-                  values.allSatisfy({ $0 >= 0 && $0 <= 1 }) else {
-                return Self.fail("bad_request", "'color' must be [r, g, b] or [r, g, b, a] in 0…1.")
+            if let values = Self.doubles(rawColor), values.count == 3 || values.count == 4,
+               values.allSatisfy({ $0 >= 0 && $0 <= 1 }) {
+                color = SIMD4(values[0], values[1], values[2], values.count == 4 ? values[3] : 1)
+            } else if let text = rawColor as? String {
+                var hex = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if hex.hasPrefix("#") { hex.removeFirst() }
+                guard hex.count == 6 || hex.count == 8, let raw = UInt64(hex, radix: 16) else {
+                    return Self.fail("bad_request",
+                                     "'color' must be [r, g, b] or [r, g, b, a] in 0…1 (or #RRGGBB[AA]).")
+                }
+                let hasAlpha = hex.count == 8
+                color = SIMD4(
+                    Double((raw >> (hasAlpha ? 24 : 16)) & 0xFF) / 255,
+                    Double((raw >> (hasAlpha ? 16 : 8)) & 0xFF) / 255,
+                    Double((raw >> (hasAlpha ? 8 : 0)) & 0xFF) / 255,
+                    hasAlpha ? Double(raw & 0xFF) / 255 : 1)
+            } else {
+                return Self.fail("bad_request",
+                                 "'color' must be [r, g, b] or [r, g, b, a] in 0…1 (or #RRGGBB[AA]).")
             }
-            color = SIMD4(values[0], values[1], values[2], values.count == 4 ? values[3] : 1)
         }
         var opacity: Double?
         if let raw = args["opacity"] {

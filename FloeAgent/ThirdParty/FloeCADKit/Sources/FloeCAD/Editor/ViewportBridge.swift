@@ -17,34 +17,228 @@ import MetalKit
 import UIKit
 #endif
 
-/// Visualization-lite material (plan §B15): nil on a BodyDrawable keeps the
-/// legacy shaded look exactly (metallic 0, legacy fixed highlight).
+/// One encoded image map of an engineering material. Exactly one entry per
+/// `MaterialTextureSlot` (the canonical model allows at most one), carried from
+/// the applied `BodyMaterialSpec` without a second material store.
+struct BodyMaterialMap: Equatable {
+    var slot: MaterialTextureSlot
+    /// Encoded PNG/JPEG bytes, bounded by `CADMaterialLimits`.
+    var data: Data
+    /// Cache identity computed ONCE when the drawable is built — never per
+    /// frame. The applied snapshot's persisted SHA-256 when it covers these
+    /// bytes (the normal service/inspector path), otherwise a deterministic
+    /// byte fingerprint for legacy images that arrived without metadata.
+    var cacheIdentity: String
+    /// Declared colour space of the encoded image (defaults mirror the core:
+    /// base colour/emissive are sRGB, scalar/normal maps are linear data).
+    var colorSpace: MaterialTextureColorSpace
+    /// Where the image's first row is; applied as a shader-side V flip.
+    var orientation: MaterialTextureOrientation
+
+    /// Decode/cache key: content identity + slot + declared colour space. The
+    /// orientation is a sampling flag, not a decode property, so it stays out
+    /// of the key (two materials differing only in row order share one upload).
+    var textureCacheKey: String {
+        "\(slot.rawValue)|\(colorSpace.rawValue)|\(cacheIdentity)"
+    }
+
+    var flipsV: Bool { orientation == .bottomLeft }
+    var isSRGB: Bool { colorSpace == .srgb }
+    var uniformFlag: UInt32 { slot.uniformFlag }
+
+    /// Identity for a slot's bytes. A metadata SHA is used only when its
+    /// recorded byte count still matches, so a stale/edited blob cannot point
+    /// the cache at a different image.
+    static func identity(for data: Data,
+                         metadata: CADMaterialTextureMetadata?) -> String {
+        if let sha = metadata?.sha256, !sha.isEmpty,
+           metadata?.byteCount == data.count {
+            return sha
+        }
+        return "fnv1a-\(data.count)-\(fingerprint(data))"
+    }
+
+    /// Deterministic FNV-1a over the byte count plus the head, middle and tail
+    /// of the image. Used only when no persisted digest exists; equal images
+    /// give equal identities in every process (unlike Swift's seeded Hasher).
+    static func fingerprint(_ data: Data) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        func mix(_ slice: Data) {
+            for byte in slice {
+                hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
+            }
+        }
+        mix(data.prefix(32))
+        if data.count > 96 {
+            mix(data.dropFirst(data.count / 2).prefix(32))
+        }
+        mix(data.suffix(32))
+        return String(hash, radix: 16)
+    }
+}
+
+/// Fragment texture unit and `BodyUniforms` flag bit for one slot. The bit
+/// order mirrors the C `BodyTextureFlag` enum in ShaderTypes.h and the
+/// `MaterialTextureSlot` declaration order; the private source check asserts
+/// the two never drift.
+extension MaterialTextureSlot {
+    var uniformFlag: UInt32 {
+        switch self {
+        case .baseColor: return 1 << 0
+        case .metallic: return 1 << 1
+        case .roughness: return 1 << 2
+        case .normal: return 1 << 3
+        case .emissive: return 1 << 4
+        case .opacity: return 1 << 5
+        }
+    }
+
+    var textureUnit: Int {
+        switch self {
+        case .baseColor: return 0
+        case .metallic: return 1
+        case .roughness: return 2
+        case .normal: return 3
+        case .emissive: return 4
+        case .opacity: return 5
+        }
+    }
+}
+
+/// Render-side appearance of a body (or of one resolved face range): nil on a
+/// `BodyDrawable` keeps the legacy shaded look exactly (metallic 0, legacy
+/// fixed highlight, no emission).
+///
+/// This is the ONE material value both the body and its face ranges use; it
+/// carries every canonical scalar and every image map, so the engineering
+/// viewport cannot "accept" an edit it then ignores. Present mode resolves the
+/// same `BodyMaterialSpec` independently.
 struct BodyMaterial: Equatable {
     var baseColor: SIMD4<Float>
     var metallic: Float = 0
     var roughness: Float = 0
-    /// Encoded image bytes sampled as the albedo when the mesh has texcoords.
-    /// Decoded into an MTLTexture keyed by (body id, textureRevision).
-    var textureData: Data? = nil
+    /// Effective opacity 0…1. Below 1 the body (or face) is drawn in the
+    /// blended pass with this alpha.
+    var opacity: Float = 1
+    /// Emissive colour factor (renderer working space) and strength; strength
+    /// 0 (the default) means no emission, so a legacy body is unchanged.
+    var emissive: SIMD3<Float> = .zero
+    var emissiveStrength: Float = 0
+    /// UV source/mapping. Non-mesh values generate render UVs on the GPU
+    /// upload path from the mesh's own positions — the B-rep/mesh is never
+    /// rewritten.
+    var uvMapping: CADMaterialUVMapping? = nil
+    /// At most one map per slot, in `MaterialTextureSlot.allCases` order.
+    var maps: [BodyMaterialMap] = []
+    /// Slots whose bytes exist but cannot be sampled on this mesh: it has no
+    /// authored UVs and the material uses the mesh UV source. Reported (not
+    /// silently painted with a guessed projection); the scalar factors remain.
+    var unavailableMapSlots: [MaterialTextureSlot] = []
     var textureRevision: UInt64 = 0
+
+    func map(_ slot: MaterialTextureSlot) -> BodyMaterialMap? {
+        maps.first { $0.slot == slot }
+    }
+
+    /// True when any part of this appearance needs the blended pass: a
+    /// sub-1 opacity factor, or an opacity MAP (whose pixels are only known on
+    /// the GPU, so the range must be blended regardless of the factor).
+    var isTransparent: Bool {
+        opacity < 0.999 || map(.opacity) != nil
+    }
+
+    var hasAnyMap: Bool { !maps.isEmpty }
+
+    /// Image data is compared by identity, not byte-for-byte: `BodyMaterial`
+    /// equality runs on every scene rebuild, and the cache identity already
+    /// covers the content.
+    static func == (lhs: BodyMaterial, rhs: BodyMaterial) -> Bool {
+        lhs.baseColor == rhs.baseColor
+            && lhs.metallic == rhs.metallic
+            && lhs.roughness == rhs.roughness
+            && lhs.opacity == rhs.opacity
+            && lhs.emissive == rhs.emissive
+            && lhs.emissiveStrength == rhs.emissiveStrength
+            && lhs.uvMapping == rhs.uvMapping
+            && lhs.unavailableMapSlots == rhs.unavailableMapSlots
+            && lhs.textureRevision == rhs.textureRevision
+            && lhs.maps.count == rhs.maps.count
+            && zip(lhs.maps, rhs.maps).allSatisfy { pair in
+                pair.0.slot == pair.1.slot
+                    && pair.0.cacheIdentity == pair.1.cacheIdentity
+                    && pair.0.colorSpace == pair.1.colorSpace
+                    && pair.0.orientation == pair.1.orientation
+            }
+    }
 }
 
 extension BodyMaterial {
-    /// The render-side form of a body's persisted appearance — the one
-    /// mapping, shared by the body and by every live preview that stands in
-    /// for it (push/pull, blend, shell, delete/replace face), which otherwise
-    /// drew the default grey. The texture rides along only when the mesh can
-    /// sample it: a rebuilt (boolean'd, blended, previewed) mesh has no
-    /// texcoords, so it keeps the colour and drops the image.
+    /// Default colour space for a slot when the applied snapshot carries no
+    /// typed metadata (legacy images). Matches `CADMaterialTexture`'s own
+    /// defaults and the Presentation resolver.
+    static func defaultColorSpace(for slot: MaterialTextureSlot) -> MaterialTextureColorSpace {
+        slot == .baseColor || slot == .emissive ? .srgb : .linear
+    }
+
+    /// The render-side form of a body's persisted appearance — the one mapping
+    /// shared by the body and by every live preview that stands in for it
+    /// (push/pull, blend, shell, delete/replace face), which otherwise drew the
+    /// default grey.
+    ///
+    /// Maps ride along only when the mesh can actually sample them: a rebuilt
+    /// (boolean'd, blended, previewed) mesh has no texcoords and no projection,
+    /// so it keeps the colour/scalars and drops the maps (recorded in
+    /// `unavailableMapSlots`) rather than pretending they are painted.
     init(spec: BodyMaterialSpec, meshHasTexcoords: Bool, revision: UInt64) {
+        let clean = spec.clamped
+        let mapping = clean.uvMapping
+        let canProject = (mapping?.source ?? .mesh) != .mesh
+        let canSample = meshHasTexcoords || canProject
+
+        var maps: [BodyMaterialMap] = []
+        var unavailable: [MaterialTextureSlot] = []
+        for slot in MaterialTextureSlot.allCases {
+            guard let data = clean.textureData(for: slot), !data.isEmpty else { continue }
+            // Corrupt or oversized bytes are dropped by the renderer, never
+            // guessed at; the scalar factors still shade the body.
+            guard data.count <= CADMaterialLimits.maximumTextureBytes,
+                  MaterialImageSniffer.mimeType(of: data) != nil else { continue }
+            guard canSample else {
+                unavailable.append(slot)
+                continue
+            }
+            let metadata = clean.textureMetadata?.first { $0.slot == slot }
+            maps.append(BodyMaterialMap(
+                slot: slot,
+                data: data,
+                cacheIdentity: BodyMaterialMap.identity(for: data, metadata: metadata),
+                colorSpace: metadata?.colorSpace ?? Self.defaultColorSpace(for: slot),
+                orientation: metadata?.orientation ?? .topLeft))
+        }
+
         self.init(
-            baseColor: SIMD4<Float>(spec.baseColor),
-            metallic: Float(spec.metallic),
-            roughness: Float(spec.roughness),
-            textureData: meshHasTexcoords ? spec.baseColorTexture : nil,
+            baseColor: SIMD4<Float>(clean.baseColor),
+            metallic: Float(clean.metallic),
+            roughness: Float(clean.roughness),
+            opacity: Float(clean.effectiveOpacity),
+            emissive: clean.emissive.map {
+                SIMD3<Float>(Float($0.x), Float($0.y), Float($0.z))
+            } ?? .zero,
+            emissiveStrength: Float(clean.emissiveStrength ?? 0),
+            uvMapping: mapping,
+            maps: maps,
+            unavailableMapSlots: unavailable,
             textureRevision: revision
         )
     }
+}
+
+/// One resolved face-material range on a body. `triangles` index the body's
+/// render mesh; the mesh itself is unchanged and shared.
+struct BodyFaceMaterial: Equatable {
+    var faceIndex: Int
+    var triangles: [Int]
+    var material: BodyMaterial
 }
 
 /// Everything the renderer needs to draw one body.
@@ -58,14 +252,22 @@ struct BodyDrawable: Identifiable {
     var baseColor: SIMD4<Float>
     var selectionState: UInt32 = 0 // SelectionState raw value
     var isTranslucent: Bool = false
-    /// Optional appearance override; when set its baseColor/metallic/roughness
-    /// replace `baseColor` and the default shading response.
+    /// Optional appearance override; when set its colour, PBR factors,
+    /// emission and image maps replace `baseColor` and the default shading.
     var material: BodyMaterial?
+    /// Resolved per-face appearances. Empty unless the body has face bindings;
+    /// the renderer splits the SAME index buffer into ranges.
+    var faceMaterials: [BodyFaceMaterial] = []
     /// Set when this drawable is an ASSEMBLY INSTANCE placement rather than a
     /// document body: the shared source body's mesh is referenced (never
     /// duplicated) and `modelMatrix` carries the instance transform composed
     /// with the source placement. Taps and selection route to the instance id.
     var assemblyInstanceID: UUID? = nil
+
+    var hasTransparentMaterial: Bool {
+        (material?.isTransparent ?? false)
+            || faceMaterials.contains { $0.material.isTransparent }
+    }
 }
 
 /// A snapshot of what the viewport should draw. Value type, rebuilt cheaply

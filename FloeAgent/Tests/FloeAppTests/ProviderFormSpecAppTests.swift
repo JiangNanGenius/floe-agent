@@ -32,11 +32,11 @@ struct ProviderFormSpecAppTests {
     func rolePresetLists() {
         #expect(
             ProviderEditorViewModel.presets(for: .image).map(\.id)
-                == [.openAI, .volcengineArk, .alibabaStudio, .googleGemini, .kimiCode]
+                == [.openAI, .volcengineArk, .volcengineAgentPlan, .alibabaStudio, .alibabaTokenPlan, .googleGemini, .kimiCode]
         )
         #expect(
             ProviderEditorViewModel.presets(for: .video).map(\.id)
-                == [.volcengineArk, .alibabaStudio, .googleGemini]
+                == [.volcengineArk, .alibabaStudio, .alibabaTokenPlan, .googleGemini]
         )
         // The video list can no longer contain a generic custom endpoint and
         // the image list no longer offers the dead generic custom route.
@@ -105,6 +105,43 @@ struct ProviderFormSpecAppTests {
         #expect(!outcome.models.contains(where: { $0.remoteModelID == "deepseek-chat" }))
     }
 
+    @Test("Agent Plan listing can add its own image model but never a PAYG one")
+    func agentPlanMediaMergeIsolation() {
+        let providerID = UUID()
+        let entry = ProviderCatalogEntry(
+            presetID: "volcengine-agent-plan",
+            name: "Volcengine Agent Plan",
+            kind: .custom,
+            defaultProtocol: .openAIChatCompletions,
+            baseURL: ProviderPreset.volcengineAgentPlan.defaultBaseURL,
+            domains: ["ark.cn-beijing.volces.com"],
+            models: ["ark-code-latest"],
+            availability: .available,
+            upstreamID: "volcengine-agent-plan",
+            authStyle: "bearer",
+            serviceOffers: [
+                ProviderCatalogServiceOffer(role: .image, models: ["doubao-seedream-5.0-lite"])
+            ]
+        )
+        let spec = ProviderFormSpecResolver.resolve(
+            role: .image,
+            preset: .volcengineAgentPlan,
+            baseURL: ProviderPreset.volcengineAgentPlan.defaultBaseURL,
+            catalogEntry: entry
+        )
+        let outcome = ProviderEditorViewModel.mediaMergePlan(
+            existing: [],
+            discovered: [
+                chatModel("doubao-seedream-5.0-lite", providerID: providerID),
+                chatModel("doubao-seedream-5-0-lite-260128", providerID: providerID)
+            ],
+            spec: spec,
+            providerID: providerID
+        )
+        #expect(outcome.models.map(\.remoteModelID) == ["doubao-seedream-5.0-lite"])
+        #expect(outcome.skippedRemoteIDs == ["doubao-seedream-5-0-lite-260128"])
+    }
+
     @Test("Kimi Code account listings remain the trusted image source")
     func mediaMergeTrustsKimiListing() {
         let providerID = UUID()
@@ -147,6 +184,45 @@ struct ProviderFormSpecAppTests {
         let staged = outcome.models.first
         #expect(staged?.capabilities.contains(.videoGeneration) == true)
         #expect(staged?.capabilities.contains(.imageGeneration) == false)
+    }
+
+    @Test("Subscription probe only uses an actually selected chat row")
+    func chatProbeSelectionContract() {
+        let providerID = UUID()
+        let first = chatModel("first-chat", providerID: providerID)
+        let second = chatModel("second-chat", providerID: providerID)
+        let media = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "selected-image",
+            displayName: "image",
+            limits: ModelLimits(contextTokens: 32_768, maxOutputTokens: 0),
+            capabilities: [.imageGeneration, .imageEditing],
+            useSurfaces: .imageGeneration
+        )
+        // No selection: the existence of candidates is not consent to spend.
+        #expect(ProviderEditorViewModel.chatProbeModelRemoteID(
+            defaultModelID: nil,
+            selectedModelIDs: [],
+            candidates: [first, second, media]
+        ) == nil)
+        // Unselected default + one selected row: never probe the default.
+        #expect(ProviderEditorViewModel.chatProbeModelRemoteID(
+            defaultModelID: first.id,
+            selectedModelIDs: [second.id, media.id],
+            candidates: [first, second, media]
+        ) == "second-chat")
+        // A selected default wins.
+        #expect(ProviderEditorViewModel.chatProbeModelRemoteID(
+            defaultModelID: first.id,
+            selectedModelIDs: [first.id, second.id],
+            candidates: [first, second, media]
+        ) == "first-chat")
+        // Only a media row selected: no chat probe.
+        #expect(ProviderEditorViewModel.chatProbeModelRemoteID(
+            defaultModelID: nil,
+            selectedModelIDs: [media.id],
+            candidates: [first, media]
+        ) == nil)
     }
 
     // MARK: - New-add selection gate

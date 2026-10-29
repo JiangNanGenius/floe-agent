@@ -210,6 +210,33 @@ final class EditorViewModel {
         return bodies
     }
 
+    /// Face triangle tables for exactly the bodies being exported, plus the
+    /// `meshRevision` stamp the exporter uses to reject a stale table.
+    ///
+    /// Identity contract: `exportableBodies()` returns the document's OWN
+    /// `Body` values — it filters nothing and remints no IDs — so the
+    /// `BodyID`s the exporter sees are the same keys `DocumentSession`
+    /// recorded in `lastFaceTables`/`lastNamingRevisions`. A body with no
+    /// retained table (or a table from before its current mesh) is passed
+    /// without a fresh stamp; the exporter then reports the face binding as
+    /// explicitly unresolved (`face_triangle_table_unavailable`) instead of
+    /// exporting a guessed triangle range. Keeping the stamp separate means a
+    /// stale table is never silently treated as current.
+    private func exportFaceTables(for bodies: [Body])
+        -> (tables: [BodyID: FaceTable], revisions: [BodyID: UInt64]) {
+        var tables: [BodyID: FaceTable] = [:]
+        var revisions: [BodyID: UInt64] = [:]
+        for body in bodies {
+            if let table = session.lastFaceTables[body.id] {
+                tables[body.id] = table
+            }
+            if let revision = session.lastNamingRevisions[body.id] {
+                revisions[body.id] = revision
+            }
+        }
+        return (tables, revisions)
+    }
+
     /// STL of the whole document, or nil when empty.
     func exportSTL() -> Data? {
         exportableBodies().map { STLExporter.binarySTL(bodies: $0) }
@@ -225,9 +252,17 @@ final class EditorViewModel {
         exportableBodies().map { ThreeMFExporter.threeMF(bodies: $0) }
     }
 
-    /// GLB of the whole document, or nil when empty.
+    /// GLB of the whole document, or nil when empty. The live session's face
+    /// triangle tables (and their mesh-revision stamps) ride along so face
+    /// materials become real glTF primitives; resolving them here is the only
+    /// difference from a body-only export.
     func exportGLB() -> Data? {
-        exportableBodies().map { GLBExporter.glb(bodies: $0) }
+        exportableBodies().map { bodies in
+            let faceTables = exportFaceTables(for: bodies)
+            return GLBExporter.glb(bodies: bodies,
+                                   faceTables: faceTables.tables,
+                                   faceTableRevisions: faceTables.revisions)
+        }
     }
 
     /// USDZ of the whole document (plan §B14); nil when the design is empty
@@ -250,10 +285,17 @@ final class EditorViewModel {
         }
     }
 
-    /// Per-body GLB payloads, mirroring `exportOBJPerBody`.
+    /// Per-body GLB payloads, mirroring `exportOBJPerBody`. Each file carries
+    /// only its own body's face table, using the same source `BodyID` and
+    /// revision stamp as the whole-document export.
     func exportGLBPerBody() -> [(name: String, data: Data)]? {
         exportableBodies().map { bodies in
-            bodies.map { ($0.name, GLBExporter.glb(bodies: [$0])) }
+            bodies.map { body in
+                let faceTables = exportFaceTables(for: [body])
+                return (body.name, GLBExporter.glb(bodies: [body],
+                                                   faceTables: faceTables.tables,
+                                                   faceTableRevisions: faceTables.revisions))
+            }
         }
     }
 
@@ -614,7 +656,9 @@ final class EditorViewModel {
         // wears the source's material — without this, a blue part turned the
         // default grey for the whole push/pull, blend, shell or face edit.
         func sourceMaterial(_ sourceID: BodyID?, on preview: Body) -> BodyMaterial? {
-            guard let sourceID, let spec = session.document.body(with: sourceID)?.material else { return nil }
+            guard let sourceID,
+                  let source = session.document.body(with: sourceID),
+                  let spec = materialSpec(for: source) else { return nil }
             return BodyMaterial(spec: spec, meshHasTexcoords: preview.render.texcoords != nil,
                                 revision: preview.meshRevision)
         }
@@ -646,10 +690,8 @@ final class EditorViewModel {
                 modelMatrix: body.transform.matrixFloat,
                 baseColor: SIMD4(0.72, 0.74, 0.78, 1),
                 selectionState: selectionState,
-                material: body.material.map {
-                    BodyMaterial(spec: $0, meshHasTexcoords: body.render.texcoords != nil,
-                                 revision: body.meshRevision)
-                }
+                material: renderMaterial(for: body),
+                faceMaterials: faceRenderGroups(for: body)
             ))
         }
         var scene = ViewportScene(bodies: drawables)
@@ -680,10 +722,8 @@ final class EditorViewModel {
                     modelMatrix: world.matrixFloat,
                     baseColor: SIMD4(0.72, 0.74, 0.78, 1),
                     selectionState: state,
-                    material: source.material.map {
-                        BodyMaterial(spec: $0, meshHasTexcoords: source.render.texcoords != nil,
-                                     revision: source.meshRevision)
-                    },
+                    material: renderMaterial(for: source),
+                    faceMaterials: faceRenderGroups(for: source),
                     assemblyInstanceID: instance.id))
             }
         }
@@ -5910,6 +5950,12 @@ final class EditorViewModel {
 
     /// Material sheet presentation flag (Material palette action).
     var showMaterialSheet = false
+
+    /// Transient material-draft preview. It is never persisted and never
+    /// creates an undo record: the inspector clears it on Cancel and the
+    /// Apply path commits the real document command. Face targets preview on
+    /// the derived face triangle range (no mesh change).
+    var materialDraftPreview: MaterialDraftPreview?
 
     /// The material the sheet opens on: the first selected body's, or the
     /// document default.

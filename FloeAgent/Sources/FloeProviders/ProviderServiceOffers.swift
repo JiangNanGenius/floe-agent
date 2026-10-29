@@ -237,14 +237,21 @@ public enum ProviderServiceOfferResolver {
                 }
             }
             guard !models.isEmpty || requiresDiscovery else {
-                result.append(ProviderServiceOfferResolution(
-                    role: role,
-                    isUsable: false,
-                    connection: .distinct,
-                    endpoint: endpoint,
-                    models: [],
-                    reason: "no verified model identifiers"
-                ))
+                // Only a DECLARED role stays visible as unsupported. An
+                // undeclared role with neither verified identifiers nor a
+                // discovery contract is simply absent (for example the chat
+                // role on a no-listing subscription gateway whose chat is
+                // already the provider being edited).
+                if let declaredOffer {
+                    result.append(ProviderServiceOfferResolution(
+                        role: role,
+                        isUsable: false,
+                        connection: .distinct,
+                        endpoint: endpoint,
+                        models: declaredOffer.models,
+                        reason: "no verified model identifiers"
+                    ))
+                }
                 continue
             }
             var connection: ProviderServiceOfferResolution.ConnectionMode = .shared

@@ -149,8 +149,13 @@ nonisolated struct Body: Identifiable, Sendable {
     /// document but are skipped by the viewport scene.
     var isHidden: Bool = false
     /// Visualization-lite appearance (plan §B15); nil keeps the legacy
-    /// default look exactly.
+    /// default look exactly. The custom-material fields on the spec are the
+    /// body-level applied snapshot (Metal-compatible and exporter-readable).
     var material: BodyMaterialSpec?
+    /// Stable per-face custom-material overrides. Additive and empty on every
+    /// existing document/body; resolution never guesses after a topology
+    /// change (see `CADFaceMaterialResolver`).
+    var materialFaceBindings: [CADFaceMaterialBinding] = []
     /// Euclid source mesh, if this body was just built/booleaned in-session.
     /// Nil after loading from disk; use `euclidMesh()` which rebuilds on demand.
     var euclid: Euclid.Mesh?
@@ -237,6 +242,7 @@ nonisolated struct Body: Identifiable, Sendable {
     nonisolated func keepingAppearance(of live: Body) -> Body {
         var body = self
         body.material = live.material
+        body.materialFaceBindings = live.materialFaceBindings
         body.isHidden = live.isHidden
         return body
     }

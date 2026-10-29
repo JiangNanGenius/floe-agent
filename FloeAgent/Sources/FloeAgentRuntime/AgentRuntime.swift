@@ -2148,6 +2148,7 @@ public actor FloeAgentRuntime {
         let isLocalProvider = configuration.provider.kind == .local
         discoverableDescriptors = catalogDescriptors
         let userTask = messages.last(where: { $0.role == "user" })?.content ?? ""
+        let localPinnedNames = LocalModelToolPolicy.pinnedToolNames(for: userTask.lowercased())
         // Eviction notices only make sense for schemas the model actually saw
         // in a previous request. Capture the pre-discovery state exactly as
         // before (cloud semantics unchanged): a first-turn guess, the curated
@@ -2169,7 +2170,7 @@ public actor FloeAgentRuntime {
             discoveryPriority = discoveryPriority.filter { offeredNames.contains($0) }
             discoveredToolNames.formUnion(
                 catalogDescriptors.map(\.name).filter {
-                    LocalModelToolPolicy.pinnedToolNames.contains($0)
+                    localPinnedNames.contains($0)
                 }
             )
         }
@@ -2191,7 +2192,7 @@ public actor FloeAgentRuntime {
         if isLocalProvider {
             pinned.formUnion(
                 catalogDescriptors.map(\.name).filter {
-                    LocalModelToolPolicy.pinnedToolNames.contains($0)
+                    localPinnedNames.contains($0)
                 }
             )
         }
@@ -3909,6 +3910,7 @@ public actor FloeAgentRuntime {
             publicWebOnly: configuration.publicWebOnly,
             workspaceRootURL: configuration.workspaceRootURL,
             canvasStagedDocument: configuration.canvasStagedDocument,
+            serviceStorePaths: configuration.serviceStorePaths,
             allowedWorkspacePaths: configuration.allowedWorkspacePaths,
             cancellation: effectiveCancellation,
             childBudget: childBudget,
@@ -5054,6 +5056,7 @@ public actor FloeAgentRuntime {
                 publicWebOnly: configuration.publicWebOnly,
                 workspaceRootURL: configuration.workspaceRootURL,
                 canvasStagedDocument: configuration.canvasStagedDocument,
+                serviceStorePaths: configuration.serviceStorePaths,
                 allowedWorkspacePaths: configuration.allowedWorkspacePaths,
                 cancellation: cancellationToken,
                 childBudget: childBudget,
@@ -5344,6 +5347,7 @@ public actor FloeAgentRuntime {
             publicWebOnly: configuration.publicWebOnly,
             workspaceRootURL: configuration.workspaceRootURL,
             canvasStagedDocument: configuration.canvasStagedDocument,
+            serviceStorePaths: configuration.serviceStorePaths,
             allowedWorkspacePaths: configuration.allowedWorkspacePaths,
             cancellation: cancellationToken,
             childBudget: childBudget,

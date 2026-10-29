@@ -108,6 +108,7 @@ enum RebuildPlanner {
                 after.name = existing.name
                 after.isHidden = existing.isHidden
                 after.material = existing.material
+                after.materialFaceBindings = existing.materialFaceBindings
                 commands.append(ReplaceBodyCommand(title: title, before: existing, after: after))
             } else {
                 commands.append(AddBodyCommand(body: body, title: title))

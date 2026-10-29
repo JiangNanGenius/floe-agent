@@ -2552,7 +2552,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let availableTools = admissibleTools(
             request.toolSchemas,
             modelRemoteID: request.model.remoteModelID
-        )
+        ).map(Self.compactCADDescriptor)
         // When a fresh turn specifically asks for web search but no usable
         // web.search is offered in this request, answer truthfully instead of
         // reaching for an unrelated tool. Apple Foundation Models have their
@@ -2762,6 +2762,16 @@ public struct LocalProviderAdapter: ProviderAdapter {
             \(offered)
             \(invocationInstructions)
             """)
+            if !usesNativeToolSchemas,
+               let cad = selectedTools.first(where: { $0.name == "cad.document" }) {
+                // JSON-envelope models receive no native schema channel. Give
+                // this structured editing tool its real argument constraints,
+                // rather than expecting a small model to infer them from a name.
+                sections.append("""
+                CAD TOOL ARGUMENTS (cad.document): \(cad.parametersJSON)
+                Start with action=capabilities or read/query for the actual document. Use path for the workspace .floecad file; query kind=features gives editable parameters and units. Ask capabilities for exact operation arguments before proposing geometry. Never invent entity IDs, successful edits, or visual observations. Text-only models use geometry queries and measurements instead of claiming to see a capture.
+                """)
+            }
         }
 
         // Generated tool metadata is system context, never pseudo-user text.
@@ -3095,9 +3105,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
         )
     }
 
-    /// Small MLX models are reliable with bounded read/search and simple
-    /// local execution, but often hallucinate multi-step browser, SSH, cloud
-    /// and write-heavy source-control actions. Apple Foundation Models are
+    /// Small MLX models use the curated search/file/CAD surface. The ordinary
+    /// runtime still owns CAD permissions and revision checks. Multi-step
+    /// browser, SSH and source-control actions remain outside this ceiling.
+    /// Apple Foundation Models are
     /// deliberately limited to Apple-owned capabilities until Floe can bridge
     /// third-party execution into one native Foundation Models session.
     static func admissibleTools(
@@ -3108,6 +3119,48 @@ public struct LocalProviderAdapter: ProviderAdapter {
             return tools.filter { $0.name.hasPrefix("apple.") }
         }
         return tools.filter { mlxAdmissibleToolNames.contains($0.name) }
+    }
+
+    /// The CAD schema includes extensive authoring examples that exceed a
+    /// small local window before a single tool can be admitted. Remove only
+    /// JSON Schema annotations; retain every validation keyword and field.
+    /// Cloud requests keep their full descriptor, and malformed schemas keep
+    /// their original fail-closed admission behavior.
+    static func compactCADDescriptor(_ tool: ToolSchemaDescriptor) -> ToolSchemaDescriptor {
+        guard tool.name == "cad.document",
+              let object = try? JSONSerialization.jsonObject(with: Data(tool.parametersJSON.utf8))
+        else { return tool }
+        func constraints(_ value: Any) -> Any {
+            guard let fields = value as? [String: Any] else { return value }
+            var result: [String: Any] = [:]
+            let maps = ["properties", "$defs", "definitions", "patternProperties", "dependentSchemas"]
+            let singles = ["additionalProperties", "unevaluatedProperties", "propertyNames", "contains", "items", "additionalItems", "unevaluatedItems", "not", "if", "then", "else", "contentSchema"]
+            for (key, child) in fields {
+                if ["description", "examples", "$comment"].contains(key) { continue }
+                if maps.contains(key), let schemas = child as? [String: Any] {
+                    result[key] = schemas.mapValues { constraints($0) }
+                } else if ["allOf", "anyOf", "oneOf", "prefixItems"].contains(key), let schemas = child as? [Any] {
+                    result[key] = schemas.map { constraints($0) }
+                } else if singles.contains(key) {
+                    // Older schemas can represent tuple items as an array.
+                    if let schemas = child as? [Any] {
+                        result[key] = schemas.map { constraints($0) }
+                    } else {
+                        result[key] = constraints(child)
+                    }
+                } else {
+                    // const/enum/default and extension data are literal values,
+                    // not schemas. Their keys must remain byte-for-byte data.
+                    result[key] = child
+                }
+            }
+            return result
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: constraints(object), options: [.sortedKeys]),
+              let schema = String(data: data, encoding: .utf8) else { return tool }
+        return ToolSchemaDescriptor(name: tool.name,
+            description: "Edit and inspect CAD documents. Read capabilities and query current features, parameters and units before editing. Runtime permissions and revision checks apply.",
+            parametersJSON: schema)
     }
 
     /// Curated model IDs whose MLX chat template must not receive native tool
@@ -3385,8 +3438,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
         return first.name
     }
 
-    /// Curated on-device ceiling. Local models may only ever see web
-    /// retrieval, read-only file lookup and the discovery meta-tools: shell,
+    /// Curated on-device ceiling. Local models may see web retrieval,
+    /// file lookup, authorized CAD editing and the discovery meta-tools: shell,
     /// code execution, Linux provisioning and complex environment lifecycle
     /// management are absent, so discovery cannot reintroduce them. The list
     /// is owned by `LocalModelToolPolicy`; this adapter and the app runtime
@@ -3409,6 +3462,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let actionRequested = requestsAction(text)
         let inventoryRequested = requestsInventory(text)
         let intentPrefixes: [(needles: [String], prefixes: [String])] = [
+            (["cad", "3d", "三维", "建模", "支架", "孔径", "圆角", "材质", "贴图", "bracket", "fillet", "material", "texture"], ["cad."]),
             (["文件", "目录", "文档", "pdf", "代码", "file", "folder", "document", "code"], ["workspace.", "document.", "pdf."]),
             (["图片", "照片", "图像", "视觉", "ocr", "image", "photo", "vision"], ["image."]),
             (["网页", "浏览器", "联网", "搜索", "搜一下", "网站", "天气", "预报", "新闻", "资讯", "热点", "web", "browser", "search", "news", "headline", "weather", "forecast", "url"], ["web."]),

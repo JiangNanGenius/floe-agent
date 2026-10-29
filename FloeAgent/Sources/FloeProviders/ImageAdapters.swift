@@ -614,7 +614,7 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
     }
 
     public func maximumOutputImages(modelRemoteID: String?) -> Int {
-        modelRemoteID?.contains("seedream-5-0-pro") == true ? 1 : 4
+        Seedream5ImageFamily.resolve(modelRemoteID)?.maximumOutputImages ?? 4
     }
 
     public func perform(
@@ -647,18 +647,28 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
             "data:\(Self.mimeType(for: $0));base64,\($0.base64EncodedString())"
         }
         let count = max(1, min(request.count, 4))
+        // Agent Plan keeps the custom provider kind (so it cannot inherit the
+        // PAYG model list) but speaks the Volcengine Ark image contract.
+        let planImageRoute = ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan
+        let imageKind: ProviderKind = planImageRoute ? .volcengineArk : provider.kind
         let nativeSize = try ImageGenerationPresetResolver.nativeSize(
-            provider: provider.kind, modelRemoteID: model,
+            provider: imageKind, modelRemoteID: model,
             operation: request.operation, selection: request.selection
         ) ?? "2K"
+        // Pro and flash document single-image output and no
+        // `sequential_image_generation`; lite keeps grouped generation.
+        let batchSupported = Seedream5ImageFamily.resolve(model)?.supportsBatchGeneration ?? true
+        // Agent Plan's official image example requests a URL result; PAYG
+        // keeps the existing tested b64_json response. Both decode through
+        // the same bounded image path.
         let body = Body(
             model: model,
             prompt: request.prompt,
             image: images,
             size: nativeSize,
-            sequential_image_generation: model.contains("seedream-5-0-pro") ? nil : (count > 1 ? "auto" : "disabled"),
-            sequential_image_generation_options: count > 1 ? ["max_images": count] : nil,
-            response_format: "b64_json",
+            sequential_image_generation: batchSupported ? (count > 1 ? "auto" : "disabled") : nil,
+            sequential_image_generation_options: batchSupported && count > 1 ? ["max_images": count] : nil,
+            response_format: planImageRoute ? "url" : "b64_json",
             watermark: false
         )
         let urlRequest = try RemoteImageHTTP.post(
@@ -723,7 +733,10 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
     ) -> Int {
         guard operation == .edit else { return 0 }
         let model = modelRemoteID?.lowercased() ?? ""
-        if model.contains("qwen-image") { return 3 }
+        // Qwen Image 2.1 accepts up to 10 references; 3.0 accepts up to 3.
+        if model.hasPrefix("qwen-image-3") { return 3 }
+        if model.hasPrefix("qwen-image-2.1") || model.hasPrefix("qwen-image-2-1") { return 10 }
+        if model.hasPrefix("qwen-image") { return 3 }
         if model.contains("wan2.7") { return 9 }
         if model.contains("wan2.6") { return 4 }
         return 0
@@ -746,7 +759,15 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
         }
 
         let root = Self.dashScopeRoot(from: provider.baseURL)
-        if Self.usesMultimodalImageProtocol(model) {
+        switch AlibabaImageWireRoute.resolve(provider: provider, modelRemoteID: model) {
+        case .openAICompatible:
+            return try await performOpenAICompatible(
+                request,
+                model: model,
+                provider: provider,
+                credentials: credentials
+            )
+        case .nativeMultimodal:
             return try await performMultimodal(
                 request,
                 model: model,
@@ -754,28 +775,100 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
                 provider: provider,
                 credentials: credentials
             )
-        }
-        guard request.operation == .generate else {
-            throw RemoteImageError.requestFailed(
-                "DashScope model \(model) does not expose image editing; use wan2.6-image or newer"
+        case .nativeTask:
+            // The legacy asynchronous text2image API is generation-only.
+            guard request.operation == .generate else {
+                throw RemoteImageError.requestFailed(
+                    "DashScope model \(model) does not expose image editing; use qwen-image-3.0, qwen-image-2.1, wan2.6-image or newer"
+                )
+            }
+            let taskID = try await submitTask(
+                request,
+                model: model,
+                root: root,
+                provider: provider,
+                credentials: credentials
             )
+            let imageURLs = try await pollForResults(
+                taskID: taskID,
+                root: root,
+                provider: provider,
+                credentials: credentials
+            )
+            let images = try await downloadImages(
+                imageURLs,
+                providerHost: root.host,
+                requestedCount: request.count
+            )
+            guard !images.isEmpty else {
+                throw RemoteImageError.invalidResponse("DashScope returned no images")
+            }
+            return RemoteImageResult(images: images, metadata: ["model": model])
         }
-        let taskID = try await submitTask(
-            request,
+    }
+
+    // MARK: - Qwen Image 3.0/2.1 OpenAI-compatible contract
+
+    /// PAYG Qwen Image 3.0/2.1 generation and editing. Both modes share
+    /// `POST /compatible-mode/v1/images/generations`; an `image` string/array
+    /// turns generation into editing. Multipart `/images/edits` is never used
+    /// because the provider documents that route as unsupported.
+    private struct OpenAICompatibleBody: Encodable {
+        var model: String
+        var prompt: String
+        var n: Int
+        var size: String
+        var image: [String]?
+        var prompt_extend: Bool
+        var watermark: Bool
+    }
+
+    private func performOpenAICompatible(
+        _ request: RemoteImageRequest,
+        model: String,
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> RemoteImageResult {
+        if request.operation != .generate, request.sourceImages.isEmpty {
+            throw RemoteImageError.requestFailed("DashScope image editing requires a source image")
+        }
+        let size = try ImageGenerationPresetResolver.nativeSize(
+            provider: .alibabaStudio, modelRemoteID: model,
+            operation: request.operation, selection: request.selection
+        ) ?? "1024*1024"
+        let body = OpenAICompatibleBody(
             model: model,
-            root: root,
-            provider: provider,
-            credentials: credentials
+            prompt: request.prompt,
+            n: max(1, min(request.count, 4)),
+            // The OpenAI-compatible contract uses an alphabetic separator;
+            // native DashScope uses `*`.
+            size: size.replacingOccurrences(of: "*", with: "x"),
+            image: request.sourceImages.isEmpty ? nil : try request.sourceImages.map {
+                try Self.imageDataURL($0)
+            },
+            prompt_extend: true,
+            watermark: false
         )
-        let imageURLs = try await pollForResults(
-            taskID: taskID,
-            root: root,
-            provider: provider,
-            credentials: credentials
+        let root = AlibabaEndpointIdentity.compatibleModeRoot(baseURL: provider.baseURL)
+        let urlRequest = try RemoteImageHTTP.post(
+            url: root.appendingPathComponent("images/generations"),
+            apiKey: credentials.apiKey,
+            authHeader: "Authorization",
+            extraHeaders: provider.nonSecretHeaders,
+            body: body
         )
-        let images = try await downloadImages(
-            imageURLs,
-            providerHost: root.host,
+        let (data, response) = try await BoundedHTTP.data(
+            for: urlRequest,
+            session: session,
+            maxBytes: 32 * 1_024 * 1_024
+        )
+        try RemoteImageHTTP.validate(
+            response, data: data, provider: "DashScope", apiKey: credentials.apiKey, allowRouteFallback: true
+        )
+        let images = try await RemoteImageDecoder.images(
+            from: data,
+            b64Key: "b64_json",
+            urlKey: "url",
             requestedCount: request.count
         )
         guard !images.isEmpty else {
@@ -802,7 +895,6 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             var prompt_extend: Bool
             var watermark: Bool
             var n: Int
-            var enable_interleave: Bool
             var size: String
         }
 
@@ -825,11 +917,11 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             text: request.prompt,
             image: nil
         )]
-        content.append(contentsOf: request.sourceImages.map {
-            .init(text: nil, image: Self.imageDataURL($0))
+        content.append(contentsOf: try request.sourceImages.map {
+            .init(text: nil, image: try Self.imageDataURL($0))
         })
         let nativeSize = try ImageGenerationPresetResolver.nativeSize(
-            provider: provider.kind, modelRemoteID: model,
+            provider: .alibabaStudio, modelRemoteID: model,
             operation: request.operation, selection: request.selection
         ) ?? "2K"
         let body = MultimodalBody(
@@ -839,7 +931,6 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
                 prompt_extend: true,
                 watermark: false,
                 n: max(1, min(request.count, 4)),
-                enable_interleave: false,
                 size: nativeSize
             )
         )
@@ -924,7 +1015,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
                 "1280*1280"
             } else {
                 try ImageGenerationPresetResolver.nativeSize(
-                    provider: provider.kind, modelRemoteID: model,
+                    provider: .alibabaStudio, modelRemoteID: model,
                     operation: request.operation, selection: request.selection
                 ) ?? "1280*1280"
             }
@@ -954,7 +1045,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             "1024*1024"
         } else {
             try ImageGenerationPresetResolver.nativeSize(
-                provider: provider.kind, modelRemoteID: model,
+                provider: .alibabaStudio, modelRemoteID: model,
                 operation: request.operation, selection: request.selection
             ) ?? "1024*1024"
         }
@@ -1107,15 +1198,12 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
         model.lowercased().hasPrefix("wan2.6-t2i")
     }
 
-    private static func usesMultimodalImageProtocol(_ model: String) -> Bool {
-        let normalized = model.lowercased()
-        return normalized.hasPrefix("wan2.6-image")
-            || normalized.hasPrefix("wan2.7-image")
-            || normalized.hasPrefix("qwen-image-3")
-    }
-
-    private static func imageDataURL(_ data: Data) -> String {
-        let mime = data.starts(with: [0x89, 0x50, 0x4E, 0x47]) ? "image/png" : "image/jpeg"
+    private static func imageDataURL(_ data: Data) throws -> String {
+        guard let mime = ImageWireFormat.sniffMimeType(data) else {
+            throw RemoteImageError.requestFailed(
+                "Source image bytes are not a supported image format (png/jpeg/gif/webp)"
+            )
+        }
         return "data:\(mime);base64,\(data.base64EncodedString())"
     }
 

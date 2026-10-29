@@ -87,3 +87,17 @@ upstream sync can rebase instead of re-deriving the patches.
   Canvas creation path are not wired (models persist; `three_d_assembly` /
   `three_d_drawing` answer `not_implemented`).
 - The Catalyst OCCT slice is not vendored (see UPSTREAM.md).
+
+
+## 2026-10-30: continuous editing, materials and presentation
+
+Floe extends the existing document/session and undo history with typed parameter edits,
+query-generation fences, failed-edit checkpoints, reusable PBR materials, per-face
+appearance bindings and additive package fields. Canvas and task hosts resolve the
+same native package and independently enforce ownership. The Metal editor consumes
+the same applied material snapshot as the non-AR RealityKit presentation. Shader ABI
+extensions are mirrored in the shim and bundled shader headers. GLB export carries
+actual PBR factors, embedded image resources and a millimetre-to-metre root transform;
+PNG uses the active renderer. Legacy geometry remains readable when optional
+appearance resources cannot be used. Upstream licenses and the OCCT relink route
+remain unchanged. Validation and release status belong to the build-specific records.

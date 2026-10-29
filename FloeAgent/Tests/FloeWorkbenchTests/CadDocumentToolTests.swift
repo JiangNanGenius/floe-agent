@@ -1557,3 +1557,203 @@ struct CadDocumentServiceRequestTests {
         }
     }
 }
+
+// MARK: - Material / parameter / capture actions
+
+extension FakeCadHost {
+    func captureViewport(documentID: String, width: Int, height: Int,
+                         expectedRevision: Int64?,
+                         access: CadDocumentAccess) async throws -> CadViewportCapture {
+        let png = Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )!
+        return CadViewportCapture(
+            pngData: png, width: width, height: height,
+            revision: expectedRevision ?? revision, changeCount: 9,
+            contentSHA256: String(repeating: "a", count: 64),
+            sha256: String(repeating: "e", count: 64),
+            renderer: "engineering", note: "actual test viewport")
+    }
+}
+
+@Suite("cad.document material, parameter and capture actions")
+struct CadNativeEditToolTests {
+    func makeContext() -> ToolContext {
+        ToolContext(runID: UUID(), toolCallID: "call-edit-1", scope: .local,
+                    workspaceRootURL: URL(fileURLWithPath: "/tmp/workspace"),
+                    cancellation: CancellationToken(), environmentID: "env-1",
+                    conversationID: UUID())
+    }
+
+    func decode(_ json: String) throws -> CadDocumentArguments {
+        try JSONDecoder().decode(CadDocumentArguments.self, from: Data(json.utf8))
+    }
+
+    func execute(_ tool: CadDocumentTool, _ json: String,
+                 context: ToolContext) async throws -> ToolExecutionOutput {
+        let args = try decode(json)
+        try tool.validate(args)
+        return try await tool.execute(args, context: context)
+    }
+
+    @Test("material create/apply requests reach the host as the material kind")
+    func materialActionRoutes() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"mutated":true,"revision":5,"change_count":3}"#)
+        let tool = CadDocumentTool(host: host)
+        let output = try await execute(tool, """
+        {"action":"material","path":"part.floecad","payload":
+         "{\\"action\\":\\"create\\",\\"name\\":\\"Copper\\",\\"color\\":[0.8,0.4,0.2,1.0],\\"metallic\\":1.0}"}
+        """, context: makeContext())
+        #expect(output.summary.contains("cad.document material"))
+        let requests = await host.threeDRequests
+        let request = try #require((try JSONSerialization.jsonObject(
+            with: Data(try #require(requests.last).utf8))) as? [String: Any])
+        #expect(request["kind"] as? String == "material")
+        #expect(request["revision"] as? Int == 4,
+                "the optional revision pin must be forwarded, not dropped")
+        let payload = try #require(request["payload"] as? [String: Any])
+        #expect(payload["action"] as? String == "create")
+        #expect(payload["name"] as? String == "Copper")
+    }
+
+    @Test("an unknown material action is refused before the host")
+    func materialUnknownActionRefused() throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        let args = try decode("""
+        {"action":"material","path":"part.floecad","payload":"{\\"action\\":\\"explode\\"}"}
+        """)
+        #expect(throws: FloeError.self) { try tool.validate(args) }
+    }
+
+    @Test("parameters update requires the typed feature/changes contract")
+    func parametersActionRoutesAndValidates() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"mutated":true,"revision":6}"#)
+        let tool = CadDocumentTool(host: host)
+        let feature = UUID().uuidString
+        _ = try await execute(tool, """
+        {"action":"parameters","path":"part.floecad","payload":
+         "{\\"action\\":\\"update\\",\\"feature_id\\":\\"\(feature)\\",\\"changes\\":{\\"distance\\":12.5}}"}
+        """, context: makeContext())
+        let requests = await host.threeDRequests
+        let request = try #require((try JSONSerialization.jsonObject(
+            with: Data(try #require(requests.last).utf8))) as? [String: Any])
+        #expect(request["kind"] as? String == "parameters")
+
+        let missing = try decode("""
+        {"action":"parameters","path":"part.floecad","payload":"{\\"action\\":\\"update\\"}"}
+        """)
+        #expect(throws: FloeError.self) { try tool.validate(missing) }
+    }
+
+    @Test("capture returns a real image artifact bound to revision/change count")
+    func captureReturnsArtifact() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        let context = makeContext()
+        let output = try await execute(tool, """
+        {"action":"capture","path":"part.floecad","revision":4,"payload":"{\\"width\\":640,\\"height\\":480}"}
+        """, context: context)
+        let artifact = try #require(output.artifacts.first)
+        #expect(artifact.mimeType == "image/png")
+        #expect(artifact.sha256 == String(repeating: "e", count: 64))
+        #expect(artifact.byteCount > 0)
+        #expect(output.summary.contains("\"revision\":4"))
+        #expect(output.summary.contains("\"renderer\":\"engineering\""))
+        #expect(output.summary.contains("\"content_sha256\":\"\(String(repeating: "a", count: 64))\""))
+        #expect(output.summary.contains("\"image_sha256\":\"\(String(repeating: "e", count: 64))\""))
+        #expect(output.summary.contains("vision"))
+
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: false)
+        let url = support.appendingPathComponent("FloeAgent")
+            .appendingPathComponent(artifact.relativePath)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        try? FileManager.default.removeItem(
+            at: support.appendingPathComponent("FloeAgent")
+                .appendingPathComponent("CADViewportArtifacts/\(context.runID.uuidString)"))
+    }
+
+    @Test("temporary chat refuses a global material-library export (it writes a file)")
+    func temporaryGlobalLibraryExportRefused() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"mutated":true}"#)
+        let tool = CadDocumentTool(host: host)
+        let args = try decode("""
+        {"action":"material","path":"part.floecad","payload":
+         "{\"action\":\"libraryExport\",\"global\":true}"}
+        """)
+        let context = ToolContext(
+            runID: UUID(), toolCallID: "call-temp-1", scope: .local,
+            workspaceRootURL: URL(fileURLWithPath: "/tmp/workspace"),
+            cancellation: CancellationToken(), environmentID: "env-1",
+            conversationID: UUID(), temporaryReadOnly: true)
+        do {
+            _ = try await tool.execute(args, context: context)
+            Issue.record("temporary chat must refuse a global library export")
+        } catch let error as FloeError {
+            guard case .unauthorized = error else {
+                Issue.record("unexpected refusal: \(error)")
+                return
+            }
+        }
+        #expect(await host.threeDRequests.isEmpty)
+
+        // A non-global export only returns JSON bytes; it remains a read.
+        await host.setThreeDReply(#"{"ok":true,"library_json":"{}"}"#)
+        let readArgs = try decode("""
+        {"action":"material","path":"part.floecad","payload":"{\"action\":\"libraryExport\"}"}
+        """)
+        _ = try await tool.execute(readArgs, context: context)
+        #expect(await host.threeDRequests.count == 1)
+    }
+
+    @Test("canvas-cad authority/canonical target use the frozen serviceStorePaths map only")
+    func canvasCadUsesFrozenTrustedMap() throws {
+        let canvas = UUID()
+        let key = "canvas-cad:\(canvas.uuidString)/Part.floecad"
+        let path = "/tmp/CanvasCAD/\(canvas.uuidString)/Part.floecad"
+        var context = ToolContext(
+            runID: UUID(), toolCallID: "call-canvas-1", scope: .local,
+            workspaceRootURL: nil, cancellation: CancellationToken(),
+            environmentID: "env-1", conversationID: UUID())
+        context.serviceStorePaths[
+            TypedMutationContract.cadCanvasBindingPrefix + key] = path
+        let args = try decode("""
+        {"action":"apply","path":"\(key)","proposal_id":"\(UUID().uuidString)"}
+        """)
+        #expect(CadDocumentTool.authorityTarget(for: args, context: context)
+            == "file:" + URL(fileURLWithPath: path).standardizedFileURL
+                .resolvingSymlinksInPath().path)
+        do {
+            try CadDocumentTool.authorizeDocumentPath(key, context: context)
+        } catch {
+            Issue.record("a frozen trusted canvas map must authorize its exact key: \(error)")
+        }
+
+        // A missing/frozen-out entry fails closed; the key's text alone grants
+        // nothing.
+        var withoutMap = context
+        withoutMap.serviceStorePaths = [:]
+        #expect(CadDocumentTool.authorityTarget(for: args, context: withoutMap)
+            == "unresolved:canvas-cad")
+        #expect(throws: FloeError.self) {
+            try CadDocumentTool.authorizeDocumentPath(key, context: withoutMap)
+        }
+    }
+
+    @Test("capture validates size bounds and revision before the host")
+    func captureValidation() throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        for json in [
+            #"{"action":"capture","path":"part.floecad","payload":"{\"width\":12}"}"#,
+            #"{"action":"capture","path":"part.dwg"}"#,
+            #"{"action":"capture","path":"part.floecad","revision":-1}"#,
+        ] {
+            let args = try decode(json)
+            #expect(throws: FloeError.self) { try tool.validate(args) }
+        }
+    }
+}

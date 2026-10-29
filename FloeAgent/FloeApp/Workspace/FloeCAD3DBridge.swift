@@ -155,6 +155,7 @@ final class FloeCAD3DBridge {
                 "ok": true,
                 "summary": summaryObject(document),
                 "state": jsonObject(document.snapshotJSON()),
+                "scene": document.sceneSummaryJSON(),
             ])
 
         case "query":
@@ -185,6 +186,124 @@ final class FloeCAD3DBridge {
                 "error": outcome.errorCode ?? "",
                 "message": outcome.message ?? "",
             ])
+
+        case "material":
+            var payload = request["payload"] as? [String: Any] ?? [:]
+            guard let action = payload["action"] as? String, !action.isEmpty else {
+                throw CADDocumentError(code: "missing_action",
+                                       message: "material requires payload.action ("
+                                        + CADMaterialService.actions.joined(separator: "|") + ").")
+            }
+            try Self.requireRevisionPin(request, document: document)
+            if (action == "libraryImport" || action == "libraryList"),
+               Self.bool(payload["global"]) == true {
+                let url = FloeCADDocument.sharedMaterialLibraryURL
+                if FileManager.default.fileExists(atPath: url.path) {
+                    let data = try Data(contentsOf: url)
+                    guard data.count <= CADMaterialService.maximumSharedLibraryBytes,
+                          let text = String(data: data, encoding: .utf8) else {
+                        throw CADDocumentError(code: "global_library_invalid",
+                                               message: "The shared material library is unreadable or too large.")
+                    }
+                    payload["library_json"] = text
+                } else if action == "libraryList" {
+                    // An absent personal library is a valid empty state, not a
+                    // failed read; the UI can then create the first entry.
+                    payload["library_json"] = #"{"schemaVersion":1,"entries":[],"updatedAt":0}"#
+                } else {
+                    throw CADDocumentError(code: "global_library_missing",
+                                           message: "No shared material library has been saved on this device yet.")
+                }
+            }
+            // Capture the pre-edit generation BEFORE the service mutates, then
+            // capture the exact post-edit generation. A failed save may only
+            // undo while the document is still at that post-edit generation.
+            let changeBefore = document.liveChangeCount
+            let checkpoint = document.captureEditCheckpoint()
+            var reply = CADMaterialService(document: document).handle(action: action, args: payload)
+            if Self.bool(reply["mutated"]) == true {
+                let changeAfter = document.liveChangeCount
+                if changeAfter == changeBefore {
+                    reply["saved"] = false
+                    reply["note"] = "The service reported a mutation but applied no undoable document command."
+                } else {
+                    let commit = await CADNativeEditCommit.save(
+                        document: document, changeAfterMutation: changeAfter,
+                        rollback: action == "undo" ? .redo
+                            : (action == "redo" ? .undo : .undo),
+                        checkpoint: checkpoint)
+                    if commit.saved {
+                        reply["saved"] = true
+                        reply["revision"] = commit.revision
+                        reply["content_sha256"] = commit.contentSHA256
+                    } else {
+                        reply["ok"] = false
+                        reply["error"] = commit.concurrentEdit ? "concurrent_edit" : "save_failed"
+                        reply["message"] = commit.error
+                        reply["rolled_back"] = commit.rolledBack
+                        reply["concurrent_edit"] = commit.concurrentEdit
+                        reply["revision"] = commit.revision
+                    }
+                }
+            }
+            if action == "libraryExport", Self.bool(payload["global"]) == true,
+               let text = reply["library_json"] as? String {
+                let target = FloeCADDocument.sharedMaterialLibraryURL
+                let incoming = Data(text.utf8)
+                // Coordinated read-merge-write on the SAME file key the UI
+                // store uses. A corrupt/oversized existing library is a
+                // refusal, never silently replaced by the incoming document.
+                do {
+                    try CADMaterialLibraryJSONMerge.mergeInPlace(
+                        at: target, incoming: incoming,
+                        maximumBytes: CADMaterialService.maximumSharedLibraryBytes)
+                } catch let error as CADMaterialLibraryJSONMerge.MergeError {
+                    throw CADDocumentError(code: error.code, message: error.message)
+                }
+                reply["global_saved"] = true
+                // The bytes live in the shared file; do not echo a potentially
+                // multi-megabyte base64 payload through the model reply.
+                reply["library_json"] = nil
+            }
+            return try jsonString(reply)
+
+        case "parameters":
+            let payload = request["payload"] as? [String: Any] ?? [:]
+            guard let action = payload["action"] as? String, !action.isEmpty else {
+                throw CADDocumentError(code: "missing_action",
+                                       message: "parameters requires payload.action ("
+                                        + CADParameterService.actions.joined(separator: "|") + ").")
+            }
+            try Self.requireRevisionPin(request, document: document)
+            let changeBefore = document.liveChangeCount
+            let checkpoint = document.captureEditCheckpoint()
+            var reply = CADParameterService(document: document).handle(action: action, args: payload)
+            if Self.bool(reply["mutated"]) == true {
+                let changeAfter = document.liveChangeCount
+                if changeAfter == changeBefore {
+                    reply["saved"] = false
+                    reply["note"] = "The service reported a mutation but applied no undoable document command."
+                } else {
+                    let commit = await CADNativeEditCommit.save(
+                        document: document, changeAfterMutation: changeAfter,
+                        rollback: action == "undo" ? .redo
+                            : (action == "redo" ? .undo : .undo),
+                        checkpoint: checkpoint)
+                    if commit.saved {
+                        reply["saved"] = true
+                        reply["revision"] = commit.revision
+                        reply["content_sha256"] = commit.contentSHA256
+                    } else {
+                        reply["ok"] = false
+                        reply["error"] = commit.concurrentEdit ? "concurrent_edit" : "save_failed"
+                        reply["message"] = commit.error
+                        reply["rolled_back"] = commit.rolledBack
+                        reply["concurrent_edit"] = commit.concurrentEdit
+                        reply["revision"] = commit.revision
+                    }
+                }
+            }
+            return try jsonString(reply)
 
         case "check":
             let payload = request["payload"] as? [String: Any] ?? [:]
@@ -390,6 +509,10 @@ final class FloeCAD3DBridge {
                 "formats": NativeCADCapabilityMatrix.json(),
             ],
             "operation_names": FloeCADDocument.nativeOperationNames,
+            "material_actions": CADMaterialService.actions,
+            "parameter_actions": CADParameterService.actions,
+            "scene_snapshot_schema": FloeCADDocument.sceneSnapshotSchemaVersion,
+            "viewport_capture": ["formats": ["png"], "min_size": 64, "max_size": 4096],
             "assembly_actions": ["report", "instances", "addInstance", "removeInstance",
                                  "setTransform", "setVisible", "addConstraint",
                                  "removeConstraint", "suppressConstraint", "solve",
@@ -857,6 +980,76 @@ final class FloeCAD3DBridge {
         return pending
             .filter { proposalDocument[$0.id].map { self.key($0) == key } ?? false }
             .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    // MARK: - Viewport capture / shared material library
+
+    /// Actual offscreen viewport render of the live document, bound to its
+    /// revision and live change count. The host owns artifact writing.
+    func captureViewport(at url: URL, width: Int, height: Int,
+                         expectedRevision: Int?) async throws -> CADViewportCaptureResult {
+        let document = try await document(at: url)
+        #if canImport(SwiftUI) && canImport(RealityKit) && canImport(UIKit)
+        // Present owns the pixels while it is actually showing this document.
+        // Inactive -> nil -> explicit engineering fallback. Active failure or
+        // a stale revision throws and MUST NOT be replaced by another renderer.
+        if let presented = try await document.capturePresentedPNG(
+            width: width, expectedRevision: expectedRevision) {
+            return CADViewportCaptureResult(
+                pngData: presented.pngData,
+                width: presented.width,
+                height: presented.height,
+                revision: presented.revision,
+                changeCount: presented.changeCount,
+                // The PNG digest and the document package identity are
+                // different identities; never alias one to the other.
+                contentSHA256: document.contentSHA256,
+                sha256: presented.sha256,
+                renderer: "presentation",
+                note: "Actual live RealityKit Present render of the open document.")
+        }
+        #endif
+        return try document.captureViewportPNG(width: width, height: height,
+                                               expectedRevision: expectedRevision)
+    }
+
+    /// App-owned shared material library file, used only by explicit
+    /// libraryImport/libraryExport calls. Document packages stay self-contained.
+    nonisolated static func materialLibraryFileURL(createDirectory: Bool = false) throws -> URL {
+        let url = FloeCADDocument.sharedMaterialLibraryURL
+        if createDirectory {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+        }
+        return url
+    }
+
+    /// An optional provided revision pin is authoritative: a mismatch is
+    /// refused BEFORE any material/parameter mutation. `nil` keeps the
+    /// ordinary action contract.
+    static func requireRevisionPin(_ request: [String: Any],
+                                   document: FloeCADDocument) throws {
+        guard let raw = request["revision"] else { return }
+        let value: Int64
+        if let number = raw as? Int64 { value = number }
+        else if let number = raw as? Int { value = Int64(number) }
+        else if let number = raw as? NSNumber { value = number.int64Value }
+        else if let text = raw as? String, let number = Int64(text) { value = number }
+        else {
+            throw CADDocumentError(code: "bad_revision", message: "revision must be an integer.")
+        }
+        guard value == Int64(document.revision) else {
+            throw CADDocumentError(
+                code: "revision_mismatch",
+                message: "The document is at revision \(document.revision), not the requested "
+                    + "\(value). Re-read it before this material/parameter action.")
+        }
+    }
+
+    static func bool(_ value: Any?) -> Bool? {
+        if let value = value as? Bool { return value }
+        if let value = value as? NSNumber { return value.boolValue }
+        return nil
     }
 
     // MARK: Helpers

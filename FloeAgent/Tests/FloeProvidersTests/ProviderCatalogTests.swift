@@ -193,7 +193,8 @@ struct ProviderCatalogTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let catalogURL = packageRoot.appendingPathComponent("FloeApp/Resources/ProviderCatalog.json")
+        let catalogURL = Bundle.main.url(forResource: "ProviderCatalog", withExtension: "json")
+            ?? packageRoot.appendingPathComponent("FloeApp/Resources/ProviderCatalog.json")
         guard FileManager.default.fileExists(atPath: catalogURL.path) else {
             // Volume/worktree checkouts may omit the app target resource; the
             // integration build covers the bundled path instead.
@@ -215,6 +216,30 @@ struct ProviderCatalogTests {
         #expect(index.all.first { $0.presetID == "openai" }?.kind == .openAI)
         #expect(index.search(query: "深度求索", filter: .all, configuredPresetIDs: []).first?.presetID == "deepseek")
         #expect(index.search(query: "硅基流动", filter: .all, configuredPresetIDs: []).first?.presetID == "siliconflow")
+
+        let agentPlan = try #require(index.entry(presetID: "volcengine-agent-plan"))
+        #expect(agentPlan.serviceOffers?.first { $0.role == .image }?.models
+                == ["doubao-seedream-5-0-pro", "doubao-seedream-5.0-flash", "doubao-seedream-5.0-lite"])
+        #expect(agentPlan.serviceOffers?.contains(where: { $0.role == .video }) != true)
+        #expect(agentPlan.modelMetadata?["doubao-seedream-5.0-lite"] != nil)
+        #expect(agentPlan.modelMetadata?["doubao-seedream-5-0-pro"] != nil)
+        #expect(agentPlan.modelMetadata?["doubao-seedream-5.0-flash"] != nil)
+        // No PAYG Seedream/Seedance identifier leaks into the plan entry.
+        #expect(agentPlan.models.allSatisfy { !$0.contains("seedream") && !$0.contains("seedance") })
+
+        let tokenPlan = try #require(index.entry(presetID: "alibaba-token-plan"))
+        #expect(tokenPlan.serviceOffers?.first { $0.role == .image }?.models
+                == ["qwen-image-3.0-pro", "wan2.7-image", "wan2.7-image-pro"])
+        #expect(tokenPlan.serviceOffers?.first { $0.role == .video }?.models
+                == ["happyhorse-1.1-i2v", "happyhorse-1.1-t2v", "wan3.0-video"])
+        #expect(tokenPlan.modelMetadata?["qwen-image-3.0"] == nil)
+        #expect(tokenPlan.models.contains("qwen-image-3.0-pro") == false)
+        #expect(tokenPlan.modelMetadata?["qwen3.8-max"]?.contextTokens == 983_616)
+        #expect(tokenPlan.modelMetadata?["qwen3.8-max"]?.maxOutputTokens == 131_072)
+
+        let payg = try #require(index.entry(presetID: "alibaba"))
+        #expect(payg.serviceOffers?.first { $0.role == .image }?.models.contains("qwen-image-2.1-pro") == true)
+        #expect(payg.serviceOffers?.first { $0.role == .video }?.models == ["wan3.0-video"])
     }
 }
 
@@ -464,6 +489,29 @@ struct ProviderCatalogValidationTests {
         document = validDocument()
         document.providers = [makeEntry("openai", name: String(repeating: "n", count: 129))]
         try expectRejection(document, containing: "name must be 1...128")
+    }
+
+    @Test("Rejects invalid optional model context and output facts")
+    func modelLimitMetadataRejections() throws {
+        func documentWith(contextTokens: Int?, maxOutputTokens: Int?) -> ProviderCatalogDocument {
+            var entry = makeEntry("openai", name: "OpenAI", models: ["gpt-5"])
+            entry.modelMetadata = [
+                "gpt-5": ProviderCatalogModelMetadata(
+                    contextTokens: contextTokens,
+                    maxOutputTokens: maxOutputTokens
+                )
+            ]
+            return makeDocument([entry])
+        }
+        try expectRejection(documentWith(contextTokens: 0, maxOutputTokens: nil), containing: "contextTokens")
+        try expectRejection(documentWith(contextTokens: nil, maxOutputTokens: 0), containing: "maxOutputTokens")
+        try expectRejection(
+            documentWith(contextTokens: 10_000_001, maxOutputTokens: nil),
+            containing: "contextTokens"
+        )
+        // A stated limit alone is a real fact (not "empty metadata").
+        let data = try JSONEncoder().encode(documentWith(contextTokens: 128_000, maxOutputTokens: 8_192))
+        _ = try ProviderCatalogIndex.validated(from: data)
     }
 
     @Test("Rejects oversized payloads before decoding")

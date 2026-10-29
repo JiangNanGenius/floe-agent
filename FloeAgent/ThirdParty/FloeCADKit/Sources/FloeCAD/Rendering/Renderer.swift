@@ -211,17 +211,20 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // 2. Opaque bodies. Wireframe swaps the fill for a depth-only prepass
         // so hidden lines stay hidden; x-ray defers every body to the
-        // translucent pass (6).
+        // translucent pass (6). Only OPAQUE ranges draw here: one transparent
+        // face material must not push the whole body into the blended pass.
         switch mode {
         case .shaded, .shadedNoEdges:
             encoder.setDepthStencilState(pipelines.depthReadWrite)
             for drawable in scene.bodies where !drawable.isTranslucent {
-                drawBody(drawable, encoder: encoder, pipeline: pipelines.lit, frame: frame)
+                drawBody(drawable, encoder: encoder, pipeline: pipelines.lit,
+                         frame: frame, filter: .opaqueOnly)
             }
         case .wireframe:
             encoder.setDepthStencilState(pipelines.depthReadWrite)
             for drawable in scene.bodies where !drawable.isTranslucent {
-                drawBody(drawable, encoder: encoder, pipeline: pipelines.depthOnly, frame: frame)
+                drawBody(drawable, encoder: encoder, pipeline: pipelines.depthOnly,
+                         frame: frame, filter: .opaqueOnly)
             }
         case .xray:
             break
@@ -308,12 +311,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         // 6. Translucent bodies (previews) last; in x-ray every body renders
-        // here at a fixed low alpha (depth read, no write).
-        for drawable in scene.bodies where drawable.isTranslucent || mode == .xray {
+        // here at a fixed low alpha (depth read, no write). A body with only
+        // some transparent ranges draws just those ranges here — its opaque
+        // ranges already wrote depth in pass 2.
+        for drawable in scene.bodies
+        where drawable.isTranslucent || drawable.hasTransparentMaterial || mode == .xray {
             encoder.setDepthStencilState(pipelines.depthReadOnly)
             let xrayAlpha: Float? = (mode == .xray && !drawable.isTranslucent) ? 0.35 : nil
+            let filter: BodyPassFilter =
+                (drawable.isTranslucent || mode == .xray) ? .all : .transparentOnly
             drawBody(drawable, encoder: encoder, pipeline: pipelines.litBlended,
-                     alphaOverride: xrayAlpha, frame: frame)
+                     alphaOverride: xrayAlpha, frame: frame, filter: filter)
         }
     }
 
@@ -608,57 +616,135 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // MARK: - Draw helpers
 
+    /// Which material ranges of a body a pass may draw. Opaque ranges write
+    /// depth in the opaque pass; transparent ranges are blended afterwards, so
+    /// one translucent face cannot demote its whole body.
+    private enum BodyPassFilter {
+        case all
+        case opaqueOnly
+        case transparentOnly
+    }
+
     private func drawBody(
         _ drawable: BodyDrawable,
         encoder: MTLRenderCommandEncoder,
         pipeline: MTLRenderPipelineState,
         alphaOverride: Float? = nil,
-        frame: FrameUniforms? = nil
+        frame: FrameUniforms? = nil,
+        filter: BodyPassFilter = .all
     ) {
         guard let resources = cache.resources(for: drawable.id) else { return }
-        // An imported body with a texture and texcoords shades through the
-        // textured twin of the requested lit pipeline; depth-only and other
-        // passes keep the pipeline they asked for.
-        var chosen = pipeline
-        if let texcoords = resources.texcoordBuffer,
-           let texture = bodyTextures.texture(for: drawable.id) {
-            if pipeline === context.pipelines.lit {
-                chosen = context.pipelines.litTextured
-            } else if pipeline === context.pipelines.litBlended {
-                chosen = context.pipelines.litTexturedBlended
+        var drawFrame = frame ?? makeFrameUniforms()
+
+        let ranges = (resources.baseRange.map { [$0] } ?? []) + resources.faceRanges
+        for range in ranges {
+            // Read the LIVE material (scalar-only edits must reach the
+            // uniforms without invalidating the cached buffers).
+            let material = range.material(in: drawable)
+            switch filter {
+            case .all:
+                break
+            case .opaqueOnly:
+                if range.isTransparent(in: drawable) { continue }
+            case .transparentOnly:
+                if !range.isTransparent(in: drawable) { continue }
             }
-            if chosen !== pipeline {
-                encoder.setVertexBuffer(texcoords, offset: 0,
-                                        index: Int(BufferIndexTexcoords.rawValue))
-                encoder.setFragmentTexture(texture, index: 0)
-            }
+            drawRange(
+                drawable: drawable,
+                range: range,
+                material: material,
+                positionBuffer: resources.positionBuffer,
+                normalBuffer: resources.normalBuffer,
+                encoder: encoder,
+                pipeline: pipeline,
+                alphaOverride: alphaOverride,
+                frame: &drawFrame)
         }
-        encoder.setRenderPipelineState(chosen)
-        var body = makeBodyUniforms(drawable)
+    }
+
+    /// One indexed range with its own material. The vertex buffers, model
+    /// matrix and camera frame are shared with the body; only the material,
+    /// index range, texcoords and image-map bindings change. Every range sets
+    /// its OWN uniforms and all six texture units, so no map can leak from the
+    /// previous body or face.
+    private func drawRange(
+        drawable: BodyDrawable,
+        range: BodyGPUResources.Range,
+        material: BodyMaterial?,
+        positionBuffer: MTLBuffer,
+        normalBuffer: MTLBuffer,
+        encoder: MTLRenderCommandEncoder,
+        pipeline: MTLRenderPipelineState,
+        alphaOverride: Float?,
+        frame: inout FrameUniforms
+    ) {
+        var body = makeBodyUniforms(
+            modelMatrix: drawable.modelMatrix,
+            material: material,
+            baseColor: drawable.baseColor,
+            selectionState: drawable.selectionState)
         if let alphaOverride {
             body.baseColor.w = alphaOverride
         }
-        encoder.setVertexBuffer(resources.positionBuffer, offset: 0,
+
+        var flags: UInt32 = 0
+        var flipVFlags: UInt32 = 0
+        var srgbFlags: UInt32 = 0
+        var chosen = pipeline
+        if let texcoordBuffer = range.texcoordBuffer, !range.maps.isEmpty {
+            // Every texture argument of `fragment_litTextured` is bound on
+            // every draw: neutral fallbacks first, then the maps that
+            // actually decoded. A failed decode leaves its flag clear, so the
+            // range keeps the scalar factor instead of sampling a fake map.
+            if let neutral = bodyTextures.neutralTexture(device: context.device) {
+                for slot in MaterialTextureSlot.allCases {
+                    encoder.setFragmentTexture(neutral, index: slot.textureUnit)
+                }
+            }
+            for map in range.maps {
+                guard let texture = bodyTextures.texture(forKey: map.cacheKey) else {
+                    continue
+                }
+                flags |= map.flag
+                if map.flipsV { flipVFlags |= map.flag }
+                if map.isSRGB { srgbFlags |= map.flag }
+                encoder.setFragmentTexture(texture, index: map.textureUnit)
+            }
+            if flags != 0 {
+                if pipeline === context.pipelines.lit {
+                    chosen = context.pipelines.litTextured
+                } else if pipeline === context.pipelines.litBlended {
+                    chosen = context.pipelines.litTexturedBlended
+                }
+                if chosen !== pipeline {
+                    encoder.setVertexBuffer(texcoordBuffer, offset: 0,
+                                            index: Int(BufferIndexTexcoords.rawValue))
+                }
+            }
+        }
+        body.textureFlags = flags
+        body.flipVFlags = flipVFlags
+        body.srgbFlags = srgbFlags
+        body.normalStrength =
+            (flags & MaterialTextureSlot.normal.uniformFlag) != 0 ? 1 : 0
+
+        encoder.setRenderPipelineState(chosen)
+        encoder.setVertexBuffer(positionBuffer, offset: 0,
                                 index: Int(BufferIndexPositions.rawValue))
-        encoder.setVertexBuffer(resources.normalBuffer, offset: 0,
+        encoder.setVertexBuffer(normalBuffer, offset: 0,
                                 index: Int(BufferIndexNormals.rawValue))
         encoder.setVertexBytes(&body, length: MemoryLayout<BodyUniforms>.stride,
                                index: Int(BufferIndexBodyUniforms.rawValue))
         encoder.setFragmentBytes(&body, length: MemoryLayout<BodyUniforms>.stride,
                                  index: Int(BufferIndexBodyUniforms.rawValue))
-        // Reuse the frame already bound for this encode: a snapshot encode's
-        // frame carries the independent fitted camera, so per-draw lighting
-        // must not rebuild one from the live camera.
-        var drawFrame = frame ?? makeFrameUniforms()
-        encoder.setFragmentBytes(&drawFrame, length: MemoryLayout<FrameUniforms>.stride,
+        encoder.setFragmentBytes(&frame, length: MemoryLayout<FrameUniforms>.stride,
                                  index: Int(BufferIndexFrameUniforms.rawValue))
         encoder.drawIndexedPrimitives(
             type: .triangle,
-            indexCount: resources.indexCount,
+            indexCount: range.indexCount,
             indexType: .uint32,
-            indexBuffer: resources.indexBuffer,
-            indexBufferOffset: 0
-        )
+            indexBuffer: range.indexBuffer,
+            indexBufferOffset: 0)
     }
 
     private func drawEdges(
@@ -791,16 +877,36 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     private func makeBodyUniforms(_ drawable: BodyDrawable) -> BodyUniforms {
+        makeBodyUniforms(modelMatrix: drawable.modelMatrix,
+                         material: drawable.material,
+                         baseColor: drawable.baseColor,
+                         selectionState: drawable.selectionState)
+    }
+
+    private func makeBodyUniforms(modelMatrix: simd_float4x4,
+                                  material: BodyMaterial?,
+                                  baseColor: SIMD4<Float>,
+                                  selectionState: UInt32) -> BodyUniforms {
         var body = BodyUniforms()
-        body.modelMatrix = drawable.modelMatrix
-        body.baseColor = drawable.baseColor
-        body.selectionState = drawable.selectionState
+        body.modelMatrix = modelMatrix
+        body.baseColor = baseColor
+        body.selectionState = selectionState
         // Visualization-lite material: zero metallic/roughness (the C-struct
-        // default) keeps the legacy shading path in fragment_lit.
-        if let material = drawable.material {
+        // default) keeps the legacy shading path in fragment_lit. The shared
+        // PBR scalars, effective opacity and emission are the authored values;
+        // image-map flags are filled per range by the texture bindings, so an
+        // absent map leaves its flag clear and adds nothing.
+        body.emissive = SIMD4(0, 0, 0, 0)
+        body.textureFlags = 0
+        body.flipVFlags = 0
+        body.srgbFlags = 0
+        body.normalStrength = 0
+        if let material {
             body.baseColor = material.baseColor
+            body.baseColor.w = material.opacity
             body.metallic = material.metallic
             body.roughness = material.roughness
+            body.emissive = SIMD4(material.emissive, material.emissiveStrength)
         }
         return body
     }

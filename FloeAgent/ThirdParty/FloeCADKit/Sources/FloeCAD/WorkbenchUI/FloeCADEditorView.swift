@@ -198,6 +198,36 @@ extension DisplayMode {
     }
 }
 
+/// The palette's Material action opens the full inspector (not the legacy
+/// three-slider sheet) on the SAME document and frozen selection. The sheet
+/// owns one stable editor preview sink for its lifetime; Apply stays one
+/// undoable composite on the shared document session.
+private struct EditorMaterialInspectorSheet: View {
+    let document: FloeCADDocument
+    let onApplied: () -> Void
+
+    @State private var target: CADMaterialTarget
+    @State private var previewSink: CADEditorMaterialPreviewSink
+
+    init(document: FloeCADDocument, viewModel: EditorViewModel,
+         onApplied: @escaping () -> Void) {
+        self.document = document
+        self.onApplied = onApplied
+        _target = State(initialValue:
+            CADMaterialTargetResolver.resolve(viewModel: viewModel))
+        _previewSink = State(initialValue:
+            CADEditorMaterialPreviewSink(viewModel: viewModel))
+    }
+
+    var body: some View {
+        CADMaterialInspectorView(document: document,
+                                 target: target,
+                                 previewSink: previewSink,
+                                 onApplied: onApplied)
+            .presentationCompactAdaptation(horizontal: .popover, vertical: .sheet)
+    }
+}
+
 /// Modeling editor: full-bleed Metal viewport with floating tool chrome.
 ///
 /// FloeCAD: adapted from OpenShape3D's `EditorView` (MIT). The SwiftData
@@ -2143,11 +2173,12 @@ struct FloeCADEditorView: View {
                 get: { viewModel.showMaterialSheet },
                 set: { viewModel.showMaterialSheet = $0 }
             )) {
-                // Body material assignment (plan §B15): one undoable
-                // SetMaterialCommand over the whole selection.
-                MaterialSheet(initial: viewModel.materialForSelection) { spec in
-                    viewModel.applyMaterial(spec)
-                }
+                // The palette's existing Material action now opens the full
+                // inspector (face/body targets, textures, mapping, library)
+                // on the same document, selection, preview sink and undo
+                // path as Present. The legacy three-slider sheet is retired.
+                EditorMaterialInspectorSheet(document: document,
+                                             viewModel: viewModel) { }
             }
             .sheet(isPresented: Binding(
                 get: { viewModel.showConstraintSettings },

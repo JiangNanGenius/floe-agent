@@ -157,7 +157,10 @@ public extension ProviderPreset {
         defaultProtocol: .openAIChatCompletions,
         supportedProtocols: [.openAIChatCompletions],
         defaultBaseURL: URL(string: "https://ark.cn-beijing.volces.com/api/plan/v3")!,
-        supportsModelDiscovery: true,
+        // The plan gateway does not document a /models listing; candidate
+        // identifiers come from the shipped catalog and the explicit chat
+        // probe. A 404 discovery is never treated as a connection failure.
+        supportsModelDiscovery: false,
         authStyle: .bearer
     )
 
@@ -168,7 +171,9 @@ public extension ProviderPreset {
         defaultProtocol: .openAIChatCompletions,
         supportedProtocols: [.openAIChatCompletions],
         defaultBaseURL: URL(string: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")!,
-        supportsModelDiscovery: true,
+        // Token Plan clients select from the plan's published model list; no
+        // OpenAI-compatible /models route is documented for this gateway.
+        supportsModelDiscovery: false,
         authStyle: .bearer
     )
 
@@ -250,7 +255,8 @@ public extension ProviderPreset {
     /// Native image suppliers remain available with an older downloaded
     /// catalog. Individual models still require discovery or explicit entry.
     static let imagePresets: [ProviderPreset] = [
-        .openAIResponses, .volcengineArk, .volcengineAgentPlan, .alibabaStudio, .googleGemini, .kimiCode, .custom
+        .openAIResponses, .volcengineArk, .volcengineAgentPlan, .alibabaStudio,
+        .alibabaTokenPlan, .googleGemini, .kimiCode, .custom
     ]
 
     /// Endpoint-specific templates share the persisted custom kind. A kind
@@ -266,6 +272,11 @@ public extension ProviderPreset {
         if kind == .custom {
             if let baseURL, KimiCodeEndpointIdentity.apiRoot(for: baseURL) != nil {
                 return .kimiCode
+            }
+            // Older hand-entered DashScope connections keep their saved URL
+            // but resolve to the Alibaba supplier contract for role forms.
+            if let baseURL, AlibabaEndpointIdentity.isPayAsYouGo(baseURL) {
+                return .alibabaStudio
             }
             return .custom
         }

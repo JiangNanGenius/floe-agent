@@ -81,6 +81,7 @@ final class DocumentSession {
         /// blob must not be overwritten by the nil we decoded to.
         var bodyPrimitive: Set<UUID> = []
         var bodyMaterial: Set<UUID> = []
+        var bodyFaceMaterials: Set<UUID> = []
         var bodyBrep: Set<UUID> = []
         /// The Items-folder blob failed to decode — leave the column alone.
         var itemFolders = false
@@ -91,7 +92,7 @@ final class DocumentSession {
         }
         /// Bodies present in the document but missing some detail.
         var partialBodyCount: Int {
-            bodyPrimitive.union(bodyMaterial).union(bodyBrep).count
+            bodyPrimitive.union(bodyMaterial).union(bodyFaceMaterials).union(bodyBrep).count
         }
         var count: Int { rowCount + partialBodyCount }
     }
@@ -662,6 +663,36 @@ final class DocumentSession {
         }
     }
 
+    // MARK: - Transaction checkpoints
+
+    /// Exact document + undo/redo/cache state before a speculative edit. Kept
+    /// in memory only; restoring it does not touch the package or the store.
+    func captureEditCheckpoint() -> CADEditCheckpoint {
+        CADEditCheckpoint(document: document,
+                          undo: undoStack.checkpoint(),
+                          evalCache: evalCache,
+                          lastEvalErrors: lastEvalErrors,
+                          lastFaceTables: lastFaceTables,
+                          lastKernelNames: lastKernelNames,
+                          lastNamingRevisions: lastNamingRevisions)
+    }
+
+    /// Restore a speculative-edit checkpoint. The change count is NOT rolled
+    /// back: it advances through `didChange()` so query generations and mesh
+    /// caches can never mistake the restored state for the rejected edit.
+    /// Undo AND redo arrays are restored verbatim, so a pre-existing redo
+    /// history survives and the rejected edit is never redoable.
+    func restoreEditCheckpoint(_ checkpoint: CADEditCheckpoint) {
+        document = checkpoint.document
+        undoStack.restore(checkpoint.undo)
+        evalCache = checkpoint.evalCache
+        lastEvalErrors = checkpoint.lastEvalErrors
+        lastFaceTables = checkpoint.lastFaceTables
+        lastKernelNames = checkpoint.lastKernelNames
+        lastNamingRevisions = checkpoint.lastNamingRevisions
+        didChange()
+    }
+
     // MARK: - Persistence
 
     private func load() {
@@ -702,6 +733,14 @@ final class DocumentSession {
                 if decoded == nil { unreadableRows.bodyMaterial.insert(persisted.bodyID) }
                 return decoded
             }
+            // Stable per-face material snapshots. A corrupt/unknown blob is
+            // preserved (never overwritten) and the body simply keeps its
+            // whole-body appearance; geometry is untouched.
+            body.materialFaceBindings = persisted.faceMaterialsData.flatMap { data -> [CADFaceMaterialBinding]? in
+                let decoded = try? JSONDecoder().decode([CADFaceMaterialBinding].self, from: data)
+                if decoded == nil { unreadableRows.bodyFaceMaterials.insert(persisted.bodyID) }
+                return decoded
+            } ?? []
             // Restore the analytic B-rep so a reloaded cylinder stays round and
             // can still compose booleans. An unreadable blob (truncated, or
             // written by a newer OCCT) leaves the body Euclid-only for this
@@ -810,6 +849,7 @@ final class DocumentSession {
         loaded.drawingsData = project.drawingsData
         loaded.scriptsData = project.scriptsData
         loaded.sceneSettingsData = project.sceneSettingsData
+        loaded.materialLibraryData = project.materialsData
         document = loaded
         evalCache = EvalCache()   // a fresh memo for a freshly loaded document
         #if DEBUG
@@ -1023,6 +1063,7 @@ final class DocumentSession {
         project.drawingsData = document.drawingsData
         project.scriptsData = document.scriptsData
         project.sceneSettingsData = document.sceneSettingsData
+        project.materialsData = document.materialLibraryData
 
         // Diff by ID against the persisted objects. Every deletion loop
         // excludes `unreadableRows` — rows load() couldn't decode are not in
@@ -1042,6 +1083,8 @@ final class DocumentSession {
             let primitiveData = body.primitive.flatMap { try? JSONEncoder().encode($0) }
             let meshData = MeshBlob.encode(body.render)
             let materialData = body.material.flatMap { try? JSONEncoder().encode($0) }
+            let faceMaterialsData = body.materialFaceBindings.isEmpty
+                ? nil : try? JSONEncoder().encode(body.materialFaceBindings)
             // Analytic geometry, when this body has it — so roundness and boolean
             // composability survive a reload instead of degrading to triangles.
             // Cache-first: `saveAsync` pre-serializes changed solids off-main.
@@ -1087,6 +1130,9 @@ final class DocumentSession {
                 if !preserve(unreadableRows.bodyMaterial, materialData) {
                     persisted.materialData = materialData
                 }
+                if !preserve(unreadableRows.bodyFaceMaterials, faceMaterialsData) {
+                    persisted.faceMaterialsData = faceMaterialsData
+                }
                 if !(preserve(unreadableRows.bodyBrep, brepData) && meshUnchanged) {
                     persisted.brepData = brepData
                 }
@@ -1100,6 +1146,7 @@ final class DocumentSession {
                 )
                 persisted.isHidden = body.isHidden
                 persisted.materialData = materialData
+                persisted.faceMaterialsData = faceMaterialsData
                 persisted.brepData = brepData
                 persisted.project = project
                 modelContext.insert(persisted)

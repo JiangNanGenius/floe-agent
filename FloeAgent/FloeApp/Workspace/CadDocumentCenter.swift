@@ -112,7 +112,7 @@ actor CadDocumentCenter: CadDocumentHost {
     /// mints a grant from tool input and owns the proposal authority context.
     func threeDAction(documentID: String, requestJSON: String,
                       access: CadDocumentAccess) async throws -> String {
-        let resolved = try resolve(documentID: documentID, access: access, allowingNativePackages: true)
+        let resolved = try await resolveNativeAware(documentID: documentID, access: access)
         let url = try resolved.service.guardResolver.resolve(resolved.id)
         let canonicalTarget = Self.canonicalDocumentPath(url)
         guard let data = requestJSON.data(using: .utf8),
@@ -147,6 +147,18 @@ actor CadDocumentCenter: CadDocumentHost {
                     }
                 }
                 return reply
+            case "material":
+                // Ordinary task-authorized document edit (no per-edit UI
+                // grant): the engine service mutates through ONE undoable
+                // command and the bridge commits it with CAS. A workspace
+                // asset path is read HERE through the same guard the import
+                // path uses and never reaches the kernel as a path.
+                let normalized = try materialRequest(request, resolved: resolved)
+                return try await FloeCAD3DBridge.shared.handle(
+                    url: url, requestJSON: Self.encodeNativeJSON(normalized))
+            case "parameters":
+                return try await FloeCAD3DBridge.shared.handle(
+                    url: url, requestJSON: requestJSON)
             case "import":
                 // Import DRAFTS a proposal on a throwaway copy (same
                 // propose → UI grant → apply authority as geometry edits).
@@ -237,6 +249,33 @@ actor CadDocumentCenter: CadDocumentHost {
         let reply = try await FloeCAD3DBridge.shared.globalCapabilitiesJSON()
         return CadServiceOperationCatalog.mergingCapabilities(into: reply, detailKind: nil,
                                                               offset: 0, limit: nil)
+    }
+
+    func captureViewport(documentID: String, width: Int, height: Int,
+                         expectedRevision: Int64?,
+                         access: CadDocumentAccess) async throws -> CadViewportCapture {
+        let resolved = try await resolveNativeAware(documentID: documentID, access: access)
+        let url = try resolved.service.guardResolver.resolve(resolved.id)
+        let expected: Int?
+        if let expectedRevision {
+            guard let value = Int(exactly: expectedRevision) else {
+                throw FloeError.validationFailed("revision is outside the supported range")
+            }
+            expected = value
+        } else {
+            expected = nil
+        }
+        do {
+            let capture = try await FloeCAD3DBridge.shared.captureViewport(
+                at: url, width: width, height: height, expectedRevision: expected)
+            return CadViewportCapture(
+                pngData: capture.pngData, width: capture.width, height: capture.height,
+                revision: Int64(capture.revision), changeCount: capture.changeCount,
+                contentSHA256: capture.contentSHA256, sha256: capture.sha256,
+                renderer: capture.renderer, note: capture.note)
+        } catch let error as CADDocumentError {
+            throw Self.classifiedNativeError(error)
+        }
     }
 
     // MARK: - Native package creation (host factory)
@@ -380,6 +419,80 @@ actor CadDocumentCenter: CadDocumentHost {
     /// The format is validated against the output extension, the source
     /// document is never modified, and the written bytes are re-read and
     /// SHA-256-verified before the receipt is returned.
+    /// Reads a material asset path through the workspace guard and injects the
+    /// bytes as base64. The bridge never receives or opens a workspace path.
+    private func materialRequest(_ request: [String: Any],
+                                 resolved: Resolved) throws -> [String: Any] {
+        guard var payload = request["payload"] as? [String: Any] else { return request }
+        var changed = false
+
+        func resolveAsset(_ rawPath: String) throws -> (base64: String, name: String) {
+            var relative = rawPath
+            if relative.hasPrefix("/") {
+                guard relative.hasPrefix(resolved.root.path + "/") else {
+                    throw FloeError.validationFailed("A material asset path must be inside the task workspace.")
+                }
+                relative = String(relative.dropFirst(resolved.root.path.count + 1))
+            }
+            let url = try resolved.service.guardResolver.resolve(relative)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue else {
+                throw FloeError.notFound("Material asset \(url.lastPathComponent)")
+            }
+            try resolved.service.guardResolver.assertReadableSize(url)
+            let data = try Data(contentsOf: url)
+            guard data.count <= 12 * 1024 * 1024 else {
+                throw FloeError.validationFailed(
+                    "A material image asset must be at most 12 MiB (got \(data.count) bytes).")
+            }
+            guard MaterialImageSnifferGuard.isSupported(data) else {
+                throw FloeError.validationFailed("A material asset must be a PNG or JPEG image.")
+            }
+            return (data.base64EncodedString(), url.lastPathComponent)
+        }
+
+        if let rawPath = (payload["asset_path"] as? String)
+            ?? (payload["image_path"] as? String), !rawPath.isEmpty {
+            let asset = try resolveAsset(rawPath)
+            payload["asset_base64"] = asset.base64
+            payload["asset_name"] = asset.name
+            payload.removeValue(forKey: "asset_path")
+            payload.removeValue(forKey: "image_path")
+            changed = true
+        }
+        if var textures = payload["textures"] as? [[String: Any]] {
+            for index in textures.indices {
+                guard let rawPath = (textures[index]["asset_path"] as? String)
+                    ?? (textures[index]["image_path"] as? String), !rawPath.isEmpty else { continue }
+                let asset = try resolveAsset(rawPath)
+                textures[index]["asset_base64"] = asset.base64
+                textures[index]["asset_name"] = asset.name
+                textures[index].removeValue(forKey: "asset_path")
+                textures[index].removeValue(forKey: "image_path")
+                changed = true
+            }
+            if changed { payload["textures"] = textures }
+        }
+        guard changed else { return request }
+        var normalized = request
+        normalized["payload"] = payload
+        return normalized
+    }
+
+    /// Local magic-byte check; keeps the FloeApp host independent of a
+    /// material-only helper while matching the engine's accepted formats.
+    private enum MaterialImageSnifferGuard {
+        static func isSupported(_ data: Data) -> Bool {
+            guard data.count >= 8 else { return false }
+            let bytes = [UInt8](data.prefix(8))
+            if bytes[0] == 0x89, bytes[1] == 0x50, bytes[2] == 0x4E, bytes[3] == 0x47 {
+                return true
+            }
+            return bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF
+        }
+    }
+
     private func nativeExport(resolved: Resolved, documentURL: URL,
                               request: [String: Any], access: CadDocumentAccess) async throws -> String {
         let payload = request["payload"] as? [String: Any] ?? [:]
@@ -675,6 +788,14 @@ actor CadDocumentCenter: CadDocumentHost {
             return FloeError.validationFailed(message)
         case "source_changed":
             return FloeError.validationFailed(message)
+        case "requery_required", "stale_face_ref", "stale_edge_ref":
+            return FloeError.validationFailed("\(code): \(message)")
+        case "revision_mismatch", "bad_revision", "presentation_stale",
+             "presentation_not_active", "presentation_failed",
+             "viewport_unavailable", "document_changed",
+             "shared_library_corrupt", "shared_library_too_large",
+             "shared_library_busy", "shared_library_write_failed":
+            return FloeError.validationFailed("\(code): \(message)")
         case "save_failed":
             return FloeError.storageCorrupted(message)
         default:
@@ -1487,7 +1608,12 @@ actor CadDocumentCenter: CadDocumentHost {
     // MARK: - CadDocumentHost
 
     func authorizeAccess(access: CadDocumentAccess) async throws {
-        guard let workspace = access.workspacePath, !workspace.isEmpty else {
+        if let workspace = access.workspacePath, !workspace.isEmpty { return }
+        // Canvas runs have no task workspace. The resolve() path below admits
+        // ONLY a verified canvas-cad:<canvas>/<file> binding owned by this
+        // conversation; every non-canvas document still fails closed here.
+        guard access.ownerKind == "chat" || access.ownerKind == "canvas",
+              access.ownerID != nil else {
             throw FloeError.unauthorized
         }
     }
@@ -2071,6 +2197,211 @@ actor CadDocumentCenter: CadDocumentHost {
     }
 
     // MARK: - Sessions
+
+    /// A verified native CAD package owned by a canvas node. This is the
+    /// trusted bridge between a Canvas run (conversation owner) and the
+    /// app-owned `.floecad` package: the model's `canvas-cad:` key selects a
+    /// node, but ownership is re-derived from the canvas project, never from
+    /// the key's text alone.
+    private struct TrustedCanvasPackage: Sendable {
+        var canvasID: UUID
+        var packageURL: URL
+        var fileName: String
+        /// Fixed canonical `Application Support/FloeAgent/CanvasCAD` root and
+        /// the expected UUID child directory. The file service is rooted at
+        /// this checked directory, never at the resolved target of a symlink.
+        var containerRoot: URL
+        var canvasDirectory: URL
+    }
+
+    @MainActor
+    private static func trustedCanvasPackage(
+        documentID: String,
+        access: CadDocumentAccess
+    ) throws -> TrustedCanvasPackage? {
+        guard CanvasCADBindingKey.isCanvasOwned(documentID) else { return nil }
+        guard let key = CanvasCADBindingKey.parse(documentID) else {
+            throw FloeError.validationFailed("canvas-cad document key is malformed")
+        }
+        guard let conversationID = access.ownerID else {
+            throw FloeError.unauthorized
+        }
+        let project: CanvasProject
+        do {
+            project = try WorkspaceCanvasRegistry.project(canvasID: key.canvasID)
+        } catch {
+            throw FloeError.notFound("Canvas project")
+        }
+        let ownerIsCanvas = access.ownerKind == "canvas"
+            && access.ownerID == key.canvasID
+        let authorizedDocuments = try conversationAuthorizedDocumentIDs(
+            project: project, conversationID: conversationID)
+        guard ownerIsCanvas || authorizedDocuments != nil else {
+            throw FloeError.unauthorized
+        }
+        let allowedDocuments = authorizedDocuments ?? Set(project.documents.map(\.id))
+        let metadataKey = CADCanvasNodePlanner.MetadataKeys.sourcePath
+        var totalNodeCount = 0
+        var allowedNodeCount = 0
+        for document in project.documents {
+            for node in document.nodes
+            where CADCanvasNodePlanner.isNativeCADNode(node)
+                && node.metadata[metadataKey] == documentID {
+                totalNodeCount += 1
+                if allowedDocuments.contains(document.id) { allowedNodeCount += 1 }
+            }
+        }
+        guard totalNodeCount > 0 else {
+            throw FloeError.notFound("Canvas CAD node")
+        }
+        guard allowedNodeCount > 0 else {
+            // The node exists in this canvas, but this conversation is bound to
+            // a different document. A valid key is not authority.
+            throw FloeError.unauthorized
+        }
+        return try validatedCanvasPackage(canvasID: key.canvasID,
+                                          fileName: key.packageFileName)
+    }
+
+    @MainActor
+    private static func conversationAuthorizedDocumentIDs(
+        project: CanvasProject, conversationID: UUID
+    ) -> Set<UUID>? {
+        let perDocument = Set(project.agentConversationIDsByDocument
+            .filter { $0.value == conversationID }
+            .keys)
+        if !perDocument.isEmpty {
+            // A per-document conversation is exact: it never widens to the
+            // rest of the canvas even if the legacy project-wide field also
+            // names it.
+            return perDocument
+        }
+        if project.agentConversationID == conversationID
+            || project.assistantSessions.contains(where: {
+                $0.conversationID == conversationID
+            }) {
+            return Set(project.documents.map(\.id))
+        }
+        return nil
+    }
+
+    @MainActor
+    private static func validatedCanvasPackage(
+        canvasID: UUID, fileName: String
+    ) throws -> TrustedCanvasPackage {
+        guard let packageURL = CanvasCADStorage.packageURL(
+            forKey: CanvasCADBindingKey.key(canvasID: canvasID,
+                                            packageFileName: fileName)) else {
+            throw FloeError.notFound("Canvas CAD document")
+        }
+        let container = try CanvasCADStorage.containerRoot(createIfNeeded: false)
+        let containerRoot = container.standardizedFileURL.resolvingSymlinksInPath()
+        let canvasDirectory = containerRoot.appendingPathComponent(
+            canvasID.uuidString, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: canvasDirectory.path,
+                                             isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw FloeError.notFound("Canvas CAD storage directory")
+        }
+        let values = try? canvasDirectory.resourceValues(forKeys: [.isSymbolicLinkKey])
+        let resolvedDirectory = canvasDirectory.standardizedFileURL
+            .resolvingSymlinksInPath()
+        guard values?.isSymbolicLink != true,
+              resolvedDirectory.path == canvasDirectory.standardizedFileURL.path,
+              resolvedDirectory.path.hasPrefix(containerRoot.path + "/") else {
+            throw FloeError.unauthorized
+        }
+        let canonicalPackage = packageURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard canonicalPackage.path.hasPrefix(resolvedDirectory.path + "/"),
+              canonicalPackage.lastPathComponent == fileName else {
+            throw FloeError.unauthorized
+        }
+        return TrustedCanvasPackage(canvasID: canvasID,
+                                    packageURL: canonicalPackage,
+                                    fileName: fileName,
+                                    containerRoot: containerRoot,
+                                    canvasDirectory: resolvedDirectory)
+    }
+
+    /// Run-launch freeze helper for the runtime typed target contract. Returns
+    /// ONLY exact conversation-authorized canvas native documents, keyed by
+    /// `canvas-cad:<canvas>/<file>` and valued with the canonical package path
+    /// (fixed CanvasCAD root + expected UUID directory; symlink escapes are
+    /// omitted). The parent folds these into `serviceStorePaths` under
+    /// `TypedMutationContract.cadCanvasBindingPrefix`; the host still re-runs
+    /// `trustedCanvasPackage` at execution.
+    @MainActor
+    static func trustedNativeCanvasDocumentPaths(
+        conversationID: UUID
+    ) -> [String: String] {
+        var result: [String: String] = [:]
+        for summary in WorkspaceCanvasRegistry.summaries() {
+            guard let project = try? WorkspaceCanvasRegistry.project(canvasID: summary.id),
+                  let authorized = conversationAuthorizedDocumentIDs(
+                    project: project, conversationID: conversationID) else { continue }
+            let metadataKey = CADCanvasNodePlanner.MetadataKeys.sourcePath
+            for document in project.documents where authorized.contains(document.id) {
+                for node in document.nodes where CADCanvasNodePlanner.isNativeCADNode(node) {
+                    guard let key = node.metadata[metadataKey],
+                          let binding = CanvasCADBindingKey.parse(key),
+                          binding.canvasID == project.id,
+                          let package = try? validatedCanvasPackage(
+                            canvasID: binding.canvasID,
+                            fileName: binding.packageFileName) else { continue }
+                    result[key] = package.packageURL.path
+                }
+            }
+        }
+        return result
+    }
+
+    /// Resolve native actions through a verified canvas binding when the
+    /// document is `canvas-cad:`; everything else keeps the workspace rules.
+    private func resolveNativeAware(documentID: String,
+                                    access: CadDocumentAccess) async throws -> Resolved {
+        if CanvasCADBindingKey.isCanvasOwned(documentID) {
+            guard let package = try await Self.trustedCanvasPackage(
+                documentID: documentID, access: access) else {
+                throw FloeError.unauthorized
+            }
+            // Fixed container root + the expected UUID directory. Never
+            // derive the root from the package target: a symlinked per-canvas
+            // directory or package file must not move the guard outside
+            // CanvasCAD.
+            let root = package.canvasDirectory
+            guard root.path.hasPrefix(package.containerRoot.path + "/") else {
+                throw FloeError.unauthorized
+            }
+            let canonicalPackage = package.packageURL
+                .standardizedFileURL.resolvingSymlinksInPath()
+            guard canonicalPackage.path.hasPrefix(root.path + "/"),
+                  canonicalPackage.lastPathComponent == package.fileName else {
+                throw FloeError.unauthorized
+            }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: canonicalPackage.path,
+                                                 isDirectory: &isDirectory),
+                  !isDirectory.boolValue else {
+                throw FloeError.notFound("Canvas CAD document")
+            }
+            let resolver = WorkspacePathGuard(
+                rootURL: root,
+                maxReadBytes: maximumDocumentBytes + 1024,
+                maxWriteBytes: maximumDocumentBytes + 1024,
+                mounts: [])
+            let key = CadDocumentIdentity.sessionKey(
+                environmentID: access.environmentID,
+                ownerKind: "canvas",
+                ownerID: package.canvasID,
+                rootPath: root.path,
+                relativePath: package.fileName)
+            return Resolved(id: package.fileName, key: key, root: root,
+                            service: WorkspaceFileService(guard: resolver))
+        }
+        return try resolve(documentID: documentID, access: access,
+                           allowingNativePackages: true)
+    }
 
     private struct Resolved {
         let id: String

@@ -119,6 +119,9 @@ struct CADBodyRecord: Codable, Sendable {
     var meshSHA256: String?
     var isHidden: Bool
     var material: Data?
+    /// Additive stable per-face material bindings (`[CADFaceMaterialBinding]`
+    /// JSON). Absent on every document written before custom materials.
+    var faceMaterials: Data?
     var brepBlob: String?
     var brepSHA256: String?
 }
@@ -171,6 +174,8 @@ struct CADDocumentRecord: Codable, Sendable {
     /// Legacy-scene presentation (`CADSceneSettings`). Additive optional key:
     /// absent on ordinary documents; older builds ignore it.
     var sceneSettings: Data?
+    /// Custom-material library (`CADMaterialLibrary`). Additive optional key.
+    var materials: Data?
 }
 
 /// Everything a commit needs, in a `Sendable` value: cheap to build on the
@@ -328,6 +333,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         project.drawingsData = document.drawings
         project.scriptsData = document.scripts
         project.sceneSettingsData = document.sceneSettings
+        project.materialsData = document.materials
         if manifest.thumbnailSHA256 != nil {
             project.thumbnail = try? Data(contentsOf: root.appendingPathComponent("blobs/thumbnail.img"))
         }
@@ -345,6 +351,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             )
             persisted.isHidden = record.isHidden
             persisted.materialData = record.material
+            persisted.faceMaterialsData = record.faceMaterials
             persisted.brepData = record.brepBlob.flatMap {
                 try? Data(contentsOf: root.appendingPathComponent($0))
             }
@@ -418,7 +425,8 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             assembly: project.assemblyData,
             drawings: project.drawingsData,
             scripts: project.scriptsData,
-            sceneSettings: project.sceneSettingsData
+            sceneSettings: project.sceneSettingsData,
+            materials: project.materialsData
         )
         var blobs: [String: Data] = [:]
 
@@ -448,6 +456,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
                 meshSHA256: meshSHA,
                 isHidden: body.isHidden,
                 material: body.materialData,
+                faceMaterials: body.faceMaterialsData,
                 brepBlob: brepBlob,
                 brepSHA256: brepSHA
             ))

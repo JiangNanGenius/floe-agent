@@ -267,6 +267,10 @@ public nonisolated struct CADSceneSettings: Codable, Equatable, Sendable {
     public var background: Background?
     public var showsGrid: Bool?
     public var legacy: LegacyProvenance?
+    /// Environment/light/floor appearance for the shared scene snapshot.
+    /// Additive optional: older documents decode with nil and use the default
+    /// studio/daylight/dark presets.
+    var presentation: CADViewAppearance?
 
     public init(schemaVersion: Int = CADSceneSettings.currentSchemaVersion,
                 camera: Camera? = nil, lighting: Lighting? = nil,

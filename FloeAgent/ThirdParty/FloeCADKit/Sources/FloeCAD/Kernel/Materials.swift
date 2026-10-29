@@ -16,7 +16,7 @@ import simd
 /// default look).
 nonisolated struct BodyMaterialSpec: Codable, Equatable, Sendable {
     /// Linear-ish RGBA in 0…1 (matches the renderer's baseColor space).
-    var baseColor: SIMD4<Double>
+    var baseColor: SIMD4<Double> = SIMD4(0.72, 0.74, 0.78, 1)
     /// 0 = dielectric (legacy shading path), 1 = metal.
     var metallic: Double = 0
     /// 0 keeps the legacy fixed highlight; > 0 widens/softens it.
@@ -27,6 +27,36 @@ nonisolated struct BodyMaterialSpec: Codable, Equatable, Sendable {
     /// JSON, so pre-texture material records decode unchanged.
     var baseColorTexture: Data? = nil
 
+    // MARK: Custom material extension (additive, backward compatible)
+    //
+    // Every new field is OPTIONAL so historical `materialData` blobs decode
+    // exactly as before. `baseColorTexture` stays the albedo and is what the
+    // existing Metal renderer samples; the remaining maps are real data for
+    // the rendering/presentation adapters, not alternate-scene content.
+
+    /// Library identity this appearance was applied from. Snapshot data stays
+    /// self-contained, so a deleted library entry never changes the body.
+    var materialID: String? = nil
+    /// Display name captured with the applied snapshot.
+    var materialName: String? = nil
+    /// 0…1; nil keeps the legacy alpha channel of `baseColor`.
+    var opacity: Double? = nil
+    /// RGB 0…1 emissive colour and strength (nil = no emission).
+    var emissive: SIMD3<Double>? = nil
+    var emissiveStrength: Double? = nil
+    /// Non-albedo PBR maps, encoded PNG/JPEG. Optional and independent of
+    /// whether the mesh carries UVs: a renderer may project them.
+    var roughnessTexture: Data? = nil
+    var metallicTexture: Data? = nil
+    var normalTexture: Data? = nil
+    var emissiveTexture: Data? = nil
+    var opacityTexture: Data? = nil
+    /// UV source/mapping. Nil means the mesh's own UVs (legacy behaviour).
+    var uvMapping: CADMaterialUVMapping? = nil
+    /// Semantics/colour space/orientation for every supplied image map. The
+    /// bytes above remain authoritative; this is the typed description.
+    var textureMetadata: [CADMaterialTextureMetadata]? = nil
+
     /// The document default — identical to the pre-material body color and
     /// shading, so assigning it changes nothing visually.
     static let `default` = BodyMaterialSpec(
@@ -35,12 +65,44 @@ nonisolated struct BodyMaterialSpec: Codable, Equatable, Sendable {
 
     /// Clamped copy: colors and factors pinned to 0…1 (slider/decode safety).
     var clamped: BodyMaterialSpec {
-        BodyMaterialSpec(
-            baseColor: simd_clamp(baseColor, SIMD4(repeating: 0), SIMD4(repeating: 1)),
-            metallic: min(max(metallic, 0), 1),
-            roughness: min(max(roughness, 0), 1),
-            baseColorTexture: baseColorTexture
-        )
+        var copy = self
+        copy.baseColor = simd_clamp(baseColor, SIMD4(repeating: 0), SIMD4(repeating: 1))
+        copy.metallic = min(max(metallic, 0), 1)
+        copy.roughness = min(max(roughness, 0), 1)
+        if let opacity { copy.opacity = min(max(opacity, 0), 1) }
+        if let emissive {
+            copy.emissive = simd_clamp(emissive, SIMD3(repeating: 0), SIMD3(repeating: 1))
+        }
+        if let emissiveStrength {
+            copy.emissiveStrength = min(max(emissiveStrength, 0), 100)
+        }
+        if let uvMapping { copy.uvMapping = uvMapping.sanitized }
+        return copy
+    }
+
+    /// Effective alpha for renderers that predate the separate `opacity`
+    /// field. Nil/1 means use `baseColor.w` unchanged.
+    var effectiveOpacity: Double {
+        min(max(opacity ?? baseColor.w, 0), 1)
+    }
+
+    /// Encoded bytes for one image-map slot, so exporters/adapters do not
+    /// re-implement the mapping from the typed metadata.
+    func textureData(for slot: MaterialTextureSlot) -> Data? {
+        switch slot {
+        case .baseColor: return baseColorTexture
+        case .roughness: return roughnessTexture
+        case .metallic: return metallicTexture
+        case .normal: return normalTexture
+        case .emissive: return emissiveTexture
+        case .opacity: return opacityTexture
+        }
+    }
+
+    /// True when the appearance carries at least one image map.
+    var hasAnyTexture: Bool {
+        baseColorTexture != nil || roughnessTexture != nil || metallicTexture != nil
+            || normalTexture != nil || emissiveTexture != nil || opacityTexture != nil
     }
 }
 

@@ -3770,7 +3770,13 @@ final class ConversationCenter: ObservableObject {
         // fact (like the workspace root): model arguments address records
         // inside the store but never mint authority, and a missing key or an
         // invalid project id fails closed.
-        let serviceStorePaths = environment.workbenchCenter.typedServiceStorePaths
+        var serviceStorePaths = environment.workbenchCenter.typedServiceStorePaths
+        for (key, path) in CadDocumentCenter.trustedNativeCanvasDocumentPaths(conversationID: conversationID) {
+            serviceStorePaths[TypedMutationContract.cadCanvasBindingPrefix + key] = path
+        }
+        if let libraryURL = try? FloeCAD3DBridge.materialLibraryFileURL() {
+            serviceStorePaths[TypedMutationContract.cadMaterialLibraryStoreKey] = libraryURL.deletingLastPathComponent().path
+        }
         // Sendable handles for the terminal-boundary dependency projection:
         // both are actors, so the @Sendable configuration closure can consult
         // the durable truth without capturing the app environment.

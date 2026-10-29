@@ -12,6 +12,7 @@
 //
 
 import Foundation
+import simd
 
 public extension FloeCADDocument {
 
@@ -48,6 +49,9 @@ public extension FloeCADDocument {
             return CADCommandOutcome(status: 200, payload: snapshotJSON(),
                                      errorCode: nil, message: nil)
 
+        case "scene":
+            return ok(["ok": true, "scope": scope, "summary": sceneSummaryJSON()])
+
         case "bodies":
             let rows: [[String: Any]] = document.bodies.map { body in
                 var row: [String: Any] = [
@@ -67,24 +71,125 @@ public extension FloeCADDocument {
                     row["faceCount"] = faces.count
                     row["planarFaces"] = faces.filter { $0.signature?.kind == .planar }.count
                 }
+                let generation = CADGeometryQueryGeneration(
+                    scope: "faces", bodyID: body.id.raw,
+                    documentRevision: revision, changeCount: session.changeCount,
+                    meshRevision: body.meshRevision)
+                row["query_token"] = generation.token
+                row["generation"] = generation.jsonObject
+                if let material = body.material {
+                    row["material"] = material.summaryJSON
+                }
+                if !body.materialFaceBindings.isEmpty {
+                    let resolutions = CADFaceMaterialResolver.resolve(body.materialFaceBindings,
+                                                                      in: body)
+                    let resolved = resolutions.compactMap { resolution -> [String: Any]? in
+                        guard let index = resolution.resolvedIndex else { return nil }
+                        return ["face_index": index,
+                                "material_name": resolution.binding.material.materialName ?? "Material",
+                                "material_id": resolution.binding.material.materialID ?? ""]
+                    }
+                    let unresolved = resolutions.filter { $0.resolvedIndex == nil }.count
+                    row["face_material_bindings"] = [
+                        "count": body.materialFaceBindings.count,
+                        "resolved": resolved,
+                        "unresolved_count": unresolved,
+                    ]
+                }
                 return row
             }
             return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows)])
 
         case "sketches":
+            // Entity detail is what makes an existing hole edit addressable:
+            // the cut profile's diameter lives on its circle, so a caller must
+            // be able to read that circle's stable entity id and CURRENT radius
+            // (then atomically edit it through parameters updateSketchEntity).
+            // `entities` stays the historical COUNT for compatibility; the
+            // typed rows are `entityRows`.
+            var usedBySketch: [SketchID: [String]] = [:]
+            for node in document.features.nodes {
+                for sketchID in node.referencedSketchIDs {
+                    usedBySketch[sketchID, default: []].append(node.id.raw.uuidString)
+                }
+            }
+            let entityRowLimit = 512
             let rows: [[String: Any]] = document.sketches.map { sketch in
-                [
+                let entityRows: [[String: Any]] = sketch.entities.prefix(entityRowLimit).map { entity in
+                    var row: [String: Any] = [
+                        "id": entity.id.uuidString,
+                        "construction": sketch.constructionEntityIDs.contains(entity.id),
+                    ]
+                    switch entity {
+                    case let .line(_, a, b):
+                        row["kind"] = "line"
+                        row["a"] = [a.x, a.y]
+                        row["b"] = [b.x, b.y]
+                        row["lengthMM"] = simd_length(b - a)
+                    case let .rect(_, low, high):
+                        row["kind"] = "rect"
+                        row["min"] = [low.x, low.y]
+                        row["max"] = [high.x, high.y]
+                        row["widthMM"] = abs(high.x - low.x)
+                        row["heightMM"] = abs(high.y - low.y)
+                    case let .circle(_, center, radius):
+                        row["kind"] = "circle"
+                        row["center"] = [center.x, center.y]
+                        row["radius"] = radius
+                        row["diameterMM"] = radius * 2
+                        row["parameter"] = "radius"
+                        row["update_action"] = "updateSketchEntity"
+                    case let .arc(_, center, radius, startAngle, endAngle):
+                        row["kind"] = "arc"
+                        row["center"] = [center.x, center.y]
+                        row["radius"] = radius
+                        row["startAngleRadians"] = startAngle
+                        row["endAngleRadians"] = endAngle
+                    case let .ellipse(_, center, radiusX, radiusY, rotation):
+                        row["kind"] = "ellipse"
+                        row["center"] = [center.x, center.y]
+                        row["radiusX"] = radiusX
+                        row["radiusY"] = radiusY
+                        row["rotationRadians"] = rotation
+                    case let .polygon(_, center, radius, sides, rotation):
+                        row["kind"] = "polygon"
+                        row["center"] = [center.x, center.y]
+                        row["radius"] = radius
+                        row["sides"] = sides
+                        row["rotationRadians"] = rotation
+                    case let .spline(_, points, closed):
+                        row["kind"] = "spline"
+                        row["closed"] = closed
+                        row["pointCount"] = points.count
+                    }
+                    return row
+                }
+                var row: [String: Any] = [
                     "id": sketch.id.raw.uuidString,
                     "name": sketch.name,
                     "hidden": sketch.isHidden,
                     "entities": sketch.entities.count,
+                    "entityRows": entityRows,
+                    "entityRowLimit": entityRowLimit,
+                    "entityRowsTruncated": sketch.entities.count > entityRowLimit,
                     "constructionEntities": sketch.constructionEntityIDs.count,
                     "constraints": sketch.constraints.count,
                     "dimensions": sketch.dimensions.count,
+                    "plane": [
+                        "origin": Self.vector(sketch.plane.origin),
+                        "xAxis": Self.vector(sketch.plane.xAxis),
+                        "yAxis": Self.vector(sketch.plane.yAxis),
+                        "normal": Self.vector(sketch.plane.normal),
+                    ],
                     "planeNormal": Self.vector(sketch.plane.normal),
                 ]
+                if let featureIDs = usedBySketch[sketch.id] {
+                    row["usedByFeatureIDs"] = featureIDs.sorted()
+                }
+                return row
             }
-            return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows)])
+            return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows),
+                       "revision": revision, "change_count": session.changeCount])
 
         case "constraints":
             var rows: [[String: Any]] = []
@@ -107,13 +212,9 @@ public extension FloeCADDocument {
 
         case "features":
             let rows: [[String: Any]] = document.features.nodes.map { node in
-                [
-                    "id": node.id.raw.uuidString,
-                    "name": node.name,
-                    "suppressed": node.suppressed,
-                    "outputBodyIDs": node.outputBodyIDs.map(\.raw.uuidString),
-                    "referencedSketches": node.referencedSketchIDs.map { $0.raw.uuidString },
-                ]
+                var row = CADParameterService.describe(node, document: document)
+                row["referencedSketches"] = node.referencedSketchIDs.map { $0.raw.uuidString }
+                return row
             }
             return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows)])
 
@@ -124,9 +225,20 @@ public extension FloeCADDocument {
                     "name": body.name,
                     "segments": body.edges.segments.count / 2,
                 ]
+                let generation = CADGeometryQueryGeneration(
+                    scope: "edges", bodyID: body.id.raw,
+                    documentRevision: revision, changeCount: session.changeCount,
+                    meshRevision: body.meshRevision)
+                row["query_token"] = generation.token
+                row["generation"] = generation.jsonObject
                 if let brep = body.brep {
                     let midpoints = OCCTKernel.edgeMidpoints(brep)
                     row["kernelEdges"] = midpoints.count
+                    row["edges"] = Array(midpoints.keys.sorted().prefix(512)).map { index in
+                        let midpoint = midpoints[index] ?? .zero
+                        return ["index": index,
+                                "midpoint": Self.vector(midpoint)]
+                    }
                 }
                 return row
             }
@@ -136,8 +248,12 @@ public extension FloeCADDocument {
             var rows: [[String: Any]] = []
             for body in document.bodies {
                 guard let brep = body.brep else { continue }
+                let generation = CADGeometryQueryGeneration(
+                    scope: "faces", bodyID: body.id.raw,
+                    documentRevision: revision, changeCount: session.changeCount,
+                    meshRevision: body.meshRevision)
                 for face in OCCTKernel.faceInfo(brep) {
-                    rows.append([
+                    var row: [String: Any] = [
                         "bodyID": body.id.raw.uuidString,
                         "body": body.name,
                         "index": face.index,
@@ -145,7 +261,25 @@ public extension FloeCADDocument {
                         "centroid": Self.vector(face.centroid),
                         "normal": Self.vector(face.normal),
                         "signature": face.signature.map { String(describing: $0) } ?? "unsupported_surface",
-                    ])
+                    ]
+                    // Typed surface identity for discovery. A cylindrical row's
+                    // radiusMM is the actual kernel radius; pair it with the
+                    // query_token below (a generation proof, never permission).
+                    switch face.signature?.kind {
+                    case .planar:
+                        row["kind"] = "planar"
+                    case let .cylindrical(radius):
+                        row["kind"] = "cylindrical"
+                        row["radiusMM"] = radius
+                    case nil:
+                        row["kind"] = "other"
+                        row["referenceable"] = false
+                    }
+                    row["signature_text"] = row["signature"]
+                    row.merge(face.stableFaceJSON) { _, new in new }
+                    row["query_token"] = generation.token
+                    row["generation"] = generation.jsonObject
+                    rows.append(row)
                 }
             }
             return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows)])
@@ -158,6 +292,27 @@ public extension FloeCADDocument {
             }
             return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows)])
 
+        case "materials":
+            let library = CADMaterialLibraryCodec.decode(document.materialLibraryData)
+            var applied: [String: Set<String>] = [:]
+            for body in document.bodies {
+                if let id = body.material?.materialID {
+                    applied[id, default: []].insert(body.id.raw.uuidString)
+                }
+                for binding in body.materialFaceBindings {
+                    if let id = binding.material.materialID {
+                        applied[id, default: []].insert(body.id.raw.uuidString)
+                    }
+                }
+            }
+            let rows = library.entries.map { entry -> [String: Any] in
+                var row = entry.summaryJSON
+                row["applied_body_ids"] = (applied[entry.id.raw.uuidString] ?? []).sorted()
+                return row
+            }
+            return ok(["ok": true, "scope": scope, "total": rows.count,
+                       "schema_version": library.schemaVersion, "rows": window(rows)])
+
         case "detail":
             var detail: [String: Any] = [
                 "ok": true,
@@ -169,6 +324,8 @@ public extension FloeCADDocument {
                 "sketches": document.sketches.count,
                 "features": document.features.nodes.count,
                 "variables": document.variables.count,
+                "material_library_entries": CADMaterialLibraryCodec.decode(document.materialLibraryData).entries.count,
+                "face_material_bindings": document.bodies.reduce(0) { $0 + $1.materialFaceBindings.count },
             ]
             if let rollback = document.features.rollbackIndex {
                 detail["rollbackIndex"] = rollback
@@ -178,7 +335,7 @@ public extension FloeCADDocument {
         default:
             return fail("unsupported_scope",
                         "Scope '\(scope)' is not served by the model query; use bodies, sketches, "
-                        + "constraints, features, edges, faces, variables, assembly, drawings, detail or snapshot.")
+                        + "constraints, features, edges, faces, variables, materials, assembly, drawings, detail or snapshot.")
         }
     }
 
@@ -523,8 +680,14 @@ public extension FloeCADDocument {
             return .success((ThreeMFExporter.threeMF(bodies: bodies),
                              "3MF tessellation (mesh representation)"))
         case "glb":
-            return .success((GLBExporter.glb(bodies: bodies),
-                             "binary glTF tessellation (mesh representation)"))
+            // Pass the feature graph's face table ONLY when its revision still
+            // matches the body; the exporter uses it for resolved per-face
+            // materials and reports stale/missing mappings in glTF extras
+            // instead of silently painting the whole body.
+            return .success((GLBExporter.glb(bodies: bodies,
+                                             faceTables: session.lastFaceTables,
+                                             faceTableRevisions: session.lastNamingRevisions),
+                             "binary glTF tessellation with applied PBR/UV/textures (mesh representation)"))
         case "usdz":
             guard USDZExporter.isSupported, let data = USDZExporter.usdz(bodies: bodies) else {
                 return failure("usdz_unavailable", "USDZ export is not available on this platform/build.")

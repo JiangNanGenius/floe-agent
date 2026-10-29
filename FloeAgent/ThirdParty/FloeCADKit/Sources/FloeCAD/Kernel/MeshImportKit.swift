@@ -17,6 +17,7 @@
 //
 
 import Compression
+import CoreGraphics
 import Foundation
 import ImageIO
 import ModelIO
@@ -418,6 +419,121 @@ nonisolated enum GLTFImporter {
     private static let jsonChunk: UInt32 = 0x4E4F534A
     private static let binChunk: UInt32 = 0x004E4942
 
+    private static func textureMetadata(
+        slot: MaterialTextureSlot, data: Data,
+        orientation: MaterialTextureOrientation = .topLeft
+    ) -> CADMaterialTextureMetadata {
+        let mime = MaterialImageSniffer.mimeType(of: data) ?? "image/png"
+        return CADMaterialTextureMetadata(
+            assetID: UUID(), slot: slot, mimeType: mime,
+            colorSpace: slot == .baseColor || slot == .emissive ? .srgb : .linear,
+            orientation: orientation,
+            sha256: CADMaterialTexture.digest(data),
+            byteCount: data.count)
+    }
+
+    /// glTF texture info is an index plus optional KHR_texture_transform. The
+    /// exporter writes a pure V flip for a bottom-up authored map; recognise
+    /// exactly that and report anything else as top-left (unsupported
+    /// rotation/scale transforms are not guessed at).
+    private static func textureOrientation(_ info: [String: Any])
+        -> MaterialTextureOrientation {
+        guard let extensions = info["extensions"] as? [String: Any],
+              let transform = extensions["KHR_texture_transform"] as? [String: Any],
+              let scale = transform["scale"] as? [Double], scale.count == 2,
+              let offset = transform["offset"] as? [Double], offset.count == 2,
+              abs(scale[0] - 1) < 1e-9,
+              abs(scale[1] + 1) < 1e-9,
+              abs(offset[0]) < 1e-9,
+              abs(offset[1] - 1) < 1e-9 else { return .topLeft }
+        return .bottomLeft
+    }
+
+    /// Decode one image with the same bounds as the viewport texture cache
+    /// (4096×4096 / 64 MiB RGBA), checked from ImageIO's metadata BEFORE a
+    /// CGImage is allocated. Returns straight-alpha, top-left RGBA code
+    /// values so channel data is not altered by premultiplication.
+    private static func decodedRGBA(_ data: Data)
+        -> (width: Int, height: Int, pixels: [UInt8])? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              width > 0, height > 0,
+              width <= CADImagePackingLimits.maximumDimension,
+              height <= CADImagePackingLimits.maximumDimension,
+              width * height <= CADImagePackingLimits.maximumPixelCount,
+              width * height * 4 <= CADImagePackingLimits.maximumDecodedBytes,
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              image.width > 0, image.height > 0,
+              image.width <= CADImagePackingLimits.maximumDimension,
+              image.height <= CADImagePackingLimits.maximumDimension,
+              image.width * image.height <= CADImagePackingLimits.maximumPixelCount,
+              image.width * image.height * 4 <= CADImagePackingLimits.maximumDecodedBytes else {
+            return nil
+        }
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        var drew = false
+        bytes.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+            context.interpolationQuality = .none
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            drew = true
+        }
+        guard drew else { return nil }
+        var pixel = 0
+        while pixel < bytes.count {
+            let alpha = Int(bytes[pixel + 3])
+            if alpha == 0 {
+                bytes[pixel] = 0
+                bytes[pixel + 1] = 0
+                bytes[pixel + 2] = 0
+            } else if alpha < 255 {
+                for channel in 0..<3 {
+                    let value = Int(bytes[pixel + channel]) * 255
+                    bytes[pixel + channel] = UInt8(min(255, (value + alpha / 2) / alpha))
+                }
+            }
+            pixel += 4
+        }
+        return (width, height, bytes)
+    }
+
+    /// Split a glTF packed metallic-roughness image's G (roughness) or B
+    /// (metallic) channel into an opaque grayscale PNG. The renderer and the
+    /// exporter both read scalar maps as luminance, so this keeps the
+    /// round-trip value exact instead of assigning the packed image to both
+    /// slots (which would read the same luminance twice).
+    private static func channelPNG(_ data: Data, channel: Int) -> Data? {
+        guard channel == 1 || channel == 2,
+              let decoded = decodedRGBA(data) else { return nil }
+        let pixelCount = decoded.width * decoded.height
+        var pixels = [UInt8](repeating: 255, count: pixelCount * 4)
+        for pixel in 0..<pixelCount {
+            let value = decoded.pixels[pixel * 4 + channel]
+            pixels[pixel * 4] = value
+            pixels[pixel * 4 + 1] = value
+            pixels[pixel * 4 + 2] = value
+        }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let image = CGImage(
+                width: decoded.width, height: decoded.height,
+                bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: decoded.width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo(rawValue:
+                    CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: false,
+                intent: .defaultIntent) else { return nil }
+        return MeshImportKit.pngData(image)
+    }
+
     static func parts(from data: Data, isBinary: Bool, siblings: [String: Data],
                       unitScale: Double) throws -> [ImportedPart] {
         var json: [String: Any]
@@ -449,6 +565,14 @@ nonisolated enum GLTFImporter {
             }
             json = parsed
         }
+
+        // Old Floe GLBs (generator "openshape3d") wrote model millimetres into
+        // a glTF header that the spec defines as metres. Treat those legacy
+        // bytes as needing an extra 0.001 so importing them with the normal
+        // 1000 mm/m factor recovers the original millimetres. New FloeCAD
+        // exports carry the root mm->m transform and need no legacy factor.
+        let generator = ((json["asset"] as? [String: Any])?["generator"] as? String) ?? ""
+        let legacyMillimetreConversion: Double = generator == "openshape3d" ? 0.001 : 1
 
         // Buffers: the GLB's BIN chunk, data: URIs, or files that came along.
         var buffers: [Data] = []
@@ -554,7 +678,7 @@ nonisolated enum GLTFImporter {
         }
 
         func imageBytes(_ imageIndex: Int) -> Data? {
-            guard imageIndex < images.count else { return nil }
+            guard imageIndex >= 0, imageIndex < images.count else { return nil }
             let image = images[imageIndex]
             if let viewIndex = image["bufferView"] as? Int, let (bytes, _) = try? viewBytes(viewIndex) {
                 return bytes
@@ -568,22 +692,96 @@ nonisolated enum GLTFImporter {
         func material(_ index: Int?) -> BodyMaterialSpec? {
             guard let index, index < materials.count else { return nil }
             let m = materials[index]
-            var spec = BodyMaterialSpec(baseColor: SIMD4(1, 1, 1, 1), metallic: 0, roughness: 0.5)
+            // glTF's own defaults: baseColorFactor [1,1,1,1], metallicFactor 1,
+            // roughnessFactor 1. (The CAD document default is 0/0, but an
+            // imported glTF material must keep the values a glTF viewer sees.)
+            var spec = BodyMaterialSpec(baseColor: SIMD4(1, 1, 1, 1),
+                                        metallic: 1, roughness: 1)
+            spec.materialName = (m["name"] as? String).flatMap { raw in
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : String(trimmed.prefix(120))
+            }
             let pbr = m["pbrMetallicRoughness"] as? [String: Any]
             if let f = pbr?["baseColorFactor"] as? [Double], f.count == 4 {
                 spec.baseColor = SIMD4(f[0], f[1], f[2], f[3])
+                spec.opacity = f[3]
             }
             if let metallic = pbr?["metallicFactor"] as? Double { spec.metallic = metallic }
             if let roughness = pbr?["roughnessFactor"] as? Double { spec.roughness = roughness }
-            var textureIndex = (pbr?["baseColorTexture"] as? [String: Any])?["index"] as? Int
-            if textureIndex == nil,
-               let sg = (m["extensions"] as? [String: Any])?["KHR_materials_pbrSpecularGlossiness"] as? [String: Any] {
-                textureIndex = (sg["diffuseTexture"] as? [String: Any])?["index"] as? Int
-                if let f = sg["diffuseFactor"] as? [Double], f.count == 4 { spec.baseColor = SIMD4(f[0], f[1], f[2], f[3]) }
+            let extensions = m["extensions"] as? [String: Any]
+            var baseTexture = pbr?["baseColorTexture"] as? [String: Any]
+            if baseTexture == nil,
+               let sg = extensions?["KHR_materials_pbrSpecularGlossiness"] as? [String: Any] {
+                baseTexture = sg["diffuseTexture"] as? [String: Any]
+                if let f = sg["diffuseFactor"] as? [Double], f.count == 4 {
+                    spec.baseColor = SIMD4(f[0], f[1], f[2], f[3])
+                    spec.opacity = f[3]
+                }
             }
-            if let textureIndex, textureIndex < textures.count,
-               let source = textures[textureIndex]["source"] as? Int {
-                spec.baseColorTexture = imageBytes(source)
+            func textureBytes(_ rawIndex: Any?) -> Data? {
+                guard let rawIndex = rawIndex as? Int, rawIndex >= 0,
+                      rawIndex < textures.count,
+                      let source = textures[rawIndex]["source"] as? Int else { return nil }
+                return imageBytes(source)
+            }
+            func textureData(_ info: [String: Any]?) -> (data: Data,
+                                                        orientation: MaterialTextureOrientation)? {
+                guard let info, let index = info["index"] as? Int,
+                      let data = textureBytes(index) else { return nil }
+                return (data, Self.textureOrientation(info))
+            }
+            if let base = textureData(baseTexture) {
+                spec.baseColorTexture = base.data
+                spec.textureMetadata = [Self.textureMetadata(
+                    slot: .baseColor, data: base.data, orientation: base.orientation)]
+            }
+            if let normal = textureData(m["normalTexture"] as? [String: Any]) {
+                spec.normalTexture = normal.data
+                spec.textureMetadata = (spec.textureMetadata ?? [])
+                    + [Self.textureMetadata(
+                        slot: .normal, data: normal.data, orientation: normal.orientation)]
+            }
+            // glTF's one packed metallic-roughness image carries G=roughness,
+            // B=metallic. Split the channels into the two Floe map slots so
+            // factor×map stays the same in engineering, Present and on
+            // re-export; assigning the packed image to both slots would read
+            // its RGB luminance twice and lose the per-channel meaning.
+            if let packed = textureData(pbr?["metallicRoughnessTexture"] as? [String: Any]) {
+                if let roughness = Self.channelPNG(packed.data, channel: 1) {
+                    spec.roughnessTexture = roughness
+                    spec.textureMetadata = (spec.textureMetadata ?? [])
+                        + [Self.textureMetadata(
+                            slot: .roughness, data: roughness,
+                            orientation: packed.orientation)]
+                }
+                if let metallic = Self.channelPNG(packed.data, channel: 2) {
+                    spec.metallicTexture = metallic
+                    spec.textureMetadata = (spec.textureMetadata ?? [])
+                        + [Self.textureMetadata(
+                            slot: .metallic, data: metallic,
+                            orientation: packed.orientation)]
+                }
+            }
+            // Emissive RGB without KHR strength has glTF's implicit 1.0. A
+            // zero strength stays zero (emission truly off), matching the
+            // shader and Present's `emissive.rgb × strength`.
+            if let f = m["emissiveFactor"] as? [Double], f.count == 3 {
+                spec.emissive = SIMD3(f[0], f[1], f[2])
+                spec.emissiveStrength = (extensions?["KHR_materials_emissive_strength"]
+                    as? [String: Any])?["emissiveStrength"] as? Double ?? 1
+            } else if let strength = (extensions?["KHR_materials_emissive_strength"]
+                as? [String: Any])?["emissiveStrength"] as? Double {
+                spec.emissiveStrength = strength
+            }
+            if let emissive = textureData(m["emissiveTexture"] as? [String: Any]) {
+                spec.emissiveTexture = emissive.data
+                spec.textureMetadata = (spec.textureMetadata ?? [])
+                    + [Self.textureMetadata(
+                        slot: .emissive, data: emissive.data,
+                        orientation: emissive.orientation)]
+            }
+            if (m["alphaMode"] as? String)?.uppercased() == "BLEND" {
+                spec.opacity = spec.opacity ?? spec.baseColor.w
             }
             return spec
         }
@@ -638,7 +836,8 @@ nonisolated enum GLTFImporter {
                 var positions = [SIMD3<Float>](); positions.reserveCapacity(pcount)
                 for i in 0..<pcount {
                     let v = world * SIMD4(Double(p[i * 3]), Double(p[i * 3 + 1]), Double(p[i * 3 + 2]), 1)
-                    positions.append(SIMD3<Float>(Float(v.x * unitScale), Float(v.y * unitScale), Float(v.z * unitScale)))
+                    let scale = unitScale * legacyMillimetreConversion
+                    positions.append(SIMD3<Float>(Float(v.x * scale), Float(v.y * scale), Float(v.z * scale)))
                 }
                 if mirrored { // keep the winding outward
                     for t in stride(from: 0, to: idx.count, by: 3) { idx.swapAt(t + 1, t + 2) }
@@ -659,7 +858,15 @@ nonisolated enum GLTFImporter {
                     render.texcoords = (0..<pcount).map { SIMD2(t[$0 * 2], t[$0 * 2 + 1]) }
                 }
                 var spec = material(prim["material"] as? Int)
-                if render.texcoords == nil { spec?.baseColorTexture = nil }
+                if render.texcoords == nil {
+                    spec?.baseColorTexture = nil
+                    spec?.normalTexture = nil
+                    spec?.emissiveTexture = nil
+                    spec?.opacityTexture = nil
+                    spec?.roughnessTexture = nil
+                    spec?.metallicTexture = nil
+                    spec?.textureMetadata = nil
+                }
                 let base = nodeName ?? meshName ?? "Part"
                 let name = primitives.count > 1 ? "\(base) \(pi + 1)" : base
                 parts.append(ImportedPart(name: name, mesh: render, material: spec))

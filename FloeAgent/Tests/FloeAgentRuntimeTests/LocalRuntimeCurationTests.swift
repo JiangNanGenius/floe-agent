@@ -52,6 +52,28 @@ struct LocalRuntimeCurationTests {
         return executor
     }
 
+    @Test("Local geometry edits pin CAD without enabling it in temporary chat")
+    func cadIntentKeepsTemporaryCeiling() async throws {
+        for temporary in [false, true] {
+            let provider = makeProvider(local: true)
+            let mockExecutor = executor(names: ["cad.document", "workspace.readFile", "web.search", "exec.shell"])
+            // The canonical CAD tool is mutating even though some actions read.
+            mockExecutor.descriptors["cad.document"] = .init(name: "cad.document",
+                toolDescription: "Inspect and edit CAD documents", parametersJSON: #"{"type":"object","required":["action"],"properties":{"action":{"type":"string"}}}"#,
+                riskLabels: [], isSideEffecting: true)
+            let adapter = MockAdapter()
+            adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+            let runtime = FloeAgentRuntime(configuration: .init(provider: provider,
+                model: makeModel(providerID: provider.id), temporaryReadOnly: temporary),
+                adapter: adapter, policy: HumanApprovalPolicy(), executor: mockExecutor)
+            try await runtime.start(goal: "把支架孔径改为 8 毫米并增加圆角")
+            let request = try #require(adapter.requests.first)
+            let names = Set(request.toolSchemas.map(\.name))
+            #expect(names.contains("cad.document") == !temporary)
+            #expect(!names.contains("exec.shell"))
+        }
+    }
+
     @Test("A local run only presents curated descriptors even with hidden tools registered")
     func localCatalogIsCurated() async throws {
         let provider = makeProvider(local: true)

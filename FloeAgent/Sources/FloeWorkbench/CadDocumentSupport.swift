@@ -69,6 +69,49 @@ public actor AsyncMutex {    private var isLocked = false
     public var isBusy: Bool { isLocked }
 }
 
+/// Mirror of one real viewport capture for the `cad.document` capture action.
+/// FloeWorkbench deliberately does not import FloeCAD; the app host maps its
+/// public `CADViewportCaptureResult` into this value at the boundary.
+public struct CadViewportCapture: Sendable, Equatable {
+    public var pngData: Data
+    public var width: Int
+    public var height: Int
+    public var revision: Int64
+    public var changeCount: Int
+    public var contentSHA256: String
+    public var sha256: String
+    /// `engineering` or `presentation`; never guessed.
+    public var renderer: String
+    public var note: String
+
+    public init(pngData: Data, width: Int, height: Int, revision: Int64,
+                changeCount: Int, contentSHA256: String, sha256: String,
+                renderer: String = "engineering", note: String) {
+        self.pngData = pngData
+        self.width = width
+        self.height = height
+        self.revision = revision
+        self.changeCount = changeCount
+        self.contentSHA256 = contentSHA256
+        self.sha256 = sha256
+        self.renderer = renderer
+        self.note = note
+    }
+}
+
+/// Action names the `material` and `parameters` tool actions accept. Kept in
+/// the tool-support module so validation does not need a FloeCAD dependency;
+/// the engine service remains the authority and returns a structured refusal
+/// for anything it does not implement.
+public enum CadNativeEditActions {
+    public static let material: Set<String> = [
+        "list", "read", "create", "update", "remove", "apply", "applyFaces",
+        "reassignFaces", "mapping", "textures", "unresolved", "libraryExport",
+        "libraryImport", "libraryList", "undo", "redo",
+    ]
+    public static let parameters: Set<String> = ["list", "update", "updateSketchEntity", "undo", "redo"]
+}
+
 // MARK: - Native package naming and creation/import policy
 
 /// Shared policy for the native `.floecad` package surface (tool create/import
@@ -682,9 +725,11 @@ public enum CadServiceOperationCatalog: Sendable {
                   examples: [#"{"bodyID":"<body uuid>","ratio":0.5,"forceMesh":true}"#]),
         Operation(kind: "mesh", action: "material", mutating: true,
                   summary: "Set material appearance on one body.",
-                  arguments: [arg("bodyID", "uuid", required: true), arg("color", "string"),
+                  arguments: [arg("bodyID", "uuid", required: true),
+                              arg("color", "[r,g,b(,a)]", note: "0…1 components (canonical); #RRGGBB also accepted"),
                               arg("opacity", "number"), arg("metallic", "number"), arg("roughness", "number")],
-                  examples: [##"{"bodyID":"<body uuid>","color":"#8899AA","roughness":0.4}"##]),
+                  examples: [##"{"bodyID":"<body uuid>","color":[0.53,0.6,0.67],"roughness":0.4}"##,
+                             ##"{"bodyID":"<body uuid>","color":"#8899AA","roughness":0.4}"##]),
         Operation(kind: "mesh", action: "text", mutating: true,
                   summary: "Create text geometry as a mesh body.",
                   arguments: [arg("text", "string", required: true), arg("size", "number"),

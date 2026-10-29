@@ -707,6 +707,18 @@ final class ProviderEditorViewModel: ObservableObject {
             )
     }
 
+    /// Limits for a manually added or catalog-staged conversation row. The
+    /// verified catalog context/output facts win when present; absent facts
+    /// keep the legacy 128K/8K default. Media rows keep their role defaults.
+    private func newModelLimits(forRemoteID remoteID: String) -> ModelLimits {
+        let fallback = ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192)
+        guard serviceRole == .conversation,
+              let metadata = catalogModelMetadata(for: remoteID) else { return fallback }
+        let context = min(max(metadata.contextTokens ?? fallback.contextTokens, 1), 10_000_000)
+        let output = min(max(metadata.maxOutputTokens ?? fallback.maxOutputTokens, 0), context)
+        return ModelLimits(contextTokens: context, maxOutputTokens: output)
+    }
+
     /// Capability defaults for a NEWLY created model row. Discovery and the
     /// manual fallback use this same pure resolver: verified catalog metadata
     /// when present, the legacy protocol default otherwise. Existing rows are
@@ -804,8 +816,11 @@ final class ProviderEditorViewModel: ObservableObject {
         return formSpec.eligiblePresets
     }
 
+    /// Whether a real model listing is available for the CURRENT fields.
+    /// Resolving through `formSpec` keeps a URL edit (for example away from
+    /// a subscription gateway) from leaving a stale discovery decision.
     var supportsDiscovery: Bool {
-        selectedPreset.supportsModelDiscovery
+        formSpec.showsModelListingRefresh
     }
 
     /// True when "refresh model list" has an honest meaning for the current
@@ -1043,7 +1058,16 @@ final class ProviderEditorViewModel: ObservableObject {
             }
             let adapter = adapterFactory.adapter(for: profile)
             if testConnectivity {
-                try await adapter.testConnection(provider: profile, credentials: credentials)
+                // Subscription gateways have no documented /models listing;
+                // their honest probe is one minimal chat request for the
+                // model the user actually selected. This call happens only on
+                // an explicit Test action.
+                try await ProviderConnectionProbe.testConnection(
+                    provider: profile,
+                    credentials: credentials,
+                    modelRemoteID: selectedChatProbeModelID,
+                    adapter: adapter
+                )
             }
             if supportsDiscovery {
                 let models = try await adapter.listModels(
@@ -1053,13 +1077,44 @@ final class ProviderEditorViewModel: ObservableObject {
                 mergeDiscovered(models)
                 testState = .succeeded(modelCount: models.count)
             } else {
-                testState = .succeeded(modelCount: 0)
+                // The probe above already verified the selected chat model;
+                // do not claim a listing count this endpoint does not expose.
+                testState = .succeeded(modelCount: selectedModels.count)
             }
         } catch {
             let message = SecretRedactor.redact(error.localizedDescription)
             testState = .failed(message)
             errorMessage = message
         }
+    }
+
+    /// The configured chat model used by the subscription connection probe.
+    /// Only an actually selected row may be probed: the default when it is
+    /// selected, otherwise the first selected chat row. An unselected
+    /// candidate must never be sent to the provider just because it exists.
+    private var selectedChatProbeModelID: String? {
+        Self.chatProbeModelRemoteID(
+            defaultModelID: defaultModelID,
+            selectedModelIDs: selectedModelIDs,
+            candidates: candidateModels
+        )
+    }
+
+    /// Pure probe-row selection shared by the editor and offline tests.
+    static func chatProbeModelRemoteID(
+        defaultModelID: UUID?,
+        selectedModelIDs: Set<UUID>,
+        candidates: [ModelProfile]
+    ) -> String? {
+        if let defaultModelID,
+           selectedModelIDs.contains(defaultModelID),
+           let model = candidates.first(where: { $0.id == defaultModelID }),
+           model.supportsChatAgentSurface {
+            return model.remoteModelID
+        }
+        return candidates.first(where: {
+            selectedModelIDs.contains($0.id) && $0.supportsChatAgentSurface
+        })?.remoteModelID
     }
 
     /// Honest media-role test. Media readiness is claimed ONLY from the
@@ -1333,7 +1388,7 @@ final class ProviderEditorViewModel: ObservableObject {
             providerID: providerID,
             remoteModelID: trimmed,
             displayName: displayName.isEmpty ? trimmed : displayName,
-            limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192),
+            limits: newModelLimits(forRemoteID: trimmed),
             capabilities: defaultCapabilities(forRemoteID: trimmed, role: serviceRole),
             useSurfaces: serviceRole.defaultUseSurfaces,
             isHiddenFromPrimaryPicker: serviceRole == .conversation ? false : true

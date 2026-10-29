@@ -35,6 +35,33 @@ public enum ImageGenerationPresetResolver {
             $0.provider == family && $0.kind == .image && $0.remoteModelID == model.remoteModelID
         }
         let adapter = ImageProviderAdapterFactory().adapter(for: provider)
+        // Agent Plan publishes its own image ids (the same Seedream family,
+        // without the PAYG revision suffix). The catalog offer is the seed
+        // authority; this branch supplies only the documented family limits.
+        // It must run before the PAYG-descriptor lookup because a plan
+        // connection has custom kind and therefore no media family.
+        if ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan,
+           let planFamily = Seedream5ImageFamily.resolve(model.remoteModelID) {
+            return ParameterContract(
+                verifiedModel: true,
+                aspectRatio: planFamily.supportedAspectRatios,
+                resolution: planFamily.supportedResolutions,
+                quality: [],
+                defaultAspectRatio: "1:1",
+                defaultResolution: planFamily.defaultResolution,
+                defaultQuality: nil,
+                minimumCount: 1,
+                maximumCount: min(
+                    planFamily.maximumOutputImages,
+                    max(1, adapter?.maximumOutputImages(modelRemoteID: model.remoteModelID) ?? 1)
+                ),
+                maximumReferenceImages: operation == .generate
+                    ? 0
+                    : ImageReferenceCapabilityResolver.maximumReferenceImages(provider: provider, model: model),
+                nativeSizeOverride: true,
+                unavailableControls: ["seed", "watermark", "promptOptimization"]
+            )
+        }
         let resolutions = (descriptor?.supportedResolutions ?? []).filter {
             !(provider.kind == .alibabaStudio && operation != .generate && $0 == "4K")
         }
@@ -89,8 +116,14 @@ public enum ImageGenerationPresetResolver {
                 throw RemoteImageError.requestFailed("Invalid or unsupported native image size")
             }
         }
-        _ = try nativeSize(provider: provider.kind, modelRemoteID: model.remoteModelID, operation: operation, selection: selection)
-        _ = try normalizedQuality(selection.quality, provider: provider.kind, modelRemoteID: model.remoteModelID)
+        // Agent Plan is a Volcengine Ark image contract behind a subscription
+        // base URL; its saved provider kind stays `.custom` so it cannot
+        // inherit the PAYG model list. Validate the actual wire family.
+        let imageKind: ProviderKind =
+            ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan
+                ? .volcengineArk : provider.kind
+        _ = try nativeSize(provider: imageKind, modelRemoteID: model.remoteModelID, operation: operation, selection: selection)
+        _ = try normalizedQuality(selection.quality, provider: imageKind, modelRemoteID: model.remoteModelID)
     }
 
     public static func defaultResolution(provider: ProviderKind, modelRemoteID: String?) -> String {
@@ -127,9 +160,15 @@ public enum ImageGenerationPresetResolver {
         case .openAI:
             return openAISize(aspect: aspect, resolution: resolution)
         case .volcengineArk:
-            let model = modelRemoteID?.lowercased() ?? ""
+            // Normalize both official spellings (`5.0`/`5-0`) before applying
+            // the family limits. The previous substring check missed dotted
+            // plan ids and treated flash as a batch-capable lite model.
+            let model = (modelRemoteID ?? "")
+                .lowercased()
+                .replacingOccurrences(of: ".", with: "-")
             if model.contains("seedream-5-0") {
-                let allowed = model.contains("-pro") ? ["1K", "1.5K", "2K"] : ["2K", "3K", "4K"]
+                let allowed = Seedream5ImageFamily.resolve(modelRemoteID)?.supportedResolutions
+                    ?? ["2K", "3K", "4K"]
                 guard allowed.contains(resolution) else { throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.the_selected_seedream_model_does_not", resolution)) }
             }
             return volcengineSize(aspect: aspect, resolution: resolution)

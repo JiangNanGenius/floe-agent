@@ -385,6 +385,7 @@ public final class CADAssemblyService {
             // copied cylinder must not degrade to its tessellation.
             copy.brep = sourceBody.brep
             copy.material = sourceBody.material
+            copy.materialFaceBindings = sourceBody.materialFaceBindings
             copy.isHidden = sourceBody.isHidden
             document.session.perform(AddBodyCommand(body: copy, title: "Assembly Copy \(sourceBody.name)"))
             copiedBodyID = copy.id.raw

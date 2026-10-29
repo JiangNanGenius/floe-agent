@@ -100,6 +100,12 @@ enum ModelDiscovery {
         provider: ProviderProfile,
         credentials: ProviderCredentials
     ) async throws -> [ModelProfile] {
+        // The plan catalog is descriptive, never an undocumented account
+        // listing. Fence the common wire entry too, so a future caller cannot
+        // reintroduce /models outside the editor's disabled refresh control.
+        guard ProviderBillingEndpoint.resolve(provider.baseURL) == nil else {
+            throw FloeError.invalidConfiguration(FloeL10n.l("providers.model_discovery.subscription_catalog"))
+        }
         let url = provider.baseURL.appendingPathComponent("models")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"

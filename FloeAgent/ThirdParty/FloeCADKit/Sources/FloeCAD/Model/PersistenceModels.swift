@@ -69,6 +69,12 @@ final class Project {
     /// the unknown column and this build writes only when non-nil.
     var sceneSettingsData: Data? = nil
 
+    /// Custom-material library (`CADMaterialLibrary`) as additive JSON. Absent
+    /// on documents that never used custom materials; applied body/face
+    /// snapshots stay on the body records, so deleting a library entry can
+    /// never change an existing appearance.
+    var materialsData: Data? = nil
+
     init(name: String) {
         self.name = name
         self.createdAt = Date()
@@ -89,6 +95,9 @@ final class PersistedBody {
     var isHidden: Bool = false
     /// JSON-encoded BodyMaterialSpec; nil keeps the legacy default look.
     var materialData: Data?
+    /// JSON-encoded `[CADFaceMaterialBinding]` (stable per-face snapshots).
+    /// Additive and nil for every pre-material document/body.
+    var faceMaterialsData: Data?
     /// OCCT BRep blob, so analytic geometry survives a reload.
     var brepData: Data?
     weak var project: Project?

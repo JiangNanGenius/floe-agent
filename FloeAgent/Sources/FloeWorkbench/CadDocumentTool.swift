@@ -1,6 +1,8 @@
 // FloeWorkbench — cad.document tool.
 //
-// One tool, thirteen actions at explicit effect levels:
+// One tool, native and 2D actions at explicit effect levels. The material,
+// parameters and capture actions are ordinary authorized native-document
+// operations (no per-edit UI grant). Summary of actions:
 //   capabilities — engine-declared capacities and limits (read-only)
 //   create       — create a new EMPTY native `.floecad` package through the
 //                  host factory (never hand-built bytes); non-overwriting,
@@ -30,6 +32,7 @@
 
 import Foundation
 import FloeCore
+import FloeModels
 import FloeTools
 
 // MARK: - Ownership and values
@@ -447,6 +450,12 @@ public protocol CadDocumentHost: Sendable {
     /// and limits. Environments without the kernel throw
     /// `FloeError.notFound("native_cad_kernel")`.
     func nativeCapabilities(access: CadDocumentAccess) async throws -> String
+    /// Actual offscreen viewport PNG of the live native scene, bound to the
+    /// document's last committed revision and live change count. Hosts
+    /// without a real viewport renderer throw instead of fabricating an image.
+    func captureViewport(documentID: String, width: Int, height: Int,
+                         expectedRevision: Int64?,
+                         access: CadDocumentAccess) async throws -> CadViewportCapture
 }
 
 public extension CadDocumentHost {
@@ -461,6 +470,11 @@ public extension CadDocumentHost {
         throw FloeError.notFound("native_cad_kernel")
     }
     func nativeCapabilities(access: CadDocumentAccess) async throws -> String {
+        throw FloeError.notFound("native_cad_kernel")
+    }
+    func captureViewport(documentID: String, width: Int, height: Int,
+                         expectedRevision: Int64?,
+                         access: CadDocumentAccess) async throws -> CadViewportCapture {
         throw FloeError.notFound("native_cad_kernel")
     }
     /// A host that does not implement the runtime-authorized automatic apply
@@ -596,6 +610,11 @@ public actor CadProposalGrantStore {
 
 public enum CadDocumentAction: String, Decodable, Sendable, CaseIterable {
     case capabilities, create, read, query, locate, measure, check, propose, `import`, preview, apply, save, export
+    /// Native custom-material library/application, typed feature-parameter
+    /// editing/undo, and real viewport capture. These are ordinary authorized
+    /// document operations (no per-edit UI grant); a model-supplied grant is
+    /// never consulted.
+    case material, parameters, capture
     /// Durable native-task status and cancellation (long rebuild/export/mesh
     /// jobs). `status` lists or reports one task; `cancel` requires task_id.
     case status, cancel
@@ -765,8 +784,19 @@ public struct CadDocumentTool: AgentTool {
     apply → propose {"op":"sketch.addEntities"} → apply → propose \
     {"op":"feature.extrude","args":{"sketchID":...,"seedPoint":[x,y],\
     "distance":mm}} → apply → measure {"op":"body","handles":["body:<uuid>"]} → \
-    export. Nothing is written by \
-    propose/preview/import.
+    export. Native `.floecad` documents additionally accept action \
+    "material" (custom PBR material library: list/read/create/update/remove/ \
+    apply/applyFaces/reassignFaces/mapping/textures/unresolved/libraryExport/ \
+    libraryImport/libraryList/undo/redo; applied appearances are snapshots \
+    and survive library deletion), action "parameters" (typed feature \
+    parameter list/update/undo/redo plus updateSketchEntity for an existing \
+    circle radius — e.g. resizing a hole — with mm/degree units, dependencies \
+    and actions from query kind=features/sketches), and action "capture" (actual viewport \
+    PNG artifact bound to the document revision/change_count; only a \
+    vision-capable model may inspect it — otherwise measure, never claim to \
+    have seen the image). Nothing is written by propose/preview/import; \
+    material/parameter edits are undoable document commands committed with \
+    compare-and-swap, and temporary chat remains read-only.
     """
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -789,7 +819,7 @@ public struct CadDocumentTool: AgentTool {
       "additionalProperties": false,
       "required": ["action"],
       "properties": {
-        "action": { "type": "string", "enum": ["capabilities", "create", "read", "query", "locate", "measure", "check", "propose", "import", "preview", "apply", "save", "export", "status", "cancel", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
+        "action": { "type": "string", "enum": ["capabilities", "create", "read", "query", "locate", "measure", "check", "propose", "import", "preview", "apply", "save", "export", "status", "cancel", "material", "parameters", "capture", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
         "path": { "type": "string", "description": "Document path relative to the task workspace (an allowed absolute workspace path is accepted too). Required for every action except capabilities without a path. A .floecad extension routes to the native 3D kernel; .dwg/.dxf route to the 2D engine. For 'create' it is the new package location (its parent directory must exist or be omitted); for 'import' it is the EXISTING .floecad package that receives the geometry. Never write a .floecad directory, manifest.json or zip yourself: use create." },
         "name": { "type": "string", "maxLength": 120, "description": "create: human-readable display name stored in the new native document. Letters and digits of ANY language (Chinese, Japanese, Cyrillic, ...), spaces and -_(). are accepted; it must not contain '/', '\\\\', control/invisible characters or a '..' path segment and must be at most 120 characters, otherwise the call is refused with a bilingual explanation. When omitted the display name defaults to the file stem. The FILE keeps the stem of 'path' and is uniquified, so the display name and the file name stay separate. import: optional name for the imported body(ies)." },
         "source_path": { "type": "string", "description": "import only: workspace-relative path of the source file to add to the existing .floecad package. Supported extensions: .step/.stp (exact solids), .iges/.igs (solids + render-only surfaces), .stl/.obj/.glb/.gltf (meshes). The file is read through the workspace guard (symlink-safe, size-bounded) and is never modified. DWG/DXF go through the 2D engine instead." },
@@ -803,10 +833,10 @@ public struct CadDocumentTool: AgentTool {
         },
         "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id from propose (preview/apply). Send it exactly as the propose reply printed it." },
         "grant_id": { "type": "string", "description": "apply: OPTIONAL. When present, selects the human-reviewed CAD UI confirmation path (opaque single-use token the user's acceptance issued; the model cannot mint it). Omit it to let the runtime-approved call authority for this exact apply authorize the change automatically; a made-up or model-supplied value never authorizes anything." },
-        "revision": { "type": "integer", "minimum": 0, "description": "apply: optional base revision pin. When present it is bound into the approved call and the host refuses a proposal drafted against a different revision." },
+        "revision": { "type": "integer", "minimum": 0, "description": "apply/capture/material/parameters: optional base revision pin. For apply it is bound into the approved call; for the other actions the host refuses with revision_mismatch before any mutation/capture when the live document is at a different revision." },
         "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
         "task_id": { "type": "string", "description": "Durable native task id (status reports one task; cancel requires it)." },
-        "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|variables|assembly|drawings|detail|snapshot. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind). capabilities: pass drawing|assembly|script|mesh to get that service's exact operations with arguments and examples." },
+        "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|variables|materials|assembly|drawings|scene|detail|snapshot. Features carry typed parameters/units/dependencies/actions; sketches carry entityRows with stable entity ids and each circle's current radius/diameter (the addressable source of an existing hole); faces/edges carry stable-matching indices, signatures and query_token/generation (revision, change_count, mesh_revision) required for index-based edits, and face rows identify planar/cylindrical kind with the actual radiusMM for a cylinder. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind). capabilities: pass drawing|assembly|script|mesh to get that service's exact operations with arguments and examples." },
         "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points: 2D distance exactly 2, angle exactly 3, area 3+; snap point (first row). Native distance exactly 2 [x,y,z] rows." },
         "handles": { "type": "array", "items": { "type": "string" }, "description": "2D entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+. Native: one handle per action, body:<uuid> / face:<uuid>:<index> / edge:<uuid>:<index>; body, mesh and bounds accept body:<uuid> (a bare body UUID is also accepted); bounds takes one or more body handles." },
         "tolerance": { "type": "number", "description": "snap/check tolerance in drawing units; native interference tolerance in mm." },
@@ -818,8 +848,8 @@ public struct CadDocumentTool: AgentTool {
         "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf; the path must stay inside the workspace. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings)." },
         "page_id": { "type": "string", "format": "uuid", "description": "export: the native drawing page id for pdf/svg/dxf exports, exactly as query with kind=drawings returned it." },
         "op": { "type": "string", "description": "Native typed operation name. Native propose requires it; native measure may use it to name the measurement kind. Exact vocabulary (also reported by capabilities as operation_names): sketch.create, sketch.addEntities, feature.extrude, feature.revolve, feature.pattern, feature.mirror, feature.transform, feature.boolean, feature.fillet, feature.chamfer, feature.shell, feature.sweep, feature.loft, feature.pushPull, feature.moveFace, feature.scaleFace, feature.rotateFace, feature.deleteFace, feature.replaceFace, feature.draftFace, body.setMaterial, item.setHidden." },
-        "args": { "type": "string", "description": "JSON object string with the typed operation's arguments. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:\"line\",a:[x,y],b:[x,y]} | {kind:\"circle\",center:[x,y],radius} | {kind:\"arc\",center:[x,y],radius,startAngle,endAngle} | {kind:\"spline\",points:[[x,y],...],closed?} | {kind:\"rect\",min:[x,y],max:[x,y]} | {kind:\"polygon\",center:[x,y],radius,sides,rotation?} | {kind:\"ellipse\",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:\"throughAll\"|\"upToNext\"|\"blind\", boolean?:\"newBody\"|\"union\"|\"subtract\"|\"intersect\", booleanTargets?:[bodyID]}. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"seedPoint\":[40,20],\"distance\":10}. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet/chamfer {bodyID,isFillet,amount,edges}, feature.shell {bodyID,thickness,openFaces}, feature.pattern {bodyID,kind,count,...}); measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild)." },
-        "payload": { "type": "string", "description": "JSON object string for the native workbench services (three_d_assembly / three_d_drawing). It MUST name one operation via payload.action or the legacy payload.op \"<kind>.<action>\" (for example \"drawing.addPage\"); without a recognizable action the call is REFUSED, never defaulted to a read. Mutating actions run via propose op \"drawing.addPage\"/\"assembly.addInstance\" then apply; read-only ones run directly. Arguments sit beside the selector or in payload.args; capabilities kind=drawing|assembly|script|mesh lists exact args/examples. Never contains file paths other than the guarded output/import fields above." }
+        "args": { "type": "string", "description": "JSON object string with the typed operation's arguments. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:\"line\",a:[x,y],b:[x,y]} | {kind:\"circle\",center:[x,y],radius} | {kind:\"arc\",center:[x,y],radius,startAngle,endAngle} | {kind:\"spline\",points:[[x,y],...],closed?} | {kind:\"rect\",min:[x,y],max:[x,y]} | {kind:\"polygon\",center:[x,y],radius,sides,rotation?} | {kind:\"ellipse\",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:\"throughAll\"|\"upToNext\"|\"blind\", boolean?:\"newBody\"|\"union\"|\"subtract\"|\"intersect\", booleanTargets?:[bodyID]}. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"seedPoint\":[40,20],\"distance\":10}. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet {bodyID,radius,edges,query_token?} / feature.chamfer {bodyID,setback,edges,query_token?}, feature.shell {bodyID,thickness,openFaces,query_token?}, feature.pattern {bodyID,kind,count,...}); Face/edge index operations require query_token from query kind=faces/edges (or the row's stable face signature/edge midpoint); index existence alone is rejected with requery_required because a rebuild can reuse an index for a different face/edge. measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild)." },
+        "payload": { "type": "string", "description": "JSON object string for the native workbench services (three_d_assembly / three_d_drawing) and the material/parameters/capture actions. Material actions: list|read|create|update|remove|apply|applyFaces|reassignFaces|mapping|textures|unresolved|libraryExport|libraryImport|libraryList|undo|redo; create/update/apply accept color [r,g,b(,a)] 0…1 (or #RRGGBB[AA]), metallic/roughness/opacity, emissive + emissive_strength, uv_mapping {source:mesh|planarProjection|boxProjection, axis:x|y|z, scale_mm:[u,v], rotation_degrees, offset:[u,v], flip_u, flip_v}, textures [{slot:baseColor|metallic|roughness|normal|emissive|opacity, asset_path? or asset_base64?, color_space?, orientation?}]. Parameter actions: list|update|updateSketchEntity|undo|redo; update {feature_id, changes:{distance|angle|taper_angle|radius|setback|thickness|factor|count|spacing|total_angle|symmetric|rotate_instances:...}} uses the units query kind=features reports; updateSketchEntity {sketch_id, entity_id, radius, expected_radius?} changes one existing circle's radius (for example a hole's diameter: radius 5 -> 4 for diameter 10 -> 8 mm), rebuilds every dependent feature in one undo step, and takes the stable ids/current radius from query kind=sketches entityRows. Capture: {width?,height?} returns a real viewport PNG artifact with renderer=presentation only while Present is active, otherwise renderer=engineering; it is bound to revision/change_count and image_sha256 is separate from content_sha256. applyFaces/reassignFaces require query_token from query kind=faces or face_signatures; index-only edits are refused with requery_required (query tokens are generation proof, not permission). Workbench service payloads MUST name one operation via payload.action or legacy payload.op; mutating workbench services still use propose→apply, while material/parameter edits are ordinary authorized undoable document commands. A global libraryExport/libraryImport uses the single app-owned personal library (libraryList reads it with global:true); global export writes a file so it is refused in temporary/read-only contexts. Never contains file paths other than the guarded asset_path/output/import fields above." }
       }
     }
     """#
@@ -1038,6 +1068,84 @@ public struct CadDocumentTool: AgentTool {
                (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] == nil {
                 throw FloeError.validationFailed("args must be a JSON object string")
             }
+        case .material:
+            guard native else {
+                throw FloeError.validationFailed(
+                    "material edits a native .floecad document; a DWG/DXF drawing has no PBR material library.")
+            }
+            let payload = try Self.servicePayloadObject(args)
+            guard let action = payload["action"] as? String,
+                  CadNativeEditActions.material.contains(action) else {
+                throw FloeError.validationFailed(
+                    "material requires payload.action ("
+                        + CadNativeEditActions.material.sorted().joined(separator: "|") + ").")
+            }
+            if let revision = args.revision, revision < 0 {
+                throw FloeError.validationFailed("revision must be >= 0")
+            }
+        case .parameters:
+            guard native else {
+                throw FloeError.validationFailed(
+                    "parameters edits the native feature graph and sketch profiles; "
+                        + "a DWG/DXF drawing has no parametric features.")
+            }
+            let payload = try Self.servicePayloadObject(args)
+            guard let action = payload["action"] as? String,
+                  CadNativeEditActions.parameters.contains(action) else {
+                throw FloeError.validationFailed(
+                    "parameters requires payload.action ("
+                        + CadNativeEditActions.parameters.sorted().joined(separator: "|") + ").")
+            }
+            if let revision = args.revision, revision < 0 {
+                throw FloeError.validationFailed("revision must be >= 0")
+            }
+            if action == "update" {
+                guard payload["feature_id"] as? String != nil || payload["id"] as? String != nil else {
+                    throw FloeError.validationFailed("parameters update requires feature_id (from query kind=features).")
+                }
+                guard let changes = payload["changes"] as? [String: Any], !changes.isEmpty else {
+                    throw FloeError.validationFailed("parameters update requires changes (parameter -> value).")
+                }
+            }
+            if action == "updateSketchEntity" {
+                guard payload["sketch_id"] as? String != nil
+                        || payload["sketchID"] as? String != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters updateSketchEntity requires sketch_id (from query kind=sketches).")
+                }
+                guard payload["entity_id"] as? String != nil
+                        || payload["entityID"] as? String != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters updateSketchEntity requires entity_id (from query kind=sketches entityRows).")
+                }
+                guard let radius = Self.doubleValue(payload["radius"]),
+                      radius.isFinite, radius > 0 else {
+                    throw FloeError.validationFailed(
+                        "parameters updateSketchEntity requires radius as a positive finite mm value.")
+                }
+                if let raw = payload["expected_radius"] ?? payload["current_radius"] {
+                    guard let expected = Self.doubleValue(raw), expected.isFinite else {
+                        throw FloeError.validationFailed(
+                            "parameters updateSketchEntity expected_radius must be a finite current radius in mm.")
+                    }
+                }
+            }
+        case .capture:
+            guard native else {
+                throw FloeError.validationFailed(
+                    "capture renders the native 3D viewport; use export for a 2D drawing.")
+            }
+            let payload = try Self.servicePayloadObject(args)
+            for key in ["width", "height"] {
+                if let raw = payload[key] {
+                    guard let value = Self.intValue(raw), (64...4096).contains(value) else {
+                        throw FloeError.validationFailed("capture \(key) must be an integer in 64…4096.")
+                    }
+                }
+            }
+            if let revision = args.revision, revision < 0 {
+                throw FloeError.validationFailed("revision must be >= 0")
+            }
         case .propose:
             if native {
                 // Native proposals use the typed operation vocabulary; the
@@ -1079,7 +1187,7 @@ public struct CadDocumentTool: AgentTool {
     /// Native read scopes served by `query` on a `.floecad` document.
     public static let nativeQueryScopes: Set<String> = [
         "bodies", "sketches", "constraints", "features", "edges", "faces",
-        "variables", "assembly", "drawings", "detail", "snapshot",
+        "variables", "materials", "assembly", "drawings", "scene", "detail", "snapshot",
     ]
 
     /// Native deterministic measurements served by `measure`.
@@ -1117,6 +1225,15 @@ public struct CadDocumentTool: AgentTool {
     /// path upstream), so nil is not an escape hatch and needs no staged
     /// check.
     public static func authorizeDocumentPath(_ path: String?, context: ToolContext) throws {
+        if let path, CanvasCADBindingKey.isCanvasOwned(path) {
+            // A canvas-cad key has authority ONLY through the run-frozen exact
+            // key→canonical-path map. The host re-verifies node/conversation/
+            // package ownership at execution; a missing entry fails closed.
+            guard TypedMutationContract.canonicalCADCanvasDocumentPath(
+                path, serviceStorePaths: context.serviceStorePaths) != nil else {
+                throw FloeError.unauthorized
+            }
+        }
         guard let staged = context.canvasStagedDocument, let path else { return }
         if path == staged.stagedRelativePath { return }
         let root = URL(fileURLWithPath: staged.draftRootPath, isDirectory: true)
@@ -1311,6 +1428,15 @@ public struct CadDocumentTool: AgentTool {
     /// foreign path is still refused by `authorizeDocumentPath`/the host
     /// before any authority is consulted).
     static func authorityTarget(for args: CadDocumentArguments, context: ToolContext) -> String {
+        if let raw = args.path?.trimmingCharacters(in: .whitespacesAndNewlines),
+           CanvasCADBindingKey.isCanvasOwned(raw) {
+            guard let canonical = TypedMutationContract.canonicalCADCanvasDocumentPath(
+                raw, serviceStorePaths: context.serviceStorePaths) else {
+                // Deliberately unmatched: the runtime and host both refuse.
+                return "unresolved:canvas-cad"
+            }
+            return "file:" + canonical
+        }
         if let staged = context.canvasStagedDocument,
            let raw = args.path?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty, raw.utf8.count <= 4_096 {
@@ -1352,6 +1478,25 @@ public struct CadDocumentTool: AgentTool {
         }
         try await host.authorizeAccess(access: access)
         let requestID = args.requestID ?? context.toolCallID ?? context.runID.uuidString
+        // Temporary chat stays READ-ONLY: material/parameter mutations are
+        // refused here even though the same actions are ordinary authorized
+        // edits in a normal task. Reads/lists and a viewport capture remain
+        // available.
+        if context.temporaryReadOnly,
+           args.action == .material || args.action == .parameters {
+            let payload = (try? Self.servicePayloadObject(args)) ?? [:]
+            let action = payload["action"] as? String ?? ""
+            let readOnlyMaterial: Set<String> = ["list", "read", "unresolved",
+                                                  "libraryExport", "libraryList"]
+            let globalExport = action == "libraryExport"
+                && (Self.boolValue(payload["global"]) == true)
+            let mutating = args.action == .material
+                ? (!readOnlyMaterial.contains(action) || globalExport)
+                : action != "list"
+            if mutating {
+                throw FloeError.unauthorized
+            }
+        }
         // Unified representation routing: a `.floecad` package is answered by
         // the native kernel and never by the 2D DWG/DXF loader.
         let native = Self.isNativeRepresentation(args.path)
@@ -1763,6 +1908,64 @@ public struct CadDocumentTool: AgentTool {
                     using: context)
             }
 
+        case .material:
+            let payload = try Self.servicePayloadObject(args)
+            var envelope: [String: Any] = ["kind": "material", "payload": payload]
+            if let revision = args.revision { envelope["revision"] = revision }
+            let request = try jsonString(envelope)
+            let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                    access: access)
+            if let object = (try? JSONSerialization.jsonObject(with: Data(reply.utf8))) as? [String: Any],
+               object["ok"] as? Bool == false {
+                let code = (object["error"] as? String) ?? "material_failed"
+                let message = (object["message"] as? String) ?? "The material operation was refused."
+                throw FloeError.validationFailed("\(code): \(message)")
+            }
+            return ToolExecutionOutput(digesting: bounded("cad.document material: \(reply)", 48_000))
+
+        case .parameters:
+            let payload = try Self.servicePayloadObject(args)
+            var envelope: [String: Any] = ["kind": "parameters", "payload": payload]
+            if let revision = args.revision { envelope["revision"] = revision }
+            let request = try jsonString(envelope)
+            let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                    access: access)
+            if let object = (try? JSONSerialization.jsonObject(with: Data(reply.utf8))) as? [String: Any],
+               object["ok"] as? Bool == false {
+                let code = (object["error"] as? String) ?? "parameter_failed"
+                let message = (object["message"] as? String) ?? "The parameter operation was refused."
+                throw FloeError.validationFailed("\(code): \(message)")
+            }
+            return ToolExecutionOutput(digesting: bounded("cad.document parameters: \(reply)", 48_000))
+
+        case .capture:
+            let payload = try Self.servicePayloadObject(args)
+            let width = Self.intValue(payload["width"] ?? 1024) ?? 1024
+            let height = Self.intValue(payload["height"] ?? 768) ?? 768
+            let capture = try await host.captureViewport(
+                documentID: args.path!, width: width, height: height,
+                expectedRevision: args.revision, access: access)
+            let artifact = try Self.writeViewportArtifact(capture, context: context)
+            let object: [String: Any] = [
+                "ok": true,
+                "action": "capture",
+                "revision": capture.revision,
+                "change_count": capture.changeCount,
+                "content_sha256": capture.contentSHA256,
+                "image_sha256": capture.sha256,
+                "renderer": capture.renderer,
+                "width": capture.width,
+                "height": capture.height,
+                "byte_count": capture.pngData.count,
+                "artifact": artifact.relativePath,
+                "note": capture.note,
+                "vision": "The attached PNG is the actual live viewport. Only a vision-capable model may inspect it; "
+                    + "otherwise use measure/query values and do not claim visual inspection.",
+            ]
+            let summary = Self.jsonText(object)
+            return ToolExecutionOutput(digesting: bounded("cad.document capture: \(summary)", 8_000),
+                                       artifacts: [artifact])
+
         case .threeDSnapshot, .threeDMeasure, .threeDPropose, .threeDApply,
              .threeDAssembly, .threeDDrawing:
             let kind: String
@@ -1872,6 +2075,67 @@ public struct CadDocumentTool: AgentTool {
             idempotencyKey: context.toolIdempotencyKey,
             approvalGrantID: context.approvalGrantID,
             binding: binding)
+    }
+
+    /// Bounded JSON text for tool summaries.
+    static func jsonText(_ object: [String: Any]) -> String {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { return "{}" }
+        return text
+    }
+
+    static func boolValue(_ value: Any?) -> Bool? {
+        if let value = value as? Bool { return value }
+        if let value = value as? NSNumber { return value.boolValue }
+        return nil
+    }
+
+    static func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        if let value = value as? Double, value == value.rounded() { return Int(value) }
+        if let value = value as? String { return Int(value) }
+        return nil
+    }
+
+    static func doubleValue(_ value: Any?) -> Double? {
+        if let value = value as? Double { return value }
+        if let value = value as? Int { return Double(value) }
+        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String { return Double(value) }
+        return nil
+    }
+
+    /// Writes the real viewport PNG into Floe's app-storage artifact root
+    /// (never a user workspace file) and returns the runtime-visible image
+    /// artifact. The path is content-addressed by its SHA-256 so repeated
+    /// captures of the same revision are idempotent.
+    static func writeViewportArtifact(_ capture: CadViewportCapture,
+                                      context: ToolContext) throws -> ToolArtifactReference {
+        guard capture.pngData.count <= 16 * 1024 * 1024 else {
+            throw FloeError.validationFailed("The viewport PNG exceeds the 16 MiB artifact bound.")
+        }
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true)
+        let relativeDirectory = "CADViewportArtifacts/\(context.runID.uuidString)"
+        let directory = support
+            .appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent(relativeDirectory, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        let fileName = "\(capture.sha256).png"
+        let url = directory.appendingPathComponent(fileName, isDirectory: false)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try capture.pngData.write(to: url, options: .atomic)
+        }
+        return ToolArtifactReference(
+            id: UUID(),
+            relativePath: "\(relativeDirectory)/\(fileName)",
+            mimeType: "image/png",
+            byteCount: capture.pngData.count,
+            sha256: capture.sha256)
     }
 
     static func defaultExportPath(for path: String) -> String {

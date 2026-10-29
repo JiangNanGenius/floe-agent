@@ -75,6 +75,30 @@ struct OrdinaryDocumentActionProfileTests {
         #expect(role("document.office.edit", #"not json"#) == nil)
     }
 
+    @Test("CAD material and parameter reads cannot disguise writes")
+    func cadPayloadActions() throws {
+        func payloadRole(_ action: String, _ operation: String, global: Bool? = nil) throws -> OrdinaryDocumentActionRole? {
+            var payload: [String: Any] = ["action": operation]
+            if let global { payload["global"] = global }
+            let text = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+            return OrdinaryDocumentActionProfile.role(forToolName: "cad.document", arguments: ["action": action, "path": "part.floecad", "payload": text])
+        }
+        #expect(try payloadRole("parameters", "list") == .readOnly)
+        for operation in ["update", "updateSketchEntity", "undo", "redo", "unknown"] {
+            #expect(try payloadRole("parameters", operation) == nil)
+        }
+        for operation in ["list", "read", "unresolved", "libraryList"] {
+            #expect(try payloadRole("material", operation) == .readOnly)
+        }
+        #expect(try payloadRole("material", "libraryExport") == .readOnly)
+        #expect(try payloadRole("material", "libraryExport", global: true) == nil)
+        for operation in ["create", "update", "remove", "apply", "applyFaces", "mapping", "textures", "libraryImport", "undo", "redo", "unknown"] {
+            #expect(try payloadRole("material", operation) == nil)
+        }
+        #expect(role("cad.document", #"{"action":"capture","path":"part.floecad"}"#) == .readOnly)
+        #expect(role("cad.document", #"{"action":"material","payload":"broken","readOnly":true}"#) == nil)
+    }
+
     @Test("A model-authored safe/readOnly flag never creates a role")
     func modelFlagsAreIgnored() {
         // The flag is not consulted: a WRITE action stays unlisted even with

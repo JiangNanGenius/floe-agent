@@ -23,7 +23,11 @@ public struct FloeCADWorkbenchView: View {
     }
 
     public var body: some View {
+        #if canImport(RealityKit) && canImport(UIKit)
+        CADPresentationWorkbenchView(document: document, canvasActions: canvasActions)
+        #else
         FloeCADEditorView(document: document, canvasActions: canvasActions)
+        #endif
     }
 }
 

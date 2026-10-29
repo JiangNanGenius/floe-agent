@@ -105,7 +105,17 @@ public enum OrdinaryDocumentActionProfile {
         case "media.project":
             return mediaProjectActions[actionValue("action", in: arguments) ?? ""]
         case "cad.document":
-            return cadDocumentActions[actionValue("action", in: arguments) ?? ""]
+            let action = actionValue("action", in: arguments) ?? ""
+            if action == "material" || action == "parameters" {
+                guard let payload = cadPayload(in: arguments),
+                      let operation = payload["action"] as? String else { return nil }
+                if action == "parameters" { return operation == "list" ? .readOnly : nil }
+                if ["list", "read", "unresolved", "libraryList"].contains(operation) { return .readOnly }
+                // Export to the personal library actually writes shared state.
+                if operation == "libraryExport", payload["global"] as? Bool != true { return .readOnly }
+                return nil
+            }
+            return cadDocumentActions[action]
         case "image.svgDocument":
             return actionValue("operation", in: arguments) == "inspect" ? .readOnly : nil
         default:
@@ -142,6 +152,7 @@ public enum OrdinaryDocumentActionProfile {
         "status": .readOnly,
         "three_d_snapshot": .readOnly,
         "three_d_measure": .readOnly,
+        "capture": .readOnly,
         "preview": .readOnly,
         "propose": .draftOnly,
         "three_d_propose": .draftOnly
@@ -153,5 +164,10 @@ public enum OrdinaryDocumentActionProfile {
         guard let raw = arguments[key] as? String else { return nil }
         let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func cadPayload(in arguments: [String: Any]) -> [String: Any]? {
+        guard let text = arguments["payload"] as? String else { return nil }
+        return (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
     }
 }

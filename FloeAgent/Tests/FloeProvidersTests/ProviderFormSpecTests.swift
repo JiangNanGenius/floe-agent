@@ -26,7 +26,7 @@ struct ProviderFormSpecModuleTests {
     func eligibleImagePresets() {
         #expect(
             ProviderFormSpecResolver.eligiblePresets(for: .image).map(\.id)
-                == [.openAI, .volcengineArk, .volcengineAgentPlan, .alibabaStudio, .googleGemini, .kimiCode]
+                == [.openAI, .volcengineArk, .volcengineAgentPlan, .alibabaStudio, .alibabaTokenPlan, .googleGemini, .kimiCode]
         )
     }
 
@@ -34,7 +34,7 @@ struct ProviderFormSpecModuleTests {
     func eligibleVideoPresets() {
         #expect(
             ProviderFormSpecResolver.eligiblePresets(for: .video).map(\.id)
-                == [.volcengineArk, .alibabaStudio, .googleGemini]
+                == [.volcengineArk, .alibabaStudio, .alibabaTokenPlan, .googleGemini]
         )
     }
 
@@ -170,6 +170,23 @@ struct ProviderFormSpecModuleTests {
         #expect(spec.trustsDiscoveryForMedia)
         #expect(spec.seedModelIDs.isEmpty)
         #expect(spec.mediaProbe == .contractWithCredentialListing)
+    }
+
+    @Test("A saved workspace DashScope URL resolves the real Alibaba route")
+    func workspaceEndpointIdentityResolves() {
+        let workspace = URL(string: "https://ws-123.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")!
+        #expect(ProviderPreset.preset(for: .custom, baseURL: workspace).id == .alibabaStudio)
+        let payg = ProviderFormSpecResolver.resolve(
+            role: .image, preset: .alibabaStudio, baseURL: workspace
+        )
+        #expect(payg.roleAdapterAvailable)
+        let video = ProviderFormSpecResolver.resolve(
+            role: .video, preset: .alibabaStudio, baseURL: workspace
+        )
+        #expect(video.roleAdapterAvailable)
+        // Coding Plan is a different subscription and must not become PAYG.
+        let coding = URL(string: "https://coding.dashscope.aliyuncs.com/v1")!
+        #expect(ProviderPreset.preset(for: .custom, baseURL: coding).id == .custom)
     }
 
     @Test("A Kimi URL edited under the generic custom preset still resolves the real route")

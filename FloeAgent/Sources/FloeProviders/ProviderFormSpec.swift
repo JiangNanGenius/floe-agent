@@ -284,7 +284,10 @@ public enum ProviderFormSpecResolver {
             eligiblePresets: presets,
             showsProtocolPicker: chat,
             showsToolNameCompatibility: chat,
-            showsHeadersField: chat || (preset.kind == .custom && preset.id != .volcengineAgentPlan)
+            showsHeadersField: chat
+                || (preset.kind == .custom
+                    && preset.id != .volcengineAgentPlan
+                    && preset.id != .alibabaTokenPlan)
                 || preset.kind == .local,
             showsModelListingRefresh: chat
                 ? preset.supportsModelDiscovery
@@ -311,13 +314,14 @@ public enum ProviderFormSpecResolver {
         guard role == .image || role == .video else { return [] }
         let catalogKind: MediaKind = role == .video ? .video : .image
         var result: [String] = []
-        // Agent Plan has a distinct model entitlement; do not inherit the
-        // full PAYG manifest. This identifier is documented by Ark's Plan
-        // visual-model guide, and the existing relative-path adapter serves it.
-        if preset.id == .volcengineAgentPlan, role == .image {
-            result.append("doubao-seedream-5.0-lite")
-        }
-        if let family = ProviderServiceOfferResolver.mediaFamily(for: preset.kind) {
+        // Subscription plans have their own entitlements and endpoints. Their
+        // verified candidates come only from the catalog entry's declared
+        // offer; never merge the same-origin PAYG manifest into a plan.
+        let isSubscriptionPlan = preset.id == .volcengineAgentPlan
+            || preset.id == .alibabaTokenPlan
+            || ProviderBillingEndpoint.resolve(preset.defaultBaseURL) != nil
+        if !isSubscriptionPlan,
+           let family = ProviderServiceOfferResolver.mediaFamily(for: preset.kind) {
             for descriptor in OfficialMediaModelCatalog.models(provider: family, kind: catalogKind) {
                 if !result.contains(descriptor.remoteModelID) { result.append(descriptor.remoteModelID) }
             }

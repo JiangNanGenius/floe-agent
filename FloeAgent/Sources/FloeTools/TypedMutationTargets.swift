@@ -41,6 +41,7 @@
 //   revision/hash binding, replay and atomic commits stay in the tools/hosts.
 
 import Foundation
+import FloeCore
 import FloeModels
 
 /// What a typed mutable target does to the bytes at its path.
@@ -158,6 +159,24 @@ public enum TypedMutationContract {
     /// `serviceStorePaths` key for the app-owned media project store
     /// (`MediaProjectStore`, `media-project-<uuid>.json` records).
     public static let mediaProjectStoreKey = "mediaProject"
+    /// Trusted root of the personal CAD material library. Its fixed record is
+    /// library.json; model arguments never select a file under this root.
+    public static let cadMaterialLibraryStoreKey = "cadMaterialLibrary"
+
+    /// Exact Canvas CAD binding identities, frozen from native ownership at run launch.
+    /// The suffix is a complete canvas-cad key; the value is one verified package path.
+    public static let cadCanvasBindingPrefix = "cadCanvasDocument:"
+
+    public static func canonicalCADCanvasDocumentPath(
+        _ key: String, serviceStorePaths: [String: String]
+    ) -> String? {
+        guard CanvasCADBindingKey.parse(key) != nil,
+              let path = serviceStorePaths[cadCanvasBindingPrefix + key],
+              path.hasPrefix("/"),
+              URL(fileURLWithPath: path).pathExtension.lowercased() == "floecad"
+        else { return nil }
+        return URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+    }
 
     /// Media project apply/export ALSO touches workspace-visible files
     /// (export `file_name`, staged assets referenced by relative paths), and
@@ -223,6 +242,23 @@ public enum TypedMutationContract {
             case "create":
                 return [.init(argument: "path", role: .outputWrite, whenAbsent: .required)]
             case "apply", "save", "three_d_apply", "import":
+                return [.init(argument: "path", role: .sourceWrite, whenAbsent: .required)]
+            case "material", "parameters":
+                guard let raw = arguments["payload"] as? String,
+                      let payload = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+                      let operation = payload["action"] as? String else { return [] }
+                if action == "parameters" {
+                    guard ["update", "updateSketchEntity", "undo", "redo"].contains(operation) else { return [] }
+                } else if operation == "libraryExport", payload["global"] as? Bool == true {
+                    // Keep the CAD document's canonical first key, and also
+                    // pin the actual shared write. Missing trusted store
+                    // metadata makes the whole extent unresolved.
+                    return [.init(argument: "path", role: .pinned, whenAbsent: .required),
+                            .init(argument: "path", role: .sourceWrite, whenAbsent: .required,
+                                  storeKey: cadMaterialLibraryStoreKey)]
+                } else {
+                    guard ["create", "update", "remove", "apply", "applyFaces", "reassignFaces", "mapping", "textures", "libraryImport", "undo", "redo"].contains(operation) else { return [] }
+                }
                 return [.init(argument: "path", role: .sourceWrite, whenAbsent: .required)]
             case "propose", "three_d_propose", "preview":
                 // Draft-only steps: no original bytes are written; classified
@@ -362,7 +398,15 @@ public enum TypedMutationContract {
     ) -> [TypedMutableTarget]? {
         let specs = specs(for: toolName, arguments: arguments)
         guard !specs.isEmpty else { return [] }
-        let root = effectiveRootURL ?? workspaceRootURL
+        var root = effectiveRootURL ?? workspaceRootURL
+        var arguments = arguments
+        if toolName == "cad.document", let key = arguments["path"] as? String,
+           CanvasCADBindingKey.isCanvasOwned(key) {
+            guard let path = canonicalCADCanvasDocumentPath(key, serviceStorePaths: serviceStorePaths)
+            else { return nil }
+            arguments["path"] = path
+            root = URL(fileURLWithPath: path).deletingLastPathComponent()
+        }
 
         var targets: [TypedMutableTarget] = []
         for spec in specs {
@@ -391,7 +435,13 @@ public enum TypedMutationContract {
     ) -> TypedMutableTarget?? {
         if let storeKey = spec.storeKey {
             guard let storeRoot = serviceStorePaths[storeKey],
-                  !storeRoot.isEmpty,
+                  !storeRoot.isEmpty else { return nil }
+            if storeKey == cadMaterialLibraryStoreKey {
+                let path = URL(fileURLWithPath: storeRoot).appendingPathComponent("library.json")
+                    .standardizedFileURL.resolvingSymlinksInPath().path
+                return .some(TypedMutableTarget(path: path, role: spec.role))
+            }
+            guard
                   let rawID = stringArgument(spec.argument, in: arguments),
                   let projectID = UUID(uuidString: rawID.trimmingCharacters(in: .whitespacesAndNewlines))
             else { return nil } // unresolved

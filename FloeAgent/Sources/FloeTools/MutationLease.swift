@@ -341,6 +341,12 @@ public enum MutationTargetResolver {
             }
 
             if documentToolPrefixes.contains(where: { name.hasPrefix($0) }) {
+                if name == "cad.document", let key = arguments?["path"] as? String,
+                   CanvasCADBindingKey.isCanvasOwned(key) {
+                    guard let canonical = TypedMutationContract.canonicalCADCanvasDocumentPath(
+                        key, serviceStorePaths: serviceStorePaths) else { return [rootKey] }
+                    return [.file(canonical)]
+                }
                 if let stagedTarget {
                     return [.file(stagedTarget)]
                 }

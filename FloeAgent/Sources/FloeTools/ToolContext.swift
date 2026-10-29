@@ -123,6 +123,8 @@ public struct ToolContext: Sendable {
     /// authority: it is seeded from the durable assistant binding at launch,
     /// never inferred from document text or model output.
     public var canvasStagedDocument: CanvasStagedDocumentAccess?
+    /// Run-frozen native service identities supplied by the application, never model arguments.
+    public var serviceStorePaths: [String: String]
     /// Optional workspace-relative file ceiling. An empty collection means
     /// the whole task workspace; entries authorize the path and descendants.
     public var allowedWorkspacePaths: [String]
@@ -194,6 +196,7 @@ public struct ToolContext: Sendable {
         publicWebOnly: Bool = false,
         workspaceRootURL: URL? = nil,
         canvasStagedDocument: CanvasStagedDocumentAccess? = nil,
+        serviceStorePaths: [String: String] = [:],
         allowedWorkspacePaths: [String] = [],
         cancellation: CancellationToken,
         childBudget: ChildBudgetContext? = nil,
@@ -224,6 +227,7 @@ public struct ToolContext: Sendable {
         self.publicWebOnly = publicWebOnly
         self.workspaceRootURL = workspaceRootURL
         self.canvasStagedDocument = canvasStagedDocument
+        self.serviceStorePaths = serviceStorePaths
         self.allowedWorkspacePaths = allowedWorkspacePaths
         self.cancellation = cancellation
         self.childBudget = childBudget

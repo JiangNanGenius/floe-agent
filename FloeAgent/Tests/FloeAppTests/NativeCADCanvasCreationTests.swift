@@ -20,6 +20,7 @@ import FloeCAD
 @testable import FloeApp
 import FloePersistence
 import FloeCore
+import FloeWorkbench
 
 @MainActor
 final class NativeCADCanvasCreationTests: XCTestCase {
@@ -1421,6 +1422,216 @@ final class NativeCADCanvasCreationTests: XCTestCase {
         XCTAssertNil(after.documents.flatMap(\.nodes).first { $0.id == nodeID })
         foreign.close()
     }
+    /// Actual Canvas AI closure: a canvas-cad key resolves through the
+    /// conversation→canvas→native-node ownership chain to the SAME live
+    /// `FloeCADDocument` owned by the Canvas workbench (unsaved edits visible,
+    /// same revision), while a key from another canvas is denied. No task
+    /// workspace and no second package copy are involved.
+    func testCanvasNativeCADToolUsesSameLiveDocumentAndDeniesForeignCanvas() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let assetStore = CreativeAssetStore(database: database)
+        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let documentID = try XCTUnwrap(project.documents.first?.id)
+        let created = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID, documentID: documentID,
+            position: CanvasPoint(x: 420, y: 120), assetStore: assetStore)
+        let nodeID = try XCTUnwrap(created.nodeID, created.message)
+        let updated = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let node = try XCTUnwrap(updated.documents.flatMap(\.nodes).first { $0.id == nodeID })
+        let key = try XCTUnwrap(node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])
+        let packageURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(forSourceKey: key))
+
+        // Bind this canvas document to one canvas conversation. This is the
+        // same durable mapping the Canvas assistant uses; the key's text alone
+        // never grants access.
+        let conversationID = UUID()
+        var bound = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        bound.agentConversationIDsByDocument[documentID] = conversationID
+        bound.agentConversationID = conversationID
+        bound.revision += 1
+        try CanvasProjectFileWriter.shared.compareAndSwap(
+            bound,
+            at: WorkspaceCanvasRegistry.projectURL(canvasID: canvasID, createDirectory: false),
+            expectedRevision: updated.revision)
+
+        // The canvas workbench owns ONE live bridge document. An UNSAVED edit
+        // proves the tool resolves that same object rather than reopening a
+        // disk copy: a fresh open would see zero bodies.
+        try await Task.sleep(for: .milliseconds(200))
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: packageURL)
+        let sketch = live.executeJSON(
+            Data(#"{"op":"sketch.create","args":{"name":"Canvas Tool"}}"#.utf8))
+        XCTAssertTrue(sketch.isOK, sketch.message ?? "sketch.create failed")
+        let sketchObject = (try? JSONSerialization.jsonObject(with: sketch.payload)) as? [String: Any]
+        let sketchID = try XCTUnwrap(sketchObject?["sketchID"] as? String)
+        let entities = live.executeJSON(Data("""
+        {"op":"sketch.addEntities","args":{"sketchID":"\(sketchID)",
+         "entities":[{"kind":"rect","min":[0,0],"max":[20,10]}]}}
+        """.utf8))
+        XCTAssertTrue(entities.isOK, entities.message ?? "addEntities failed")
+        let extrude = live.executeJSON(Data("""
+        {"op":"feature.extrude","args":{"sketchID":"\(sketchID)","seedPoint":[10,5],"distance":4}}
+        """.utf8))
+        XCTAssertTrue(extrude.isOK, extrude.message ?? "extrude failed")
+        let liveSummary = live.summary()
+        XCTAssertEqual(liveSummary.bodyCount, 1, "the unsaved body must be live in memory")
+
+        let center = CadDocumentCenter(nativeProposalStoreFileURL:
+            FileManager.default.temporaryDirectory
+                .appendingPathComponent("canvas-tool-proposals-\(UUID().uuidString).json"))
+        let access = CadDocumentAccess(environmentID: nil, workspacePath: nil,
+                                       ownerKind: "chat", ownerID: conversationID)
+        try await center.authorizeAccess(access: access)
+        let bodiesReply = try await center.threeDAction(
+            documentID: key,
+            requestJSON: #"{"kind":"query","payload":{"scope":"bodies","limit":10}}"#,
+            access: access)
+        let bodiesRoot = try XCTUnwrap(
+            (try? JSONSerialization.jsonObject(with: Data(bodiesReply.utf8))) as? [String: Any])
+        let bodiesResult = try XCTUnwrap(bodiesRoot["result"] as? [String: Any])
+        let rows = try XCTUnwrap(bodiesResult["rows"] as? [[String: Any]])
+        XCTAssertEqual(rows.count, 1,
+                       "the tool must see the live unsaved body, not a reopened disk copy")
+
+        let snapshotReply = try await center.threeDAction(
+            documentID: key, requestJSON: #"{"kind":"snapshot"}"#, access: access)
+        let snapshotRoot = try XCTUnwrap(
+            (try? JSONSerialization.jsonObject(with: Data(snapshotReply.utf8))) as? [String: Any])
+        let summary = try XCTUnwrap(snapshotRoot["summary"] as? [String: Any])
+        XCTAssertEqual(summary["revision"] as? Int, liveSummary.revision,
+                       "the Canvas tool and workbench must share the same live revision")
+
+        // The same live document/undo stack is used by an ordinary material
+        // edit: the tool mutates the in-memory session, then the workbench's
+        // own undo reverts it. A second document instance would not see it.
+        let materialReply = try await center.threeDAction(
+            documentID: key,
+            requestJSON: #"{"kind":"material","payload":{"action":"create","name":"Canvas Tool Paint","color":[0.2,0.4,0.6,1.0]}}"#,
+            access: access)
+        XCTAssertTrue(materialReply.contains("\"ok\":true"), materialReply)
+        XCTAssertNotNil(live.session.document.materialLibraryData)
+        live.session.undo()
+        XCTAssertNil(live.session.document.materialLibraryData,
+                     "the Canvas workbench undo must operate on the same document")
+
+        // A native node in a DIFFERENT canvas is denied even though its key is
+        // a perfectly valid canvas-cad binding for another canvas.
+        let foreignCanvasID = UUID()
+        try WorkspaceCanvasRegistry.createIfNeeded(canvasID: foreignCanvasID,
+                                                   name: "Foreign Canvas", workspaceID: nil)
+        defer {
+            try? WorkspaceCanvasRegistry.delete(canvasID: foreignCanvasID)
+            CanvasCADStorage.removePackages(canvasID: foreignCanvasID)
+        }
+        let foreignProject = try WorkspaceCanvasRegistry.project(canvasID: foreignCanvasID)
+        let foreignDocumentID = try XCTUnwrap(foreignProject.documents.first?.id)
+        let foreignCreated = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: foreignCanvasID, documentID: foreignDocumentID,
+            position: CanvasPoint(x: 100, y: 100), assetStore: assetStore)
+        let foreignNodeID = try XCTUnwrap(foreignCreated.nodeID, foreignCreated.message)
+        let foreignProjectUpdated = try WorkspaceCanvasRegistry.project(canvasID: foreignCanvasID)
+        let foreignNode = try XCTUnwrap(
+            foreignProjectUpdated.documents.flatMap(\.nodes).first { $0.id == foreignNodeID })
+        let foreignKey = try XCTUnwrap(
+            foreignNode.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])
+        XCTAssertNil(CadDocumentCenter.trustedNativeCanvasDocumentPaths(
+            conversationID: conversationID)[foreignKey],
+            "a different canvas's key must never enter this conversation's launch map")
+        do {
+            _ = try await center.threeDAction(
+                documentID: foreignKey, requestJSON: #"{"kind":"snapshot"}"#, access: access)
+            XCTFail("a canvas-cad key from another canvas must be denied")
+        } catch let error as FloeError {
+            guard case .unauthorized = error else {
+                return XCTFail("unexpected denial: \(error)")
+            }
+        }
+
+        await FloeCAD3DBridge.shared.releaseDocument(at: packageURL)
+        CanvasCADStorage.removePackages(canvasID: canvasID)
+    }
+
+    /// A per-document canvas conversation must not use a native CAD document
+    /// that belongs to another CanvasDocument, even though both are in the same
+    /// canvas. The launch map and the execution resolver both enforce this.
+    func testPerDocumentConversationCannotUseAnotherDocumentsCanvasCAD() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let assetStore = CreativeAssetStore(database: database)
+
+        var project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let firstDocumentID = try XCTUnwrap(project.documents.first?.id)
+        let secondDocumentID = UUID()
+        project.documents.append(CanvasDocument(id: secondDocumentID, name: "Second"))
+        project.revision += 1
+        try CanvasProjectFileWriter.shared.compareAndSwap(
+            project,
+            at: WorkspaceCanvasRegistry.projectURL(canvasID: canvasID, createDirectory: false),
+            expectedRevision: project.revision - 1)
+
+        let first = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID, documentID: firstDocumentID,
+            position: CanvasPoint(x: 40, y: 40), assetStore: assetStore)
+        let second = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID, documentID: secondDocumentID,
+            position: CanvasPoint(x: 240, y: 40), assetStore: assetStore)
+        let firstKey = try XCTUnwrap(
+            (try? WorkspaceCanvasRegistry.project(canvasID: canvasID))?
+                .documents.first { $0.id == firstDocumentID }?
+                .nodes.first { $0.id == first.nodeID }?
+                .metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])
+        let secondKey = try XCTUnwrap(
+            (try? WorkspaceCanvasRegistry.project(canvasID: canvasID))?
+                .documents.first { $0.id == secondDocumentID }?
+                .nodes.first { $0.id == second.nodeID }?
+                .metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])
+        let firstPackage = try XCTUnwrap(CADCanvasActionBridge.packageURL(forSourceKey: firstKey))
+        let secondPackage = try XCTUnwrap(CADCanvasActionBridge.packageURL(forSourceKey: secondKey))
+
+        let conversationID = UUID()
+        var bound = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        bound.agentConversationIDsByDocument[firstDocumentID] = conversationID
+        bound.agentConversationID = conversationID
+        bound.revision += 1
+        try CanvasProjectFileWriter.shared.compareAndSwap(
+            bound,
+            at: WorkspaceCanvasRegistry.projectURL(canvasID: canvasID, createDirectory: false),
+            expectedRevision: bound.revision - 1)
+
+        let trusted = CadDocumentCenter.trustedNativeCanvasDocumentPaths(
+            conversationID: conversationID)
+        XCTAssertNotNil(trusted[firstKey])
+        XCTAssertNil(trusted[secondKey],
+                     "the launch map must not include another document in the same canvas")
+
+        let center = CadDocumentCenter(nativeProposalStoreFileURL:
+            FileManager.default.temporaryDirectory
+                .appendingPathComponent("canvas-perdoc-proposals-\(UUID().uuidString).json"))
+        let access = CadDocumentAccess(environmentID: nil, workspacePath: nil,
+                                       ownerKind: "chat", ownerID: conversationID)
+        try await center.authorizeAccess(access: access)
+        // The bound document itself still works.
+        _ = try await center.threeDAction(documentID: firstKey,
+                                          requestJSON: #"{"kind":"snapshot"}"#,
+                                          access: access)
+        do {
+            _ = try await center.threeDAction(documentID: secondKey,
+                                              requestJSON: #"{"kind":"snapshot"}"#,
+                                              access: access)
+            XCTFail("a per-document conversation must not use another document's CAD package")
+        } catch let error as FloeError {
+            guard case .unauthorized = error else {
+                return XCTFail("unexpected denial: \(error)")
+            }
+        }
+
+        await FloeCAD3DBridge.shared.releaseDocument(at: firstPackage)
+        await FloeCAD3DBridge.shared.releaseDocument(at: secondPackage)
+        CanvasCADStorage.removePackages(canvasID: canvasID)
+    }
+
     #endif
 }
 

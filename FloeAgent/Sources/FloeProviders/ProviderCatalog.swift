@@ -107,26 +107,38 @@ public struct ProviderCatalogEntry: Codable, Sendable, Equatable, Hashable, Iden
 /// image-input inference model to the existing `.vision` capability; audio and
 /// video are kept as data because no wire implementation exists for them yet.
 /// `toolCall`/`attachment`/`reasoning` describe upstream flags; absence means
-/// "upstream did not say", never "false".
+/// "upstream did not say", never "false". `contextTokens`/`maxOutputTokens`
+/// are optional official limits; absence means "not stated", never zero.
 public struct ProviderCatalogModelMetadata: Codable, Sendable, Equatable, Hashable {
     public var input: [String]?
     public var output: [String]?
     public var toolCall: Bool?
     public var attachment: Bool?
     public var reasoning: Bool?
+    /// Verified context window, when the official provider page states one.
+    /// Additive/optional: old catalogs decode with `nil` and callers keep the
+    /// existing protocol/listing default. Never an invented ceiling.
+    public var contextTokens: Int?
+    /// Verified maximum output tokens, when the official provider page states
+    /// one. Absence keeps the protocol default.
+    public var maxOutputTokens: Int?
 
     public init(
         input: [String]? = nil,
         output: [String]? = nil,
         toolCall: Bool? = nil,
         attachment: Bool? = nil,
-        reasoning: Bool? = nil
+        reasoning: Bool? = nil,
+        contextTokens: Int? = nil,
+        maxOutputTokens: Int? = nil
     ) {
         self.input = input
         self.output = output
         self.toolCall = toolCall
         self.attachment = attachment
         self.reasoning = reasoning
+        self.contextTokens = contextTokens
+        self.maxOutputTokens = maxOutputTokens
     }
 }
 
@@ -534,8 +546,26 @@ public struct ProviderCatalogIndex: Sendable {
                     }
                 }
             }
+            // Optional context/output facts are descriptive only. Reject
+            // non-positive or absurd values so a signed catalog cannot turn
+            // them into a misleading limit; absence stays "not stated".
+            if let context = value.contextTokens {
+                guard (1...10_000_000).contains(context) else {
+                    throw ProviderCatalogValidationError(
+                        "\(presetID): contextTokens for \(modelID) must be 1...10000000"
+                    )
+                }
+            }
+            if let output = value.maxOutputTokens {
+                guard (1...10_000_000).contains(output) else {
+                    throw ProviderCatalogValidationError(
+                        "\(presetID): maxOutputTokens for \(modelID) must be 1...10000000"
+                    )
+                }
+            }
             guard value.input != nil || value.output != nil || value.toolCall != nil
-                    || value.attachment != nil || value.reasoning != nil else {
+                    || value.attachment != nil || value.reasoning != nil
+                    || value.contextTokens != nil || value.maxOutputTokens != nil else {
                 throw ProviderCatalogValidationError(
                     "\(presetID): empty model metadata for \(modelID)"
                 )

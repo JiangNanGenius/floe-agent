@@ -135,6 +135,10 @@ public final class CADProposalService {
                                           + (flushed.error ?? "unknown error"))
         }
         let operation = try Self.decodeOperation(operationJSON)
+        // A numeric face/edge reference that no longer exists on the live body
+        // is refused at DRAFT time with the current choices, so a rebuilt body
+        // can never reinterpret an old index as a different face/edge.
+        try CADStaleReferenceGuard.validate(operationJSON: operationJSON, document: document)
         let before = Self.documentStats(document)
         let isServiceOperation = CADServiceOperations.isServiceOperation(operation)
 

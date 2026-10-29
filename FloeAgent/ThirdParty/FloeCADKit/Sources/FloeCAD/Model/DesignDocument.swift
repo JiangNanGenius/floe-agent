@@ -50,6 +50,10 @@ nonisolated struct DesignDocument: Sendable {
     /// (camera, lighting, background, grid, provenance). Additive optional
     /// column, nil on ordinary CAD documents.
     var sceneSettingsData: Data? = nil
+    /// Custom-material library as additive JSON (`CADMaterialLibrary`).
+    /// Document state so library edits are undoable/redoable exactly like
+    /// geometry; `nil` on documents that never used the material library.
+    var materialLibraryData: Data? = nil
 
     /// Monotonic revision source for mesh changes (GPU cache invalidation).
     private var revisionCounter: UInt64 = 0

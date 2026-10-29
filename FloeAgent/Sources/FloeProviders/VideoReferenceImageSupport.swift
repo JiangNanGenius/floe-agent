@@ -63,7 +63,8 @@ public enum VideoReferenceImagePolicy {
 
     public static func supportsReferenceImages(
         providerKind: ProviderKind,
-        modelRemoteID: String
+        modelRemoteID: String,
+        baseURL: URL? = nil
     ) -> Bool {
         switch providerKind {
         case .googleGemini:
@@ -76,8 +77,18 @@ public enum VideoReferenceImagePolicy {
             // The Wan adapter only builds an image request for the documented
             // first-frame field of the 3.x family. Any other Wan model is
             // text-only here rather than silently dropping the image.
-            return modelRemoteID.hasPrefix("wan3.0-")
-        case .openAI, .anthropic, .local, .custom:
+            if modelRemoteID.hasPrefix("wan3.0-") { return true }
+            // HappyHorse 1.1 image-to-video documents one first-frame image.
+            return AlibabaVideoWireRoute.resolve(modelRemoteID: modelRemoteID) == .happyHorseImage
+        case .custom:
+            // A hand-entered PAYG/Token Plan Model Studio URL keeps the
+            // documented first-frame contracts.
+            guard let baseURL,
+                  AlibabaEndpointIdentity.isPayAsYouGo(baseURL)
+                    || AlibabaEndpointIdentity.isTokenPlan(baseURL) else { return false }
+            if modelRemoteID.hasPrefix("wan3.0-") { return true }
+            return AlibabaVideoWireRoute.resolve(modelRemoteID: modelRemoteID) == .happyHorseImage
+        case .openAI, .anthropic, .local:
             return false
         }
     }

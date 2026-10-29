@@ -170,9 +170,17 @@ public struct ImageProviderAdapterFactory: Sendable {
     public init() {}
 
     public func adapter(for provider: ProviderProfile) -> (any ImageProviderAdapter)? {
-        if provider.kind == .custom,
-           ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan {
-            return VolcengineImageAdapter()
+        // Subscription endpoints are identified by their exact route first:
+        // Agent Plan serves images on `/api/plan/v3/images/generations`, and
+        // Token Plan serves them through the native Model Studio multimodal
+        // route. Neither may inherit a PAYG behavior by kind alone.
+        if let billing = ProviderBillingEndpoint.resolve(provider.baseURL) {
+            switch billing {
+            case .volcengineAgentPlan:
+                return VolcengineImageAdapter()
+            case .alibabaTokenPlan:
+                return AlibabaImageAdapter()
+            }
         }
         switch provider.kind {
         case .openAI:
@@ -188,6 +196,11 @@ public struct ImageProviderAdapterFactory: Sendable {
             // image service.
             return nil
         case .custom:
+            // Older hand-entered DashScope connections keep their saved URL
+            // but use the real Alibaba image contract.
+            if AlibabaEndpointIdentity.isPayAsYouGo(provider.baseURL) {
+                return AlibabaImageAdapter()
+            }
             // Custom endpoints are not assumed to support image operations —
             // except a verified Kimi Code Coding Plan route (api.kimi.com with
             // the evidenced /coding or /coding/v1 base): its synchronous
