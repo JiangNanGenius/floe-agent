@@ -1,4 +1,7 @@
 <!-- docs-updated: 2026-10-28 -->
+
+> This guide primarily describes iOS/iPadOS. In Android Alpha15, open **Task list → Notes → New** for the independent Notes workspace. Basic editing needs no provider; AI actions use your cloud configuration. See the [Android release notes](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.15) and [installation notes](../README.md#get-started) for platform availability and current verification limits.
+
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual
 

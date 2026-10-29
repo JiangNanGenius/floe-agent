@@ -1,4 +1,7 @@
 <!-- docs-updated: 2026-10-28 -->
+
+> 本指南主要介绍iOS/iPadOS。Android Alpha15可从“任务列表 → 手记 → 新建”进入独立手记工作区，基础编辑无需配置模型，AI助手使用自备云端配置。安装、平台差异与当前验证边界见[Android发布说明](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.15)和[安装说明](../README.zh-CN.md#开始使用)。
+
 <!-- doc-anchor: section-1 -->
 # Floe Agent 使用手册
 

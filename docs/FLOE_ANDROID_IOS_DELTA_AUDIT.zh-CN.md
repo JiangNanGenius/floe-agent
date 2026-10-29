@@ -216,3 +216,7 @@ G06尚未关闭或发布。文本保存与重开状态已修复，并通过三�
 | IOS-D34 | `cad.document` 新增 `material`/`parameters`/`capture`：共享材质库合并写、特征参数与既有圆半径更新、真实视口 PNG（revision/change_count/图像与内容摘要分离）、canvas-cad 冻结映射、修订钉与临时会话只读拒绝；同批 `FloeCADKit` vendor 为输入 | G10（G07–G09 之后）；复用统一几何内核、typed mutation 与审批，不把 RealityKit 捕获当安卓等价；canvas-cad 只接受冻结的 conversation→canvas→package 映射；不扩 G06 或当前发布 |
 
 - 既有 IOS-D01..D33 身份与归属保持不变；D34 不改变 G06 收尾顺序或 Android 当前批次。下次收尾继续比较 `ac11bdf0` 之后的实际 `FloeAgent/FloeApp|Sources` 增量。以上仅为源码/元数据静态比对，未运行 iOS 编译、测试、设备或发布。
+
+### 2026-10-30：G06 阶段交付后的最终增量复核
+
+G06以Android Alpha15/code17交付，源码标签`86b20a34a14ebda636213fa480cdf14f8d4fee05`，实际APK与公开附件哈希已通过。收尾读回公共main为`b7feb3f8fe749ec730e27444dda02f909d7d47c9`；`ac11bdf05f7c829dd712c6c0c7a8ad198996c73d`之后的`FloeAgent/FloeApp`和`FloeAgent/Sources`差异为零。本次只关闭安卓交付和文档，不自动重钉共享源码；此前D01..D33与D34安排完整保留。下一目标仍为G07网络/Wi-Fi，后续从本次iOS基线继续做增量核对。实体笔硬件、OCR真实推理和紧凑列表优先的验证/精修边界保留。
