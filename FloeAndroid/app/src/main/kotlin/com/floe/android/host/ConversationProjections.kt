@@ -1522,8 +1522,14 @@ internal object ConversationWire {
             )
         } ?: emptyList()
         val policy = root["taskPolicy"] as? JsonObject
+        // `resolvedApprovalMode` is the native TaskApprovalMode rawValue
+        // vocabulary (`ask`/`automatic`/`fullAccess`), NOT the Kotlin enum
+        // NAME (`FULL_ACCESS`). Comparing names silently dropped the
+        // persisted Full access value on a cold-opened task and left the
+        // composer chip on its default Ask; map the actual wire spelling and
+        // keep an unknown value as honest absence.
         val approvalMode = policy?.string("resolvedApprovalMode")?.let { raw ->
-            ApprovalModeUi.entries.firstOrNull { it.name.lowercase() == raw.lowercase() }
+            ApprovalModeUi.entries.firstOrNull { it.swiftRaw == raw }
         }
         // The REAL persisted row identity for run.policy.update CAS: the
         // projection carries `updatedAt` under the native TaskPolicy raw
