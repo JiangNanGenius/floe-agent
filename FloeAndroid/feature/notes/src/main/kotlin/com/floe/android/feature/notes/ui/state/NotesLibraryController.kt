@@ -30,7 +30,9 @@ import com.floe.android.feature.notes.ui.api.NotesPdfHandle
 import com.floe.android.feature.notes.ui.api.NotesPdfOpenOutcome
 import com.floe.android.feature.notes.ui.api.NotesPdfOpenRequest
 import com.floe.android.feature.notes.ui.api.NotesPickedFile
+import com.floe.android.feature.notes.ui.api.NotesPortFailure
 import com.floe.android.feature.notes.ui.api.NotesPortFailureException
+import com.floe.android.feature.notes.ui.api.NotesWorkspaceScope
 import com.floe.android.feature.notes.ui.presentation.NotesFailure
 import com.floe.android.feature.notes.ui.presentation.NotesLibraryCounts
 import com.floe.android.feature.notes.ui.presentation.NotesEditReceipt
@@ -555,6 +557,42 @@ internal class NotesLibraryController(
             ) ?: return false
             picked = selected
             importPicked(selected, notebookID)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            failure = error.toNotesFailure()
+            false
+        } finally {
+            picked?.let { runCatching { it.close() } }
+            busy = false
+        }
+    }
+
+    /**
+     * Import one file that the user explicitly chose in the real Floe task
+     * workspace chooser.
+     *
+     * The workspace port owns the read handle (bounded chunks, native owner
+     * fence, idempotent close). The SAME [importPicked] pipeline copies the
+     * bytes into the independent Notes store; a workspace path or URI never
+     * enters Notes. The original workspace file is never modified.
+     */
+    suspend fun importWorkspaceFile(
+        scope: NotesWorkspaceScope,
+        relativePath: String,
+        notebookID: String? = selectedNotebookID,
+    ): Boolean {
+        val port = ports.workspaceImport
+        if (port == null) {
+            failure = NotesFailure(NotesPortFailure.UNAVAILABLE, "workspaceImportUnavailable")
+            return false
+        }
+        var picked: NotesPickedFile? = null
+        busy = true
+        failure = null
+        return try {
+            picked = port.open(scope, relativePath)
+            importPicked(picked, notebookID)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {

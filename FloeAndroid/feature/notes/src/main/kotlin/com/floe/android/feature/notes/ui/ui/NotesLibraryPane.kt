@@ -82,6 +82,7 @@ internal fun NotesLibraryPane(
     val library = controller.library
     val scope = rememberCoroutineScope()
     var createStage by remember { mutableStateOf<NotesCreateStage>(NotesCreateStage.Closed) }
+    var workspaceImportOpen by remember { mutableStateOf(false) }
     var pendingCreate by remember { mutableStateOf<NotesCreateRequest?>(null) }
     var failureDialog by remember { mutableStateOf<NotesFailureDialog?>(null) }
     var sortOpen by remember { mutableStateOf(false) }
@@ -339,6 +340,14 @@ internal fun NotesLibraryPane(
         onBackToMenu = { createStage = NotesCreateStage.Menu },
         onPickKind = { kind -> createStage = NotesCreateStage.Naming(kind) },
         onPickOffice = { createStage = NotesCreateStage.OfficeMenu },
+        onImportWorkspace = if (controller.ports.workspaceImport != null) {
+            {
+                createStage = NotesCreateStage.Closed
+                workspaceImportOpen = true
+            }
+        } else {
+            null
+        },
         onImportFile = {
             createStage = NotesCreateStage.Closed
             scope.launch {
@@ -361,6 +370,28 @@ internal fun NotesLibraryPane(
             }
         },
     )
+    val workspacePort = controller.ports.workspaceImport
+    if (workspaceImportOpen && workspacePort != null) {
+        NotesWorkspaceImportSheet(
+            port = workspacePort,
+            onDismiss = { workspaceImportOpen = false },
+            onPick = { workspaceScope, relativePath ->
+                workspaceImportOpen = false
+                scope.launch {
+                    val imported = library.importWorkspaceFile(workspaceScope, relativePath)
+                    if (!imported) {
+                        val failure = library.failure
+                        if (failure != null) {
+                            library.clearFailure()
+                            if (failure.code != NotesFailure.CANCELLED) {
+                                failureDialog = NotesFailureDialog(R.string.notes_import_failed_title, failure)
+                            }
+                        }
+                    }
+                }
+            },
+        )
+    }
     NotesSortSheet(
         visible = sortOpen,
         current = library.sort,
@@ -668,6 +699,7 @@ private fun NotesCreateFlowSheet(
     onBackToMenu: () -> Unit,
     onPickKind: (NotesCreateKind) -> Unit,
     onPickOffice: () -> Unit,
+    onImportWorkspace: (() -> Unit)?,
     onImportFile: () -> Unit,
     onCreate: (NotesCreateKind, String) -> Unit,
 ) {
@@ -694,7 +726,7 @@ private fun NotesCreateFlowSheet(
             NotesCreateStage.Closed -> Unit
             NotesCreateStage.Menu -> NotesCreateMenuContent(
                 title = stringResource(R.string.notes_new),
-                rows = listOf(
+                rows = listOfNotNull(
                     NotesCreateMenuRow(
                         label = stringResource(R.string.notes_create_blank_note),
                         icon = NotesIcons.NewNote,
@@ -716,6 +748,13 @@ private fun NotesCreateFlowSheet(
                         trailingChevron = true,
                         onClick = onPickOffice,
                     ),
+                    onImportWorkspace?.let { importWorkspace ->
+                        NotesCreateMenuRow(
+                            label = stringResource(R.string.notes_import_workspace),
+                            icon = FloeIcons.Folder,
+                            onClick = importWorkspace,
+                        )
+                    },
                     NotesCreateMenuRow(
                         label = stringResource(R.string.notes_import_file),
                         icon = NotesIcons.Import,

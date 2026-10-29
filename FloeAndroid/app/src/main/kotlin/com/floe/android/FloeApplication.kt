@@ -98,9 +98,11 @@ class FloeApplication : Application() {
                             return@withLock
                         }
                         val host = runtimeHost ?: error("notesHostUnavailable")
+                        val workspaceImport = com.floe.android.notesplatform.NotesWorkspaceImportHost(host)
                         val platform = com.floe.android.notesplatform.createNotesPlatformHost(
                             this@FloeApplication, notesHost.service, hostScope,
                             passwordProvider = notesPdfPasswords,
+                            workspaceImport = workspaceImport,
                         )
                         try {
                             platform.presentation.loadWorkspace()
@@ -118,6 +120,10 @@ class FloeApplication : Application() {
                                 hostScope = hostScope,
                                 epochProvider = { runtimeHost?.nativeRootEpoch()?.takeIf { it > 0L } ?: 0L },
                             )
+                            // The real task-workspace file source is owned by
+                            // the platform host above and participates in the
+                            // same root-stop gate. The handle is read-only;
+                            // the workspace file is never modified.
                             val ports = platform.hostPorts(assistant = assistant, indexing = ocr)
                             val session = com.floe.android.feature.notes.ui.state.createNotesWorkspaceSession(
                                 notesHost.service, ports,
@@ -171,6 +177,7 @@ class FloeApplication : Application() {
             if (runtimeHost?.conversations?.notesChatTransfers?.prepareForRootStop(epoch)?.canRetire == false) {
                 return@withLock false
             }
+            if (ready?.host?.prepareForRootStop(epoch) == false) return@withLock false
             canRetire = true
             true
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -185,6 +192,7 @@ class FloeApplication : Application() {
                     if (epoch > 0L && runtimeHost?.nativeRootEpoch() == epoch) {
                         runCatching { ready?.workspace?.assistant?.abortRootStop(epoch) }
                         runCatching { notesOcrHost?.abortRootStop(epoch) }
+                        runCatching { ready?.host?.abortRootStop(epoch) }
                         runtimeHost?.conversations?.notesChatTransfers?.abortRootStop(epoch)
                     }
                     runCatching {
@@ -202,6 +210,7 @@ class FloeApplication : Application() {
         if (notesAcceptedEpoch == epoch && !notesStopping) return@withLock
         if (runtimeHost?.nativeRootEpoch() != epoch) return@withLock
         val ready = notesPlatformState.value as? NotesPlatformLoadState.Ready
+        ready?.host?.resumeAfterRootChange(epoch)
         ready?.workspace?.assistant?.resumeAfterRootChange(epoch)
         notesOcrHost?.resumeAfterRootChange(epoch)
         kotlinx.coroutines.withContext(Dispatchers.Main.immediate) {

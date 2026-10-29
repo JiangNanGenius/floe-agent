@@ -10,9 +10,9 @@ import com.floe.android.feature.notes.ui.api.NotesOfficeBlankKind
  *
  * Import is an action, not a document kind; it never selects a row and
  * never renders an inline name field (iOS launches the file importer
- * directly from the menu). "Import from Floe Workspace" is intentionally
- * absent: 1f has no Notes workspace-source port, and a row that cannot
- * open a real workspace would be a fake placeholder.
+ * directly from the menu). "Import from Floe Workspace" is a separate action
+ * owned by the real task-workspace chooser; it is rendered only while the
+ * App has wired `NotesHostPorts.workspaceImport`.
  */
 internal enum class NotesCreateKind {
     NOTE,
