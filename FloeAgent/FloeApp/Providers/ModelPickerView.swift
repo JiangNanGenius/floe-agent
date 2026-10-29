@@ -27,12 +27,22 @@ struct ModelPickerView: View {
         }
     }
 
+    private var filteredOfficialPresets: [MediaModelDescriptor] {
+        let listedIDs = Set(viewModel.candidateModels.map(\.remoteModelID))
+        return viewModel.officialMediaPresets.filter { descriptor in
+            !listedIDs.contains(descriptor.remoteModelID)
+                && (searchText.isEmpty
+                    || descriptor.displayName.localizedCaseInsensitiveContains(searchText)
+                    || descriptor.remoteModelID.localizedCaseInsensitiveContains(searchText))
+        }
+    }
+
     var body: some View {
         NavigationStack {
             List {
-                if !viewModel.officialMediaPresets.isEmpty {
+                if !filteredOfficialPresets.isEmpty {
                     Section("providers.model_picker_view.official_models") {
-                        ForEach(viewModel.officialMediaPresets) { descriptor in
+                        ForEach(filteredOfficialPresets) { descriptor in
                             Button {
                                 viewModel.addOfficialMediaPreset(descriptor)
                             } label: {
@@ -60,7 +70,9 @@ struct ModelPickerView: View {
                     }
                 }
                 if !filteredModels.isEmpty {
-                    Section("providers.discovered") {
+                    // Candidates also include saved/manual/catalog entries.
+                    // Their presence is not evidence of account discovery.
+                    Section("providers.models_section") {
                         ForEach(filteredModels) { model in
                             Toggle(isOn: Binding(
                                 get: { viewModel.selectedModelIDs.contains(model.id) },

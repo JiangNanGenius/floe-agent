@@ -239,6 +239,8 @@ final class ProviderCatalogPickerUITests: XCTestCase {
             if noDiscovery {
                 XCTAssertFalse(app.buttons["providers.refresh_models"].exists,
                                "A plan without model discovery must not offer a discovery request")
+                XCTAssertFalse(app.staticTexts["Discovered"].exists,
+                               "Catalog candidates must not be presented as account discovery")
             }
             attach(app, "\(presetID)-\(modelID)-candidates")
             // No credentials, Save, connection test or Generate action.
