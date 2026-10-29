@@ -185,3 +185,20 @@ G05-R3 当前仍在修复后的统一编译及 App 验收阶段，实际大目�
 ### 2026-10-29 G06 启动参照
 
 最新公开主线从 `5ed31c1628f83877b3ce3969d9b34b34e65f79b6` 前进至 `96cd41c92ad20a8070776887ccbf3a3967e7d8a3`，新增提交属于云端 Skill Hub 签名转发基础设施；`FloeAgent/FloeApp` 与 `FloeAgent/Sources` 差异为零。本轮按该公开源固定手记参照，复用 FloeNotes 的资料、编辑、资源、导图与归档模型，新增 Android 宿主、编辑界面、PDF/笔迹和助手适配。保持 IOS-D01..D30 身份及既有后续范围；不将未合入 iOS 工作树视为公开基线，不整体刷新已验证安卓原生输入。
+
+
+### 2026-10-30：G06 实测期间的 iOS 增量对齐
+
+基线为 `96cd41c92ad20a8070776887ccbf3a3967e7d8a3`，实际公共主线参照为 `90da89dbc1ee9c6e38bc0bb313547ecb192b6ba6`（tree `8ea1fd124929ff2bbc33470afcc1deab42bde7d9`）。GitHub API与本地对象读回一致，祖先关系已核验。区间55个提交；`FloeAgent/FloeApp`与`FloeAgent/Sources`合计109个文件变更。后续安卓提交`1f267e1b`没有新增iOS源码差异。
+
+`Sources/FloeNotes`、`FloeApp/Notes`与`FloeApp/Canvas`本区间均无产品代码变更，手记参照保持。已有IOS-D01..D30身份及归属不重置；D05/D06/D09/D10/D12/D15/D16/D18/D19/D21/D22/D24按现有目标补强，不为本次G06另起全量审计。
+
+| ID | 新增实际源码差异 | 安卓安排 |
+| --- | --- | --- |
+| IOS-D31 | `FloeMacBridge/`、`MacBridgeClient`/`MacBridgeShellBackend`及受信环境租约：同机Mac执行后端，断连保留任务身份、报告未知结果而不自动回放 | 平台专属，不移植宿主终端或公证分发；未知结果语义并入D33，P2记录 |
+| IOS-D32 | `StorageSuspensionCoordinator`、`StorageOperationBudget`、数据库挂起/恢复、文档所有权租约；`OfficeDocumentEditorView`失去所有权后只读并保留副本 | P1合同：后台写入可取消、外部改动保留副本与明确只读；不把iOS后台断言照搬为安卓保活，不宣称当前已等效完成 |
+| IOS-D33 | `ToolContext.approvalOrigin`、`RuntimeNestedApprovalHandle`与`outcomeUnknown`：执行中审批复用单一等待面，未知执行结果禁止重放 | P1合同：下一次共享谱系/工具结果接线前核对，保留安卓现有权限围栏，不扩大本次修复批次 |
+
+G06尚未关闭或发布。文本保存与重开状态已修复，并通过三星实际保存及强制停止后重开；Office准备、PDF背景、手机操作层级和完整工作区导入仍需闭合。下一批集中编译/设备复核这些改动，已通过的定向证据复用。上述新增系统差异登记为后续输入，不预排工作队列。
+
+下次大目标收尾从`90da89dbc1ee9c6e38bc0bb313547ecb192b6ba6`之后的实际iOS源码增量继续核对。以上差异审计是源码/元数据证据，不代表审计任务运行过iOS编译、Apple处理或设备安装。
