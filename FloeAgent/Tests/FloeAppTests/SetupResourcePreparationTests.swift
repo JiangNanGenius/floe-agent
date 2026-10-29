@@ -21,6 +21,7 @@ import Testing
 import CryptoKit
 @testable import FloeApp
 import FloeCore
+import FloeSecurity
 
 @Suite("FloeApp.SetupResourceStageRules")
 struct SetupResourceStageRulesTests {

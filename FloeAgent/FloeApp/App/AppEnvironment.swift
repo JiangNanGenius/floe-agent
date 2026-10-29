@@ -1052,6 +1052,9 @@ final class AppEnvironment: ObservableObject {
                 )
             }
         )
+        // Only a trusted macBridge lease routes to the same-Mac shell; every
+        // other environment keeps the Linux guest backend.
+        let shellBackend = MacBridgeExecutionRouter(defaultBackend: linuxShellBackend)
         let advisoryRelay = DurationAdvisoryRelay()
         self.durationAdvisoryRelay = advisoryRelay
         self.durationReminder = LongRunDurationReminder { [relay = advisoryRelay] milestone, fence in
@@ -1083,7 +1086,6 @@ final class AppEnvironment: ObservableObject {
                 return await self.skillsCenter.runtimeComponentAuthorization(skillID: skillID)
             }
         )
-        let shellBackend = MacBridgeExecutionRouter(defaultBackend: linuxShellBackend)
         let skillDependencies = self.skillDependencies
         if let runtimeComponentCacheRoot {
             skillDependencies.setLateBindings(

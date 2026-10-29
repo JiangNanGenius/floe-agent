@@ -684,12 +684,16 @@ final class AssistantAudioService: ObservableObject {
             }
         }
         guard !pcm.isEmpty else { throw AssistantAudioError.emptyAudio }
+        // Immutable snapshots: synthesis accumulates in mutable locals, and
+        // the detached writers below run concurrently.
+        let resolvedPCM = pcm
+        let resolvedSampleRate = sampleRate
 
         let written: WrittenAssistantAudio
         do {
             written = try await Self.detached {
                 try AssistantAudioFileWriter.write(
-                    pcm: pcm, sampleRate: sampleRate, to: outputURL)
+                    pcm: resolvedPCM, sampleRate: resolvedSampleRate, to: outputURL)
             }
         } catch is CancellationError {
             throw CancellationError()
@@ -698,8 +702,8 @@ final class AssistantAudioService: ObservableObject {
         do {
             inline = try await Self.detached {
                 try AssistantAudioInlinePlayer.makeReference(
-                    pcm: pcm,
-                    sampleRate: sampleRate,
+                    pcm: resolvedPCM,
+                    sampleRate: resolvedSampleRate,
                     runID: runID,
                     title: outputURL.deletingPathExtension().lastPathComponent)
             }

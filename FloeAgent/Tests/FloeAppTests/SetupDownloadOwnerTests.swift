@@ -83,7 +83,7 @@ struct SetupDownloadOwnerHooksTests {
                                  received: 500, expected: -1, now: 1_000)
                 lines.append("down:\(Self.render(jobs.transfers[id]))")
                 // The fraction channel is unchanged: unknown total => none.
-                lines.append("fraction:\(jobs.fractions[id].map(String.init) ?? "nil")")
+                lines.append("fraction:\(jobs.fractions[id].map { String($0) } ?? "nil")")
                 jobs.reportBytes(id: id, epoch: epoch, sequence: 2, phase: .downloading,
                                  received: 900, expected: -1, now: 1_001)
                 lines.append("grown:\(Self.render(jobs.transfers[id]))")
@@ -114,7 +114,7 @@ struct SetupDownloadOwnerHooksTests {
                                  received: 130_000_000, expected: 1_000_000_000, now: 1_000.6)
                 lines.append("window:\(Self.render(jobs.transfers[id]))")
                 // The fraction channel behaves exactly as the stamped progress API.
-                lines.append("fraction:\(jobs.fractions[id].map(String.init) ?? "nil")")
+                lines.append("fraction:\(jobs.fractions[id].map { String($0) } ?? "nil")")
                 return Self.trace(lines)
             }
         }
@@ -353,7 +353,7 @@ struct SetupDownloadOwnerHooksTests {
         while !center.installingIDs.contains(id) {
             try await Task.sleep(for: .milliseconds(10))
             waited += 1
-            if waited > 500 { throw TestFailure(detail: "install attempt for \(id) never registered") }
+            if waited > 500 { throw TestFailure.detail("install attempt for \(id) never registered") }
         }
     }
 

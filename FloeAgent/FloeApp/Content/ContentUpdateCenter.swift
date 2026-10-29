@@ -755,7 +755,7 @@ final class ContentUpdateCenter: ObservableObject {
         // `.cancelled` exists only on URLError (verified against the real
         // Foundation type by Main's review).
         if let cocoaError = error as? CocoaError { return cocoaError.code == .userCancelled }
-        if let posix = error as? POSIXError { return posix.code == ECANCELED }
+        if let posix = error as? POSIXError { return posix.code == .ECANCELED }
         return false
     }
 

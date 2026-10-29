@@ -6,6 +6,7 @@
 // download is started: a resource row is only observed, never requested.
 
 import XCTest
+import UIKit
 
 final class SetupGuideUITests: XCTestCase {
     override func setUpWithError() throws {
@@ -19,7 +20,7 @@ final class SetupGuideUITests: XCTestCase {
     ]
 
     private func launch(
-        orientation: XCUIDevice.Orientation = .landscapeLeft,
+        orientation: UIDeviceOrientation = .landscapeLeft,
         extraArguments: [String] = []
     ) -> XCUIApplication {
         XCUIDevice.shared.orientation = orientation

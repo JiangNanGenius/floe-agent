@@ -147,8 +147,8 @@ final class MacOriginalSkillsCenter: ObservableObject {
                 publicationCommit: publicationCommit, catalogDigest: catalogDigest,
                 contentDigest: entry.digest, packageSHA256: nil, reviewDigest: nil)
             return try SkillHubCatalogEntry(id: entry.id, version: entry.version, kind: .optional,
-                name: SkillHubLocalizedText(en: entry.name.en, zhHans: entry.name.zhHans),
-                description: SkillHubLocalizedText(en: entry.description.en, zhHans: entry.description.zhHans),
+                name: SkillHubLocalizedText.name(en: entry.name.en, zhHans: entry.name.zhHans),
+                description: SkillHubLocalizedText.description(en: entry.description.en, zhHans: entry.description.zhHans),
                 category: entry.category.rawValue, tags: ["macos", "upstream-original"],
                 containsScripts: entry.files.contains { $0.path.hasPrefix("scripts/") },
                 installOffer: .upstreamOriginal, reviewed: true, qualified: false, published: true,
