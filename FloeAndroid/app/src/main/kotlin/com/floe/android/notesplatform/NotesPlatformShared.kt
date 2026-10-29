@@ -523,15 +523,31 @@ internal enum class NotesOfficeReadbackDecision {
 
 internal object NotesOfficeReadbackPolicy {
     /**
+     * Terminal engine results that can only describe the CLOSE transport,
+     * never the document itself: the pinned last-session BYE runs
+     * `std::_exit(0)` before Java can deliver the Activity result, and the
+     * engine's own bounded reclaim reports PROCESS_LOST. Both are recognised
+     * ONLY together with an exact user-close acknowledgement for this mount
+     * (OfficeCloseAckPolicy). They never imply closedCleanly.
+     */
+    private val CLOSE_BYPASS_FAILURES: Set<String> = setOf("PROCESS_LOST", "TRANSPORT_FAILURE")
+
+    /**
      * @param resultPresent an Activity result carrying the exact session token
      * @param tokenMatches the result token equals the launched session token
      * @param closedCleanly the engine reported its exact clean close
      * @param failureCode a terminal Office failure code, or null
      * @param digestChanged the read-back working copy differs from the source
-     * @param explicitSaveCompleted the App completed and settled one exact
-     *        Save-Copy handoff (the viewer's only authorized close-after-edit
-     *        path) for this session
-     * @param validOoxml the read-back/settled bytes pass the bounded OOXML check
+     * @param explicitSaveCompleted one verified save produced the exact bytes
+     *        to import: either the App's settled external Save-Copy handoff or
+     *        the App-owned internal working-copy snapshot (real `.uno:Save`
+     *        receipt + re-read digest). This is the ONLY positive save proof.
+     * @param validOoxml the saved bytes pass the bounded OOXML check
+     * @param userCloseAcknowledged the engine sent the exact close-intent
+     *        acknowledgement for THIS session/incarnation before its fatal
+     *        native BYE. It proves the user closed this mount; it never
+     *        proves the document was saved and never becomes a clean-close
+     *        claim.
      */
     fun decide(
         resultPresent: Boolean,
@@ -541,24 +557,114 @@ internal object NotesOfficeReadbackPolicy {
         digestChanged: Boolean,
         explicitSaveCompleted: Boolean,
         validOoxml: Boolean,
-    ): NotesOfficeReadbackDecision = when {
-        !resultPresent -> NotesOfficeReadbackDecision.MISSING_RESULT
-        !tokenMatches -> NotesOfficeReadbackDecision.STALE_RESULT
-        failureCode != null -> NotesOfficeReadbackDecision.EDITOR_FAILED
-        !closedCleanly -> NotesOfficeReadbackDecision.EDITOR_UNCLEAN
-        // The viewer's Save-Copy-and-close handoff is the only explicit
-        // close-after-edit path. Its bytes were written + read back by the
-        // App and settled with the engine, so this is the only case allowed
-        // to become a saved note resource.
-        explicitSaveCompleted -> if (validOoxml) {
-            NotesOfficeReadbackDecision.SAVED
-        } else {
-            NotesOfficeReadbackDecision.INVALID_SAVED_COPY
+        userCloseAcknowledged: Boolean = false,
+    ): NotesOfficeReadbackDecision {
+        val closeOnlyFailure = failureCode != null && failureCode in CLOSE_BYPASS_FAILURES
+        // 1. A verified, freshly serialized save is the only positive outcome.
+        if (explicitSaveCompleted) {
+            if (!validOoxml) return NotesOfficeReadbackDecision.INVALID_SAVED_COPY
+            if (!resultPresent) {
+                // Normal case: the native process exited after BYE and no
+                // result arrived. The App already proved the exact bytes
+                // and the user close was acknowledged for this mount.
+                return if (userCloseAcknowledged) {
+                    NotesOfficeReadbackDecision.SAVED
+                } else {
+                    NotesOfficeReadbackDecision.MISSING_RESULT
+                }
+            }
+            if (!tokenMatches) return NotesOfficeReadbackDecision.STALE_RESULT
+            if (failureCode == null && closedCleanly) return NotesOfficeReadbackDecision.SAVED
+            // A close-transport failure AFTER the exact user close does not
+            // invalidate the bytes the App already verified.
+            if (userCloseAcknowledged && (failureCode == null || closeOnlyFailure)) {
+                return NotesOfficeReadbackDecision.SAVED
+            }
+            return if (failureCode != null) {
+                NotesOfficeReadbackDecision.EDITOR_FAILED
+            } else {
+                NotesOfficeReadbackDecision.EDITOR_UNCLEAN
+            }
         }
-        !digestChanged -> NotesOfficeReadbackDecision.UNCHANGED
-        // A changed working copy with no App settlement is a Discard or an
-        // autosave we cannot prove; never import it.
-        else -> NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE
+        // 2. No verified save: an acknowledged user close may still be a
+        // plain return (unchanged) or a Discard; a change is never imported.
+        if (!resultPresent) {
+            return when {
+                !userCloseAcknowledged -> NotesOfficeReadbackDecision.MISSING_RESULT
+                !digestChanged -> NotesOfficeReadbackDecision.UNCHANGED
+                else -> NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE
+            }
+        }
+        if (!tokenMatches) return NotesOfficeReadbackDecision.STALE_RESULT
+        if (failureCode != null) {
+            return if (userCloseAcknowledged && closeOnlyFailure) {
+                if (!digestChanged) {
+                    NotesOfficeReadbackDecision.UNCHANGED
+                } else {
+                    NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE
+                }
+            } else {
+                NotesOfficeReadbackDecision.EDITOR_FAILED
+            }
+        }
+        if (!closedCleanly) {
+            return if (userCloseAcknowledged) {
+                if (!digestChanged) {
+                    NotesOfficeReadbackDecision.UNCHANGED
+                } else {
+                    NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE
+                }
+            } else {
+                NotesOfficeReadbackDecision.EDITOR_UNCLEAN
+            }
+        }
+        return if (!digestChanged) {
+            NotesOfficeReadbackDecision.UNCHANGED
+        } else {
+            // A changed working copy with no verified save is a Discard or an
+            // autosave we cannot prove; never import it.
+            NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE
+        }
+    }
+}
+
+/** Outcome of one App-owned internal working-copy save verification. */
+internal enum class NotesOfficeInternalSaveDecision {
+    /** The bytes changed from the Note base and were snapshotted for import. */
+    ACCEPTED,
+
+    /** The working copy still equals the Note base; close without a new revision. */
+    UNCHANGED,
+
+    /** Shape/digest/size did not match the engine receipt or this mount. */
+    REJECTED,
+}
+
+/**
+ * Pure verification table for the R3 internal Notes save handoff. The engine
+ * only says which bytes it wrote (`InternalSaveNotice`); the App re-reads its
+ * own working copy and compares the facts here before any snapshot/import.
+ * Nothing in this table trusts a path, a URI or a success string.
+ */
+internal object NotesOfficeInternalSavePolicy {
+    fun decide(
+        expectedFormat: String?,
+        noticeFormat: String?,
+        noticeSha256: String?,
+        noticeBytes: Long,
+        actualSha256: String?,
+        actualBytes: Long,
+        baseSha256: String?,
+        maxBytes: Long,
+    ): NotesOfficeInternalSaveDecision = when {
+        expectedFormat.isNullOrEmpty() || noticeFormat == null ||
+            noticeFormat != expectedFormat -> NotesOfficeInternalSaveDecision.REJECTED
+        noticeSha256 == null || actualSha256 == null ||
+            noticeSha256 != actualSha256 -> NotesOfficeInternalSaveDecision.REJECTED
+        noticeBytes <= 0L || noticeBytes > maxBytes ||
+            actualBytes != noticeBytes -> NotesOfficeInternalSaveDecision.REJECTED
+        actualSha256 == baseSha256 -> NotesOfficeInternalSaveDecision.UNCHANGED
+        else -> NotesOfficeInternalSaveDecision.ACCEPTED
     }
 }
 

@@ -43,7 +43,11 @@
     <string name="office_viewer_edit_info">Edit a copy. Use Save Copy to keep your changes. The original stays unchanged.</string>
     <string name="office_viewer_dirty_title">Save your changes?</string>
     <string name="office_viewer_dirty_message">This working copy has unsaved changes.</string>
+    <string name="office_viewer_edit_note_info">Edit this document. Save and close saves changes to this note.</string>
     <string name="office_action_save_close">Save Copy and close</string>
+    <string name="office_action_save_note_close">Save and close</string>
+    <string name="office_viewer_dirty_internal_message">Save these changes to this note?</string>
+    <string name="office_busy_saving">Saving…</string>
     <string name="office_action_discard_close">Discard changes</string>
     <string name="office_action_keep_editing">Keep editing</string>
     <string name="office_action_save_copy">Save a Copy…</string>

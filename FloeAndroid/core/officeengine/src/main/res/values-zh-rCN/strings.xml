@@ -43,7 +43,11 @@
     <string name="office_viewer_edit_info">编辑副本。使用“存为副本”保留你的更改，原文件不变。</string>
     <string name="office_viewer_dirty_title">要保存更改吗？</string>
     <string name="office_viewer_dirty_message">当前工作副本有未保存的更改。</string>
+    <string name="office_viewer_edit_note_info">编辑此手记中的文档。保存并关闭会将更改保存在此手记中。</string>
     <string name="office_action_save_close">存副本并关闭</string>
+    <string name="office_action_save_note_close">保存并关闭</string>
+    <string name="office_viewer_dirty_internal_message">要将这些更改保存到此手记吗？</string>
+    <string name="office_busy_saving">正在保存…</string>
     <string name="office_action_discard_close">放弃更改</string>
     <string name="office_action_keep_editing">继续编辑</string>
     <string name="office_action_save_copy">存为副本…</string>
