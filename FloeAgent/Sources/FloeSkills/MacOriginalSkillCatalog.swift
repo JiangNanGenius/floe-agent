@@ -49,19 +49,19 @@ public struct MacOriginalSkillCatalog: Codable, Sendable {
             _ = try SignedContentVersion(entry.version)
             _ = try SignedContentVersion(entry.minimumAppVersion)
             let repository = entry.repository.split(separator: "/", omittingEmptySubsequences: false)
-            guard repository.count == 2, repository.allSatisfy({ validComponent(String($0)) }),
-                  hex(entry.commit, length: 40), hex(entry.digest, length: 64),
+            guard repository.count == 2, repository.allSatisfy({ Self.validComponent(String($0)) }),
+                  Self.hex(entry.commit, length: 40), Self.hex(entry.digest, length: 64),
                   !entry.name.en.isEmpty, !entry.name.zhHans.isEmpty,
                   entry.name.en.count <= 128, entry.name.zhHans.count <= 128,
                   !entry.description.en.isEmpty, !entry.description.zhHans.isEmpty,
                   !entry.license.isEmpty, entry.license.count <= 256,
                   entry.files.count <= 2_048, !entry.files.isEmpty,
                   Set(entry.files.map(\.path)).count == entry.files.count,
-                  safePath(entry.licensePath), entry.subdirectory.isEmpty || safePath(entry.subdirectory),
+                  Self.safePath(entry.licensePath), entry.subdirectory.isEmpty || Self.safePath(entry.subdirectory),
                   entry.files.contains(where: { $0.path == "SKILL.md" }),
                   entry.files.contains(where: { $0.path == entry.licensePath }),
-                  entry.files.allSatisfy({ safePath($0.path) && safePath($0.sourcePath) && ($0.path == entry.licensePath || $0.sourcePath == (entry.subdirectory.isEmpty ? $0.path : entry.subdirectory + "/" + $0.path)) && hex($0.sha256, length: 64) && $0.bytes >= 0 && $0.bytes <= maximumPackageBytes && ["100644", "100755"].contains($0.mode) }),
-                  entry.files.reduce(Int64(0), { $0 + $1.bytes }) <= maximumPackageBytes else { throw SignedContentFailure.feed }
+                  entry.files.allSatisfy({ Self.safePath($0.path) && Self.safePath($0.sourcePath) && ($0.path == entry.licensePath || $0.sourcePath == (entry.subdirectory.isEmpty ? $0.path : entry.subdirectory + "/" + $0.path)) && Self.hex($0.sha256, length: 64) && $0.bytes >= 0 && $0.bytes <= Self.maximumPackageBytes && ["100644", "100755"].contains($0.mode) }),
+                  entry.files.reduce(Int64(0), { $0 + $1.bytes }) <= Self.maximumPackageBytes else { throw SignedContentFailure.feed }
             let manifest = entry.files.sorted { $0.path < $1.path }.map { ["path": $0.path, "sourcePath": $0.sourcePath, "sha256": $0.sha256, "mode": $0.mode] }
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             guard FloeDigest.sha256Hex(try encoder.encode(manifest)) == entry.digest else { throw SignedContentFailure.feed }
