@@ -1,7 +1,7 @@
 #if os(macOS)
 import Foundation
 import AppKit
-import ApplicationServices
+@preconcurrency import ApplicationServices
 import ScreenCaptureKit
 import CryptoKit
 import FloeMacBridgeProtocol
