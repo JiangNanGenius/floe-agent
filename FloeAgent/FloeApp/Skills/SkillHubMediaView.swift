@@ -198,6 +198,13 @@ struct SkillHubDetailCover: View {
     /// reserves a giant blank box while the real cover is absent or loading.
     private let placeholderBandHeight: CGFloat = 170
 
+    private var coverAccessibilityLabel: Text {
+        if let alt = ref?.alt?.value(), !alt.isEmpty {
+            return Text(verbatim: alt)
+        }
+        return Text(category.title)
+    }
+
     var body: some View {
         SkillHubPublicationImage(ref: ref, commit: commit, media: media) { image in
             let ratio = image.size.height > 0
@@ -225,7 +232,7 @@ struct SkillHubDetailCover: View {
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(ref?.alt?.value() ?? category.title)
+        .accessibilityLabel(coverAccessibilityLabel)
         .accessibilityAddTraits(.isImage)
         .accessibilityIdentifier("skills.detail.cover.\(skillID)")
     }
