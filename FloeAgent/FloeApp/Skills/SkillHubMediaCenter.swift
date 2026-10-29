@@ -18,6 +18,11 @@
 //   * a small in-memory LRU plus a bounded on-disk cache keyed by commit and
 //     path keep scrolling cheap and offline; cached bytes are revalidated on
 //     load and a torn or forged entry is dropped, never trusted;
+//   * the session budget bounds the DISTINCT accepted artwork footprint of
+//     one publication (unique files + their maximum encoded bytes), not the
+//     number of demands: a validated disk re-read after memory eviction is
+//     still an already-admitted identity and never re-charges it, so ordinary
+//     repeated scrolling cannot black out the same publication's art;
 //   * publication identity invalidates the session: binding a new commit
 //     cancels shared reads and discards results that complete afterwards
 //     (the epoch guard mirrored from the web hub-media contract);
@@ -189,6 +194,12 @@ final class SkillHubMediaCenter: ObservableObject {
     private var imageOrder: [String] = []
     private var imageDecodedBytes = 0
     private var imageRequests: [String: Task<UIImage?, Never>] = [:]
+    /// Encoded bytes charged per admitted artwork identity ("commit:path").
+    /// The session budget bounds DISTINCT accepted artwork, not demands: a
+    /// validated disk/cache re-read of an already admitted identity costs
+    /// nothing, while a larger payload under the same key charges only its
+    /// growth (and is refused when that growth does not fit).
+    private var sessionCharges: [String: Int] = [:]
     private var sessionBytes = 0
     private var sessionFiles = 0
 
@@ -227,6 +238,7 @@ final class SkillHubMediaCenter: ObservableObject {
         imageCache.removeAll()
         imageOrder.removeAll()
         imageDecodedBytes = 0
+        sessionCharges.removeAll()
         sessionBytes = 0
         sessionFiles = 0
     }
@@ -323,7 +335,20 @@ final class SkillHubMediaCenter: ObservableObject {
     private static let nativelyRenderableMIMEs: Set<String> = ["image/png", "image/jpeg", "image/webp"]
 
     private func loadImage(path: String, commit: String, key: String, demandEpoch: Int) async -> UIImage? {
-        guard sessionFiles < budgets.maximumSessionFiles else { return nil }
+        // Cheap preflight ONLY for a new identity: refuse before any I/O when
+        // the unique-file or encoded-byte budget is already full. A key that
+        // was already admitted must still proceed — a validated disk re-read
+        // of the same artwork after memory eviction adds no new resource and
+        // stays available for the whole session. (This preflight used to
+        // refuse such repeats as soon as the file count filled, compounding
+        // the per-demand charge below.) The authoritative decision is the
+        // post-await admission below, which re-checks BOTH bounds on the main
+        // actor because concurrent distinct demands can pass this preflight
+        // together and overshoot a file-count-only check.
+        if sessionCharges[key] == nil {
+            guard sessionFiles < budgets.maximumSessionFiles,
+                  sessionBytes < budgets.maximumSessionBytes else { return nil }
+        }
         let name = diskFileName(commit: commit, path: path)
         var bytes: Data?
         var fromNetwork = false
@@ -377,12 +402,31 @@ final class SkillHubMediaCenter: ObservableObject {
             // decode are persisted; a refused write only costs a re-fetch.
             await disk.store(fileName: name, bytes: bytes)
         }
-        guard demandEpoch == epoch, publicationCommit == commit,
-              sessionBytes + bytes.count <= budgets.maximumSessionBytes else {
+        // Final admission, decided on the main actor AFTER every await. The
+        // budget bounds the DISTINCT accepted artwork footprint of this
+        // immutable publication, not how many times a validated still is
+        // demanded:
+        //   * an already admitted key (memory hit, or disk/cache re-read
+        //     after LRU eviction) adds no file and charges only growth, so a
+        //     repeat demand of the same small payload charges 0;
+        //   * a later LARGER payload under the same key charges the delta
+        //     over its previous maximum, and is refused when that delta does
+        //     not fit — a changed payload cannot bypass the byte cap;
+        //   * a new key must fit BOTH the unique-file and encoded-byte caps.
+        // Re-checking both caps here is what stops two concurrent new
+        // identities, both past the cheap preflight, from overshooting.
+        // Cancelled, stale or failed demands never reach this block, and a
+        // refusal here charges nothing.
+        guard !Task.isCancelled, demandEpoch == epoch, publicationCommit == commit else { return nil }
+        let priorCharge = sessionCharges[key]
+        let growth = max(0, bytes.count - (priorCharge ?? 0))
+        guard priorCharge != nil || sessionFiles < budgets.maximumSessionFiles,
+              sessionBytes + growth <= budgets.maximumSessionBytes else {
             return nil
         }
-        sessionBytes += bytes.count
-        sessionFiles += 1
+        sessionBytes += growth
+        if priorCharge == nil { sessionFiles += 1 }
+        sessionCharges[key] = max(priorCharge ?? 0, bytes.count)
         publishMemory(key: key, image: decoded.image, cost: decoded.decodedBytes)
         return decoded.image
     }
@@ -424,6 +468,10 @@ final class SkillHubMediaCenter: ObservableObject {
     /// Test-visible LRU occupancy (both bounds are behavior under test).
     var debugMemoryCacheCount: Int { imageCache.count }
     var debugMemoryDecodedBytes: Int { imageDecodedBytes }
+    /// Test-visible session identity accounting: distinct admitted artwork
+    /// identities and their encoded-byte footprint, never per-demand counts.
+    var debugSessionFileCount: Int { sessionFiles }
+    var debugSessionBytes: Int { sessionBytes }
 
     // MARK: Cache naming
 
