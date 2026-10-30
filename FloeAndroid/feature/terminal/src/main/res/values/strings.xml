@@ -37,4 +37,6 @@
     <string name="terminal_tab_save">Save</string>
     <string name="terminal_tab_close">Close tab</string>
     <string name="terminal_tab_limit">Two terminal tabs can run at once. Close one to open another.</string>
+    <string name="terminal_tab_pending_hint">Input is available once this tab starts.</string>
+    <string name="terminal_tab_open_failed">Couldn\'t open a new tab. Try again.</string>
 </resources>

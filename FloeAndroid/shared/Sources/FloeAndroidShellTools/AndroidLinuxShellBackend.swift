@@ -224,6 +224,26 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
     /// [hasCapacity(for:)] is the explicit role question concurrent opens use.
     public func isEngineSlotBusy() -> Bool { !slotHolders.isEmpty }
 
+    /// The ONLY proven workspace owner this backend observed for the
+    /// conversation, if exactly one exists. The start reply's
+    /// `workspaceOwner` is the runtime's own admission fact: a participant
+    /// (`false`) or an absent legacy field is never promoted to an owner
+    /// hint. More than one proven owner is an inconsistent observation, so
+    /// this fails closed (nil) instead of choosing an arbitrary/default
+    /// session; the runtime then resolves shared/deferred ownership itself.
+    static func observedWorkspaceReuse(
+        conversationID: UUID?,
+        sessions: [EngineSession]
+    ) -> LinuxShellWorkspaceReuse? {
+        guard let conversationID else { return nil }
+        let owners = sessions.filter {
+            !$0.leaseReleased && $0.conversationID == conversationID &&
+                $0.workspaceOwner == true
+        }
+        guard owners.count == 1, let owner = owners.first else { return nil }
+        return .shared(ownerSessionID: owner.engineSessionID)
+    }
+
     public func hasCapacity(for role: LinuxShellLeaseRole) -> Bool {
         // Approved default: 2 interactive + ONE execution slot shared by the
         // Agent command and a language/run session. Total live sessions <= 3.
@@ -300,10 +320,12 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         // G07.3A: the Agent command has ONE dedicated slot. A live terminal
         // no longer blocks it, and a live terminal in the SAME conversation
         // makes this command a workspace PARTICIPANT (no second import/export).
-        let reuseHint = sessions.values.first(where: {
-            !$0.engine.leaseReleased && request.conversationID != nil &&
-                $0.engine.conversationID == request.conversationID
-        }).map { LinuxShellWorkspaceReuse.shared(ownerSessionID: $0.engine.engineSessionID) }
+        // ONLY a session whose own runtime reply proved workspaceOwner==true
+        // may be named: an observed participant's lease id is refused by the
+        // real runtime, and there is no dictionary-order/default fallback.
+        let reuseHint = Self.observedWorkspaceReuse(
+            conversationID: request.conversationID,
+            sessions: sessions.values.map(\.engine))
         guard await acquireGate(heldBy: holdKey, role: .agent, timeout: request.gateTimeout,
                                 cancellation: cancellation) else {
             phases.mark(.gate, at: TerminalLatencyPhases.now())
@@ -609,18 +631,15 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         // an unqualified engine refuses above.
         let role = request.leaseRole
         // A second tab/run in the SAME conversation mounts the live owner's
-        // guest workspace instead of importing over it. Only the trusted
-        // same-conversation observation mints this hint; the runtime re-proves
-        // the named owner and refuses an unprovable one.
-        let reuseHint: LinuxShellWorkspaceReuse?
-        if request.conversationID != nil,
-           let owner = sessions.values.first(where: {
-               !$0.engine.leaseReleased && $0.engine.conversationID == request.conversationID
-           })?.engine.engineSessionID {
-            reuseHint = .shared(ownerSessionID: owner)
-        } else {
-            reuseHint = nil
-        }
+        // guest workspace instead of importing over it. ONLY a session whose
+        // own runtime reply proved workspaceOwner==true may be named: a live
+        // participant (`false`) or an absent legacy field never mints a hint,
+        // and there is no dictionary-order/default fallback. With no proven
+        // owner the hint is omitted and the runtime resolves shared/deferred
+        // ownership itself.
+        let reuseHint = Self.observedWorkspaceReuse(
+            conversationID: request.conversationID,
+            sessions: sessions.values.map(\.engine))
         guard await acquireGate(heldBy: request.sessionID, role: role, timeout: request.gateTimeout,
                                 cancellation: cancellation) else {
             try cancellation?.throwIfCancelled()
@@ -733,7 +752,11 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             prepareMillis: reply.prepareMillis,
             prepareCopiedBytes: reply.prepareCopiedBytes,
             importMillis: reply.importMillis,
-            importedEntries: reply.importedEntries
+            importedEntries: reply.importedEntries,
+            // The actual engine lease id from the real start reply. The
+            // center/UI keep using `request.sessionID` (the client token);
+            // live files address this exact runtime session only.
+            runtimeSessionID: reply.sessionID
         )
     }
 

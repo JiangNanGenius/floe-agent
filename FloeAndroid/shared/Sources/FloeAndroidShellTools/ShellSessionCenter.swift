@@ -200,7 +200,11 @@ public actor ShellSessionCenter {
             prepareMillis: result.prepareMillis,
             prepareCopiedBytes: result.prepareCopiedBytes,
             importMillis: result.importMillis,
-            importedEntries: result.importedEntries
+            importedEntries: result.importedEntries,
+            // Carry the REAL engine lease id alongside the client token. The
+            // center keeps keying exchange/close/resize by its own client
+            // `sessionID`; only the live-files RPC uses this value.
+            runtimeSessionID: result.runtimeSessionID
         )
     }
 

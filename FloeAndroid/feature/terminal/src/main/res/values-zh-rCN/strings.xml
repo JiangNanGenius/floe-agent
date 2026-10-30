@@ -34,4 +34,6 @@
     <string name="terminal_tab_save">保存</string>
     <string name="terminal_tab_close">关闭标签页</string>
     <string name="terminal_tab_limit">最多同时运行两个终端标签页。请先关闭一个。</string>
+    <string name="terminal_tab_pending_hint">标签页启动后即可输入。</string>
+    <string name="terminal_tab_open_failed">无法新建终端标签页，请重试。</string>
 </resources>

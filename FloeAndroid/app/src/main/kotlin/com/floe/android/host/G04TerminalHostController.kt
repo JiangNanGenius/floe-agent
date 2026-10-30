@@ -260,7 +260,7 @@ internal class G04TerminalHostController(
     /** Pending opens that belong to the TAB layer rather than the legacy
      *  default-attach lane. Keyed by the exact requestID submitted. */
     private val pendingTabOpens = ConcurrentHashMap<String, PendingTabOpen>()
-    private data class PendingTabOpen(val conversationID: String, val epoch: Long)
+    internal data class PendingTabOpen(val conversationID: String, val epoch: Long)
     /** Registered run-open intents keyed by the EXACT requestID `runDraft`
      * submitted: the service-owned binding route for an accepted Run's
      * sessionToken (device evidence 2026-10-25: native answers the reply —
@@ -985,7 +985,10 @@ internal class G04TerminalHostController(
         return null
     }
 
-    private fun engineEnsurerForTab(conversationID: String, sessionID: String) {
+    /** Per-tab engine ensurer. Internal seam so focused host tests can observe
+     *  adoption without constructing the vendored emulator (the same idiom as
+     *  [engineEnsurer]); production keeps the real engine registry. */
+    internal var tabEngineEnsurer: (String, String) -> Unit = { conversationID, sessionID ->
         if (!tabEngines.containsKey(sessionID)) {
             tabEngines[sessionID] = G04TerminalEngine(80, 24, host = object : TerminalEngineHost {
                 override fun writeToPty(bytes: ByteArray) {
@@ -998,7 +1001,15 @@ internal class G04TerminalHostController(
         }
     }
 
-    /** Switch the pane's visible tab. Never attaches, restarts or stops. */
+    private fun engineEnsurerForTab(conversationID: String, sessionID: String) {
+        tabEngineEnsurer(conversationID, sessionID)
+    }
+
+    /** Switch the pane's visible tab. Never attaches, restarts or stops.
+     *  Selecting a pending reservation is allowed and truthful: it returns a
+     *  view with NO native identity, so the pane can show its disabled surface
+     *  instead of borrowing the previously selected PTY. The legacy
+     *  conversation token is updated ONLY for a real session. */
     fun selectTab(conversationID: String, tabID: String): TerminalTabView? {
         val selected = tabRegistry.select(conversationID, tabID) ?: return null
         selected.sessionID?.let { sessionTokens[conversationID] = it }
@@ -1291,6 +1302,16 @@ internal class G04TerminalHostController(
                 if (tabRegistry.tabsFor(conversationID).isEmpty()) {
                     val seed = "seed:" + newToken
                     tabRegistry.newTab(conversationID, seed)?.let { tabRegistry.adopt(seed, newToken) }
+                    // The first tab adopts the SAME emulator the pane already
+                    // created for the pre-tab conversation projection, so the
+                    // first prompt/output captured before tab adoption is not
+                    // lost. A second tab still gets its own emulator.
+                    engines[conversationID]?.let { tabEngines.putIfAbsent(newToken, it) }
+                    // The tab engine must exist BEFORE the first output page:
+                    // the host feeds `tabEngines[token]` first, and a view that
+                    // composes later must attach to the SAME emulator (never
+                    // lose the first prompt to the legacy conversation engine).
+                    engineEnsurerForTab(conversationID, newToken)
                     notifyTabs(conversationID)
                 }
                 // Seed the view state; the native terminalStatus event for
@@ -1316,6 +1337,14 @@ internal class G04TerminalHostController(
                 // published while the captured handle was still absent. Re-publish
                 // the matching current snapshot after binding so observers can
                 // re-evaluate BOTH facts; never fabricate a RUNNING phase.
+                // The tab layer reads per-token snapshots: seed it from this
+                // exact SAME-token projection so re-showing a tab never falls
+                // back to another PTY's screen. An authoritative status that
+                // already arrived wins (never downgraded).
+                if (tabSnapshots[newToken] == null) {
+                    snapshots[conversationID]?.takeIf { it.sessionToken == newToken }
+                        ?.let { tabSnapshots[newToken] = it }
+                }
                 snapshots[conversationID]?.takeIf { it.sessionToken == newToken }?.let { snapshot ->
                     sessionWatchers[conversationID]?.forEach { it(snapshot) }
                 }
@@ -1566,9 +1595,16 @@ internal class G04TerminalHostController(
         if (tabSnapshots[sessionToken]?.phase?.isLive() == false) return
         scope.launch(outputDispatcher) {
             if (!deliveryOwnershipLive(admittedEpoch, conversationID, sessionToken)) return@launch
-            // A tab owns its own emulator; the legacy conversation engine is
-            // used only when no tab engine exists for this exact token.
-            tabEngines[sessionToken]?.let { it.feed(payload) } ?: engines[conversationID]?.feed(payload)
+            // A tab owns its own emulator. The legacy conversation engine is
+            // a fallback ONLY for the conversation's CURRENT default token
+            // (the pre-tab first-session bridge); a non-default tab's bytes
+            // must never enter another PTY's screen.
+            val tabEngine = tabEngines[sessionToken]
+            if (tabEngine != null) {
+                tabEngine.feed(payload)
+            } else if (sessionTokens[conversationID] == sessionToken) {
+                engines[conversationID]?.feed(payload)
+            }
             val listeners = outputListeners[sessionToken]?.toList() ?: return@launch
             for (listener in listeners) {
                 if (!deliveryOwnershipLive(admittedEpoch, conversationID, sessionToken)) {
@@ -1955,17 +1991,27 @@ internal class G04TerminalHostController(
                 descriptor["requestID"]?.jsonPrimitive?.contentOrNull?.let { requestID ->
                     pendingTabOpens[requestID]?.let { intent ->
                         val lateToken = descriptor["sessionToken"]?.jsonPrimitive?.contentOrNull
-                        if (!lateToken.isNullOrEmpty() && boundEpoch == intent.epoch &&
-                            currentNativeEpoch() == intent.epoch && !stopped.get() &&
+                        val generationLive = boundEpoch == intent.epoch &&
+                            currentNativeEpoch() == intent.epoch && !stopped.get()
+                        if (generationLive && !lateToken.isNullOrEmpty() &&
                             tokenConversations[lateToken] == null) {
-                            bindToken(intent.conversationID, lateToken)
                             if (tabRegistry.adopt(requestID, lateToken) != null) {
+                                bindToken(intent.conversationID, lateToken)
                                 engineEnsurerForTab(intent.conversationID, lateToken)
                                 clearInputIssue(intent.conversationID)
                                 notifyTabs(intent.conversationID)
                             }
                             pendingTabOpens.remove(requestID)
+                        } else if (generationLive) {
+                            // A status with an unusable/already-owned token is
+                            // not a second claim: settle the reservation so a
+                            // pending tab can never linger forever.
+                            pendingTabOpens.remove(requestID)
+                            tabRegistry.drop(requestID)
+                            notifyTabs(intent.conversationID)
                         }
+                        // A stale generation keeps the reservation only for
+                        // its own fencing path; no other world may adopt it.
                     }
                 }
                 val snapshot = TerminalSessionSnapshot(
@@ -2098,19 +2144,41 @@ internal class G04TerminalHostController(
                     // G07.3A: the accepted SECOND/next tab binds at the reply
                     // event itself, exactly like the interactive lane, so
                     // native's following output/status events already see the
-                    // exact token. A stale generation or a late reply never
-                    // adopts a session.
-                    if (ok && future != null && boundEpoch == intent.epoch &&
-                        currentNativeEpoch() == intent.epoch && !stopped.get()) {
-                        val token = descriptor["sessionToken"]?.jsonPrimitive?.contentOrNull
-                        if (!token.isNullOrEmpty()) {
-                            bindToken(intent.conversationID, token)
+                    // exact token. A submit-waiter TIMEOUT does not release
+                    // the tab reservation: the pending tab IS this request's
+                    // exact claim, so a late accepted reply still adopts it
+                    // (never a phantom live tab in the meantime). A typed
+                    // refusal, a stale generation or a token already owned by
+                    // another binding SETTLES the reservation instead of
+                    // leaving it pending forever.
+                    val token = descriptor["sessionToken"]?.jsonPrimitive?.contentOrNull
+                    val generationLive = boundEpoch == intent.epoch &&
+                        currentNativeEpoch() == intent.epoch && !stopped.get()
+                    if (ok) {
+                        if (generationLive && !token.isNullOrEmpty() &&
+                            tokenConversations[token] == null) {
                             if (tabRegistry.adopt(requestID, token) != null) {
+                                bindToken(intent.conversationID, token)
                                 engineEnsurerForTab(intent.conversationID, token)
                                 clearInputIssue(intent.conversationID)
                                 notifyTabs(intent.conversationID)
+                            } else {
+                                tabRegistry.drop(requestID)
+                                notifyTabs(intent.conversationID)
                             }
+                        } else {
+                            // Accepted without a usable/owned identity (stale
+                            // generation, empty or already-bound token): never
+                            // invent a second claim; drop the reservation.
+                            tabRegistry.drop(requestID)
+                            notifyTabs(intent.conversationID)
                         }
+                    } else {
+                        // A real typed refusal/fence: no session exists for
+                        // this request (including a late reply that arrives
+                        // after the submit waiter expired).
+                        tabRegistry.drop(requestID)
+                        notifyTabs(intent.conversationID)
                     }
                 }
                 pendingInteractiveOpens.remove(requestID)?.let { intent ->

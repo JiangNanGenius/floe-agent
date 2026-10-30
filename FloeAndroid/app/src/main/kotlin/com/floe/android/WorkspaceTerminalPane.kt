@@ -52,7 +52,9 @@ import com.floe.android.host.TerminalInputIssue
 import com.floe.android.host.TerminalLanguageRuntimeState
 import com.floe.android.host.TerminalSessionPhase
 import com.floe.android.host.TerminalSessionSnapshot
+import com.floe.android.host.terminalsessions.TerminalTabLimits
 import com.floe.android.host.terminalsessions.TerminalTabView
+import com.floe.android.host.terminalsessions.terminalPaneTarget
 import kotlinx.coroutines.launch
 
 /**
@@ -91,6 +93,11 @@ internal fun WorkspaceTerminalPane(
     var renameText by remember(controller, conversationID) { mutableStateOf("") }
     var renameTargetSession by remember(controller, conversationID) { mutableStateOf<String?>(null) }
     var tabLimitNotice by remember(controller, conversationID) { mutableStateOf(false) }
+    // Typed new-tab refusal (slot busy / host refused / invalid reply). It is
+    // shown beside the strip and never changes the SELECTED tab's own status.
+    var tabOpenFailure by remember(controller, conversationID) {
+        mutableStateOf<TerminalActionReply?>(null)
+    }
     var keyboardVisible by remember { mutableStateOf(true) }
     var terminalCopyText by remember(controller, conversationID) { mutableStateOf<String?>(null) }
     var textSp by remember { mutableStateOf(13f) }
@@ -137,7 +144,10 @@ internal fun WorkspaceTerminalPane(
     DisposableEffect(controller, conversationID) {
         val host = controller ?: return@DisposableEffect onDispose { }
         val unregisterSessions = host.watchSessions(conversationID) { legacy ->
-            if (host.currentTab(conversationID)?.sessionID == null) snapshot = legacy
+            // Legacy conversation projection ONLY before any tab exists. With
+            // tabs, the selected tab's own authoritative snapshot wins; a
+            // pending tab must never borrow the previous PTY's status.
+            if (host.tabs(conversationID).isEmpty()) snapshot = legacy
         }
         val unregisterTabs = host.watchTabs(conversationID) { tabs = host.tabs(conversationID) }
         // Live server transitions keep the settings list honest while open;
@@ -180,6 +190,20 @@ internal fun WorkspaceTerminalPane(
         val host = controller ?: return@LaunchedEffect
         openFailure = null
         showFailureDetails = false
+        // A pending tab is an ALREADY DISPATCHED real open. Re-showing the
+        // pane must never dispatch a second start or attach another tab's PTY
+        // while that bounded reservation is in flight: show exactly the
+        // pending target (no addressable session) and wait for its real reply.
+        val pendingTabs = host.tabs(conversationID)
+        if (pendingTabs.any { it.pending }) {
+            terminalReady = host.availability().let { it.qualified && it.workspaceAttached }
+            tabs = pendingTabs
+            val target = terminalPaneTarget(pendingTabs)
+            snapshot = target.sessionID?.let { id ->
+                host.snapshotFor(id) ?: snapshot?.takeIf { it.sessionToken == id }
+            }
+            return@LaunchedEffect
+        }
         // Read the gate LIVE. `capabilitiesKnown` alone lets an
         // Application-owned known-false snapshot pin the pane forever: on a
         // false cached gate the pane performs ONE bounded capabilities
@@ -210,12 +234,20 @@ internal fun WorkspaceTerminalPane(
             TerminalFirstUseGate.ATTACH_LIVE -> {
                 // An existing live session is attached, never restarted. With
                 // tabs, attach the SELECTED native session (a second tab is a
-                // different PTY and must be attached by its own token).
-                val liveSelected = host.tabs(conversationID).firstOrNull { it.sessionID != null && it.isLive }
-                if (liveSelected?.sessionID != null) {
-                    host.attachTab(liveSelected.sessionID)
-                } else {
-                    host.attachOrOpen(conversationID, workspaceID = null, columns = 80, rows = 24)
+                // different PTY and must be attached by its own token) and
+                // never attach a different tab when the selected one has no
+                // native identity.
+                val currentTab = host.currentTab(conversationID)
+                if (currentTab?.sessionID != null && currentTab.isLive) {
+                    host.attachTab(currentTab.sessionID)
+                } else if (currentTab?.pending != true) {
+                    val liveSelected = host.tabs(conversationID)
+                        .firstOrNull { it.sessionID != null && it.isLive }
+                    if (liveSelected?.sessionID != null) {
+                        host.attachTab(liveSelected.sessionID)
+                    } else {
+                        host.attachOrOpen(conversationID, workspaceID = null, columns = 80, rows = 24)
+                    }
                 }
                 host.tabs(conversationID)
             }
@@ -241,27 +273,58 @@ internal fun WorkspaceTerminalPane(
             TerminalFirstUseGate.EXPLAIN -> Unit
         }
         tabs = host.tabs(conversationID)
-        snapshot = host.currentTab(conversationID)?.sessionID?.let { host.snapshotFor(it) }
-            ?: host.currentSnapshot(conversationID) ?: snapshot
+        val target = terminalPaneTarget(tabs)
+        snapshot = when {
+            target.sessionID != null ->
+                host.snapshotFor(target.sessionID) ?: snapshot?.takeIf { it.sessionToken == target.sessionID }
+            // Legacy pre-tab compatibility ONLY: no tab exists at all.
+            target.legacyConversation -> host.currentSnapshot(conversationID) ?: snapshot
+            // A pending (or otherwise unaddressable) selected tab must never
+            // borrow the conversation's other live PTY.
+            else -> null
+        }
     }
 
+    // ONE truthful pane target: a pending/failed tab has no session identity,
+    // so the pane can neither create an engine/transport for it nor fall back
+    // to another live PTY. The legacy conversation projection is used only
+    // when this conversation has no tabs at all.
+    val paneTarget = terminalPaneTarget(tabs)
     val selectedTab = tabs.firstOrNull { it.selected } ?: tabs.lastOrNull()
-    val activeSessionID = selectedTab?.sessionID
-    // The selected tab's AUTHORITATIVE status wins; the legacy conversation
-    // projection is used only before any tab exists.
+    val activeSessionID = paneTarget.sessionID
+    val pendingSelected = paneTarget.pending
+    // The selected tab's AUTHORITATIVE status wins. A real tab without a
+    // status yet is a starting surface (its own token); it is never replaced
+    // by the conversation's previous/default tab screen.
     LaunchedEffect(activeSessionID, tabs) {
-        snapshot = activeSessionID?.let { controller?.snapshotFor(it) }
-            ?: controller?.currentSnapshot(conversationID)
+        snapshot = when {
+            activeSessionID != null ->
+                controller?.snapshotFor(activeSessionID) ?: snapshot?.takeIf { it.sessionToken == activeSessionID }
+            paneTarget.legacyConversation -> controller?.currentSnapshot(conversationID)
+            else -> null
+        }
     }
-    val engine = remember(controller, activeSessionID, conversationID) {
-        activeSessionID?.let { controller?.engineForTab(it) } ?: controller?.engineFor(conversationID)
+    val engine = remember(controller, activeSessionID, paneTarget.legacyConversation, conversationID) {
+        when {
+            activeSessionID != null -> controller?.engineForTab(activeSessionID)
+            paneTarget.legacyConversation -> controller?.engineFor(conversationID)
+            else -> null
+        }
     }
-    val transport = remember(controller, activeSessionID, conversationID) {
-        activeSessionID?.let { controller?.transportForTab(it) } ?: controller?.transportFor(conversationID)
+    val transport = remember(controller, activeSessionID, paneTarget.legacyConversation, conversationID) {
+        when {
+            activeSessionID != null -> controller?.transportForTab(activeSessionID)
+            paneTarget.legacyConversation -> controller?.transportFor(conversationID)
+            else -> null
+        }
     }
 
-    val statusText = when (snapshot?.phase) {
+    val statusText = if (pendingSelected) {
+        // An unaddressable pending reservation has exactly ONE honest state.
+        stringResource(com.floe.android.feature.terminal.R.string.terminal_starting)
+    } else when (snapshot?.phase) {
         null -> when {
+            activeSessionID != null -> stringResource(com.floe.android.feature.terminal.R.string.terminal_starting)
             controller == null -> stringResource(R.string.inspector_runtime_pending)
             // The run-less first entry in flight: one short honest sentence,
             // never "Starting terminal…" (nothing is starting yet) and never a
@@ -309,8 +372,11 @@ internal fun WorkspaceTerminalPane(
                             .clip(RoundedCornerShape(8.dp))
                             .background(if (selected) colors.accent else colors.fillTertiary)
                             .clickable {
-                                tab.sessionID?.let { controller?.selectTab(conversationID, tab.tabID) }
-                                tab.sessionID?.let { snapshot = controller?.snapshotFor(it) }
+                                // Pending tabs are selectable too: the pane
+                                // then shows their own disabled starting
+                                // surface, never the previous tab's PTY.
+                                controller?.selectTab(conversationID, tab.tabID)
+                                snapshot = tab.sessionID?.let { controller?.snapshotFor(it) }
                             }
                             .padding(horizontal = 10.dp, vertical = 6.dp)
                             .semantics {
@@ -361,16 +427,40 @@ internal fun WorkspaceTerminalPane(
                         .clickable {
                             scope.launch {
                                 val host = controller ?: return@launch
-                                val created = host.openTab(conversationID, null, 80, 24) { refusal ->
-                                    openFailure = refusal
+                                tabOpenFailure = null
+                                tabLimitNotice = false
+                                val before = host.tabs(conversationID).map { it.tabID }.toSet()
+                                var refusal: TerminalActionReply? = null
+                                val created = host.openTab(conversationID, null, 80, 24) { reply ->
+                                    // The refusal belongs to the NEW tab only:
+                                    // it must never replace A's output/status.
+                                    refusal = reply
                                 }
+                                val after = host.tabs(conversationID)
                                 if (created == null) {
-                                    tabLimitNotice = host.tabs(conversationID).size >= 2
+                                    val pendingOpening = after.any {
+                                        it.pending && it.tabID !in before
+                                    }
+                                    when {
+                                        // A real start is still in flight: the
+                                        // pending chip is the bounded truth.
+                                        pendingOpening -> Unit
+                                        after.size >= TerminalTabLimits.MAX_TABS -> {
+                                            tabLimitNotice = true
+                                        }
+                                        else -> {
+                                            tabOpenFailure =
+                                                refusal ?: TerminalActionReply.TimedOut
+                                        }
+                                    }
                                 } else {
                                     created.sessionID?.let { host.selectTab(conversationID, created.tabID) }
-                                    tabs = host.tabs(conversationID)
-                                    tabLimitNotice = false
+                                    snapshot = created.sessionID?.let { host.snapshotFor(it) }
                                 }
+                                // Re-read AFTER a possible select: the tab
+                                // strip must show the newly selected tab, not
+                                // the pre-select snapshot captured above.
+                                tabs = host.tabs(conversationID)
                             }
                         }
                         .padding(horizontal = 10.dp, vertical = 6.dp)
@@ -379,9 +469,16 @@ internal fun WorkspaceTerminalPane(
                     FloeText("+", style = Floe.typography.metadata, color = colors.label)
                 }
             }
-            if (tabLimitNotice) {
+            if (tabLimitNotice || tabOpenFailure != null) {
                 FloeText(
-                    stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_limit),
+                    text = when {
+                        tabOpenFailure.isEngineSlotBusyRefusal ->
+                            stringResource(R.string.workspace_runtime_slot_busy)
+                        tabOpenFailure != null -> stringResource(
+                            com.floe.android.feature.terminal.R.string.terminal_tab_open_failed)
+                        else -> stringResource(
+                            com.floe.android.feature.terminal.R.string.terminal_tab_limit)
+                    },
                     style = Floe.typography.metadata,
                     color = colors.secondaryLabel,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
@@ -457,7 +554,30 @@ internal fun WorkspaceTerminalPane(
             )
         }
         val hasSession = snapshot != null && snapshot!!.phase != TerminalSessionPhase.CLOSED
-        if (engine == null || transport == null || (!hasSession && !startDispatched)) {
+        // A real tab whose first authoritative status is still in flight is
+        // its OWN starting surface; it must not be mistaken for an
+        // unqualified engine (and never replaced by another tab's screen).
+        val awaitingTabStatus = activeSessionID != null && snapshot == null
+        if (pendingSelected) {
+            // The selected tab has no native identity yet. Render a blank,
+            // honest, disabled surface: no emulator, no engine/transport from
+            // another PTY, no input/resize/interrupt/paste/copy fallback.
+            Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FloeText(
+                        stringResource(com.floe.android.feature.terminal.R.string.terminal_starting),
+                        style = Floe.typography.body,
+                        color = colors.secondaryLabel,
+                    )
+                    FloeText(
+                        stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_pending_hint),
+                        style = Floe.typography.metadata,
+                        color = colors.secondaryLabel,
+                    )
+                }
+            }
+        } else if (engine == null || transport == null ||
+            (!hasSession && !startDispatched && !awaitingTabStatus)) {
             // Honest unavailability: no engine, or the runtime is not
             // qualified. The guidance text points to the REAL setup surface;
             // when the ORIGINAL stage authority reports the exact shape of

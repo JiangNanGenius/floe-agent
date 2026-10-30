@@ -39,8 +39,10 @@ internal data class TerminalTabView(
     val selected: Boolean,
     val pending: Boolean,
 ) {
+    /** A pending reservation is NOT a native session: it never counts as a
+     *  live tab (no live dot, no attach, no live-file identity). */
     val isLive: Boolean
-        get() = phase == "starting" || phase == "running" || phase == "waitingOutput"
+        get() = !pending && (phase == "starting" || phase == "running" || phase == "waitingOutput")
 }
 
 internal class TerminalTabRegistry {
@@ -166,7 +168,11 @@ internal class TerminalTabRegistry {
     fun select(conversationID: String, tabID: String): TerminalTabView? {
         val tab = tabs[tabID]?.takeIf { it.conversationID == conversationID } ?: return null
         selected[conversationID] = tab.tabID
-        return find(tab.sessionID ?: tab.tabID)
+        // A pending tab has no sessionID, so `find(sessionID)` cannot address
+        // it; resolve by the actual tab key instead. Selecting a pending tab
+        // is a truthful selection (the pane then shows its disabled surface),
+        // never a fall-back to another live PTY.
+        return tabsFor(conversationID).firstOrNull { it.tabID == tab.tabID }
     }
 
     /**
@@ -212,7 +218,8 @@ internal class TerminalTabRegistry {
     }
 
     private fun Tab.isLiveForSelection(): Boolean =
-        phase == "starting" || phase == "running" || phase == "waitingOutput"
+        pendingRequestID == null &&
+            (phase == "starting" || phase == "running" || phase == "waitingOutput")
 
     private fun pendingID(requestID: String): String = "pending:" + requestID.take(48)
 

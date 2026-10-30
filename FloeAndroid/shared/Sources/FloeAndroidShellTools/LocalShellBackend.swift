@@ -272,13 +272,19 @@ public struct ShellOpenResult: Sendable, Equatable {
     public var prepareCopiedBytes: Int64?
     public var importMillis: Int64?
     public var importedEntries: Int64?
+    /// G07.3A live-files identity: the ENGINE lease/session id from the REAL
+    /// `shell.start` reply. `sessionID` stays the client/service token used by
+    /// terminal actions; live-file RPC is the ONLY consumer of this value.
+    /// nil when no real reply was observed (legacy/fake backend), and the
+    /// live-files path then refuses instead of addressing the client token.
+    public var runtimeSessionID: String?
 
     public init(sessionID: String, initialOutput: String, alive: Bool,
                 terminalOutput: Data? = nil, runtimeGeneration: String? = nil,
                 environmentID: String = "", workspaceOwner: Bool? = nil,
                 prepareReused: Bool? = nil, prepareMillis: Int64? = nil,
                 prepareCopiedBytes: Int64? = nil, importMillis: Int64? = nil,
-                importedEntries: Int64? = nil) {
+                importedEntries: Int64? = nil, runtimeSessionID: String? = nil) {
         self.sessionID = sessionID
         self.initialOutput = initialOutput
         self.terminalOutput = terminalOutput
@@ -291,6 +297,7 @@ public struct ShellOpenResult: Sendable, Equatable {
         self.prepareCopiedBytes = prepareCopiedBytes
         self.importMillis = importMillis
         self.importedEntries = importedEntries
+        self.runtimeSessionID = runtimeSessionID
     }
 }
 

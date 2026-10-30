@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.*
@@ -72,9 +73,9 @@ internal fun NetworkDiagnosticReportControls(controller: NetworkDiagnosticReport
                 else NetworkR.string.network_monitor_report_mode_redacted), style = Floe.typography.metadata)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FloeCapsuleButton(stringResource(NetworkR.string.network_monitor_export_json),
-                    { beginExport(MonitorExportFormat.JSON) }, enabled = !global.busy && pendingReport == null)
+                    { beginExport(MonitorExportFormat.JSON) }, enabled = !global.busy && pendingReport == null, modifier = Modifier.weight(1f))
                 FloeCapsuleButton(stringResource(NetworkR.string.network_monitor_export_markdown),
-                    { beginExport(MonitorExportFormat.MARKDOWN) }, enabled = !global.busy && pendingReport == null)
+                    { beginExport(MonitorExportFormat.MARKDOWN) }, enabled = !global.busy && pendingReport == null, modifier = Modifier.weight(1f))
             }
         }
         if (current?.exporting == true) FloeCapsuleButton(stringResource(NetworkR.string.network_monitor_export_cancel),

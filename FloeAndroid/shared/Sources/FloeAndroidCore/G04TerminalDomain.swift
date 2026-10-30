@@ -196,6 +196,10 @@ private final class TerminalSessionRecord: @unchecked Sendable {
     /// reply. Live read-only file actions require the EXACT generation.
     var environmentID: String = ""
     var runtimeGeneration: String = ""
+    /// G07.3A live-files identity: the ENGINE lease id echo from the REAL
+    /// start reply. `sessionToken` stays the client/UI token used by every
+    /// terminal action; live-file RPC is its ONLY consumer.
+    var runtimeSessionID: String = ""
     var workspaceOwner: Bool = true
     /// G07.3A measured preparation facts (never promised latencies).
     var prepareReused = false
@@ -754,6 +758,7 @@ public actor G04TerminalStore {
                                                cancellation: receipt.cancellation, receipt: receipt)
             record.environmentID = result.environmentID
             record.runtimeGeneration = result.runtimeGeneration ?? ""
+            record.runtimeSessionID = result.runtimeSessionID ?? ""
             record.workspaceOwner = result.workspaceOwner ?? true
             record.prepareReused = result.prepareReused ?? false
             record.prepareMillis = result.prepareMillis ?? 0
@@ -1043,6 +1048,7 @@ public actor G04TerminalStore {
         guard !retired, G02NativeRootEpoch.readback() == epoch,
               let record = sessions[sessionToken], record.conversationID == conversationID,
               record.alive, !record.runtimeGeneration.isEmpty, !record.environmentID.isEmpty,
+              !record.runtimeSessionID.isEmpty,
               let components, let transport = components.liveFiles else { return nil }
         let projectID = LinuxShellProjectMapping
             .projectID(forCanonicalCoreWorkspaceRoot: record.rootURL).uuidString
@@ -1058,7 +1064,10 @@ public actor G04TerminalStore {
             return
         }
         let request = LinuxLiveFilesRequest(
-            sessionID: sessionToken,
+            // The runtime pump resolves live files by its ENGINE lease id.
+            // `sessionToken` above is only the client/UI key; sending it here
+            // was the confirmed live-files refusal.
+            sessionID: record.runtimeSessionID,
             workspaceKey: projectID,
             environmentID: record.environmentID,
             generation: record.runtimeGeneration,
@@ -1096,7 +1105,7 @@ public actor G04TerminalStore {
             return
         }
         let request = LinuxLiveFilesRequest(
-            sessionID: sessionToken,
+            sessionID: record.runtimeSessionID,
             workspaceKey: projectID,
             environmentID: record.environmentID,
             generation: record.runtimeGeneration,

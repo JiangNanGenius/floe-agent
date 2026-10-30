@@ -102,6 +102,42 @@ class TerminalTabRegistryTest {
     }
 
     @Test
+    fun `a pending tab is selectable but never a live or addressable session`() {
+        val registry = TerminalTabRegistry()
+        registry.newTab("conv-1", "req-1").also { registry.adopt("req-1", "session-A") }
+        val pending = requireNotNull(registry.newTab("conv-1", "req-2"))
+        val selected = requireNotNull(registry.select("conv-1", pending.tabID))
+        assertNull("a pending tab has no native identity", selected.sessionID)
+        assertTrue(selected.selected)
+        assertTrue(selected.pending)
+        assertFalse("a pending reservation must not show the live dot", selected.isLive)
+        // Selection is truthful, yet no session is addressable for this
+        // conversation while the reservation is pending.
+        assertNull(registry.selectedSessionID("conv-1"))
+        assertEquals("session-A", registry.find("session-A")?.sessionID)
+        // Late adoption follows the selection to the real identity.
+        val adopted = requireNotNull(registry.adopt("req-2", "session-B"))
+        assertTrue(adopted.selected)
+        assertTrue(adopted.isLive)
+        assertEquals("session-B", registry.selectedSessionID("conv-1"))
+    }
+
+    @Test
+    fun `closing the selected tab never treats a pending reservation as a live survivor`() {
+        val registry = TerminalTabRegistry()
+        registry.newTab("conv-1", "req-1").also { registry.adopt("req-1", "session-A") }
+        val pending = requireNotNull(registry.newTab("conv-1", "req-2"))
+        registry.updatePhase("session-A", "running")
+        registry.select("conv-1", "session-A")
+        val survivor = registry.close("session-A")
+        // Only the pending reservation remains. It is selected as the nearest
+        // remaining tab, but it is NOT advertised as a live survivor.
+        assertEquals(pending.tabID, survivor?.tabID)
+        assertNull(survivor?.sessionID)
+        assertFalse(survivor?.isLive ?: true)
+    }
+
+    @Test
     fun `closing the selected tab moves selection to a live survivor only`() {
         val registry = TerminalTabRegistry()
         registry.newTab("conv-1", "req-1").also { registry.adopt("req-1", "session-A") }
