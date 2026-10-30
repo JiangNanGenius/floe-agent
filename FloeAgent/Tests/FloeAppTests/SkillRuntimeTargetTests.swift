@@ -411,7 +411,8 @@ struct SkillRuntimeTargetTests {
         let merged = SkillRuntimeDiscovery.merged(
             installed: inventory, nativeBundled: bundled, macOriginals: [macOriginal]
         )
-        #expect(merged.contains { $0.id == created.id && $0.digest == created.digest })
+        let installedDigest = try #require(inventory.first { $0.id == created.id }).digest
+        #expect(merged.contains { $0.id == created.id && $0.digest == installedDigest })
         #expect(merged.contains { $0.id == created.id && $0.digest == macOriginal.digest })
         #expect(merged.contains { $0.id == "floe-office" })
     }

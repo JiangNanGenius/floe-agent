@@ -5,7 +5,7 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeSecurity
-import FloeSSH
+@testable import FloeSSH
 import FloeTools
 import FloeExecution
 @testable import FloeApp

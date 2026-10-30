@@ -129,9 +129,11 @@ struct TaskExecutionBindingStoreTests: Sendable {
                                       revision: Int64) async throws {
         var copy = migration
         copy.revision = revision
+        let body = try encode(copy)
+        let id = copy.id.uuidString
         try await database.writer { db in
             try db.execute(sql: "UPDATE task_environment_migrations SET revision=?,body_json=? WHERE id=?",
-                           arguments: [revision, try encode(copy), copy.id.uuidString])
+                           arguments: [revision, body, id])
         }
     }
 
@@ -398,6 +400,7 @@ struct TaskExecutionBindingStoreTests: Sendable {
         #expect(again?.revision == 3)
         #expect(again?.cancellationRequested == true)
 
+        let durableStop = try #require(readBack)
         // Cancellation wins before the commit transaction, even though the
         // staged evidence is otherwise complete.
         await #expect(throws: FloeError.self) {
@@ -405,7 +408,6 @@ struct TaskExecutionBindingStoreTests: Sendable {
         }
         #expect(try await store.binding(conversationID: conversation)?.generation == 1)
 
-        let durableStop = try #require(readBack)
         // A stale caller that never saw the flag cannot clear it.
         var stale = durableStop
         stale.cancellationRequested = nil
