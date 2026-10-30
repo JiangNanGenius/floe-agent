@@ -358,8 +358,9 @@ final class DocumentSession {
     /// replay → diff the produced bodies against the current feature-owned bodies
     /// → build `ReplaceBody` (changed) / `AddBody` (new) / `DeleteBodies`
     /// (consumed) commands → bundle them with `edit` into one
-    /// `CompositeCommand("Edit Feature")` and `perform` it, so a single undo
-    /// reverts BOTH the parameter change and every downstream mesh.
+    /// `CompositeCommand(title)` (default "Edit Feature") and `perform` it, so
+    /// a single undo reverts BOTH the parameter change and every downstream
+    /// mesh under the operation's own title.
     ///
     /// Non-feature bodies (imported meshes, copies) are untouched — only IDs a
     /// node minted (`FeatureNode.outputBodyIDs`, reused across rebuilds) are
@@ -400,7 +401,8 @@ final class DocumentSession {
         return result.bodies.first { $0.id == bodyID }
     }
 
-    func rebuildFrom(_ id: FeatureID, edit: EditFeatureCommand? = nil) {
+    func rebuildFrom(_ id: FeatureID, edit: EditFeatureCommand? = nil,
+                     title: String = "Edit Feature") {
         // Graph with the pending parameter edit applied, so replay sees the new
         // parameters without mutating the live document yet.
         var editedGraph = document.features
@@ -408,7 +410,7 @@ final class DocumentSession {
             editedGraph.nodes[index].kind = edit.after
         }
         let leading: [DocumentCommand] = edit.map { [$0] } ?? []
-        performRebuild(editedGraph, leadingCommands: leading, title: "Edit Feature")
+        performRebuild(editedGraph, leadingCommands: leading, title: title)
     }
 
     /// Append feature nodes and rebuild in ONE undo step (the appends ride as
@@ -729,10 +731,17 @@ final class DocumentSession {
     /// rebuild everything downstream in one undo step. Builds the
     /// `EditFeatureCommand` (capturing the current kind as `before`) and defers
     /// to `rebuildFrom`. No-op if the node is gone.
-    func editFeature(_ id: FeatureID, to newKind: FeatureKind) {
+    ///
+    /// `title` is the single undo-history label for the whole edit (the
+    /// parameter swap plus every rebuilt body). Callers with a specific
+    /// operation pass e.g. "Edit Hole"; the generic editor default stays
+    /// "Edit Feature". The leading command keeps its own type title for
+    /// internal ordering; the ONE user-visible step is the composite.
+    func editFeature(_ id: FeatureID, to newKind: FeatureKind,
+                     title: String = "Edit Feature") {
         guard let node = document.features.node(id) else { return }
         let edit = EditFeatureCommand(featureID: id, before: node.kind, after: newKind)
-        rebuildFrom(id, edit: edit)
+        rebuildFrom(id, edit: edit, title: title)
     }
 
     /// Edit a pattern feature's `PatternSpec` and rebuild everything downstream in

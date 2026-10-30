@@ -387,7 +387,13 @@ final class CADHoleFeatureTests: XCTestCase {
         XCTAssertEqual(updated["ok"] as? Bool, true, "\(updated)")
         XCTAssertEqual(try volume(document, fixture.bodyID),
                        60_000 - 128 * .pi, accuracy: 1e-3)
-        XCTAssertEqual(undoTitle(document)?.contains("Hole") == true, true,
+        // ONE user-visible step for the hole edit itself: the parameter swap
+        // and every rebuilt body ride one composite, and its title names this
+        // mechanical operation instead of the editor's generic "Edit Feature".
+        // (Before the fix the composite was titled "Edit Feature", so this
+        // assertion failed even though the edit was already atomic; the
+        // volume undo/redo assertions below were passing.)
+        XCTAssertEqual(undoTitle(document), "Edit Hole",
                        "one hole update is one undo step")
 
         document.session.undo()
@@ -480,12 +486,21 @@ final class CADHoleFeatureTests: XCTestCase {
 
     func testHoleDiameterAndPositionUpdateThroughPlacementSketch() async throws {
         let document = try await makeDocument("Placement")
-        let fixture = try plate(document)
+        let plateThickness = 10.0
+        let fixture = try plate(document, thickness: plateThickness)
         let circle = try circleSketch(document, center: SIMD2(50, 30), radius: 5)
         let reply = try createHole(document, sketchID: circle.sketchID,
                                    seed: SIMD2(50, 30), target: fixture.bodyID,
                                    type: "throughAll")
         let featureID = try XCTUnwrap(reply["featureID"] as? String)
+
+        // Independent analytic removal: a through hole removes exactly
+        // pi * r^2 * plate thickness. Before the edit r = 5 (250*pi); after it
+        // r = 4 (160*pi). The earlier 200*pi fixture value was an arithmetic
+        // slip, never geometry: the kernel already measured exactly
+        // 60000 - 160*pi.
+        let initialRemoval = Double.pi * 5 * 5 * plateThickness
+        let editedRemoval = Double.pi * 4 * 4 * plateThickness
 
         let service = CADParameterService(document: document)
         let edited = service.handle(action: "updateSketchEntity", args: [
@@ -496,7 +511,7 @@ final class CADHoleFeatureTests: XCTestCase {
         ])
         XCTAssertEqual(edited["ok"] as? Bool, true, "\(edited)")
         XCTAssertEqual(try volume(document, fixture.bodyID),
-                       60_000 - 200 * .pi, accuracy: 1e-3)
+                       60_000 - editedRemoval, accuracy: 1e-3)
         let result = try XCTUnwrap(body(document, fixture.bodyID))
         let walls = cylinders(result, radius: 4)
         XCTAssertFalse(walls.isEmpty)
@@ -509,10 +524,10 @@ final class CADHoleFeatureTests: XCTestCase {
 
         document.session.undo()
         XCTAssertEqual(try volume(document, fixture.bodyID),
-                       60_000 - 250 * .pi, accuracy: 1e-3)
+                       60_000 - initialRemoval, accuracy: 1e-3)
         document.session.redo()
         XCTAssertEqual(try volume(document, fixture.bodyID),
-                       60_000 - 200 * .pi, accuracy: 1e-3)
+                       60_000 - editedRemoval, accuracy: 1e-3)
     }
 
     func testRotatedScaledTargetKeepsWorldMillimetreHoleAndAxis() async throws {
@@ -626,16 +641,23 @@ final class CADHoleFeatureTests: XCTestCase {
         XCTAssertEqual(try volume(document, fixture.bodyID),
                        60_000 - 128 * .pi, accuracy: 1e-3)
 
-        // A parameter edit whose rebuild fails is rolled back without adding
-        // an undo step and without clearing the existing history.
+        // A parameter edit is validated at the SERVICE preflight against the
+        // SAME structural bounds creation and evaluation use. A Ø4 counterbore
+        // on the Ø8 pilot is invalid regardless of rebuild, so the documented
+        // preflight contract refuses it as `bad_parameter` BEFORE any mutation
+        // (the rebuild path still owns failures only the geometry can reveal).
+        // Names here are the query kind=features vocabulary
+        // (`counterbore_diameter`, not the create-time camelCase spelling).
         let rejected = service.handle(action: "update", args: [
             "feature_id": featureID,
             "changes": ["hole_type": "counterbore",
-                        "counterboreDiameter": 4.0,
-                        "counterboreDepth": 5.0],
+                        "counterbore_diameter": 4.0,
+                        "counterbore_depth": 5.0],
         ])
         XCTAssertEqual(rejected["ok"] as? Bool, false, "\(rejected)")
-        XCTAssertEqual(rejected["error"] as? String ?? "", "rebuild_failed")
+        XCTAssertEqual(rejected["error"] as? String ?? "", "bad_parameter")
+        XCTAssertTrue((rejected["message"] as? String ?? "").contains("pilot diameter"),
+                      "the refusal must name the actual pilot relation: \(rejected)")
         XCTAssertEqual(try volume(document, fixture.bodyID),
                        60_000 - 128 * .pi, accuracy: 1e-3)
         XCTAssertFalse(document.session.undoStack.canRedo)
@@ -837,7 +859,11 @@ final class CADHoleFeatureTests: XCTestCase {
                        "an opaque read-only save must not rewrite a byte")
 
         // Malformed KNOWN semantics are distinguished from a future version:
-        // they are reported as malformed and never replayed either.
+        // they are reported as malformed and never replayed either. The raw
+        // record above deliberately carries version 2 so it opens read-only as
+        // a FUTURE definition; this corruption fixture must therefore restore
+        // the supported version, otherwise `assess` would still take the
+        // future-version opaque branch instead of validating known fields.
         var malformed = raw
         let holeIndex = try XCTUnwrap(malformed.features.firstIndex(where: { row in
             guard let object = (try? JSONSerialization.jsonObject(with: row.kind)) as? [String: Any]
@@ -848,6 +874,7 @@ final class CADHoleFeatureTests: XCTestCase {
             JSONSerialization.jsonObject(with: malformed.features[holeIndex].kind) as? [String: Any])
         var hole = try XCTUnwrap(kind["hole"] as? [String: Any])
         var spec = try XCTUnwrap(hole["spec"] as? [String: Any])
+        spec["version"] = HoleSpec.supportedVersion
         spec["kind"] = "blind"
         spec.removeValue(forKey: "depth")
         hole["spec"] = spec
@@ -861,12 +888,15 @@ final class CADHoleFeatureTests: XCTestCase {
             XCTAssertTrue(record.contains("hole"))
         }
 
-        // An unknown FUTURE kind is opaque (not malformed) at a known version.
+        // An unknown FUTURE kind is opaque (not malformed) at a KNOWN version,
+        // so the fixture must also restore the supported version here; the
+        // `threaded` kind alone is what makes it future/opaque.
         var futureKind = raw
         var kind2 = try XCTUnwrap(
             JSONSerialization.jsonObject(with: futureKind.features[holeIndex].kind) as? [String: Any])
         var hole2 = try XCTUnwrap(kind2["hole"] as? [String: Any])
         var spec2 = try XCTUnwrap(hole2["spec"] as? [String: Any])
+        spec2["version"] = HoleSpec.supportedVersion
         spec2["kind"] = "threaded"
         hole2["spec"] = spec2
         kind2["hole"] = hole2

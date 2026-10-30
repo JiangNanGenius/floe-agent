@@ -208,8 +208,12 @@ public final class CADParameterService {
             return Self.fail("missing_changes",
                              "update needs changes: an object of parameter -> value (units per the feature descriptor).")
         }
+        // Hole edits validate the pilot relation before mutation; other kinds
+        // pay no sketch-resolution cost here (the helper short-circuits).
         let edited: FeatureKind
-        switch Self.updated(node.kind, changes: changes) {
+        switch Self.updated(node.kind, changes: changes,
+                            pilotDiameter: Self.placementPilotDiameter(
+                                node, document: document.session.document)) {
         case .failure(let error):
             return Self.fail("bad_parameter", error.message)
         case .success(let kind):
@@ -222,7 +226,11 @@ public final class CADParameterService {
         if case let .pattern(_, spec) = edited {
             document.session.editPatternFeature(featureID, spec: spec)
         } else {
-            document.session.editFeature(featureID, to: edited)
+            // The undo entry a user actually sees must name the operation.
+            // "Edit Feature" stays the shared editor default; hole edits are
+            // a distinct one-step mechanical operation.
+            document.session.editFeature(featureID, to: edited,
+                                         title: Self.editTitle(for: node.kind))
         }
         if let rejection = Self.rebuildRejection(document) { return rejection }
         let afterErrors = document.session.lastEvalErrors
@@ -1820,8 +1828,18 @@ public final class CADParameterService {
         case .success(let value):
             publicValue = value
         }
+        // Validate the value the expression RESOLVES to through the SAME
+        // public-unit entry point a numeric edit uses (`updated` converts a
+        // public-degree angle to stored radians exactly once). The formula
+        // text is the actual change, so a formula that evaluates to the
+        // current value (e.g. 6 -> variable boreDepth = 6) must not be refused
+        // as a numeric no-op.
         let numericKind: FeatureKind
-        switch Self.updated(node.kind, changes: [slot.name: publicValue]) {
+        switch Self.updated(node.kind,
+                            changes: [slot.name: publicValue],
+                            requireChange: false,
+                            pilotDiameter: Self.placementPilotDiameter(
+                                node, document: document.session.document)) {
         case .failure(let error):
             return Self.fail("invalid_parameter_value", error.message)
         case .success(let kind):
@@ -1849,7 +1867,8 @@ public final class CADParameterService {
         let beforeErrors = document.session.lastEvalErrors
         let beforeChangeCount = document.session.changeCount
         let checkpoint = document.captureEditCheckpoint()
-        document.session.editFeature(node.id, to: finalKindWithValue)
+        document.session.editFeature(node.id, to: finalKindWithValue,
+                                     title: Self.editTitle(for: node.kind))
         if let failure = Self.rollbackIfRebuildBroke(
             document: document, beforeErrors: beforeErrors,
             beforeChangeCount: beforeChangeCount, checkpoint: checkpoint,
@@ -3004,12 +3023,46 @@ public final class CADParameterService {
 
     // MARK: - Editing
 
+    /// The actual pilot diameter a hole feature's placement sketch resolves to,
+    /// so a parameter edit can be validated BEFORE any mutation with the same
+    /// relation creation and evaluation use (`counterboreDiameter` /
+    /// `countersinkDiameter` must genuinely exceed the pilot). Nil when the
+    /// feature is not a hole, the sketch is gone, or the region no longer
+    /// resolves to a circle; the rebuild performs the final pilot-aware check.
+    private static func placementPilotDiameter(_ node: FeatureNode,
+                                               document: DesignDocument) -> Double? {
+        guard case let .hole(_, profile, _, _) = node.kind,
+              let sketch = document.sketches.first(where: { $0.id == profile.sketchID }),
+              let circle = HoleKit.circle(in: sketch, matching: profile) else { return nil }
+        return circle.radius * 2
+    }
+
+    /// The ONE user-visible undo title for a parameter edit. Mechanical holes
+    /// are a distinct editable operation, so their step names the operation
+    /// instead of the editor's generic "Edit Feature".
+    private static func editTitle(for kind: FeatureKind) -> String {
+        if case .hole = kind { return "Edit Hole" }
+        return "Edit Feature"
+    }
+
     /// Map the documented parameter vocabulary onto the typed FeatureKind.
     /// Unknown names are a refusal (never a silent no-op), and every numeric
     /// value is validated against the same physical bounds the interactive
     /// tools use.
+    ///
+    /// `requireChange` is the ordinary EDIT contract: at least one value must
+    /// actually differ, otherwise the reply is the explicit no-op refusal.
+    /// `feature.setExpression` passes `false` because its change is the
+    /// FORMULA text; a formula bound to the current numeric value (e.g.
+    /// `depth = 6` rebound to variable `boreDepth` = 6) must still validate and
+    /// be stored as an Expr instead of being rejected as "nothing changed".
+    /// Validation itself is identical in both modes, and `pilotDiameter`
+    /// (resolved from the placement sketch) lets a hole edit use the SAME
+    /// structural validation as creation/evaluation.
     static func updated(_ kind: FeatureKind,
-                        changes: [String: Any]) -> Result<FeatureKind, CADParameterEditError> {
+                        changes: [String: Any],
+                        requireChange: Bool = true,
+                        pilotDiameter: Double? = nil) -> Result<FeatureKind, CADParameterEditError> {
         var didChange = false
         func value(_ name: String) -> Double? {
             guard let raw = changes[name] else { return nil }
@@ -3168,6 +3221,11 @@ public final class CADParameterService {
             return .success(.shell(body: body, openFaces: openFaces,
                                    thickness: Expr(value: t, formula: nil)))
         case let .hole(target, profile, plane, spec):
+            // One field mapping for BOTH the ordinary numeric edit and the
+            // formula-binding prevalidation. The stored Expr comparison below
+            // detects a real numeric change; a formula-only rebind supplies
+            // the SAME number, so only the ordinary edit path enforces that
+            // something moved.
             let allowed = ["hole_type", "depth", "counterbore_diameter",
                            "counterbore_depth", "countersink_diameter",
                            "countersink_angle", "reversed"]
@@ -3175,7 +3233,6 @@ public final class CADParameterService {
                 return unknown(allowed)
             }
             var newSpec = spec
-            var changed = false
             if let raw = changes["hole_type"] {
                 guard let name = raw as? String,
                       let kind = HoleSpec.Kind(rawValue: name) else {
@@ -3185,62 +3242,54 @@ public final class CADParameterService {
                 if kind == .blind, newSpec.depth == nil {
                     return fail("depth", "A blind hole needs a depth; provide depth in this update.")
                 }
-                if kind != newSpec.kind { newSpec.kind = kind; changed = true }
+                newSpec.kind = kind
             }
             if let depth = value("depth") {
                 guard depth > 0, depth.isFinite else {
                     return fail("depth", "depth must be a positive finite mm value.")
                 }
-                if newSpec.depth?.value != depth || newSpec.depth?.formula != nil {
-                    newSpec.depth = Expr(value: depth, formula: nil)
-                    changed = true
-                }
+                // A numeric edit replaces a stale formula with the literal
+                // value the caller supplied (same rule as every other Expr).
+                newSpec.depth = Expr(value: depth, formula: nil)
             }
             if let diameter = value("counterbore_diameter") {
                 guard diameter > 0, diameter.isFinite else {
                     return fail("counterbore_diameter", "counterbore_diameter must be positive mm.")
                 }
-                if newSpec.counterboreDiameter?.value != diameter {
-                    newSpec.counterboreDiameter = Expr(value: diameter, formula: nil)
-                    changed = true
-                }
+                newSpec.counterboreDiameter = Expr(value: diameter, formula: nil)
             }
             if let depth = value("counterbore_depth") {
                 guard depth > 0, depth.isFinite else {
                     return fail("counterbore_depth", "counterbore_depth must be positive mm.")
                 }
-                if newSpec.counterboreDepth?.value != depth {
-                    newSpec.counterboreDepth = Expr(value: depth, formula: nil)
-                    changed = true
-                }
+                newSpec.counterboreDepth = Expr(value: depth, formula: nil)
             }
             if let diameter = value("countersink_diameter") {
                 guard diameter > 0, diameter.isFinite else {
                     return fail("countersink_diameter", "countersink_diameter must be positive mm.")
                 }
-                if newSpec.countersinkDiameter?.value != diameter {
-                    newSpec.countersinkDiameter = Expr(value: diameter, formula: nil)
-                    changed = true
-                }
+                newSpec.countersinkDiameter = Expr(value: diameter, formula: nil)
             }
             if let angle = value("countersink_angle") {
                 guard angle.isFinite, (30.0...170.0).contains(angle) else {
                     return fail("countersink_angle",
                                 "countersink_angle must be an included angle of 30…170 degrees.")
                 }
-                if newSpec.countersinkAngle?.value != angle {
-                    newSpec.countersinkAngle = Expr(value: angle, formula: nil)
-                    changed = true
-                }
+                newSpec.countersinkAngle = Expr(value: angle, formula: nil)
             }
             if let reversed = boolValue("reversed") {
-                if newSpec.reversed != reversed {
-                    newSpec.reversed = reversed
-                    changed = true
-                }
+                newSpec.reversed = reversed
             }
-            guard changed else { return unknown(allowed) }
-            if let issue = HoleKit.validationIssue(newSpec, pilotDiameter: nil) {
+            // A formula-only rebind changes `newSpec` at the caller (the stored
+            // Expr gets its formula); the numeric specs are equal there, so the
+            // caller's own expression-only check owns that decision. The
+            // ordinary edit still refuses a true no-op.
+            if requireChange, newSpec == spec {
+                return .failure(CADParameterEditError(
+                    "No supported hole parameter value changed. Structured bounds were still "
+                    + "validated; supply a different value for a numeric edit."))
+            }
+            if let issue = HoleKit.validationIssue(newSpec, pilotDiameter: pilotDiameter) {
                 return fail("hole", issue)
             }
             return .success(.hole(target: target, profile: profile, plane: plane,
