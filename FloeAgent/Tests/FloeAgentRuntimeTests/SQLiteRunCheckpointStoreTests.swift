@@ -483,7 +483,7 @@ struct SQLiteRunCheckpointStoreTests: Sendable {
             marker: "stale",
             binding: oldBinding
         )
-        let staleBody = try stale.encoded()
+        let staleBody = String(decoding: try stale.encoded(), as: UTF8.self)
         try await database.writer { db in
             try db.execute(
                 sql: """

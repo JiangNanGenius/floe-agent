@@ -322,6 +322,10 @@ struct TaskExecutionBindingStoreTests: Sendable {
         let source = try await store.bindInitial(makeBinding(conversation, target: makeTarget("remote-a")))
         var migration = TaskEnvironmentMigration(source: source, target: makeTarget("remote-b"))
         try await store.begin(migration)
+        // Compare against the actual durable timestamp, not a Date's extra
+        // sub-millisecond precision lost by the JSON milliseconds round trip.
+        migration = try #require(try await store.activeMigration(conversationID: conversation))
+
 
         var waiting = migration
         waiting.phase = .waiting
