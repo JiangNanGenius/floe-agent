@@ -166,30 +166,54 @@ public extension FloeCADDocument {
                         row["kind"] = "arc"
                         row["center"] = [center.x, center.y]
                         row["radius"] = radius
+                        row["diameterMM"] = radius * 2
                         row["startAngleRadians"] = startAngle
                         row["endAngleRadians"] = endAngle
-                        // Arc center/radius/sweep editing is a later tranche;
-                        // reporting it editable would be a false capability.
-                        row["editable"] = false
+                        row["startAngleDegrees"] = startAngle * 180 / .pi
+                        row["endAngleDegrees"] = endAngle * 180 / .pi
+                        row["sweepAngleDegrees"] = SketchEntity.arcSweep(
+                            startAngle: startAngle, endAngle: endAngle) * 180 / .pi
+                        row["editable"] = true
+                        row["update_action"] = "updateSketchEntity"
+                        row["update_fields"] = ["center", "radius", "diameter",
+                                               "start_angle_deg", "end_angle_deg",
+                                               "sweep_angle_deg"]
                     case let .ellipse(_, center, radiusX, radiusY, rotation):
                         row["kind"] = "ellipse"
                         row["center"] = [center.x, center.y]
                         row["radiusX"] = radiusX
                         row["radiusY"] = radiusY
                         row["rotationRadians"] = rotation
-                        row["editable"] = false
+                        row["rotationDegrees"] = rotation * 180 / .pi
+                        row["editable"] = true
+                        row["update_action"] = "updateSketchEntity"
+                        row["update_fields"] = ["center", "radius_x", "radius_y",
+                                               "rotation_deg"]
                     case let .polygon(_, center, radius, sides, rotation):
                         row["kind"] = "polygon"
                         row["center"] = [center.x, center.y]
                         row["radius"] = radius
                         row["sides"] = sides
                         row["rotationRadians"] = rotation
+                        row["rotationDegrees"] = rotation * 180 / .pi
+                        // Polygon remains query-only; its side/rotation edit
+                        // has not been promoted with the M01 evidence.
                         row["editable"] = false
                     case let .spline(_, points, closed):
                         row["kind"] = "spline"
                         row["closed"] = closed
                         row["pointCount"] = points.count
-                        row["editable"] = false
+                        row["points"] = points.map { [$0.x, $0.y] }
+                        row["point_identity"] = "zero-based index in points"
+                        // A legacy/degenerate spline with fewer than two fit
+                        // points cannot be meaningfully edited or solved.
+                        if points.count >= 2 {
+                            row["editable"] = true
+                            row["update_action"] = "updateSketchEntity"
+                            row["update_fields"] = ["points", "point_index", "point"]
+                        } else {
+                            row["editable"] = false
+                        }
                     }
                     row["constraint_count"] = sketch.constraints.filter {
                         $0.refs.contains(where: { $0.entityID == entity.id })
@@ -197,6 +221,10 @@ public extension FloeCADDocument {
                     row["dimension_ids"] = sketch.dimensions.filter {
                         $0.refs.contains(where: { $0.entityID == entity.id })
                     }.map { $0.id.uuidString }
+                    // Explicit one-entity deletion is discoverable from the row
+                    // itself. Reference ownership (shared refs / pattern links)
+                    // is enforced by the service, not by dropping the action.
+                    row["delete_action"] = "deleteSketchEntity"
                     return row
                 }
                 var row: [String: Any] = [

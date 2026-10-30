@@ -225,21 +225,42 @@ final class CADSketchEditTests: XCTestCase {
         XCTAssertEqual(row["radius"] as? Double ?? -1, 3, accuracy: 1e-9)
         XCTAssertEqual(row["diameterMM"] as? Double ?? -1, 6, accuracy: 1e-9)
 
-        // 4. Unsupported entity kinds report editable=false and refuse edits.
+        // 4. Arc/ellipse/spline are editable by the typed contract; polygon
+        // remains query-only until its M01 evidence is promoted.
         let arc = try addSketch(
             document, name: "Arc",
             entities: #"[{"kind":"arc","center":[0,0],"radius":4,"startAngle":0,"endAngle":1.57}]"#)
         let arcEntity = try XCTUnwrap(arc.entityIDs.first)
         row = try entityRow(document, sketchID: arc.sketchID, entityID: arcEntity)
-        XCTAssertEqual(row["editable"] as? Bool, false)
-        XCTAssertNil(row["update_action"])
+        XCTAssertEqual(row["editable"] as? Bool, true)
+        XCTAssertEqual(row["update_action"] as? String, "updateSketchEntity")
+        XCTAssertEqual(row["update_fields"] as? [String],
+                       ["center", "radius", "diameter", "start_angle_deg",
+                        "end_angle_deg", "sweep_angle_deg"])
         let arcEdit = parameters.handle(action: "updateSketchEntity", args: [
             "sketch_id": arc.sketchID,
             "entity_id": arcEntity,
             "radius": 5,
+            "expected_radius": 4,
         ])
-        XCTAssertEqual(arcEdit["ok"] as? Bool, false)
-        XCTAssertEqual(arcEdit["error"] as? String, "unsupported_entity")
+        XCTAssertEqual(arcEdit["ok"] as? Bool, true, "\(arcEdit)")
+        row = try entityRow(document, sketchID: arc.sketchID, entityID: arcEntity)
+        XCTAssertEqual(row["radius"] as? Double ?? -1, 5, accuracy: 1e-9)
+
+        let polygon = try addSketch(
+            document, name: "Polygon",
+            entities: #"[{"kind":"polygon","center":[0,0],"radius":4,"sides":6}]"#)
+        let polygonEntity = try XCTUnwrap(polygon.entityIDs.first)
+        row = try entityRow(document, sketchID: polygon.sketchID, entityID: polygonEntity)
+        XCTAssertEqual(row["editable"] as? Bool, false)
+        XCTAssertNil(row["update_action"])
+        let polygonEdit = parameters.handle(action: "updateSketchEntity", args: [
+            "sketch_id": polygon.sketchID,
+            "entity_id": polygonEntity,
+            "radius": 5,
+        ])
+        XCTAssertEqual(polygonEdit["ok"] as? Bool, false)
+        XCTAssertEqual(polygonEdit["error"] as? String, "unsupported_entity")
     }
 
     func testDrivingLengthAngleDiameterAndRectangleWidthDimensions() async throws {

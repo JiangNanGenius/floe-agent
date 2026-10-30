@@ -741,6 +741,36 @@ struct RemoveSketchEntitiesCommand: DocumentCommand {
     }
 }
 
+/// Detach one live sketch pattern link without touching the entities it
+/// owned. Instances stay as ordinary independent geometry with their stable
+/// ids, which is the explicit "Delete Constraints" behaviour; the same undo
+/// restores the link and its order.
+struct RemoveSketchPatternLinkCommand: DocumentCommand {
+    let title = "Delete Pattern Link"
+    let sketchID: SketchID
+    let link: SketchPatternLink
+    let index: Int
+
+    init(sketchID: SketchID, link: SketchPatternLink, index: Int) {
+        self.sketchID = sketchID
+        self.link = link
+        self.index = index
+    }
+
+    func apply(to document: inout DesignDocument) {
+        guard let sketchIndex = document.sketches.firstIndex(where: { $0.id == sketchID })
+        else { return }
+        document.sketches[sketchIndex].patternLinks.removeAll { $0.id == link.id }
+    }
+
+    func revert(in document: inout DesignDocument) {
+        guard let sketchIndex = document.sketches.firstIndex(where: { $0.id == sketchID })
+        else { return }
+        let at = min(max(index, 0), document.sketches[sketchIndex].patternLinks.count)
+        document.sketches[sketchIndex].patternLinks.insert(link, at: at)
+    }
+}
+
 /// Trim: replace one entity with the fragments left after deleting a span
 /// (may be empty — the whole entity goes away).
 ///

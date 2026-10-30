@@ -1758,6 +1758,16 @@ struct CadNativeEditToolTests {
 
         let cases: [(String, [String: Any])] = [
             ("updateSketchEntity", ["sketch_id": sketch, "entity_id": entity, "a": [0, 0], "b": [10, 0]]),
+            ("updateSketchEntity", ["sketch_id": sketch, "entity_id": entity,
+                                    "start_angle_deg": 30, "end_angle_deg": 120]),
+            ("updateSketchEntity", ["sketch_id": sketch, "entity_id": entity,
+                                    "radius_x": 8, "radius_y": 4, "rotation_deg": 30]),
+            ("updateSketchEntity", ["sketch_id": sketch, "entity_id": entity,
+                                    "point_index": 1, "point": [6, 28]]),
+            ("deleteSketchEntity", ["sketch_id": sketch, "entity_id": entity]),
+            ("deleteSketchEntity", ["sketch_id": sketch, "entity_id": entity,
+                                    "remove_shared_references": true,
+                                    "remove_pattern_link": true]),
             ("setSketchDimension", ["sketch_id": sketch, "entity_id": entity, "kind": "length", "value": 20]),
             ("removeSketchDimension", ["sketch_id": sketch, "dimension_id": dimension]),
             ("feature.suppress", ["feature_id": feature, "suppressed": true]),
@@ -1787,6 +1797,10 @@ struct CadNativeEditToolTests {
             #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"setSketchDimension\",\"sketch_id\":\"x\",\"entity_id\":\"y\",\"kind\":\"explode\",\"value\":1}"}"#,
             #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"feature.move\",\"feature_id\":\"x\",\"to_index\":-1}"}"#,
             #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"feature.suppress\",\"feature_id\":\"x\"}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"updateSketchEntity\",\"sketch_id\":\"x\",\"entity_id\":\"y\",\"point_index\":1}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"updateSketchEntity\",\"sketch_id\":\"x\",\"entity_id\":\"y\",\"points\":[[0,0],[1,1]],\"point_index\":1,\"point\":[2,2]}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"deleteSketchEntity\",\"sketch_id\":\"x\"}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"deleteSketchEntity\",\"sketch_id\":\"x\",\"entity_id\":\"y\",\"remove_shared_references\":1}"}"#,
         ]
         for json in invalid {
             let args = try decode(json)

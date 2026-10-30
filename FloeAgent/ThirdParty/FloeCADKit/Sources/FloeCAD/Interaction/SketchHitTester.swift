@@ -67,6 +67,9 @@ nonisolated enum SketchHitTester {
         case radiusY
         case arcStart
         case arcEnd
+        /// Zero-based fit/control point on a spline. Its identity is the
+        /// entity id plus this stable order index.
+        case splinePoint(Int)
     }
 
     struct ControlHit {
@@ -203,8 +206,21 @@ nonisolated enum SketchHitTester {
             return [(.center, center), (.radius, vertex0)]
         case let .spline(_, points, _):
             // Every FIT point is draggable — that is how a spline is edited.
-            guard let first = points.first, let last = points.last else { return [] }
-            return [(.lineStart, first), (.lineEnd, last)]
+            // The first/last keep the endpoint roles so coincident/endpoint
+            // constraints retain their existing address; interior points use
+            // their stable order index.
+            guard points.count >= 2 else { return [] }
+            var handles: [(kind: ControlKind, point: SIMD2<Double>)] = []
+            for (index, point) in points.enumerated() {
+                if index == 0 {
+                    handles.append((kind: .lineStart, point: point))
+                } else if index == points.count - 1 {
+                    handles.append((kind: .lineEnd, point: point))
+                } else {
+                    handles.append((kind: .splinePoint(index), point: point))
+                }
+            }
+            return handles
         }
     }
 
@@ -338,6 +354,21 @@ nonisolated enum SketchHitTester {
                 id: id, center: center, radius: radius,
                 sides: sides, rotation: atan2(delta.y, delta.x)
             )
+        case let (.spline(id, points, closed), .lineStart):
+            guard !points.isEmpty else { return entity }
+            var moved = points
+            moved[0] = p
+            return .spline(id: id, points: moved, closed: closed)
+        case let (.spline(id, points, closed), .lineEnd):
+            guard !points.isEmpty else { return entity }
+            var moved = points
+            moved[moved.count - 1] = p
+            return .spline(id: id, points: moved, closed: closed)
+        case let (.spline(id, points, closed), .splinePoint(index)):
+            guard points.indices.contains(index) else { return entity }
+            var moved = points
+            moved[index] = p
+            return .spline(id: id, points: moved, closed: closed)
         default:
             return entity
         }

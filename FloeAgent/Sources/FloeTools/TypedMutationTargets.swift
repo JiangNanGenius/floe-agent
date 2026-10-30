@@ -274,7 +274,8 @@ public enum TypedMutationContract {
                     // rewrite of the SAME .floecad package, so it stays pinned
                     // to this one source target (no extra review target) and
                     // unknown operations keep the unresolved behavior.
-                    guard ["update", "updateSketchEntity", "setSketchDimension", "removeSketchDimension",
+                    guard ["update", "updateSketchEntity", "deleteSketchEntity",
+                           "setSketchDimension", "removeSketchDimension",
                            "feature.suppress", "feature.delete", "feature.move",
                            "variable.create", "variable.update", "variable.delete",
                            "feature.setExpression",

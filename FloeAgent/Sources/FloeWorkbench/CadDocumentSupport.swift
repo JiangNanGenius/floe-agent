@@ -245,7 +245,7 @@ public enum CadNativeEditActions {
         "libraryImport", "libraryList", "undo", "redo",
     ]
     public static let parameters: Set<String> = [
-        "list", "update", "updateSketchEntity",
+        "list", "update", "updateSketchEntity", "deleteSketchEntity",
         "setSketchDimension", "removeSketchDimension",
         "feature.suppress", "feature.delete", "feature.move",
         "variable.create", "variable.update", "variable.delete",

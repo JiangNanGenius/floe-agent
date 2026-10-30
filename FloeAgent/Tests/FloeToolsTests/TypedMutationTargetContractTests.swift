@@ -407,7 +407,8 @@ struct TypedMutationTargetContractTests {
         let root = try makeTree()
         defer { try? FileManager.default.removeItem(at: root) }
         let target = root.appendingPathComponent("part.floecad").path
-        for operation in ["update", "updateSketchEntity", "setSketchDimension", "removeSketchDimension",
+        for operation in ["update", "updateSketchEntity", "deleteSketchEntity",
+                          "setSketchDimension", "removeSketchDimension",
                           "feature.suppress", "feature.delete", "feature.move", "undo", "redo"] {
             let payload = String(decoding: try JSONSerialization.data(withJSONObject: ["action": operation]),
                                  as: UTF8.self)

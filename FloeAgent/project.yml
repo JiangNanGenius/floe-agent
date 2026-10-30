@@ -961,6 +961,7 @@ targets:
       - path: Tests/FloeAppTests/NativeCADDocumentCreationTests.swift
       - path: Tests/FloeAppTests/NativeCADCanvasCreationTests.swift
       - path: Tests/FloeAppTests/NativeCADCanvasBackupTests.swift
+      - path: Tests/FloeAppTests/NativeCADPartReferenceHostTests.swift
       - path: Tests/FloeAppTests/EngineeringWebSessionReparentTests.swift
       - path: Tests/FloeAppTests/EngineeringObservationServiceTests.swift
       - path: Tests/FloeAppTests/NativeCADCapabilityDiscoveryTests.swift
@@ -1220,6 +1221,8 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialCoreTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHoleWorkflowTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchEditTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyHierarchyReferenceTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchEntityEditingTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADParameterCorrectnessTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADCapabilitySurfaceTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADStoredIntegrityTests.swift

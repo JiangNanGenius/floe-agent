@@ -16,6 +16,7 @@
 //
 
 import Foundation
+import CoreFoundation
 import simd
 
 nonisolated struct CADParameterEditError: Error, Equatable {
@@ -31,7 +32,7 @@ public final class CADParameterService {
     /// executable instead of a model-facing suggestion that silently has no
     /// implementation.
     public static let actions: [String] = [
-        "list", "update", "updateSketchEntity",
+        "list", "update", "updateSketchEntity", "deleteSketchEntity",
         "setSketchDimension", "removeSketchDimension",
         "feature.suppress", "feature.delete", "feature.move",
         "variable.create", "variable.update", "variable.delete",
@@ -39,8 +40,12 @@ public final class CADParameterService {
         "undo", "redo",
     ] + CADDatumService.actions
 
-    /// Sketch-entity kinds with a real typed geometry edit.
-    public static let editableSketchEntityKinds: Set<String> = ["line", "rect", "circle"]
+    /// Sketch-entity kinds with a real typed geometry edit. Polygon remains
+    /// query-only until its side/rotation semantics are promoted with the same
+    /// constraint evidence as the other kind-specific edits.
+    public static let editableSketchEntityKinds: Set<String> = [
+        "line", "rect", "circle", "arc", "ellipse", "spline",
+    ]
 
     /// Driving dimension kinds accepted by `setSketchDimension`. `length` is
     /// the model-facing name for a line's point-to-point `.distance`.
@@ -64,6 +69,7 @@ public final class CADParameterService {
         case "list": return list(args)
         case "update": return update(args)
         case "updateSketchEntity": return updateSketchEntity(args)
+        case "deleteSketchEntity": return deleteSketchEntity(args)
         case "setSketchDimension": return setSketchDimension(args)
         case "removeSketchDimension": return removeSketchDimension(args)
         case "feature.suppress": return featureSuppress(args)
@@ -119,19 +125,44 @@ public final class CADParameterService {
             // from query kind=sketches (rows[].entityRows).
             "sketch_entity_update": [
                 "action": "updateSketchEntity",
-                "supported_entity_kinds": ["line", "rect", "circle"],
+                "supported_entity_kinds": ["line", "rect", "circle", "arc", "ellipse", "spline"],
                 "fields": [
                     "sketch_id", "entity_id",
                     "line: a, b (alias start, end) + expected_a, expected_b",
                     "rect: min, max, center, width, height + expected_min, expected_max, expected_width, expected_height",
                     "circle: center, radius, diameter + expected_radius, expected_diameter, expected_center",
+                    "arc: center, radius, diameter, start_angle_deg, end_angle_deg, sweep_angle_deg",
+                    "arc fences: expected_center, expected_radius, expected_start_angle_deg, expected_end_angle_deg, expected_sweep_angle_deg",
+                    "ellipse: center, radius_x, radius_y, rotation_deg + expected_center, expected_radius_x, expected_radius_y, expected_rotation_deg",
+                    "spline: points (all fit points) or point_index (0-based) + point; expected_points / expected_point",
                 ],
                 "unit": "mm",
-                "constraints": "A direct geometry edit is REFUSED with constraint_conflict when it "
-                    + "would leave an existing driving dimension/constraint unsatisfied. Circle "
-                    + "radius/diameter and rectangle width/height update their matching driving "
-                    + "dimensions in the same undo step; use setSketchDimension for other values.",
+                "angle_unit": "degrees (stored radians are converted once)",
+                "constraints": "A direct geometry edit is REFUSED with constraint_conflict only when "
+                    + "the saved dimensions/constraints cannot be satisfied with the requested fields "
+                    + "held. A satisfiable edit re-solves with the existing solver and commits every "
+                    + "RELATED geometry move in the same undo step; unrelated entities, ids and "
+                    + "constraints stay untouched. Circle/arc radius/diameter, arc sweep and rectangle "
+                    + "width/height update their matching driving dimensions in the same undo step; use "
+                    + "setSketchDimension for other values.",
+                "locked": "A .fixed (Lock) constraint on the edited entity refuses the edit with "
+                    + "locked_entity because a fixed solver variable carries no target residual.",
+                "unsupported_references": "If a constraint/dimension references geometry the solver "
+                    + "cannot validate for this kind (for example tangent/equalRadius on an ellipse), "
+                    + "the edit is refused with dependent_reference and the exact ids instead of "
+                    + "dropping or silently ignoring the relationship.",
                 "discover": "query kind=sketches -> rows[].entityRows[].update_fields",
+            ],
+            "sketch_entity_delete": [
+                "action": "deleteSketchEntity",
+                "fields": ["sketch_id", "entity_id"],
+                "semantics": "Deletes exactly one entity by stable id in one undo step. Constraints/"
+                    + "dimensions whose refs are ALL this entity are removed with it and listed. A "
+                    + "reference that also anchors another entity refuses with shared_references "
+                    + "unless remove_shared_references:true is explicit. A pattern link that owns "
+                    + "the entity refuses unless remove_pattern_link:true; instances then stay as "
+                    + "ordinary entities and keep their ids. Nothing else is cascaded.",
+                "discover": "query kind=sketches -> rows[].entityRows[].id",
             ],
             "sketch_dimension_update": [
                 "action": "setSketchDimension",
@@ -283,6 +314,10 @@ public final class CADParameterService {
     /// internally consistent), the applied fields and the reply row.
     private struct SketchEntityEditPlan {
         var after: SketchEntity
+        /// Solver slots the caller explicitly asked for. They are held during
+        /// the connected solve; the rest of the primitive may follow related
+        /// constraints like any other related geometry.
+        var heldRefs: [ConstraintRef]
         var dimensionUpdates: [(before: SketchDimension, after: SketchDimension)]
         var applied: [String: Any]
         var response: [String: Any]
@@ -295,18 +330,29 @@ public final class CADParameterService {
     /// Supported typed edits:
     ///   * line: `a`/`b` endpoints (aliases `start`/`end`);
     ///   * rect: `min`/`max` bounds, or `center` + `width`/`height`;
-    ///   * circle: `center`, `radius` and/or `diameter`.
+    ///   * circle: `center`, `radius` and/or `diameter`;
+    ///   * arc: `center`, `radius`/`diameter`, and `start_angle_deg`,
+    ///     `end_angle_deg` and/or `sweep_angle_deg`;
+    ///   * ellipse: `center`, `radius_x`, `radius_y` and/or `rotation_deg`;
+    ///   * spline: all fit `points`, or `point_index` (0-based) + `point`.
     ///
-    /// The edit is REFUSED (`constraint_conflict`) when it would leave an
-    /// existing driving dimension or geometric constraint unsatisfied. A
-    /// matching single-entity driving value — a circle's radius/diameter, a
-    /// rectangle's width/height, a line's own length/horizontal/vertical —
-    /// is updated in the same undo step instead of becoming stale. Other
-    /// driving values are changed through `setSketchDimension`.
+    /// The edit is REFUSED (`constraint_conflict`) only when the saved driving
+    /// dimensions and geometric constraints cannot be satisfied WITH the
+    /// caller's requested fields held. A satisfiable edit re-solves through
+    /// the existing sketch solver and commits every RELATED geometry move in
+    /// the SAME undo step; unrelated entities, their ids and their constraints
+    /// stay untouched. A matching single-entity driving value — a circle/arc
+    /// radius or diameter, an arc sweep angle, a rectangle's width/height, a
+    /// line's own length/horizontal/vertical — is updated in the same undo step
+    /// instead of becoming stale. Other driving values are changed through
+    /// `setSketchDimension`.
     ///
     /// Optional optimistic fences (`expected_radius`, `expected_center`,
     /// `expected_a`/`expected_b`, `expected_min`/`expected_max`,
-    /// `expected_width`/`expected_height`) compare against the current
+    /// `expected_width`/`expected_height`, `expected_start_angle_deg`,
+    /// `expected_end_angle_deg`, `expected_sweep_angle_deg`,
+    /// `expected_radius_x`, `expected_radius_y`, `expected_rotation_deg`,
+    /// `expected_points`, `expected_point`) compare against the current
     /// geometry and refuse a concurrent edit instead of overwriting it. The
     /// whole edit is checkpointed, so a rebuild that introduces a new
     /// FeatureError restores the document and BOTH undo/redo histories.
@@ -321,6 +367,14 @@ public final class CADParameterService {
             "radius", "diameter", "expected_radius", "current_radius",
             "expected_diameter", "expected_center", "expected_a", "expected_b",
             "expected_min", "expected_max", "expected_width", "expected_height",
+            "start_angle_deg", "start_angle", "startAngleDegrees",
+            "end_angle_deg", "end_angle", "endAngleDegrees",
+            "sweep_angle_deg", "sweep_angle", "sweepAngleDegrees",
+            "expected_start_angle_deg", "expected_end_angle_deg",
+            "expected_sweep_angle_deg",
+            "radius_x", "radius_y", "rotation_deg", "rotation",
+            "expected_radius_x", "expected_radius_y", "expected_rotation_deg",
+            "points", "point", "point_index", "expected_point", "expected_points",
         ]
         let unknown = args.keys.filter { !allowed.contains($0) }.sorted()
         guard unknown.isEmpty else {
@@ -352,6 +406,10 @@ public final class CADParameterService {
                              "Sketch '\(sketch.name)' has no entity \(rawEntity). Query kind=sketches first.")
         }
         let before = sketch.entities[entityIndex]
+        if let failure = Self.editReferenceFailure(
+            entity: before, entityID: entityUUID, sketch: sketch) {
+            return Self.fail(failure.code, failure.message)
+        }
         let plan: SketchEntityEditPlan
         switch before {
         case let .line(_, a, b):
@@ -372,22 +430,47 @@ public final class CADParameterService {
             case .success(let value): plan = value
             case .failure(let error): return Self.fail(error.code, error.message)
             }
+        case let .arc(_, center, radius, startAngle, endAngle):
+            switch Self.arcEditPlan(
+                args: args, id: entityUUID, center: center, radius: radius,
+                startAngle: startAngle, endAngle: endAngle,
+                dimensions: sketch.dimensions) {
+            case .success(let value): plan = value
+            case .failure(let error): return Self.fail(error.code, error.message)
+            }
+        case let .ellipse(_, center, radiusX, radiusY, rotation):
+            switch Self.ellipseEditPlan(
+                args: args, id: entityUUID, center: center,
+                radiusX: radiusX, radiusY: radiusY, rotation: rotation) {
+            case .success(let value): plan = value
+            case .failure(let error): return Self.fail(error.code, error.message)
+            }
+        case let .spline(_, points, closed):
+            switch Self.splineEditPlan(
+                args: args, id: entityUUID, points: points, closed: closed) {
+            case .success(let value): plan = value
+            case .failure(let error): return Self.fail(error.code, error.message)
+            }
         default:
             return Self.fail(
                 "unsupported_entity",
-                "updateSketchEntity edits line, rect and circle entities; entity \(rawEntity) "
-                    + "is \(Self.entityKindName(before)). Its editable flags are false in "
-                    + "query kind=sketches. Change unsupported geometry with the sketch tools.")
+                "updateSketchEntity edits line, rect, circle, arc, ellipse and spline entities; entity "
+                    + "\(rawEntity) is \(Self.entityKindName(before)). Its editable flag is false in "
+                    + "query kind=sketches. Change polygon geometry with the sketch tools.")
         }
 
         if plan.after == before && plan.dimensionUpdates.isEmpty {
             return Self.fail("no_change",
                              "The \(Self.entityKindName(before)) edit did not change any geometry.")
         }
-        // Keep the STORED sketch consistent before the rebuild: apply the new
-        // entity plus every matching driving value to a preview, and refuse a
-        // change the saved constraints cannot satisfy. This gate is the same
-        // `residualNorm` the interactive sketch tool uses before writing.
+        // Apply the new entity plus every matching driving value to a preview,
+        // then solve the saved system with the REQUESTED fields held. This
+        // follows the ordinary parametric path (the interactive editor and
+        // `setSketchDimension`): related geometry moves as the constraints
+        // require, unrelated entities keep their ids/geometry, and only a
+        // genuinely unsatisfiable system is refused. The transient anchor is
+        // never stored; it covers only the fields the caller named on the
+        // edited primitive, never every entity and never unrequested fields.
         var proposed = sketch
         proposed.entities[entityIndex] = plan.after
         for (beforeDimension, afterDimension) in plan.dimensionUpdates {
@@ -397,21 +480,30 @@ public final class CADParameterService {
             }
             proposed.dimensions[index] = afterDimension
         }
-        if SketchSolverBridge.residualNorm(proposed) > Self.overConstraintTolerance {
-            return Self.fail(
-                "constraint_conflict",
-                "The \(Self.entityKindName(before)) edit would violate an existing sketch constraint or "
-                    + "driving dimension. Nothing was changed. Read query kind=constraints and either keep "
-                    + "the constrained value or change the driving value with setSketchDimension.")
+        let entitiesToCommit: [SketchEntity]
+        switch Self.solveEditedSketch(proposed, edited: plan.after, heldRefs: plan.heldRefs) {
+        case .success(let value): entitiesToCommit = value
+        case .failure(let error): return Self.fail(error.code, error.message)
         }
+        let movedEntities = zip(sketch.entities, entitiesToCommit).compactMap { before, after in
+            before == after ? nil : (before: before, after: after)
+        }
+        guard !movedEntities.isEmpty || !plan.dimensionUpdates.isEmpty else {
+            return Self.fail("no_change",
+                             "The \(Self.entityKindName(before)) edit produced no document change.")
+        }
+        let solvedEdited = entitiesToCommit.first(where: { $0.id == entityUUID }) ?? plan.after
+        let actual = Self.applyingSolvedGeometry(solvedEdited, to: plan)
 
         let beforeErrors = document.session.lastEvalErrors
         let beforeChangeCount = document.session.changeCount
         let checkpoint = document.captureEditCheckpoint()
-        var commands: [DocumentCommand] = [
-            UpdateSketchEntityCommand(title: plan.title, sketchID: sketchID,
-                                      before: before, after: plan.after)
-        ]
+        var commands: [DocumentCommand] = []
+        for change in movedEntities {
+            commands.append(UpdateSketchEntityCommand(
+                title: plan.title, sketchID: sketchID,
+                before: change.before, after: change.after))
+        }
         for (beforeDimension, afterDimension) in plan.dimensionUpdates {
             commands.append(UpdateSketchDimensionCommand(
                 sketchID: sketchID, before: beforeDimension, after: afterDimension))
@@ -436,9 +528,188 @@ public final class CADParameterService {
             "action": "updateSketchEntity",
             "mutated": true,
             "sketch": ["id": sketchID.raw.uuidString, "name": sketch.name],
-            "entity": plan.response,
-            "applied_changes": plan.applied,
+            "entity": actual.response,
+            "applied_changes": actual.applied,
             "updated_dimension_ids": plan.dimensionUpdates.map { $0.after.id.uuidString },
+            "dependent_feature_ids": dependents,
+            "revision": document.revision,
+            "change_count": document.session.changeCount,
+            "can_undo": document.session.undoStack.canUndo,
+            "can_redo": document.session.undoStack.canRedo,
+        ])
+    }
+
+    // MARK: - Sketch entity delete
+
+    /// Delete exactly ONE entity by stable id, with explicit reference
+    /// ownership rather than a broad cascade:
+    ///   * a constraint/dimension that references ONLY this entity is owned by
+    ///     it and is removed in the SAME undo step (and reported);
+    ///   * a reference that also anchors another entity is REFUSED with
+    ///     `shared_references` unless the caller passes
+    ///     `remove_shared_references:true` explicitly;
+    ///   * a live pattern link owning the entity is refused with
+    ///     `pattern_link_reference` unless `remove_pattern_link:true`; then
+    ///     only the link is removed, and every instance/seed keeps its id.
+    /// Unaffected entities, their ids and unrelated constraints are untouched.
+    /// The same checkpoint/rebuild rollback as an edit applies.
+    private func deleteSketchEntity(_ args: [String: Any]) -> [String: Any] {
+        let allowed: Set<String> = [
+            "action", "revision", "expected_revision",
+            "sketch_id", "sketchID", "sketch",
+            "entity_id", "entityID", "id",
+            "remove_shared_references", "remove_pattern_link",
+        ]
+        let unknown = args.keys.filter { !allowed.contains($0) }.sorted()
+        guard unknown.isEmpty else {
+            return Self.fail("unknown_argument",
+                             "Unknown argument(s) \(unknown.joined(separator: ", ")). Allowed: "
+                                + allowed.sorted().joined(separator: ", ") + ".")
+        }
+        func optIn(_ key: String) -> Bool? {
+            guard let raw = args[key] else { return false }
+            // NSNumber bridges 1 to Bool; require the JSON/CF boolean type so
+            // a numeric flag cannot silently opt into a reference cascade.
+            guard let number = raw as? NSNumber,
+                  CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+            return number.boolValue
+        }
+        guard let removeShared = optIn("remove_shared_references") else {
+            return Self.fail("bad_boolean", "remove_shared_references must be true or false.")
+        }
+        guard let removePatternLink = optIn("remove_pattern_link") else {
+            return Self.fail("bad_boolean", "remove_pattern_link must be true or false.")
+        }
+        guard let rawSketch = CADMaterialService.string(args["sketch_id"])
+            ?? CADMaterialService.string(args["sketchID"])
+            ?? CADMaterialService.string(args["sketch"]),
+              let sketchUUID = UUID(uuidString: rawSketch) else {
+            return Self.fail("missing_sketch",
+                             "deleteSketchEntity needs sketch_id (the UUID query kind=sketches returned).")
+        }
+        let sketchID = SketchID(raw: sketchUUID)
+        guard let sketch = document.session.document.sketches.first(where: { $0.id == sketchID }) else {
+            return Self.fail("unknown_sketch",
+                             "No sketch \(rawSketch) in this document. Query kind=sketches first.")
+        }
+        guard let rawEntity = CADMaterialService.string(args["entity_id"])
+            ?? CADMaterialService.string(args["entityID"])
+            ?? CADMaterialService.string(args["id"]),
+              let entityUUID = UUID(uuidString: rawEntity) else {
+            return Self.fail("missing_entity",
+                             "deleteSketchEntity needs entity_id (the entity id query kind=sketches returned).")
+        }
+        guard let entity = sketch.entities.first(where: { $0.id == entityUUID }) else {
+            return Self.fail("unknown_entity",
+                             "Sketch '\(sketch.name)' has no entity \(rawEntity). Query kind=sketches first.")
+        }
+        let kind = Self.entityKindName(entity)
+        let constraints = sketch.constraints.filter {
+            $0.refs.contains { $0.entityID == entityUUID }
+        }
+        let dimensions = sketch.dimensions.filter {
+            $0.refs.contains { $0.entityID == entityUUID }
+        }
+        func otherEntities(_ refs: [ConstraintRef]) -> [String] {
+            Set(refs.compactMap {
+                $0.entityID == entityUUID ? nil : $0.entityID.uuidString
+            }).sorted()
+        }
+        let sharedConstraints = constraints.filter {
+            $0.refs.contains { $0.entityID != entityUUID }
+        }
+        let sharedDimensions = dimensions.filter {
+            $0.refs.contains { $0.entityID != entityUUID }
+        }
+        if (!sharedConstraints.isEmpty || !sharedDimensions.isEmpty) && !removeShared {
+            var rows: [[String: Any]] = []
+            for constraint in sharedConstraints {
+                let refs = constraint.refs.filter { $0.entityID == entityUUID }
+                rows.append([
+                    "type": "constraint", "id": constraint.id.uuidString,
+                    "kind": constraint.kind.rawValue,
+                    "roles": refs.map { $0.role.rawValue },
+                    "also_anchors": otherEntities(constraint.refs),
+                ])
+            }
+            for dimension in sharedDimensions {
+                let refs = dimension.refs.filter { $0.entityID == entityUUID }
+                rows.append([
+                    "type": "dimension", "id": dimension.id.uuidString,
+                    "kind": dimension.kind.rawValue,
+                    "roles": refs.map { $0.role.rawValue },
+                    "also_anchors": otherEntities(dimension.refs),
+                ])
+            }
+            return Self.fail(
+                "shared_references",
+                "Deleting this \(kind) would also remove references that anchor other entities: "
+                    + rows.map { "\($0["type"] as? String ?? "ref") \($0["id"] as? String ?? "")"
+                        + "(\($0["kind"] as? String ?? ""))" }.joined(separator: ", ")
+                    + ". Nothing was changed. Delete or rebind those references first, or pass "
+                    + "remove_shared_references:true to remove exactly them with this entity.",
+                extra: ["references": rows])
+        }
+
+        let patternLinkIndex = sketch.patternLinks.firstIndex {
+            $0.seedIDs.contains(entityUUID) || $0.allInstanceIDs.contains(entityUUID)
+        }
+        if let patternLinkIndex, !removePatternLink {
+            let link = sketch.patternLinks[patternLinkIndex]
+            return Self.fail(
+                "pattern_link_reference",
+                "This \(kind) belongs to pattern link \(link.id.uuidString) (seeds "
+                    + link.seedIDs.map(\.uuidString).joined(separator: ", ")
+                    + "). Nothing was changed. Pass remove_pattern_link:true to detach the link; "
+                    + "all seeds/instances then stay as ordinary entities with their ids.",
+                extra: ["pattern_link_id": link.id.uuidString])
+        }
+
+        let beforeErrors = document.session.lastEvalErrors
+        let beforeChangeCount = document.session.changeCount
+        let checkpoint = document.captureEditCheckpoint()
+        let title = "Delete \(kind.capitalized)"
+        var commands: [DocumentCommand] = [
+            RemoveSketchEntitiesCommand(ids: [entityUUID], sketch: sketch)
+        ]
+        var removedPatternLink: String?
+        if let patternLinkIndex, removePatternLink {
+            let link = sketch.patternLinks[patternLinkIndex]
+            removedPatternLink = link.id.uuidString
+            commands.append(RemoveSketchPatternLinkCommand(
+                sketchID: sketchID, link: link, index: patternLinkIndex))
+        }
+        document.session.performWithSketchRebuild(
+            commands.count == 1 ? commands[0]
+                : CompositeCommand(title: title, commands: commands),
+            sketchID: sketchID)
+        if let failure = Self.rollbackIfRebuildBroke(
+            document: document, beforeErrors: beforeErrors,
+            beforeChangeCount: beforeChangeCount, checkpoint: checkpoint,
+            message: "Deleting the sketch entity broke the rebuild; it was rolled back (nothing was kept).") {
+            return failure
+        }
+        guard document.session.changeCount != beforeChangeCount else {
+            return Self.fail("no_change", "Deleting the sketch entity produced no document change.")
+        }
+        let dependents = document.session.document.features.nodes
+            .filter { $0.referencedSketchIDs.contains(sketchID) }
+            .map { $0.id.raw.uuidString }
+        return Self.ok([
+            "action": "deleteSketchEntity",
+            "mutated": true,
+            "sketch": ["id": sketchID.raw.uuidString, "name": sketch.name],
+            "deleted_entity": ["id": entityUUID.uuidString, "kind": kind],
+            "removed_reference_ids": (constraints.map(\.id) + dimensions.map(\.id))
+                .map(\.uuidString).sorted(),
+            "removed_dimensions": dimensions.map {
+                ["id": $0.id.uuidString, "kind": $0.kind.rawValue]
+            },
+            "removed_constraints": constraints.map {
+                ["id": $0.id.uuidString, "kind": $0.kind.rawValue]
+            },
+            "shared_references_removed": !sharedConstraints.isEmpty || !sharedDimensions.isEmpty,
+            "pattern_link_removed": removedPatternLink.map { $0 as Any } ?? NSNull(),
             "dependent_feature_ids": dependents,
             "revision": document.revision,
             "change_count": document.session.changeCount,
@@ -464,6 +735,98 @@ public final class CADParameterService {
         case .polygon: "polygon"
         case .spline: "spline"
         }
+    }
+
+    /// Refuse an edit whose saved relationships cannot actually be validated
+    /// by the solver for this entity kind. A `.fixed` (Lock) is a target-less
+    /// solver fence: rebuilding from the PROPOSED geometry would silently
+    /// re-lock the new values, so it must be an explicit refusal. Other
+    /// relationships are refused only when their reference role/kind is
+    /// unsupported for the edited primitive (for example a tangent on an
+    /// ellipse, or any reference to a closed spline) — never silently dropped.
+    private static func editReferenceFailure(
+        entity: SketchEntity, entityID: UUID, sketch: Sketch
+    ) -> SketchEditFailure? {
+        func references(_ refs: [ConstraintRef]) -> [ConstraintRef] {
+            refs.filter { $0.entityID == entityID }
+        }
+        let constraints = sketch.constraints.filter { !references($0.refs).isEmpty }
+        let dimensions = sketch.dimensions.filter { !references($0.refs).isEmpty }
+        let kind = entityKindName(entity)
+
+        let fixed = constraints.filter { $0.kind == .fixed }
+        if !fixed.isEmpty {
+            return SketchEditFailure(
+                code: "locked_entity",
+                message: "The \(kind) \(entityID.uuidString) is locked by fixed constraint(s) "
+                    + fixed.map(\.id.uuidString).joined(separator: ", ")
+                    + ". Nothing was changed. Remove the Lock explicitly in the sketch, then retry.")
+        }
+
+        func detail(_ id: UUID, _ name: String, _ refs: [ConstraintRef],
+                    in allRefs: [ConstraintRef]) -> String {
+            let others = Set(allRefs.compactMap { $0.entityID == entityID ? nil : $0.entityID.uuidString }).sorted()
+            let roles = Set(refs.map { $0.role.rawValue }).sorted().joined(separator: "+")
+            var text = "\(id.uuidString)(\(name), refs=\(roles)"
+            if !others.isEmpty { text += ", also anchors " + others.joined(separator: ",") }
+            return text + ")"
+        }
+        var unsupported: [String] = []
+        for constraint in constraints {
+            let refs = references(constraint.refs)
+            let rejected: Bool
+            switch entity {
+            case .arc:
+                rejected = refs.contains { $0.role == .endpointA || $0.role == .endpointB }
+            case .ellipse:
+                // A point-based relationship on the centre is validated by the
+                // production solve. Tangency/equal-radius needs ellipse radius
+                // variables the solver does not have, so those are ambiguous.
+                rejected = (refs.contains { $0.role != .center }
+                            && constraint.kind != .fixed)
+                    || constraint.kind == .tangent || constraint.kind == .equalRadius
+            case .spline(_, _, let closed):
+                rejected = closed || refs.contains {
+                    $0.role != .endpointA && $0.role != .endpointB
+                }
+            default:
+                rejected = false
+            }
+            if rejected {
+                unsupported.append(detail(constraint.id, constraint.kind.rawValue,
+                                          refs, in: constraint.refs))
+            }
+        }
+        for dimension in dimensions {
+            let refs = references(dimension.refs)
+            let rejected: Bool
+            switch entity {
+            case .arc:
+                rejected = refs.contains { $0.role == .endpointA || $0.role == .endpointB }
+            case .ellipse:
+                // Only radius/diameter dimensions assume an ellipse radius
+                // scalar; point/distance dimensions are checked by the
+                // production solve like every other reference.
+                rejected = dimension.kind == .radius || dimension.kind == .diameter
+            case .spline(_, _, let closed):
+                rejected = closed || refs.contains {
+                    $0.role != .endpointA && $0.role != .endpointB
+                }
+            default:
+                rejected = false
+            }
+            if rejected {
+                unsupported.append(detail(dimension.id, dimension.kind.rawValue,
+                                          refs, in: dimension.refs))
+            }
+        }
+        guard !unsupported.isEmpty else { return nil }
+        return SketchEditFailure(
+            code: "dependent_reference",
+            message: "The \(kind) edit is refused because these saved relationships use geometry "
+                + "the constraint solver cannot validate for this kind: "
+                + unsupported.joined(separator: "; ")
+                + ". Nothing was changed. Remove or rebind them explicitly, then retry.")
     }
 
     private static let entityEditCommonKeys: Set<String> = [
@@ -502,6 +865,71 @@ public final class CADParameterService {
 
     private static func samePoint(_ left: SIMD2<Double>, _ right: SIMD2<Double>) -> Bool {
         abs(left.x - right.x) <= 1e-6 && abs(left.y - right.y) <= 1e-6
+    }
+
+    private static func samePoints(_ left: [SIMD2<Double>], _ right: [SIMD2<Double>]) -> Bool {
+        left.count == right.count && zip(left, right).allSatisfy { samePoint($0, $1) }
+    }
+
+    /// The model-facing angle unit for every typed edit is degrees. Sketch
+    /// storage keeps radians; convert exactly once at this boundary.
+    private static func radians(fromDegrees value: Double) -> Double {
+        value * Double.pi / 180
+    }
+
+    private static func degrees(fromRadians value: Double) -> Double {
+        value * 180 / Double.pi
+    }
+
+    /// Canonical signed angle in (-π, π]. A 350° input becomes -10°, so the
+    /// stored start ray is canonical while the original sweep is preserved.
+    private static func normalizedRadians(_ value: Double) -> Double {
+        var angle = value.truncatingRemainder(dividingBy: 2 * .pi)
+        if angle <= -Double.pi { angle += 2 * .pi }
+        if angle > Double.pi { angle -= 2 * .pi }
+        return angle
+    }
+
+    private static func angleArgument(
+        _ args: [String: Any], keys: [String]
+    ) -> Result<(key: String, value: Double)?, SketchEditFailure> {
+        for key in keys where args[key] != nil {
+            guard let value = CADMaterialService.number(args[key]), value.isFinite else {
+                return .failure(SketchEditFailure(
+                    code: "bad_angle",
+                    message: "\(key) must be a finite angle in degrees."))
+            }
+            return .success((key, value))
+        }
+        return .success(nil)
+    }
+
+    private static func integerValue(_ raw: Any?, code: String, label: String) -> Result<Int, SketchEditFailure> {
+        guard let number = CADMaterialService.number(raw), number.isFinite,
+              number == number.rounded(), number >= 0, number < Double(Int.max) else {
+            return .failure(SketchEditFailure(
+                code: code,
+                message: "\(label) must be a non-negative whole number."))
+        }
+        return .success(Int(number))
+    }
+
+    private static func angularDifference(_ leftDegrees: Double, _ rightDegrees: Double) -> Double {
+        abs(degrees(fromRadians: normalizedRadians(
+            radians(fromDegrees: leftDegrees) - radians(fromDegrees: rightDegrees))))
+    }
+
+    /// Parse a list of plane points from either [[x, y], ...] or
+    /// [{x, y}, ...]. Rejects non-finite values instead of storing NaN.
+    private static func pointList(_ value: Any?) -> [SIMD2<Double>]? {
+        guard let rows = value as? [Any] else { return nil }
+        var points: [SIMD2<Double>] = []
+        points.reserveCapacity(rows.count)
+        for row in rows {
+            guard let point = point2(row), point.x.isFinite, point.y.isFinite else { return nil }
+            points.append(point)
+        }
+        return points
     }
 
     private static func firstPoint(_ args: [String: Any], keys: [String]) -> SIMD2<Double>? {
@@ -588,8 +1016,12 @@ public final class CADParameterService {
             after.displayExpression = nil
             if after != dimension { updates.append((dimension, after)) }
         }
+        var heldRefs: [ConstraintRef] = []
+        if touchedA { heldRefs.append(ConstraintRef(entityID: id, role: .endpointA)) }
+        if touchedB { heldRefs.append(ConstraintRef(entityID: id, role: .endpointB)) }
         return .success(SketchEntityEditPlan(
             after: .line(id: id, a: newA, b: newB),
+            heldRefs: heldRefs,
             dimensionUpdates: updates,
             applied: ["a": [newA.x, newA.y], "b": [newB.x, newB.y]],
             response: [
@@ -712,8 +1144,23 @@ public final class CADParameterService {
             if after != dimension { updates.append((dimension, after)) }
         }
         let center = (normalizedLow + normalizedHigh) / 2
+        var heldRefs: [ConstraintRef] = []
+        if centerValue != nil || widthValue != nil || heightValue != nil {
+            // A framed edit fixes both bounds; a min/max edit fixes only the
+            // side(s) the caller named and leaves the other side solvable.
+            heldRefs = [ConstraintRef(entityID: id, role: .endpointA),
+                        ConstraintRef(entityID: id, role: .endpointB)]
+        } else {
+            if minValue != nil {
+                heldRefs.append(ConstraintRef(entityID: id, role: .endpointA))
+            }
+            if maxValue != nil {
+                heldRefs.append(ConstraintRef(entityID: id, role: .endpointB))
+            }
+        }
         return .success(SketchEntityEditPlan(
             after: .rect(id: id, min: normalizedLow, max: normalizedHigh),
+            heldRefs: heldRefs,
             dimensionUpdates: updates,
             applied: ["min": [normalizedLow.x, normalizedLow.y],
                       "max": [normalizedHigh.x, normalizedHigh.y]],
@@ -817,8 +1264,19 @@ public final class CADParameterService {
             after.displayExpression = nil
             if after != dimension { updates.append((dimension, after)) }
         }
+        let heldRefs: [ConstraintRef]
+        if radiusValue != nil || diameterValue != nil {
+            // There is no radius-only ConstraintRef; a whole ref holds the
+            // requested radius and the center it is measured from.
+            heldRefs = [ConstraintRef(entityID: id, role: .whole)]
+        } else if centerValue != nil {
+            heldRefs = [ConstraintRef(entityID: id, role: .center)]
+        } else {
+            heldRefs = []
+        }
         return .success(SketchEntityEditPlan(
             after: .circle(id: id, center: newCenter, radius: newRadius),
+            heldRefs: heldRefs,
             dimensionUpdates: updates,
             applied: ["center": [newCenter.x, newCenter.y], "radius": newRadius],
             response: [
@@ -831,6 +1289,495 @@ public final class CADParameterService {
                 "unit": "mm",
             ],
             title: "Edit Circle"))
+    }
+
+    /// Edit an existing ARC by stable id. Angles cross the model boundary in
+    /// degrees; storage keeps radians with a CCW sweep normalized into
+    /// [0, 2π). Changing the start angle alone rotates the arc and changes its
+    /// sweep; `sweep_angle_deg` changes only the swept amount. A matching
+    /// single-arc angle dimension is updated in the same undo step, exactly
+    /// like a circle's radius/diameter dimension.
+    private static func arcEditPlan(
+        args: [String: Any], id: UUID, center: SIMD2<Double>, radius: Double,
+        startAngle: Double, endAngle: Double, dimensions: [SketchDimension]
+    ) -> Result<SketchEntityEditPlan, SketchEditFailure> {
+        if let failure = rejectUnsupportedFields(
+            args,
+            allowed: ["center", "radius", "diameter",
+                      "start_angle_deg", "start_angle", "startAngleDegrees",
+                      "end_angle_deg", "end_angle", "endAngleDegrees",
+                      "sweep_angle_deg", "sweep_angle", "sweepAngleDegrees",
+                      "expected_center", "expected_radius", "current_radius",
+                      "expected_diameter", "expected_start_angle_deg",
+                      "expected_end_angle_deg", "expected_sweep_angle_deg"],
+            entityKind: "arc") {
+            return .failure(failure)
+        }
+        let centerValue = firstPoint(args, keys: ["center"])
+        let ray = (angleArgument(args, keys: ["start_angle_deg", "start_angle", "startAngleDegrees"]))
+        let endArg = (angleArgument(args, keys: ["end_angle_deg", "end_angle", "endAngleDegrees"]))
+        let sweepArg = (angleArgument(args, keys: ["sweep_angle_deg", "sweep_angle", "sweepAngleDegrees"]))
+        guard centerValue != nil || args["radius"] != nil || args["diameter"] != nil
+                || args["start_angle_deg"] != nil || args["start_angle"] != nil
+                || args["startAngleDegrees"] != nil || args["end_angle_deg"] != nil
+                || args["end_angle"] != nil || args["endAngleDegrees"] != nil
+                || args["sweep_angle_deg"] != nil || args["sweep_angle"] != nil
+                || args["sweepAngleDegrees"] != nil else {
+            return .failure(SketchEditFailure(
+                code: "missing_geometry",
+                message: "An arc edit needs center, radius/diameter, start_angle_deg, "
+                    + "end_angle_deg and/or sweep_angle_deg."))
+        }
+        let startDegrees: (key: String, value: Double)?
+        switch ray {
+        case .success(let value): startDegrees = value
+        case .failure(let error): return .failure(error)
+        }
+        let endDegrees: (key: String, value: Double)?
+        switch endArg {
+        case .success(let value): endDegrees = value
+        case .failure(let error): return .failure(error)
+        }
+        let sweepDegrees: (key: String, value: Double)?
+        switch sweepArg {
+        case .success(let value): sweepDegrees = value
+        case .failure(let error): return .failure(error)
+        }
+
+        if let failure = fencePoint(args, key: "expected_center", current: center,
+                                    code: "bad_expected_center") { return .failure(failure) }
+        let currentStartDegrees = degrees(fromRadians: normalizedRadians(startAngle))
+        let currentEndDegrees = degrees(fromRadians: normalizedRadians(endAngle))
+        let currentSweepDegrees = degrees(fromRadians:
+            SketchEntity.arcSweep(startAngle: startAngle, endAngle: endAngle))
+        if let raw = args["expected_start_angle_deg"] {
+            guard let expected = CADMaterialService.number(raw), expected.isFinite else {
+                return .failure(SketchEditFailure(
+                    code: "bad_expected_start_angle_deg",
+                    message: "expected_start_angle_deg must be the current finite angle in degrees."))
+            }
+            guard angularDifference(expected, currentStartDegrees) <= 1e-6 else {
+                return .failure(SketchEditFailure(
+                    code: "angle_mismatch",
+                    message: "The arc starts at \(currentStartDegrees)°, not the expected "
+                        + "\(expected)°. Re-query kind=sketches before editing it."))
+            }
+        }
+        if let raw = args["expected_end_angle_deg"] {
+            guard let expected = CADMaterialService.number(raw), expected.isFinite else {
+                return .failure(SketchEditFailure(
+                    code: "bad_expected_end_angle_deg",
+                    message: "expected_end_angle_deg must be the current finite angle in degrees."))
+            }
+            guard angularDifference(expected, currentEndDegrees) <= 1e-6 else {
+                return .failure(SketchEditFailure(
+                    code: "angle_mismatch",
+                    message: "The arc ends at \(currentEndDegrees)°, not the expected "
+                        + "\(expected)°. Re-query kind=sketches before editing it."))
+            }
+        }
+        if let raw = args["expected_sweep_angle_deg"] {
+            guard let expected = CADMaterialService.number(raw), expected.isFinite else {
+                return .failure(SketchEditFailure(
+                    code: "bad_expected_sweep_angle_deg",
+                    message: "expected_sweep_angle_deg must be the current finite angle in degrees."))
+            }
+            guard abs(expected - currentSweepDegrees) <= 1e-6 else {
+                return .failure(SketchEditFailure(
+                    code: "angle_mismatch",
+                    message: "The arc sweeps \(currentSweepDegrees)°, not the expected "
+                        + "\(expected)°. Re-query kind=sketches before editing it."))
+            }
+        }
+        if let raw = args["expected_radius"] ?? args["current_radius"] {
+            guard let expected = CADMaterialService.number(raw), expected.isFinite else {
+                return .failure(SketchEditFailure(
+                    code: "bad_expected_radius",
+                    message: "expected_radius must be the finite current radius from query kind=sketches."))
+            }
+            guard abs(expected - radius) <= 1e-6 else {
+                return .failure(SketchEditFailure(
+                    code: "radius_mismatch",
+                    message: "The arc is currently \(radius) mm, not the expected \(expected) mm. "
+                        + "Re-query kind=sketches before editing it."))
+            }
+        }
+        if let raw = args["expected_diameter"] {
+            guard let expected = CADMaterialService.number(raw), expected.isFinite else {
+                return .failure(SketchEditFailure(
+                    code: "bad_expected_diameter",
+                    message: "expected_diameter must be the finite current diameter in mm."))
+            }
+            guard abs(expected - radius * 2) <= 1e-6 else {
+                return .failure(SketchEditFailure(
+                    code: "diameter_mismatch",
+                    message: "The arc is currently \(radius * 2) mm diameter, not the expected "
+                        + "\(expected) mm. Re-query kind=sketches before editing it."))
+            }
+        }
+
+        let newCenter = centerValue ?? center
+        guard newCenter.x.isFinite, newCenter.y.isFinite else {
+            return .failure(SketchEditFailure(
+                code: "bad_point", message: "The arc center must be a finite [x, y] point."))
+        }
+        let radiusValue = args["radius"] == nil ? nil : CADMaterialService.number(args["radius"])
+        let diameterValue = args["diameter"] == nil ? nil : CADMaterialService.number(args["diameter"])
+        if args["radius"] != nil, radiusValue == nil || radiusValue?.isFinite != true {
+            return .failure(SketchEditFailure(code: "bad_radius", message: "radius must be a finite mm value."))
+        }
+        if args["diameter"] != nil, diameterValue == nil || diameterValue?.isFinite != true {
+            return .failure(SketchEditFailure(code: "bad_diameter", message: "diameter must be a finite mm value."))
+        }
+        var newRadius = radius
+        if let radiusValue, let diameterValue {
+            guard abs(radiusValue * 2 - diameterValue) <= 1e-6 else {
+                return .failure(SketchEditFailure(
+                    code: "conflicting_geometry", message: "radius and diameter disagree; send one value."))
+            }
+            newRadius = radiusValue
+        } else if let radiusValue {
+            newRadius = radiusValue
+        } else if let diameterValue {
+            newRadius = diameterValue / 2
+        }
+        guard newRadius.isFinite, newRadius > 1e-6 else {
+            return .failure(SketchEditFailure(code: "bad_radius", message: "radius must be greater than 0 mm."))
+        }
+
+        var newStart = normalizedRadians(startAngle)
+        if let startDegrees {
+            newStart = normalizedRadians(radians(fromDegrees: startDegrees.value))
+        }
+        var sweep: Double
+        if let endDegrees {
+            let requestedEnd = radians(fromDegrees: endDegrees.value)
+            sweep = SketchEntity.arcSweep(startAngle: newStart, endAngle: requestedEnd)
+            if let sweepDegrees {
+                let requestedSweep = radians(fromDegrees: sweepDegrees.value)
+                guard abs(sweep - requestedSweep) <= 1e-6 else {
+                    return .failure(SketchEditFailure(
+                        code: "conflicting_geometry",
+                        message: "end_angle_deg and sweep_angle_deg disagree; send one angle pair."))
+                }
+            }
+        } else if let sweepDegrees {
+            sweep = radians(fromDegrees: sweepDegrees.value)
+        } else {
+            sweep = SketchEntity.arcSweep(startAngle: newStart, endAngle: endAngle)
+        }
+        guard sweep.isFinite, sweep > 1e-9, sweep < 2 * .pi - 1e-9 else {
+            return .failure(SketchEditFailure(
+                code: "degenerate_arc",
+                message: "An arc needs a positive sweep smaller than a full turn; use a circle "
+                    + "for a complete closed curve."))
+        }
+        let newEnd = newStart + sweep
+
+        var updates: [(before: SketchDimension, after: SketchDimension)] = []
+        for dimension in dimensions where dimension.refs.contains(where: { $0.entityID == id }) {
+            guard dimension.formula == nil else { continue }
+            var after = dimension
+            switch dimension.kind {
+            case .radius:
+                after.value = newRadius
+            case .diameter:
+                after.value = newRadius * 2
+            case .angle where dimension.refs.count == 1:
+                after.value = sweep
+            default:
+                continue
+            }
+            after.formula = nil
+            after.displayExpression = nil
+            if after != dimension { updates.append((dimension, after)) }
+        }
+        let startDeg = degrees(fromRadians: newStart)
+        let endDeg = degrees(fromRadians: normalizedRadians(newEnd))
+        let sweepDeg = degrees(fromRadians: sweep)
+        let touchedShape = radiusValue != nil || diameterValue != nil
+            || startDegrees != nil || endDegrees != nil || sweepDegrees != nil
+        let heldRefs: [ConstraintRef]
+        if touchedShape {
+            // Arc radius/sweep have no role-level ref; a whole ref holds the
+            // requested scalar(s) and the center they are measured from.
+            heldRefs = [ConstraintRef(entityID: id, role: .whole)]
+        } else if centerValue != nil {
+            heldRefs = [ConstraintRef(entityID: id, role: .center)]
+        } else {
+            heldRefs = []
+        }
+        return .success(SketchEntityEditPlan(
+            after: .arc(id: id, center: newCenter, radius: newRadius,
+                        startAngle: newStart, endAngle: newEnd),
+            heldRefs: heldRefs,
+            dimensionUpdates: updates,
+            applied: ["center": [newCenter.x, newCenter.y], "radius": newRadius,
+                      "start_angle_deg": startDeg, "end_angle_deg": endDeg,
+                      "sweep_angle_deg": sweepDeg],
+            response: [
+                "id": id.uuidString,
+                "kind": "arc",
+                "center": [newCenter.x, newCenter.y],
+                "radius": newRadius,
+                "diameter": newRadius * 2,
+                "startAngleRadians": newStart,
+                "endAngleRadians": newEnd,
+                "startAngleDegrees": startDeg,
+                "endAngleDegrees": endDeg,
+                "sweepAngleDegrees": sweepDeg,
+                "unit": "mm",
+                "angleUnit": "degrees",
+            ],
+            title: "Edit Arc"))
+    }
+
+    /// Edit an existing ELLIPSE by stable id. Axis radii are millimetres and
+    /// `rotation_deg` is the model-facing angle; the stored rotation is radians.
+    /// The solver has no ellipse radius/rotation variables, so any saved
+    /// dimension/tangent relationship is refused by `editReferenceFailure`
+    /// rather than silently left stale.
+    private static func ellipseEditPlan(
+        args: [String: Any], id: UUID, center: SIMD2<Double>,
+        radiusX: Double, radiusY: Double, rotation: Double
+    ) -> Result<SketchEntityEditPlan, SketchEditFailure> {
+        if let failure = rejectUnsupportedFields(
+            args,
+            allowed: ["center", "radius_x", "radius_y", "radiusX", "radiusY",
+                      "rotation_deg", "rotation",
+                      "expected_center", "expected_radius_x", "expected_radius_y",
+                      "expected_rotation_deg"],
+            entityKind: "ellipse") {
+            return .failure(failure)
+        }
+        let centerValue = firstPoint(args, keys: ["center"])
+        let hasRadiusX = args["radius_x"] != nil || args["radiusX"] != nil
+        let hasRadiusY = args["radius_y"] != nil || args["radiusY"] != nil
+        let rotationArg = (angleArgument(args, keys: ["rotation_deg", "rotation"]))
+        guard centerValue != nil || hasRadiusX || hasRadiusY
+                || args["rotation_deg"] != nil || args["rotation"] != nil else {
+            return .failure(SketchEditFailure(
+                code: "missing_geometry",
+                message: "An ellipse edit needs center, radius_x, radius_y and/or rotation_deg."))
+        }
+        let rotationDegrees: (key: String, value: Double)?
+        switch rotationArg {
+        case .success(let value): rotationDegrees = value
+        case .failure(let error): return .failure(error)
+        }
+        if let failure = fencePoint(args, key: "expected_center", current: center,
+                                    code: "bad_expected_center") { return .failure(failure) }
+        let currentRotationDegrees = degrees(fromRadians: normalizedRadians(rotation))
+        for (key, current, code) in [
+            ("expected_radius_x", radiusX, "bad_expected_radius_x"),
+            ("expected_radius_y", radiusY, "bad_expected_radius_y"),
+        ] {
+            if let raw = args[key] {
+                guard let expected = CADMaterialService.number(raw), expected.isFinite else {
+                    return .failure(SketchEditFailure(
+                        code: code, message: "\(key) must be the finite current radius in mm."))
+                }
+                guard abs(expected - current) <= 1e-6 else {
+                    return .failure(SketchEditFailure(
+                        code: "radius_mismatch",
+                        message: "The ellipse axis is currently \(current) mm, not the expected "
+                            + "\(expected) mm. Re-query kind=sketches before editing it."))
+                }
+            }
+        }
+        if let raw = args["expected_rotation_deg"] {
+            guard let expected = CADMaterialService.number(raw), expected.isFinite else {
+                return .failure(SketchEditFailure(
+                    code: "bad_expected_rotation_deg",
+                    message: "expected_rotation_deg must be the current finite angle in degrees."))
+            }
+            guard angularDifference(expected, currentRotationDegrees) <= 1e-6 else {
+                return .failure(SketchEditFailure(
+                    code: "angle_mismatch",
+                    message: "The ellipse rotation is \(currentRotationDegrees)°, not the expected "
+                        + "\(expected)°. Re-query kind=sketches before editing it."))
+            }
+        }
+        let newCenter = centerValue ?? center
+        guard newCenter.x.isFinite, newCenter.y.isFinite else {
+            return .failure(SketchEditFailure(
+                code: "bad_point", message: "The ellipse center must be a finite [x, y] point."))
+        }
+        func axis(_ keys: [String], current: Double, code: String) -> Result<Double, SketchEditFailure> {
+            for key in keys where args[key] != nil {
+                guard let value = CADMaterialService.number(args[key]), value.isFinite, value > 1e-6 else {
+                    return .failure(SketchEditFailure(
+                        code: code, message: "\(key) must be a positive finite mm radius."))
+                }
+                return .success(value)
+            }
+            return .success(current)
+        }
+        let newRadiusX: Double
+        switch axis(["radius_x", "radiusX"], current: radiusX, code: "bad_radius_x") {
+        case .success(let value): newRadiusX = value
+        case .failure(let error): return .failure(error)
+        }
+        let newRadiusY: Double
+        switch axis(["radius_y", "radiusY"], current: radiusY, code: "bad_radius_y") {
+        case .success(let value): newRadiusY = value
+        case .failure(let error): return .failure(error)
+        }
+        let newRotation = rotationDegrees.map {
+            normalizedRadians(radians(fromDegrees: $0.value))
+        } ?? normalizedRadians(rotation)
+        let rotationDeg = degrees(fromRadians: newRotation)
+        let heldRefs: [ConstraintRef] = centerValue == nil
+            ? []
+            : [ConstraintRef(entityID: id, role: .center)]
+        return .success(SketchEntityEditPlan(
+            after: .ellipse(id: id, center: newCenter,
+                            radiusX: newRadiusX, radiusY: newRadiusY,
+                            rotation: newRotation),
+            heldRefs: heldRefs,
+            dimensionUpdates: [],
+            applied: ["center": [newCenter.x, newCenter.y],
+                      "radius_x": newRadiusX, "radius_y": newRadiusY,
+                      "rotation_deg": rotationDeg],
+            response: [
+                "id": id.uuidString,
+                "kind": "ellipse",
+                "center": [newCenter.x, newCenter.y],
+                "radiusX": newRadiusX,
+                "radiusY": newRadiusY,
+                "rotationRadians": newRotation,
+                "rotationDegrees": rotationDeg,
+                "unit": "mm",
+                "angleUnit": "degrees",
+            ],
+            title: "Edit Ellipse"))
+    }
+
+    /// Edit a SPLINE's fit points by stable entity id. `point_index` is the
+    /// zero-based identity of one point in the stored order; `points` replaces
+    /// the whole list and therefore every index. Interior fit points are not
+    /// solver variables (only an open spline's two ends are), so the direct
+    /// reference gate refuses a closed/wholly-referenced spline instead of
+    /// pretending the solver could validate it.
+    private static func splineEditPlan(
+        args: [String: Any], id: UUID, points: [SIMD2<Double>], closed: Bool
+    ) -> Result<SketchEntityEditPlan, SketchEditFailure> {
+        if let failure = rejectUnsupportedFields(
+            args,
+            allowed: ["points", "point", "point_index", "expected_point", "expected_points"],
+            entityKind: "spline") {
+            return .failure(failure)
+        }
+        let hasPoints = args["points"] != nil
+        let hasIndexEdit = args["point_index"] != nil || args["point"] != nil
+        guard hasPoints || hasIndexEdit else {
+            return .failure(SketchEditFailure(
+                code: "missing_geometry",
+                message: "A spline edit needs points (all fit points) or point_index + point."))
+        }
+        if hasPoints && hasIndexEdit {
+            return .failure(SketchEditFailure(
+                code: "conflicting_geometry",
+                message: "Send either points (replace all) or point_index + point (edit one); "
+                    + "combining both is ambiguous."))
+        }
+        var newPoints = points
+        var editedIndex: Int?
+        if hasPoints {
+            guard let parsed = pointList(args["points"]) else {
+                return .failure(SketchEditFailure(
+                    code: "bad_points",
+                    message: "points must be [[x, y], ...] finite plane points, in fit order."))
+            }
+            guard parsed.count >= 2 else {
+                return .failure(SketchEditFailure(
+                    code: "bad_spline",
+                    message: "A spline needs at least two fit points."))
+            }
+            if let raw = args["expected_points"] {
+                guard let expected = pointList(raw) else {
+                    return .failure(SketchEditFailure(
+                        code: "bad_expected_points",
+                        message: "expected_points must be the current [[x, y], ...] list."))
+                }
+                guard samePoints(expected, points) else {
+                    return .failure(SketchEditFailure(
+                        code: "points_mismatch",
+                        message: "The spline's fit points changed since they were read; "
+                            + "re-query kind=sketches before replacing them."))
+                }
+            }
+            newPoints = parsed
+        } else {
+            guard let rawIndex = args["point_index"] else {
+                return .failure(SketchEditFailure(
+                    code: "missing_point_index",
+                    message: "Editing one spline point needs point_index (0-based) and point."))
+            }
+            let index: Int
+            switch integerValue(rawIndex, code: "bad_point_index", label: "point_index") {
+            case .success(let value): index = value
+            case .failure(let error): return .failure(error)
+            }
+            guard index < points.count else {
+                return .failure(SketchEditFailure(
+                    code: "unknown_point",
+                    message: "point_index \(index) is outside this spline (0...\(points.count - 1))."))
+            }
+            guard let rawPoint = args["point"] else {
+                return .failure(SketchEditFailure(
+                    code: "missing_point",
+                    message: "Editing one spline point needs point as a finite [x, y]."))
+            }
+            guard let point = point2(rawPoint), point.x.isFinite, point.y.isFinite else {
+                return .failure(SketchEditFailure(
+                    code: "bad_point", message: "point must be a finite [x, y] plane point."))
+            }
+            if let raw = args["expected_point"] {
+                guard let expected = point2(raw) else {
+                    return .failure(SketchEditFailure(
+                        code: "bad_expected_point",
+                        message: "expected_point must be the current [x, y] point."))
+                }
+                guard samePoint(expected, points[index]) else {
+                    return .failure(SketchEditFailure(
+                        code: "point_mismatch",
+                        message: "Spline point \(index) is currently [\(points[index].x), "
+                            + "\(points[index].y)], not the expected [\(expected.x), \(expected.y)]. "
+                            + "Re-query kind=sketches before editing it."))
+                }
+            }
+            newPoints[index] = point
+            editedIndex = index
+        }
+        var heldRefs: [ConstraintRef] = []
+        if !closed {
+            if hasPoints {
+                heldRefs = [ConstraintRef(entityID: id, role: .endpointA),
+                            ConstraintRef(entityID: id, role: .endpointB)]
+            } else if let editedIndex {
+                if editedIndex == 0 {
+                    heldRefs = [ConstraintRef(entityID: id, role: .endpointA)]
+                } else if editedIndex == points.count - 1 {
+                    heldRefs = [ConstraintRef(entityID: id, role: .endpointB)]
+                }
+            }
+        }
+        return .success(SketchEntityEditPlan(
+            after: .spline(id: id, points: newPoints, closed: closed),
+            heldRefs: heldRefs,
+            dimensionUpdates: [],
+            applied: ["points": newPoints.map { [$0.x, $0.y] }],
+            response: [
+                "id": id.uuidString,
+                "kind": "spline",
+                "closed": closed,
+                "pointCount": newPoints.count,
+                "points": newPoints.map { [$0.x, $0.y] },
+                "editedPointIndex": editedIndex.map { $0 as Any } ?? NSNull(),
+                "unit": "mm",
+            ],
+            title: "Edit Spline"))
     }
 
     // MARK: - Driving dimensions
@@ -2670,6 +3617,243 @@ public final class CADParameterService {
 
     private static let overConstraintTolerance = 1e-3
 
+    /// Solve a proposed entity edit through the existing sketch solver while
+    /// holding only the caller's EXPLICIT fields on the edited primitive. A
+    /// legal parametric/constraint solution therefore moves related geometry
+    /// (other entities and any unrequested part of the edited primitive), the
+    /// ordinary editor / `setSketchDimension` behavior; genuinely unrelated
+    /// entities have no residual coupling and keep their geometry. The
+    /// transient `.fixed` anchor is never stored and never covers every
+    /// primitive in the sketch. Returns the solved entity list plus explicit
+    /// failure diagnostics instead of silently accepting an unsatisfied system.
+    private static func solveEditedSketch(
+        _ sketch: Sketch, edited: SketchEntity, heldRefs: [ConstraintRef]
+    ) -> Result<[SketchEntity], SketchEditFailure> {
+        let anchored: Sketch
+        switch applyingCoincidentFollowers(sketch, edited: edited) {
+        case .success(let value): anchored = value
+        case .failure(let error): return .failure(error)
+        }
+        var solvedSketch = anchored
+        if !heldRefs.isEmpty {
+            solvedSketch.constraints.append(SketchConstraint(
+                kind: .fixed, refs: heldRefs))
+        }
+        let outcome = SketchSolverBridge.solveOutcome(
+            solvedSketch, movingEntity: nil, dragTarget: nil)
+        guard outcome.structuralResidual <= overConstraintTolerance else {
+            let blame = SketchSolverBridge.conflictAttribution(
+                solvedSketch, tolerance: overConstraintTolerance)
+            let rows = blame.constraintIDs.map(\.uuidString).sorted()
+                + blame.dimensionIDs.map(\.uuidString).sorted()
+            return .failure(SketchEditFailure(
+                code: "constraint_conflict",
+                message: "The \(entityKindName(edited)) edit cannot satisfy the saved constraints and "
+                    + "driving dimensions with the requested geometry held"
+                    + (rows.isEmpty ? "." : ": " + rows.joined(separator: ", ") + ".")
+                    + " Nothing was changed. Keep the constrained value, or change the driving "
+                    + "value with setSketchDimension."))
+        }
+        return .success(outcome.entities)
+    }
+
+    /// Rebuild the reply's geometry rows from the ACTUAL solved primitive. The
+    /// caller's explicit fields are held exactly, but an unrequested
+    /// endpoint/side may follow a saved constraint; reporting the stale plan
+    /// values would claim geometry the document does not contain.
+    private static func applyingSolvedGeometry(
+        _ entity: SketchEntity, to plan: SketchEntityEditPlan
+    ) -> (applied: [String: Any], response: [String: Any]) {
+        var applied = plan.applied
+        var response = plan.response
+        switch entity {
+        case let .line(_, a, b):
+            applied["a"] = [a.x, a.y]
+            applied["b"] = [b.x, b.y]
+            response["a"] = [a.x, a.y]
+            response["b"] = [b.x, b.y]
+            response["lengthMM"] = simd_length(b - a)
+        case let .rect(_, low, high):
+            let center = (low + high) / 2
+            applied["min"] = [low.x, low.y]
+            applied["max"] = [high.x, high.y]
+            response["min"] = [low.x, low.y]
+            response["max"] = [high.x, high.y]
+            response["center"] = [center.x, center.y]
+            response["widthMM"] = abs(high.x - low.x)
+            response["heightMM"] = abs(high.y - low.y)
+        case let .circle(_, center, radius):
+            applied["center"] = [center.x, center.y]
+            applied["radius"] = radius
+            response["center"] = [center.x, center.y]
+            response["radius"] = radius
+            response["diameter"] = radius * 2
+        case let .arc(_, center, radius, startAngle, endAngle):
+            let startDeg = degrees(fromRadians: normalizedRadians(startAngle))
+            let endDeg = degrees(fromRadians: normalizedRadians(endAngle))
+            let sweepDeg = degrees(fromRadians:
+                SketchEntity.arcSweep(startAngle: startAngle, endAngle: endAngle))
+            applied["center"] = [center.x, center.y]
+            applied["radius"] = radius
+            applied["start_angle_deg"] = startDeg
+            applied["end_angle_deg"] = endDeg
+            applied["sweep_angle_deg"] = sweepDeg
+            response["center"] = [center.x, center.y]
+            response["radius"] = radius
+            response["diameter"] = radius * 2
+            response["startAngleRadians"] = startAngle
+            response["endAngleRadians"] = endAngle
+            response["startAngleDegrees"] = startDeg
+            response["endAngleDegrees"] = endDeg
+            response["sweepAngleDegrees"] = sweepDeg
+        case let .ellipse(_, center, radiusX, radiusY, rotation):
+            applied["center"] = [center.x, center.y]
+            applied["radius_x"] = radiusX
+            applied["radius_y"] = radiusY
+            applied["rotation_deg"] = degrees(fromRadians: normalizedRadians(rotation))
+            response["center"] = [center.x, center.y]
+            response["radiusX"] = radiusX
+            response["radiusY"] = radiusY
+            response["rotationRadians"] = rotation
+            response["rotationDegrees"] = degrees(fromRadians: normalizedRadians(rotation))
+        case let .spline(_, points, _):
+            let rows = points.map { [$0.x, $0.y] }
+            applied["points"] = rows
+            response["points"] = rows
+            response["pointCount"] = points.count
+        case .polygon:
+            break
+        }
+        return (applied, response)
+    }
+
+    /// A saved Coincident constraint is a stored weld. The solver represents a
+    /// weld as one shared variable and would average the edited point with its
+    /// partner's OLD position, pulling the requested edit halfway back. Carry
+    /// the requested position to every coincident partner first, so the
+    /// partner follows the edited geometry as the saved constraint requires.
+    /// Only explicit constraints are followed; nothing is added or removed.
+    /// A locked partner cannot follow, so that is a precise refusal rather
+    /// than silently re-locking (and moving) the saved Lock's coordinates.
+    private static func applyingCoincidentFollowers(
+        _ sketch: Sketch, edited: SketchEntity
+    ) -> Result<Sketch, SketchEditFailure> {
+        var proposed = sketch
+        var positions: [String: SIMD2<Double>] = [:]
+        for slot in pointSlots(of: edited) {
+            positions[slotKey(edited.id, slot.role)] = slot.point
+        }
+        var changed = true
+        while changed {
+            changed = false
+            for constraint in sketch.constraints
+            where constraint.kind == .coincident && constraint.refs.count == 2 {
+                let first = constraint.refs[0]
+                let second = constraint.refs[1]
+                let firstKey = slotKey(first.entityID, first.role)
+                let secondKey = slotKey(second.entityID, second.role)
+                if let point = positions[firstKey], positions[secondKey] == nil {
+                    positions[secondKey] = point
+                    changed = true
+                } else if let point = positions[secondKey], positions[firstKey] == nil {
+                    positions[firstKey] = point
+                    changed = true
+                }
+            }
+        }
+        for (index, entity) in proposed.entities.enumerated() where entity.id != edited.id {
+            var updated = entity
+            for slot in pointSlots(of: entity) {
+                guard let point = positions[slotKey(entity.id, slot.role)],
+                      let candidate = replacingPoint(point, role: slot.role, in: updated)
+                else { continue }
+                if simd_distance(point, slot.point) > 1e-9,
+                   isPointLocked(ConstraintRef(entityID: entity.id, role: slot.role),
+                                 in: sketch) {
+                    return .failure(SketchEditFailure(
+                        code: "constraint_conflict",
+                        message: "The \(entityKindName(entity)) \(entity.id.uuidString) is a "
+                            + "Coincident partner of the edited \(entityKindName(edited)) but is "
+                            + "locked at its current point. Nothing was changed. Remove that Lock "
+                            + "explicitly, or move the locked partner itself."))
+                }
+                updated = candidate
+            }
+            if updated != entity { proposed.entities[index] = updated }
+        }
+        return .success(proposed)
+    }
+
+    /// A stored Lock that pins this exact point: a whole-entity `.fixed`, or a
+    /// `.fixed` naming the same point role.
+    private static func isPointLocked(_ ref: ConstraintRef, in sketch: Sketch) -> Bool {
+        sketch.constraints.contains { constraint in
+            constraint.kind == .fixed && constraint.refs.contains { fixed in
+                fixed.entityID == ref.entityID
+                    && (fixed.role == .whole || fixed.role == ref.role)
+            }
+        }
+    }
+
+    /// Point slots the sketch solver exposes for an entity. Closed splines and
+    /// solvers without point variables produce no slots.
+    private static func pointSlots(
+        of entity: SketchEntity
+    ) -> [(role: PointRole, point: SIMD2<Double>)] {
+        switch entity {
+        case let .line(_, a, b):
+            return [(.endpointA, a), (.endpointB, b)]
+        case let .rect(_, low, high):
+            return [(.endpointA, low), (.endpointB, high)]
+        case let .circle(_, center, _), let .arc(_, center, _, _, _),
+             let .ellipse(_, center, _, _, _), let .polygon(_, center, _, _, _):
+            return [(.center, center)]
+        case let .spline(_, points, closed):
+            guard !closed, let first = points.first, let last = points.last else { return [] }
+            return [(.endpointA, first), (.endpointB, last)]
+        }
+    }
+
+    private static func slotKey(_ entityID: UUID, _ role: PointRole) -> String {
+        "\(entityID.uuidString):\(role.rawValue)"
+    }
+
+    private static func replacingPoint(
+        _ point: SIMD2<Double>, role: PointRole, in entity: SketchEntity
+    ) -> SketchEntity? {
+        switch (entity, role) {
+        case let (.line(id, _, b), .endpointA):
+            return .line(id: id, a: point, b: b)
+        case let (.line(id, a, _), .endpointB):
+            return .line(id: id, a: a, b: point)
+        case let (.rect(id, _, high), .endpointA):
+            return .rect(id: id, min: point, max: high)
+        case let (.rect(id, low, _), .endpointB):
+            return .rect(id: id, min: low, max: point)
+        case let (.circle(id, _, radius), .center):
+            return .circle(id: id, center: point, radius: radius)
+        case let (.arc(id, _, radius, startAngle, endAngle), .center):
+            return .arc(id: id, center: point, radius: radius,
+                        startAngle: startAngle, endAngle: endAngle)
+        case let (.ellipse(id, _, radiusX, radiusY, rotation), .center):
+            return .ellipse(id: id, center: point, radiusX: radiusX,
+                            radiusY: radiusY, rotation: rotation)
+        case let (.polygon(id, _, radius, sides, rotation), .center):
+            return .polygon(id: id, center: point, radius: radius,
+                            sides: sides, rotation: rotation)
+        case let (.spline(id, points, closed), .endpointA) where !closed && !points.isEmpty:
+            var moved = points
+            moved[0] = point
+            return .spline(id: id, points: moved, closed: closed)
+        case let (.spline(id, points, closed), .endpointB) where !closed && !points.isEmpty:
+            var moved = points
+            moved[moved.count - 1] = point
+            return .spline(id: id, points: moved, closed: closed)
+        default:
+            return nil
+        }
+    }
+
     private func undo(_ args: [String: Any]) -> [String: Any] {
         guard document.session.undoStack.canUndo else {
             return Self.fail("nothing_to_undo", "The document undo stack is empty.")
@@ -3311,5 +4495,12 @@ public final class CADParameterService {
 
     static func fail(_ code: String, _ message: String) -> [String: Any] {
         ["ok": false, "error": code, "message": message]
+    }
+
+    static func fail(_ code: String, _ message: String,
+                     extra: [String: Any]) -> [String: Any] {
+        var reply = fail(code, message)
+        for (key, value) in extra { reply[key] = value }
+        return reply
     }
 }

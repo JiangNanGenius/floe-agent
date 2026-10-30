@@ -11381,12 +11381,44 @@ final class EditorViewModel {
             return
         }
 
+        // A spline's interior fit points are not solver variables (only the
+        // two ends of an open spline are), so moving one is a direct geometry
+        // edit that keeps the entity id and every other point. The same saved
+        // whole-entity Lock that stops other handles still refuses it.
+        let isSplinePointEdit: Bool
+        if case .splinePoint? = drag.control {
+            isSplinePointEdit = true
+            let locked = sketch.constraints.contains { constraint in
+                constraint.kind == .fixed
+                    && constraint.refs.contains { $0.entityID == drag.before.id }
+            }
+            let closedSpline: Bool
+            if case let .spline(_, _, closed) = drag.before {
+                closedSpline = closed
+            } else {
+                closedSpline = false
+            }
+            let hasUnsupportedReference = closedSpline && (
+                sketch.constraints.contains { $0.refs.contains { $0.entityID == drag.before.id } }
+                    || sketch.dimensions.contains { $0.refs.contains { $0.entityID == drag.before.id } })
+            if locked || hasUnsupportedReference {
+                if !drag.showedBlockedNotice {
+                    showNotice("Locked or constrained sketch parts can't be moved.")
+                    drag.showedBlockedNotice = true
+                    sketchEntityDrag = drag
+                }
+                return
+            }
+        } else {
+            isSplinePointEdit = false
+        }
+
         // Solve-on-edit (plan §C1): when the sketch carries constraints or
         // dimensions, route a control-point drag through the solver so
         // constrained geometry holds and under-constrained geometry follows.
         // Body translates keep the direct path (the solver pins a single
         // point, which would deform rather than translate a whole entity).
-        if drag.control != nil,
+        if !isSplinePointEdit, drag.control != nil,
            !(sketch.constraints.isEmpty && sketch.dimensions.isEmpty) {
             updateSolvedSketchEntityDrag(&drag, raw: raw, sketch: sketch)
             return
