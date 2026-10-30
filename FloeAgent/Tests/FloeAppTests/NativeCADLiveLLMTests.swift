@@ -76,10 +76,19 @@
 // path exercised. The test asserts there is no approval event and no pending
 // approval.
 //
-// A watchdog polls the durable usage records and cancels the run if the total
-// input tokens, output tokens or computed model cost exceeds the opt-in
-// ceiling. Every run also has a wall-clock deadline. Those are hard stops, not
-// claims that a skipped/failed turn passed.
+// A watchdog polls the durable usage records and cancels the run if the
+// computed model cost, an individual token dimension or the reported aggregate
+// token budget exceeds the opt-in ceiling. Every run also has a wall-clock
+// deadline. Those are hard stops, not claims that a skipped/failed turn passed.
+//
+// The token budget is ONE aggregate cap across all three model turns:
+// `maxTotalTokens` counts uncached input + cache read + output, summed over
+// every run. Reasoning tokens are already inside the provider's output count
+// and cache-write tokens are already inside its input count, so neither is
+// added again. `maxInputTokens` and `maxOutputTokens` may each be 1,000,000,
+// but the aggregate guard still stops the combined reported total at the cap.
+// The reviewed prepaid basis requires `maxTotalTokens`; a legacy metered
+// opt-in that omits it keeps the previous separate input/output caps only.
 //
 // Isolation and cleanup
 // ---------------------
@@ -174,6 +183,205 @@ final class NativeCADLiveLLMTests: XCTestCase {
     }
 }
 
+/// Non-paid accounting tests for the one aggregate CAD budget. They exercise
+/// the same ledger the live acceptance uses, but never touch the App graph, a
+/// provider, a credential, an opt-in file, the network or a model request.
+@MainActor
+final class NativeCADLiveBudgetTests: XCTestCase {
+
+    /// Synthetic, test-only pricing. The metered basis uses positive exact
+    /// integers; the prepaid basis stays on the reviewed exact-route shape.
+    private func makeLedger(
+        basis: NativeCADLiveBudgetBasis = .prepaidAgentPlan,
+        maxInput: Int = 1_000_000,
+        maxOutput: Int = 1_000_000,
+        maxTotal: Int?
+    ) -> NativeCADLiveLedger {
+        let pricing: NativeCADLivePricing
+        switch basis {
+        case .prepaidAgentPlan:
+            pricing = NativeCADLivePricing(
+                inputPerMillion: .zero,
+                outputPerMillion: .zero,
+                basis: .prepaidAgentPlan
+            )
+        case .meteredUSD:
+            pricing = NativeCADLivePricing(
+                inputPerMillion: Decimal(1),
+                outputPerMillion: Decimal(2),
+                basis: .meteredUSD
+            )
+        }
+        return NativeCADLiveLedger(
+            pricing: pricing,
+            maxCost: Decimal(10),
+            maxInputTokens: maxInput,
+            maxOutputTokens: maxOutput,
+            maxTotalTokens: maxTotal
+        )
+    }
+
+    private func record(
+        _ runID: UUID,
+        input: Int,
+        output: Int,
+        cacheRead: Int = 0,
+        cacheWrite: Int = 0,
+        reasoning: Int = 0
+    ) -> RunUsageRecord {
+        RunUsageRecord(
+            runID: runID,
+            inputTokens: input,
+            outputTokens: output,
+            cacheReadTokens: cacheRead,
+            cacheWriteTokens: cacheWrite,
+            reasoningTokens: reasoning
+        )
+    }
+
+    func testReportedAggregateCountsEachDimensionOnce() async {
+        let runID = UUID()
+        let ledger = makeLedger(maxTotal: 1_000_000)
+        let totals = await ledger.update(runID: runID, records: [
+            record(
+                runID,
+                input: 500_000,
+                output: 80_000,
+                cacheRead: 400_000,
+                cacheWrite: 50_000,
+                reasoning: 70_000
+            ),
+        ])
+        XCTAssertEqual(totals.inputTokens, 500_000)
+        XCTAssertEqual(totals.outputTokens, 80_000)
+        XCTAssertEqual(totals.cacheReadTokens, 400_000)
+        XCTAssertEqual(
+            totals.reportedTotalTokens,
+            980_000,
+            "The aggregate must be uncached input + cache read + output; cache write is already "
+                + "inside provider input and reasoning is already inside output."
+        )
+        XCTAssertTrue(totals.hasUsage)
+        XCTAssertFalse(totals.exceeds)
+        XCTAssertEqual(totals.cost, Decimal.zero)
+    }
+
+    func testCacheReadOnlyUsageCountsAsReportedUsage() async {
+        let runID = UUID()
+        let ledger = makeLedger(maxTotal: 1_000_000)
+        let totals = await ledger.update(runID: runID, records: [
+            record(runID, input: 0, output: 0, cacheRead: 750_000),
+        ])
+        XCTAssertEqual(totals.inputTokens, 0)
+        XCTAssertEqual(totals.outputTokens, 0)
+        XCTAssertEqual(totals.cacheReadTokens, 750_000)
+        XCTAssertEqual(totals.reportedTotalTokens, 750_000)
+        XCTAssertTrue(
+            totals.hasUsage,
+            "A fully cached prompt with no new output is still reported token usage."
+        )
+        XCTAssertFalse(totals.exceeds)
+    }
+
+    func testAggregateBoundaryIsInclusiveAndOneTokenOverFails() async {
+        let runID = UUID()
+        let ledger = makeLedger(maxTotal: 1_000_000)
+        let atBoundary = await ledger.update(runID: runID, records: [
+            record(runID, input: 500_000, output: 100_000, cacheRead: 400_000),
+        ])
+        XCTAssertEqual(atBoundary.reportedTotalTokens, 1_000_000)
+        XCTAssertFalse(atBoundary.exceeds, "Exactly the aggregate cap is allowed.")
+
+        let over = await ledger.update(runID: runID, records: [
+            record(runID, input: 500_001, output: 100_000, cacheRead: 400_000),
+        ])
+        XCTAssertEqual(over.reportedTotalTokens, 1_000_001)
+        XCTAssertTrue(over.exceeds, "One token over the aggregate cap must stop the run.")
+    }
+
+    func testRepeatedWatcherSnapshotsReplaceInsteadOfAppend() async {
+        let runID = UUID()
+        let ledger = makeLedger(maxTotal: 1_000_000)
+        _ = await ledger.update(runID: runID, records: [
+            record(runID, input: 600_000, output: 50_000),
+        ])
+        let second = await ledger.update(runID: runID, records: [
+            record(runID, input: 600_000, output: 50_000),
+            record(runID, input: 200_000, output: 20_000),
+        ])
+        XCTAssertEqual(
+            second.reportedTotalTokens,
+            870_000,
+            "The durable snapshot for one run contains exactly its own requests."
+        )
+
+        let repeated = await ledger.update(runID: runID, records: [
+            record(runID, input: 600_000, output: 50_000),
+            record(runID, input: 200_000, output: 20_000),
+        ])
+        XCTAssertEqual(
+            repeated.reportedTotalTokens,
+            870_000,
+            "Polling the same watcher snapshot again must replace, never append, the run's usage."
+        )
+    }
+
+    func testAggregateSumsEveryOwnedRunID() async {
+        let ledger = makeLedger(maxTotal: 1_000_000)
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+        _ = await ledger.update(runID: first, records: [
+            record(first, input: 300_000, output: 20_000),
+        ])
+        _ = await ledger.update(runID: second, records: [
+            record(second, input: 300_000, output: 20_000),
+        ])
+        let all = await ledger.update(runID: third, records: [
+            record(third, input: 300_000, output: 60_000),
+        ])
+        XCTAssertEqual(all.inputTokens, 900_000)
+        XCTAssertEqual(all.outputTokens, 100_000)
+        XCTAssertEqual(all.reportedTotalTokens, 1_000_000)
+        XCTAssertFalse(all.exceeds, "All three owned runs at exactly the aggregate cap are allowed.")
+
+        let over = await ledger.update(runID: third, records: [
+            record(third, input: 300_001, output: 60_000),
+        ])
+        XCTAssertEqual(over.reportedTotalTokens, 1_000_001)
+        XCTAssertTrue(over.exceeds, "The aggregate must include every owned run ID.")
+    }
+
+    func testLegacyMeteredOptInWithoutTotalKeepsSeparateCaps() async {
+        let runID = UUID()
+        let ledger = makeLedger(
+            basis: .meteredUSD,
+            maxInput: 600_000,
+            maxOutput: 100_000,
+            maxTotal: nil
+        )
+        let within = await ledger.update(runID: runID, records: [
+            record(runID, input: 600_000, output: 50_000, cacheRead: 500_000),
+        ])
+        XCTAssertEqual(within.reportedTotalTokens, 1_150_000)
+        XCTAssertFalse(
+            within.exceeds,
+            "A legacy metered opt-in without maxTotalTokens keeps only its separate input/output "
+                + "caps; cache reads must not create an unrequested aggregate cap."
+        )
+
+        let inputOver = await ledger.update(runID: runID, records: [
+            record(runID, input: 600_001, output: 50_000, cacheRead: 500_000),
+        ])
+        XCTAssertTrue(inputOver.exceeds)
+
+        let outputOver = await ledger.update(runID: runID, records: [
+            record(runID, input: 1, output: 100_001),
+        ])
+        XCTAssertTrue(outputOver.exceeds)
+    }
+}
+
 /// The one reviewed prepaid route this test may account as zero incremental
 /// USD. These are test-only constants: they do not change production provider
 /// configuration or enable any generic free-model path.
@@ -182,8 +390,9 @@ private enum NativeCADLivePrepaidRoute {
     static let modelID = UUID(uuidString: "A3060000-0000-4000-8000-000000000002")!
     static let baseURL = URL(string: "https://ark.cn-beijing.volces.com/api/plan/v3")!
     static let remoteModelID = "deepseek-v4-flash"
-    static let maxInputTokens = 160_000
-    static let maxOutputTokens = 8_000
+    static let maxInputTokens = 1_000_000
+    static let maxOutputTokens = 1_000_000
+    static let maxTotalTokens = 1_000_000
     static let maxPerRunSeconds: Double = 900
     static let maxTotalSeconds: Double = 2_700
 
@@ -314,6 +523,9 @@ private struct NativeCADLiveOptIn: Sendable {
     var maxCost: Decimal
     var maxInputTokens: Int
     var maxOutputTokens: Int
+    /// One aggregate reported-token budget across every run: uncached input +
+    /// cache read + output. Nil preserves the legacy metered separate caps.
+    var maxTotalTokens: Int?
     var perRunTimeoutSeconds: Double
     var maxTotalSeconds: Double
 
@@ -333,6 +545,7 @@ private struct NativeCADLiveOptIn: Sendable {
         var maxEstimatedCostUSD: Double?
         var maxInputTokens: Int?
         var maxOutputTokens: Int?
+        var maxTotalTokens: Int?
         var perRunTimeoutSeconds: Double?
         var maxTotalSeconds: Double?
     }
@@ -437,8 +650,22 @@ private struct NativeCADLiveOptIn: Sendable {
             throw XCTSkip("Live native CAD acceptance skipped: maxInputTokens must be 1...1,000,000. A skip is not live evidence.")
         }
         let maxOutput = raw.maxOutputTokens ?? 30_000
-        guard (1...200_000).contains(maxOutput) else {
-            throw XCTSkip("Live native CAD acceptance skipped: maxOutputTokens must be 1...200,000. A skip is not live evidence.")
+        guard (1...1_000_000).contains(maxOutput) else {
+            throw XCTSkip("Live native CAD acceptance skipped: maxOutputTokens must be 1...1,000,000. A skip is not live evidence.")
+        }
+        let maxTotal: Int?
+        if let declaredTotal = raw.maxTotalTokens {
+            guard (1...1_000_000).contains(declaredTotal) else {
+                throw XCTSkip("Live native CAD acceptance skipped: maxTotalTokens must be 1...1,000,000. A skip is not live evidence.")
+            }
+            maxTotal = declaredTotal
+        } else if prepaid {
+            throw XCTSkip(
+                "Live native CAD acceptance skipped: prepaidBudgetBasis requires maxTotalTokens "
+                    + "so the one aggregate budget across every run is explicit. A skip is not live evidence."
+            )
+        } else {
+            maxTotal = nil
         }
         let perRun = raw.perRunTimeoutSeconds ?? 300
         guard perRun.isFinite, (30...900).contains(perRun) else {
@@ -450,14 +677,17 @@ private struct NativeCADLiveOptIn: Sendable {
         }
 
         if prepaid {
-            guard maxInput <= NativeCADLivePrepaidRoute.maxInputTokens,
+            guard let maxTotal,
+                  maxTotal <= NativeCADLivePrepaidRoute.maxTotalTokens,
+                  maxInput <= NativeCADLivePrepaidRoute.maxInputTokens,
                   maxOutput <= NativeCADLivePrepaidRoute.maxOutputTokens,
                   perRun <= NativeCADLivePrepaidRoute.maxPerRunSeconds,
                   total <= NativeCADLivePrepaidRoute.maxTotalSeconds else {
                 throw XCTSkip(
                     "Live native CAD acceptance skipped: prepaidBudgetBasis may not exceed the "
-                        + "approved 160,000 input / 8,000 output / 900 s per turn / 2,700 s total "
-                        + "budget. A skip is not live evidence."
+                        + "approved 1,000,000-token aggregate (uncached input + cache read + "
+                        + "output), 1,000,000 input, 1,000,000 output, 900 s per turn or "
+                        + "2,700 s total. A skip is not live evidence."
                 )
             }
         }
@@ -474,6 +704,7 @@ private struct NativeCADLiveOptIn: Sendable {
             maxCost: Decimal(maxCostDouble),
             maxInputTokens: maxInput,
             maxOutputTokens: maxOutput,
+            maxTotalTokens: maxTotal,
             perRunTimeoutSeconds: perRun,
             maxTotalSeconds: total
         )
@@ -796,22 +1027,38 @@ private actor NativeCADLiveStopSignal {
 private struct NativeCADLiveTotals: Sendable {
     var inputTokens: Int
     var outputTokens: Int
+    var cacheReadTokens: Int
+    /// Uncached input + cache read + output, counted once across every run.
+    var reportedTotalTokens: Int
     var cost: Decimal
     var maxCost: Decimal
     var maxInputTokens: Int
     var maxOutputTokens: Int
+    var maxTotalTokens: Int?
     var basis: NativeCADLiveBudgetBasis
 
-    var hasUsage: Bool { inputTokens + outputTokens > 0 }
+    var hasUsage: Bool { reportedTotalTokens > 0 }
     var exceeds: Bool {
-        cost > maxCost
-            || inputTokens > maxInputTokens
-            || outputTokens > maxOutputTokens
+        if cost > maxCost { return true }
+        if inputTokens > maxInputTokens { return true }
+        if outputTokens > maxOutputTokens { return true }
+        if let maxTotalTokens, reportedTotalTokens > maxTotalTokens { return true }
+        return false
     }
 
     var description: String {
-        let tokens = "input \(inputTokens)/\(maxInputTokens) tokens, "
-            + "output \(outputTokens)/\(maxOutputTokens) tokens"
+        let aggregate: String
+        if let maxTotalTokens {
+            aggregate = "reported aggregate \(reportedTotalTokens)/\(maxTotalTokens) tokens "
+                + "(uncached input + cache read + output)"
+        } else {
+            aggregate = "reported aggregate \(reportedTotalTokens) tokens "
+                + "(uncached input + cache read + output; legacy opt-in has no aggregate cap)"
+        }
+        let tokens = "uncached input \(inputTokens)/\(maxInputTokens) tokens, "
+            + "cache read \(cacheReadTokens) tokens, "
+            + "output \(outputTokens)/\(maxOutputTokens) tokens, "
+            + aggregate
         switch basis {
         case .meteredUSD:
             return "\(tokens), estimated metered cost \(cost) USD (cap \(maxCost) USD)"
@@ -828,20 +1075,26 @@ private actor NativeCADLiveLedger {
     private let maxCost: Decimal
     private let maxInputTokens: Int
     private let maxOutputTokens: Int
+    private let maxTotalTokens: Int?
     private var recordsByRun: [UUID: [RunUsageRecord]] = [:]
 
     init(
         pricing: NativeCADLivePricing,
         maxCost: Decimal,
         maxInputTokens: Int,
-        maxOutputTokens: Int
+        maxOutputTokens: Int,
+        maxTotalTokens: Int?
     ) {
         self.pricing = pricing
         self.maxCost = maxCost
         self.maxInputTokens = maxInputTokens
         self.maxOutputTokens = maxOutputTokens
+        self.maxTotalTokens = maxTotalTokens
     }
 
+    /// The watcher polls the same run repeatedly, so each call REPLACES that
+    /// run's snapshot. Assigning (rather than appending) is what makes a
+    /// repeated watcher observation count one model request exactly once.
     func update(runID: UUID, records: [RunUsageRecord]) -> NativeCADLiveTotals {
         recordsByRun[runID] = records
         return totalsLocked()
@@ -854,21 +1107,29 @@ private actor NativeCADLiveLedger {
     private func totalsLocked() -> NativeCADLiveTotals {
         var input = 0
         var output = 0
+        var cacheRead = 0
         var cost = Decimal.zero
         for records in recordsByRun.values {
             for record in records {
+                // Cost keeps using the provider's uncached input and output
+                // fields. Reasoning is already part of output; cache write is
+                // already part of provider input on wires that report it.
                 input += record.inputTokens
                 output += record.outputTokens
+                cacheRead += record.cacheReadTokens ?? 0
                 cost += pricing.cost(inputTokens: record.inputTokens, outputTokens: record.outputTokens)
             }
         }
         return NativeCADLiveTotals(
             inputTokens: input,
             outputTokens: output,
+            cacheReadTokens: cacheRead,
+            reportedTotalTokens: input + cacheRead + output,
             cost: cost,
             maxCost: maxCost,
             maxInputTokens: maxInputTokens,
             maxOutputTokens: maxOutputTokens,
+            maxTotalTokens: maxTotalTokens,
             basis: pricing.basis
         )
     }
@@ -910,7 +1171,8 @@ private final class NativeCADLiveSession {
             pricing: route.pricing,
             maxCost: optIn.maxCost,
             maxInputTokens: optIn.maxInputTokens,
-            maxOutputTokens: optIn.maxOutputTokens
+            maxOutputTokens: optIn.maxOutputTokens,
+            maxTotalTokens: optIn.maxTotalTokens
         )
         self.documentName = "NativeBracket-\(String(UUID().uuidString.prefix(8))).floecad"
         self.title = "Native CAD live acceptance \(String(UUID().uuidString.prefix(6)))"
@@ -986,6 +1248,13 @@ private final class NativeCADLiveSession {
         XCTAssertTrue(totals.hasUsage, "The real model run must produce durable token usage.")
         XCTAssertFalse(totals.exceeds, "Hard cost/data ceiling exceeded: \(totals.description)")
         XCTAssertLessThanOrEqual(totals.cost, optIn.maxCost)
+        if let maxTotalTokens = optIn.maxTotalTokens {
+            XCTAssertLessThanOrEqual(
+                totals.reportedTotalTokens,
+                maxTotalTokens,
+                "The one aggregate budget (uncached input + cache read + output) was exceeded: \(totals.description)"
+            )
+        }
         attachUsage(totals)
     }
 
@@ -1468,6 +1737,8 @@ private final class NativeCADLiveSession {
         }
         let totals = await ledger.totals()
         lines.append("ledger_totals=\(totals.description)")
+        lines.append("ledger_reported_total_tokens=\(totals.reportedTotalTokens)")
+        lines.append("ledger_cache_read_tokens=\(totals.cacheReadTokens)")
         lines.append("ledger_has_usage=\(totals.hasUsage)")
         lines.append("run_count=\(runIDs.count)")
 
