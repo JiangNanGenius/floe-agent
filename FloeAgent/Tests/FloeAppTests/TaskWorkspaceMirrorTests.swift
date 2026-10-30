@@ -567,6 +567,40 @@ struct TaskWorkspaceMirrorTests: Sendable {
             EnvironmentFileTransaction.directoryName).path))
     }
 
+    @Test("mirror recovery refuses a legacy owner-tagged journal without receipts")
+    func mirrorRecoveryRefusesLegacyOwnedJournal() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let note = try write("base", path: "note.txt", in: root)
+        let directory = root.appendingPathComponent(EnvironmentFileTransaction.directoryName)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: note, to: directory.appendingPathComponent("backup-0"))
+        try Data(TaskWorkspaceMirror.transactionOwner.utf8)
+            .write(to: directory.appendingPathComponent("owner"))
+        try write("changed", path: "note.txt", in: root)
+        let journal: [String: Any] = [
+            "entries": [["path": "note.txt", "backup": "backup-0"]],
+            "committed": false,
+            "owner": TaskWorkspaceMirror.transactionOwner
+        ]
+        try JSONSerialization.data(withJSONObject: journal)
+            .write(to: directory.appendingPathComponent("journal.json"))
+
+        do {
+            _ = try TaskWorkspaceMirror.recoverInterruptedFileTransaction(root: root)
+            Issue.record("Expected recovery to refuse a legacy journal")
+        } catch let error as FloeError {
+            #expect(error.localizedDescription.contains("legacy"))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(try String(contentsOf: note, encoding: .utf8) == "changed")
+        #expect(FileManager.default.fileExists(atPath: directory.path))
+
+        #expect(try EnvironmentFileTransaction.recover(root: root))
+        #expect(try String(contentsOf: note, encoding: .utf8) == "base")
+    }
+
     @Test("mirror recovery preserves an unmarked generic transaction")
     func mirrorRecoveryPreservesForeignTransaction() throws {
         let root = try makeRoot()

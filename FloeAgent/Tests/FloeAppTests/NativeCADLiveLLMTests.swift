@@ -1593,7 +1593,7 @@ private enum NativeCADLivePaths {
 
     static func captureArtifactURL(relativePath: String) throws -> URL {
         guard relativePath.hasPrefix("CADViewportArtifacts/"),
-              !relativePath.split(separator: "/").contains(where: { $0 == Substring("..") }) else {
+              !relativePath.split(separator: "/").contains(where: { String($0) == ".." }) else {
             throw NativeCADLiveError.invalidCapture("The artifact path is outside the App-owned CAD capture root.")
         }
         return try applicationSupport()
