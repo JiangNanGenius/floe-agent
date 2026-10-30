@@ -1488,7 +1488,7 @@ extension NativeCADDocumentCreationTests {
             runID: childParentID, toolCallID: "child-read", scope: .local,
             allowedToolNames: [CadDocumentTool.name], workspaceRootURL: workspace,
             cancellation: CancellationToken(), conversationID: conversationID)
-        try await ActiveParentTestScope.withScope {
+        try await ActiveParentTestScope.withScope { @Sendable in
             try await ActiveParentTestScope.activate(childParent)
             let childResult = await childParent.dispatchChildTool(
                 childCall, identity: childIdentity, childContext: childContext)
