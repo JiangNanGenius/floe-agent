@@ -4,6 +4,23 @@ import Testing
 
 @Suite("Shared file stages across suspension")
 struct StorageSuspensionTests {
+    @Test("The process drain reaches every live manager and leaves an unsuspended writer usable")
+    func registryDrainDoesNotSuspend() async throws {
+        let first = try DatabaseManager.inMemory()
+        let second = try DatabaseManager.inMemory()
+        try await first.migrate()
+        try await second.migrate()
+        // No suspend notification is posted here: the drain joins queues and
+        // must not leave either database globally suspended.
+        await DatabaseManager.drainWriterQueues()
+        try await first.writer { db in
+            try db.execute(sql: "CREATE TABLE drain_registry_probe(value INTEGER)")
+        }
+        try await second.writer { db in
+            try db.execute(sql: "CREATE TABLE drain_registry_probe(value INTEGER)")
+        }
+    }
+
     private actor CopyGate {
         private var arrived = false
         private var released = false

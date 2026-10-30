@@ -17,6 +17,33 @@ import FloeSecurity
 /// the app goes through `reader(_:)` / `writer(_:)`.
 public actor DatabaseManager {
 
+    /// Weak registry of live managers so the process-level suspension hook can
+    /// drain every GRDB writer (the live store and any recovery store) without
+    /// the App lifecycle coordinator holding one strong instance.
+    private final class SuspensionDrainRegistry: @unchecked Sendable {
+        private final class Entry {
+            weak var manager: DatabaseManager?
+            init(_ manager: DatabaseManager) { self.manager = manager }
+        }
+        private let lock = NSLock()
+        private var entries: [Entry] = []
+
+        func register(_ manager: DatabaseManager) {
+            lock.lock()
+            entries.removeAll { $0.manager == nil }
+            entries.append(Entry(manager))
+            lock.unlock()
+        }
+
+        func snapshot() -> [DatabaseManager] {
+            lock.lock()
+            defer { lock.unlock() }
+            entries.removeAll { $0.manager == nil }
+            return entries.compactMap(\.manager)
+        }
+    }
+    private static let suspensionDrainRegistry = SuspensionDrainRegistry()
+
     private let pool: DatabasePool?
     private let queue: DatabaseQueue?
     private var migrator = DatabaseMigrator()
@@ -33,12 +60,14 @@ public actor DatabaseManager {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
         self.queue = nil
         Self.registerMigrations(into: &migrator)
+        Self.suspensionDrainRegistry.register(self)
     }
 
     private init(inMemory: Void) throws {
         self.pool = nil
         self.queue = try DatabaseQueue(configuration: Self.configuration())
         Self.registerMigrations(into: &migrator)
+        Self.suspensionDrainRegistry.register(self)
     }
 
     /// Registers every published migration in order. Migrations are never
@@ -188,6 +217,43 @@ public actor DatabaseManager {
 
     public nonisolated static func resumeConnections() {
         NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
+    }
+
+    /// Fences GRDB and joins the writer queues of every live manager before
+    /// the caller returns the process's last background execution assertion.
+    ///
+    /// `suspendNotification` is intentionally not synchronous with respect to
+    /// lock release: GRDB sets a suspension flag and calls
+    /// `sqlite3_interrupt`, while the transaction that owns the database lock
+    /// unwinds on the writer queue. An empty write barrier is therefore
+    /// enqueued behind any in-flight writer; reaching it proves that the
+    /// previous statement/transaction has ended. The barrier may observe
+    /// `SQLITE_ABORT`/cancellation because the database is suspended; that is
+    /// still a completed drain and is deliberately ignored.
+    ///
+    /// The notification is process-wide, so the drain matches every live
+    /// manager (the main App store and any recovery/in-memory environment).
+    public static func suspendConnectionsAndDrainWriter() async {
+        Self.suspendConnections()
+        await drainWriterQueues()
+    }
+
+    /// Joins the writer queue of every live manager without posting the
+    /// process-wide suspension again. Callers that must record the posted
+    /// state synchronously (before any await) call `suspendConnections()` and
+    /// then this drain separately.
+    public static func drainWriterQueues() async {
+        for manager in suspensionDrainRegistry.snapshot() {
+            await manager.drainWriterForSuspension()
+        }
+    }
+
+    private func drainWriterForSuspension() async {
+        if let queue {
+            _ = try? await queue.writeWithoutTransaction { (_: Database) in () }
+        } else if let pool {
+            _ = try? await pool.writeWithoutTransaction { (_: Database) in () }
+        }
     }
 
     /// The single underlying GRDB reader, exposed ONLY for read-only

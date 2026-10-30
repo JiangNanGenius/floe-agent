@@ -1906,6 +1906,13 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         openStages.removeAll()
         suspendedStageIDs.formUnion(stages.keys)
         for stage in stages.values { closeStage(stage) }
+        // Actor reentrancy means a metadata write can still be inside
+        // `pool.write` after `storageSuspended` flips. New writes are refused
+        // above, and this empty barrier is queued behind any in-flight one, so
+        // returning here proves the store's writer no longer owns a SQLite
+        // lock. The host can then surrender its last execution assertion
+        // without leaving the shared App Group database locked in suspension.
+        _ = try? await pool.writeWithoutTransaction { (_: Database) in () }
     }
 
     public func resumeAfterSuspension() {
