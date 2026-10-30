@@ -19,8 +19,25 @@ internal interface NetworkSession : Closeable {
     suspend fun ping(host: String, count: Int, timeoutMs: Int): ProbeResult
     suspend fun tcpProbe(host: String, port: Int, timeoutMs: Int): ProbeResult
     suspend fun http(target: HttpTarget, timeoutMs: Int, maxRedirects: Int): ProbeResult
+    suspend fun lanDiscover(request: LanDiscoveryRequest): ProbeResult
+    suspend fun speedTest(request: SpeedTestRequest): ProbeResult
+
+    /**
+     * Last bounded observation published by an operation that supports
+     * partial results. The service merges it into timeout/cancelled envelopes
+     * so a stopped speed transfer retains actual bytes instead of being
+     * replaced by a generic empty result. Default null preserves the G07.1
+     * behavior for every existing method.
+     */
+    fun partialResult(): ProbeResult? = null
 }
 
 internal interface NetworkPlatform {
     fun openSession(request: ParsedRequest): NetworkSession
 }
+
+/** The captured Network handle changed or disappeared while an operation ran. */
+internal class NetworkChangedException(
+    val currentHandle: Long?,
+    message: String = "the captured Android Network changed",
+) : Exception(message)

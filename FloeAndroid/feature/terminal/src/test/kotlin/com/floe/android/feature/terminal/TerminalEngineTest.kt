@@ -29,6 +29,27 @@ class TerminalEngineTest {
     private fun bytes(text: String) = text.toByteArray(Charsets.UTF_8)
 
     @Test
+    fun accessibilityTracksScrolledViewportInsteadOfLiveBottom() {
+        val engine = engine()
+        engine.feed(bytes((0..7).joinToString("\r\n") { "ROW$it" }))
+        assertEquals("ROW3\nROW4\nROW5\nROW6\nROW7", engine.viewportText(0))
+        assertEquals("ROW0\nROW1\nROW2\nROW3\nROW4", engine.viewportText(3))
+        assertEquals(engine.viewportText(3), engine.viewportText(Int.MAX_VALUE))
+        assertEquals(engine.viewportText(0), engine.viewportText(-1))
+    }
+
+    @Test
+    fun accessibilityTextBudgetIsBoundedWithoutChangingInputOrScroll() {
+        val host = RecordingHost()
+        val engine = engine(host = host)
+        engine.feed(bytes((0..7).joinToString("\r\n") { "ROW$it" }))
+        assertEquals("ROW0\nRO", engine.viewportText(3, 7))
+        assertEquals("", engine.viewportText(3, 0))
+        assertTrue(host.ptyWrites.isEmpty())
+        assertEquals("ROW3\nROW4\nROW5\nROW6\nROW7", engine.viewportText(0))
+    }
+
+    @Test
     fun plainTextAndWrappingParse() {
         val engine = engine()
         engine.feed(bytes("hello floe"))

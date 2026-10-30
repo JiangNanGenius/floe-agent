@@ -22,6 +22,41 @@ internal object NetworkLimits {
     const val DEFAULT_PING_TIMEOUT_MS = 5_000
     const val DEFAULT_TCP_TIMEOUT_MS = 5_000
     const val DEFAULT_HTTP_TIMEOUT_MS = 10_000
+    const val DEFAULT_LAN_TIMEOUT_MS = 20_000
+    const val DEFAULT_SPEED_TIMEOUT_MS = 30_000
+
+    // G07.2 LAN discovery bounds.
+    const val MAX_LAN_SERVICE_TYPES = 8
+    const val MAX_LAN_SERVICES = 64
+    const val MAX_LAN_ATTRIBUTES = 16
+    const val MAX_LAN_ATTRIBUTE_KEY_CHARS = 32
+    const val MAX_LAN_ATTRIBUTE_VALUE_BYTES = 128
+    const val MIN_LAN_DISCOVERY_MS = 500
+    const val MAX_LAN_DISCOVERY_MS = 15_000
+    const val DEFAULT_LAN_DISCOVERY_MS = 4_000
+
+    // G07.2 bounded private-subnet TCP discovery.
+    const val MAX_TCP_PORTS = 8
+    const val MAX_TCP_HOSTS = 254
+    const val MAX_TCP_ATTEMPTS = 1_024
+    const val MIN_TCP_CONNECT_TIMEOUT_MS = 100
+    const val MAX_TCP_CONNECT_TIMEOUT_MS = 2_000
+    const val DEFAULT_TCP_CONNECT_TIMEOUT_MS = 500
+    const val MAX_TCP_CONCURRENCY = 32
+    const val DEFAULT_TCP_CONCURRENCY = 16
+    const val MAX_TCP_OPEN_PORTS = 256
+
+    // G07.2 explicitly budgeted throughput diagnostics.
+    const val MIN_SPEED_BYTES = 65_536
+    const val MAX_SPEED_BYTES = 33_554_432
+    const val DEFAULT_SPEED_BYTES = 8_388_608
+    const val MIN_SPEED_DURATION_MS = 1_000
+    const val MAX_SPEED_DURATION_MS = 15_000
+    const val DEFAULT_SPEED_DURATION_MS = 10_000
+    const val MAX_SPEED_WARMUP_BYTES = 262_144
+    const val MIN_SPEED_SAMPLE_BYTES = 65_536
+    const val MIN_SPEED_SAMPLE_MS = 250
+    const val SPEED_CONNECTION_MARGIN_MS = 1_500
 
     const val MAX_HOST_CHARS = 253
     const val MAX_URL_CHARS = 4096
@@ -39,7 +74,9 @@ internal enum class NetworkMethod(val wire: String, val defaultTimeoutMs: Int) {
     DNS_LOOKUP("network.dnsLookup", NetworkLimits.DEFAULT_DNS_TIMEOUT_MS),
     PING("network.ping", NetworkLimits.DEFAULT_PING_TIMEOUT_MS),
     TCP_PROBE("network.tcpProbe", NetworkLimits.DEFAULT_TCP_TIMEOUT_MS),
-    HTTP("network.http", NetworkLimits.DEFAULT_HTTP_TIMEOUT_MS);
+    HTTP("network.http", NetworkLimits.DEFAULT_HTTP_TIMEOUT_MS),
+    LAN_DISCOVER("network.lanDiscover", NetworkLimits.DEFAULT_LAN_TIMEOUT_MS),
+    SPEED_TEST("network.speedTest", NetworkLimits.DEFAULT_SPEED_TIMEOUT_MS);
 
     companion object {
         fun fromWire(value: String): NetworkMethod? = entries.firstOrNull { it.wire == value }

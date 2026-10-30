@@ -15,15 +15,18 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
 /**
- * G07.1 network host lane — the Kotlin mirror of the Swift-owned wire
+ * G07.1/G07.2 network host lane — the Kotlin mirror of the Swift-owned wire
  * authority (`G07NetworkHostMailbox.swift` + `FloeAndroidNetwork`
  * `NetworkToolRequest.swift` / `NetworkObservationV1.swift`).
  *
  * This file performs ONLY closed-grammar parsing/bounding of what the
  * mailbox already handed the pump. It never decides authority, never invents
  * a measurement, never logs a target, and stores no permission state. The
- * request `host`/`url` is parsed ONLY to hand the existing LAN broker a
- * host-only hint when the service reports `permissionRequired`.
+ * request `host`/`url`/`subnetCidr` is parsed ONLY to hand the existing LAN
+ * broker a bounded host/label hint when the service reports
+ * `permissionRequired`.
+ * Endpoint arguments are opaque untrusted data: normalizing a host here never
+ * grants permission and never widens the request the service re-validates.
  */
 internal object NetworkDiagnosticsWire {
 
@@ -52,6 +55,8 @@ internal object NetworkDiagnosticsWire {
         "network.ping",
         "network.tcpProbe",
         "network.http",
+        "network.lanDiscover",
+        "network.speedTest",
     )
 
     val STATUSES = setOf(
@@ -78,7 +83,13 @@ internal object NetworkDiagnosticsWire {
 
     data class RequestFacts(
         val method: String,
-        /** Host only (no scheme, path, query, userinfo or port). */
+        /**
+         * Host only (no scheme, path, query, userinfo or port). For
+         * `network.lanDiscover` this is the subnet's network address; an
+         * mDNS-only browse has no concrete endpoint and stays null. For
+         * `network.speedTest` it is the requested direction's endpoint host
+         * (local-looking endpoint preferred for downloadAndUpload).
+         */
         val targetHost: String?,
     )
 
@@ -196,13 +207,59 @@ internal object NetworkDiagnosticsWire {
     }
 
     private fun targetHost(arguments: JsonObject): String? {
-        val host = (arguments["host"] as? JsonPrimitive)
+        (arguments["host"] as? JsonPrimitive)
             ?.takeIf { it.isString }?.content
-        if (host != null) return safeHost(host)
-        val url = (arguments["url"] as? JsonPrimitive)
+            ?.let { return safeHost(it) }
+        // G07.1 network.http keeps its original url-host hint unchanged.
+        arguments.urlHost("url")?.let { return it }
+        // network.lanDiscover: the subnet scan's network address is the only
+        // concrete hint. mDNS-only discovery has no endpoint, so it stays null
+        // and the existing host permission surface owns the guidance.
+        (arguments["subnetCidr"] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.content
+            ?.substringBefore('/')
+            ?.let { return safeHost(it) }
+        val download = arguments.urlHost("downloadUrl")
+        val upload = arguments.urlHost("uploadUrl")
+        val direction = (arguments["direction"] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.content ?: "download"
+        return when (direction) {
+            "upload" -> upload
+            "downloadAndUpload" ->
+                // Prefer a local-looking endpoint so the existing broker gets
+                // the useful hint when only one direction is local. The
+                // service remains authoritative for the actual route.
+                listOfNotNull(download, upload).firstOrNull { isLocalHint(it) }
+                    ?: download ?: upload
+            else -> download ?: upload
+        }
+    }
+
+    private fun JsonObject.urlHost(key: String): String? {
+        val url = (this[key] as? JsonPrimitive)
             ?.takeIf { it.isString }?.content ?: return null
-        val parsed = runCatching { java.net.URI(url).host }.getOrNull() ?: return null
-        return safeHost(parsed)
+        val host = runCatching { java.net.URI(url).host }.getOrNull() ?: return null
+        return safeHost(host)
+    }
+
+    private fun isLocalHint(host: String): Boolean {
+        if (host.endsWith(".local")) return true
+        if (host == "::1" || host.startsWith("fe80:") ||
+            host.startsWith("fc") || host.startsWith("fd")
+        ) {
+            return true
+        }
+        val parts = host.split('.')
+        if (parts.size != 4) return false
+        val octets = parts.mapNotNull { it.toIntOrNull() }
+        if (octets.size != 4 || octets.any { it !in 0..255 }) return false
+        return when {
+            octets[0] == 10 -> true
+            octets[0] == 172 && octets[1] in 16..31 -> true
+            octets[0] == 192 && octets[1] == 168 -> true
+            octets[0] == 127 -> true
+            else -> false
+        }
     }
 
     private fun safeHost(value: String): String? {
@@ -288,11 +345,17 @@ internal object NetworkDiagnosticsWire {
         if (status != "permissionRequired") return null
         val missing = permissionNames(root)
         if (missing.isEmpty()) return null
+        val label = when {
+            ticket.method != "network.lanDiscover" -> null
+            facts.targetHost == null -> "Local network discovery (.local/mDNS)"
+            else -> "LAN subnet ${facts.targetHost.orEmpty()}"
+        }
         return NetworkPermissionRequest(
             operationID = ticket.operationID,
             method = ticket.method,
             missingPermissions = missing,
             targetHost = facts.targetHost,
+            targetLabel = label,
         )
     }
 

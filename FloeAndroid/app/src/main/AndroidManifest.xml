@@ -9,6 +9,10 @@
         <package android:name="com.floe.agent.runtime.full.dev" />
     </queries>
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- User-started, bounded network monitoring; never a background keepalive. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- G07: normal state permissions and explicit foreground Wi-Fi analysis.
          Location/Nearby permission requests happen only after the user's action. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -25,6 +29,11 @@
     <application android:name=".FloeApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.Floe" android:allowBackup="false" android:supportsRtl="true"
         android:usesCleartextTraffic="false" android:enableOnBackInvokedCallback="true">
+        <service
+            android:name=".host.networkmonitor.NetworkMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="true" />
         <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

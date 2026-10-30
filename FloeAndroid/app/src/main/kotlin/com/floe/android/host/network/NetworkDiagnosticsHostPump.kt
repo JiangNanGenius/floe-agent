@@ -41,7 +41,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    generation remains owned/pending. The reader's finally performs the
  *    exact-epoch close only after real settlement.
  *
- * Availability is REAL: the six `network.*` tools are registered by the
+ * Availability is REAL: the eight `network.*` tools are registered by the
  * Swift bind, and the bind is only attempted when an actual service is
  * present. A missing service leaves the lane honestly absent.
  */
@@ -110,7 +110,7 @@ internal class NetworkDiagnosticsHostPump(
             return@withLock existing.epoch == epoch &&
                 existing.reader?.isActive == true && !existing.stopping.get()
         }
-        // No service means no capability. Binding anyway would advertise six
+        // No service means no capability. Binding anyway would advertise eight
         // tools the host cannot execute; keep the lane honestly absent.
         if (serviceProvider() == null) return@withLock false
         val bound = try {

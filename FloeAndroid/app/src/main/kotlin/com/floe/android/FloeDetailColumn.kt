@@ -87,6 +87,7 @@ fun FloeDetailColumn(
             is SidebarSelection.More -> when (selection.destination) {
                 MoreDestination.NETWORK -> NetworkWorkbenchDestination(
                     host = runtimeHost, compact = compact,
+                    showSidebarToggle = showSidebarToggle,
                     onNavigate = { if (compact) onOpenDrawer() else onExpandSidebar() },
                 )
                 MoreDestination.NOTES -> NotesDestination(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact, onOpenSettingsSection)

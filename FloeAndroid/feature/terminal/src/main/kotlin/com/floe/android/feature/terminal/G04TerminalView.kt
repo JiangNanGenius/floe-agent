@@ -201,7 +201,7 @@ fun G04TerminalView(
             .background(settings.backgroundColor)
             .onSizeChanged { viewSize = it }
             .semantics {
-                contentDescription = terminalAccessibilityLabel(engine, statusLine, revision)
+                contentDescription = terminalAccessibilityLabel(engine, statusLine, revision, scrollRows)
             }
             // Physical/hardware key events -> KeyHandler tables in the sink.
             .onPreviewKeyEvent { event ->
@@ -334,7 +334,9 @@ private fun terminalAccessibilityLabel(
     engine: G04TerminalEngine,
     statusLine: String,
     revision: Int,
+    scrollRows: Int,
 ): String {
-    val text = runCatching { engine.visibleText() }.getOrDefault("").trim().take(800)
-    return if (statusLine.isBlank()) text.ifBlank { "Terminal" } else "$statusLine\n$text"
+    val text = runCatching { engine.viewportText(scrollRows) }.getOrDefault("")
+    val status = statusLine.take(512)
+    return if (status.isBlank()) text.ifBlank { "Terminal" } else "$status\n$text"
 }

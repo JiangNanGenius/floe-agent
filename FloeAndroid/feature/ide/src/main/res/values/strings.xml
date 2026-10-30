@@ -6,6 +6,11 @@
     <!-- shell / chrome -->
     <string name="ide_back_cd">Back to task</string>
     <string name="ide_back_to_files_cd">Back to file list</string>
+    <!-- The full-window editor may return either to the phone file list or to
+         the tablet inspector preview that opened it; this label is truthful
+         in both cases and never promises the wrong destination. -->
+    <string name="ide_close_full_window_cd">Close full-window editor</string>
+    <string name="ide_workspace_name_exists">A file or folder with this name already exists. Choose a different name.</string>
     <string name="ide_title_no_document">No file open</string>
     <string name="ide_empty_hint">Open a text or code file from the workspace file list.</string>
     <string name="ide_doc_loading">Loading…</string>

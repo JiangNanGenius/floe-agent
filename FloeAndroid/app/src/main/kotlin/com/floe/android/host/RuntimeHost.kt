@@ -129,6 +129,64 @@ class RuntimeHost internal constructor(
     private var networkDiagnosticsControl: Job? = null
     private val networkDiagnosticsLock = Any()
 
+    /**
+     * Native-root generation gate for the monitoring launch. It is armed
+     * before the root drain (even when the lazy host below was never
+     * constructed) and admits explicit Starts again only after a different
+     * live [nativeRootEpoch] is observed. This is the root-retirement hook,
+     * not a second lifecycle tracker: the launch lifecycle stays in the
+     * host-side pure ledger.
+     */
+    private val networkMonitorLaunchAdmission =
+        com.floe.android.host.networkmonitor.NetworkMonitorLaunchAdmission()
+
+    internal fun isNetworkMonitorLaunchAdmitted(): Boolean =
+        networkMonitorLaunchAdmission.isAdmitted(nativeRootEpoch())
+
+    private fun armNetworkMonitorLaunchRetirementAt(epoch: Long?) {
+        networkMonitorLaunchAdmission.arm(epoch)
+    }
+
+    /**
+     * G07.2 application-scoped bounded-monitoring host. Construction performs
+     * no probe, no disk read and no Service start; it is admitted only when
+     * the dedicated monitoring panel is first opened. The existing single
+     * PhoneNetworkService is the only transport port, and the real Activity
+     * foreground callback is the start authority. The ServiceRuntime resolver
+     * is installed before the panel can expose Start.
+     */
+    private val networkMonitorDelegate = lazy {
+        val monitor = com.floe.android.host.networkmonitor.NetworkMonitorHost(
+            context = appContext,
+            executor = com.floe.android.host.networkmonitor.PhoneNetworkMonitorExecutor(networkService),
+            isAppForeground = {
+                (appContext as? com.floe.android.FloeApplication)?.isActivityInForeground() == true
+            },
+            deviceMetadata = {
+                val appVersion = runCatching {
+                    appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName
+                }.getOrNull().orEmpty().take(128).ifBlank { "unknown" }
+                com.floe.android.core.networkmonitor.NetworkMonitorDeviceMetadata(
+                    osVersion = "Android ${android.os.Build.VERSION.RELEASE} " +
+                        "(API ${android.os.Build.VERSION.SDK_INT})",
+                    appVersion = appVersion,
+                )
+            },
+            launchAdmission = ::isNetworkMonitorLaunchAdmitted,
+        )
+        com.floe.android.host.networkmonitor.NetworkMonitorServiceRuntime.install(monitor)
+        monitor
+    }
+    internal val networkMonitorHost: com.floe.android.host.networkmonitor.NetworkMonitorHost
+        get() = networkMonitorDelegate.value
+
+    /** Test/verification seam: proves an untouched panel is not initialized by root stop. */
+    internal val isNetworkMonitorHostInitialized: Boolean
+        get() = networkMonitorDelegate.isInitialized()
+    /** Stable in-process control owner for the workbench monitoring panel. */
+    internal val networkMonitorOwnerId =
+        "network-monitor-ui:" + java.util.UUID.randomUUID().toString()
+
     internal fun currentNetworkPermissionNotice(notice: NetworkPermissionNotice): Boolean =
         networkPermissionNotice.value === notice && commandClient.generation() == notice.generation && nativeRootEpoch() == notice.epoch
 
@@ -151,12 +209,40 @@ class RuntimeHost internal constructor(
     }
 
     internal suspend fun prepareNetworkForRootStop(): Boolean {
+        // Arm the generation gate before any lane work: from here on a new
+        // launch (including one arriving after an untouched lazy host is
+        // eventually constructed) is refused until a different live native
+        // root epoch exists. Repeated drains keep the last known epoch.
+        armNetworkMonitorLaunchRetirementAt(nativeRootEpoch())
+        return drainNetworkForRootStop()
+    }
+
+    private suspend fun drainNetworkForRootStop(): Boolean {
         networkWorkbench.leave()
         networkPermissionNotice.value = null
         networkDiagnosticsControl?.cancelAndJoin()
         networkDiagnosticsControl = null
+        // Never initialize the monitoring host just to stop it: an untouched
+        // panel has no owned launch. For an admitted host, retirement first
+        // invalidates every PENDING/CLAIMED launch (not just the asynchronously
+        // published StateFlow), then joins the exact ACTIVE session before the
+        // native root is retired. A failed join is reported honestly and keeps
+        // the old generation pending.
+        val monitorReady = if (networkMonitorDelegate.isInitialized()) {
+            val monitor = networkMonitorDelegate.value
+            val retirement = monitor.retireForRootStop()
+            val sessionId = retirement.activeSessionId
+            sessionId == null || monitor.stopAndJoin(
+                sessionId,
+                NETWORK_MONITOR_STOP_WAIT_MS,
+                com.floe.android.core.networkmonitor.NetworkMonitorEndReason.SERVICE_DESTROYED,
+            )
+        } else {
+            true
+        }
         val epoch = networkDiagnostics.boundEpoch()
-        return epoch <= 0 || networkDiagnostics.stopAndJoin(epoch, 5_000)
+        val diagnosticsReady = epoch <= 0 || networkDiagnostics.stopAndJoin(epoch, 5_000)
+        return monitorReady && diagnosticsReady
     }
 
     /**
@@ -455,7 +541,25 @@ class RuntimeHost internal constructor(
                 }
                 g02ReadinessAdapter.reset()
                 stopOfficeAiLane()
-                scope.launch(ioDispatcher) { prepareNetworkForRootStop() }
+                scope.launch(ioDispatcher) {
+                    // Post-stop cleanup only for a genuinely retired root. A
+                    // live non-null epoch means a NEW generation has already
+                    // been accepted: the main pre-stop drain cleaned the old
+                    // generation, and this late callback must neither retire
+                    // the new root's monitor session nor arm/block its epoch.
+                    if (nativeRootEpoch() != null) return@launch
+                    // A cleared gate that was armed before means a newer
+                    // generation was already admitted; never drain it from
+                    // this stale callback. A never-armed gate (no main drain)
+                    // is closed now so the retired window cannot admit work.
+                    if (networkMonitorLaunchAdmission.wasEverArmed() &&
+                        !networkMonitorLaunchAdmission.isArmed()
+                    ) {
+                        return@launch
+                    }
+                    armNetworkMonitorLaunchRetirementAt(null)
+                    drainNetworkForRootStop()
+                }
             }
         }
     }
@@ -737,6 +841,9 @@ class RuntimeHost internal constructor(
         /** Bounded join for the owned document-preview renderer/snapshot
          * drain, matching the other lane stop waits. */
         internal const val WORKSPACE_PREVIEW_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the exact active monitoring session on root stop. */
+        internal const val NETWORK_MONITOR_STOP_WAIT_MS = 5_000L
 
         /** Structural refusal metadata only — never echo the goal/payload. */
         private val RUN_FAILURE_DETAIL_KEYS = listOf(

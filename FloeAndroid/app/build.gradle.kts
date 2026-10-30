@@ -464,6 +464,7 @@ androidComponents.onVariants { variant ->
 dependencies {
     implementation(project(":core:contracts"))
     implementation(project(":core:network"))
+    implementation(project(":core:networkmonitor"))
     implementation(project(":feature:network"))
     implementation(project(":core:credentials"))
     implementation(project(":core:designsystem"))
