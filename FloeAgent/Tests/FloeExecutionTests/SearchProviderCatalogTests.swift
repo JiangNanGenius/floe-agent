@@ -319,15 +319,17 @@ struct SearchProviderCatalogTests {
         #expect(custom.configuration.endpoint == nil, "custom endpoints are user supplied")
         #expect(custom.configuration.options.isEmpty)
 
+        let searxngEntry = try #require(index.entry(presetID: "searxng"))
         let searxng = try #require(SearchProviderDraftFactory.draftInstance(
-            for: try #require(index.entry(presetID: "searxng")),
+            for: searxngEntry,
             localePrimary: "en"
         ))
         #expect(searxng.configuration.credentialAccount.hasPrefix("web-search.instance."))
 
         var volcengineAccountID: UUID?
+        let volcengineEntry = try #require(index.entry(presetID: "volcengine"))
         let volcengine = try #require(SearchProviderDraftFactory.draftInstance(
-            for: try #require(index.entry(presetID: "volcengine")),
+            for: volcengineEntry,
             localePrimary: "zh-Hans",
             volcengineCredentialAccount: { id in
                 volcengineAccountID = id
@@ -586,8 +588,9 @@ struct SearchProviderCatalogTests {
     @Test("Drafts created from a catalog pick stay catalog-owned until a real rename")
     func catalogPickDraftFollowsLaterTitles() throws {
         let bundled = try Self.bundledIndex()
+        let bochaEntry = try #require(bundled.entry(presetID: "bocha"))
         let draft = try #require(SearchProviderDraftFactory.draftInstance(
-            for: try #require(bundled.entry(presetID: "bocha")), localePrimary: "zh-Hans"
+            for: bochaEntry, localePrimary: "zh-Hans"
         ))
         #expect(draft.configuration.displayName == "博查搜索")
         #expect(draft.overrides.isEmpty, "adopting the pick default is not a user alias")
