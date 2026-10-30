@@ -191,7 +191,10 @@ public final class CADAssemblyReferenceBridge {
             if isCancelled() {
                 return failure("cancelled", Self.cancelledMessage)
             }
-            let staged = stagedBody(from: body, in: document)
+            guard let staged = stagedBody(from: body, in: document) else {
+                return failure("source_geometry_unavailable",
+                               "The source geometry could not be copied; nothing was changed.")
+            }
             let stagedBodyID = staged.id.raw
             let reference = CADPartReference(
                 name: normalizedName(name) ?? body.name,
@@ -409,10 +412,13 @@ public final class CADAssemblyReferenceBridge {
             if isCancelled() {
                 return failure("cancelled", Self.cancelledMessage)
             }
-            let replacement = stagedBody(from: body,
-                                         in: document,
-                                         bodyID: reference.stagedBodyID,
-                                         name: staged.name)
+            guard let replacement = stagedBody(from: body,
+                                               in: document,
+                                               bodyID: reference.stagedBodyID,
+                                               name: staged.name) else {
+                return failure("source_geometry_unavailable",
+                               "The source geometry could not be copied; the previous reference was retained.")
+            }
             var updated = reference
             updated.sourceDocumentName = summary.name
             updated.sourceBodyName = body.name
@@ -515,7 +521,7 @@ public final class CADAssemblyReferenceBridge {
     private func stagedBody(from source: Body,
                             in document: FloeCADDocument,
                             bodyID: UUID? = nil,
-                            name: String? = nil) -> Body {
+                            name: String? = nil) -> Body? {
         let stagedID = bodyID.map { BodyID(raw: $0) } ?? BodyID()
         let existing = bodyID.flatMap { id in
             document.session.document.bodies.first { $0.id.raw == id }
@@ -543,12 +549,9 @@ public final class CADAssemblyReferenceBridge {
         // the document package uses; a shared live handle would couple the
         // staged body to the source document's lifetime.
         if let brep = source.brep {
-            if let data = OCCTKernel.serialize(brep),
-               let owned = OCCTKernel.deserialize(data) {
-                staged.brep = owned
-            } else {
-                staged.brep = brep
-            }
+            guard let data = OCCTKernel.serialize(brep),
+                  let owned = OCCTKernel.deserialize(data) else { return nil }
+            staged.brep = owned
         }
         return staged
     }

@@ -12,6 +12,13 @@ func assertComposerAboveSoftwareKeyboardIfRequired(
     XCTAssertTrue(keyboard.waitForExistence(timeout: 10),
                   "This acceptance run requires the actual onscreen keyboard", file: file, line: line)
     guard keyboard.exists else { return }
+    let visibleKeyboard = keyboard.frame.intersection(app.windows.firstMatch.frame)
+    XCTAssertFalse(visibleKeyboard.isNull || visibleKeyboard.isEmpty,
+                   "A parked offscreen AX keyboard is not software-keyboard evidence",
+                   file: file, line: line)
+    XCTAssertTrue(keyboard.keys.allElementsBoundByIndex.contains { key in
+        key.isHittable && visibleKeyboard.contains(CGPoint(x: key.frame.midX, y: key.frame.midY))
+    }, "The software keyboard must paint usable keys inside the App window", file: file, line: line)
     XCTAssertLessThanOrEqual(input.frame.maxY, keyboard.frame.minY + 1,
                             "The editable viewport and current line must stay above the keyboard",
                             file: file, line: line)
