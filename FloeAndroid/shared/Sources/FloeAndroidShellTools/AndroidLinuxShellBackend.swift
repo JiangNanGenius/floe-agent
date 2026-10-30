@@ -130,6 +130,18 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         /// True once a stop was REQUESTED (cancel/timeout); it is NOT a
         /// proven stop until `leaseReleased` arrives with the real terminal.
         public var stopRequested: Bool
+        /// G07.3A: the trusted admission role this session was opened under.
+        public var role: LinuxShellLeaseRole = .interactive
+        /// Runtime process generation that admitted the session.
+        public var runtimeGeneration: String? = nil
+        /// True when this session owns the workspace import/export.
+        public var workspaceOwner: Bool? = nil
+        /// G07.3A measured preparation facts (rootfs reuse + real stage ms).
+        public var prepareReused: Bool? = nil
+        public var prepareMillis: Int64? = nil
+        public var prepareCopiedBytes: Int64? = nil
+        public var importMillis: Int64? = nil
+        public var importedEntries: Int64? = nil
 
         /// The exit status surfaced to the original outcome/DTO vocabulary:
         /// 128+signal for a signalled terminal (POSIX shell convention,
@@ -157,10 +169,13 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
     private let readiness: any LinuxShellReadiness
     private let configuration: Configuration
 
-    /// The single engine slot (mirrors the original process-wide gate).
+    /// G07.3A bounded role slot pool. The runtime process itself enforces the
+    /// same ceilings (2 interactive + ONE shared Agent/run execution slot);
+    /// this LOCAL gate keeps
+    /// the client honest and gives a typed refusal before a dispatch is sent.
     /// Holders are unique per dispatch so two same-token one-shot runs can
-    /// never re-enter each other's gate.
-    private var gateHolder: String?
+    /// never re-enter each other's slot.
+    private var slotHolders: [String: LinuxShellLeaseRole] = [:]
     private var sessions: [String: SessionRecord] = [:]
     /// G07.1 terminal04: bounded client-visible phase composition of the MOST
     /// RECENT one-shot dispatch this backend measured (closed vocabulary +
@@ -205,7 +220,72 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         ownedSessions().filter { $0.runID == runID }
     }
 
-    public func isEngineSlotBusy() -> Bool { gateHolder != nil }
+    /// Legacy "is ANY engine workload held" truth (drain/handoff proofs).
+    /// [hasCapacity(for:)] is the explicit role question concurrent opens use.
+    public func isEngineSlotBusy() -> Bool { !slotHolders.isEmpty }
+
+    /// The ONLY proven workspace owner this backend observed for the
+    /// conversation, if exactly one exists. The start reply's
+    /// `workspaceOwner` is the runtime's own admission fact: a participant
+    /// (`false`) or an absent legacy field is never promoted to an owner
+    /// hint. More than one proven owner is an inconsistent observation, so
+    /// this fails closed (nil) instead of choosing an arbitrary/default
+    /// session; the runtime then resolves shared/deferred ownership itself.
+    static func observedWorkspaceReuse(
+        conversationID: UUID?,
+        sessions: [EngineSession]
+    ) -> LinuxShellWorkspaceReuse? {
+        guard let conversationID else { return nil }
+        let owners = sessions.filter {
+            !$0.leaseReleased && $0.conversationID == conversationID &&
+                $0.workspaceOwner == true
+        }
+        guard owners.count == 1, let owner = owners.first else { return nil }
+        return .shared(ownerSessionID: owner.engineSessionID)
+    }
+
+    public func hasCapacity(for role: LinuxShellLeaseRole) -> Bool {
+        // Approved default: 2 interactive + ONE execution slot shared by the
+        // Agent command and a language/run session. Total live sessions <= 3.
+        guard slotHolders.count < Self.maximumConcurrentSessions else { return false }
+        switch role {
+        case .interactive:
+            return slotHolders.values.filter { $0 == .interactive }.count < 2
+        case .agent, .run:
+            return slotHolders.values.filter { $0 == .agent || $0 == .run }.count < 1
+        }
+    }
+
+    /// The live role whose lease makes `role` inadmissible RIGHT NOW, or nil
+    /// when `role` can start. This is a pure snapshot of the same role pool
+    /// `hasCapacity(for:)` admits from: an interactive lease NEVER blocks the
+    /// dedicated Agent/run execution role, while an Agent/run lease blocks
+    /// both execution roles and cannot be freed by closing a terminal. Used by
+    /// admission messaging to avoid reporting a TTY conflict for an execution
+    /// slot a TTY does not own. It mints, stops and releases nothing.
+    public func capacityBlockingRole(for role: LinuxShellLeaseRole) -> LinuxShellLeaseRole? {
+        guard !hasCapacity(for: role) else { return nil }
+        switch role {
+        case .interactive:
+            return .interactive
+        case .agent, .run:
+            // The execution pool is shared by exactly these two roles; the
+            // 3-slot total leaves no other way to make it inadmissible. The
+            // fallback keeps an inconsistent snapshot from being read as a
+            // phantom interactive owner.
+            return slotHolders.values.first(where: { $0 == .agent || $0 == .run }) ?? role
+        }
+    }
+
+    static func capacity(for role: LinuxShellLeaseRole) -> Int {
+        switch role {
+        case .interactive: return 2
+        case .agent: return 1
+        case .run: return 1
+        }
+    }
+
+    static let maximumConcurrentSessions = 3
 
     /// Owner-scoped reconciliation view for the trusted facade ledger.
     public func unreconciledSessions(runID: UUID) -> [EngineSession] {
@@ -258,14 +338,24 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         // for attribution), so a concurrent/denied dispatch can never be
         // journaled against another call's timing.
         var phases = TerminalLatencyPhases(originNanos: TerminalLatencyPhases.now())
-        guard await acquireGate(heldBy: holdKey, timeout: request.gateTimeout, cancellation: cancellation) else {
+        // G07.3A: the Agent command has ONE dedicated slot. A live terminal
+        // no longer blocks it, and a live terminal in the SAME conversation
+        // makes this command a workspace PARTICIPANT (no second import/export).
+        // ONLY a session whose own runtime reply proved workspaceOwner==true
+        // may be named: an observed participant's lease id is refused by the
+        // real runtime, and there is no dictionary-order/default fallback.
+        let reuseHint = Self.observedWorkspaceReuse(
+            conversationID: request.conversationID,
+            sessions: sessions.values.map(\.engine))
+        guard await acquireGate(heldBy: holdKey, role: .agent, timeout: request.gateTimeout,
+                                cancellation: cancellation) else {
             phases.mark(.gate, at: TerminalLatencyPhases.now())
             let cancelled = cancellation?.isCancelled == true || Task.isCancelled
             if cancelled { return (.cancelled, phases.render(terminal: .cancelled)) }
-            // The engine slot is still owned (or being reconciled): nothing
-            // of this command ran. Distinct from a timeout, exactly as the
+            // The Agent slot is still owned (or being reconciled): nothing of
+            // this command ran. Distinct from a timeout, exactly as the
             // original contract documents.
-            return (.notStarted(reason: "the single runtime-UID Linux workload slot is occupied (another command or session still holds the engine lease); nothing was started"),
+            return (.notStarted(reason: "the Agent command slot is occupied (a previous exec.shell command still holds its engine lease); nothing was started"),
                     phases.render(terminal: .notStarted))
         }
         phases.mark(.gate, at: TerminalLatencyPhases.now())
@@ -286,13 +376,15 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             // job's stdin as a dedicated pipe (stdout/stderr stay on the
             // PTY slave) whose sole EOF is the descriptor close commanded
             // below. Interactive `openSession` never sets this.
-            stdinDelivery: .pipe
+            stdinDelivery: .pipe,
+            hostLeaseRole: .agent,
+            workspaceReuse: reuseHint
         )
         let reply: LinuxShellStartReply
         do {
             reply = try await transport.shellStart(start)
         } catch {
-            releaseGate(heldBy: holdKey)
+            releaseGate(heldBy: holdKey, role: .agent)
             phases.mark(.start, at: TerminalLatencyPhases.now())
             return (.failed(message: describeTransportError(error)), phases.render(terminal: .failed))
         }
@@ -305,7 +397,14 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                                    cursor: 0, bytesRead: 0, bytesWritten: 0,
                                    state: .running, leaseReleased: false,
                                    cancelled: false, stopReason: nil,
-                                   exitCode: nil, termSig: nil, stopRequested: false)
+                                   exitCode: nil, termSig: nil, stopRequested: false,
+                                   role: .agent, runtimeGeneration: reply.runtimeGeneration,
+                                   workspaceOwner: reply.workspaceOwner,
+                                   prepareReused: reply.prepareReused,
+                                   prepareMillis: reply.prepareMillis,
+                                   prepareCopiedBytes: reply.prepareCopiedBytes,
+                                   importMillis: reply.importMillis,
+                                   importedEntries: reply.importedEntries)
         sessions[holdKey] = SessionRecord(engine: engine, reconcilingSince: nil)
 
         // One-shot pipe stdin: explicit caller data rides <=16 KiB
@@ -435,7 +534,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                 // `unobserved` in the rendered diagnostics).
                 phases.mark(.run, at: TerminalLatencyPhases.now())
                 sessions.removeValue(forKey: holdKey)
-                releaseGate(heldBy: holdKey)
+                releaseGate(heldBy: holdKey, role: .agent)
                 let durationMs = Int(Date().timeIntervalSince(started) * 1000)
                 let mergedText = String(decoding: merged, as: UTF8.self)
                 var metaErr = stdinFailureNote.map { "[metadata] \($0)" } ?? ""
@@ -453,7 +552,11 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                     let note = "[recovery-evidence]\n" + detail
                     metaErr = metaErr.isEmpty ? note : metaErr + "\n" + note
                 }
-                if page.workspaceStatus != "synced" {
+                if page.workspaceStatus == "deferred" {
+                    let note = "[workspace] changes are owned by another live session; they will be exported when the last session settles"
+                    metaErr = metaErr.isEmpty ? note : metaErr + "\n" + note
+                }
+                if page.workspaceStatus != "synced" && page.workspaceStatus != "deferred" {
                     // Concise actionable state first; bounded technical
                     // evidence rides BELOW it as explicit tool-card detail
                     // (relative paths, digests, counters — no host paths).
@@ -547,10 +650,30 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         // ops + specialUse FGS), never a model-path side effect from
         // shell.open. Component selection/paths/leases stay engine-owned;
         // an unqualified engine refuses above.
-        guard await acquireGate(heldBy: request.sessionID, timeout: request.gateTimeout,
+        let role = request.leaseRole
+        // A second tab/run in the SAME conversation mounts the live owner's
+        // guest workspace instead of importing over it. ONLY a session whose
+        // own runtime reply proved workspaceOwner==true may be named: a live
+        // participant (`false`) or an absent legacy field never mints a hint,
+        // and there is no dictionary-order/default fallback. With no proven
+        // owner the hint is omitted and the runtime resolves shared/deferred
+        // ownership itself.
+        let reuseHint = Self.observedWorkspaceReuse(
+            conversationID: request.conversationID,
+            sessions: sessions.values.map(\.engine))
+        guard await acquireGate(heldBy: request.sessionID, role: role, timeout: request.gateTimeout,
                                 cancellation: cancellation) else {
             try cancellation?.throwIfCancelled()
-            throw FloeError.validationFailed("the single Linux workload slot is occupied; close the running session or wait for the command to finish")
+            let message: String
+            switch role {
+            case .interactive:
+                message = "both interactive terminal slots are occupied; close a terminal tab or wait for a session to settle"
+            case .run:
+                message = "the language/run service slot is occupied; close the running session or wait for it to settle"
+            case .agent:
+                message = "the Agent command slot is occupied; wait for the command to finish"
+            }
+            throw FloeError.validationFailed(message)
         }
         let start = LinuxShellStartRequest(
             projectID: LinuxShellProjectMapping.projectID(forCanonicalCoreWorkspaceRoot: request.rootURL),
@@ -574,12 +697,14 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             // wire key is omitted entirely (never null), so canonical
             // Ctrl-D/Ctrl-C semantics, exchange paging and R1/R2 session
             // contracts are byte-identical to before.
+            hostLeaseRole: role,
+            workspaceReuse: reuseHint
         )
         let reply: LinuxShellStartReply
         do {
             reply = try await transport.shellStart(start)
         } catch {
-            releaseGate(heldBy: request.sessionID)
+            releaseGate(heldBy: request.sessionID, role: role)
             throw mapBackendError(error)
         }
         var engine = EngineSession(sessionKey: request.sessionID,
@@ -590,7 +715,14 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                                    cursor: 0, bytesRead: 0, bytesWritten: 0,
                                    state: .running, leaseReleased: false,
                                    cancelled: false, stopReason: nil,
-                                   exitCode: nil, termSig: nil, stopRequested: false)
+                                   exitCode: nil, termSig: nil, stopRequested: false,
+                                   role: role, runtimeGeneration: reply.runtimeGeneration,
+                                   workspaceOwner: reply.workspaceOwner,
+                                   prepareReused: reply.prepareReused,
+                                   prepareMillis: reply.prepareMillis,
+                                   prepareCopiedBytes: reply.prepareCopiedBytes,
+                                   importMillis: reply.importMillis,
+                                   importedEntries: reply.importedEntries)
         sessions[request.sessionID] = SessionRecord(engine: engine, reconcilingSince: nil)
         // Brief bounded initial drain so the first prompt/program output
         // reaches the caller (the original open() returned initial output).
@@ -626,14 +758,26 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             // The program died immediately: tear the slot down here; the
             // center treats a non-alive open as its own close path.
             sessions.removeValue(forKey: request.sessionID)
-            releaseGate(heldBy: request.sessionID)
+            releaseGate(heldBy: request.sessionID, role: role)
         }
         let text = String(decoding: initial, as: UTF8.self)
         return ShellOpenResult(
             sessionID: request.sessionID,
             initialOutput: text,
             alive: !engine.leaseReleased,
-            terminalOutput: initial.isEmpty ? nil : initial
+            terminalOutput: initial.isEmpty ? nil : initial,
+            runtimeGeneration: reply.runtimeGeneration,
+            environmentID: reply.environmentID,
+            workspaceOwner: reply.workspaceOwner,
+            prepareReused: reply.prepareReused,
+            prepareMillis: reply.prepareMillis,
+            prepareCopiedBytes: reply.prepareCopiedBytes,
+            importMillis: reply.importMillis,
+            importedEntries: reply.importedEntries,
+            // The actual engine lease id from the real start reply. The
+            // center/UI keep using `request.sessionID` (the client token);
+            // live files address this exact runtime session only.
+            runtimeSessionID: reply.sessionID
         )
     }
 
@@ -703,10 +847,11 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             // The session truly ended: release the gate. exitCode only ever
             // comes from the engine's real terminal fields (EOF != exit).
             sessions.removeValue(forKey: request.sessionID)
-            releaseGate(heldBy: request.sessionID)
+            releaseGate(heldBy: request.sessionID, role: engine.role)
         }
         var failureParts: [String] = []
-        if engine.leaseReleased, engine.workspaceStatus != "synced" {
+        if engine.leaseReleased, engine.workspaceStatus != "synced",
+           engine.workspaceStatus != "deferred" {
             let recovery = engine.workspaceRecoveryRef.map { " recovery=\($0)" } ?? ""
             failureParts.append("workspace-not-saved status=\(engine.workspaceStatus ?? "unknown")" + recovery)
         }
@@ -722,6 +867,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         // opened tool-detail block (nil metadata keeps this byte-identical
         // to before; the first lines above stay unchanged).
         if engine.leaseReleased, engine.workspaceStatus != "synced",
+           engine.workspaceStatus != "deferred",
            let evidence = engine.workspaceRecovery, evidence.hasActionableEvidence,
            let detail = evidence.evidenceText {
             failureParts.append("recovery-evidence\n" + detail)
@@ -747,7 +893,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         guard let record = sessions[sessionID] else { return }
         guard !record.engine.leaseReleased else {
             _ = sessions.removeValue(forKey: sessionID)  // already truly gone
-            releaseGate(heldBy: sessionID)
+            releaseGate(heldBy: sessionID, role: record.engine.role)
             return
         }
         // Engine stop is a REQUEST; ownership stays until the release proof.
@@ -922,14 +1068,14 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         }
     }
 
-    /// Bounded wait for the single engine slot (mirrors the original
-    /// process-wide run gate semantics exactly).
-    private func acquireGate(heldBy key: String, timeout: TimeInterval,
+    /// Bounded wait for ONE role slot. The deadline/cancellation contract is
+    /// unchanged; only the slot accounting is role-bounded.
+    private func acquireGate(heldBy key: String, role: LinuxShellLeaseRole, timeout: TimeInterval,
                              cancellation: CancellationToken?) async -> Bool {
         let deadline = Date().addingTimeInterval(max(0, timeout))
         while true {
-            if gateHolder == nil {
-                gateHolder = key
+            if hasCapacity(for: role) {
+                slotHolders[key] = role
                 return true
             }
             if cancellation?.isCancelled == true || Task.isCancelled || Date() >= deadline {
@@ -939,8 +1085,8 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         }
     }
 
-    private func releaseGate(heldBy key: String) {
-        if gateHolder == key { gateHolder = nil }
+    private func releaseGate(heldBy key: String, role: LinuxShellLeaseRole) {
+        if slotHolders[key] == role { slotHolders.removeValue(forKey: key) }
     }
 
     private func handoffReconciliation(_ sessionKey: String) {
@@ -1003,7 +1149,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         record.engine.termSig = termSig ?? record.engine.termSig
         if released {
             sessions.removeValue(forKey: sessionKey)
-            releaseGate(heldBy: sessionKey)
+            releaseGate(heldBy: sessionKey, role: record.engine.role)
         } else {
             sessions[sessionKey] = record
         }
@@ -1017,8 +1163,9 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         // must never block a fresh generation.
         guard var record = sessions[sessionKey] else { return }
         record.reconcilingSince = record.reconcilingSince ?? Date()
+        let role = record.engine.role
         sessions[sessionKey] = record
-        releaseGate(heldBy: sessionKey)
+        releaseGate(heldBy: sessionKey, role: role)
     }
 
     private func describeTransportError(_ error: Error) -> String {

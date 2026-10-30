@@ -272,4 +272,10 @@
     <string name="network_monitor_report_current_note">报告包含生成时已完成的检测。</string>
     <string name="network_monitor_export_cancel">取消导出</string>
     <string name="network_monitor_background_note">Floe 进入后台后监测会继续运行，可通过通知停止。</string>
+    <string name="network_certificate_title">证书</string>
+    <string name="network_certificate_valid_at_check">检测时处于有效期内</string>
+    <string name="network_certificate_invalid_at_check">检测时不在有效期内</string>
+    <string name="network_certificate_expires">到期时间：%1$s</string>
+    <string name="network_certificate_metadata_note">指纹和服务器提供的证书链见详情，未检查吊销状态。</string>
+    <string name="network_diagnostic_report_failed">未能完成报告，原检测结果未改变。</string>
 </resources>

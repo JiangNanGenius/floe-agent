@@ -361,7 +361,25 @@ internal object NetworkWorkbenchProjection {
             detailFacts = sections.detail,
             lan = if (method == NetworkPage.LAN.method) decodeLan(observations) else null,
             speed = if (method == NetworkPage.SPEED.method) decodeSpeed(observations) else null,
+            certificates = if (method == NetworkPage.HTTPS.method) decodeCertificates(observations) else emptyList(),
         )
+    }
+
+    private fun decodeCertificates(observations: JSONObject): List<TlsCertificateUi> {
+        val array = observations.optJSONObject("tls")?.optJSONObject("peerCertificates")
+            ?.optJSONArray("certificates") ?: return emptyList()
+        return (0 until minOf(array.length(), 8)).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            val hash = item.optString("sha256")
+            val before = item.optString("notBefore")
+            val after = item.optString("notAfter")
+            if (!hash.matches(Regex("[0-9a-f]{64}")) ||
+                runCatching { java.time.Instant.parse(before); java.time.Instant.parse(after) }.isFailure ||
+                item.opt("validAtObservation") !is Boolean) return@mapNotNull null
+            TlsCertificateUi(item.optInt("chainIndex", index), hash, before, after,
+                item.getBoolean("validAtObservation"), item.optString("signatureAlgorithm").take(128),
+                item.optString("publicKeyAlgorithm").take(128))
+        }
     }
 
     private fun decodeLan(observations: JSONObject): LanDiscoveryUi {
@@ -498,10 +516,14 @@ internal object NetworkWorkbenchProjection {
         method: String,
     ): List<String> {
         val messages = mutableListOf<Pair<String, String>>()
-        val code = observations.optString("errorCode", observations.optString("unsupportedReason"))
+        val code = observations.optString("errorCode", observations.optString("unsupportedReason", observations.optString("stoppedReason")))
         when (code) {
             "noActiveNetwork" -> messages += "Connect to a network and try again." to "请连接网络后重试。"
             "dnsFailure" -> messages += "The host could not be resolved on this network." to "当前网络无法解析此主机。"
+            "tlsCertificateExpired" -> messages += "The server certificate has expired. Check the device date and server certificate." to "服务器证书已过期，请检查设备日期和服务器证书。"
+            "tlsCertificateNotYetValid" -> messages += "The server certificate is not valid yet. Check the device date." to "服务器证书尚未生效，请检查设备日期。"
+            "tlsTrustVerificationFailed" -> messages += "Android could not verify the certificate chain. The connection was stopped." to "Android 无法验证证书链，连接已停止。"
+            "tlsHostnameVerificationFailed" -> messages += "The certificate does not match this host. The connection was stopped." to "证书与主机不匹配，连接已停止。"
             "tlsFailure" -> messages += "The secure connection could not be verified. Check the server certificate and network." to "无法验证安全连接，请检查服务器证书和网络。"
             "icmpv6NotImplemented" -> messages += "IPv6 Ping is not supported yet. DNS and TCP checks support IPv6." to "暂不支持 IPv6 Ping，可使用 DNS 或 TCP 检测。"
             "meteredNetworkDisallowed" -> messages += "This network is metered. Enable metered transfers and start again." to "当前网络按流量计费，请允许按流量计费传输后重试。"

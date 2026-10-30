@@ -794,6 +794,16 @@ class ConversationFlowHolder(
         showingGoalBuilder = false
         showsTemporaryAbout = false
         liveReasoningExpanded = false
+        threadSearchGenerationInternal += 1
+        threadSearchVisible = false
+        threadSearch = ThreadSearchStateUi(requestGeneration = threadSearchGenerationInternal)
+        threadSearchHighlight = emptyMap()
+        userQuestionSnapshot = null
+        userQuestionDraft = null
+        userQuestionSubmitting = false
+        userQuestionError = null
+        userQuestionNotice = null
+        userQuestionSheetVisible = false
     }
 
     /** Every host→holder echo entry first checks this: after genuine
@@ -1332,6 +1342,19 @@ class ConversationFlowHolder(
         if (!started) return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
         approvalDispatched.add(live.key)
         return ConversationFlowResult.Accepted
+    }
+
+    /**
+     * The LIVE owned interactive-terminal capture for the historical
+     * single-slot handoff contract, or null. Read at decision time (never
+     * cached in a card) so the consent names the session that is really live
+     * now; the runtime's typed conflict reason is the only caller. A live TTY
+     * by itself is not a blocker under the separated pool, so nothing here
+     * offers to stop one.
+     */
+    fun liveTerminalHandoffConsent(): TerminalHandoffConsentUi? {
+        if (retired) return null
+        return host.liveTerminalHandoffConsent(session)
     }
 
     /** Host publication of the live owned-slot conflict for THIS session
@@ -1919,6 +1942,12 @@ class ConversationFlowHolder(
     fun returnToLatest() {
         followState.returnToLatest()
         showsReturnToLatest = false
+        // Returning to the live end is an explicit exit from a retained
+        // search hit; the find bar may stay open.
+        if (threadSearch.focusedMessageId != null) {
+            threadSearch = threadSearch.copy(focusedMessageId = null)
+            threadSearchHighlight = emptyMap()
+        }
     }
 
     /** ⇄ capture-snapshot-before-present (dismiss never collapses mid-flight). */
@@ -2049,6 +2078,360 @@ class ConversationFlowHolder(
     fun saveMessageToNotes(text: String): ConversationFlowResult =
         if (host.saveMessageToNotes(session, text)) ConversationFlowResult.Accepted
         else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+
+    /* ------------------------------- thread search ----------------------------- */
+
+    /** RAM-only in-thread find state. A real rebind/retirement resets it; it
+     * is never persisted and does not touch the draft or editor history. */
+    var threadSearch: ThreadSearchStateUi by mutableStateOf(ThreadSearchStateUi())
+        private set
+    var threadSearchVisible: Boolean by mutableStateOf(false)
+        private set
+    private var threadSearchGenerationInternal = 0L
+    private var threadSearchFocusTokenInternal = 0L
+    private var threadSearchHighlight: Map<String, List<IntRange>> = emptyMap()
+
+    fun beginThreadSearch() {
+        if (retired) return
+        threadSearchVisible = true
+        threadSearch = threadSearch.copy(
+            isSearching = false,
+            error = null,
+        )
+    }
+
+    /** Done leaves the CURRENT hit selected; it never jumps to the newest row
+     * and does not clear the user's position. */
+    fun endThreadSearch() {
+        if (retired) return
+        threadSearchVisible = false
+        threadSearchGenerationInternal += 1
+        threadSearch = threadSearch.copy(
+            query = "",
+            hits = emptyList(),
+            currentIndex = -1,
+            isSearching = false,
+            includesDurableHistory = false,
+            error = null,
+            focusedMessageId = threadSearch.focusedMessageId,
+            requestGeneration = threadSearchGenerationInternal,
+        )
+        threadSearchHighlight = emptyMap()
+    }
+
+    fun setThreadSearchQuery(value: String) {
+        if (retired) return
+        val bounded = value.take(ThreadSearchQuery.MAXIMUM_QUERY_CHARACTERS)
+        if (bounded == threadSearch.query) return
+        threadSearch = threadSearch.copy(query = bounded, error = null)
+    }
+
+    /** Starts one native search. The host echoes the generation; a late reply
+     * for a superseded query is dropped whole. */
+    fun searchThread() {
+        if (retired) return
+        val query = threadSearch.query.trim()
+        threadSearchGenerationInternal += 1
+        val generation = threadSearchGenerationInternal
+        if (query.isEmpty()) {
+            threadSearch = threadSearch.copy(
+                hits = emptyList(),
+                currentIndex = -1,
+                isSearching = false,
+                error = null,
+                requestGeneration = generation,
+            )
+            threadSearchHighlight = emptyMap()
+            return
+        }
+        threadSearch = threadSearch.copy(
+            isSearching = true,
+            error = null,
+            requestGeneration = generation,
+        )
+        if (!host.requestThreadSearch(session, query, generation)) {
+            threadSearch = threadSearch.copy(
+                isSearching = false,
+                error = ThreadSearchErrorUi.SEARCH_FAILED,
+            )
+        }
+    }
+
+    fun applyThreadSearchResult(
+        echoSession: ConversationSessionToken,
+        generation: Long,
+        result: ThreadSearchResultUi,
+    ) {
+        if (!echoAccepted(echoSession)) return
+        if (generation != threadSearchGenerationInternal) return
+        if (result.isTemporary != (snapshot.value?.isTemporary == true)) return
+        threadSearch = threadSearch.copy(
+            hits = result.hits,
+            currentIndex = if (result.hits.isEmpty()) -1 else result.hits.lastIndex,
+            isSearching = false,
+            includesDurableHistory = result.includesDurableHistory,
+            isTemporary = result.isTemporary,
+            error = null,
+            focusedMessageId = if (result.hits.isEmpty()) null else threadSearch.focusedMessageId,
+            requestGeneration = generation,
+        )
+        if (result.hits.isEmpty()) threadSearchHighlight = emptyMap()
+        if (result.hits.isNotEmpty()) focusCurrentThreadSearchHit()
+    }
+
+    fun applyThreadSearchFailure(
+        echoSession: ConversationSessionToken,
+        generation: Long,
+    ) {
+        if (!echoAccepted(echoSession)) return
+        if (generation != threadSearchGenerationInternal) return
+        threadSearch = threadSearch.copy(
+            isSearching = false,
+            error = ThreadSearchErrorUi.SEARCH_FAILED,
+        )
+    }
+
+    fun nextThreadSearchHit() {
+        val current = threadSearch
+        if (current.hits.isEmpty()) return
+        threadSearch = current.copy(
+            currentIndex = (current.currentIndex + 1) % current.hits.size,
+        )
+        focusCurrentThreadSearchHit()
+    }
+
+    fun previousThreadSearchHit() {
+        val current = threadSearch
+        if (current.hits.isEmpty()) return
+        threadSearch = current.copy(
+            currentIndex = (current.currentIndex - 1 + current.hits.size) % current.hits.size,
+        )
+        focusCurrentThreadSearchHit()
+    }
+
+    /** Focus the selected hit. A hit outside the loaded rows requests the
+     * bounded native window; the host then calls [applyThreadSearchFocus]. */
+    fun focusCurrentThreadSearchHit() {
+        if (retired) return
+        val hit = threadSearch.currentHit ?: return
+        val state = snapshot.value
+        if (state != null && state.rows.any { rowMessageId(it) == hit.messageId }) {
+            threadSearchFocusTokenInternal += 1
+            threadSearch = threadSearch.copy(
+                focusedMessageId = hit.messageId,
+                focusRowToken = threadSearchFocusTokenInternal,
+                focusGeneration = threadSearchGenerationInternal,
+                error = null,
+            )
+            return
+        }
+        val token = ++threadSearchFocusTokenInternal
+        threadSearch = threadSearch.copy(
+            focusedMessageId = hit.messageId,
+            focusRowToken = token,
+            focusGeneration = threadSearchGenerationInternal,
+            error = null,
+        )
+        if (!host.revealThreadSearchHit(session, hit.messageId, token)) {
+            threadSearch = threadSearch.copy(error = ThreadSearchErrorUi.OLDER_MATCH_UNAVAILABLE)
+        }
+    }
+
+    fun applyThreadSearchFocus(
+        echoSession: ConversationSessionToken,
+        token: Long,
+        messageId: String,
+    ) {
+        if (!echoAccepted(echoSession)) return
+        if (token != threadSearchFocusTokenInternal) return
+        threadSearchFocusTokenInternal += 1
+        threadSearch = threadSearch.copy(
+            focusedMessageId = messageId,
+            focusRowToken = threadSearchFocusTokenInternal,
+            error = null,
+        )
+    }
+
+    fun applyThreadSearchRevealFailure(
+        echoSession: ConversationSessionToken,
+        token: Long,
+    ) {
+        if (!echoAccepted(echoSession)) return
+        if (token != threadSearchFocusTokenInternal) return
+        threadSearch = threadSearch.copy(error = ThreadSearchErrorUi.OLDER_MATCH_UNAVAILABLE)
+    }
+
+    /** The selected row's exact visible ranges. Only the focused message gets
+     * ranges; the UI computes them off the SAME visible string it renders. */
+    fun applyThreadSearchHighlight(messageId: String, ranges: List<IntRange>) {
+        if (threadSearch.focusedMessageId != messageId) return
+        threadSearchHighlight = mapOf(messageId to ranges)
+    }
+
+    fun threadSearchHighlightFor(messageId: String): List<IntRange> =
+        threadSearchHighlight[messageId].orEmpty()
+
+    private fun rowMessageId(row: TimelineRowUi): String? = when (row) {
+        is TimelineRowUi.UserMessage -> row.message.id
+        is TimelineRowUi.AssistantMessage -> row.attachedMessageId
+        else -> null
+    }
+
+    /* ------------------------------ user questions ------------------------------ */
+
+    /** Latest pending question projection for THIS task. It is cleared by the
+     * native settled snapshot; no local answer is ever treated as settlement. */
+    var userQuestionSnapshot: UserQuestionSnapshotUi? by mutableStateOf(null)
+        private set
+    var userQuestionDraft: UserQuestionDraftUi? by mutableStateOf(null)
+        private set
+    var userQuestionSubmitting: Boolean by mutableStateOf(false)
+        private set
+    var userQuestionError: String? by mutableStateOf(null)
+        private set
+    var userQuestionNotice: String? by mutableStateOf(null)
+        private set
+    var userQuestionSheetVisible: Boolean by mutableStateOf(false)
+        private set
+
+    val currentUserQuestion: UserQuestionPromptUi?
+        get() = userQuestionSnapshot?.currentQuestion
+
+    val showingUserQuestion: Boolean
+        get() = currentUserQuestion != null && userQuestionSheetVisible
+
+    fun openUserQuestionSheet() {
+        if (currentUserQuestion != null) userQuestionSheetVisible = true
+    }
+
+    fun dismissUserQuestionSheet() {
+        userQuestionSheetVisible = false
+    }
+
+    fun applyUserQuestionSnapshot(
+        echoSession: ConversationSessionToken,
+        snapshot: UserQuestionSnapshotUi?,
+    ) {
+        if (!echoAccepted(echoSession)) return
+        if (snapshot != null && snapshot.conversationId != conversationId) return
+        userQuestionSnapshot = snapshot
+        val question = snapshot?.currentQuestion
+        if (question == null) {
+            userQuestionDraft = null
+            userQuestionSubmitting = false
+            userQuestionError = null
+            userQuestionSheetVisible = false
+            return
+        }
+        val existing = userQuestionDraft
+        if (existing?.questionId != question.questionId) {
+            userQuestionDraft = UserQuestionDraftUi(questionId = question.questionId)
+            userQuestionError = null
+            userQuestionSubmitting = false
+            // A genuinely new question (or the first projection) opens the
+            // sheet; a settled receipt or a user dismissal does not.
+            userQuestionSheetVisible = true
+        }
+    }
+
+    fun selectUserQuestionOption(optionId: String) {
+        if (retired) return
+        val question = currentUserQuestion ?: return
+        val draft = userQuestionDraft ?: UserQuestionDraftUi(question.questionId)
+        val selected = UserQuestionDraftPolicy.toggle(
+            current = draft.selectedOptionIds,
+            optionId = optionId,
+            mode = question.selectionMode,
+            validIds = question.options.map { it.id }.toSet(),
+        )
+        userQuestionDraft = draft.copy(selectedOptionIds = selected)
+        userQuestionError = null
+    }
+
+    fun setUserQuestionFreeText(value: String) {
+        if (retired) return
+        val question = currentUserQuestion ?: return
+        if (!question.canAcceptFreeText) return
+        val draft = userQuestionDraft ?: UserQuestionDraftUi(question.questionId)
+        userQuestionDraft = draft.copy(freeText = TextFieldValue(value))
+        userQuestionError = null
+    }
+
+    fun canSubmitUserQuestion(): Boolean {
+        val question = currentUserQuestion ?: return false
+        val draft = userQuestionDraft ?: return false
+        if (question.questionId != draft.questionId) return false
+        return UserQuestionDraftPolicy.canSubmit(
+            question = question,
+            selected = draft.selectedOptionIds,
+            freeText = draft.freeText.text,
+        )
+    }
+
+    /** Dispatch EXACTLY ONE answer. Native CAS/nonce/revision is the only
+     * settlement; a duplicate tap is blocked while the request is in flight. */
+    fun submitUserQuestion(): ConversationFlowResult {
+        if (retired) return rejected(ConversationRejectedReason.NO_SESSION)
+        if (userQuestionSubmitting) return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
+        val question = currentUserQuestion ?: return rejected(ConversationRejectedReason.STALE)
+        val draft = userQuestionDraft ?: return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        if (question.questionId != draft.questionId || !canSubmitUserQuestion()) {
+            userQuestionError = null
+            return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        }
+        val (selected, freeText) = UserQuestionDraftPolicy.answer(
+            question = question, selected = draft.selectedOptionIds,
+            freeText = draft.freeText.text,
+        )
+        val request = UserQuestionAnswerRequestUi(
+            requestId = question.requestId,
+            requestDigest = question.requestDigest,
+            questionId = question.questionId,
+            runId = question.runId,
+            expectedRevision = question.revision,
+            answerNonce = question.answerNonce,
+            selectedOptionIds = selected,
+            freeText = freeText,
+        )
+        if (!host.answerUserQuestion(session, request)) {
+            userQuestionError = null
+            return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
+        userQuestionSubmitting = true
+        userQuestionError = null
+        return ConversationFlowResult.Accepted
+    }
+
+    fun cancelUserQuestion(): ConversationFlowResult {
+        if (userQuestionSubmitting) return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
+        val snapshot = userQuestionSnapshot ?: return rejected(ConversationRejectedReason.STALE)
+        if (!host.cancelUserQuestion(session, snapshot.requestId)) {
+            return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
+        userQuestionSubmitting = true
+        userQuestionError = null
+        return ConversationFlowResult.Accepted
+    }
+
+    fun applyUserQuestionReceipt(receipt: UserQuestionAnswerReceiptUi) {
+        if (retired) return
+        userQuestionSubmitting = false
+        if (receipt.settled) {
+            userQuestionNotice = null
+            userQuestionError = null
+        }
+    }
+
+    fun applyUserQuestionFailure(code: String?) {
+        if (retired) return
+        userQuestionSubmitting = false
+        userQuestionError = code ?: "questionUnavailable"
+    }
+
+    fun dismissUserQuestionNotice() {
+        userQuestionNotice = null
+        userQuestionError = null
+    }
 
     companion object {
         /** ⇄ ApprovalCardView deny(reason: "user denied") stable vocabulary. */

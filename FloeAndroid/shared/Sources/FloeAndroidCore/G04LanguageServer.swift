@@ -568,9 +568,9 @@ public final class G04CenterLspTransport: G04LspSessionTransport, @unchecked Sen
         guard let components, RuntimeFacadeLinuxBindings.shared.isCapabilityQualified else {
             throw G04LspCode.engineUnqualified
         }
-        if await components.backend.isEngineSlotBusy() {
-            // The engine runs ONE workload: the terminal pane or a run owns
-            // the slot; refuse honestly (the host shows availability).
+        if !(await components.backend.hasCapacity(for: .run)) {
+            // The language/run ROLE slot is already held; other interactive
+            // or Agent workloads do not consume it. Refuse honestly.
             throw G04LspCode.saturated
         }
         guard let (runDomain, _) = RunDomainFacade.current(epoch: epoch),
@@ -596,7 +596,10 @@ public final class G04CenterLspTransport: G04LspSessionTransport, @unchecked Sen
                 cancellation: receipt.cancellation,
                 forTerminal: true, toolEnvironment: nil, clientSessionID: nil,
                 conversationID: conversationID,
-                workspaceOperationID: operationGrantID)
+                workspaceOperationID: operationGrantID,
+                // G07.3A: a language server is a RUN/service workload, never a
+                // human interactive tab; it must not consume a terminal slot.
+                leaseRole: .run)
             let session = Opened(sessionToken: result.sessionID, ownerRunID: ownerRunID,
                                  receipt: receipt, cancellation: receipt.cancellation)
             g04LspLocked(stateLock) { opened = session }

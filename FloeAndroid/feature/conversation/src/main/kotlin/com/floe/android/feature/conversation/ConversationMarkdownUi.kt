@@ -306,6 +306,7 @@ fun FloeMarkdownMessage(
     onCopyText: (String) -> Unit,
     modifier: Modifier = Modifier,
     isStreaming: Boolean = false,
+    highlightQuery: String? = null,
 ) {
     val fragments: List<String> = if (isStreaming) {
         StreamingMarkdownWindow.split(source).let { f ->
@@ -319,6 +320,7 @@ fun FloeMarkdownMessage(
         // thread and echoes generation-fenced results back to the holder.
         fragments.forEach { holder.ensureMarkdownParse(it) }
     }
+    val searchQuery = highlightQuery?.takeIf { it.isNotBlank() }?.let(::ThreadSearchQuery)
     SelectionContainer {
         Column(
             modifier = modifier.fillMaxWidth(),
@@ -327,7 +329,7 @@ fun FloeMarkdownMessage(
             fragments.forEach { fragment ->
                 when (val state = holder.markdownState(fragment)) {
                     is MarkdownContentUi.Parsed -> state.blocks.forEach { block ->
-                        MarkdownBlockView(block, onLinkOpen, onCopyText)
+                        MarkdownBlockView(block, onLinkOpen, onCopyText, searchQuery)
                     }
                     // Preparing / Literal: verbatim text remains visible
                     // (content is never dropped); no styled claim is made.
@@ -350,6 +352,7 @@ private fun MarkdownBlockView(
     block: MarkdownBlockUi,
     onLinkOpen: (String) -> Unit,
     onCopyText: (String) -> Unit,
+    searchQuery: ThreadSearchQuery? = null,
 ) {
     val colors = Floe.colors
     when (block) {
@@ -359,11 +362,21 @@ private fun MarkdownBlockView(
                     block.text,
                     style = headingStyle(block.level),
                     onLinkOpen = onLinkOpen,
+                    highlightRanges = searchQuery?.let {
+                        ThreadSearchMatcher.ranges(block.text.plainText, it)
+                    }.orEmpty(),
                 )
             }
         }
         is MarkdownBlockUi.Paragraph -> {
-            InlineTextView(block.text, style = Floe.typography.body, onLinkOpen = onLinkOpen)
+            InlineTextView(
+                block.text,
+                style = Floe.typography.body,
+                onLinkOpen = onLinkOpen,
+                highlightRanges = searchQuery?.let {
+                    ThreadSearchMatcher.ranges(block.text.plainText, it)
+                }.orEmpty(),
+            )
         }
         is MarkdownBlockUi.ListBlock -> {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -384,12 +397,15 @@ private fun MarkdownBlockView(
                                 item.content,
                                 style = Floe.typography.body,
                                 onLinkOpen = onLinkOpen,
+                                highlightRanges = searchQuery?.let {
+                                    ThreadSearchMatcher.ranges(item.content.plainText, it)
+                                }.orEmpty(),
                             )
                         }
                         if (item.children.isNotEmpty()) {
                             Column(modifier = Modifier.padding(start = 22.dp)) {
                                 item.children.forEach { child ->
-                                    MarkdownBlockView(child, onLinkOpen, onCopyText)
+                                    MarkdownBlockView(child, onLinkOpen, onCopyText, searchQuery)
                                 }
                             }
                         }
@@ -412,13 +428,15 @@ private fun MarkdownBlockView(
                 ) {}
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     block.inner.forEach { inner ->
-                        MarkdownBlockView(inner, onLinkOpen, onCopyText)
+                        MarkdownBlockView(inner, onLinkOpen, onCopyText, searchQuery)
                     }
                 }
             }
         }
-        is MarkdownBlockUi.CodeBlock -> FloeCodeBlock(block, onCopyText)
-        is MarkdownBlockUi.Table -> MarkdownTable(block, onLinkOpen, onCopyText)
+        is MarkdownBlockUi.CodeBlock -> FloeCodeBlock(
+            block, onCopyText,
+            searchQuery?.let { ThreadSearchMatcher.ranges(block.code, it) }.orEmpty())
+        is MarkdownBlockUi.Table -> MarkdownTable(block, onLinkOpen, onCopyText, searchQuery)
         MarkdownBlockUi.ThematicBreak -> FloeDivider(modifier = Modifier.padding(vertical = 2.dp))
     }
 }
@@ -439,9 +457,12 @@ private fun InlineTextView(
     text: InlineTextUi,
     style: androidx.compose.ui.text.TextStyle,
     onLinkOpen: (String) -> Unit,
+    highlightRanges: List<IntRange> = emptyList(),
 ) {
     val colors = Floe.colors
-    val annotated = inlineAnnotated(text, linkColor = colors.accent)
+    val annotated = inlineAnnotated(
+        text, linkColor = colors.accent, highlightRanges = highlightRanges,
+        highlightColor = colors.pending.copy(alpha = 0.35f))
     if (text.hasLinks) {
         ClickableText(
             text = annotated,
@@ -462,8 +483,14 @@ private fun InlineTextView(
     }
 }
 
-private fun inlineAnnotated(text: InlineTextUi, linkColor: Color): AnnotatedString =
-    buildAnnotatedString {
+private fun inlineAnnotated(
+    text: InlineTextUi,
+    linkColor: Color,
+    highlightRanges: List<IntRange> = emptyList(),
+    highlightColor: Color = Color.Transparent,
+): AnnotatedString {
+    val builder = AnnotatedString.Builder()
+    builder.withStyle(SpanStyle()) {
         text.spans.forEach { span ->
             if (span.linkUrl != null) pushStringAnnotation("URL", span.linkUrl)
             withStyle(
@@ -484,11 +511,25 @@ private fun inlineAnnotated(text: InlineTextUi, linkColor: Color): AnnotatedStri
             if (span.linkUrl != null) pop()
         }
     }
+    val length = builder.length
+    for (range in highlightRanges) {
+        val start = range.first.coerceIn(0, length)
+        val end = (range.last + 1).coerceIn(start, length)
+        if (end > start) {
+            builder.addStyle(SpanStyle(background = highlightColor), start, end)
+        }
+    }
+    return builder.toAnnotatedString()
+}
 
 /** ⇄ CodeBlockView: language tag + copy with explicit "copied" confirmation
  * over a horizontally scrollable monospaced body. Never executed. */
 @Composable
-private fun FloeCodeBlock(block: MarkdownBlockUi.CodeBlock, onCopyText: (String) -> Unit) {
+private fun FloeCodeBlock(
+    block: MarkdownBlockUi.CodeBlock,
+    onCopyText: (String) -> Unit,
+    highlightRanges: List<IntRange> = emptyList(),
+) {
     val colors = Floe.colors
     var didCopy by remember(block.code) { mutableStateOf(false) }
     val copyLabel = stringResource(if (didCopy) R.string.action_copied else R.string.action_copy)
@@ -544,10 +585,9 @@ private fun FloeCodeBlock(block: MarkdownBlockUi.CodeBlock, onCopyText: (String)
                     .horizontalScroll(rememberScrollState())
                     .padding(10.dp),
             ) {
-                FloeText(
-                    block.code,
-                    style = Floe.typography.evidence,
-                    color = colors.label,
+                androidx.compose.material3.Text(
+                    text = codeAnnotated(block.code, highlightRanges, colors.pending.copy(alpha = 0.35f)),
+                    style = Floe.typography.evidence.copy(color = colors.label),
                 )
             }
         }
@@ -561,6 +601,7 @@ private fun MarkdownTable(
     block: MarkdownBlockUi.Table,
     onLinkOpen: (String) -> Unit,
     onCopyText: (String) -> Unit,
+    searchQuery: ThreadSearchQuery? = null,
 ) {
     val colors = Floe.colors
     Column(
@@ -574,18 +615,49 @@ private fun MarkdownTable(
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             block.header.forEach { cell ->
-                InlineTextView(cell, style = Floe.typography.metadata.copy(fontWeight = FontWeight.SemiBold), onLinkOpen = onLinkOpen)
+                InlineTextView(
+                    cell,
+                    style = Floe.typography.metadata.copy(fontWeight = FontWeight.SemiBold),
+                    onLinkOpen = onLinkOpen,
+                    highlightRanges = searchQuery?.let {
+                        ThreadSearchMatcher.ranges(cell.plainText, it)
+                    }.orEmpty(),
+                )
             }
         }
         FloeDivider()
         block.rows.forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 row.forEach { cell ->
-                    InlineTextView(cell, style = Floe.typography.metadata, onLinkOpen = onLinkOpen)
+                    InlineTextView(
+                        cell,
+                        style = Floe.typography.metadata,
+                        onLinkOpen = onLinkOpen,
+                        highlightRanges = searchQuery?.let {
+                            ThreadSearchMatcher.ranges(cell.plainText, it)
+                        }.orEmpty(),
+                    )
                 }
             }
         }
     }
+}
+
+private fun codeAnnotated(
+    code: String,
+    highlightRanges: List<IntRange>,
+    highlightColor: Color,
+): AnnotatedString {
+    val builder = AnnotatedString.Builder()
+    builder.append(code)
+    for (range in highlightRanges) {
+        val start = range.first.coerceIn(0, code.length)
+        val end = (range.last + 1).coerceIn(start, code.length)
+        if (end > start) {
+            builder.addStyle(SpanStyle(background = highlightColor), start, end)
+        }
+    }
+    return builder.toAnnotatedString()
 }
 
 /* ----------------------------- reasoning blocks ----------------------------- */

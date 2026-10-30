@@ -226,7 +226,10 @@ class LinuxRuntimeReadinessController(
         if (status.optInt("protocol") != com.floe.android.runtimeipc.RuntimeWire.VERSION) error("engineProtocolUnsupported")
         val identity = processIdentity(status) ?: error("engineIdentityUnreported")
         val workloadContract = status.optString("workloadContractVersion")
-        if (workloadContract != WORKLOAD_CONTRACT) error("workloadNotSingle")
+        // G07.3A: the engine advertises its REAL admission contract. v2 is the
+        // bounded concurrent contract (2 interactive + 1 shared execution); v1 is
+        // the historical single workload. Anything else is unproven.
+        if (workloadContract !in ACCEPTED_WORKLOAD_CONTRACTS) error("workloadContractUnsupported")
         val install = result(client.exchange("install.status"))
         val receipt = install.optString("rootfsReceiptDigest")
         val version = install.optString("rootfsVersion")
@@ -680,6 +683,8 @@ class LinuxRuntimeReadinessController(
 
     companion object {
         const val WORKLOAD_CONTRACT = "floe-single-workload-v1"
+        const val MULTI_WORKLOAD_CONTRACT = "floe-multi-workload-v2"
+        val ACCEPTED_WORKLOAD_CONTRACTS = setOf(WORKLOAD_CONTRACT, MULTI_WORKLOAD_CONTRACT)
         /** Owned, BOUNDED re-ingress attempt set per invalidation burst
          *  (individual attempts are already bounded by the connection
          *  handshake; this caps the sequence itself). */
@@ -752,7 +757,7 @@ class LinuxRuntimeReadinessController(
             "invalidEpoch", "epochNotBound", "readinessNotIngressed",
             // Controller live-measurement refusals (refusalOf vocabulary).
             "peerUnmeasurable", "peerProofMalformed", "engineProtocolUnsupported",
-            "engineIdentityUnreported", "workloadNotSingle", "rootfsUnverified",
+            "engineIdentityUnreported", "workloadNotSingle", "workloadContractUnsupported", "rootfsUnverified",
             "exchangeFailed", "ingress_failed", "peer_boundary_drift",
             "engine_identity_lost", "peer_generation_drift", "rootfs_drift",
             "transport_lost", "preflight_peer_retired",

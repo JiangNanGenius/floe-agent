@@ -9,6 +9,22 @@ import org.junit.Test
 
 class HttpObservationBuilderTest {
     @Test
+    fun finalPeerMetadataIsPreservedWithoutInventingRevocationOrEarlierHopCertificates() {
+        val target = NetworkTargetPolicy.parseHttpTarget("https://example.com/")
+        val peer = JSONObject().put("inspectedCount", 1).put("analysis", "peerMetadataOnly")
+            .put("revocationChecked", false).put("certificates", org.json.JSONArray())
+        val finalHop = HttpHop(target, 200, null, "TLS_AES_128_GCM_SHA256", null, 0,
+            certificateObservation = peer)
+        val response = HttpObservationBuilder.build(target,
+            HttpChainResult(ObservationStatus.OK, listOf(finalHop), target, null), 1)
+        val tls = response.observations.getJSONObject("tls")
+        assertTrue(tls.getBoolean("certificateChainAnalyzed"))
+        assertEquals("peerMetadataOnly", tls.getJSONObject("peerCertificates").getString("analysis"))
+        assertFalse(tls.getJSONObject("peerCertificates").getBoolean("revocationChecked"))
+        assertEquals("platformDefault", tls.getString("trust"))
+    }
+
+    @Test
     fun redactsLocationHeadersAndReportsActualPhases() {
         val initial = NetworkTargetPolicy.parseHttpTarget("https://example.com/start")
         val finalTarget = NetworkTargetPolicy.parseHttpTarget("https://example.com/next?token=secret")

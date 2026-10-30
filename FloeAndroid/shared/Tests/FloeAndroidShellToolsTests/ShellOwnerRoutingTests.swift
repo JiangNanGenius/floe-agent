@@ -186,9 +186,12 @@ final class ShellOwnerRoutingTests: XCTestCase {
             if nth == 1 { return FakeLinuxShellTransport.page(session: session, cursor: cursor, text: "$ ") }
             return nil
         }
+        // G07.3A: an interactive terminal no longer blocks the Agent command.
+        // Occupy the ONE shared execution slot with an agent-role session, so
+        // the second Agent command is refused exactly as this test pins.
         _ = try await center.open(command: "", cwd: ".", environment: [:], columns: 80, rows: 24,
                                   runID: UUID(), rootURL: root, cancellation: nil,
-                                  clientSessionID: "run:parent")
+                                  clientSessionID: "run:parent", leaseRole: .agent)
         let result = await service.run(command: "ls", cwd: ".", environment: [:], stdin: nil,
                                        timeout: 1, maxOutputBytes: nil, isBackground: false,
                                        context: context(clientSessionID: "run:parent",

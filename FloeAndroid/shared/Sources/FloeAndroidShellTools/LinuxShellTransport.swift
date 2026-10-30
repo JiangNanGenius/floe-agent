@@ -88,6 +88,37 @@ public enum LinuxShellStdinDelivery: String, Sendable, Equatable {
     case pipe
 }
 
+/// G07.3A — the closed workload-role vocabulary of the engine start wire.
+/// The trusted platform adapter selects it; it is never model/environment/
+/// command text. `interactive` admits a human terminal tab (two per engine),
+/// `agent` the single one-shot exec.shell command and `run` a language run/LSP
+/// service session. The engine enforces the same ceilings in its own authority.
+public enum LinuxShellLeaseRole: String, Sendable, Equatable, Hashable {
+    case interactive
+    case agent
+    case run
+}
+
+/// A validated same-workspace participation hint. Only the trusted platform
+/// adapter produces it, and only after observing a live engine session for the
+/// SAME conversation. The runtime re-proves the named owner (live, same
+/// project) and then mounts the existing guest workspace WITHOUT a second
+/// import/export; an unprovable hint is refused, never silently treated as a
+/// fresh owner (which would swap files under a live terminal).
+public struct LinuxShellWorkspaceReuse: Sendable, Equatable {
+    public var mode: String
+    public var ownerSessionID: String?
+
+    public init(mode: String, ownerSessionID: String?) {
+        self.mode = mode
+        self.ownerSessionID = ownerSessionID
+    }
+
+    public static func shared(ownerSessionID: String) -> LinuxShellWorkspaceReuse {
+        LinuxShellWorkspaceReuse(mode: "shared", ownerSessionID: ownerSessionID)
+    }
+}
+
 public struct LinuxShellStartRequest: Sendable, Equatable {
     /// Stable project identity derived from the TRUSTED canonical ORIGINAL
     /// Core workspace root (see `LinuxShellProjectMapping`). Not random,
@@ -128,13 +159,19 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
     /// `openSession` MUST stay nil. Only the trusted platform one-shot run
     /// adapter sets `.pipe`; it is never model-, env- or string-selected.
     public var stdinDelivery: LinuxShellStdinDelivery?
+    /// G07.3A trusted workload role (engine admission accounting).
+    public var hostLeaseRole: LinuxShellLeaseRole?
+    /// G07.3A validated same-workspace participation (live owner required).
+    public var workspaceReuse: LinuxShellWorkspaceReuse?
 
     public init(projectID: UUID, runID: UUID, conversationID: UUID?,
                 environmentID: String?, command: String, cwd: String,
                 environment: [String: String] = [:],
                 rows: Int, columns: Int, timeoutSeconds: Double, hostToolCallID: String? = nil,
                 hostOperationID: String? = nil,
-                stdinDelivery: LinuxShellStdinDelivery? = nil) {
+                stdinDelivery: LinuxShellStdinDelivery? = nil,
+                hostLeaseRole: LinuxShellLeaseRole? = nil,
+                workspaceReuse: LinuxShellWorkspaceReuse? = nil) {
         self.projectID = projectID
         self.runID = runID
         self.conversationID = conversationID
@@ -148,6 +185,8 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
         self.hostToolCallID = hostToolCallID
         self.hostOperationID = hostOperationID
         self.stdinDelivery = stdinDelivery
+        self.hostLeaseRole = hostLeaseRole
+        self.workspaceReuse = workspaceReuse
     }
 
     /// The engine's own `shell.start` env bounds (authoritative source:
@@ -188,9 +227,36 @@ public struct LinuxShellStartReply: Sendable, Equatable {
     /// The engine session identity == the runtime lease id.
     public var sessionID: String
     public var environmentID: String
-    public init(sessionID: String, environmentID: String) {
+    /// The runtime PROCESS generation that admitted the workload (measured
+    /// boot token). Live file reads echo it so a stale page cannot be applied
+    /// to a restarted engine.
+    public var runtimeGeneration: String?
+    /// True when this session OWNS the workspace import/export, false for a
+    /// validated same-workspace participant.
+    public var workspaceOwner: Bool?
+    /// G07.3A REAL preparation facts from the runtime (measured, not promised):
+    /// whether the validated base-revision rootfs marker was reused and the
+    /// actual materialize / import stage durations. A participant reports its
+    /// import as the skipped participant path (importMillis = 0).
+    public var prepareReused: Bool?
+    public var prepareMillis: Int64?
+    public var prepareCopiedBytes: Int64?
+    public var importMillis: Int64?
+    public var importedEntries: Int64?
+    public init(sessionID: String, environmentID: String,
+                runtimeGeneration: String? = nil, workspaceOwner: Bool? = nil,
+                prepareReused: Bool? = nil, prepareMillis: Int64? = nil,
+                prepareCopiedBytes: Int64? = nil, importMillis: Int64? = nil,
+                importedEntries: Int64? = nil) {
         self.sessionID = sessionID
         self.environmentID = environmentID
+        self.runtimeGeneration = runtimeGeneration
+        self.workspaceOwner = workspaceOwner
+        self.prepareReused = prepareReused
+        self.prepareMillis = prepareMillis
+        self.prepareCopiedBytes = prepareCopiedBytes
+        self.importMillis = importMillis
+        self.importedEntries = importedEntries
     }
 }
 

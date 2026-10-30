@@ -97,12 +97,64 @@ class RecordingHost : ConversationUiCallbacks {
         record("resolveApproval", request); return true
     }
 
+    /** What the host would answer for the on-demand single-slot capture. Null
+     * by default: a live TTY alone is not a blocker under the separated pool. */
+    var liveTerminalConsent: TerminalHandoffConsentUi? = null
+
+    override fun liveTerminalHandoffConsent(
+        session: ConversationSessionToken,
+    ): TerminalHandoffConsentUi? {
+        record("liveTerminalHandoffConsent", session)
+        return liveTerminalConsent
+    }
+
     override fun loadEarlierMessages(session: ConversationSessionToken): Boolean {
         record("loadEarlierMessages", session); return true
     }
 
     override fun loadEarlierEvents(session: ConversationSessionToken, cursor: EventCursor): Boolean {
         record("loadEarlierEvents", session, cursor); return true
+    }
+
+    var threadSearchAccepted = true
+    var revealAccepted = true
+    var pendingQuestionAccepted = true
+    var questionAnswerAccepted = true
+    var questionCancelAccepted = true
+
+    override fun requestThreadSearch(
+        session: ConversationSessionToken, query: String, epoch: Long,
+    ): Boolean {
+        record("requestThreadSearch", session, query, epoch)
+        return threadSearchAccepted
+    }
+
+    override fun revealThreadSearchHit(
+        session: ConversationSessionToken, messageId: String, requestToken: Long,
+    ): Boolean {
+        record("revealThreadSearchHit", session, messageId, requestToken)
+        return revealAccepted
+    }
+
+    override fun requestPendingQuestion(
+        session: ConversationSessionToken, requestId: String?,
+    ): Boolean {
+        record("requestPendingQuestion", session, requestId)
+        return pendingQuestionAccepted
+    }
+
+    override fun answerUserQuestion(
+        session: ConversationSessionToken, request: UserQuestionAnswerRequestUi,
+    ): Boolean {
+        record("answerUserQuestion", session, request)
+        return questionAnswerAccepted
+    }
+
+    override fun cancelUserQuestion(
+        session: ConversationSessionToken, requestId: String,
+    ): Boolean {
+        record("cancelUserQuestion", session, requestId)
+        return questionCancelAccepted
     }
 
     override fun requestAttachmentImport(session: ConversationSessionToken): Boolean {

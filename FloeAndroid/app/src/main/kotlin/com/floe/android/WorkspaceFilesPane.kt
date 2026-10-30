@@ -290,6 +290,16 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
     var toolbarMenu by remember(owner) { mutableStateOf<WorkspaceToolbarMenu?>(null) }
     var newTriggerBounds by remember(owner) { mutableStateOf<Rect?>(null) }
     var moreTriggerBounds by remember(owner) { mutableStateOf<Rect?>(null) }
+    val liveController = host.workspaceTerminal
+    var liveTabs by remember(owner) { mutableStateOf(emptyList<com.floe.android.host.terminalsessions.TerminalTabView>()) }
+    var livePreviewSession by remember(owner) { mutableStateOf<String?>(null) }
+    DisposableEffect(owner, liveController) {
+        fun updateLiveTabs() { liveTabs = liveController?.tabs(bound.client.taskID).orEmpty() }
+        updateLiveTabs()
+        val detach = liveController?.watchTabs(bound.client.taskID) { updateLiveTabs() }
+        onDispose { detach?.invoke() }
+    }
+    val selectedLiveSession = liveTabs.firstOrNull { it.selected && it.isLive }?.sessionID
     var source by remember(owner) { mutableStateOf("") }
     var destination by remember(owner) { mutableStateOf("") }
     var operationError by remember(owner) { mutableStateOf<String?>(null) }
@@ -519,12 +529,22 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
                 WorkspaceMenuItem(stringResource(R.string.network_workspace_title), enabled = !busy) {
                     toolbarMenu = null; networkVisible = true
                 },
+                WorkspaceMenuItem(stringResource(R.string.workspace_live_title), enabled = !busy && selectedLiveSession != null) {
+                    toolbarMenu = null; livePreviewSession = selectedLiveSession
+                },
                 WorkspaceMenuItem(stringResource(R.string.workspace_recovery_title), enabled = !busy) {
                     toolbarMenu = null; recoveryVisible = true
                 },
             ),
             onDismiss = { toolbarMenu = null },
         )
+    }
+    livePreviewSession?.let { sessionID ->
+        if (liveController != null) WorkspaceLiveFilesDialog(liveController, bound.client.taskID, sessionID,
+            onDismiss = {
+                livePreviewSession = null
+                if (bound.isCurrent()) presenter.refreshTreeKeepingExpansion()
+            })
     }
     WorkspaceRecoveryPanel(host, bound.client, recoveryVisible, onDismiss = { recoveryVisible = false },
         onOpenFile = ::openFromPanel, onTreeChanged = { bound.ide.refreshWorkspace(); presenter.refreshTreeKeepingExpansion() })

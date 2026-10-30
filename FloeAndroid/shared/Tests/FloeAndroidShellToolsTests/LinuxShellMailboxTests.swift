@@ -142,6 +142,250 @@ final class LinuxShellMailboxTests: XCTestCase {
         }
     }
 
+    // MARK: - G07.3A trusted role/reuse + measured admission metadata
+
+    private func settleStart(_ mailbox: LinuxShellMailbox,
+                             transport: MailboxLinuxShellTransport,
+                             request: LinuxShellStartRequest,
+                             reply: String) async throws -> LinuxShellStartReply {
+        let replyTask = Task { try await transport.shellStart(request) }
+        let host = try claimOne(mailbox)
+        XCTAssertEqual(host.operation, "shell.start")
+        var buffer = Data(reply.utf8)
+        buffer.withUnsafeBytes { raw in
+            XCTAssertEqual(mailbox.complete(claim: host.claim, status: 0,
+                                            value: raw.bindMemory(to: UInt8.self).baseAddress!,
+                                            valueLen: Int32(buffer.count)), 0)
+        }
+        return try await replyTask.value
+    }
+
+    private func settlePoll(_ mailbox: LinuxShellMailbox,
+                            transport: MailboxLinuxShellTransport,
+                            reply: String) async throws -> LinuxShellPollReply {
+        let replyTask = Task {
+            try await transport.shellPoll(LinuxShellPollRequest(sessionID: "lease-1", cursor: 0,
+                                                                maxBytes: 16_384))
+        }
+        let host = try claimOne(mailbox)
+        XCTAssertEqual(host.operation, "shell.poll")
+        var buffer = Data(reply.utf8)
+        buffer.withUnsafeBytes { raw in
+            XCTAssertEqual(mailbox.complete(claim: host.claim, status: 0,
+                                            value: raw.bindMemory(to: UInt8.self).baseAddress!,
+                                            valueLen: Int32(buffer.count)), 0)
+        }
+        return try await replyTask.value
+    }
+
+    private func interactiveReuseRequest(_ owner: String) -> LinuxShellStartRequest {
+        LinuxShellStartRequest(
+            projectID: UUID(), runID: UUID(), conversationID: UUID(),
+            environmentID: "linux.local", command: "exec /bin/sh", cwd: ".",
+            environment: [:], rows: 24, columns: 80, timeoutSeconds: 30,
+            hostLeaseRole: .interactive,
+            workspaceReuse: .shared(ownerSessionID: owner))
+    }
+
+    /// The real mailbox ingress (claim -> describe -> takePayload -> complete)
+    /// carries the trusted role/reuse on ONE interactive start, and the same
+    /// round trip decodes every measured admission fact the runtime reports.
+    func testInteractiveReuseStartCarriesTrustedWireAndDecodesMeasuredMetadata() async throws {
+        let (mailbox, transport) = makeMailbox()
+        XCTAssertTrue(mailbox.bind(epoch: 30))
+        let owner = UUID().uuidString
+        let request = interactiveReuseRequest(owner)
+        let replyTask = Task { try await transport.shellStart(request) }
+        let host = try claimOne(mailbox)
+        XCTAssertEqual(host.operation, "shell.start")
+        XCTAssertEqual(host.payload["leaseRole"] as? String, "interactive")
+        let reuse = try XCTUnwrap(host.payload["workspaceReuse"] as? [String: Any])
+        XCTAssertEqual(reuse["mode"] as? String, "shared")
+        XCTAssertEqual(reuse["ownerSessionID"] as? String, owner,
+                       "the trusted owner identity rides unchanged (never normalized)")
+        var buffer = Data("""
+        {"sessionID":"lease-reuse","environmentID":"linux.local",
+         "runtimeGeneration":"00112233445566778899aabbccddeeff",
+         "workspaceOwner":false,"prepareReused":true,
+         "prepareMillis":120,"prepareCopiedBytes":4096,
+         "importMillis":0,"importedEntries":12}
+        """.utf8)
+        buffer.withUnsafeBytes { raw in
+            XCTAssertEqual(mailbox.complete(claim: host.claim, status: 0,
+                                            value: raw.bindMemory(to: UInt8.self).baseAddress!,
+                                            valueLen: Int32(buffer.count)), 0)
+        }
+        let reply = try await replyTask.value
+        XCTAssertEqual(reply.sessionID, "lease-reuse")
+        XCTAssertEqual(reply.environmentID, "linux.local")
+        XCTAssertEqual(reply.runtimeGeneration, "00112233445566778899aabbccddeeff")
+        XCTAssertEqual(reply.workspaceOwner, false, "a participant is not the owner")
+        XCTAssertEqual(reply.prepareReused, true)
+        XCTAssertEqual(reply.prepareMillis, 120)
+        XCTAssertEqual(reply.prepareCopiedBytes, 4_096)
+        XCTAssertEqual(reply.importMillis, 0, "a measured zero import is a real fact, not a missing one")
+        XCTAssertEqual(reply.importedEntries, 12)
+    }
+
+    /// A legacy start payload stays byte-for-byte shaped as before: nil role
+    /// and nil reuse keys are OMITTED, never encoded as null/default values.
+    func testLegacyStartPayloadStillOmitsRoleAndReuseKeys() async throws {
+        let (mailbox, transport) = makeMailbox()
+        XCTAssertTrue(mailbox.bind(epoch: 31))
+        let request = startRequest()
+        let replyTask = Task { try await transport.shellStart(request) }
+        let host = try claimOne(mailbox)
+        XCTAssertNil(host.payload["leaseRole"])
+        XCTAssertNil(host.payload["workspaceReuse"])
+        XCTAssertEqual(Set(host.payload.keys).sorted(),
+                       ["columns", "command", "conversationID", "cwd", "environmentID",
+                        "projectID", "rows", "runID", "timeoutSeconds"])
+        var buffer = Data(#"{"sessionID":"lease-legacy","environmentID":"linux.local"}"#.utf8)
+        buffer.withUnsafeBytes { raw in
+            XCTAssertEqual(mailbox.complete(claim: host.claim, status: 0,
+                                            value: raw.bindMemory(to: UInt8.self).baseAddress!,
+                                            valueLen: Int32(buffer.count)), 0)
+        }
+        let reply = try await replyTask.value
+        XCTAssertNil(reply.runtimeGeneration)
+        XCTAssertNil(reply.workspaceOwner, "absence must not be fabricated as a boolean")
+        XCTAssertNil(reply.prepareReused, "absence must not be fabricated as a boolean")
+        XCTAssertNil(reply.prepareMillis)
+        XCTAssertNil(reply.prepareCopiedBytes)
+        XCTAssertNil(reply.importMillis)
+        XCTAssertNil(reply.importedEntries)
+    }
+
+    /// A present-but-malformed optional admission fact fails closed instead
+    /// of being silently dropped or coerced (bool-as-number, fractional or
+    /// negative counters, empty generation).
+    func testMalformedStartReplyMetadataFailsClosed() async throws {
+        let base = #""sessionID":"lease-bad","environmentID":"linux.local""#
+        let malformed = [
+            "{" + base + #","runtimeGeneration":""}"#,
+            "{" + base + #","runtimeGeneration":42}"#,
+            "{" + base + #","workspaceOwner":"true"}"#,
+            "{" + base + #","prepareReused":1}"#,
+            "{" + base + #","prepareMillis":-1}"#,
+            "{" + base + #","prepareMillis":1.5}"#,
+            "{" + base + #","prepareCopiedBytes":"4096"}"#,
+            "{" + base + #","importedEntries":true}"#,
+        ]
+        for (index, json) in malformed.enumerated() {
+            let (mailbox, transport) = makeMailbox()
+            XCTAssertTrue(mailbox.bind(epoch: UInt64(40 + index)))
+            do {
+                _ = try await settleStart(mailbox, transport: transport,
+                                          request: startRequest(), reply: json)
+                XCTFail("malformed optional metadata must be refused: \(json)")
+            } catch let error as LinuxShellTransportError {
+                XCTAssertEqual(error, .replyMalformed, "case \(index): \(json)")
+            }
+        }
+    }
+
+    /// A same-workspace hint that violates the runtime's closed shape is
+    /// refused BEFORE queueing; it is never dropped (which would silently
+    /// start a fresh owner and re-import over live guest files).
+    func testMalformedWorkspaceReuseHintIsRefusedBeforeQueueing() async throws {
+        let (mailbox, transport) = makeMailbox()
+        XCTAssertTrue(mailbox.bind(epoch: 32))
+        let malformed = [
+            LinuxShellWorkspaceReuse(mode: "exclusive", ownerSessionID: "owner-A"),
+            LinuxShellWorkspaceReuse(mode: "", ownerSessionID: "owner-A"),
+            LinuxShellWorkspaceReuse(mode: "shared", ownerSessionID: ""),
+            LinuxShellWorkspaceReuse(mode: "shared", ownerSessionID: "owner\nA"),
+        ]
+        for (index, reuse) in malformed.enumerated() {
+            var request = startRequest()
+            request.hostLeaseRole = .interactive
+            request.workspaceReuse = reuse
+            do {
+                _ = try await transport.shellStart(request)
+                XCTFail("malformed workspaceReuse must be refused: case \(index)")
+            } catch let error as LinuxShellTransportError {
+                XCTAssertEqual(error, .payloadTooLarge, "case \(index)")
+            }
+        }
+        XCTAssertEqual(mailbox.snapshotForTesting().live, 0,
+                       "a refused hint never reached the host queue")
+    }
+
+    /// A hint the runtime cannot prove is a typed FAILED start: the hint is
+    /// sent unchanged, the failure is surfaced, and nothing is retried as a
+    /// silent fresh owner (which would re-import over live guest files).
+    func testRuntimeRefusedWorkspaceHintFailsClosedWithoutFallback() async throws {
+        let (mailbox, transport) = makeMailbox()
+        XCTAssertTrue(mailbox.bind(epoch: 35))
+        let owner = UUID().uuidString
+        // Build the request BEFORE the sending closure so the Task captures
+        // only Sendable values (the XCTestCase instance is not Sendable).
+        let request = interactiveReuseRequest(owner)
+        let replyTask = Task { try await transport.shellStart(request) }
+        let host = try claimOne(mailbox)
+        let reuse = try XCTUnwrap(host.payload["workspaceReuse"] as? [String: Any])
+        XCTAssertEqual(reuse["ownerSessionID"] as? String, owner,
+                       "the exact hint must reach the runtime unchanged")
+        var buffer = Data(#"{"code":"workspaceOwnerUnavailable"}"#.utf8)
+        buffer.withUnsafeBytes { raw in
+            XCTAssertEqual(mailbox.complete(claim: host.claim, status: 1,
+                                            value: raw.bindMemory(to: UInt8.self).baseAddress!,
+                                            valueLen: Int32(buffer.count)), 0)
+        }
+        do {
+            _ = try await replyTask.value
+            XCTFail("a refused reuse hint must fail closed")
+        } catch let error as LinuxShellTransportError {
+            XCTAssertEqual(error, .remoteFailed(code: "workspaceOwnerUnavailable"))
+        }
+        XCTAssertEqual(mailbox.snapshotForTesting().live, 0)
+        XCTAssertEqual(mailbox.nextClaim(timeoutMillis: 0), 0,
+                       "a refused hint is never replayed as a fresh-owner start")
+    }
+
+    /// `deferred` is a real shared-export outcome accepted only for a
+    /// RELEASED terminal carrying the runtime's typed owner fact. The owner
+    /// reports true; a participant reports false (another live session owns
+    /// the export). It is not an exit, not a saved workspace and never
+    /// relaxes the lease/process proof.
+    func testPollAcceptsDeferredOnlyWithReleasedTerminalAndTypedOwnerFact() async throws {
+        let base = #""sessionID":"lease-1","state":"terminated","outputBase64":"","cursor":4,"gapBytes":0,"more":false,"droppedBytes":0,"leaseReleased":true,"cancelled":false"#
+        let cases = [
+            "{" + base + #","workspaceStatus":"deferred","workspaceOwner":true}"#,
+            "{" + base + #","workspaceStatus":"deferred","workspaceOwner":false}"#,
+        ]
+        for (index, json) in cases.enumerated() {
+            let (mailbox, transport) = makeMailbox()
+            XCTAssertTrue(mailbox.bind(epoch: UInt64(33 + index)))
+            let page = try await settlePoll(mailbox, transport: transport, reply: json)
+            XCTAssertEqual(page.workspaceStatus, "deferred")
+            XCTAssertTrue(page.leaseReleased)
+            XCTAssertFalse(page.cancelled)
+            XCTAssertNil(page.exitCode, "a deferred export is not a fabricated exit")
+            XCTAssertNil(page.stopReason)
+        }
+    }
+
+    func testPollRejectsDeferredWithoutReleasedOwnerOrWithUnknownStatus() async throws {
+        let base = #""sessionID":"lease-1","state":"terminated","outputBase64":"","cursor":4,"gapBytes":0,"more":false,"droppedBytes":0"#
+        let malformed = [
+            "{" + base + #","leaseReleased":true,"workspaceStatus":"deferred"}"#,
+            "{" + base + #","leaseReleased":false,"workspaceStatus":"deferred","workspaceOwner":true}"#,
+            "{" + base + #","leaseReleased":true,"workspaceStatus":"pending"}"#,
+            "{" + base + #","leaseReleased":true,"workspaceStatus":"deferred","workspaceOwner":1}"#,
+        ]
+        for (index, json) in malformed.enumerated() {
+            let (mailbox, transport) = makeMailbox()
+            XCTAssertTrue(mailbox.bind(epoch: UInt64(50 + index)))
+            do {
+                _ = try await settlePoll(mailbox, transport: transport, reply: json)
+                XCTFail("invalid deferred poll must be refused: case \(index)")
+            } catch let error as LinuxShellTransportError {
+                XCTAssertEqual(error, .replyMalformed, "case \(index): \(json)")
+            }
+        }
+    }
+
     func testPollDecodesStopTruthFields() async throws {
         let (mailbox, transport) = makeMailbox()
         XCTAssertTrue(mailbox.bind(epoch: 19))

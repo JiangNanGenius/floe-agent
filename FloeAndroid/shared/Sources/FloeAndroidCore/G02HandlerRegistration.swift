@@ -45,6 +45,7 @@ extension G02InstalledComposition {
         registerPersonalizationCommands(gen: gen)
         registerDefaultsUsageCommands(gen: gen)
         registerSharedContentRead(gen: gen)
+        registerInteractionCommands(gen: gen)
         return registeredHandlerKeys
     }
 

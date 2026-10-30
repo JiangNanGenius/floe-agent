@@ -34,7 +34,7 @@ public actor ShellSessionCenter {
         public var gateWaitTimeout: TimeInterval
 
         public init(
-            maximumSessions: Int = 4,
+            maximumSessions: Int = 3,
             sessionLifetime: TimeInterval = 30 * 60,
             maximumBufferBytes: Int = 256 * 1024,
             gateWaitTimeout: TimeInterval = 5
@@ -131,7 +131,9 @@ public actor ShellSessionCenter {
         toolEnvironment: ToolEnvironment? = nil,
         clientSessionID: String? = nil,
         conversationID: UUID? = nil,
-        workspaceOperationID: UUID? = nil
+        workspaceOperationID: UUID? = nil,
+        leaseRole: LinuxShellLeaseRole = .interactive,
+        workspaceReuse: LinuxShellWorkspaceReuse? = nil
     ) async throws -> ShellOpenResult {
         try cancellation?.throwIfCancelled()
         try ShellInputValidation.validate(command: command, cwd: cwd, environment: environment)
@@ -162,7 +164,9 @@ public actor ShellSessionCenter {
             toolEnvironment: lease.context.environment,
             conversationID: conversationID,   // A1 (see file header)
             workspaceOperationID: workspaceOperationID, // G04-R2 trusted UI operation lease (nil = unchanged path)
-            prepareLinuxIfMissing: !forTerminal
+            prepareLinuxIfMissing: !forTerminal,
+            leaseRole: leaseRole,           // G07.3A engine admission accounting
+            workspaceReuse: workspaceReuse  // G07.3A validated same-workspace participation
         )
         let result: ShellOpenResult
         do { result = try await backend.openSession(request, cancellation: cancellation) }
@@ -188,7 +192,19 @@ public actor ShellSessionCenter {
             sessionID: sessionID,
             initialOutput: SecretRedactor.redact(ShellOutputSanitizer.sanitize(ShellInputValidation.prefix(result.initialOutput, maxBytes: configuration.maximumBufferBytes))),
             alive: result.alive,
-            terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.initialOutput.utf8)) : nil
+            terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.initialOutput.utf8)) : nil,
+            runtimeGeneration: result.runtimeGeneration,
+            environmentID: result.environmentID,
+            workspaceOwner: result.workspaceOwner,
+            prepareReused: result.prepareReused,
+            prepareMillis: result.prepareMillis,
+            prepareCopiedBytes: result.prepareCopiedBytes,
+            importMillis: result.importMillis,
+            importedEntries: result.importedEntries,
+            // Carry the REAL engine lease id alongside the client token. The
+            // center keeps keying exchange/close/resize by its own client
+            // `sessionID`; only the live-files RPC uses this value.
+            runtimeSessionID: result.runtimeSessionID
         )
     }
 

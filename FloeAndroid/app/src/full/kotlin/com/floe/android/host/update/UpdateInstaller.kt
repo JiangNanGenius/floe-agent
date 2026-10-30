@@ -52,8 +52,22 @@ internal sealed interface AppInstallState {
     /** Downloaded and verified; owned work is still running (never force-stopped). */
     data class WaitingForJobs(val blockingKinds: Set<OperationKind>) : AppInstallState
 
-    /** The OS must grant "install unknown apps" for this package first. */
-    data class NeedsPermission(val intent: Intent) : AppInstallState
+    /**
+     * The OS must grant "install unknown apps" for this package first.
+     *
+     * Two real system surfaces are carried: the per-app unknown-sources page
+     * and the App-info page. The second one is the ONLY route when Android
+     * 13+ hides the first toggle behind "restricted settings" for a sideloaded
+     * install; [deniedOnce] records that the user already returned without the
+     * grant, and [settingsUnavailable] records that the unknown-sources page
+     * could not be launched at all.
+     */
+    data class NeedsPermission(
+        val intent: Intent,
+        val appInfoIntent: Intent,
+        val deniedOnce: Boolean = false,
+        val settingsUnavailable: Boolean = false,
+    ) : AppInstallState
 
     /** The verified bytes are being written into the install session. */
     data object Committing : AppInstallState
@@ -61,10 +75,94 @@ internal sealed interface AppInstallState {
     data class AwaitingSystem(val sessionID: Int) : AppInstallState
     data class Confirming(val sessionID: Int, val intent: Intent) : AppInstallState
     data class Succeeded(val versionName: String) : AppInstallState
-    data class Failed(val kind: InstallFailure, val detail: String? = null) : AppInstallState
+    data class Failed(
+        val kind: InstallFailure,
+        val detail: String? = null,
+    ) : AppInstallState
 }
 
-internal enum class InstallFailure { CANCELLED, ABORTED, SYSTEM, IDENTITY }
+/**
+ * Typed install failure. The system reports enough to distinguish a cancelled
+ * dialog from a blocked policy, a storage shortfall, an invalid/incompatible
+ * package or a verification refusal; collapsing them into one "failed" message
+ * is what left the previous flow with no actionable next step.
+ */
+internal enum class InstallFailure {
+    CANCELLED,
+    ABORTED,
+    BLOCKED,
+    INCOMPATIBLE,
+    INVALID_PACKAGE,
+    STORAGE,
+    VERIFICATION,
+    CONFLICT,
+    SYSTEM,
+    IDENTITY,
+}
+
+/**
+ * Pure mapping from Android's `PackageInstaller` status to [InstallFailure].
+ *
+ * `status` is the value of `PackageInstaller.EXTRA_STATUS` (1..7). The legacy
+ * negative `INSTALL_FAILED_*` code is carried by the platform in
+ * `PackageInstaller.EXTRA_LEGACY_STATUS`; it is more specific for
+ * incompatibility/verification/storage and is used when the generic status
+ * alone does not identify the cause.
+ */
+internal object InstallFailureClassifier {
+    // PackageInstaller.STATUS_* (android.content.pm.PackageInstaller).
+    const val STATUS_FAILURE = 1
+    const val STATUS_FAILURE_BLOCKED = 2
+    const val STATUS_FAILURE_ABORTED = 3
+    const val STATUS_FAILURE_INVALID = 4
+    const val STATUS_FAILURE_CONFLICT = 5
+    const val STATUS_FAILURE_STORAGE = 6
+    const val STATUS_FAILURE_INCOMPATIBLE = 7
+
+    // android.content.pm.PackageManager.INSTALL_FAILED_* (subset).
+    const val INSTALL_FAILED_INVALID_APK = -2
+    const val INSTALL_FAILED_INSUFFICIENT_STORAGE = -4
+    const val INSTALL_FAILED_UPDATE_INCOMPATIBLE = -7
+    const val INSTALL_FAILED_VERIFICATION_FAILURE = -22
+    const val INSTALL_FAILED_ABORTED = -115
+
+    fun classify(status: Int, legacyStatus: Int? = null): InstallFailure = when (status) {
+        STATUS_FAILURE_BLOCKED -> InstallFailure.BLOCKED
+        STATUS_FAILURE_ABORTED -> InstallFailure.CANCELLED
+        STATUS_FAILURE_INVALID -> InstallFailure.INVALID_PACKAGE
+        STATUS_FAILURE_CONFLICT -> InstallFailure.CONFLICT
+        STATUS_FAILURE_STORAGE -> InstallFailure.STORAGE
+        STATUS_FAILURE_INCOMPATIBLE -> InstallFailure.INCOMPATIBLE
+        else -> when (legacyStatus) {
+            INSTALL_FAILED_UPDATE_INCOMPATIBLE -> InstallFailure.INCOMPATIBLE
+            INSTALL_FAILED_INVALID_APK -> InstallFailure.INVALID_PACKAGE
+            INSTALL_FAILED_INSUFFICIENT_STORAGE -> InstallFailure.STORAGE
+            INSTALL_FAILED_VERIFICATION_FAILURE -> InstallFailure.VERIFICATION
+            INSTALL_FAILED_ABORTED -> InstallFailure.CANCELLED
+            else -> InstallFailure.SYSTEM
+        }
+    }
+}
+
+/**
+ * Install storage preflight. The staged APK and the PackageInstaller's own
+ * copy both live on /data, so a device with "one APK" free space would pass a
+ * download check and then fail inside the session with STATUS_FAILURE_STORAGE.
+ * Requiring the copy plus bounded headroom turns that into an actionable state
+ * before anything is committed.
+ */
+internal object InstallStoragePolicy {
+    fun requiredBytes(apkBytes: Long): Long {
+        if (apkBytes <= 0L) return UpdateConfig.INSTALL_HEADROOM_BYTES
+        val tenPercent = apkBytes / 10L
+        return apkBytes + maxOf(UpdateConfig.INSTALL_HEADROOM_BYTES, tenPercent)
+    }
+
+    fun hasRoom(usableSpace: Long, apkBytes: Long): Boolean {
+        if (usableSpace <= 0L) return true // unknown reporting: defer to the OS
+        return usableSpace >= requiredBytes(apkBytes)
+    }
+}
 
 /** Persisted record of one committed install session (process-death safe). */
 internal data class PendingInstall(
@@ -73,6 +171,8 @@ internal data class PendingInstall(
     val sha256: String,
     val fileName: String,
     val sessionID: Int,
+    val packageName: String = "",
+    val signerSha256: Set<String> = emptySet(),
 ) {
     fun toJson(): String = buildJsonObject {
         put("versionName", versionName)
@@ -80,6 +180,8 @@ internal data class PendingInstall(
         put("sha256", sha256)
         put("fileName", fileName)
         put("sessionID", sessionID)
+        put("packageName", packageName)
+        put("signerSha256", signerSha256.sorted().joinToString(","))
     }.toString()
 
     companion object {
@@ -96,7 +198,23 @@ internal data class PendingInstall(
             if (versionCode <= 0L || sessionID <= 0) return null
             if (!sha256.matches(Regex("[0-9a-f]{64}"))) return null
             if (fileName.isEmpty() || fileName.contains('/') || fileName.contains('\\')) return null
-            return PendingInstall(versionName, versionCode, sha256, fileName, sessionID)
+            val packageName = string("packageName").orEmpty()
+            if (packageName.length > 200 || packageName.contains('/') || packageName.contains('\\')) return null
+            val signers = string("signerSha256")
+                .orEmpty()
+                .split(',')
+                .filter { it.isNotEmpty() }
+                .toSet()
+            if (signers.any { !it.matches(Regex("[0-9a-f]{64}")) }) return null
+            return PendingInstall(
+                versionName = versionName,
+                versionCode = versionCode,
+                sha256 = sha256,
+                fileName = fileName,
+                sessionID = sessionID,
+                packageName = packageName,
+                signerSha256 = signers,
+            )
         }
     }
 }
@@ -104,7 +222,12 @@ internal data class PendingInstall(
 /** Process-local handoff of PackageInstaller callbacks (never exposed to a model). */
 internal sealed interface InstallEvent {
     data class Confirmation(val sessionID: Int, val intent: Intent) : InstallEvent
-    data class Finished(val sessionID: Int, val success: Boolean, val status: Int) : InstallEvent
+    data class Finished(
+        val sessionID: Int,
+        val success: Boolean,
+        val status: Int,
+        val legacyStatus: Int? = null,
+    ) : InstallEvent
 }
 
 internal object AppUpdateInstallEvents {
@@ -140,6 +263,12 @@ internal object AppUpdateInstallEvents {
  * was true when the download finished cannot become stale across a
  * quiescence wait or the unknown-sources round trip. A digest mismatch
  * abandons the session before any commit.
+ *
+ * Recovery: a verified staging APK is NEVER deleted by a failed or cancelled
+ * install attempt — only by an explicit discard or after a confirmed success.
+ * When the system ends an owned session without a result (or its confirmation
+ * intent can no longer be launched), the user can cancel the owned session and
+ * retry from the SAME verified bytes instead of re-downloading a full APK.
  */
 internal class AppUpdateInstaller(
     private val context: Context,
@@ -158,6 +287,9 @@ internal class AppUpdateInstaller(
 
     @Volatile
     private var permissionPending: PendingInstallRequest? = null
+
+    @Volatile
+    private var permissionDeniedOnce: Boolean = false
 
     private data class PendingInstallRequest(
         val versionName: String,
@@ -207,9 +339,7 @@ internal class AppUpdateInstaller(
         }
         val installed = reader.installed()
         if (installed != null && installed.longVersionCode >= record.versionCode) {
-            store.pendingInstallJson = null
-            mutable.value = AppInstallState.Succeeded(record.versionName)
-            cleanupStaged(record)
+            adoptInstalled(record, installed)
             return
         }
         val session = runCatching {
@@ -231,30 +361,46 @@ internal class AppUpdateInstaller(
      * Explicit user recovery for an owned session whose system confirmation is
      * no longer actionable in this process. Abandons ONLY this app's recorded
      * session and clears the persisted record: never starts a new install and
-     * never deletes a successful installed package.
+     * never deletes a successful installed package. The verified staging APK
+     * is KEPT so the user can retry without a new download.
      */
     fun cancelPendingInstall() {
         val record = PendingInstall.fromJson(store.pendingInstallJson) ?: return
         val installed = reader.installed()
         if (installed != null && installed.longVersionCode >= record.versionCode) {
-            store.pendingInstallJson = null
-            mutable.value = AppInstallState.Succeeded(record.versionName)
-            cleanupStaged(record)
+            adoptInstalled(record, installed)
             return
         }
         val abandoned = runCatching {
             context.packageManager.packageInstaller.abandonSession(record.sessionID)
         }.isSuccess
         if (!abandoned) {
-            mutable.value = AppInstallState.Failed(
-                InstallFailure.SYSTEM,
-                "pending-session-abandon-failed",
-            )
+            mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "pending-session-abandon-failed")
             return
         }
         store.pendingInstallJson = null
-        cleanupStaged(record)
+        permissionPending = null
         mutable.value = AppInstallState.Failed(InstallFailure.CANCELLED, "pending-cancelled")
+    }
+
+    /**
+     * Retry the installation from the already-verified staging APK after a
+     * failure that did NOT leave an owned pending session (storage, identity,
+     * output verification, a session ended by the system, or a permission
+     * handoff that could not be launched). The full admission — identity,
+     * signer, quiescence, permission and the streamed checksum — runs again.
+     *
+     * This never re-commits an ambiguous session: a persisted record blocks
+     * the retry and must be resolved through reconcile/cancel first.
+     */
+    fun retryInstall(versionName: String, apk: File, sha256: String) {
+        if (mutable.value !is AppInstallState.Failed) return
+        if (PendingInstall.fromJson(store.pendingInstallJson) != null) return
+        // Only sessions that were never committed have no record; abandoning
+        // them here is the explicit cleanup before a fresh admission.
+        abandonOrphanSessions()
+        mutable.value = AppInstallState.Idle
+        requestInstall(versionName, apk, sha256, force = false)
     }
 
     /**
@@ -334,23 +480,50 @@ internal class AppUpdateInstaller(
         cancelWaiting()
         permissionPending = request
         if (!context.packageManager.canRequestPackageInstalls()) {
-            mutable.value = AppInstallState.NeedsPermission(
-                Intent(
-                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                    Uri.parse("package:${context.packageName}"),
-                ),
-            )
+            mutable.value = permissionState(deniedOnce = permissionDeniedOnce)
+            return
+        }
+        permissionDeniedOnce = false
+        // Both the staged APK and the installer's own copy live on /data.
+        if (!InstallStoragePolicy.hasRoom(stagingDir.usableSpace, apk.length())) {
+            mutable.value = AppInstallState.Failed(InstallFailure.STORAGE, "install-space")
             return
         }
         commit(request)
     }
 
-    /** Resume after the user returns from the unknown-sources setting. */
+    private fun permissionState(
+        deniedOnce: Boolean,
+        settingsUnavailable: Boolean = false,
+    ): AppInstallState.NeedsPermission {
+        val packageUri = Uri.parse("package:${context.packageName}")
+        return AppInstallState.NeedsPermission(
+            intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, packageUri)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            appInfoIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            deniedOnce = deniedOnce,
+            settingsUnavailable = settingsUnavailable,
+        )
+    }
+
+    /** Resume after the user returns from the unknown-sources/App-info settings. */
     fun onForeground() {
         when (val current = mutable.value) {
             is AppInstallState.NeedsPermission -> {
                 val pending = permissionPending ?: return
-                if (!context.packageManager.canRequestPackageInstalls()) return
+                if (!context.packageManager.canRequestPackageInstalls()) {
+                    // Returning without the grant is a real state: keep the two
+                    // actionable system surfaces and say the toggle is still off
+                    // (on Android 13+ it may be hidden by restricted settings).
+                    permissionDeniedOnce = true
+                    mutable.value = permissionState(
+                        deniedOnce = true,
+                        settingsUnavailable = current.settingsUnavailable,
+                    )
+                    return
+                }
+                permissionDeniedOnce = false
                 // Re-enter the full admission: identity, release SHA and the
                 // quiescence state are re-proved after the settings round trip.
                 requestInstall(pending.versionName, pending.apk, pending.sha256, force = false)
@@ -364,6 +537,16 @@ internal class AppUpdateInstaller(
             is AppInstallState.AwaitingSystem -> refreshSession(current.sessionID)
             else -> Unit
         }
+    }
+
+    /**
+     * The unknown-sources Settings page could not be launched on this build.
+     * Keep the state actionable by switching the primary surface to App info
+     * and marking the page unavailable instead of leaving a dead button.
+     */
+    fun onPermissionIntentUnavailable() {
+        if (mutable.value !is AppInstallState.NeedsPermission) return
+        mutable.value = permissionState(deniedOnce = true, settingsUnavailable = true)
     }
 
     fun cancelWaiting() {
@@ -381,6 +564,17 @@ internal class AppUpdateInstaller(
         return current.intent
     }
 
+    /**
+     * The system confirmation intent could not be launched. The owned session
+     * still exists and still blocks a duplicate commit; the explicit recovery
+     * is "cancel install" followed by a retry from the same verified APK.
+     */
+    fun onConfirmationUnavailable() {
+        if (mutable.value is AppInstallState.Confirming) {
+            mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "confirmation-unavailable")
+        }
+    }
+
     fun dismissFailure() {
         if (mutable.value is AppInstallState.Failed) mutable.value = AppInstallState.Idle
     }
@@ -391,7 +585,9 @@ internal class AppUpdateInstaller(
 
     /**
      * Bounded quiescence wait on an owned coroutine. When it drains, a NEW
-     * admission revalidates everything before commit (see [admit]).
+     * admission revalidates everything before commit (see [admit]). Reaching
+     * the deadline does not commit and does not spin: the explicit "install
+     * now" action remains the only way past a still-busy device.
      */
     private fun startWaiting(request: PendingInstallRequest) {
         if (waitingJob.get() != null) return
@@ -408,6 +604,11 @@ internal class AppUpdateInstaller(
                         return@launch
                     }
                     mutable.value = AppInstallState.WaitingForJobs(kinds)
+                }
+                // Deadline reached with work still owned: stay in the explicit
+                // waiting state (no commit, no infinite loop, no false success).
+                if (mutable.value is AppInstallState.WaitingForJobs) {
+                    mutable.value = AppInstallState.WaitingForJobs(heldOperationKinds())
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation
@@ -523,10 +724,12 @@ internal class AppUpdateInstaller(
             // system confirmation is ever dropped as an unknown session.
             store.pendingInstallJson = PendingInstall(
                 versionName = request.versionName,
-                versionCode = candidate.longVersionCode,
+                versionCode = post.longVersionCode,
                 sha256 = streamedSha,
                 fileName = apk.name,
                 sessionID = sessionID,
+                packageName = post.packageName,
+                signerSha256 = post.signerSha256,
             ).toJson()
             // Hand ownership to the system exactly once. An exception here is
             // an AMBIGUOUS commit: keep the persisted session record and the
@@ -566,21 +769,39 @@ internal class AppUpdateInstaller(
                 if (event.sessionID != record.sessionID) return
                 store.pendingInstallJson = null
                 if (event.success) {
-                    mutable.value = AppInstallState.Succeeded(record.versionName)
-                    cleanupStaged(record)
-                } else {
-                    val kind = if (event.status == PackageInstaller.STATUS_FAILURE_ABORTED ||
-                        event.status == PackageInstaller.STATUS_FAILURE_BLOCKED
-                    ) {
-                        InstallFailure.CANCELLED
-                    } else {
-                        InstallFailure.SYSTEM
+                    val installed = reader.installed()
+                    if (installed != null) adoptInstalled(record, installed) else {
+                        mutable.value = AppInstallState.Succeeded(record.versionName)
+                        cleanupStaged(record)
                     }
+                } else {
+                    val kind = InstallFailureClassifier.classify(event.status, event.legacyStatus)
                     runCatching { context.packageManager.packageInstaller.abandonSession(record.sessionID) }
+                    // The verified staging APK is retained for an explicit retry.
                     mutable.value = AppInstallState.Failed(kind, "status-${event.status}")
                 }
             }
         }
+    }
+
+    private fun adoptInstalled(record: PendingInstall, installed: ApkIdentity) {
+        store.pendingInstallJson = null
+        if (record.packageName.isNotEmpty() && installed.packageName != record.packageName) {
+            mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, "installed-package-changed")
+            return
+        }
+        if (record.signerSha256.isNotEmpty() && installed.signerSha256 != record.signerSha256) {
+            mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, "installed-signer-changed")
+            return
+        }
+        mutable.value = AppInstallState.Succeeded(
+            if (installed.longVersionCode == record.versionCode && record.versionName.isNotEmpty()) {
+                record.versionName
+            } else {
+                installed.versionName.ifEmpty { record.versionName }
+            },
+        )
+        cleanupStaged(record)
     }
 
     private fun refreshSession(sessionID: Int) {
@@ -591,8 +812,7 @@ internal class AppUpdateInstaller(
         val record = PendingInstall.fromJson(store.pendingInstallJson)
         val installed = reader.installed()
         if (record != null && installed != null && installed.longVersionCode >= record.versionCode) {
-            store.pendingInstallJson = null
-            mutable.value = AppInstallState.Succeeded(record.versionName)
+            adoptInstalled(record, installed)
         } else if (record != null) {
             store.pendingInstallJson = null
             mutable.value = AppInstallState.Failed(InstallFailure.ABORTED, "session-ended")
@@ -608,13 +828,13 @@ internal class AppUpdateInstaller(
         }
     }
 
+    /**
+     * Deletes ONLY the exact staged file of a confirmed install. Other staged
+     * files are owned by the downloader and are never touched from here (a
+     * concurrent writer or a delta fallback must not lose its bytes).
+     */
     private fun cleanupStaged(record: PendingInstall) {
         runCatching { File(stagingDir, record.fileName).delete() }
-        runCatching {
-            stagingDir.listFiles()
-                ?.filter { it.name.endsWith(".part") || it.name.endsWith(".apk") }
-                ?.forEach { it.delete() }
-        }
     }
 
     companion object {
@@ -651,7 +871,15 @@ class AppUpdateInstallReceiver : BroadcastReceiver() {
                 InstallEvent.Finished(sessionID, success = true, status = status),
             )
             else -> AppUpdateInstallEvents.publish(
-                InstallEvent.Finished(sessionID, success = false, status = status),
+                InstallEvent.Finished(
+                    sessionID = sessionID,
+                    success = false,
+                    status = status,
+                    legacyStatus = intent.getIntExtra(
+                        "android.content.pm.extra.LEGACY_STATUS", // wire extra; no public SDK constant
+                        Int.MIN_VALUE,
+                    ).takeIf { it != Int.MIN_VALUE },
+                ),
             )
         }
     }

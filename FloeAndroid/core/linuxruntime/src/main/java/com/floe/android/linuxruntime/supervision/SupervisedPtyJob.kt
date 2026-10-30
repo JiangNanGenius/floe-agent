@@ -192,6 +192,22 @@ class SupervisedPtyJob internal constructor(
     private val clock: SupervisorClock,
     private val onTerminal: (WorkloadTerminal) -> Unit,
     rootBirthOverride: ProcessBirth? = null,
+    /**
+     * G07.3A: this job's terminal proof may run while OTHER owned workloads are
+     * live in the same runtime UID (two interactive terminals + one Agent
+     * command). The provider returns the live scoped exclusion for THIS proof.
+     * It is evaluated at proof time, never cached, and returns only kernel-
+     * attributed roots of other jobs — so this job's own descendants still must
+     * be gone and another session is never signalled.
+     */
+    private val exclusionProvider: () -> QuiescenceExclusion = { QuiescenceExclusion.none },
+    /**
+     * Whether an unattributable non-excluded process may be signalled by THIS
+     * proof. False while OTHER owned workloads are live: an unattributable
+     * process might be another session's detached guest, so the proof must
+     * refuse (retain the lease) instead of guessing and killing it.
+     */
+    private val enforceProvider: () -> Boolean = { true },
 ) {
     private val stateLock = ReentrantLock()
     private val ring = BoundedOutputRing(policy.maxRetainedOutputBytes)
@@ -675,7 +691,7 @@ class SupervisedPtyJob internal constructor(
         if (spec.stdinDelivery == StdinDelivery.OneShotPipe) session.closeStdinPipe()
         run {
             if (!cancelled) drainLeftoverOutput()
-            val proof = quiescer.quiesce(reason)
+            val proof = quiescer.quiesce(reason, exclusion = exclusionProvider(), enforce = enforceProvider())
             lastFailure = if (proof is Quiescence.Proven) null else proof
             return when (proof) {
                 is Quiescence.Proven -> {

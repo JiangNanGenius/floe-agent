@@ -232,7 +232,7 @@ final class LinuxAuthorityWireTests: XCTestCase {
     func testHandshakeReplyGoldenBytesOnFreshAuthority() async throws {
         let authority = FloeLinuxAuthority()
         let reply = await authority.exchange(data(#"{"version":1,"operation":"handshake"}"#))
-        let expected = #"{"outcome":{"ok":{"handshake":{"activeLease":false,"configurationInFlight":false,"configured":false,"execShellReady":false,"leaseAdmissionPending":false,"maxConcurrentRuntimeLeases":1,"wireVersion":1}}},"requestID":null,"version":1}"#
+        let expected = #"{"outcome":{"ok":{"handshake":{"activeLease":false,"activeLeases":0,"configurationInFlight":false,"configured":false,"execShellReady":false,"leaseAdmissionPending":false,"maxAgentLeases":1,"maxConcurrentRuntimeLeases":3,"maxExecutionLeases":1,"maxInteractiveLeases":2,"wireVersion":1}}},"requestID":null,"version":1}"#
         XCTAssertEqual(String(decoding: reply, as: UTF8.self), expected)
         // Reply must also decode into the typed value (round-trip symmetry).
         let decoded = try JSONDecoder().decode(LinuxAuthorityReply.self, from: reply)
@@ -240,7 +240,9 @@ final class LinuxAuthorityWireTests: XCTestCase {
                                                     outcome: .ok(.handshake(LinuxAuthorityHandshakeInfo(
                                                         wireVersion: 1, configured: false, activeLease: false,
                                                         leaseAdmissionPending: false, configurationInFlight: false,
-                                                        maxConcurrentRuntimeLeases: 1, execShellReady: false)))))
+                                                        maxConcurrentRuntimeLeases: 3, execShellReady: false,
+                                                        maxInteractiveLeases: 2, maxAgentLeases: 1,
+                                                        activeLeases: 0, maxExecutionLeases: 1)))))
     }
 
     func testFailureReplyGoldenBytes() async throws {
@@ -270,7 +272,11 @@ final class LinuxAuthorityWireTests: XCTestCase {
         let reply = await authority.exchange(data(#"{"version":1,"operation":"handshake"}"#))
         let payload = successPayload(reply, "handshake")
         XCTAssertEqual(payload["wireVersion"] as? Int, 1)
-        XCTAssertEqual(payload["maxConcurrentRuntimeLeases"] as? Int, 1)
+        XCTAssertEqual(payload["maxConcurrentRuntimeLeases"] as? Int, 3)
+        XCTAssertEqual(payload["maxInteractiveLeases"] as? Int, 2)
+        XCTAssertEqual(payload["maxExecutionLeases"] as? Int, 1)
+        XCTAssertEqual(payload["maxAgentLeases"] as? Int, 1)
+        XCTAssertEqual(payload["activeLeases"] as? Int, 0)
         XCTAssertEqual(payload["execShellReady"] as? Bool, false)
         XCTAssertEqual(payload["leaseAdmissionPending"] as? Bool, false)
         XCTAssertEqual(payload["configurationInFlight"] as? Bool, false)

@@ -40,10 +40,23 @@ data class NetworkObservationUi(
     val lan: LanDiscoveryUi? = null,
     /** Structured transfer results from `network.speedTest`; null for other methods. */
     val speed: SpeedTestUi? = null,
+    /** Metadata from a peer whose platform TLS handshake succeeded. */
+    val certificates: List<TlsCertificateUi> = emptyList(),
 )
 data class NetworkWorkbenchState(
     val results: Map<NetworkPage, NetworkObservationUi> = emptyMap(),
     val running: NetworkPage? = null,
     /** The user asked to stop and the typed service response is still pending. */
     val stopping: Boolean = false,
+)
+
+/** Values are measurements at the captured time, not a revocation or pin check. */
+data class TlsCertificateUi(
+    val index: Int,
+    val sha256: String,
+    val notBefore: String,
+    val notAfter: String,
+    val validAtObservation: Boolean,
+    val signatureAlgorithm: String,
+    val publicKeyAlgorithm: String,
 )

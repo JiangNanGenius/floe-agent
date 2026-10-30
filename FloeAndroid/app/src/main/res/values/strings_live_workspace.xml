@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_live_title">Terminal files</string>
+    <string name="workspace_live_back">Back</string>
+    <string name="workspace_live_refresh">Refresh</string>
+    <string name="workspace_live_close">Close</string>
+    <string name="workspace_live_readonly">Read-only live view. Close all running sessions to sync changes to the editable workspace.</string>
+    <string name="workspace_live_loading">Reading…</string>
+    <string name="workspace_live_binary">This preview supports UTF-8 text. Open the complete file in the workspace after sessions end.</string>
+    <string name="workspace_live_changed">The file is changing. Refresh to try again.</string>
+    <string name="workspace_live_ended">This session ended or changed. Return to the workspace to view synced files.</string>
+    <string name="workspace_live_link">This link cannot be previewed here.</string>
+    <string name="workspace_live_failed">The file could not be read. Refresh to try again.</string>
+    <string name="workspace_live_list_partial">Showing part of this folder. Open a subfolder to narrow the list.</string>
+    <string name="workspace_live_text_partial">Showing only the first 24 KiB. The original file is unchanged.</string>
+</resources>

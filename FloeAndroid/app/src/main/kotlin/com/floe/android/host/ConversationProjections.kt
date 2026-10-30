@@ -668,6 +668,20 @@ class ThreadProjectionBuilder internal constructor(
     }
 
     /**
+     * Replace the loaded message window with one bounded native window
+     * around a search hit. The window is the CURRENT truth for the thread
+     * body; run events and the live tail remain untouched. Used only by the
+     * explicit find-reveal path, never by ordinary paging (which appends).
+     */
+    internal fun applyMessageWindow(page: ConversationWire.MessagePage) {
+        userMessages.clear()
+        assistantMessages.clear()
+        applyMessagePage(page, earlier = false)
+        earlierCursor = page.earlierCursor
+        hasEarlierMessages = page.hasEarlier
+    }
+
+    /**
      * Appends one verified `content.read` chunk to the SAME message row.
      * Only an oversize row that arrived with a handle can reach this; the
      * row's text grows in exact chunk order and the row identity/role/run is

@@ -64,6 +64,11 @@ internal fun NetworkWorkbenchDestination(
         },
         onOpenLocationSettings = { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) },
         onNavigate = onNavigate, showSidebarToggle = showSidebarToggle,
+        diagnosticReport = { observation ->
+            (context.applicationContext as? FloeApplication)?.let { app ->
+                NetworkDiagnosticReportControls(app.diagnosticReports, observation)
+            }
+        },
         monitoringLabel = stringResource(com.floe.android.feature.network.R.string.network_monitor),
         monitoringContent = { panelModifier -> NetworkMonitoringDestination(host, panelModifier) },
         modifier = Modifier.fillMaxSize(),

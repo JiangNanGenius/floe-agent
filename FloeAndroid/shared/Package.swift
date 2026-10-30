@@ -666,6 +666,9 @@ let package = Package(
             "GRDB", "GRDBSQLite",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeAndroidLinuxAuthorityTests", dependencies: [
+            "FloeAndroidLinuxAuthority", "FloeCore", "FloeEnvironments",
+        ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidShellToolsTests", dependencies: [
             "FloeAndroidShellTools", "FloeAndroidCore", "FloeCore", "FloeTools",
             .product(name: "Crypto", package: "swift-crypto"),
@@ -721,6 +724,9 @@ let package = Package(
             // G06 notes suites run the REAL NotesStore + NotesEngine against
             // temporary roots on the host (no bootstrap/device dependency).
             "FloeNotes",
+            // G07.3A user-question contract tests exercise the real
+            // UserAskTool/UserQuestionCoordinator in the runtime target.
+            "FloeAgentRuntime",
         ], swiftSettings: strictSettings)
     ]
 )

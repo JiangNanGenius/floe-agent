@@ -477,4 +477,6 @@
     <string name="notes_copy_dismiss">关闭</string>
     <string name="workspace_terminal_sync_hint">会话结束后，可在工作区文件中查看终端里的改动。</string>
     <string name="workspace_terminal_closed_hint">会话已关闭。重新打开终端可开始新会话。</string>
+    <string name="workspace_terminal_empty_title">暂无终端标签页</string>
+    <string name="workspace_terminal_empty_hint">新建标签页以在此任务中启动终端。</string>
 </resources>

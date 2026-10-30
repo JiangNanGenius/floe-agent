@@ -19,6 +19,8 @@ import FloeTools
 import FloePersistence
 import FloeAndroidShellTools
 import FloeAndroidWorkspaceTools
+// The role-aware engine-slot admission vocabulary lives in FloeAgentRuntime.
+import FloeAgentRuntime
 @testable import FloeAndroidCore
 
 private final class FirstEntryFlowSink: G04TerminalEventSink, @unchecked Sendable {
@@ -428,6 +430,122 @@ final class G04TerminalFirstUseProductionFlowTests: XCTestCase {
         XCTAssertEqual(refused["reason"] as? String, "leaseCancelled")
         XCTAssertTrue(transport.dispatches.filter { $0.operation == "shell.start" }.isEmpty)
         _ = await lifecycle.abortDeletionFence(fence)
+        await store.retire()
+    }
+
+    /// G07.3A Agent admission role-pool regression (job-2ea65c020ee447b2):
+    /// the REAL terminal store plus the REAL role-aware backend decision.
+    /// Two admitted interactive tabs must never become an engine-slot conflict
+    /// for the free dedicated Agent execution slot. When a live Agent/run lease
+    /// really owns that execution slot, the probe must stay silent because
+    /// ending a terminal cannot free it (the ORIGINAL backend `.notStarted`
+    /// serialization remains the truthful refusal). Backend capacities are
+    /// pinned too: 2 interactive + 1 shared execution, never a fabricated
+    /// extra execution slot.
+    func testAgentAdmissionIgnoresTwoInteractiveTabsAndNeverMisoffersTTYHandoff() async throws {
+        let boot = try await boot()
+        let transport = FakeTerminalTransport()
+        try compose(boot, transport: transport)
+        let hostControl = FirstEntryHostControl(holdForRelease: false)
+        let host = startPreflightHost(boot, control: hostControl)
+        let conversation = UUID()
+        try await makeConversation(conversation)
+        let sink = FirstEntryFlowSink()
+        let store = G04TerminalStore(epoch: boot.epoch, sink: sink)
+        stores.append(store)
+
+        transport.startReply = LinuxShellStartReply(
+            sessionID: "engine-tty-a", environmentID: "env-shared",
+            runtimeGeneration: "boot-gen-1")
+        await store.open(conversationID: conversation, workspaceID: nil,
+                         purpose: .interactive, command: "", cwd: ".",
+                         columns: 80, rows: 24, requestID: "tty-a")
+        let ttyA = try XCTUnwrap(sink.reply("tty-a"))
+        XCTAssertEqual(ttyA["ok"] as? Bool, true)
+
+        // Warm same-conversation second tab: no second host preflight.
+        transport.startReply = LinuxShellStartReply(
+            sessionID: "engine-tty-b", environmentID: "env-shared",
+            runtimeGeneration: "boot-gen-1")
+        await store.open(conversationID: conversation, workspaceID: nil,
+                         purpose: .interactive, command: "", cwd: ".",
+                         columns: 80, rows: 24, requestID: "tty-b")
+        let ttyB = try XCTUnwrap(sink.reply("tty-b"))
+        XCTAssertEqual(ttyB["ok"] as? Bool, true)
+        await host.value
+        XCTAssertEqual(hostControl.claimCount, 1)
+
+        let backend = try XCTUnwrap(RuntimeFacadeLinuxBindings.shared.components?.backend)
+        let twoTabsOwned = await backend.ownedSessions()
+        XCTAssertEqual(twoTabsOwned.filter { $0.role == .interactive }.count, 2)
+        XCTAssertEqual(twoTabsOwned.filter { $0.role == .agent || $0.role == .run }.count, 0)
+        let interactiveCapacityWithTwoTabs = await backend.hasCapacity(for: .interactive)
+        let agentCapacityWithTwoTabs = await backend.hasCapacity(for: .agent)
+        let runCapacityWithTwoTabs = await backend.hasCapacity(for: .run)
+        XCTAssertFalse(interactiveCapacityWithTwoTabs,
+                       "both interactive slots are genuinely occupied")
+        XCTAssertTrue(agentCapacityWithTwoTabs,
+                      "two interactive leases must not consume the dedicated execution slot")
+        XCTAssertTrue(runCapacityWithTwoTabs,
+                      "the shared Agent/run execution slot is still free")
+        let freeExecutionBlocker = await backend.capacityBlockingRole(for: .agent)
+        XCTAssertNil(freeExecutionBlocker,
+                     "two live TTY leases are not the role blocking Agent admission")
+
+        // Exact production probe + registry path (isolated instance; never the
+        // process-wide shared registry).
+        let registry = LinuxEngineSlotRegistry()
+        XCTAssertTrue(registry.register(
+            G04TerminalSlotConflictProbe(store: store, epoch: boot.epoch),
+            epoch: boot.epoch))
+        let freeExecutionConflict = await registry.interactiveTerminalConflict(
+            conversationID: conversation, toolName: "exec.shell")
+        XCTAssertNil(freeExecutionConflict,
+                     "a full TTY pool with a free dedicated execution slot must not escalate")
+
+        // Genuinely hold the ONE shared Agent/run execution slot from another
+        // conversation. Closing this conversation's TTY cannot free it, so the
+        // probe must remain nil instead of offering a misleading TTY handoff.
+        transport.startReply = LinuxShellStartReply(
+            sessionID: "engine-agent-holder", environmentID: "env-agent",
+            runtimeGeneration: "boot-gen-1", workspaceOwner: false)
+        let agentOpen = try await backend.openSession(ShellOpenRequest(
+            command: "", cwd: ".", rootURL: boot.root, environment: [:],
+            columns: 80, rows: 24, gateTimeout: 1, sessionID: "agent-holder",
+            runID: UUID(), toolEnvironment: nil, conversationID: UUID(),
+            prepareLinuxIfMissing: false, leaseRole: .agent), cancellation: nil)
+        XCTAssertTrue(agentOpen.alive)
+
+        let executionOwned = await backend.ownedSessions()
+        XCTAssertEqual(executionOwned.filter { $0.role == .interactive }.count, 2,
+                       "the two TTY leases are unchanged while execution runs")
+        XCTAssertEqual(executionOwned.filter { $0.role == .agent || $0.role == .run }.count, 1)
+        let interactiveCapacityWithExecution = await backend.hasCapacity(for: .interactive)
+        let agentCapacityWithExecution = await backend.hasCapacity(for: .agent)
+        let runCapacityWithExecution = await backend.hasCapacity(for: .run)
+        XCTAssertFalse(interactiveCapacityWithExecution)
+        XCTAssertFalse(agentCapacityWithExecution,
+                       "genuine execution occupancy is still 0/1")
+        XCTAssertFalse(runCapacityWithExecution)
+        let busyExecutionBlocker = await backend.capacityBlockingRole(for: .agent)
+        XCTAssertEqual(busyExecutionBlocker, LinuxShellLeaseRole.agent,
+                       "the live Agent lease, never a TTY, is the real execution blocker")
+
+        let busyExecutionConflict = await registry.interactiveTerminalConflict(
+            conversationID: conversation, toolName: "exec.shell")
+        XCTAssertNil(busyExecutionConflict,
+                     "another Agent/run lease is not this conversation's TTY; a terminal handoff cannot free it")
+        let directStoreTruth = await store.interactiveTerminalHoldingEngineSlot(
+            conversationID: conversation)
+        XCTAssertNil(directStoreTruth,
+                     "the production store must not report the TTY as holding the execution slot")
+        let afterProbeOwned = await backend.ownedSessions()
+        XCTAssertEqual(afterProbeOwned.filter { $0.role == .interactive }.count, 2,
+                       "the probe must never stop or close the TTY leases")
+        XCTAssertEqual(afterProbeOwned.filter { $0.role == .agent }.count, 1,
+                       "the probe must not stop or hand off the unrelated execution lease")
+
+        await backend.closeSession(sessionID: "agent-holder")
         await store.retire()
     }
 }

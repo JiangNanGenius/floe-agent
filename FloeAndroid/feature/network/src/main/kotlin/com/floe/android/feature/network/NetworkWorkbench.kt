@@ -44,6 +44,7 @@ fun NetworkWorkbench(
      */
     monitoringLabel: String? = null,
     monitoringContent: (@Composable (Modifier) -> Unit)? = null,
+    diagnosticReport: (@Composable (NetworkObservationUi) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var selection by rememberSaveable { mutableStateOf<String?>(null) }
@@ -168,7 +169,7 @@ fun NetworkWorkbench(
                     onExecute = onExecute, onStop = onStop,
                     onPermission = onPermission,
                     onOpenLocationSettings = onOpenLocationSettings, onDetails = { detailsPage = it.name },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f), diagnosticReport = diagnosticReport,
                 )
             }
         }
@@ -243,6 +244,7 @@ private fun NetworkDetail(
     stopping: Boolean, onExecute: (NetworkExecuteCommand) -> Unit, onStop: () -> Unit,
     onPermission: (List<String>) -> Unit, onOpenLocationSettings: () -> Unit,
     onDetails: (NetworkPage) -> Unit, modifier: Modifier,
+    diagnosticReport: (@Composable (NetworkObservationUi) -> Unit)? = null,
 ) {
     when (page) {
         NetworkPage.LAN -> LanDiscoveryDetail(
@@ -259,7 +261,7 @@ private fun NetworkDetail(
             page = page, result = result, busy = busy, isRunning = isRunning,
             stopping = stopping, onExecute = onExecute, onStop = onStop,
             onPermission = onPermission, onOpenLocationSettings = onOpenLocationSettings,
-            onDetails = { onDetails(page) }, modifier = modifier,
+            onDetails = { onDetails(page) }, modifier = modifier, diagnosticReport = diagnosticReport,
         )
     }
 }
@@ -270,6 +272,7 @@ private fun SimpleNetworkDetail(
     stopping: Boolean, onExecute: (NetworkExecuteCommand) -> Unit, onStop: () -> Unit,
     onPermission: (List<String>) -> Unit, onOpenLocationSettings: () -> Unit,
     onDetails: () -> Unit, modifier: Modifier,
+    diagnosticReport: (@Composable (NetworkObservationUi) -> Unit)? = null,
 ) {
     var target by rememberSaveable(page) { mutableStateOf("") }
     var port by rememberSaveable(page) { mutableStateOf("443") }
@@ -366,8 +369,12 @@ private fun SimpleNetworkDetail(
                 }
                 result.cacheAgeMs?.let { age -> item { MeasurementAge(age) } }
             }
+            if (page == NetworkPage.HTTPS && result.certificates.isNotEmpty()) item {
+                CertificateSummary(result.certificates.first())
+            }
             item { ObservationLimitations(result) }
             item { ObservationDetailsAction(onDetails) }
+            if (page == NetworkPage.HTTPS && diagnosticReport != null) item { diagnosticReport(result) }
         }
     }
 }
@@ -577,3 +584,19 @@ internal fun statusTitle(status: String): String = stringResource(when (status) 
     "error" -> R.string.network_status_error
     else -> R.string.network_status_unavailable
 })
+
+@Composable
+private fun CertificateSummary(certificate: TlsCertificateUi) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        FloeText(stringResource(R.string.network_certificate_title), style = Floe.typography.body)
+        FloeText(stringResource(if (certificate.validAtObservation)
+            R.string.network_certificate_valid_at_check else R.string.network_certificate_invalid_at_check),
+            style = Floe.typography.metadata)
+        FloeText(stringResource(R.string.network_certificate_expires, certificate.notAfter),
+            style = Floe.typography.metadata)
+        FloeText(listOf(certificate.publicKeyAlgorithm, certificate.signatureAlgorithm)
+            .filter { it.isNotBlank() }.joinToString(" · "), style = Floe.typography.metadata)
+        FloeText(stringResource(R.string.network_certificate_metadata_note),
+            style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+    }
+}

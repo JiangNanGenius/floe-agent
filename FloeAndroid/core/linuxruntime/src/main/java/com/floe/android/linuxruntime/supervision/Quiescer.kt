@@ -35,6 +35,50 @@ data class QuiescePolicy(
 }
 
 /**
+ * Scoped exclusion for a quiescence proof (G07.3A multi-workload admission and
+ * per-session settlement).
+ *
+ * The runtime UID may own MORE than one supervised workload (two interactive
+ * PTY sessions plus one Agent command). A proof that belongs to ONE workload
+ * must not treat another owned workload's live process tree as its own
+ * stragglers — and it must never kill it. The exclusion is a pure, live
+ * observation over the SAME census snapshot: it never signals, never infers
+ * from names and never trusts a caller-supplied pid without the snapshot.
+ *
+ * [QuiescenceExclusion.ownedRoots] attributes a process to an owned workload
+ * only through the kernel-reported parent chain (pid -> ppid -> ...). A
+ * process that detached (`setsid`, reparented to init) is deliberately NOT
+ * attributed; it is treated as unattributable live work, so a concurrent
+ * proof refuses rather than guessing and killing another session's guest.
+ */
+fun interface QuiescenceExclusion {
+    fun excludes(process: OwnProcess, snapshot: List<OwnProcess>): Boolean
+
+    companion object {
+        /** Legacy single-workload proof: nothing is excluded. */
+        val none: QuiescenceExclusion = QuiescenceExclusion { _, _ -> false }
+
+        /** Excludes the supplied root pids and every snapshot descendant of them. */
+        fun ownedRoots(roots: Set<Int>): QuiescenceExclusion {
+            if (roots.isEmpty()) return none
+            return QuiescenceExclusion { process, snapshot ->
+                if (process.pid in roots) return@QuiescenceExclusion true
+                val byPid = snapshot.associateBy { it.pid }
+                var cursor = process
+                var hops = 0
+                while (hops++ < 256) {
+                    val parent = byPid[cursor.ppid] ?: return@QuiescenceExclusion false
+                    if (parent.pid in roots) return@QuiescenceExclusion true
+                    if (parent.ppid == parent.pid) return@QuiescenceExclusion false
+                    cursor = parent
+                }
+                false
+            }
+        }
+    }
+}
+
+/**
  * Result of a whole-runtime-UID quiescence attempt. Only [Proven] may release a
  * lease or fire a terminal callback; [Retained] and [Unknown] keep the lease.
  */
@@ -56,6 +100,13 @@ sealed class Quiescence {
         val stableSamples: Int,
         val audit: CensusSnapshot,
         val observedZombies: List<OwnProcess>,
+        /**
+         * Live processes deliberately attributed to OTHER owned workloads and
+         * therefore excluded from THIS proof (additive, default empty for the
+         * legacy single-workload proofs). They were neither killed nor counted
+         * as this workload's quiescence gap.
+         */
+        val excludedLive: List<OwnProcess> = emptyList(),
     ) : Quiescence()
 
     /** The budget ran out while own-UID work is still live, or our own child is unreaped. */
@@ -100,13 +151,25 @@ class RuntimeUidQuiescer(
 
     /**
      * @param reason audit label ("pre-admission", "workload-exit", "cancel", …).
+     * @param exclusion live processes that belong to OTHER owned workloads and
+     *   must be neither killed nor counted for THIS proof. Defaults to the
+     *   legacy whole-UID scope.
+     * @param enforce when false, live non-excluded processes are never
+     *   signalled: the attempt answers [Quiescence.Retained] immediately. This
+     *   is the only safe shape for a CONCURRENT admission check, because an
+     *   unattributable process might belong to another live session whose
+     *   descendant detached.
      *
      * The caller must have already tried to reap its own root child through the
      * transport. If that root is somehow still observable here, it is treated
-     * like any other own-UID live process: verified (UID + birth) and killed.
-     * A caller's belief is never a kernel fact.
+     * like any other owned live process: verified (UID + birth) and killed
+     * (enforcing scopes only). A caller's belief is never a kernel fact.
      */
-    fun quiesce(reason: String): Quiescence {
+    fun quiesce(
+        reason: String,
+        exclusion: QuiescenceExclusion = QuiescenceExclusion.none,
+        enforce: Boolean = true,
+    ): Quiescence {
         val kills = mutableListOf<KillRecord>()
         var rounds = 0
         var stable = 0
@@ -134,9 +197,12 @@ class RuntimeUidQuiescer(
                 )
             }
 
-            val live = snapshot.ownLive
+            val allLive = snapshot.ownLive
+            val excluded = allLive.filter { exclusion.excludes(it, allLive) }
+            val live = allLive.filterNot { exclusion.excludes(it, allLive) }
+            val unreaped = snapshot.unreapedOwnChildren
+                .filterNot { exclusion.excludes(it, allLive) }
             if (live.isEmpty()) {
-                val unreaped = snapshot.unreapedOwnChildren
                 if (unreaped.isNotEmpty()) {
                     return Quiescence.Retained(
                         reason, rounds, kills, live = emptyList(),
@@ -148,10 +214,20 @@ class RuntimeUidQuiescer(
                     return Quiescence.Proven(
                         reason, rounds, kills, stableSamples = stable,
                         audit = snapshot, observedZombies = snapshot.ownZombies,
+                        excludedLive = excluded,
                     )
                 }
                 clock.sleep(policy.settleMs)
                 continue
+            }
+            if (!enforce) {
+                // Concurrent admission: NEVER signal a process that may belong
+                // to another live session whose guest detached from its root.
+                // The owner sees the real live list and can act explicitly.
+                return Quiescence.Retained(
+                    reason, rounds, kills, live = live,
+                    unreapedOwnChildren = unreaped, audit = snapshot,
+                )
             }
 
             stable = 0
@@ -189,7 +265,10 @@ class RuntimeUidQuiescer(
         if (audit.inventoryFailure != null || audit.ambiguous.isNotEmpty()) {
             return Quiescence.Unknown(reason, rounds, kills, "budget-exhausted-unresolved", audit)
         }
-        if (audit.ownLive.isEmpty() && audit.unreapedOwnChildren.isEmpty()) {
+        val remaining = audit.ownLive.filterNot { exclusion.excludes(it, audit.ownLive) }
+        val remainingZombies = audit.unreapedOwnChildren
+            .filterNot { exclusion.excludes(it, audit.ownLive) }
+        if (remaining.isEmpty() && remainingZombies.isEmpty()) {
             // Nothing live is observable, but stability was not observed long
             // enough to *prove* it. That is an unproven result, never a success
             // and never "retained work" either.
@@ -200,8 +279,8 @@ class RuntimeUidQuiescer(
             )
         }
         return Quiescence.Retained(
-            reason, rounds, kills, live = audit.ownLive,
-            unreapedOwnChildren = audit.unreapedOwnChildren, audit = audit,
+            reason, rounds, kills, live = remaining,
+            unreapedOwnChildren = remainingZombies, audit = audit,
         )
     }
 }

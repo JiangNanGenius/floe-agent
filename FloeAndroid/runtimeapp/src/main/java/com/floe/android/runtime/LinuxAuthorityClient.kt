@@ -42,7 +42,7 @@ internal class LinuxAuthorityClient(context: Context) {
     @Synchronized fun acquire(payload: JSONObject): Lease {
         val arguments = JSONObject().put("projectID", payload.getString("projectID"))
             .put("runID", payload.getString("runID"))
-        for (key in listOf("conversationID", "environmentID")) {
+        for (key in listOf("conversationID", "environmentID", "leaseRole")) {
             if (payload.has(key) && !payload.isNull(key)) arguments.put(key, payload.getString(key))
         }
         val result = exchange("acquire", arguments)
@@ -60,7 +60,12 @@ internal class LinuxAuthorityClient(context: Context) {
 
     /** Root reap AND dedicated-UID proof are mandatory before the original lease is released. */
     @Synchronized fun complete(lease: Lease, birth: ProcessBirth, exit: ExitResult, proof: Quiescence.Proven) {
-        check(exit.waitErrno == 0 && proof.audit.isCleanlyQuiescent && proof.stableSamples >= 2)
+        // G07.3A: a per-workload proof may legitimately coexist with OTHER
+        // owned workloads, so the audit is not globally "clean". The proof's
+        // own scoped live set is empty by construction (`Quiescence.Proven`);
+        // the inventory itself must still be fully readable and unambiguous.
+        check(exit.waitErrno == 0 && proof.stableSamples >= 2 &&
+            proof.audit.inventoryFailure == null && proof.audit.ambiguous.isEmpty())
         val status = if (exit.signaled) exit.termSig and 0x7f else (exit.exitCode and 0xff) shl 8
         exchange("complete", JSONObject().put("leaseID", lease.id).put("processIdentity", identity(birth))
             .put("quiescence", JSONObject().put("reaped", true).put("exitStatus", status)))

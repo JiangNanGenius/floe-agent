@@ -23,6 +23,15 @@ internal interface RuntimeOperations {
     fun validateCancellation(request: RuntimeWire.Request)
     fun stopOwnedWork(request: RuntimeWire.Request? = null)
     fun hasOwnedWork(): Boolean
+    /** Install / first-use preflight: still exclusive with every workload. */
+    fun hasExclusiveWork(): Boolean
+    /**
+     * Every exact admitted work request id that still owns runtime work:
+     * pending start, retained lease/failed lease, live [Running.startID],
+     * install, preflight and a retained deferred export's OWNER start id.
+     * Only positive removal from this set settles a permit association.
+     */
+    fun ownedRequestIDs(): Set<String>
 }
 
 /** Bounded transient IPC receipts, not the main App's durable BackgroundJobStore. */
@@ -30,8 +39,13 @@ class RuntimeKernel(context: Context) {
     private val context = context.applicationContext
     private val executor = ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS,
         ArrayBlockingQueue(8)) { work -> Thread(work, "floe-linux-control") }.apply { allowCoreThreadTimeOut(true) }
-    private val stopExecutor = ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS,
-        ArrayBlockingQueue(1)) { work -> Thread(work, "floe-linux-stop") }.apply { allowCoreThreadTimeOut(true) }
+    // Per-target cancellation lane. The ORIGINAL single-slot queue claimed at
+    // most one stop and silently dropped every additional distinct target
+    // while that drain was pending; once two interactive sessions each own a
+    // foreground permit, each accepted target stop must be delivered. This
+    // stays ONE serialized lane with a bounded queue and a lossless handoff
+    // (see BoundedStopDispatcher): no unbounded queue, no concurrent stop.
+    private val stopExecutor = BoundedStopDispatcher(BoundedStopDispatcher.DEFAULT_CAPACITY)
     private val count = AtomicInteger()
     // G03-R3 first-start admission repair: the stopping fence is a
     // monitor-serialized lifecycle state machine, not two free atomics.
@@ -44,7 +58,15 @@ class RuntimeKernel(context: Context) {
     // the read-only `status` metadata path merely READS the fence.
     private val fence = RuntimeStoppingFence { hasOwnedWork() }
     private val pendingInstallID = AtomicReference<String?>()
-    private val pendingShellID = AtomicReference<String?>()
+    // G07.3A: concurrent starts each have their own pending wire id; a
+    // session-less stop may address any ONE of them by exact id.
+    private val pendingShellIDs: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    // Target-scoped stops that arrived for a still-admitted request. The
+    // queued request consults this set before it creates operations/spawns,
+    // so a stop for A can never be lost while the operations object is being
+    // built; the request's own finally removes only its own id. This is a
+    // lifecycle note, never a grant or an admission bypass.
+    private val targetStoppedIDs: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val pendingPreflightID = AtomicReference<String?>()
     // REAL engine PROCESS generation, measured identity — never an auth
     // token and never a random success flag: the kernel object is created
@@ -83,7 +105,7 @@ class RuntimeKernel(context: Context) {
                 // kernel genuinely runs a single-slot executor with the
                 // exclusive-start admission below. It is the engine's own real
                 // attestation; an idle check belongs to the host ingest.
-                .put("workloadContractVersion", if (executor.maximumPoolSize == 1) WORKLOAD_CONTRACT else "")
+                .put("workloadContractVersion", MULTI_WORKLOAD_CONTRACT)
             // G07.1 terminal04 (ADDITIVE, diagnostics only): this engine
             // process's OWN settled phase composition for its most recent
             // workload. Absent until a first terminal; stage names and
@@ -107,7 +129,7 @@ class RuntimeKernel(context: Context) {
             // Urgent stop is never queued behind a download/materialization.
             if (request.operation == "install.cancel" && pendingInstallID.get() == request.payload.optString("requestID")) {
                 require(request.payload.keys().asSequence().toSet() == setOf("requestID"))
-            } else if (request.operation == "shell.cancel" && pendingShellID.get() == request.payload.optString("requestID")) {
+            } else if (request.operation == "shell.cancel" && pendingShellIDs.contains(request.payload.optString("requestID"))) {
                 require(request.payload.keys().asSequence().toSet() == setOf("requestID"))
             } else if (request.operation == RuntimeWire.PREFLIGHT_CANCEL &&
                 pendingPreflightID.get() == request.payload.optString("requestID")
@@ -130,14 +152,17 @@ class RuntimeKernel(context: Context) {
         check(!fence.isStopping) { "Runtime is stopping" }
         synchronized(receipts) {
             receipts[request.id]?.let { return JSONObject(it.toString()) }
-            if (request.operation == "install.start" || request.operation == "shell.start" ||
-                request.operation == RuntimeWire.PREFLIGHT
-            ) {
-                // Exclusive single-workload admission: an unrelated busy
-                // workload A makes a NEW preflight REFUSE before any state
-                // is written; nothing about A is touched or cancelled.
+            if (request.operation == "install.start" || request.operation == RuntimeWire.PREFLIGHT) {
+                // Install / first-use preflight stay EXCLUSIVE: they rewrite or
+                // mirror shared state and must never race a live workload.
                 if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_ADMISSION_CHECK)
                 check(!hasOwnedWork()) { "Runtime already owns work" }
+            } else if (request.operation == "shell.start") {
+                // G07.3A: concurrent workloads are admitted by ROLE/CAPACITY in
+                // LinuxRuntimeOperations (2 interactive + ONE shared Agent/run), but
+                // never while an install or first-use preflight owns the UID.
+                if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_ADMISSION_CHECK)
+                check(operations?.hasExclusiveWork() != true) { "Runtime is preparing an exclusive lane" }
             }
             while (receipts.size >= 64) {
                 val evict = receipts.entries.firstOrNull { it.value.optString("state") in setOf("completed", "failed") }
@@ -147,7 +172,7 @@ class RuntimeKernel(context: Context) {
             receipts[request.id] = JSONObject().put("requestID", request.id).put("state", "queued")
             count.incrementAndGet() // reserve admission before another Binder call
             if (request.operation == "install.start") pendingInstallID.set(request.id)
-            if (request.operation == "shell.start") pendingShellID.set(request.id)
+            if (request.operation == "shell.start") pendingShellIDs.add(request.id)
             if (request.operation == RuntimeWire.PREFLIGHT) pendingPreflightID.set(request.id)
         }
         if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_QUEUED)
@@ -156,7 +181,11 @@ class RuntimeKernel(context: Context) {
                 if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTOR_ENTER)
                 update(request.id, JSONObject().put("state", "running"))
                 try {
-                    check(!fence.isStopping && (metadataOnly || cleanupLane || foregroundAllowed()))
+                    // A target-scoped stop for THIS admission is refused here
+                    // exactly like the global fence; a sibling's stop is not
+                    // in this set and never refuses this request.
+                    check(!fence.isStopping && request.id !in targetStoppedIDs &&
+                        (metadataOnly || cleanupLane || foregroundAllowed()))
                     // All native loading, disk work and real command admission
                     // happen on this owned IO thread, never on Binder/Main.
                     // G03-R3 first-start admission repair: the REAL owned-work
@@ -168,9 +197,13 @@ class RuntimeKernel(context: Context) {
                         context, onOwnedWorkReleased = { fence.settleAfterOwnedWorkReleased() },
                     ).also { operations = it }
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_OPERATIONS_READY)
-                    check(!fence.isStopping && (metadataOnly || cleanupLane || foregroundAllowed()))
+                    check(!fence.isStopping && request.id !in targetStoppedIDs &&
+                        (metadataOnly || cleanupLane || foregroundAllowed()))
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTE_ENTER)
-                    val result = runtime.execute(request, workspaceGrant) { fence.isStopping || (!metadataOnly && !foregroundAllowed()) }
+                    val result = runtime.execute(request, workspaceGrant) {
+                        fence.isStopping || request.id in targetStoppedIDs ||
+                            (!metadataOnly && !foregroundAllowed())
+                    }
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_RESULT_READY)
                     RuntimeWire.bounded(result.toString())
                     update(request.id, JSONObject().put("state", "completed").put("result", result))
@@ -201,8 +234,11 @@ class RuntimeKernel(context: Context) {
                     update(request.id, failed)
                 } finally {
                     pendingInstallID.compareAndSet(request.id, null)
-                    pendingShellID.compareAndSet(request.id, null)
+                    pendingShellIDs.remove(request.id)
                     pendingPreflightID.compareAndSet(request.id, null)
+                    // Only this request's own target note retires here; a
+                    // sibling's target remains queued/idempotent.
+                    targetStoppedIDs.remove(request.id)
                     count.decrementAndGet()
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_REQUEST_RETURNED)
                     fence.settleAfterRequestDrained()
@@ -211,8 +247,9 @@ class RuntimeKernel(context: Context) {
             }
         } catch (_: RejectedExecutionException) {
             pendingInstallID.compareAndSet(request.id, null)
-            pendingShellID.compareAndSet(request.id, null)
+            pendingShellIDs.remove(request.id)
             pendingPreflightID.compareAndSet(request.id, null)
+            targetStoppedIDs.remove(request.id)
             count.decrementAndGet()
             synchronized(receipts) { receipts.remove(request.id) }
             throw IllegalStateException("Runtime control queue full")
@@ -221,24 +258,96 @@ class RuntimeKernel(context: Context) {
         return JSONObject().put("requestID", request.id).put("state", "queued")
     }
 
+    /**
+     * Stop entry. A NON-NULL request is one exact target-scoped cancellation
+     * (`shell.cancel` / `install.cancel` / `workspace.preflight.cancel`) and
+     * MUST NOT raise the global admission fence: closing TTY A may not refuse
+     * B's queued input/resize or B's next start. A null request is the
+     * ORIGINAL genuine global stop (service ownership loss / teardown): it
+     * still raises the fence, coalesces the global drain and holds every
+     * admission until the engine's real ownership reads empty.
+     */
     fun requestStop(request: RuntimeWire.Request? = null) {
-        // Raise + single queue claim under the fence monitor (ORIGINAL rule:
-        // every stop raises the fence; exactly one queued stopOwnedWork
-        // drain at a time; the tail clears only while the engine provably
-        // owns nothing).
-        if (fence.beginStop()) stopExecutor.execute {
-            try { operations?.stopOwnedWork(request) }
-            catch (_: Exception) {
-                // Keep owned work/leases and the stopping notice. An inability
-                // to stop is not permission to tear down their directories.
+        if (request != null) {
+            // The payload's own request id is the only id a session-less
+            // cancellation may address. If that admission is still queued or
+            // running, record the target so it refuses before operations or a
+            // session exists; a settled/other id is never added.
+            targetRequestID(request)?.let {
+                if (isActiveAdmission(it)) targetStoppedIDs.add(it)
             }
-            finally {
+            RuntimeExecutionTrace.mark(Stage.STOP_TARGET_ACCEPTED)
+            stopExecutor.dispatch {
+                try { operations?.stopOwnedWork(request) }
+                catch (_: Exception) {
+                    // Keep only this target's owned work/lease. A failed
+                    // exact stop is not permission to widen to siblings.
+                }
+            }
+            onChanged?.invoke(fence.isStopping)
+            return
+        }
+        // ORIGINAL global rule: raise + single queue claim under the fence
+        // monitor; exactly one queued global drain at a time; the tail clears
+        // only while the engine provably owns nothing. The claim is global
+        // only, so a queued target stop can never suppress a genuine global
+        // drain (the old single claim did exactly that).
+        val claimed = fence.beginStop()
+        if (claimed) {
+            RuntimeExecutionTrace.mark(Stage.STOP_GLOBAL_ACCEPTED)
+            try {
+                stopExecutor.dispatch {
+                    try { operations?.stopOwnedWork(null) }
+                    catch (_: Exception) {
+                        // Keep owned work/leases and the stopping notice. An
+                        // inability to stop is not permission to tear down
+                        // their directories.
+                    } finally {
+                        fence.stopDrained()
+                        onChanged?.invoke(fence.isStopping)
+                    }
+                }
+            } catch (failure: IllegalStateException) {
+                // No public shutdown path exists; if it is ever hit, the
+                // drain was NOT accepted. Release only the queue claim, keep
+                // the fence while real ownership remains, and surface the
+                // honest rejection instead of running a second stop inline.
                 fence.stopDrained()
                 onChanged?.invoke(fence.isStopping)
+                throw failure
             }
         }
         fence.settleAfterRaise()
         onChanged?.invoke(true)
+    }
+
+    val isStopping: Boolean get() = fence.isStopping
+
+    /** Exact request id carried by a target-scoped cancellation, if any. */
+    private fun targetRequestID(request: RuntimeWire.Request): String? = when (request.operation) {
+        "shell.cancel", "install.cancel", RuntimeWire.PREFLIGHT_CANCEL ->
+            request.payload.optString("requestID").takeIf { it.isNotEmpty() }
+        else -> null
+    }
+
+    /** A receipt is an admission only while it is queued or executing. */
+    private fun isActiveAdmission(id: String): Boolean = synchronized(receipts) {
+        receipts[id]?.optString("state").let { it == "queued" || it == "running" }
+    }
+
+    /**
+     * Every exact owned request id: queued/running work-admitting admissions
+     * before the operations object exists, plus the operations' own pending,
+     * live, retained-lease and deferred-owner ids. Permit associations retire
+     * only when their ids are absent from this positive set.
+     */
+    fun ownedRequestIDs(): Set<String> {
+        val ids = HashSet<String>()
+        pendingInstallID.get()?.let(ids::add)
+        pendingPreflightID.get()?.let(ids::add)
+        ids.addAll(pendingShellIDs)
+        operations?.ownedRequestIDs()?.let(ids::addAll)
+        return ids
     }
 
     private fun update(id: String, value: JSONObject) {
@@ -251,6 +360,8 @@ class RuntimeKernel(context: Context) {
          *  the exclusive-start admission above). Ingested as a FACT only
          *  while the engine additionally reports itself idle. */
         const val WORKLOAD_CONTRACT = "floe-single-workload-v1"
+        /** G07.3A real concurrent contract (2 interactive + 1 shared execution). */
+        const val MULTI_WORKLOAD_CONTRACT = "floe-multi-workload-v2"
 
         /**
          * G03-R3 failed-start receipt handoff (job-150dee8e1ed14ba1): the

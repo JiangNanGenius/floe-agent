@@ -22,10 +22,10 @@ public actor DatabaseManager {
     private var migrator = DatabaseMigrator()
 
     /// Schema version tracked in `user_version`-aligned migrations. Must
-    /// match the highest registered migration (v48); every historical bump
+    /// match the highest registered migration (v49); every historical bump
     /// paired this constant with the new migration so that
     /// `user_version == currentSchemaVersion` after `migrate()`.
-    public static let currentSchemaVersion = 48
+    public static let currentSchemaVersion = 49
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
@@ -90,6 +90,7 @@ public actor DatabaseManager {
         V46TaskLifecycle.register(into: &migrator)
         V47AndroidWorkspaceSources.register(into: &migrator)
         V48TaskPolicyConvergence.register(into: &migrator)
+        V49UserQuestions.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

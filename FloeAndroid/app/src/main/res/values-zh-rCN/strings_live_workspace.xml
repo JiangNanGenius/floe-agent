@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_live_title">终端中的文件</string>
+    <string name="workspace_live_back">返回</string>
+    <string name="workspace_live_refresh">刷新</string>
+    <string name="workspace_live_close">关闭</string>
+    <string name="workspace_live_readonly">运行中只读查看。结束所有运行会话后，改动会同步到可编辑的工作区。</string>
+    <string name="workspace_live_loading">正在读取…</string>
+    <string name="workspace_live_binary">这里支持 UTF-8 文本预览，完整文件请在会话结束后从工作区打开。</string>
+    <string name="workspace_live_changed">文件正在变化，请刷新后重试。</string>
+    <string name="workspace_live_ended">会话已结束或已变更，请返回工作区查看同步后的文件。</string>
+    <string name="workspace_live_link">此链接暂不支持在这里预览。</string>
+    <string name="workspace_live_failed">暂时无法读取，请刷新后重试。</string>
+    <string name="workspace_live_list_partial">当前仅显示部分项目，可进入子文件夹缩小范围。</string>
+    <string name="workspace_live_text_partial">仅预览前 24 KiB，原文件未改变。</string>
+</resources>

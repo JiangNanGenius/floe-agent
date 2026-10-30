@@ -59,6 +59,16 @@ object RuntimeExecutionTrace {
         OPS_FINISH_RETURNED,
         OPS_START_EXCEPTION,
         OPS_PUMP_EXCEPTION,
+        // G07.3A multi-session stop/permit boundary. ADDITIVE enum-only marks:
+        // no id, command, path, binder token or payload ever reaches the log.
+        // They distinguish a target-scoped stop from a genuine global one and
+        // show whether a foreground permit was retired by real settlement or
+        // lost while its work was still live.
+        STOP_TARGET_ACCEPTED,
+        STOP_GLOBAL_ACCEPTED,
+        STOP_GLOBAL_PERMIT_LOSS,
+        STOP_GLOBAL_SERVICE_LOSS,
+        PERMIT_RETIRED,
     }
 
     fun mark(stage: Stage) {

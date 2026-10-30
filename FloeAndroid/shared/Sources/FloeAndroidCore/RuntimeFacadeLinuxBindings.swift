@@ -136,6 +136,10 @@ public struct LinuxShellComponents: Sendable {
     public let backend: AndroidLinuxShellBackend
     public let service: LocalShellService
     public let sessions: ShellSessionCenter
+    /// G07.3A bounded READ-ONLY live guest file snapshot (same mailbox).
+    /// Optional so existing pure actor fixtures can compose a components value
+    /// without the mailbox; production always supplies the mailbox transport.
+    public var liveFiles: (any LinuxLiveFilesTransport)? = nil
     /// Engine session identities stay owned by the backend; the facade keeps
     /// the ledger bridge (`reconcileLedger`) to settle owned workers only on
     /// REAL lease releases.
@@ -226,6 +230,7 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     @discardableResult
     public func compose(
         transport: LinuxShellTransport = MailboxLinuxShellTransport(),
+        liveFiles: (any LinuxLiveFilesTransport)? = nil,
         coordinator: FacadeToolWorkCoordinator,
         rootProvider: @escaping @Sendable () async -> URL?,
         readiness: LinuxShellReadiness = LinuxShellInjectedReadiness.unconfigured,
@@ -251,12 +256,15 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
             rootProvider: rootProvider
         )
         let sessions = ShellSessionCenter(backend: backend)
+        let files = liveFiles ?? (transport as? LinuxLiveFilesTransport) ?? MailboxLinuxShellTransport()
         stateLock.lock()
-        componentsStorage = LinuxShellComponents(backend: backend, service: service, sessions: sessions)
+        componentsStorage = LinuxShellComponents(backend: backend, service: service, sessions: sessions,
+                                                 liveFiles: files)
         coordinatorStorage = coordinator
         readinessStorage = readiness
         stateLock.unlock()
-        return LinuxShellComponents(backend: backend, service: service, sessions: sessions)
+        return LinuxShellComponents(backend: backend, service: service, sessions: sessions,
+                                    liveFiles: files)
     }
 
     public var components: LinuxShellComponents? {

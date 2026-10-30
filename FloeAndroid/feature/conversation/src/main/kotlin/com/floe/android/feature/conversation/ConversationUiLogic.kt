@@ -331,6 +331,58 @@ object ApprovalGrantMapping {
      * card even while a terminal is live. */
     fun acquiresLinuxEngineSlot(toolName: String): Boolean =
         toolName == "exec.shell" || toolName == "shell.open"
+
+    /** The ONE card projection that decides whether the explicit
+     * "end terminal and run" control exists. */
+    data class TerminalHandoffProjection(
+        /** Show the short "terminal is using the engine" note. */
+        val showsConflictNote: Boolean,
+        /** Offer the separate end-and-run control (never a variant of Allow). */
+        val allowsEndAndRun: Boolean,
+        /** The live capture the control must consent to, if any. */
+        val consent: TerminalHandoffConsentUi?,
+    ) {
+        companion object {
+            val NONE = TerminalHandoffProjection(
+                showsConflictNote = false, allowsEndAndRun = false, consent = null)
+        }
+    }
+
+    /**
+     * The production approval-card projection for the historical single-slot
+     * terminal handoff.
+     *
+     * A live interactive terminal is NOT evidence of an engine-slot conflict:
+     * the approved separated pool runs TWO interactive tabs plus ONE shared
+     * Agent/run execution slot, so a TTY never makes the Agent role
+     * inadmissible. Only the runtime's trusted G04 probe decides a conflict,
+     * and it publishes the exact typed token on the card's `reason` channel.
+     * Therefore:
+     *  * ordinary reasons never show the note/action, even with a live TTY;
+     *  * the typed conflict token shows them only for a tool that really must
+     *    acquire the slot AND while the host can name the still-live captured
+     *    session (the consent). A settled/absent terminal offers no
+     *    destructive control, and the ordinary Allow stays available.
+     *
+     * This changes presentation only. The host re-validates the consent's
+     * token/generation and proves the real release before the same ordinary
+     * approval dispatches once.
+     */
+    fun terminalHandoffProjection(
+        reason: String,
+        toolName: String,
+        liveConsent: TerminalHandoffConsentUi?,
+    ): TerminalHandoffProjection {
+        if (!terminalHandoffConflict(reason)) return TerminalHandoffProjection.NONE
+        if (!acquiresLinuxEngineSlot(toolName)) return TerminalHandoffProjection.NONE
+        val consent = liveConsent?.takeIf { it.sessionToken.isNotEmpty() }
+            ?: return TerminalHandoffProjection.NONE
+        return TerminalHandoffProjection(
+            showsConflictNote = true,
+            allowsEndAndRun = true,
+            consent = consent,
+        )
+    }
 }
 
 /* ------------------------------- follow & drafts ----------------------------- */

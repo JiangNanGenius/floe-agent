@@ -82,7 +82,13 @@ internal object RuntimeNetworkConfiguration {
     private val revalidationQueued = AtomicBoolean()
     @Volatile private var last: Snapshot? = null
     private var monitor: ResolverMonitor? = null
-    private var session: Session? = null
+    /**
+     * G07.3A: one prepared resolver session per OWNED WORKLOAD. The bridge and
+     * socket directory are process-wide and shared; each workload gets its own
+     * scratch copy of the committed files. Releasing one workload must never
+     * stop the resolver another live terminal still uses.
+     */
+    private val sessions = LinkedHashMap<File, Session>()
 
     // Staged-helper state (install-time verification; digest re-checked at
     // each prepare so on-disk drift after install also fails closed).
@@ -126,33 +132,36 @@ internal object RuntimeNetworkConfiguration {
      *  explicit unreachable-local configuration. */
     fun prepareBinds(context: Context, scratch: File): List<LinuxBind> =
         synchronized(lock) {
-            val facts = readFacts(context)
-            val decision = decideFor(facts)
-            var committed = decision
-            var socketDir: File? = null
-            if (decision.bridgeRequested) {
-                val started = tryStartBridge(context, facts)
-                if (started != null) {
-                    socketDir = started
-                } else {
-                    committed = ResolverConfiguration.decide(ResolverInputs(
-                        android.os.Build.VERSION.SDK_INT, facts.mode, facts.effectivePrivateDns,
-                        facts.activeNetwork != null, facts.rawServers, false, false,
-                        probeFor(facts)))
+            val ownerScratch = scratch.canonicalFile
+            // A live configuration is process-wide truth: a second concurrent
+            // session writes the SAME committed bytes into its OWN scratch
+            // instead of re-deciding into a divergent resolver state.
+            val existing = sessions.values.firstOrNull()
+            val committed: ResolverDecision
+            val socketDir: File?
+            if (existing != null) {
+                committed = existing.decision
+                socketDir = existing.socketDir
+            } else {
+                val facts = readFacts(context)
+                val decision = decideFor(facts)
+                var selected = decision
+                var started: File? = null
+                if (decision.bridgeRequested) {
+                    started = tryStartBridge(context, facts)
+                    if (started == null) {
+                        selected = ResolverConfiguration.decide(ResolverInputs(
+                            android.os.Build.VERSION.SDK_INT, facts.mode, facts.effectivePrivateDns,
+                            facts.activeNetwork != null, facts.rawServers, false, false,
+                            probeFor(facts)))
+                    }
                 }
+                committed = selected
+                socketDir = started
             }
-            val plan = ResolverConfiguration.ownedFilePlan(committed)
-            val binds = ArrayList<LinuxBind>()
-            for (file in plan.files) {
-                binds += writeFileBind(scratch, file.scratchName, file.content, file.guestPath)
-            }
-            if (plan.requiresHelperModule) {
-                val helper = resolveHelper(context) ?: error("bridge committed without verified helper")
-                binds += LinuxBind(helper, ResolverConfiguration.GUEST_NSS_MODULE_PATH)
-                binds += LinuxBind(checkNotNull(socketDir), ResolverConfiguration.GUEST_SOCKET_DIR_PATH)
-            }
-            session = Session(scratch, socketDir, committed)
-            last = snapshotOf(committed, facts)
+            val binds = bindsFor(context, ownerScratch, committed, socketDir)
+            sessions[ownerScratch] = Session(ownerScratch, socketDir, committed)
+            last = snapshotOf(committed, readFacts(context))
             if (monitor == null) {
                 monitor = ResolverMonitor(context.applicationContext,
                     onChange = {
@@ -165,6 +174,21 @@ internal object RuntimeNetworkConfiguration {
             }
             binds.toList()
         }
+
+    private fun bindsFor(context: Context, scratch: File, committed: ResolverDecision,
+                         socketDir: File?): List<LinuxBind> {
+        val plan = ResolverConfiguration.ownedFilePlan(committed)
+        val binds = ArrayList<LinuxBind>()
+        for (file in plan.files) {
+            binds += writeFileBind(scratch, file.scratchName, file.content, file.guestPath)
+        }
+        if (plan.requiresHelperModule) {
+            val helper = resolveHelper(context) ?: error("bridge committed without verified helper")
+            binds += LinuxBind(helper, ResolverConfiguration.GUEST_NSS_MODULE_PATH)
+            binds += LinuxBind(checkNotNull(socketDir), ResolverConfiguration.GUEST_SOCKET_DIR_PATH)
+        }
+        return binds
+    }
 
     private fun tryStartBridge(context: Context, facts: Facts): File? {
         val appContext = context.applicationContext
@@ -185,13 +209,18 @@ internal object RuntimeNetworkConfiguration {
     /** End the session's real resolver use: stop the owned listener,
      *  remove the owned socket directory and unregister the owned
      *  callbacks. Idempotent; safe from the owned IO thread and stop paths. */
-    fun release() {
+    fun release(scratch: File? = null) {
         synchronized(lock) {
+            val released = if (scratch == null) sessions.values.toList()
+                else listOfNotNull(sessions.remove(scratch.canonicalFile))
+            if (sessions.isEmpty()) sessions.clear()
+            if (sessions.isNotEmpty()) return
             bridge.stop()
-            session?.socketDir?.let { dir -> runCatching { dir.delete() } }
+            released.mapNotNull { it.socketDir }.distinct().forEach { dir ->
+                runCatching { dir.deleteRecursively() }
+            }
             monitor?.unregister()
             monitor = null
-            session = null
         }
     }
 
@@ -279,7 +308,7 @@ internal object RuntimeNetworkConfiguration {
         .apply { allowCoreThreadTimeOut(true) }
 
     private fun scheduleRevalidation(appContext: Context) {
-        if (session == null || revalidationQueued.get()) return
+        if (sessions.isEmpty() || revalidationQueued.get()) return
         if (!revalidationQueued.compareAndSet(false, true)) return
         try {
             revalidationExecutor.execute {
@@ -293,15 +322,15 @@ internal object RuntimeNetworkConfiguration {
 
     private fun revalidateNow(appContext: Context) {
         synchronized(lock) {
-            val owned = session ?: return
+            if (sessions.isEmpty()) return
             val facts = readFacts(appContext)
             val fresh = decideFor(facts)
-            val previous = owned.decision
             // A bridged session is live-correct by construction; a session
             // can never be UPGRADED into a bridge mid-launch (PRoot binds
             // are fixed), so the honest live actions are: keep, rewrite
             // with a still-safe configuration, or revoke to the dead
             // marker. There is never a raw/plaintext substitution.
+            val previous = sessions.values.first().decision
             if (previous.state == ResolverState.BRIDGED) { updateSnapshot(previous, facts); return }
             val replacement: ResolverDecision = when {
                 fresh.state == ResolverState.BRIDGED ->
@@ -313,27 +342,25 @@ internal object RuntimeNetworkConfiguration {
                 else -> revokedMarker()
             }
             if (replacement.resolvConfText != previous.resolvConfText) {
-                runCatching {
-                    val target = File(owned.scratch, "resolv.conf")
-                    if (target.isFile) { // scratch may be gone with a settled session
-                        val tmp = File(owned.scratch, "resolv.conf.tmp-$processTag")
-                        Files.write(tmp.toPath(), replacement.resolvConfText.toByteArray(Charsets.US_ASCII),
-                            StandardOpenOption.CREATE, StandardOpenOption.WRITE,
-                            StandardOpenOption.TRUNCATE_EXISTING)
-                        android.system.Os.chmod(tmp.path, 0x180)
-                        Files.move(tmp.toPath(), target.toPath(),
-                            StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                for (owned in sessions.values) {
+                    runCatching {
+                        val target = File(owned.scratch, "resolv.conf")
+                        if (target.isFile) { // scratch may be gone with a settled session
+                            val tmp = File(owned.scratch, "resolv.conf.tmp-$processTag")
+                            Files.write(tmp.toPath(), replacement.resolvConfText.toByteArray(Charsets.US_ASCII),
+                                StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                                StandardOpenOption.TRUNCATE_EXISTING)
+                            android.system.Os.chmod(tmp.path, 0x180)
+                            Files.move(tmp.toPath(), target.toPath(),
+                                StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                        }
+                    }.onFailure {
+                        lastError = "rewrite_failed"
                     }
-                }.onFailure {
-                    // Cannot rewrite the committed file. A DIRECT/TUNNEL
-                    // session keeps its LAST-SAFE commitment; it can never
-                    // be silently replaced by something more dangerous, and
-                    // the next launch sees the current facts.
-                    lastError = "rewrite_failed"
                 }
             }
             revalidations.incrementAndGet()
-            owned.decision = replacement
+            for (owned in sessions.values) owned.decision = replacement
             last = snapshotOf(replacement, facts).copy(
                 lastTransition = previous.state.name.lowercase() + "->" + replacement.state.name.lowercase())
         }

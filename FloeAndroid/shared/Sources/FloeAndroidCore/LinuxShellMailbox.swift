@@ -50,14 +50,19 @@
 //      request IDs by receipt identity.
 //   shell.start may carry the explicit caller `env` object (engine bounds:
 //   <=32 entries, engine key shape, no PROOT_*/FLOE_* keys, no HOME/TMPDIR
-//   override, no NUL, <=32 KiB combined bytes); shell.poll replies carry
-//   `cancelled` plus the fixed `stopReason` service code alongside
-//   state/leaseReleased/exit fields.
+//   override, no NUL, <=32 KiB combined bytes), plus the trusted closed
+//   `leaseRole` and validated `workspaceReuse {mode:"shared", ownerSessionID}`
+//   hints (both omitted when nil); its reply carries the optional measured
+//   admission facts (runtimeGeneration/workspaceOwner/prepare*/import*).
+//   shell.poll replies carry `cancelled` plus the fixed `stopReason` service
+//   code alongside state/leaseReleased/exit fields; `workspaceStatus` may be
+//   `deferred` only for a released owner terminal.
 //   Identity case: owner UUID strings (projectID/runID/conversationID) ride
 //   Swift canonical form UNCHANGED; only the transient interface/control
 //   request UUIDs may be normalized (lowercase Java canonical) by the host
 //   adapter, never owner IDs.
 import Foundation
+import CoreFoundation
 import FloeCore
 import FloeAndroidShellTools
 
@@ -885,6 +890,18 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
             hostObject["operationID"] = operation
         }
         if !hostObject.isEmpty { payload["host"] = hostObject }
+        // G07.3A engine admission: the trusted caller's closed workload role
+        // and validated same-workspace hint. They are PRIVATE host data (never
+        // model/env/command text) and ride the top-level wire keys the actual
+        // runtime `start` validates. nil OMITS each key so every legacy
+        // start payload stays byte-for-byte unchanged (the runtime keeps its
+        // historical Agent default for an absent role).
+        if let role = request.hostLeaseRole {
+            payload["leaseRole"] = role.rawValue
+        }
+        if let reuse = request.workspaceReuse {
+            payload["workspaceReuse"] = try Self.workspaceReuseObject(reuse)
+        }
         if let conversationID = request.conversationID {
             payload["conversationID"] = conversationID.uuidString
         }
@@ -917,7 +934,25 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
               let environmentID = object["environmentID"] as? String, !environmentID.isEmpty else {
             throw LinuxShellTransportError.replyMalformed
         }
-        return LinuxShellStartReply(sessionID: sessionID, environmentID: environmentID)
+        // G07.3A start reply metadata (all ADDITIVE and OPTIONAL). The actual
+        // runtime `start` reports the measured admission facts this session
+        // really observed; an absent key (legacy engine) stays nil and is
+        // NEVER replaced by a fabricated false/zero. A present but malformed
+        // value fails closed instead of silently inventing truth.
+        let runtimeGeneration = try Self.optionalBoundedToken(
+            object, key: "runtimeGeneration", maximumBytes: 128)
+        let workspaceOwner = try Self.optionalStrictBool(object, key: "workspaceOwner")
+        let prepareReused = try Self.optionalStrictBool(object, key: "prepareReused")
+        let prepareMillis = try Self.optionalNonNegativeInt64(object, key: "prepareMillis")
+        let prepareCopiedBytes = try Self.optionalNonNegativeInt64(object, key: "prepareCopiedBytes")
+        let importMillis = try Self.optionalNonNegativeInt64(object, key: "importMillis")
+        let importedEntries = try Self.optionalNonNegativeInt64(object, key: "importedEntries")
+        return LinuxShellStartReply(
+            sessionID: sessionID, environmentID: environmentID,
+            runtimeGeneration: runtimeGeneration, workspaceOwner: workspaceOwner,
+            prepareReused: prepareReused, prepareMillis: prepareMillis,
+            prepareCopiedBytes: prepareCopiedBytes, importMillis: importMillis,
+            importedEntries: importedEntries)
     }
 
     public func shellPoll(_ request: LinuxShellPollRequest) async throws -> LinuxShellPollReply {
@@ -969,8 +1004,21 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
             workspaceStatus: leaseReleased ? object["workspaceStatus"] as? String : nil,
             workspaceRecoveryRef: leaseReleased ? object["workspaceRecoveryRef"] as? String : nil)
         if let state = poll.workspaceStatus,
-           !["synced", "conflict", "aborted", "error", "unknown"].contains(state) {
+           !["synced", "conflict", "aborted", "error", "unknown", "deferred"].contains(state) {
             throw LinuxShellTransportError.replyMalformed
+        }
+        // G07.3A deferred shared export: `deferred` is honest only after the
+        // engine proved THIS session's real terminal (leaseReleased) and the
+        // runtime attached a typed ownership fact. The owner reports
+        // workspaceOwner=true; a participant reports false (the export is
+        // owned by another live session). An absent/non-boolean owner is
+        // malformed — never read as a saved workspace, a fake exit, or a
+        // relaxable lease.
+        if object["workspaceStatus"] as? String == "deferred" {
+            guard leaseReleased,
+                  Self.strictBool(object["workspaceOwner"]) != nil else {
+                throw LinuxShellTransportError.replyMalformed
+            }
         }
         if let ref = poll.workspaceRecoveryRef,
            ref.range(of: "^[0-9a-f]{32}$", options: .regularExpression) == nil {
@@ -1047,6 +1095,75 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
     }
 
     // MARK: JSON helpers (standard JSON only, bounded frames)
+
+    /// Validates the SAME trusted same-workspace hint the runtime `start`
+    /// accepts: the closed mode `shared` and, when present, a non-empty
+    /// bounded owner identity. A malformed hint is REFUSED here instead of
+    /// being dropped — dropping it would silently start a fresh owner and
+    /// re-import over a live participant's guest tree.
+    static func workspaceReuseObject(_ reuse: LinuxShellWorkspaceReuse) throws -> [String: Any] {
+        guard reuse.mode == "shared" else {
+            throw LinuxShellTransportError.payloadTooLarge
+        }
+        var object: [String: Any] = ["mode": reuse.mode]
+        if let owner = reuse.ownerSessionID {
+            guard Self.isBoundedToken(owner, maximumBytes: 128) else {
+                throw LinuxShellTransportError.payloadTooLarge
+            }
+            object["ownerSessionID"] = owner
+        }
+        return object
+    }
+
+    /// Optional bounded printable token: absent → nil; present but empty,
+    /// oversized or containing control/whitespace bytes → malformed.
+    static func optionalBoundedToken(_ object: [String: Any], key: String,
+                                     maximumBytes: Int) throws -> String? {
+        guard let raw = object[key] else { return nil }
+        guard let value = raw as? String, Self.isBoundedToken(value, maximumBytes: maximumBytes) else {
+            throw LinuxShellTransportError.replyMalformed
+        }
+        return value
+    }
+
+    private static func isBoundedToken(_ value: String, maximumBytes: Int) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= maximumBytes else { return false }
+        return value.unicodeScalars.allSatisfy { $0.value >= 0x21 && $0.value <= 0x7e }
+    }
+
+    /// Optional real JSON boolean. NSNumber `intValue`-style bridging would
+    /// turn a malformed `1` into `true`; only the CFBoolean type qualifies.
+    static func strictBool(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
+    static func optionalStrictBool(_ object: [String: Any], key: String) throws -> Bool? {
+        guard let raw = object[key] else { return nil }
+        guard let value = Self.strictBool(raw) else {
+            throw LinuxShellTransportError.replyMalformed
+        }
+        return value
+    }
+
+    /// Optional exact non-negative integer (the same trust idiom as the strict
+    /// recovery counters: no Bool, no fraction, no negative). Absence stays
+    /// nil; a malformed value fails closed.
+    static func optionalNonNegativeInt64(_ object: [String: Any], key: String) throws -> Int64? {
+        guard let raw = object[key] else { return nil }
+        guard let number = raw as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite else {
+            throw LinuxShellTransportError.replyMalformed
+        }
+        let integer = number.int64Value
+        guard integer >= 0,
+              number.compare(NSNumber(value: integer)) == .orderedSame else {
+            throw LinuxShellTransportError.replyMalformed
+        }
+        return integer
+    }
 
     static func jsonData(_ object: [String: Any]) throws -> Data {
         guard JSONSerialization.isValidJSONObject(object),

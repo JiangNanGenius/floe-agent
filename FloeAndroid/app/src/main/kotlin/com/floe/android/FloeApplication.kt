@@ -43,6 +43,10 @@ import kotlinx.coroutines.sync.withLock
  *  * onTerminate is never used as a shutdown/cleanup signal.
  */
 class FloeApplication : Application() {
+    // Lazy access occurs only from the ready main-process network destination.
+    internal val diagnosticReports by lazy {
+        com.floe.android.host.network.NetworkDiagnosticReportController(this)
+    }
     internal lateinit var officePreviews: com.floe.android.host.OfficePreviewController
         private set
     /** D04 owned run-output consumer lane (Application-owned like the

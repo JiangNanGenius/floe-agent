@@ -10,6 +10,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import com.floe.android.host.terminalsessions.TerminalTabRegistry
+import com.floe.android.host.terminalsessions.terminalPaneTarget
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -652,7 +654,8 @@ class G04TerminalHostControllerTest {
         val observed = mutableListOf<TerminalInputIssue?>()
         controller.watchInputIssues("c1") { observed.add(it) }
         // A typed refusal is a USER-VISIBLE truth, not a log-only one:
-        // unbind the generation and write.
+        // bind the live conversation, then unbind the generation and write.
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-1"
         root.epoch = null
         setFieldLong(controller, "boundEpoch", 0L)
         controller.transportFor("c1").write("a".toByteArray())
@@ -1464,4 +1467,259 @@ class G04TerminalHostControllerTest {
         assertEquals("no release proof after a cancelled caller",
             listOf("close:c1:tok-1"), events)
     }
+
+    // MARK: - G07.3A real independent tabs (authored)
+
+    @Test
+    fun twoTabsReceiveOnlyTheirOwnOutputAndTheirOwnStatus() {
+        val (controller, _) = boundController(Dispatchers.Unconfined)
+        val tokens = seedMap<String>(controller, "sessionTokens")
+        val owners = seedMap<String>(controller, "tokenConversations")
+        tokens["c1"] = "tok-a"
+        owners["tok-a"] = "c1"
+        owners["tok-b"] = "c1"
+
+        // Two REAL emulators owned by the service, one per native session.
+        val engineA = controller.engineForTab("tok-a")
+        val engineB = controller.engineForTab("tok-b")
+        controller.deliverTerminalOutput("tok-a", "AAA".toByteArray())
+        controller.deliverTerminalOutput("tok-b", "BBB".toByteArray())
+        assertTrue(engineA.visibleText(), engineA.visibleText().contains("AAA"))
+        assertFalse(engineB.visibleText(), engineB.visibleText().contains("AAA"))
+        assertTrue(engineA.visibleText(), engineB.visibleText().contains("BBB"))
+        assertFalse(engineA.visibleText(), engineA.visibleText().contains("BBB"))
+
+        // A terminalStatus for tab B must never overwrite the conversation's
+        // default-token projection (tab A). The tab projection is keyed by the
+        // exact native session.
+        val descriptor = """{"type":"terminalStatus","conversationID":"c1",
+            "sessionToken":"tok-b","phase":"running","purpose":"interactive"}"""
+            .trimIndent().toByteArray()
+        assertTrue(controller.handleEvent(0L, descriptor))
+        assertEquals("tok-b", controller.snapshotFor("tok-b")?.sessionToken)
+        assertEquals(TerminalSessionPhase.RUNNING, controller.snapshotFor("tok-b")?.phase)
+        assertNull("tab A's conversation projection must not show tab B",
+            controller.currentSnapshot("c1")?.takeIf { it.sessionToken == "tok-b" })
+    }
+
+    @Test
+    fun outputForANonDefaultTabNeverFeedsTheConversationEngine() {
+        val (controller, _) = boundController(Dispatchers.Unconfined)
+        val tokens = seedMap<String>(controller, "sessionTokens")
+        val owners = seedMap<String>(controller, "tokenConversations")
+        tokens["c1"] = "tok-a"
+        owners["tok-a"] = "c1"
+        owners["tok-b"] = "c1"
+        val legacy = controller.engineFor("c1") // pre-tab conversation projection
+        controller.deliverTerminalOutput("tok-b", "BBB".toByteArray())
+        assertFalse("a non-default tab's bytes must never enter the conversation engine",
+            legacy.visibleText().contains("BBB"))
+        controller.deliverTerminalOutput("tok-a", "AAA".toByteArray())
+        assertTrue("the default token may still use the legacy bridge before a tab engine exists",
+            legacy.visibleText().contains("AAA"))
+    }
+
+    @Test
+    fun closingOneTabAddressesOnlyThatNativeSession() = runBlocking {
+        val closed = mutableListOf<Pair<String, String>>()
+        val root = LiveRoot(7L)
+        val controller = G04TerminalHostController(
+            CoroutineScope(Dispatchers.Unconfined),
+            outputDispatcher = Dispatchers.Unconfined,
+            inputDispatcher = Dispatchers.Unconfined,
+            closeSinkOverride = { conversationID, sessionToken ->
+                closed.add(conversationID to sessionToken)
+                TerminalActionReply.Success(buildJsonObject { })
+            },
+            currentNativeEpoch = { root.epoch })
+        setFieldLong(controller, "boundEpoch", 7L)
+        (G04TerminalHostController::class.java.getDeclaredField("stopped")
+            .apply { isAccessible = true }.get(controller)
+            as java.util.concurrent.atomic.AtomicBoolean).set(false)
+        val tokens = seedMap<String>(controller, "sessionTokens")
+        val owners = seedMap<String>(controller, "tokenConversations")
+        tokens["c1"] = "tok-a"
+        owners["tok-a"] = "c1"
+        owners["tok-b"] = "c1"
+        val reply = controller.closeTab("tok-b")
+        assertTrue(reply is TerminalActionReply.Success)
+        assertEquals("the close carries ONLY the tab's exact token", listOf("c1" to "tok-b"), closed)
+        assertEquals("tok-a", tokens["c1"])
+        assertEquals("c1", owners["tok-a"])
+        assertFalse("the closed tab's token is unbound", owners.containsKey("tok-b"))
+    }
+
+    @Test
+    fun closingTheLastInteractiveTabDropsTheRemovedSessionProjection() = runBlocking {
+        val root = LiveRoot(7L)
+        val controller = G04TerminalHostController(
+            CoroutineScope(Dispatchers.Unconfined),
+            outputDispatcher = Dispatchers.Unconfined,
+            inputDispatcher = Dispatchers.Unconfined,
+            closeSinkOverride = { _, _ -> TerminalActionReply.Success(buildJsonObject { }) },
+            currentNativeEpoch = { root.epoch })
+        setFieldLong(controller, "boundEpoch", 7L)
+        (G04TerminalHostController::class.java.getDeclaredField("stopped")
+            .apply { isAccessible = true }.get(controller)
+            as java.util.concurrent.atomic.AtomicBoolean).set(false)
+        val registry = tabRegistry(controller)
+        registry.newTab("c1", "req-a")
+        registry.adopt("req-a", "tok-a")
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-a"
+        seedMap<String>(controller, "tokenConversations")["tok-a"] = "c1"
+        seedMap<TerminalInputIssue>(controller, "inputIssues")["c1"] =
+            TerminalInputIssue("c1", "removedSessionRefusal", 2)
+        // The device shape: the conversation key still projects the last
+        // status of the (now removed) interactive session.
+        seedMap<TerminalSessionSnapshot>(controller, "snapshots")["c1"] =
+            TerminalSessionSnapshot(
+                "c1", "tok-a", TerminalSessionPhase.FAULT, "interactive", "",
+                null, null, "invalidConfiguration__engine_reported_the_request_failed", 0)
+
+        val reply = controller.closeTab("tok-a")
+        assertTrue(reply is TerminalActionReply.Success)
+        assertTrue("the closed last tab must not stay addressable", controller.tabs("c1").isEmpty())
+        assertTrue("the conversation remains tab-era", controller.hasTabHistory("c1"))
+        assertNull("the removed session's projection must not survive as the pane fallback",
+            controller.currentSnapshot("c1"))
+        assertNull("its typed input refusal is not the empty pane's truth",
+            seedMap<TerminalInputIssue>(controller, "inputIssues")["c1"])
+        // The production target rule then shows the empty terminal, never the
+        // pre-tab legacy conversation singleton.
+        val target = terminalPaneTarget(controller.tabs("c1"), controller.hasTabHistory("c1"))
+        assertTrue(target.emptyAfterNativeTabs)
+        assertFalse(target.legacyConversation)
+        assertNull(target.sessionID)
+    }
+
+    @Test
+    fun closingTheLastInteractiveTabKeepsALiveRunProjection() = runBlocking {
+        val root = LiveRoot(7L)
+        val controller = G04TerminalHostController(
+            CoroutineScope(Dispatchers.Unconfined),
+            outputDispatcher = Dispatchers.Unconfined,
+            inputDispatcher = Dispatchers.Unconfined,
+            closeSinkOverride = { _, _ -> TerminalActionReply.Success(buildJsonObject { }) },
+            currentNativeEpoch = { root.epoch })
+        setFieldLong(controller, "boundEpoch", 7L)
+        (G04TerminalHostController::class.java.getDeclaredField("stopped")
+            .apply { isAccessible = true }.get(controller)
+            as java.util.concurrent.atomic.AtomicBoolean).set(false)
+        val registry = tabRegistry(controller)
+        registry.newTab("c1", "req-a")
+        registry.adopt("req-a", "tok-a")
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-a"
+        seedMap<String>(controller, "tokenConversations")["tok-a"] = "c1"
+        val snapshots = seedMap<TerminalSessionSnapshot>(controller, "snapshots")
+        snapshots["c1"] = TerminalSessionSnapshot(
+            "c1", "tok-run", TerminalSessionPhase.RUNNING, "run", "run-1",
+            null, null, null, 0)
+
+        assertTrue(controller.closeTab("tok-a") is TerminalActionReply.Success)
+        assertEquals("a live Run session still owns the conversation projection",
+            "tok-run", controller.currentSnapshot("c1")?.sessionToken)
+    }
+
+    // MARK: - G07.3A pending/refused tab ownership (device regression)
+
+    private fun tabRegistry(controller: G04TerminalHostController): TerminalTabRegistry {
+        val field = G04TerminalHostController::class.java.getDeclaredField("tabRegistry")
+        field.isAccessible = true
+        return field.get(controller) as TerminalTabRegistry
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun pendingTabOpens(
+        controller: G04TerminalHostController,
+    ): MutableMap<String, G04TerminalHostController.PendingTabOpen> {
+        val field = G04TerminalHostController::class.java.getDeclaredField("pendingTabOpens")
+        field.isAccessible = true
+        return field.get(controller)
+            as MutableMap<String, G04TerminalHostController.PendingTabOpen>
+    }
+
+    @Test
+    fun pendingTabSelectionReturnsItsOwnUnaddressableViewNotTheLiveToken() {
+        val (controller, _) = boundController(Dispatchers.Unconfined)
+        val registry = tabRegistry(controller)
+        registry.newTab("c1", "req-a")
+        registry.adopt("req-a", "tok-a")
+        val pending = requireNotNull(registry.newTab("c1", "req-b"))
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-a"
+
+        // Clicking the pending chip selects THAT reservation truthfully. It
+        // answers with no native identity, so the pane can only render its
+        // disabled starting surface — never A's engine/screen.
+        val selected = controller.selectTab("c1", pending.tabID)
+        assertNotNull(selected)
+        assertNull(selected!!.sessionID)
+        assertTrue(selected.selected)
+        assertFalse("a pending reservation is never a live tab", selected.isLive)
+        assertNull("the pending selection has no addressable session",
+            registry.selectedSessionID("c1"))
+        assertEquals("A remains its own real tab, not the selected target",
+            "tok-a", registry.find("tok-a")?.sessionID)
+    }
+
+    @Test
+    fun lateAcceptedTabReplyAdoptsThePendingReservation() {
+        val (controller, _) = boundController(Dispatchers.Unconfined)
+        // Adoption must not depend on the vendored emulator for this unit;
+        // the real registration path is asserted below.
+        controller.tabEngineEnsurer = { _, _ -> }
+        val registry = tabRegistry(controller)
+        requireNotNull(registry.newTab("c1", "req-late"))
+        pendingTabOpens(controller)["req-late"] =
+            G04TerminalHostController.PendingTabOpen("c1", 1L)
+
+        val event = """{"type":"actionReply","requestID":"req-late","ok":true,
+            "sessionToken":"tok-late"}""".trimIndent().toByteArray()
+        assertTrue(controller.handleEvent(1L, event))
+
+        val adopted = registry.find("tok-late")
+        assertNotNull("a late ACCEPTED reply is still this reservation's session", adopted)
+        assertFalse(adopted!!.pending)
+        assertEquals("c1", adopted.conversationID)
+        assertTrue(registry.tabsFor("c1").none { it.pending })
+        assertTrue(pendingTabOpens(controller).isEmpty())
+        assertEquals("c1", seedMap<String>(controller, "tokenConversations")["tok-late"])
+        assertNull("adoption never fabricates a status", controller.snapshotFor("tok-late"))
+    }
+
+    @Test
+    fun lateRefusedTabReplyDropsThePendingReservation() {
+        val (controller, _) = boundController(Dispatchers.Unconfined)
+        val registry = tabRegistry(controller)
+        requireNotNull(registry.newTab("c1", "req-refused"))
+        pendingTabOpens(controller)["req-refused"] =
+            G04TerminalHostController.PendingTabOpen("c1", 1L)
+
+        val event = """{"type":"actionReply","requestID":"req-refused","ok":false,
+            "code":"saturated","reason":"engineSlotBusy"}""".trimIndent().toByteArray()
+        assertTrue(controller.handleEvent(1L, event))
+
+        assertTrue("a refused tab never remains as a phantom pending chip",
+            registry.tabsFor("c1").isEmpty())
+        assertTrue(pendingTabOpens(controller).isEmpty())
+        assertNull(seedMap<String>(controller, "sessionTokens")["c1"])
+    }
+
+    @Test
+    fun lateTabStatusWithoutAUsableIdentitySettlesTheReservation() {
+        val (controller, _) = boundController(Dispatchers.Unconfined)
+        val registry = tabRegistry(controller)
+        requireNotNull(registry.newTab("c1", "req-null-token"))
+        pendingTabOpens(controller)["req-null-token"] =
+            G04TerminalHostController.PendingTabOpen("c1", 1L)
+
+        val event = """{"type":"terminalStatus","conversationID":"c1",
+            "sessionToken":"","phase":"starting","requestID":"req-null-token"}"""
+            .trimIndent().toByteArray()
+        assertTrue(controller.handleEvent(1L, event))
+
+        assertTrue("no usable native identity must settle the bounded reservation",
+            registry.tabsFor("c1").isEmpty())
+        assertTrue(pendingTabOpens(controller).isEmpty())
+    }
+
 }
