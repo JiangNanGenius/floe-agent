@@ -270,8 +270,16 @@ public enum TypedMutationContract {
                     return [.init(argument: "path", role: .sourceWrite, whenAbsent: .required)]
                 }
                 if action == "parameters" {
+                    // Every variable/formula edit is an ordinary undoable
+                    // rewrite of the SAME .floecad package, so it stays pinned
+                    // to this one source target (no extra review target) and
+                    // unknown operations keep the unresolved behavior.
                     guard ["update", "updateSketchEntity", "setSketchDimension", "removeSketchDimension",
-                           "feature.suppress", "feature.delete", "feature.move", "undo", "redo"].contains(operation) else { return [] }
+                           "feature.suppress", "feature.delete", "feature.move",
+                           "variable.create", "variable.update", "variable.delete",
+                           "feature.setExpression",
+                           "datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
+                           "sketch.setSupport", "sketch.clearSupport", "undo", "redo"].contains(operation) else { return [] }
                 } else if operation == "libraryExport", payload["global"] as? Bool == true {
                     // Keep the CAD document's canonical first key, and also
                     // pin the actual shared write. Missing trusted store

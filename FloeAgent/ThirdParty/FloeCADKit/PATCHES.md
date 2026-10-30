@@ -119,3 +119,54 @@ and preview commits, while model identity remains stable. Saves pin the
 change generation before suspension so a later edit remains dirty, and closed
 or newer-format documents remain protected. The staged commit and digest
 calculation run outside the main actor.
+
+## 2026-10-31: associative datum transactions and exact primitive identity
+
+Offset datum definitions and sketch supports retain their source body version,
+actual writer and existing topological face name. Replay resolves these through
+OCCT and the existing feature graph; derived coordinates remain caches. Session
+preflight, variable fanout, checkpoints and undo use the same document authority.
+Format 2 preserves these definitions; unknown semantics remain opaque and read-only.
+Project merging preserves or explicitly refuses associations rather than dropping
+relationships or rebinding them to host identities.
+
+The OCCT bridge exposes box construction faces from `BRepPrimAPI_MakeBox` and
+follows their identities through the existing transform builder. Euclid render
+indices and geometric similarity are not kernel identities. Unsupported baked
+primitive rotations refuse named association until render-side roles can preserve
+local construction identities. This extends the existing OCCT adapter; the pinned
+OCCT version, licenses and relinking route are unchanged. Qualification results and
+remaining UI/live-drag boundaries are recorded in the implementation progress docs.
+
+
+Associated sketch drags use a Session-owned transient token over the existing
+checkpoint and command stack. Committing performs one guarded rebuild; cancellation
+restores the baseline. Save results are per call, with ownership checked after
+serialization awaits. Persistence markers remain separate from query generations.
+UIKit cancellation is routed explicitly through the public SwiftUI gesture-recognizer
+adapter; no custom gesture recognizer or geometry engine is introduced. Ordinary
+non-associated and model-mode previews retain their earlier paths. Component and
+actual App/touch qualification remain separate in the progress record.
+
+## 2026-10-31: durable identity, host selection and volume integration
+
+The existing Session publishes one observable successful `CADSaveOutcome`. Native
+autosave, synchronous save and the public facade use the same receipt; facade and
+scene identity are projections rather than separate cached revisions. File-store
+receipts bind revision and both digests under the original commit lock. Older
+deliveries cannot downgrade the published identity or dirty acknowledgement, while
+each save still returns its own outcome. The generic store tuple API is unchanged.
+
+A shared Edit/Present wrapper publishes the live editor selection to the host.
+Its identity includes complete face/edge picks and the live document object; the
+wrapped Editor publisher is disabled to avoid duplicate events. Standalone Editor
+publication remains available, and no polling or secondary selection store is added.
+
+Certified elementary surfaces and boundary curves use OCCT's existing adaptive
+Gauss exact-surface volume overload at relative `1e-7`. Spline, Bezier and unknown
+geometry retain the original knot-span Gauss-Kronrod path and precision. The change
+avoids the observed rotated analytic-cutter integration hot path without replacing
+OCCT, changing its pin, using mesh volume or adding a custom integrator. Historical
+upstream spline acceptance is relative `1e-6`; new regression tests check relative
+`1e-7`. Runtime qualification and original failed assumptions remain in the progress
+and private evidence records.

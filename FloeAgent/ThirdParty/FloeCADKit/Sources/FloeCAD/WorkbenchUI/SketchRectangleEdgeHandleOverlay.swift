@@ -7,9 +7,11 @@ struct SketchRectangleEdgeHandleOverlay: View {
     @Bindable var viewModel: EditorViewModel
     @State private var dragAxis: SIMD2<Double>?
     @State private var pointsPerUnit: Double = 1
+    @State private var gestureID: EditorViewModel.SketchDragGestureID?
 
     var body: some View {
         let _ = viewModel.cameraEpoch
+        Group {
         if !viewModel.sketchTransformActive, viewModel.editingDimension == nil,
            let geometry = viewModel.rectangleHandleGeometry,
            let sketch = viewModel.activeSketch,
@@ -34,17 +36,27 @@ struct SketchRectangleEdgeHandleOverlay: View {
                     .position(x: p.x + axis.x * 30, y: p.y + axis.y * 30)
                     .accessibilityIdentifier("SketchRectangleEdgeHandle")
                     .accessibilityLabel("Resize rectangle from selected edge")
-                    .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
-                        .onChanged { value in
-                            if dragAxis == nil { dragAxis = axis; pointsPerUnit = length }
-                            let translation = SIMD2(Double(value.translation.width), Double(value.translation.height))
-                            viewModel.updateRectangleEdgeDrag(delta: simd_dot(translation, dragAxis ?? axis) / pointsPerUnit)
-                        }.onEnded { _ in
-                            viewModel.endRectangleEdgeDrag()
-                            dragAxis = nil
-                        })
+                    .gesture(CADSketchControlDragGesture(onBegan: {
+                        guard let id = viewModel.beginRectangleEdgeDragGesture() else { return nil }
+                        gestureID = id; dragAxis = axis; pointsPerUnit = length
+                        return id
+                    }, onChanged: { translation, id in
+                        viewModel.updateRectangleEdgeDrag(
+                            delta: simd_dot(translation, dragAxis ?? axis) / pointsPerUnit, gestureID: id)
+                    }, onEnded: { id in
+                        viewModel.endRectangleEdgeDrag(gestureID: id)
+                        if gestureID == id { gestureID = nil; dragAxis = nil }
+                    }, onCancelled: { id in cancelGesture(id) }))
                 }
             }
         }
+        }
+        .onDisappear { if let id = gestureID { cancelGesture(id) } }
     }
+
+    private func cancelGesture(_ id: EditorViewModel.SketchDragGestureID) {
+        if !viewModel.cancelSketchDragGesture(id) { viewModel.endRectangleEdgeDrag(gestureID: id) }
+        if gestureID == id { gestureID = nil; dragAxis = nil }
+    }
+
 }

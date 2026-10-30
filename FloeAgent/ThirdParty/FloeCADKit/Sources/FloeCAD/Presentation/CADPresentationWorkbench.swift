@@ -119,7 +119,7 @@ struct CADPresentationPresentationPane: View {
         ZStack {
             Color(uiColor: .systemBackground)
             if let scene = store.scene {
-                CADPresentationSurface(scene: scene, handle: handle)
+                CADPresentationSurface(scene: scene, handle: handle, document: document)
                     .accessibilityIdentifier("CADPresentationSurface")
                 if scene.isEmpty {
                     ContentUnavailableView {
@@ -134,6 +134,19 @@ struct CADPresentationPresentationPane: View {
                 }
             } else {
                 ProgressView()
+            }
+            if let title = handle.selectionTitle, !title.isEmpty {
+                Text(title)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(2)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.top, 58)
+                    .padding(.horizontal, 16)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("CADPresentSelection")
             }
             if !handle.issues.isEmpty {
                 Button {
@@ -180,6 +193,9 @@ struct CADPresentationPresentationPane: View {
             store.stopObserving()
             CADPresentationCaptureRegistry.shared.unregister(document)
             handle.controller?.release()
+        }
+        .onChange(of: CADPresentationSelection.state(document: document)) { _, _ in
+            handle.controller?.refreshSelection()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -574,7 +590,7 @@ struct CADPresentationWorkbenchContent: View {
     // MARK: Actions
 
     private func openMaterialInspector() {
-        materialTarget = CADMaterialTargetResolver.resolve(viewModel: document.viewModel())
+        materialTarget = CADPresentationSelection.materialTarget(document: document)
         presentSink.handle = handle
         showMaterialInspector = true
     }
@@ -604,6 +620,40 @@ struct CADPresentationWorkbenchContent: View {
     }
 }
 
+// MARK: - Host selection publication
+
+/// Lives above Edit/Present so switching the rendering surface cannot remove
+/// the host's selection notification path. The shared editor remains the sole
+/// selection authority. Standalone FloeCADEditorView keeps its own publisher.
+struct CADPresentationSelectionObserver: ViewModifier {
+    let document: FloeCADDocument
+    @Environment(\.cadSelectionObserver) private var observer
+    @State private var active = false
+
+    func body(content: Content) -> some View {
+        let key = CADPresentationSelection.observationKey(document: document)
+        ZStack {
+            // Wrapped Edit must not race or duplicate the persistent publisher.
+            // This changes only the child's environment, not this modifier's.
+            content.environment(\.cadSelectionObserver, nil)
+        }
+            .onAppear {
+                active = true
+                publish(expected: CADPresentationSelection.observationKey(document: document))
+            }
+            .onDisappear { active = false }
+            .onChange(of: key) { _, current in publish(expected: current) }
+    }
+
+    private func publish(expected: CADPresentationSelectionObservationKey) {
+        guard active, !document.isClosed, let observer,
+              expected == CADPresentationSelection.observationKey(document: document) else { return }
+        // Synchronous main-actor capture: no pending task/handler lease can
+        // later publish another mode/document's selection.
+        observer.handler(document.assistantSelectionContext())
+    }
+}
+
 // MARK: - Public wrapper
 
 /// Drop-in workbench with the native Edit / Present switch. The host keeps its
@@ -621,9 +671,11 @@ public struct CADPresentationWorkbenchView: View {
     public var body: some View {
         CADPresentationWorkbenchContent(document: document,
                                         canvasActions: canvasActions)
+            .modifier(CADPresentationSelectionObserver(document: document))
             // A new package at the same navigation position must not inherit
             // the previous document's Present store, camera or capture handle.
-            .id(document.url.standardizedFileURL.path)
+            // A reopened live owner at the same URL is a different session.
+            .id(ObjectIdentifier(document))
             // Edit's editor view owns this same compact title. Present has no
             // editor view, so the shared wrapper keeps it in both modes
             // instead of leaving a blank navigation bar above Present.

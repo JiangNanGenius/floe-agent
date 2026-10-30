@@ -40,7 +40,11 @@ final class Project {
     var formatVersion: Int = 1
 
     /// The newest store format this build reads AND writes.
-    static let currentFormatVersion = 1
+    static let currentFormatVersion = CADDocumentFormat.supportedVersion
+
+    /// Runtime-only classification. Original sketch/plane blobs remain in
+    /// their persisted rows; this is never a replacement on-disk version.
+    var hasOpaqueAssociations = false
 
     /// Gallery folder this design sits in; `nil` = top level.
     var folderID: UUID? = nil
@@ -319,8 +323,9 @@ final class CADModelContext {
     }
 
     /// Off-main step: encode, hash and commit the prepared payload.
-    nonisolated static func write(_ payload: CADWritePayload, to store: FileCADDocumentStore) throws {
-        _ = try store.performWrite(payload)
+    @discardableResult
+    nonisolated static func write(_ payload: CADWritePayload, to store: FileCADDocumentStore) throws -> CADSaveOutcome {
+        try store.performWriteWithIdentity(payload)
     }
 }
 

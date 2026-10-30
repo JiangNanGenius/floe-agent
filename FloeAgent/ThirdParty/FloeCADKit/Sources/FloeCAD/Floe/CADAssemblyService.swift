@@ -44,6 +44,7 @@ public final class CADAssemblyService {
     /// One JSON-shaped action. See the action list in
     /// `docs/FLOE_CAD_AND_DRAWING_ASSISTANT.md`. Never throws.
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "assembly", action: action) { return refusal }
         switch action {
         case "report": return reportAction()
         case "instances": return instancesAction()
@@ -83,6 +84,7 @@ public final class CADAssemblyService {
     /// is accepted (late results from a moved document are discarded). All
     /// other actions delegate to the synchronous path.
     public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "assembly", action: action) { return refusal }
         guard action == "interference" else { return handle(action: action, args: args) }
         return await interferenceOffMain(args)
     }

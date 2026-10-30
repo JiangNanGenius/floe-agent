@@ -390,7 +390,7 @@ public struct CADSelectionContext: Sendable, Equatable {
             instanceRows = live.prefix(maximumInstances).map { instance in
                 Instance(id: instance.id.uuidString,
                          name: instance.name,
-                         bodyID: instance.bodyID.uuidString,
+                         bodyID: (instance.copiedBodyID ?? instance.bodyID).uuidString,
                          position: [instance.transform.position.x,
                                     instance.transform.position.y,
                                     instance.transform.position.z],

@@ -81,6 +81,8 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     let viewModel: EditorViewModel
     private(set) var renderer: Renderer?
     private let gestures = ViewportGestureController()
+    private var viewportDragID: UUID?
+    private var sketchDragGestureID: EditorViewModel.SketchDragGestureID?
     private weak var view: MTKView?
     private var cameraAnimator: CameraAnimator?
     /// The coordinator that owned the shared viewport bindings when this one
@@ -143,6 +145,9 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     /// `CADViewportMTKView.willMove(toWindow:)` and `dismantleUIView`; the
     /// second call is a no-op. (T7W)
     func viewportDidLeaveWindow() {
+        if let id = sketchDragGestureID { _ = viewModel.cancelSketchDragGesture(id) }
+        sketchDragGestureID = nil
+        viewportDragID = nil
         guard viewModel.cameraControl === self else { return }
         guard let presenter, presenter !== self, let presenterRenderer = presenter.renderer else {
             // No live presenter to promote: keep the last visible bindings
@@ -522,7 +527,37 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         return Double(dx * ux + dy * uy) * worldPerPoint
     }
 
+    func gestureDragBegan(at point: CGPoint, isPencil: Bool, gestureID: UUID) -> Bool {
+        let claimed = gestureDragBegan(at: point, isPencil: isPencil)
+        viewportDragID = claimed ? gestureID : nil
+        return claimed
+    }
+    func gestureDragChanged(at point: CGPoint, gestureID: UUID) {
+        guard viewportDragID == gestureID else { return }
+        gestureDragChanged(at: point)
+    }
+    func gestureDragEnded(at point: CGPoint, gestureID: UUID) {
+        guard viewportDragID == gestureID else { return }
+        viewportDragID = nil
+        gestureDragEnded(at: point)
+    }
+    func gestureDragCancelled(at point: CGPoint, gestureID: UUID) {
+        guard viewportDragID == gestureID else { return }
+        viewportDragID = nil
+        gestureDragCancelled(at: point)
+    }
+    func gestureDragCancelled(at point: CGPoint) {
+        if let id = sketchDragGestureID, viewModel.cancelSketchDragGesture(id) {
+            sketchDragGestureID = nil
+            sceneDidChange()
+            return
+        }
+        // Unrelated/plain legacy tools retain their previous end behavior.
+        gestureDragEnded(at: point)
+    }
+
     func gestureDragBegan(at point: CGPoint, isPencil: Bool) -> Bool {
+        sketchDragGestureID = nil
         dragStartPoint = point
         pullActive = false
         if isPencil { viewModel.sawApplePencil = true }
@@ -582,7 +617,9 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             if !isPencil && viewModel.sawApplePencil {
                 return false // let the finger orbit the camera
             }
-            return viewModel.beginSketchStroke(ray: ray)
+            let claimed = viewModel.beginSketchStroke(ray: ray)
+            sketchDragGestureID = claimed ? viewModel.currentSketchDragGestureID : nil
+            return claimed
         }
 
         // Extruding: drags adjust the pull distance / revolve angle.
@@ -806,7 +843,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         }
         guard let ray = ray(at: point) else { return }
         if viewModel.mode.isSketching {
-            viewModel.updateSketchStroke(ray: ray)
+            viewModel.updateSketchStroke(ray: ray, gestureID: sketchDragGestureID)
             sceneDidChange()
             return
         }
@@ -889,7 +926,9 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             return
         }
         if viewModel.mode.isSketching, let ray = ray(at: point) {
-            viewModel.endSketchStroke(ray: ray)
+            let id = sketchDragGestureID
+            sketchDragGestureID = nil
+            viewModel.endSketchStroke(ray: ray, gestureID: id)
             sceneDidChange()
             return
         }

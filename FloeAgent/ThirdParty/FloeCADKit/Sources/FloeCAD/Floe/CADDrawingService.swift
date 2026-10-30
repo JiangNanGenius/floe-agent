@@ -75,6 +75,7 @@ public final class CADDrawingService {
     /// `["ok": false, "error": code, "message": text]`; mutating actions set
     /// `"mutated": true` so the caller persists with `document.save()`.
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "drawing", action: action) { return refusal }
         switch action {
         case "pages": return pagesAction()
         case "addPage": return addPageAction(args)
@@ -231,8 +232,10 @@ public final class CADDrawingService {
                 page.sourceFingerprint = live
                 page.modelRevision = revision
                 updated.pages[index] = page
-                if let failure = persist(updated) { return failure }
-                mutated = true
+                if !document.isReadOnly, !document.session.isSketchPreviewActive {
+                    if let failure = persist(updated) { return failure }
+                    mutated = true
+                }
             }
         }
         return projectionPayload(page: page, projection: projection, mutated: mutated)

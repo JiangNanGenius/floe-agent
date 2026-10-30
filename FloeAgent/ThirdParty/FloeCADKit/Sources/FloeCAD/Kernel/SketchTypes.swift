@@ -257,6 +257,12 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
     var circleRadiusDirections: [UUID: SIMD2<Double>]
     /// Undriven line readout projection. Presentation only; never a solver input.
     var lineDimensionKinds: [UUID: DimensionKind]
+    /// M07: the construction plane this sketch is associatively supported by.
+    /// Nil = the sketch keeps its absolute `plane`. The first slice accepts
+    /// only `.construction(id)` at creation/mutation (a `.sketch` support
+    /// would form a recursive graph); decoding still preserves every existing
+    /// `PlaneRef` case, and all support traversal still needs its cycle guard.
+    var support: PlaneRef?
 
     init(
         id: SketchID = SketchID(),
@@ -272,7 +278,8 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         rotatedRectangleEdges: [UUID: [UUID]] = [:],
         disconnectedEndpoints: [ConstraintRef] = [],
         circleRadiusDirections: [UUID: SIMD2<Double>] = [:],
-        lineDimensionKinds: [UUID: DimensionKind] = [:]
+        lineDimensionKinds: [UUID: DimensionKind] = [:],
+        support: PlaneRef? = nil
     ) {
         self.id = id
         self.name = name
@@ -288,13 +295,14 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         self.disconnectedEndpoints = disconnectedEndpoints
         self.circleRadiusDirections = circleRadiusDirections
         self.lineDimensionKinds = lineDimensionKinds
+        self.support = support
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, plane, entities, isHidden, constructionEntityIDs
         case constraints, dimensions, patternLinks, rectangleSizingAnchors
         case disconnectedEndpoints, rotatedRectangleEdges, circleRadiusDirections
-        case lineDimensionKinds
+        case lineDimensionKinds, support
     }
 
     /// `name`/`isHidden`/`constructionEntityIDs`/`constraints`/`dimensions`
@@ -324,7 +332,33 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
             [UUID: SIMD2<Double>].self, forKey: .circleRadiusDirections) ?? [:]
         lineDimensionKinds = try container.decodeIfPresent(
             [UUID: DimensionKind].self, forKey: .lineDimensionKinds) ?? [:]
+        support = try container.decodeIfPresent(PlaneRef.self, forKey: .support)
         RectangleConstruction.recoverLegacyGroups(in: &self)
+    }
+
+    /// Explicit so a legacy (support == nil) sketch keeps the exact pre-M07
+    /// key set and byte identity; the optional field is omitted, not null.
+    /// Keys follow the existing CodingKeys declaration order (the order the
+    /// previous synthesized encoder used), not the property order — a
+    /// reordered key would change the stored blob bytes of an untouched
+    /// legacy document.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(plane, forKey: .plane)
+        try container.encode(entities, forKey: .entities)
+        try container.encode(isHidden, forKey: .isHidden)
+        try container.encode(constructionEntityIDs, forKey: .constructionEntityIDs)
+        try container.encode(constraints, forKey: .constraints)
+        try container.encode(dimensions, forKey: .dimensions)
+        try container.encode(patternLinks, forKey: .patternLinks)
+        try container.encode(rectangleSizingAnchors, forKey: .rectangleSizingAnchors)
+        try container.encode(disconnectedEndpoints, forKey: .disconnectedEndpoints)
+        try container.encode(rotatedRectangleEdges, forKey: .rotatedRectangleEdges)
+        try container.encode(circleRadiusDirections, forKey: .circleRadiusDirections)
+        try container.encode(lineDimensionKinds, forKey: .lineDimensionKinds)
+        try container.encodeIfPresent(support, forKey: .support)
     }
 }
 

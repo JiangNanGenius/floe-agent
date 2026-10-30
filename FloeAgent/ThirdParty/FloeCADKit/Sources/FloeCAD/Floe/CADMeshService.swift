@@ -66,6 +66,7 @@ public final class CADMeshService {
     // MARK: Action router
 
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
         switch action {
         case "combine": return combine(args)
         case "boolean": return boolean(args)

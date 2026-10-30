@@ -31,6 +31,10 @@ struct RebuildPlan {
     /// Every body the replay produced — what the naming-revision capture
     /// stamps after apply.
     var resultBodyIDs: [BodyID]
+    var resolvedPlaneUpdates: [ConstructionPlaneID: SketchPlane]
+    var resolvedSketchSupportUpdates: [SketchID: SketchPlane]
+    var referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError]
+    var lastBodyWriters: [BodyID: FeatureID]
 }
 
 enum RebuildPlanner {
@@ -56,16 +60,30 @@ enum RebuildPlanner {
         cache: inout EvalCache,
         nextRevision: () -> UInt64,
         leadingCommands: [DocumentCommand],
-        title: String
+        title: String,
+        previewDocument: DesignDocument? = nil,
+        variables: [String: Double]? = nil
     ) -> RebuildPlan {
+        // Leading commands apply exactly once to the live model at commit.
+        // This copy supplies the BEFORE values for derived-cache commands,
+        // after those leading edits but before derived coordinates land.
+        var postLeading = document
+        for command in leadingCommands { command.apply(to: &postLeading) }
+        // Existing callers keep passing their sketch preview as before. New
+        // definition/support transactions pass the complete preview explicitly.
+        let inputSketches = previewDocument?.sketches ?? sketches
+        let inputPlanes = previewDocument?.planes ?? planes
+        let values = variables ?? VariableTable.resolve(
+            (previewDocument ?? postLeading).variables).values
         // Memoised replay: nodes whose inputs are unchanged are spliced from
         // `cache` instead of re-run.
         let result = editedGraph.evaluate(
-            sketches: sketches,
-            planes: planes,
+            sketches: inputSketches,
+            planes: inputPlanes,
             naming: naming,
             nextRevision: nextRevision,
-            cache: &cache
+            cache: &cache,
+            variables: values
         )
 
         // Every BodyID any node owns — the pre-edit graph too, so a node removed
@@ -82,6 +100,22 @@ enum RebuildPlanner {
         }
 
         var commands: [DocumentCommand] = leadingCommands
+
+        // Field-only cache writes preserve new definitions/support and sketch
+        // local geometry installed by leading commands. Undo runs in reverse,
+        // restoring caches before reverting those semantic edits.
+        for id in result.resolvedPlaneUpdates.keys.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
+            guard let before = postLeading.planes.first(where: { $0.id == id })?.plane,
+                  let after = result.resolvedPlaneUpdates[id], before != after else { continue }
+            commands.append(UpdateResolvedConstructionPlaneCommand(
+                planeID: id, before: before, after: after))
+        }
+        for id in result.resolvedSketchSupportUpdates.keys.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
+            guard let before = postLeading.sketches.first(where: { $0.id == id })?.plane,
+                  let after = result.resolvedSketchSupportUpdates[id], before != after else { continue }
+            commands.append(UpdateResolvedSketchPlaneCommand(
+                sketchID: id, before: before, after: after))
+        }
 
         // Replace bodies that still exist; add ones the graph newly produced.
         // Preserve user-owned metadata the replay doesn't carry.
@@ -140,6 +174,10 @@ enum RebuildPlanner {
             errors: result.errors,
             faceTables: result.faceTables,
             kernelNames: result.kernelNames,
-            resultBodyIDs: result.bodies.map(\.id))
+            resultBodyIDs: result.bodies.map(\.id),
+            resolvedPlaneUpdates: result.resolvedPlaneUpdates,
+            resolvedSketchSupportUpdates: result.resolvedSketchSupportUpdates,
+            referenceErrors: result.referenceErrors,
+            lastBodyWriters: result.lastBodyWriters)
     }
 }

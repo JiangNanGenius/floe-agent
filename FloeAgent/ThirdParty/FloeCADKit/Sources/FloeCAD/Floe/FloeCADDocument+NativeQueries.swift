@@ -33,8 +33,23 @@ public extension FloeCADDocument {
         let limit = min(max(payload["limit"] as? Int ?? 200, 1), 500)
         let offset = max(payload["offset"] as? Int ?? 0, 0)
 
+        func gatedDiscovery(_ value: Any) -> Any {
+            if let fields = value as? [String: Any] {
+                var result: [String: Any] = [:]
+                for (key, child) in fields {
+                    if key == "actions" || key.hasSuffix("_action") || key.hasSuffix("_actions") { continue }
+                    result[key] = key == "editable" ? false : gatedDiscovery(child)
+                }
+                return result
+            }
+            if let rows = value as? [Any] { return rows.map(gatedDiscovery) }
+            return value
+        }
         func ok(_ object: [String: Any]) -> CADCommandOutcome {
-            Self.jsonOutcome(status: 200, object: object)
+            guard let block = session.writeBlock else { return Self.jsonOutcome(status: 200, object: object) }
+            var gated = gatedDiscovery(object) as? [String: Any] ?? object
+            gated["write_block"] = ["code": block.code, "message": block.message]
+            return Self.jsonOutcome(status: 200, object: gated)
         }
         func fail(_ code: String, _ message: String) -> CADCommandOutcome {
             Self.jsonOutcome(status: 400, object: ["ok": false, "error": code, "message": message])
@@ -203,6 +218,25 @@ public extension FloeCADDocument {
                     ],
                     "planeNormal": Self.vector(sketch.plane.normal),
                 ]
+                row["support"] = CADDatumService.supportJSON(sketch)
+                if session.writeBlock == nil { row["set_support_action"] = "sketch.setSupport" }
+                if isReadOnly {
+                    row["support_status"] = "read_only"
+                    row["support_frame_status"] = "cached"
+                    if project.hasOpaqueAssociations { row["support"] = ["kind": "unsupported", "semantics": "opaque"] }
+                    else if var support = row["support"] as? [String: Any] {
+                        support.removeValue(forKey: "clear_action"); row["support"] = support
+                    }
+                } else if let block = session.writeBlock {
+                    row["support_status"] = block.code
+                    row["support_frame_status"] = "cached"
+                    if var support = row["support"] as? [String: Any] {
+                        support.removeValue(forKey: "clear_action"); row["support"] = support
+                    }
+                } else if let error = session.lastReferenceErrors[.sketch(sketch.id)] {
+                    row["support_status"] = "error"
+                    row["support_error"] = error.message
+                } else { row["support_status"] = sketch.support == nil ? "explicit" : "resolved" }
                 if let featureIDs = usedBySketch[sketch.id] {
                     row["usedByFeatureIDs"] = featureIDs.sorted()
                 }
@@ -210,6 +244,11 @@ public extension FloeCADDocument {
             }
             return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows),
                        "revision": revision, "change_count": session.changeCount])
+
+        case "planes":
+            let rows = CADDatumService.planeRows(document: self)
+            return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows),
+                       "actions": session.writeBlock == nil ? CADDatumService.actions : [], "revision": revision, "change_count": session.changeCount])
 
         case "constraints":
             // Only rows with a real typed mutation carry `editable: true`:
@@ -240,6 +279,15 @@ public extension FloeCADDocument {
                         ? dimension.value * 180 / .pi
                         : dimension.value
                     row["stored_unit"] = dimension.kind == .angle ? "rad" : "mm"
+                    // The formula source is authored in the DISPLAY unit
+                    // (degrees for an angle) while value is stored in the
+                    // stored unit. Variable fan-out applies that conversion;
+                    // expose both sides so a caller never conflates them.
+                    row["formula"] = dimension.formula ?? NSNull()
+                    row["formula_unit"] = dimension.kind == .angle ? "deg" : "mm"
+                    row["formula_reference_names"] = dimension.formula.map {
+                        ExpressionEvaluator.identifiers(in: $0).sorted()
+                    } ?? []
                     rows.append(row)
                 }
             }
@@ -283,13 +331,22 @@ public extension FloeCADDocument {
 
         case "faces":
             var rows: [[String: Any]] = []
+            let sourceBodyIDs = Set(document.bodies.filter {
+                $0.brep != nil && session.lastNamingRevisions[$0.id] == $0.meshRevision
+                    && !(session.lastKernelNames[$0.id] ?? [:]).isEmpty
+            }.map(\.id))
+            let sources = session.associativeSources(for: sourceBodyIDs)
             for body in document.bodies {
                 guard let brep = body.brep else { continue }
                 let generation = CADGeometryQueryGeneration(
                     scope: "faces", bodyID: body.id.raw,
                     documentRevision: revision, changeCount: session.changeCount,
                     meshRevision: body.meshRevision)
-                for face in OCCTKernel.faceInfo(brep) {
+                let faces = OCCTKernel.faceInfo(brep)
+                let descriptors = CADDatumService.sourceDescriptors(document: self, body: body,
+                    planarIndices: Set(faces.filter { $0.signature?.kind == .planar }.map(\.index)),
+                    acquired: sources[body.id])
+                for face in faces {
                     var row: [String: Any] = [
                         "bodyID": body.id.raw.uuidString,
                         "body": body.name,
@@ -314,6 +371,8 @@ public extension FloeCADDocument {
                     }
                     row["signature_text"] = row["signature"]
                     row.merge(face.stableFaceJSON) { _, new in new }
+                    row.merge(descriptors[face.index] ?? ["datum_source_supported": false]) { _, new in new }
+                    row["face_index_space"] = "occt_kernel_1_based"
                     row["query_token"] = generation.token
                     row["generation"] = generation.jsonObject
                     rows.append(row)
@@ -322,12 +381,14 @@ public extension FloeCADDocument {
             return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows)])
 
         case "variables":
-            let rows: [[String: Any]] = document.variables.map { variable in
-                ["name": variable.name,
-                 "expression": variable.expression,
-                 "value": variable.value]
-            }
-            return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows)])
+            // Shared with the variable service, so a discovered id/action and
+            // the executable add/edit/delete contract cannot disagree. Rows
+            // carry the exact expression source, the resolved scalar, the unit
+            // contract (variables are unitless scalars) and both directions of
+            // the reference set deletion/rename must respect.
+            let rows = CADParameterService.variableRows(in: document)
+            return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows),
+                       "revision": revision, "change_count": session.changeCount])
 
         case "materials":
             let library = CADMaterialLibraryCodec.decode(document.materialLibraryData)
@@ -372,7 +433,7 @@ public extension FloeCADDocument {
         default:
             return fail("unsupported_scope",
                         "Scope '\(scope)' is not served by the model query; use bodies, sketches, "
-                        + "constraints, features, edges, faces, variables, materials, assembly, drawings, detail or snapshot.")
+                        + "planes, constraints, features, edges, faces, variables, materials, assembly, drawings, detail or snapshot.")
         }
     }
 
@@ -515,6 +576,14 @@ public extension FloeCADDocument {
                           format rawFormat: String,
                           fileName: String?,
                           unitScale: Double?) -> CADCommandOutcome {
+        if let block = session.writeBlock {
+            return Self.jsonOutcome(status: 409, object: ["ok": false, "error": block.code,
+                "message": block.message, "mutated": false])
+        }
+        guard !isClosed else {
+            return Self.jsonOutcome(status: 409, object: ["ok": false, "error": "read_only",
+                "message": "The CAD document is closed.", "mutated": false])
+        }
         let format = rawFormat.lowercased()
         let baseName = (fileName?.trimmingCharacters(in: .whitespacesAndNewlines))
             .flatMap { $0.isEmpty ? nil : $0 } ?? "Imported"
@@ -726,10 +795,34 @@ public extension FloeCADDocument {
                                              faceTableRevisions: session.lastNamingRevisions),
                              "binary glTF tessellation with applied PBR/UV/textures (mesh representation)"))
         case "usdz":
-            guard USDZExporter.isSupported, let data = USDZExporter.usdz(bodies: bodies) else {
-                return failure("usdz_unavailable", "USDZ export is not available on this platform/build.")
+            // The exporter reports WHY a body/material/resource could not be
+            // packaged instead of returning nil. A material or texture refusal
+            // is therefore surfaced with its real code (never disguised as
+            // "USDZ unavailable"); only an actually unsupported platform keeps
+            // the stable usdz_unavailable contract.
+            let report = USDZExporter.export(bodies: bodies)
+            if let data = report.data, report.diagnostics.isEmpty {
+                return .success((data, "USDZ tessellation (presentation mesh)"))
             }
-            return .success((data, "USDZ tessellation (presentation mesh)"))
+            if !USDZExporter.isSupported {
+                return failure("usdz_unavailable",
+                               "USDZ export is not available on this platform/build.")
+            }
+            guard let first = report.diagnostics.first else {
+                return failure("usdz_export_failed",
+                               "The USDZ writer produced no bytes; nothing was written.")
+            }
+            let details = report.diagnostics.prefix(4).map { diagnostic -> String in
+                var text = "\(diagnostic.code): \(diagnostic.message)"
+                if let bodyID = diagnostic.bodyID {
+                    text += " (body \(bodyID.uuidString))"
+                }
+                if let slot = diagnostic.textureSlot {
+                    text += " [texture \(slot.rawValue)]"
+                }
+                return text
+            }.joined(separator: "; ")
+            return failure(first.code, details)
         case "pdf", "svg", "dxf":
             guard let pageID else {
                 return failure("page_required",

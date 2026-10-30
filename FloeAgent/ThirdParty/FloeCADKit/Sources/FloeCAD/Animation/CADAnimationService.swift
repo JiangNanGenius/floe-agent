@@ -644,6 +644,11 @@ public extension FloeCADDocument {
     func animationJSON(_ payload: [String: Any]) -> CADCommandOutcome {
         let action = (payload["action"] as? String) ?? "list"
         do {
+            if session.isSketchPreviewActive,
+               !["list", "query", "evaluate", "capture", "export"].contains(action),
+               let block = session.writeBlock {
+                throw CADDocumentError(code: block.code, message: block.message)
+            }
             switch action {
             case "list", "query":
                 return Self.jsonOutcome(status: 200, object: animationListJSON())
@@ -889,6 +894,9 @@ public extension FloeCADDocument {
     // MARK: Internals
 
     private func requireWritableAnimation(_ state: CADAnimationLoadState) throws {
+        if session.isSketchPreviewActive, let block = session.writeBlock {
+            throw CADDocumentError(code: block.code, message: block.message)
+        }
         guard !isReadOnly else {
             throw CADDocumentError(
                 code: "document_read_only",

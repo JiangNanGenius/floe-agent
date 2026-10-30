@@ -6,9 +6,11 @@ struct SketchRadialHandleOverlay: View {
     @Bindable var viewModel: EditorViewModel
     @State private var dragAxis: SIMD2<Double>?
     @State private var pointsPerUnit: Double = 1
+    @State private var gestureID: EditorViewModel.SketchDragGestureID?
 
     var body: some View {
         let _ = viewModel.cameraEpoch
+        Group {
         if !viewModel.sketchTransformActive, viewModel.editingDimension == nil,
            let entity = viewModel.selectedSingleRadialEntity,
            let geometry = radialGeometry(entity),
@@ -35,20 +37,27 @@ struct SketchRadialHandleOverlay: View {
                     .position(anchor)
                     .accessibilityIdentifier(geometry.isCircle ? "SketchCircleRadiusHandle" : "SketchArcRadiusHandle")
                     .accessibilityLabel(geometry.isCircle ? "Adjust circle radius" : "Adjust arc radius")
-                    .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global).onChanged { value in
-                        if dragAxis == nil {
-                            dragAxis = axis
-                            pointsPerUnit = length / radius
-                        }
-                        let translation = SIMD2(Double(value.translation.width), Double(value.translation.height))
-                        viewModel.updateRadialRadiusDrag(delta: simd_dot(translation, dragAxis ?? axis) / pointsPerUnit)
-                    }.onEnded { _ in
-                        viewModel.endRadialRadiusDrag()
-                        dragAxis = nil
-                    })
+                    .gesture(CADSketchControlDragGesture(onBegan: {
+                        guard let id = viewModel.beginRadialRadiusDragGesture() else { return nil }
+                        gestureID = id; dragAxis = axis; pointsPerUnit = length / radius
+                        return id
+                    }, onChanged: { translation, id in
+                        viewModel.updateRadialRadiusDrag(
+                            delta: simd_dot(translation, dragAxis ?? axis) / pointsPerUnit, gestureID: id)
+                    }, onEnded: { id in
+                        viewModel.endRadialRadiusDrag(gestureID: id)
+                        if gestureID == id { gestureID = nil; dragAxis = nil }
+                    }, onCancelled: { id in cancelGesture(id) }))
                 }
             }
         }
+        }
+        .onDisappear { if let id = gestureID { cancelGesture(id) } }
+    }
+
+    private func cancelGesture(_ id: EditorViewModel.SketchDragGestureID) {
+        if !viewModel.cancelSketchDragGesture(id) { viewModel.endRadialRadiusDrag(gestureID: id) }
+        if gestureID == id { gestureID = nil; dragAxis = nil }
     }
 
     private func radialGeometry(_ entity: SketchEntity) -> (center: SIMD2<Double>, radius: Double, angle: Double, isCircle: Bool)? {

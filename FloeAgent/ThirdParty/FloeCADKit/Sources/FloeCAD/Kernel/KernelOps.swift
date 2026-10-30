@@ -8,6 +8,7 @@
 import Foundation
 import simd
 import Euclid
+import OCCTShim
 
 nonisolated extension KernelOps {
     /// A cylinder along an arbitrary axis, base at `baseCenter`, extending
@@ -1468,5 +1469,90 @@ nonisolated extension KernelOps {
         guard len2 > 1e-18 else { return simd_length(p - a) }
         let t = max(0, min(1, simd_dot(p - a, ab) / len2))
         return simd_length(p - (a + ab * t))
+    }
+}
+
+// Exact-body editing gate shared by UI commits and feature replay. Mesh-only
+// bodies keep their existing Euclid editing path; no implicit conversion occurs.
+nonisolated extension KernelOps {
+    enum ExactEditError: Error {
+        case unsupported(String)
+        case refused
+        var message: String {
+            switch self {
+            case .unsupported(let operation):
+                return FloeCADStrings.format("cad.error.exactEditUnsupported", "%@ is not supported for exact bodies yet. The original body was preserved.", operation)
+            case .refused:
+                return FloeCADStrings.text("cad.error.exactEditRefused", "The exact geometry operation could not be completed. The original body was preserved.")
+            }
+        }
+    }
+
+    /// `face` and `distance` are in the body's local coordinate system.
+    static func exactPushPull(body: Body, face: PlanarFace, distance: Double,
+                              revision: UInt64) throws -> Body {
+        guard let brep = body.brep, distance.isFinite else { throw ExactEditError.refused }
+        if abs(distance) < 1e-9 { return body }
+        guard let triangle = face.triangles.first, triangle >= 0,
+              triangle < body.render.triangleCount else { throw ExactEditError.refused }
+        let indices = body.render.indices
+        let positions = body.render.positions
+        let p = (positions[Int(indices[triangle * 3])] + positions[Int(indices[triangle * 3 + 1])]
+                 + positions[Int(indices[triangle * 3 + 2])]) / 3
+        let status = OCCTOpStatus()
+        guard let shape = OCCTBridge.pushedPlanarFace(of: brep.shape,
+            atPointX: Double(p.x), y: Double(p.y), z: Double(p.z),
+            normalX: Double(face.normal.x), normalY: Double(face.normal.y), normalZ: Double(face.normal.z),
+            distance: distance, tolerance: OCCTKernel.matchTolerance(for: brep), status: status)
+        else { throw ExactEditError.refused }
+        guard status.code.rawValue == 0 else { throw ExactEditError.refused }
+        var result = Body(id: body.id, name: body.name, transform: body.transform,
+                          primitive: nil, euclidMesh: body.euclidMesh(), revision: revision)
+        guard result.adoptBRep(BRepHandle(shape)) else { throw ExactEditError.refused }
+        return result.keepingAppearance(of: body)
+    }
+
+    static func exactMoveFace(body: Body, face: PlanarFace, delta: SIMD3<Double>,
+                              revision: UInt64) throws -> Body {
+        let normal = simd_normalize(SIMD3<Double>(face.normal))
+        let distance = simd_dot(delta, normal)
+        guard simd_length(delta - normal * distance) <= max(1e-7, simd_length(delta) * 1e-7)
+        else { throw ExactEditError.unsupported("Tangential face movement") }
+        return try exactPushPull(body: body, face: face, distance: distance, revision: revision)
+    }
+
+    /// Returns world-space exact halves. Callers commit both atomically only
+    /// after both OCCT results and their render meshes have been validated.
+    static func exactSplit(body: Body, plane: SketchPlane, profile: Profile? = nil,
+                           holes: [Profile] = []) throws -> (Body, Body) {
+        guard let local = body.brep,
+              let world = OCCTKernel.transformed(local, by: body.transform) else { throw ExactEditError.refused }
+        let bounds = body.euclidMesh().transformed(by: body.transform.euclid).bounds
+        var radius = 0.0
+        for i in 0..<8 {
+            let corner = SIMD3((i & 1) == 0 ? bounds.min.x : bounds.max.x,
+                               (i & 2) == 0 ? bounds.min.y : bounds.max.y,
+                               (i & 4) == 0 ? bounds.min.z : bounds.max.z)
+            radius = max(radius, simd_length(corner - plane.origin))
+        }
+        guard radius.isFinite, radius > 0 else { throw ExactEditError.refused }
+        let r = radius * 2 + 1
+        let cutter: BRepHandle?
+        if let profile {
+            cutter = OCCTKernel.extrudeSolid(outer: profile, holes: holes, extras: [], zMin: -r, zMax: r,
+                origin: plane.origin, xAxis: plane.xAxis, yAxis: plane.yAxis, normal: plane.normal)
+        } else {
+            cutter = OCCTKernel.extrudeShape(outerLoop: [SIMD2(-r, -r), SIMD2(r, -r), SIMD2(r, r), SIMD2(-r, r)],
+                holes: [], zMin: 0, zMax: r, origin: plane.origin,
+                xAxis: plane.xAxis, yAxis: plane.yAxis, normal: plane.normal)
+        }
+        guard let cutter,
+              case let .success(a) = OCCTKernel.booleanResult(world, cutter, op: 2), a.solidCount == 1,
+              case let .success(b) = OCCTKernel.booleanResult(world, cutter, op: 1), b.solidCount == 1
+        else { throw ExactEditError.refused }
+        var first = Body(id: body.id, name: body.name, euclidMesh: body.euclidMesh(), revision: 0)
+        var second = Body(name: body.name, euclidMesh: body.euclidMesh(), revision: 0)
+        guard first.adoptBRep(a.handle), second.adoptBRep(b.handle) else { throw ExactEditError.refused }
+        return (first.keepingAppearance(of: body), second.keepingAppearance(of: body))
     }
 }

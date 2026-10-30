@@ -34,6 +34,12 @@ final class DocumentSession {
     /// replays (`refreshEvalErrors`, `inputBody`) use a discarded copy.
     private var evalCache = EvalCache()
     private(set) var lastEvalErrors: [FeatureID: FeatureError] = [:]
+    private(set) var lastReferenceErrors: [AssociativeReferenceKey: AssociativeReferenceError] = [:]
+    private(set) var lastBodyWriters: [BodyID: FeatureID] = [:]
+    /// Diagnostics from a refused speculative rebuild; live diagnostics still
+    /// describe the unchanged document. Services must not report that as success.
+    private(set) var lastRebuildRejection: [AssociativeReferenceKey: AssociativeReferenceError] = [:]
+    private(set) var lastRejectedFeatureErrors: [FeatureID: FeatureError] = [:]
 
     /// The face tables of the most recent APPLIED rebuild — the tables whose
     /// triangle indices are valid against the documents' CURRENT renders,
@@ -58,6 +64,23 @@ final class DocumentSession {
     /// Bumped on every document mutation; the editor observes this to rebuild
     /// the viewport scene.
     private(set) var changeCount = 0
+    /// Dirty/save identity only. Preview epochs still advance changeCount for
+    /// runtime/query fencing without making an unchanged baseline need a save.
+    private(set) var persistenceChangeCount = 0
+    private var lastSavedPersistenceChangeCount = 0
+    /// Successful durable identity only. Computed facade readers participate
+    /// in this existing Session's Observation tracking, including save-only
+    /// changes that do not advance a geometry/query generation.
+    private(set) var savedIdentity: CADSaveOutcome
+
+    @discardableResult
+    func adoptCommittedIdentity(_ receipt: CADSaveOutcome, persistenceCount: Int) -> Bool {
+        guard receipt.succeeded, receipt.revision > savedIdentity.revision else { return false }
+        lastSavedPersistenceChangeCount = persistenceCount
+        savedIdentity = receipt
+        recordSaveResult(nil)
+        return true
+    }
 
     /// IDs of persisted rows this build could not decode at `load()` — an
     /// unknown feature kind written by a newer build, a newer `MeshBlob`
@@ -97,10 +120,24 @@ final class DocumentSession {
         var count: Int { rowCount + partialBodyCount }
     }
 
-    /// True when the store's `formatVersion` is newer than this build writes.
+    /// Legacy property name: true for a newer format OR opaque association
+    /// semantics. The original store bytes remain available for viewing.
     /// The document still opens for viewing, but `save()` refuses to run —
     /// an older app must never rewrite a newer store.
     private(set) var storeIsNewerThanApp = false
+
+    var isReadOnly: Bool {
+        storeIsNewerThanApp || project.formatVersion > Project.currentFormatVersion || project.hasOpaqueAssociations
+    }
+    var readOnlyMessage: String {
+        project.hasOpaqueAssociations ? CADDocumentFormat.opaqueReadOnlyMessage
+            : "This CAD document uses a newer format and is read-only."
+    }
+    @discardableResult
+    private func requireWritable() -> Bool {
+        if let block = writeBlock { recordWriteBlock(block.message); return false }
+        return true
+    }
 
     /// One-shot user-facing warning from `load()` (newer-format store, or
     /// "N items couldn't be read"); the editor surfaces it once on open.
@@ -111,22 +148,156 @@ final class DocumentSession {
     private(set) var lastSaveError: String?
 
     private var saveTask: Task<Void, Never>?
+    private var inFlightSaveCount = 0
+    private var lastSaveErrorIsWriteBlock = false
+    var saveFailureRequiresRetry: Bool { lastSaveError != nil && !lastSaveErrorIsWriteBlock }
+    var hasUncommittedPersistenceChanges: Bool {
+        persistenceChangeCount != lastSavedPersistenceChangeCount || saveFailureRequiresRetry
+    }
+    private func recordWriteBlock(_ message: String) {
+        // An editing refusal must not hide a real failed commit/CAS error.
+        if lastSaveError == nil || lastSaveErrorIsWriteBlock {
+            lastSaveError = message
+            lastSaveErrorIsWriteBlock = true
+        }
+    }
+    private func recordSaveResult(_ error: String?) {
+        lastSaveError = error
+        lastSaveErrorIsWriteBlock = false
+    }
+    #if DEBUG
+    /// Deterministic, session-local suspension inside prewarm for race tests.
+    /// Absent in release; no store/network/global synchronization is replaced.
+    var savePrewarmSuspensionForTesting: (@MainActor () async -> Void)?
+    var committedIdentityDeliveryForTesting: (@MainActor (CADSaveOutcome) async -> Void)?
+    var hasPendingAutosaveForTesting: Bool { saveTask != nil }
+    #endif
+
+    /// One native sketch gesture may preview only its source sketch. The
+    /// existing checkpoint remains the sole baseline and history authority.
+    nonisolated struct SketchPreviewToken: Hashable, Sendable {
+        fileprivate let id: UUID
+        fileprivate init() { id = UUID() }
+    }
+    private struct SketchPreview {
+        var token: SketchPreviewToken
+        var sketchID: SketchID
+        var title: String
+        var baseline: CADEditCheckpoint
+        var ownedChangeCount: Int
+        var baselineSaveWasPending: Bool
+    }
+    private var sketchPreview: SketchPreview?
+    var isSketchPreviewActive: Bool { sketchPreview != nil }
+    var previewSketchID: SketchID? { sketchPreview?.sketchID }
+    var writeBlock: (code: String, message: String)? {
+        if isReadOnly { return ("read_only", readOnlyMessage) }
+        if isSketchPreviewActive {
+            return ("edit_in_progress", FloeCADStrings.text("cad.sketch.finishCurrentEdit", "Finish or cancel the sketch edit first."))
+        }
+        return nil
+    }
+    private nonisolated enum SketchPreviewWriteError: LocalizedError {
+        case editing
+        var errorDescription: String? { FloeCADStrings.text("cad.sketch.finishCurrentEdit", "Finish or cancel the sketch edit first.") }
+    }
+
+    /// Begin before Copy/decomposition or the first changed solver frame.
+    /// A second owner cannot replace a token or its baseline.
+    func beginSketchPreview(sketchID: SketchID, title: String = "Edit Sketch") -> SketchPreviewToken? {
+        guard requireWritable(), Self.hasAssociations(document),
+              document.sketches.contains(where: { $0.id == sketchID }) else { return nil }
+        let pending = saveTask != nil || inFlightSaveCount > 0
+        saveTask?.cancel()
+        saveTask = nil
+        let baseline = captureEditCheckpoint()
+        // Begin alone fences old save/NativeEditCommit continuations before
+        // the first accepted gesture frame arrives.
+        didChange(autosave: false, persistedChange: false)
+        let token = SketchPreviewToken()
+        sketchPreview = SketchPreview(token: token, sketchID: sketchID, title: title,
+                                      baseline: baseline, ownedChangeCount: changeCount,
+                                      baselineSaveWasPending: pending)
+        return token
+    }
+
+    /// Update only the owned sketch; unrelated command, body, graph or metadata
+    /// writes have no owner bypass. Geometry stays a transient source preview.
+    @discardableResult
+    func updateSketchPreview(_ sketch: Sketch, token: SketchPreviewToken) -> Bool {
+        guard var owner = sketchPreview, owner.token == token,
+              owner.ownedChangeCount == changeCount, !isReadOnly,
+              sketch.id == owner.sketchID,
+              let index = document.sketches.firstIndex(where: { $0.id == sketch.id }) else { return false }
+        document.sketches[index] = sketch
+        didChange(autosave: false, persistedChange: false)
+        owner.ownedChangeCount = changeCount
+        sketchPreview = owner
+        return true
+    }
+
+    /// Restore the ORIGINAL source and exact redo/cache before validation, then
+    /// make the complete source/solver/constraint edit and derived rebuild one
+    /// ordinary transaction. A rejected rebuild leaves the original baseline.
+    @discardableResult
+    func commitSketchPreview(_ token: SketchPreviewToken) -> Bool {
+        guard let owner = sketchPreview, owner.token == token,
+              owner.ownedChangeCount == changeCount,
+              let before = owner.baseline.document.sketches.first(where: { $0.id == owner.sketchID }),
+              let after = document.sketches.first(where: { $0.id == owner.sketchID }) else { return false }
+        sketchPreview = nil
+        restoreCheckpointState(owner.baseline, autosave: false)
+        guard before != after else { resumeBaselineSaveIfNeeded(owner); return true }
+        let accepted = performWithSketchRebuild(
+            ReplaceSketchGeometryCommand(title: owner.title, before: before, after: after),
+            sketchID: owner.sketchID)
+        if !accepted { resumeBaselineSaveIfNeeded(owner) }
+        return accepted
+    }
+
+    /// Late/stale callbacks cannot restore a newer owner's baseline. A
+    /// generation mismatch is never repaired by overwriting an outside edit.
+    @discardableResult
+    func cancelSketchPreview(_ token: SketchPreviewToken) -> Bool {
+        guard let owner = sketchPreview, owner.token == token,
+              owner.ownedChangeCount == changeCount else { return false }
+        sketchPreview = nil
+        restoreCheckpointState(owner.baseline, autosave: false)
+        resumeBaselineSaveIfNeeded(owner)
+        return true
+    }
+
+    private func resumeBaselineSaveIfNeeded(_ owner: SketchPreview) {
+        guard owner.baselineSaveWasPending, !isReadOnly,
+              lastSavedPersistenceChangeCount != owner.baseline.persistenceChangeCount else { return }
+        scheduleAutosave()
+    }
+
+    /// Trusted document lifecycle boundary, before its final baseline flush
+    /// and store revoke. No editor callback can retain a usable owner token.
+    func cancelSketchPreviewForClose() {
+        if let token = sketchPreview?.token { cancelSketchPreview(token) }
+    }
 
     init(project: Project, modelContext: CADModelContext) {
         self.project = project
         self.modelContext = modelContext
+        self.savedIdentity = modelContext.store?.committedIdentity
+            ?? CADSaveOutcome(revision: 0, contentSHA256: "", error: nil)
         load()
     }
 
     // MARK: - Mutations
 
     func perform(_ command: DocumentCommand) {
+        guard requireWritable() else { return }
         undoStack.perform(command, on: &document)
         didChange()
     }
 
     /// Coalesce with the previous command (live drags, slider edits).
     func amend(_ command: DocumentCommand) {
+        guard requireWritable() else { return }
         undoStack.amendLast(command, on: &document)
         didChange()
     }
@@ -134,11 +305,13 @@ final class DocumentSession {
     /// Transient (non-undoable) document update, e.g. live transform during a
     /// drag before the final command is pushed on gesture end.
     func preview(_ mutate: (inout DesignDocument) -> Void) {
+        guard requireWritable() else { return }
         mutate(&document)
         didChange(autosave: false)
     }
 
     func undo() {
+        guard requireWritable() else { return }
         undoStack.undo(on: &document)
         // A rebuild's errors were computed for the state being undone;
         // recompute for the restored state so badges track the document
@@ -148,13 +321,15 @@ final class DocumentSession {
     }
 
     func redo() {
+        guard requireWritable() else { return }
         undoStack.redo(on: &document)
         refreshEvalErrors()
         didChange()
     }
 
-    private func didChange(autosave: Bool = true) {
+    private func didChange(autosave: Bool = true, persistedChange: Bool = true) {
         changeCount += 1
+        if persistedChange { persistenceChangeCount = changeCount }
         if autosave {
             scheduleAutosave()
         }
@@ -208,6 +383,7 @@ final class DocumentSession {
     /// blend on it, and re-picking edges against it would pick the edges of the
     /// result rather than of the input.
     func inputBody(for featureID: FeatureID, bodyID: BodyID) -> Body? {
+        guard !isReadOnly else { return nil }
         var graph = document.features
         guard let index = graph.index(of: featureID) else { return nil }
         graph.rollbackIndex = index
@@ -218,7 +394,8 @@ final class DocumentSession {
             planes: document.planes,
             naming: naming,
             nextRevision: { counter &+= 1; return counter },
-            cache: &scratch
+            cache: &scratch,
+            variables: variableValues()
         )
         return result.bodies.first { $0.id == bodyID }
     }
@@ -329,13 +506,13 @@ final class DocumentSession {
     /// edit and `leadingCommands` is empty. Skips entirely when nothing depends on
     /// the sketch (no undo noise) and when a rebuild is already in flight.
     ///
-    /// This DOES land as its own undo step, so it is now only for paths that
-    /// can't compose: live entity drags (the move command was amended per
-    /// tick) and finishSketch's belt-and-suspenders pass. Everything else
-    /// goes through `performWithSketchRebuild` for one atomic step (S6).
+    /// This lands as its own undo step for the plain-document legacy drag
+    /// fallback and finishSketch's belt-and-suspenders pass. Associated sketch
+    /// gestures use scoped preview + full-sketch commit instead. Other direct
+    /// edits use `performWithSketchRebuild` for one atomic step.
     func rebuildForSketchChange(_ sketchID: SketchID) {
         guard !isRebuilding else { return }
-        guard document.features.nodes.contains(where: {
+        guard Self.hasAssociations(document) || document.features.nodes.contains(where: {
             $0.referencedSketchIDs.contains(sketchID)
         }) else { return }
         performRebuild(document.features, leadingCommands: [], title: "Update Sketch")
@@ -350,29 +527,30 @@ final class DocumentSession {
     /// when the composite performs. Falls back to a plain `perform` when no
     /// feature references any of the touched sketches.
     ///
-    /// Residual (documented): live entity DRAGS amend their move command per
-    /// tick and rebuild at the drag-end boundary, so that path still lands as
-    /// two steps.
-    func performWithSketchRebuild(_ command: DocumentCommand, sketchIDs: Set<SketchID>) {
-        guard !isRebuilding,
-              document.features.nodes.contains(where: {
-                  !$0.referencedSketchIDs.isDisjoint(with: sketchIDs)
-              })
-        else {
-            perform(command)
-            return
-        }
+    /// The plain-document legacy drag fallback may still amend a source
+    /// command before this rebuild. Associated gestures instead own a scoped
+    /// preview and submit their final whole Sketch through this guarded path.
+    @discardableResult
+    func performWithSketchRebuild(_ command: DocumentCommand, sketchIDs: Set<SketchID>) -> Bool {
+        guard requireWritable(), !isRebuilding else { return false }
         var preview = document
         command.apply(to: &preview)
-        performRebuild(
-            document.features,
-            leadingCommands: [command],
-            title: command.title,
-            sketches: preview.sketches
-        )
+        // A support/definition can be invalid even with no solid consuming it.
+        // Check the complete prospective records rather than direct consumers
+        // alone, including the first support introduced by this command.
+        guard Self.hasAssociations(document) || Self.hasAssociations(preview)
+                || document.features.nodes.contains(where: {
+                    !$0.referencedSketchIDs.isDisjoint(with: sketchIDs)
+                }) else {
+            perform(command)
+            return true
+        }
+        return performRebuild(preview.features, leadingCommands: [command], title: command.title,
+                              sketches: preview.sketches, previewDocument: preview)
     }
 
-    func performWithSketchRebuild(_ command: DocumentCommand, sketchID: SketchID) {
+    @discardableResult
+    func performWithSketchRebuild(_ command: DocumentCommand, sketchID: SketchID) -> Bool {
         performWithSketchRebuild(command, sketchIDs: [sketchID])
     }
 
@@ -381,10 +559,11 @@ final class DocumentSession {
     /// mesh changes plus `leadingCommands` (the graph mutation itself) as ONE
     /// undoable `CompositeCommand`. Shared by `rebuildFrom`, `setSuppressed`, and
     /// `deleteFeature` so all three stay a single undo step.
+    @discardableResult
     private func performRebuild(
         _ editedGraph: FeatureGraph, leadingCommands: [DocumentCommand], title: String,
-        sketches: [Sketch]? = nil
-    ) {
+        sketches: [Sketch]? = nil, previewDocument: DesignDocument? = nil
+    ) -> Bool {
         // Re-entrancy guard: this method ends by `perform`ing one internal
         // `CompositeCommand`; if that mutation ever routes back into a rebuild
         // (e.g. a sketch-change hook observing the change), we must NOT start a
@@ -392,38 +571,70 @@ final class DocumentSession {
         // deleteFeature / rebuildForSketchChange — are unaffected: the flag is
         // false on entry, so each performs exactly as before; the guard only
         // short-circuits a RE-ENTRANT (nested) call.
-        guard !isRebuilding else { return }
+        guard requireWritable(), !isRebuilding else { return false }
+        lastRebuildRejection = [:]
+        lastRejectedFeatureErrors = [:]
         isRebuilding = true
         defer { isRebuilding = false }
 
-        // The pure core (RebuildPlanner, docs/OFF_MAIN_EVAL_DESIGN.md slice 0):
-        // replay against `evalCache` (memoised — unchanged nodes are spliced),
-        // diff against the live bodies, produce the commands. `nextRevision`
-        // advances the REAL document counter so every emitted revision is
-        // globally unique (added bodies keep theirs; replaced bodies get a
-        // fresh one again in ReplaceBodyCommand.apply). `sketches` override:
-        // performWithSketchRebuild evaluates against a preview that already
-        // contains its (not-yet-performed) sketch edit.
+        // Evaluate against complete prospective records, never half-applied
+        // definitions/support. Scratch counters/cache are committed only after
+        // validation, so a refusal cannot dirty persistence or destroy redo.
+        var prospective = previewDocument ?? document
+        if previewDocument == nil {
+            for command in leadingCommands { command.apply(to: &prospective) }
+            if let sketches { prospective.sketches = sketches }
+        }
+        prospective.features = editedGraph
+        let associative = Self.hasAssociations(document) || Self.hasAssociations(prospective)
+        var plannedCache = evalCache
+        var revisionDocument = document
         let plan = RebuildPlanner.plan(
-            editedGraph: editedGraph,
-            previousGraph: document.features,
-            document: document,
-            sketches: sketches ?? document.sketches,
-            planes: document.planes,
-            naming: naming,
-            cache: &evalCache,
-            nextRevision: { self.document.nextRevision() },
-            leadingCommands: leadingCommands,
-            title: title
-        )
+            editedGraph: editedGraph, previousGraph: document.features,
+            document: document, sketches: prospective.sketches, planes: prospective.planes,
+            naming: naming, cache: &plannedCache,
+            nextRevision: { revisionDocument.nextRevision() },
+            leadingCommands: leadingCommands, title: title,
+            previewDocument: prospective,
+            variables: VariableTable.resolve(prospective.variables).values)
+        if associative {
+            var baselineCache = evalCache
+            var counter: UInt64 = 0
+            let baseline = document.features.evaluate(
+                sketches: document.sketches, planes: document.planes, naming: naming,
+                nextRevision: { counter &+= 1; return counter }, cache: &baselineCache,
+                variables: variableValues())
+            let captured = AssociativeDependencyGraph(
+                graph: document.features, sketches: document.sketches, planes: document.planes,
+                featureDependencies: CADParameterService.bodyWriterDependencies(in: document.features.nodes))
+            let beforeDependencies = captured.validationErrors(in: document.features)
+            var newReferences = plan.referenceErrors.filter { baseline.referenceErrors[$0.key] != $0.value }
+            for (key, error) in captured.validationErrors(in: editedGraph)
+            where beforeDependencies[key] != error { newReferences[key] = error }
+            let newFeatures = plan.errors.filter { key, error in
+                baseline.errors[key].map { String(describing: $0) } != String(describing: error)
+            }
+            if !newReferences.isEmpty || !newFeatures.isEmpty {
+                lastRebuildRejection = newReferences
+                lastRejectedFeatureErrors = newFeatures
+                // Only the generation advances. No autosave is scheduled and
+                // no Project/format metadata has been touched.
+                didChange(autosave: false, persistedChange: false)
+                return false
+            }
+        }
+        document = revisionDocument
+        evalCache = plannedCache
         lastEvalErrors = plan.errors
         lastFaceTables = plan.faceTables
         lastKernelNames = plan.kernelNames
+        lastReferenceErrors = plan.referenceErrors
+        lastBodyWriters = plan.lastBodyWriters
 
         guard !plan.commands.isEmpty else {
             captureNamingRevisions(for: plan.resultBodyIDs)
             adoptCachedBodies()
-            return
+            return true
         }
         perform(CompositeCommand(title: title, commands: plan.commands))
         // AFTER the commands: ReplaceBodyCommand.apply re-mints meshRevision,
@@ -434,6 +645,66 @@ final class DocumentSession {
         // built them — only the revision stamps had moved.
         captureNamingRevisions(for: plan.resultBodyIDs)
         adoptCachedBodies()
+        return true
+    }
+
+    /// Read-only source acquisition for the datum adapter. Two bounded memo
+    /// replays discover the actual successful last PUT, then retain precisely
+    /// that version. No live counters, naming upgrades, commands or caches are
+    /// adopted. Callers still fence their selection against current document
+    /// generation/body revision; scratch render indices are never live picks.
+    func associativeSource(for bodyID: BodyID) -> (version: GeometryVersionRef, snapshot: GeometryVersionSnapshot)? {
+        associativeSources(for: [bodyID])[bodyID]
+    }
+
+    /// Batch discovery uses the same two scratch replays for all requested
+    /// bodies. Face queries must not replay the entire graph twice per body.
+    func associativeSources(for bodyIDs: Set<BodyID>) -> [BodyID: (version: GeometryVersionRef, snapshot: GeometryVersionSnapshot)] {
+        guard !isReadOnly, !bodyIDs.isEmpty else { return [:] }
+        let requestedBodies = bodyIDs.intersection(Set(document.bodies.map(\.id)))
+        guard !requestedBodies.isEmpty else { return [:] }
+        var scratch = evalCache
+        var revision: UInt64 = 0
+        let values = variableValues()
+        let initial = document.features.evaluate(sketches: document.sketches, planes: document.planes,
+            naming: naming, nextRevision: { revision &+= 1; return revision }, cache: &scratch,
+            variables: values)
+        var requestedVersions: [BodyID: GeometryVersionRef] = [:]
+        for bodyID in requestedBodies {
+            guard let writer = initial.lastBodyWriters[bodyID] else { continue }
+            requestedVersions[bodyID] = GeometryVersionRef(bodyID: bodyID, writer: writer)
+        }
+        guard !requestedVersions.isEmpty else { return [:] }
+        let result = document.features.evaluate(sketches: document.sketches, planes: document.planes,
+            naming: naming, nextRevision: { revision &+= 1; return revision }, cache: &scratch,
+            variables: values, requestedVersions: Set(requestedVersions.values))
+        var sources: [BodyID: (version: GeometryVersionRef, snapshot: GeometryVersionSnapshot)] = [:]
+        for (bodyID, version) in requestedVersions {
+            guard result.errors[version.writer] == nil, let snapshot = result.geometryVersions[version] else { continue }
+            sources[bodyID] = (version, snapshot)
+        }
+        return sources
+    }
+
+    private static func hasAssociations(_ document: DesignDocument) -> Bool {
+        document.planes.contains { $0.definition != nil } || document.sketches.contains { $0.support != nil }
+    }
+
+    /// Domain seam for definition/support edits. Semantic edits and all derived
+    /// planes, sketches and solids commit together, or nothing is applied.
+    @discardableResult
+    func performAssociativeTransaction(_ commands: [DocumentCommand], title: String) -> Bool {
+        guard requireWritable(), !commands.isEmpty, !isRebuilding else { return false }
+        var preview = document
+        for command in commands { command.apply(to: &preview) }
+        let resolved = VariableTable.resolve(preview.variables)
+        let fanOut = Self.variableFanOutPlan(document: preview, resolved: resolved)
+        preview.features = fanOut.graph
+        preview.sketches = fanOut.sketches
+        preview.planes = fanOut.planes
+        return performRebuild(preview.features, leadingCommands: commands + fanOut.featureCommands
+                              + fanOut.sketchCommands + fanOut.planeCommands, title: title,
+                              previewDocument: preview)
     }
 
     /// The memo's bodies take the DOCUMENT's post-apply geometry and revision
@@ -526,6 +797,169 @@ final class DocumentSession {
         VariableTable.resolve(document.variables).values
     }
 
+    // MARK: - Formula-capable feature parameters
+
+    /// One scalar feature parameter that can carry a variable formula.
+    ///
+    /// `unit` is the PUBLIC unit a caller reads/writes, while `storedUnit` is
+    /// the unit of the persisted `Expr.value`. They differ only for
+    /// `rotateFace.angle` (public degrees, persisted radians); the scales make
+    /// that conversion explicit instead of letting a degree formula land in a
+    /// radian slot. Every other slot has unit == storedUnit and scale 1.
+    nonisolated struct FeatureExpressionSlot: Sendable, Equatable {
+        var name: String
+        var unit: String
+        var storedUnit: String
+        var expr: Expr
+        /// stored -> public
+        var publicScale: Double
+        /// public -> stored
+        var storedScale: Double
+
+        init(name: String, unit: String, storedUnit: String = "mm", expr: Expr,
+             publicScale: Double = 1, storedScale: Double = 1) {
+            self.name = name
+            self.unit = unit
+            self.storedUnit = storedUnit
+            self.expr = expr
+            self.publicScale = publicScale
+            self.storedScale = storedScale
+        }
+
+        var publicValue: Double { expr.value * publicScale }
+
+        var formulaReferences: [String] {
+            guard let formula = expr.formula else { return [] }
+            return ExpressionEvaluator.identifiers(in: formula).sorted()
+        }
+    }
+
+    /// Every formula-capable scalar of `kind`, in descriptor order. This is the
+    /// ONE list the expression setters, reference rewrites, variable fan-out and
+    /// feature query share, so a discovered expression parameter is executable
+    /// and a rename cannot miss a formula it does not know about.
+    ///
+    /// Deliberately absent: parameters that are plain numbers today (primitive
+    /// dimensions, pattern count/spacing/total_angle, booleans, vectors) and
+    /// features with no scalar `Expr`. They are reported as unsupported rather
+    /// than turned into a value-only mutation that silently drops intent.
+    nonisolated static func expressionSlots(in kind: FeatureKind) -> [FeatureExpressionSlot] {
+        let radiansToDegrees = 180 / Double.pi
+        let degreesToRadians = Double.pi / 180
+        switch kind {
+        case let .extrude(_, _, distance, _, _, _):
+            return [FeatureExpressionSlot(name: "distance", unit: "mm", expr: distance)]
+        case let .draftExtrude(_, _, distance, taperAngle, _, _):
+            return [FeatureExpressionSlot(name: "distance", unit: "mm", expr: distance),
+                    FeatureExpressionSlot(name: "taper_angle", unit: "deg",
+                                          storedUnit: "deg", expr: taperAngle)]
+        case let .revolve(_, _, _, angle, _):
+            return [FeatureExpressionSlot(name: "angle", unit: "deg",
+                                          storedUnit: "deg", expr: angle)]
+        case let .pushPull(_, distance, _):
+            return [FeatureExpressionSlot(name: "distance", unit: "mm", expr: distance)]
+        case let .scaleFace(_, factor):
+            return [FeatureExpressionSlot(name: "factor", unit: "unitless",
+                                          storedUnit: "unitless", expr: factor)]
+        case let .rotateFace(_, angle, _):
+            return [FeatureExpressionSlot(name: "angle", unit: "deg",
+                                          storedUnit: "rad", expr: angle,
+                                          publicScale: radiansToDegrees,
+                                          storedScale: degreesToRadians)]
+        case let .draftFace(_, _, _, angle):
+            return [FeatureExpressionSlot(name: "angle", unit: "deg",
+                                          storedUnit: "deg", expr: angle)]
+        case let .chamfer(_, _, setback):
+            return [FeatureExpressionSlot(name: "setback", unit: "mm", expr: setback)]
+        case let .fillet(_, _, radius):
+            return [FeatureExpressionSlot(name: "radius", unit: "mm", expr: radius)]
+        case let .shell(_, _, thickness):
+            return [FeatureExpressionSlot(name: "thickness", unit: "mm", expr: thickness)]
+        case .primitive, .sweep, .loft, .boolean, .transform, .mirror, .pattern,
+             .moveFace, .deleteFace, .replaceFace:
+            return []
+        }
+    }
+
+    static func expressionSlot(in kind: FeatureKind,
+                               named name: String) -> FeatureExpressionSlot? {
+        expressionSlots(in: kind).first { $0.name == name }
+    }
+
+    /// The same kind with ONE named scalar `Expr` replaced, preserving every
+    /// other value/reference/unit. Nil when the kind has no such slot.
+    static func replacingExpression(in kind: FeatureKind, named name: String,
+                                    with expr: Expr) -> FeatureKind? {
+        switch kind {
+        case let .extrude(profile, plane, distance, symmetric, boolean, extras):
+            guard name == "distance" else { return nil }
+            return .extrude(profile: profile, plane: plane, distance: expr,
+                            symmetric: symmetric, boolean: boolean,
+                            extraProfiles: extras)
+        case let .draftExtrude(profile, plane, distance, taperAngle, symmetric, boolean):
+            switch name {
+            case "distance":
+                return .draftExtrude(profile: profile, plane: plane, distance: expr,
+                                     taperAngle: taperAngle, symmetric: symmetric,
+                                     boolean: boolean)
+            case "taper_angle":
+                return .draftExtrude(profile: profile, plane: plane, distance: distance,
+                                     taperAngle: expr, symmetric: symmetric,
+                                     boolean: boolean)
+            default:
+                return nil
+            }
+        case let .revolve(profile, plane, axis, angle, boolean):
+            guard name == "angle" else { return nil }
+            return .revolve(profile: profile, plane: plane, axis: axis,
+                            angle: expr, boolean: boolean)
+        case let .pushPull(face, distance, mode):
+            guard name == "distance" else { return nil }
+            return .pushPull(face: face, distance: expr, mode: mode)
+        case let .scaleFace(face, factor):
+            guard name == "factor" else { return nil }
+            return .scaleFace(face: face, factor: expr)
+        case let .rotateFace(face, angle, axis):
+            guard name == "angle" else { return nil }
+            return .rotateFace(face: face, angle: expr, axis: axis)
+        case let .draftFace(face, origin, normal, angle):
+            guard name == "angle" else { return nil }
+            return .draftFace(face: face, neutralOrigin: origin,
+                              neutralNormal: normal, angle: expr)
+        case let .chamfer(body, edges, setback):
+            guard name == "setback" else { return nil }
+            return .chamfer(body: body, edges: edges, setback: expr)
+        case let .fillet(body, edges, radius):
+            guard name == "radius" else { return nil }
+            return .fillet(body: body, edges: edges, radius: expr)
+        case let .shell(body, openFaces, thickness):
+            guard name == "thickness" else { return nil }
+            return .shell(body: body, openFaces: openFaces, thickness: expr)
+        case .primitive, .sweep, .loft, .boolean, .transform, .mirror, .pattern,
+             .moveFace, .deleteFace, .replaceFace:
+            return nil
+        }
+    }
+
+    /// Apply `transform` to every formula-capable scalar, returning a rebuilt
+    /// kind only when at least one `Expr` actually changed. Sharing this walk
+    /// keeps re-evaluation, rename rewriting and discovery from drifting apart.
+    static func mapExpressions(
+        in kind: FeatureKind,
+        _ transform: (FeatureExpressionSlot) -> Expr?
+    ) -> FeatureKind? {
+        var result = kind
+        var changed = false
+        for slot in expressionSlots(in: kind) {
+            guard let replacement = transform(slot), replacement != slot.expr else { continue }
+            guard let replaced = replacingExpression(in: result, named: slot.name,
+                                                     with: replacement) else { continue }
+            result = replaced
+            changed = true
+        }
+        return changed ? result : nil
+    }
+
     /// Re-evaluate every formula-bearing `Expr` on `kind` against `values`,
     /// returning a new kind if ANY of its values changed, or `nil` when nothing
     /// changed (so callers only emit an edit for genuinely affected nodes).
@@ -534,36 +968,30 @@ final class DocumentSession {
     static func reevaluatedKind(
         _ kind: FeatureKind, with values: [String: Double]
     ) -> FeatureKind? {
-        func updated(_ expr: Expr) -> Expr? {
-            guard let formula = expr.formula else { return nil }  // not variable-driven
+        mapExpressions(in: kind) { slot in
+            guard let formula = slot.expr.formula else { return nil }  // not variable-driven
             // A formula that no longer resolves — its variable was deleted or
             // renamed — errors to 0 (spec §6.6). Propagate the 0 so the breakage
             // surfaces (the step goes empty/errored) rather than silently keeping
             // the last resolved value with a now-dangling formula.
             let v = ExpressionEvaluator.evaluate(formula, variables: values) ?? 0
-            guard v != expr.value else { return nil }
+            guard v != slot.expr.value else { return nil }
             return Expr(value: v, formula: formula)
         }
-        switch kind {
-        case let .extrude(profile, plane, distance, symmetric, boolean, extras):
-            guard let d = updated(distance) else { return nil }
-            return .extrude(
-                profile: profile, plane: plane, distance: d,
-                symmetric: symmetric, boolean: boolean, extraProfiles: extras)
-        case let .revolve(profile, plane, axis, angle, boolean):
-            guard let a = updated(angle) else { return nil }
-            return .revolve(profile: profile, plane: plane, axis: axis, angle: a, boolean: boolean)
-        case let .pushPull(face, distance, mode):
-            guard let d = updated(distance) else { return nil }
-            return .pushPull(face: face, distance: d, mode: mode)
-        case let .scaleFace(face, factor):
-            guard let f = updated(factor) else { return nil }
-            return .scaleFace(face: face, factor: f)
-        case let .rotateFace(face, angle, axis):
-            guard let a = updated(angle) else { return nil }
-            return .rotateFace(face: face, angle: a, axis: axis)
-        default:
-            return nil
+    }
+
+    /// Rewrite variable references inside every formula-capable scalar without
+    /// touching values, references or stored units. Used by a variable rename so
+    /// one token-aware rewrite covers features and sketches atomically.
+    static func rewrittenKind(
+        _ kind: FeatureKind,
+        rewriting: (String) -> String?
+    ) -> FeatureKind? {
+        mapExpressions(in: kind) { slot in
+            guard let formula = slot.expr.formula,
+                  let rewritten = rewriting(formula),
+                  rewritten != formula else { return nil }
+            return Expr(value: slot.expr.value, formula: rewritten)
         }
     }
 
@@ -574,80 +1002,86 @@ final class DocumentSession {
     /// `.formula`, so the graph must already hold the resolved values before any
     /// `performRebuild`. Not undoable — `.value` is a derived cache of `.formula`.
     func resolveExprFormulas() {
+        guard requireWritable() else { return }
         let values = variableValues()
         for index in document.features.nodes.indices {
             if let newKind = Self.reevaluatedKind(document.features.nodes[index].kind, with: values) {
                 document.features.nodes[index].kind = newKind
             }
         }
+        for index in document.planes.indices {
+            guard case var .offset(definition)? = document.planes[index].definition,
+                  let formula = definition.distance.formula,
+                  let value = ExpressionEvaluator.evaluate(formula, variables: values), value.isFinite else { continue }
+            definition.distance.value = value
+            document.planes[index].definition = .offset(definition)
+        }
     }
 
-    /// Fan-out after any variable add/edit/delete (the VM performs the mutating
-    /// command, then calls this):
-    ///
-    /// (a) Re-resolve `document.variables` (creation-order rule) and write the
-    ///     resolved `.value` back into each variable — a derived cache, updated in
-    ///     place (not a separate undo step; undoing the triggering command restores
-    ///     the prior snapshots).
-    /// (b) FEATURE fan-out: recompute every feature `Expr` that carries a `formula`;
-    ///     the changed nodes' `EditFeatureCommand`s ride the SAME `performRebuild`
-    ///     as the downstream mesh diff, so one undo reverts the whole feature
-    ///     rebuild. The edited graph is pre-resolved so `evaluate()` reads the new
-    ///     `.value`.
-    /// (c) SKETCH fan-out: recompute every `SketchDimension` that carries a
-    ///     `formula`; each affected sketch re-solves (SketchSolverBridge) and
-    ///     rebuilds its dependents via `rebuildForSketchChange` — as its OWN undo
-    ///     step, SEPARATE from the feature rebuild (atomic bundling is a later
-    ///     tranche).
-    ///
-    /// Guarded by `isRebuilding` so a rebuild already in flight never re-enters.
-    func variablesDidChange() {
-        guard !isRebuilding else { return }
+    /// Everything one variable transaction must rebuild, computed against a
+    /// PREVIEW document (the variable commands applied, formulas already
+    /// rewritten) and then committed as one `performRebuild`.
+    private struct VariableFanOutPlan {
+        var graph: FeatureGraph
+        var featureCommands: [DocumentCommand]
+        var sketchCommands: [DocumentCommand]
+        var sketches: [Sketch]
+        var planes: [ConstructionPlane]
+        var planeCommands: [DocumentCommand]
+    }
 
-        // (a) Resolve + cache values back into the variables.
-        let resolved = VariableTable.resolve(document.variables)
+    /// Resolve the prospective variables, then plan every downstream feature
+    /// and sketch change. The plan contains only commands/sketches; nothing is
+    /// written until the caller performs it.
+    private static func variableFanOutPlan(
+        document: DesignDocument,
+        resolved: (resolved: [Variable], values: [String: Double], errors: [VariableID: String])
+    ) -> VariableFanOutPlan {
         let values = resolved.values
-        for index in document.variables.indices where index < resolved.resolved.count {
-            document.variables[index].value = resolved.resolved[index].value
-        }
-        didChange()
 
-        // (b) Feature formulas -> one rebuild step.
-        var editedGraph = document.features
-        var editCommands: [DocumentCommand] = []
+        // FEATURE fan-out: formulas are re-evaluated against the new values.
+        // Every changed node becomes an EditFeatureCommand in the SAME rebuild.
+        var graph = document.features
+        var featureCommands: [DocumentCommand] = []
         for (index, node) in document.features.nodes.enumerated() {
-            guard let newKind = Self.reevaluatedKind(node.kind, with: values) else { continue }
-            editCommands.append(EditFeatureCommand(
+            guard let newKind = reevaluatedKind(node.kind, with: values) else { continue }
+            featureCommands.append(EditFeatureCommand(
                 featureID: node.id, before: node.kind, after: newKind))
-            editedGraph.nodes[index].kind = newKind
-        }
-        if !editCommands.isEmpty {
-            performRebuild(editedGraph, leadingCommands: editCommands, title: "Variables")
+            graph.nodes[index].kind = newKind
         }
 
-        // (c) Sketch dimension formulas -> one re-solve + rebuild step per sketch.
-        for sketchIndex in document.sketches.indices {
-            let sketch = document.sketches[sketchIndex]
+        // SKETCH fan-out: each formula-bearing driving value is recomputed and
+        // every affected sketch re-solved; all entities/dimensions land in the
+        // same transaction instead of one undo step per sketch.
+        var sketches = document.sketches
+        var sketchCommands: [DocumentCommand] = []
+        for sketchIndex in sketches.indices {
+            let sketch = sketches[sketchIndex]
             var proposed = sketch
-            var dimCommands: [DocumentCommand] = []
-            for dimIndex in sketch.dimensions.indices {
-                let before = sketch.dimensions[dimIndex]
+            var dimensionCommands: [DocumentCommand] = []
+            for dimensionIndex in sketch.dimensions.indices {
+                let before = sketch.dimensions[dimensionIndex]
                 guard let formula = before.formula else { continue }
                 // Broken formula (deleted/renamed variable) errors to 0 — surface
                 // it rather than silently keeping the stale dimension value.
-                let v = ExpressionEvaluator.evaluate(formula, variables: values) ?? 0
-                guard v != before.value else { continue }
+                let evaluated = ExpressionEvaluator.evaluate(formula, variables: values) ?? 0
+                // A sketch angle is authored in DEGREES by the inline field but
+                // persisted in RADIANS. Convert here, exactly once: storing the
+                // degree result directly was interpreted as radians and made a
+                // variable-driven angle jump by 57.3x.
+                let value = before.kind == .angle ? evaluated * .pi / 180 : evaluated
+                guard value != before.value else { continue }
                 var after = before
-                after.value = v
-                proposed.dimensions[dimIndex] = after
-                dimCommands.append(UpdateSketchDimensionCommand(
+                after.value = value
+                proposed.dimensions[dimensionIndex] = after
+                dimensionCommands.append(UpdateSketchDimensionCommand(
                     sketchID: sketch.id, before: before, after: after))
             }
-            guard !dimCommands.isEmpty else { continue }
+            guard !dimensionCommands.isEmpty else { continue }
 
             let outcome = SketchSolverBridge.solveOutcome(
                 proposed, movingEntity: nil, dragTarget: nil)
-            var commands = dimCommands
+            var commands = dimensionCommands
             // Same gate as the drag path (R2-3): if the new dimension values
             // make the system CONFLICTING, the dimensions still update (they
             // are what the user's variable edit means) but the solver's
@@ -657,10 +1091,97 @@ final class DocumentSession {
                     commands.append(UpdateSketchEntityCommand(
                         sketchID: sketch.id, before: before, after: after))
                 }
+                proposed.entities = outcome.entities
             }
-            perform(CompositeCommand(title: "Variables", commands: commands))
-            rebuildForSketchChange(sketch.id)
+            sketches[sketchIndex] = proposed
+            sketchCommands.append(contentsOf: commands)
         }
+
+        var planes = document.planes
+        var planeCommands: [DocumentCommand] = []
+        for index in planes.indices {
+            guard case var .offset(definition)? = planes[index].definition,
+                  let formula = definition.distance.formula,
+                  let value = ExpressionEvaluator.evaluate(formula, variables: values), value.isFinite,
+                  value != definition.distance.value else { continue }
+            let before = planes[index].definition
+            definition.distance.value = value
+            planes[index].definition = .offset(definition)
+            planeCommands.append(EditConstructionPlaneDefinitionCommand(
+                planeID: planes[index].id, before: before, after: planes[index].definition))
+        }
+        return VariableFanOutPlan(graph: graph, featureCommands: featureCommands,
+                                  sketchCommands: sketchCommands, sketches: sketches,
+                                  planes: planes, planeCommands: planeCommands)
+    }
+
+    /// Apply one variable-add/edit/delete AND every dependent feature/sketch
+    /// rebuild as ONE undoable transaction. `commands` are the variable-side
+    /// mutations (including reference rewrites a rename requires); their
+    /// resolved values drive the fan-out computed against a preview.
+    ///
+    /// A rejected service validation never reaches this method. Associative
+    /// rebuild errors are refused before commit. Legacy no-association kernel
+    /// errors retain the service checkpoint rollback path. Both preserve redo
+    /// and advance query generations instead of rewinding.
+    @discardableResult
+    func performVariableTransaction(_ commands: [DocumentCommand], title: String) -> Bool {
+        guard requireWritable() else { return false }
+        guard !isRebuilding, !commands.isEmpty else { return false }
+        var preview = document
+        for command in commands {
+            command.apply(to: &preview)
+        }
+        let resolved = VariableTable.resolve(preview.variables)
+        var variableCacheCommands: [DocumentCommand] = []
+        for index in preview.variables.indices where index < resolved.resolved.count {
+            let before = preview.variables[index]
+            let after = resolved.resolved[index]
+            if before.value != after.value {
+                variableCacheCommands.append(EditVariableCommand(before: before, after: after))
+                preview.variables[index] = after
+            }
+        }
+        let plan = Self.variableFanOutPlan(document: preview, resolved: resolved)
+        let leading = commands + variableCacheCommands + plan.featureCommands + plan.sketchCommands + plan.planeCommands
+        guard !leading.isEmpty else { return false }
+        preview.features = plan.graph
+        preview.sketches = plan.sketches
+        preview.planes = plan.planes
+        return performRebuild(plan.graph, leadingCommands: leading, title: title,
+                              previewDocument: preview)
+    }
+
+    /// Fan-out after any variable add/edit/delete performed through the legacy
+    /// UI path (the VM performs the mutating command, then calls this). Feature
+    /// AND sketch formula rebuilds now land in ONE undo step; the variable
+    /// command itself remains the VM's separate leading step.
+    ///
+    /// Guarded by `isRebuilding` so a rebuild already in flight never re-enters.
+    func variablesDidChange() {
+        guard requireWritable() else { return }
+        guard !isRebuilding else { return }
+
+        let resolved = VariableTable.resolve(document.variables)
+        var cacheChanged = false
+        for index in document.variables.indices where index < resolved.resolved.count {
+            if document.variables[index].value != resolved.resolved[index].value {
+                document.variables[index].value = resolved.resolved[index].value
+                cacheChanged = true
+            }
+        }
+        let plan = Self.variableFanOutPlan(document: document, resolved: resolved)
+        let leading = plan.featureCommands + plan.sketchCommands + plan.planeCommands
+        guard !leading.isEmpty else {
+            if cacheChanged { didChange(autosave: false) }
+            return
+        }
+        var preview = document
+        preview.features = plan.graph
+        preview.sketches = plan.sketches
+        preview.planes = plan.planes
+        performRebuild(plan.graph, leadingCommands: leading, title: "Variables",
+                       previewDocument: preview)
     }
 
     // MARK: - Transaction checkpoints
@@ -669,9 +1190,12 @@ final class DocumentSession {
     /// in memory only; restoring it does not touch the package or the store.
     func captureEditCheckpoint() -> CADEditCheckpoint {
         CADEditCheckpoint(document: document,
+                          persistenceChangeCount: persistenceChangeCount,
                           undo: undoStack.checkpoint(),
                           evalCache: evalCache,
                           lastEvalErrors: lastEvalErrors,
+                          lastReferenceErrors: lastReferenceErrors,
+                          lastBodyWriters: lastBodyWriters,
                           lastFaceTables: lastFaceTables,
                           lastKernelNames: lastKernelNames,
                           lastNamingRevisions: lastNamingRevisions)
@@ -683,20 +1207,34 @@ final class DocumentSession {
     /// Undo AND redo arrays are restored verbatim, so a pre-existing redo
     /// history survives and the rejected edit is never redoable.
     func restoreEditCheckpoint(_ checkpoint: CADEditCheckpoint) {
+        guard requireWritable() else { return }
+        restoreCheckpointState(checkpoint, autosave: true)
+    }
+
+    private func restoreCheckpointState(_ checkpoint: CADEditCheckpoint, autosave: Bool) {
         document = checkpoint.document
+        persistenceChangeCount = checkpoint.persistenceChangeCount
         undoStack.restore(checkpoint.undo)
         evalCache = checkpoint.evalCache
         lastEvalErrors = checkpoint.lastEvalErrors
+        lastReferenceErrors = checkpoint.lastReferenceErrors
+        lastBodyWriters = checkpoint.lastBodyWriters
+        lastRebuildRejection = [:]
+        lastRejectedFeatureErrors = [:]
         lastFaceTables = checkpoint.lastFaceTables
         lastKernelNames = checkpoint.lastKernelNames
         lastNamingRevisions = checkpoint.lastNamingRevisions
-        didChange()
+        didChange(autosave: autosave, persistedChange: false)
     }
 
     // MARK: - Persistence
 
     private func load() {
-        storeIsNewerThanApp = project.formatVersion > Project.currentFormatVersion
+        let associationAssessment = try? CADDocumentFormat.assess(
+            planes: project.planes.map { CADBlobRecord(blobID: $0.planeID, data: $0.planeData, sha256: "") },
+            sketches: project.sketches.map { CADBlobRecord(blobID: $0.sketchID, data: $0.sketchData, sha256: "") })
+        project.hasOpaqueAssociations = project.hasOpaqueAssociations || associationAssessment?.isOpaqueReadOnly == true
+        storeIsNewerThanApp = project.formatVersion > Project.currentFormatVersion || project.hasOpaqueAssociations
         #if DEBUG
         OpenTiming.mark("load start")
         #endif
@@ -757,20 +1295,28 @@ final class DocumentSession {
         OpenTiming.mark("\(loaded.bodies.count) bodies decoded (mesh, brep)")
         #endif
         for persisted in project.sketches {
-            if let sketch = try? JSONDecoder().decode(Sketch.self, from: persisted.sketchData) {
-                loaded.sketches.append(sketch)
-            } else {
+            do {
+                loaded.sketches.append(try JSONDecoder().decode(Sketch.self, from: persisted.sketchData))
+            } catch {
                 unreadableRows.sketches.insert(persisted.sketchID)
+                if associationAssessment?.opaqueSketches.contains(persisted.sketchID) == true,
+                   let cache = try? CADDocumentFormat.cachedSketch(from: persisted.sketchData) {
+                    loaded.sketches.append(cache) // view-only; original bytes are not replaced
+                }
             }
         }
         #if DEBUG
         OpenTiming.mark("\(loaded.sketches.count) sketches decoded")
         #endif
         for persisted in project.planes {
-            if let plane = try? JSONDecoder().decode(ConstructionPlane.self, from: persisted.planeData) {
-                loaded.planes.append(plane)
-            } else {
+            do {
+                loaded.planes.append(try JSONDecoder().decode(ConstructionPlane.self, from: persisted.planeData))
+            } catch {
                 unreadableRows.planes.insert(persisted.planeID)
+                if associationAssessment?.opaquePlanes.contains(persisted.planeID) == true,
+                   let cache = try? CADDocumentFormat.cachedPlane(from: persisted.planeData) {
+                    loaded.planes.append(cache) // display cache, never editable/solve input
+                }
             }
         }
         for persisted in project.axes {
@@ -856,7 +1402,9 @@ final class DocumentSession {
         #if DEBUG
         OpenTiming.mark("\(loaded.features.nodes.count) features decoded, load done")
         #endif
-        if storeIsNewerThanApp {
+        if project.hasOpaqueAssociations {
+            loadWarning = CADDocumentFormat.opaqueReadOnlyMessage
+        } else if storeIsNewerThanApp {
             loadWarning = """
             This project was saved by a newer version of the app. It opens \
             read-only here — changes will not be saved. Update the app to \
@@ -899,34 +1447,43 @@ final class DocumentSession {
     /// come from a scratch counter, not the document's, so the first live
     /// rebuild still warms the memo itself.
     private func scheduleLoadEvalRefresh() {
-        guard !document.features.nodes.isEmpty else {
+        guard !isReadOnly else { return }
+        guard !document.features.nodes.isEmpty || Self.hasAssociations(document) else {
             lastEvalErrors = [:]
+            lastReferenceErrors = [:]
+            lastBodyWriters = [:]
             return
         }
         let features = document.features
         let sketches = document.sketches
         let planes = document.planes
         let naming = naming
+        let values = variableValues()
         let generation = changeCount
         Task.detached(priority: .utility) { [weak self] in
             var counter: UInt64 = 1
             var scratch = EvalCache()
-            let errors = features.evaluate(
+            let result = features.evaluate(
                 sketches: sketches,
                 planes: planes,
                 naming: naming,
                 nextRevision: { counter &+= 1; return counter },
-                cache: &scratch
-            ).errors
-            await self?.adoptLoadEvalErrors(errors, generation: generation)
+                cache: &scratch, variables: values
+            )
+            await self?.adoptLoadEvalErrors(result.errors, referenceErrors: result.referenceErrors,
+                                           writers: result.lastBodyWriters, generation: generation)
         }
     }
 
     /// The main-actor half of `scheduleLoadEvalRefresh`: keep the replay's
     /// errors only if no edit has happened since it was scheduled.
-    private func adoptLoadEvalErrors(_ errors: [FeatureID: FeatureError], generation: Int) {
+    private func adoptLoadEvalErrors(_ errors: [FeatureID: FeatureError],
+                                     referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError],
+                                     writers: [BodyID: FeatureID], generation: Int) {
         guard changeCount == generation else { return }
         lastEvalErrors = errors
+        lastReferenceErrors = referenceErrors
+        lastBodyWriters = writers
     }
 
     /// Recompute `lastEvalErrors` WITHOUT touching any body: replay the
@@ -936,8 +1493,13 @@ final class DocumentSession {
     /// doesn't bite). Called on load and after undo/redo, the two paths
     /// that used to leave stale or missing badges (R4-N6 / S6).
     private func refreshEvalErrors() {
-        guard !document.features.nodes.isEmpty else {
+        guard !isReadOnly else { return }
+        lastRebuildRejection = [:]
+        lastRejectedFeatureErrors = [:]
+        guard !document.features.nodes.isEmpty || Self.hasAssociations(document) else {
             lastEvalErrors = [:]
+            lastReferenceErrors = [:]
+            lastBodyWriters = [:]
             return
         }
         var counter: UInt64 = 1
@@ -949,9 +1511,14 @@ final class DocumentSession {
             planes: document.planes,
             naming: naming,
             nextRevision: { counter &+= 1; return counter },
-            cache: &scratch
+            cache: &scratch,
+            variables: variableValues()
         )
         lastEvalErrors = result.errors
+        lastReferenceErrors = result.referenceErrors
+        lastBodyWriters = result.lastBodyWriters
+        lastRebuildRejection = [:]
+        lastRejectedFeatureErrors = [:]
     }
 
     /// Cancel a pending debounced autosave and commit now. Called when the
@@ -966,7 +1533,7 @@ final class DocumentSession {
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
-            await self?.saveAsync()
+            _ = await self?.saveAsync()
         }
     }
 
@@ -974,13 +1541,14 @@ final class DocumentSession {
     func save() {
         saveTask?.cancel()
         saveTask = nil
-        guard !storeIsNewerThanApp else { return }
+        guard requireWritable() else { return }
         do {
             guard let payload = try buildSavePayload() else { return }
-            try modelContext.store?.performWrite(payload)
-            lastSaveError = nil
+            guard let store = modelContext.store else { throw CADDocumentStoreError.noStoreAttached }
+            let receipt = try store.performWriteWithIdentity(payload)
+            adoptCommittedIdentity(receipt, persistenceCount: persistenceChangeCount)
         } catch {
-            lastSaveError = error.localizedDescription
+            recordSaveResult(error.localizedDescription)
         }
     }
 
@@ -988,23 +1556,55 @@ final class DocumentSession {
     /// task, then JSON encoding + SHA-256 + file I/O run detached against the
     /// revision-guarded store. Only the cheap record slice runs on the
     /// session actor.
-    func saveAsync() async {
+    @discardableResult
+    func saveAsync() async -> String? {
+        let outcome = await saveWithIdentityAsync()
+        return outcome.error
+    }
+
+    /// The one async writer. Callers receive THIS commit's immutable outcome;
+    /// publishing the newest receipt for UI observation is a separate step.
+    @discardableResult
+    func saveWithIdentityAsync() async -> CADSaveOutcome {
         saveTask?.cancel()
         saveTask = nil
-        guard !storeIsNewerThanApp else { return }
+        if let block = writeBlock {
+            recordWriteBlock(block.message)
+            return failedSaveOutcome(block.message)
+        }
+        inFlightSaveCount += 1
+        defer { inFlightSaveCount -= 1 }
         await prewarmBrepSerialization()
+        // Preserve owner acquisition and local-error fences across the await.
+        if let block = writeBlock {
+            recordWriteBlock(block.message)
+            return failedSaveOutcome(block.message)
+        }
         do {
-            guard let payload = try buildSavePayload() else { return }
-            guard let store = modelContext.store else {
-                throw CADDocumentStoreError.noStoreAttached
-            }
-            try await Task.detached(priority: .utility) {
+            let savedPersistenceCount = persistenceChangeCount
+            guard let payload = try buildSavePayload() else { return savedIdentity }
+            guard let store = modelContext.store else { throw CADDocumentStoreError.noStoreAttached }
+            let receipt = try await Task.detached(priority: .utility) {
                 try CADModelContext.write(payload, to: store)
             }.value
-            lastSaveError = nil
+            #if DEBUG
+            // A deterministic local test seam AFTER real commit / BEFORE
+            // delivery. Never replaces IO, CAS, or a store lock.
+            if let delivery = committedIdentityDeliveryForTesting { await delivery(receipt) }
+            #endif
+            adoptCommittedIdentity(receipt, persistenceCount: savedPersistenceCount)
+            return receipt
         } catch {
-            lastSaveError = error.localizedDescription
+            let message = error.localizedDescription
+            recordSaveResult(message)
+            return failedSaveOutcome(message)
         }
+    }
+
+    private func failedSaveOutcome(_ message: String) -> CADSaveOutcome {
+        var outcome = savedIdentity
+        outcome.error = message
+        return outcome
     }
 
     /// B-rep blobs are immutable once produced; cache the serialized bytes per
@@ -1028,6 +1628,9 @@ final class DocumentSession {
 
     /// Serialize every changed analytic body off-main into the blob cache.
     func prewarmBrepSerialization() async {
+        #if DEBUG
+        if let suspension = savePrewarmSuspensionForTesting { await suspension() }
+        #endif
         let pending: [(UUID, UInt64, BRepHandle)] = document.bodies.compactMap { body in
             guard let handle = body.brep else { return nil }
             if let cached = brepBlobCache[body.id.raw],
@@ -1055,7 +1658,9 @@ final class DocumentSession {
         // A store written by a NEWER format must never be rewritten by this
         // build — the diffs below would delete every row it couldn't decode.
         // The user was warned at load (`loadWarning`).
-        guard !storeIsNewerThanApp else { return nil }
+        guard !isReadOnly else { throw CADDocumentFormatError.opaqueAssociations }
+        guard !isSketchPreviewActive else { throw SketchPreviewWriteError.editing }
+        try CADDocumentFormat.validateLiveAssociations(document)
 
         // Floe workbench record blobs are document state (undoable commands);
         // mirror them onto the project columns the package store slices
@@ -1345,7 +1950,7 @@ final class DocumentSession {
         }
 
         project.modifiedAt = Date()
-        project.formatVersion = Project.currentFormatVersion
+        project.formatVersion = max(project.formatVersion, CADDocumentFormat.requiredFormat(document: document))
         return try modelContext.preparedPayload()
     }
 
@@ -1354,6 +1959,6 @@ final class DocumentSession {
     @discardableResult
     func commitNow() -> Int? {
         save()
-        return lastSaveError == nil && !storeIsNewerThanApp ? modelContext.store?.revision : nil
+        return lastSaveError == nil && !isReadOnly ? modelContext.store?.revision : nil
     }
 }

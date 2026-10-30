@@ -23,6 +23,13 @@ import simd
 
 nonisolated enum ProjectMergeKit {
 
+    nonisolated enum MergeError: Error, Equatable {
+        case associativeVariableCollision([String])
+        case missingAssociativeReferences([String])
+        case invalidAssociativeExpressions([String])
+        case associativeRollback
+    }
+
     /// The result of an insert: the merged document plus what the guest's IDs
     /// became, so a caller can select or name the newly inserted work.
     nonisolated struct Insertion: Sendable {
@@ -38,11 +45,40 @@ nonisolated enum ProjectMergeKit {
     ///
     /// The guest's feature nodes are APPENDED, so the host's history is
     /// untouched and the inserted steps are individually editable at the end.
+    /// Associated guests refuse unresolved identities or formula namespaces.
+    /// If either document has associations, rollback markers are unsupported;
+    /// throwing leaves both input values untouched.
     static func insert(
         _ guest: DesignDocument, into host: DesignDocument,
         translation: SIMD3<Double> = .zero
-    ) -> Insertion {
-        let map = IDMap(guest)
+    ) throws -> Insertion {
+        let associative = guest.planes.contains { $0.definition != nil }
+            || guest.sketches.contains { $0.support != nil }
+        let hostAssociative = host.planes.contains { $0.definition != nil }
+            || host.sketches.contains { $0.support != nil }
+        // One ordered rollback prefix cannot represent two independently
+        // active histories. In particular, adding the guest count to a host
+        // marker would activate the host's formerly rolled-back suffix.
+        if (associative || hostAssociative),
+           host.features.rollbackIndex != nil || guest.features.rollbackIndex != nil {
+            throw MergeError.associativeRollback
+        }
+        if associative {
+            // A formula keeps its source meaning only when all guest names
+            // remain guest-owned. Do not silently bind it to a host variable.
+            let hostNames = Set(host.variables.map { $0.name.trimmingCharacters(in: .whitespaces).lowercased() })
+            let collisions = guest.variables.map(\.name).filter {
+                hostNames.contains($0.trimmingCharacters(in: .whitespaces).lowercased())
+            }
+            guard collisions.isEmpty else {
+                throw MergeError.associativeVariableCollision(collisions.sorted())
+            }
+            for plane in guest.planes {
+                if case let .offset(definition)? = plane.definition { try definition.validate() }
+            }
+            try validateAssociativeExpressions(in: guest)
+        }
+        let map = IDMap(guest, rejectUnknownReferences: associative)
         var merged = host
 
         // Sketches, planes, images, symbols: identity re-minted, geometry kept.
@@ -76,8 +112,16 @@ nonisolated enum ProjectMergeKit {
         // Variables are named, not identified — a name already in use belongs
         // to the host, and overwriting it would retarget the host's formulas.
         let existing = Set(host.variables.map(\.name))
-        merged.variables += guest.variables.filter { !existing.contains($0.name) }
+        let incomingVariables = guest.variables.filter { !existing.contains($0.name) }
+        merged.variables += associative ? incomingVariables.map {
+            Variable(name: $0.name, expression: $0.expression, value: $0.value)
+        } : incomingVariables
 
+        // Remapping visits every reference before publishing the pure result.
+        // A broken guest reference must never be healed by a host UUID clash.
+        guard map.missingReferences.isEmpty else {
+            throw MergeError.missingAssociativeReferences(map.missingReferences.sorted())
+        }
         return Insertion(
             document: merged,
             featureIDs: featureIDs,
@@ -94,18 +138,55 @@ nonisolated enum ProjectMergeKit {
         return guest.variables.map(\.name).filter { existing.contains($0) }
     }
 
+    /// Validate formulas in the guest namespace before host names exist. This
+    /// uses the same slot table and parser as parameter edits; a missing guest
+    /// variable must not become a valid, differently bound host expression.
+    private static func validateAssociativeExpressions(in guest: DesignDocument) throws {
+        let resolution = VariableTable.resolve(guest.variables)
+        var failures = guest.variables.filter { resolution.errors[$0.id] != nil }.map {
+            "variable:\($0.name)"
+        }
+        func validate(_ formula: String?, label: String) {
+            guard let formula else { return }
+            guard let value = ExpressionEvaluator.evaluate(formula, variables: resolution.values),
+                  value.isFinite else { failures.append(label); return }
+        }
+        for node in guest.features.nodes {
+            for slot in DocumentSession.expressionSlots(in: node.kind) {
+                validate(slot.expr.formula, label: "feature:\(node.id.raw.uuidString):\(slot.name)")
+            }
+        }
+        for plane in guest.planes {
+            if case let .offset(definition)? = plane.definition {
+                validate(definition.distance.formula, label: "plane:\(plane.id.raw.uuidString):distance")
+            }
+        }
+        for sketch in guest.sketches {
+            for dimension in sketch.dimensions {
+                validate(dimension.formula, label: "sketch:\(sketch.id.raw.uuidString):\(dimension.id.uuidString)")
+            }
+        }
+        guard failures.isEmpty else {
+            throw MergeError.invalidAssociativeExpressions(failures.sorted())
+        }
+    }
+
     // MARK: - Identity remapping
 
     /// Fresh identities for everything in the guest, minted once up front so a
     /// reference can be rewritten before the thing it points at is visited.
-    private struct IDMap {
+    private nonisolated final class IDMap {
         var features = [FeatureID: FeatureID]()
         var bodies = [BodyID: BodyID]()
         var sketches = [SketchID: SketchID]()
         var planes = [ConstructionPlaneID: ConstructionPlaneID]()
         var entities = [UUID: UUID]()
 
-        init(_ guest: DesignDocument) {
+        let rejectUnknownReferences: Bool
+        private(set) var missingReferences = Set<String>()
+
+        init(_ guest: DesignDocument, rejectUnknownReferences: Bool) {
+            self.rejectUnknownReferences = rejectUnknownReferences
             for node in guest.features.nodes {
                 features[node.id] = FeatureID()
                 for id in node.outputBodyIDs { bodies[id] = BodyID() }
@@ -120,13 +201,32 @@ nonisolated enum ProjectMergeKit {
             for plane in guest.planes { planes[plane.id] = ConstructionPlaneID() }
         }
 
-        // Unknown ids keep their value: a ref into geometry the guest did not
-        // carry is already broken, and inventing an id would hide that.
-        func newFeature(_ id: FeatureID) -> FeatureID { features[id] ?? id }
-        func newBody(_ id: BodyID) -> BodyID { bodies[id] ?? id }
-        func newSketch(_ id: SketchID) -> SketchID { sketches[id] ?? id }
-        func newPlane(_ id: ConstructionPlaneID) -> ConstructionPlaneID { planes[id] ?? id }
-        func newEntity(_ id: UUID) -> UUID { entities[id] ?? id }
+        // Legacy absolute documents retain the old broken-reference behavior.
+        // Associated guests reject unresolved identities before returning a
+        // result, including provenance and recursively nested element names.
+        private func missing(_ kind: String, _ id: UUID) {
+            if rejectUnknownReferences { missingReferences.insert("\(kind):\(id.uuidString)") }
+        }
+        func newFeature(_ id: FeatureID) -> FeatureID {
+            guard let result = features[id] else { missing("feature", id.raw); return id }
+            return result
+        }
+        func newBody(_ id: BodyID) -> BodyID {
+            guard let result = bodies[id] else { missing("body", id.raw); return id }
+            return result
+        }
+        func newSketch(_ id: SketchID) -> SketchID {
+            guard let result = sketches[id] else { missing("sketch", id.raw); return id }
+            return result
+        }
+        func newPlane(_ id: ConstructionPlaneID) -> ConstructionPlaneID {
+            guard let result = planes[id] else { missing("plane", id.raw); return id }
+            return result
+        }
+        func newEntity(_ id: UUID) -> UUID {
+            guard let result = entities[id] else { missing("entity", id); return id }
+            return result
+        }
 
         // MARK: Model objects
 
@@ -157,8 +257,11 @@ nonisolated enum ProjectMergeKit {
                 rotatedRectangleEdges: Dictionary(uniqueKeysWithValues:
                     sketch.rotatedRectangleEdges.map { (newEntity($0.key), $0.value.map(newEntity)) }),
                 disconnectedEndpoints: sketch.disconnectedEndpoints.map(remap),
+                circleRadiusDirections: Dictionary(uniqueKeysWithValues:
+                    sketch.circleRadiusDirections.map { (newEntity($0.key), $0.value) }),
                 lineDimensionKinds: Dictionary(uniqueKeysWithValues:
-                    sketch.lineDimensionKinds.map { (newEntity($0.key), $0.value) }))
+                    sketch.lineDimensionKinds.map { (newEntity($0.key), $0.value) }),
+                support: sketch.support.map { remap($0, translation: translation) })
         }
 
         func remap(_ ref: ConstraintRef) -> ConstraintRef {
@@ -168,7 +271,8 @@ nonisolated enum ProjectMergeKit {
         func remap(_ plane: ConstructionPlane, translation: SIMD3<Double>) -> ConstructionPlane {
             ConstructionPlane(
                 id: newPlane(plane.id), plane: moved(plane.plane, by: translation),
-                size: plane.size, isHidden: plane.isHidden)
+                size: plane.size, isHidden: plane.isHidden,
+                definition: plane.definition.map { remap($0, translation: translation) })
         }
 
         /// `Body.id` is `let`, so the remapped body is rebuilt around its
@@ -181,7 +285,12 @@ nonisolated enum ProjectMergeKit {
             result.transform.translation += translation
             result.isHidden = body.isHidden
             result.material = body.material
-            result.materialFaceBindings = body.materialFaceBindings
+            result.materialFaceBindings = body.materialFaceBindings.map { binding in
+                var mapped = binding
+                // The material signature is body-local and does not translate.
+                mapped.key.elementName = binding.key.elementName.map(remap)
+                return mapped
+            }
             // Carry the CSG mesh and analytic solid: an inserted project's
             // smooth cylinders must not degrade to their tessellation
             // (2026-08-25 review, C4).
@@ -216,7 +325,8 @@ nonisolated enum ProjectMergeKit {
             switch ref.source {
             case let .sketch(id): PlaneRef(source: .sketch(newSketch(id)))
             case let .construction(id): PlaneRef(source: .construction(newPlane(id)))
-            case .ground: ref
+            case .ground:
+                translation == .zero ? ref : PlaneRef(source: .explicit(moved(.ground, by: translation)))
             case let .explicit(p): PlaneRef(source: .explicit(moved(p, by: translation)))
             }
         }
@@ -236,6 +346,7 @@ nonisolated enum ProjectMergeKit {
             var result = ref
             result.body = remap(ref.body)
             result.creator = newFeature(ref.creator)
+            result.elementName = ref.elementName.map(remap)
             result.signature.centroid += translation
             // The plane offset is n·centroid, so it moves with the geometry.
             result.signature.planeOffset += simd_dot(ref.signature.normal, translation)
@@ -245,8 +356,47 @@ nonisolated enum ProjectMergeKit {
         func remap(_ ref: EdgeRef, translation: SIMD3<Double>) -> EdgeRef {
             var result = ref
             result.body = remap(ref.body)
+            result.faceNames = ref.faceNames.map(remap)
             result.signature.midpoint += translation
             return result
+        }
+
+        func remap(_ name: ElementName) -> ElementName {
+            let source: ElementName.Source
+            switch name.source {
+            case let .profileWall(entity, occurrence):
+                source = .profileWall(entity: newEntity(entity), occurrence: occurrence)
+            case let .opFace(operation, parents, index):
+                source = .opFace(operation: newFeature(operation), parents: parents.map(remap), index: index)
+            case .primitiveFace, .profileCap, .kernelFace:
+                source = name.source
+            }
+            return ElementName(creator: newFeature(name.creator), source: source)
+        }
+
+        func remap(_ name: EdgeName) -> EdgeName {
+            EdgeName(faceA: remap(name.faceA), faceB: remap(name.faceB), occurrence: name.occurrence)
+        }
+
+        func remap(_ definition: ConstructionPlaneDefinition,
+                   translation: SIMD3<Double>) -> ConstructionPlaneDefinition {
+            switch definition {
+            case let .offset(offset):
+                return .offset(OffsetPlaneDefinition(
+                    version: offset.version,
+                    source: remap(offset.source, translation: translation),
+                    sourceVersion: GeometryVersionRef(
+                        bodyID: newBody(offset.sourceVersion.bodyID),
+                        writer: newFeature(offset.sourceVersion.writer)),
+                    distance: offset.distance,
+                    // This frame is centroid-relative and body-local. Source
+                    // geometry and placement already account for translation.
+                    attachment: offset.attachment))
+            }
+        }
+
+        func remap(_ intent: BooleanIntent) -> BooleanIntent {
+            BooleanIntent(op: intent.op, resolvedTargets: intent.resolvedTargets.map(remap))
         }
 
         func remap(_ kind: FeatureKind, translation t: SIMD3<Double>) -> FeatureKind {
@@ -258,35 +408,41 @@ nonisolated enum ProjectMergeKit {
             case let .extrude(profile, plane, distance, symmetric, boolean, extra):
                 return .extrude(
                     profile: remap(profile), plane: remap(plane, translation: t),
-                    distance: distance, symmetric: symmetric, boolean: boolean,
+                    distance: distance, symmetric: symmetric, boolean: remap(boolean),
                     extraProfiles: extra.map(remap))
             case let .draftExtrude(profile, plane, distance, taperAngle, symmetric, boolean):
                 return .draftExtrude(
                     profile: remap(profile), plane: remap(plane, translation: t),
                     distance: distance, taperAngle: taperAngle,
-                    symmetric: symmetric, boolean: boolean)
+                    symmetric: symmetric, boolean: remap(boolean))
             case let .revolve(profile, plane, axis, angle, boolean):
                 return .revolve(
                     profile: remap(profile), plane: remap(plane, translation: t),
-                    axis: remap(axis), angle: angle, boolean: boolean)
+                    axis: remap(axis), angle: angle, boolean: remap(boolean))
             case let .sweep(profile, plane, spine, boolean, helix):
                 var movedHelix = helix
                 movedHelix?.axisPoint += t          // the exact spine moves with the sampled one
                 return .sweep(
                     profile: remap(profile), plane: remap(plane, translation: t),
-                    spine: spine.map { PointWrapper($0.point + t) }, boolean: boolean,
+                    spine: spine.map { PointWrapper($0.point + t) }, boolean: remap(boolean),
                     helix: movedHelix)
             case let .loft(sections, boolean):
-                return .loft(sections: sections.map(remap), boolean: boolean)
+                return .loft(sections: sections.map(remap), boolean: remap(boolean))
             case let .boolean(op, target, tools):
                 return .boolean(kind: op, target: remap(target), tools: tools.map(remap))
             case let .transform(body, delta):
-                return .transform(body: remap(body), delta: delta)
+                // Conjugate the world delta by the insertion translation:
+                // delta' ∘ (T ∘ placement) = T ∘ delta ∘ placement.
+                var translated = delta
+                translated.translation += t - delta.rotation.act(t * delta.scale)
+                return .transform(body: remap(body), delta: translated)
             case let .mirror(body, plane, keepOriginal):
                 return .mirror(body: remap(body), plane: remap(plane, translation: t),
                                keepOriginal: keepOriginal)
             case let .pattern(body, spec):
-                return .pattern(body: remap(body), spec: spec)
+                var translated = spec
+                if translated.kind == .circular { translated.center += t }
+                return .pattern(body: remap(body), spec: translated)
             case let .pushPull(face, distance, mode):
                 return .pushPull(face: remap(face, translation: t),
                                  distance: distance, mode: mode)

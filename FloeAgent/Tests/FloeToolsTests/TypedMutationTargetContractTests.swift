@@ -422,6 +422,36 @@ struct TypedMutationTargetContractTests {
         }
     }
 
+    @Test("Variable and expression edits stay ordinary single-document source writes")
+    func nativeCADVariableAndExpressionMutationsPinOnlyTheirDocument() throws {
+        let root = try makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("part.floecad").path
+        for operation in ["variable.create", "variable.update", "variable.delete",
+                          "feature.setExpression", "datum.offsetPlane.create", "datum.offsetPlane.update",
+                          "datum.offsetPlane.delete", "sketch.setSupport", "sketch.clearSupport"] {
+            let payload = String(decoding: try JSONSerialization.data(
+                withJSONObject: ["action": operation]), as: UTF8.self)
+            let arguments = String(decoding: try JSONSerialization.data(withJSONObject: [
+                "action": "parameters", "path": "part.floecad", "payload": payload
+            ]), as: UTF8.self)
+            let result = try resolve("cad.document", arguments, root: root)
+            #expect(result.contractCovered)
+            #expect(!result.hasUnresolvedExtent)
+            #expect(result.mutableTargets == [TypedMutableTarget(path: target, role: .sourceWrite)],
+                    "\(operation) must stay pinned to the same .floecad package")
+            #expect(try authorityTarget("cad.document", arguments, root: root) == "file:" + target)
+        }
+
+        // An unknown parameter payload remains untyped/unresolved (fail closed).
+        let unknownArguments = String(decoding: try JSONSerialization.data(withJSONObject: [
+            "action": "parameters", "path": "part.floecad",
+            "payload": #"{"action":"variable.explode"}"#,
+        ]), as: UTF8.self)
+        let unknown = try resolve("cad.document", unknownArguments, root: root)
+        #expect(!unknown.contractCovered)
+    }
+
     @Test("cad.document types the package target, drafts and export copies")
     func cadFamilyTyping() throws {
         let root = try makeTree()

@@ -75,6 +75,25 @@ public nonisolated enum CADServiceOperations {
         "repair", "simplify", "material", "text", "image",
     ]
 
+    /// Document write protection only. This does not change discovery,
+    /// proposal classification or permission policy; read/export actions and
+    /// personal-library payload exchange remain available.
+    @MainActor
+    static func readOnlyRefusal(document: FloeCADDocument, kind: String, action: String) -> [String: Any]? {
+        let writesDocument: Bool
+        switch kind {
+        case "assembly": writesDocument = mutatingAssemblyActions.contains(action)
+        case "drawing": writesDocument = mutatingDrawingActions.contains(action)
+        case "script": writesDocument = mutatingScriptActions.contains(action)
+        case "mesh": writesDocument = mutatingMeshActions.contains(action)
+        case "material": writesDocument = ["create", "update", "remove", "apply", "applyFaces", "reassignFaces", "mapping", "textures", "libraryImport", "undo", "redo"].contains(action)
+        case "parameter": writesDocument = CADParameterService.actions.contains(action) && action != "list"
+        default: writesDocument = false
+        }
+        guard writesDocument, let block = document.session.writeBlock else { return nil }
+        return ["ok": false, "error": block.code, "message": block.message, "mutated": false]
+    }
+
     /// True when `kind` + `action` would mutate the document and therefore must
     /// not be reachable through a direct payload call.
     public static func isMutating(kind: String, action: String) -> Bool {

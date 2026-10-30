@@ -63,6 +63,7 @@ final class EditorViewModel {
     let explodedPreview: CADExplodedViewPreview
     var mode: EditorMode = .idle {
         didSet {
+            if mode != oldValue { cancelActiveAssociatedSketchDrag() }
             if !mode.isSketching || mode.sketchTool != nil { sketchTransformActive = false }
             // An Items plane selection lives only while idle.
             if mode != .idle { selectedPlaneID = nil }
@@ -356,11 +357,39 @@ final class EditorViewModel {
     /// entries via `USDZExporter.isSupported`, so this error is a fallback).
     func exportUSDZ() -> Data? {
         guard let bodies = exportableBodies() else { return nil }
-        guard let data = USDZExporter.usdz(bodies: bodies) else {
-            errorMessage = FloeCADStrings.text("cad.error.exportUSDZ", "Couldn't export USDZ on this device.")
+        let report = USDZExporter.export(bodies: bodies)
+        guard let data = report.data else {
+            errorMessage = report.diagnostics.isEmpty
+                ? FloeCADStrings.text("cad.error.exportUSDZ", "Couldn't export USDZ on this device.")
+                : Array(Set(report.diagnostics.map { Self.usdzExportMessage(for: $0.code) })).sorted().joined(separator: "\n")
             return nil
         }
         return data
+    }
+
+    private static func usdzExportMessage(for code: String) -> String {
+        switch code {
+        case "unsupportedPlatform":
+            return FloeCADStrings.text("cad.error.exportUSDZ", "Couldn't export USDZ on this device.")
+        case "emptyModel":
+            return FloeCADStrings.text("cad.error.exportNoBodies", "Nothing to export — the design has no solid bodies.")
+        case "unsupportedFaceMaterials":
+            return FloeCADStrings.text("cad.error.usdzFaceMaterials", "USDZ can't keep face materials yet. Try GLB instead.")
+        case "missingTexture", "textureIdentityMismatch", "ambiguousTextureMetadata", "invalidTexture", "textureDecodeFailed", "textureEncodeFailed":
+            return FloeCADStrings.text("cad.error.usdzTexture", "A material image couldn't be exported. Replace that image and try again.")
+        case "missingUVs", "invalidUVs", "unsupportedMeshUVTransform":
+            return FloeCADStrings.text("cad.error.usdzMapping", "A material's texture mapping couldn't be exported. Choose a projection in Material and try again.")
+        case "unsupportedHDREmission":
+            return FloeCADStrings.text("cad.error.usdzEmission", "This emissive material can't be exported to USDZ yet. Try GLB instead.")
+        case "unsupportedNormalColorSpace", "unsupportedImageOrientation", "unsupportedOpacityDimensions":
+            return FloeCADStrings.text("cad.error.usdzTextureSettings", "This material's image settings aren't supported by USDZ yet. Try GLB instead.")
+        case "invalidMesh":
+            return FloeCADStrings.text("cad.error.usdzGeometry", "A body couldn't be exported. Check it in Edit and try again.")
+        case "invalidMaterial":
+            return FloeCADStrings.text("cad.error.usdzMaterial", "A material couldn't be exported. Check its settings and try again.")
+        default:
+            return FloeCADStrings.text("cad.error.usdzFailed", "Couldn't write USDZ. Try exporting again.")
+        }
     }
 
     /// Per-body OBJ payloads for the "Separate File per Body" export option
@@ -1725,9 +1754,27 @@ final class EditorViewModel {
         let holes = face.holes.map {
             Profile(loop: $0.map { $0 * scale }, kind: .polygonal, sourceEntityIDs: [])
         }
-        return ToolContext(
+        var context = ToolContext(
             profile: profile, holes: holes, plane: plane, sketchID: nil,
             sourceBody: body.id, faceTriangles: face.triangles, kind: .extrude(distance: 0))
+        if let triangle = face.triangles.first,
+           let name = mintElementName(body: body, triangle: triangle),
+           let revision = datumQueryRevision?() {
+            let matches = (session.lastKernelNames[body.id] ?? [:]).filter { $0.value == name }
+            if matches.count == 1, let index = matches.first?.key, let brep = body.brep,
+               let kernelFace = OCCTKernel.faceInfo(brep).first(where: { $0.index == index }),
+               kernelFace.signature?.kind == .planar {
+                let local = SketchPlane.readable(origin: kernelFace.centroid, normal: kernelFace.normal)
+                let basePlane = SketchPlane(origin: transform.applying(to: local.origin),
+                    xAxis: transform.rotation.act(local.xAxis), yAxis: transform.rotation.act(local.yAxis))
+                let generation = CADGeometryQueryGeneration(scope: "faces", bodyID: body.id.raw,
+                    documentRevision: revision, changeCount: session.changeCount,
+                    meshRevision: body.meshRevision)
+                context.datumSource = DatumFaceSelection(bodyID: body.id, faceIndex: index,
+                    queryToken: generation.token, basePlane: basePlane)
+            }
+        }
+        return context
     }
 
     /// Tool context for a CURVED smooth face picked whole (twisted wall, blend).
@@ -1853,13 +1900,14 @@ final class EditorViewModel {
         faceMoveSession = nil
         faceMoveLastDelta = .zero
 
+        if s.source.brep != nil {
+            commitExactFaceMove(s, worldDelta: worldDelta)
+            return
+        }
+
         var beforeTransform = Transform3D.identity
         beforeTransform.translation = s.pivot
-        let before = Body(
-            id: s.bodyID, name: session.document.body(with: s.bodyID)?.name ?? "Body",
-            transform: beforeTransform, primitive: nil,
-            euclidMesh: s.sourceLocalMesh, revision: 0
-        )
+        let before = s.source
 
         // Negligible drag (a tap, or a wobble): restore the source and do
         // nothing undoable.
@@ -1901,6 +1949,34 @@ final class EditorViewModel {
             mode = .selected(s.bodyID)
         }
         session.save()
+    }
+
+    private func exactSelectedFace(_ context: ToolContext, source: Body) -> PlanarFace? {
+        guard let triangle = context.faceTriangles.first else { return nil }
+        return FaceTopology.planarFace(in: source.render, seedTriangle: triangle)
+    }
+
+    private func commitExactFaceMove(_ s: FaceMoveSession, worldDelta: SIMD3<Float>) {
+        guard simd_length(worldDelta) > 1e-4 else { return }
+        do {
+            guard let face = exactSelectedFace(s.context, source: s.source) else {
+                throw KernelOps.ExactEditError.refused
+            }
+            let localDelta = s.source.transform.rotation.inverse.act(SIMD3<Double>(worldDelta))
+                / s.source.transform.scale
+            let after = try KernelOps.exactMoveFace(body: s.source, face: face,
+                                                    delta: localDelta, revision: 0)
+            let replace = ReplaceBodyCommand(title: "Move Face", before: s.source, after: after)
+            if let node = moveFaceFeatureNode(session: s, worldDelta: worldDelta) {
+                session.perform(CompositeCommand(title: "Move Face", commands: [replace, AppendFeatureCommand(node: node)]))
+            } else { session.perform(replace) }
+            toolContext = nil
+            selection = [s.bodyID]
+            mode = .selected(s.bodyID)
+            session.save()
+        } catch {
+            errorMessage = (error as? KernelOps.ExactEditError)?.message ?? "Exact face movement failed."
+        }
     }
 
     /// A `.moveFace` feature node for a face move on a feature-produced body, or
@@ -1978,6 +2054,10 @@ final class EditorViewModel {
               let context = toolContext, context.cylinderFace == nil,
               let source = session.document.body(with: bodyID)
         else { return false }
+        guard source.brep == nil else {
+            errorMessage = KernelOps.ExactEditError.unsupported("Face scaling").message
+            return false
+        }
         let local = source.euclidMesh()
         faceScaleLastFactor = 1
         let worldMesh = local.transformed(by: source.transform.euclid)
@@ -2059,10 +2139,7 @@ final class EditorViewModel {
 
         var beforeTransform = Transform3D.identity
         beforeTransform.translation = s.pivot
-        let before = Body(
-            id: s.bodyID, name: session.document.body(with: s.bodyID)?.name ?? "Body",
-            transform: beforeTransform, primitive: nil,
-            euclidMesh: s.sourceLocalMesh, revision: 0)
+        let before = s.source
 
         guard abs(factor - 1) > 1e-4,
               let scaled = faceScaledLocalMesh(s, factor: factor) else {
@@ -2148,6 +2225,10 @@ final class EditorViewModel {
               let context = toolContext, context.cylinderFace == nil,
               let source = session.document.body(with: bodyID)
         else { return false }
+        guard source.brep == nil else {
+            errorMessage = KernelOps.ExactEditError.unsupported("Face rotation").message
+            return false
+        }
         let local = source.euclidMesh()
         faceRotateLastAngle = 0
         faceRotateSession = FaceRotateSession(
@@ -2209,10 +2290,7 @@ final class EditorViewModel {
 
         var beforeTransform = Transform3D.identity
         beforeTransform.translation = s.pivot
-        let before = Body(
-            id: s.bodyID, name: session.document.body(with: s.bodyID)?.name ?? "Body",
-            transform: beforeTransform, primitive: nil,
-            euclidMesh: s.sourceLocalMesh, revision: 0)
+        let before = s.source
 
         guard abs(angle) > 1e-4,
               let rotated = faceRotatedLocalMesh(s, angle: angle, axis: axis) else {
@@ -2372,6 +2450,9 @@ final class EditorViewModel {
         // transient revisions from colliding with real ones (like blend/shell).
         if let s = faceMoveSession {
             faceMoveLastDelta = delta
+            // Exact edits are evaluated on release; never install a mesh-only
+            // drag preview into document state (autosave/undo can observe it).
+            if s.source.brep != nil { return }
             // The preview only has to LOOK right, so it translates the picked
             // vertices of the source's render buffers — 0.5 ms — instead of
             // deforming through Euclid, which rebuilds every polygon, welds the
@@ -3001,7 +3082,7 @@ final class EditorViewModel {
             } else {
                 if after.plane != sketch.plane {
                     commands.append(ChangeSketchPlaneCommand(
-                        sketchID: sketch.id, before: sketch.plane, after: after.plane))
+                        sketch: sketch, after: after.plane))
                 }
                 if after.entities != sketch.entities {
                     commands.append(UpdateSketchEntitiesCommand(
@@ -5212,16 +5293,41 @@ final class EditorViewModel {
         let world = body.euclidMesh().transformed(by: body.transform.euclid)
         let tiles = worldPlaneTiles + constructionPlaneTiles
         if let hit = PlanePicking.pick(ray: ray, tiles: tiles) {
+            if body.brep != nil {
+                do { performExactSplit(of: body, halves: try KernelOps.exactSplit(body: body, plane: hit.tile.plane)) }
+                catch { errorMessage = (error as? KernelOps.ExactEditError)?.message ?? "Exact split failed." }
+                return
+            }
             let halves = KernelOps.split(body: world, byPlane: hit.tile.plane)
             performSplit(of: body, halves: (halves.kept, halves.other))
             return
         }
         if let fill = profileHit(ray: ray) {
+            if body.brep != nil {
+                do { performExactSplit(of: body, halves: try KernelOps.exactSplit(body: body, plane: fill.plane, profile: fill.profile, holes: fill.holes)) }
+                catch { errorMessage = (error as? KernelOps.ExactEditError)?.message ?? "Exact split failed." }
+                return
+            }
             let halves = KernelOps.split(
                 body: world, byProfile: fill.profile, holes: fill.holes, in: fill.plane
             )
             performSplit(of: body, halves: (halves.inside, halves.outside))
         }
+    }
+
+    private func performExactSplit(of body: Body, halves: (Body, Body)) {
+        var document = session.document
+        var first = halves.0
+        var second = halves.1
+        first.name = document.uniqueBodyName(base: "\(body.name) A")
+        second.name = document.uniqueBodyName(base: "\(body.name) B")
+        second.meshRevision = document.nextRevision()
+        session.perform(CompositeCommand(title: "Split", commands: [
+            ReplaceBodyCommand(title: "Split", before: body, after: first),
+            AddBodyCommand(body: second, title: "Split")]))
+        selection = [first.id, second.id]
+        mode = .idle
+        session.save()
     }
 
     /// Replace the body with the first half and add the second as a new body
@@ -5672,6 +5778,7 @@ final class EditorViewModel {
     }
 
     func undo() {
+        if cancelActiveAssociatedSketchDrag() { return }
         if isPickingSymmetryAxis { cancelSymmetryAxisPick(); return }
         if hasPendingRectangle { clearRectanglePlacement(); return }
         // Native three-point construction leaves drawing mode when Undo
@@ -5712,6 +5819,7 @@ final class EditorViewModel {
     }
 
     func redo() {
+        if cancelActiveAssociatedSketchDrag() { return }
         clearCircleNumericSelection(for: session.undoStack.redoCommands.last)
         clearLineDimensionSelection(for: session.undoStack.redoCommands.last)
         clearAppliedRelationSelection(for: session.undoStack.redoCommands.last)
@@ -5853,6 +5961,7 @@ final class EditorViewModel {
     /// re-apply pre-change transforms the undo/rollback just removed
     /// (2026-08-25 review, finding C3).
     private func prepareForHistoryChange() {
+        _ = cancelActiveAssociatedSketchDrag()
         cancelSymmetryAxisPick()
         retainedCircleCenterReadoutID = nil
         if selectedSketchPoints.count == 1,
@@ -5910,6 +6019,7 @@ final class EditorViewModel {
         clearChain()
         sketchEntityDrag = nil
         sketchGizmoDrag = nil
+        sketchDragOwner = nil
         let liveEntityIDs = Set(session.document.sketches.flatMap { $0.entities.map(\.id) })
         selectedSketchEntityIDs = selectedSketchEntityIDs.intersection(liveEntityIDs)
         selectedSketchPoints = selectedSketchPoints.filter { liveEntityIDs.contains($0.entityID) }
@@ -6509,7 +6619,7 @@ final class EditorViewModel {
         if let hit = PlanePicking.pick(ray: ray, tiles: constructionPlaneTiles) {
             cancelTool()
             selection.removeAll()
-            beginSketch(on: hit.tile.plane, tool: .line)
+            beginSketch(on: hit.tile.plane, tool: .line, constructionPlaneID: hit.tile.planeID)
             return
         }
 
@@ -7350,6 +7460,13 @@ final class EditorViewModel {
 
     // MARK: - Profile tools (Extrude / Revolve)
 
+    struct DatumFaceSelection {
+        var bodyID: BodyID
+        var faceIndex: Int
+        var queryToken: String
+        var basePlane: SketchPlane
+    }
+
     struct ToolContext {
         enum Kind {
             case extrude(distance: Double)
@@ -7372,6 +7489,9 @@ final class EditorViewModel {
         var sourceBody: BodyID?
         /// Face triangles for the selection highlight (face extrudes).
         var faceTriangles: [Int] = []
+        /// Captured with the selected render face, before any later edit.
+        /// The index came from its unique exact name, never a triangle index.
+        var datumSource: DatumFaceSelection?
         /// Set when pushing/pulling a body's cylindrical side: distance is a
         /// RADIAL delta (grows/shrinks the radius), not an axial extrusion.
         var cylinderFace: FaceTopology.CylindricalFace?
@@ -7931,6 +8051,11 @@ final class EditorViewModel {
     /// of the face plane along its normal.
     func beginOffsetPlane() {
         guard case .faceSelected = mode, var context = toolContext else { return }
+        guard context.datumSource != nil else {
+            errorMessage = FloeCADStrings.text("cad.datum.reselectSource",
+                "Select a supported planar face again to create a reference plane.")
+            return
+        }
         context.kind = .offsetPlane(distance: 2)
         context.preview = nil
         toolContext = context
@@ -7956,21 +8081,26 @@ final class EditorViewModel {
         }
         // Offset from a body face: lay the new plane out like a face sketch
         // (see `SketchPlane.readable`); offset from a sketch keeps its axes.
-        let plane = context.sourceBody != nil
-            ? SketchPlane.readable(origin: origin, normal: context.plane.normal)
-            : SketchPlane(origin: origin, xAxis: context.plane.xAxis, yAxis: context.plane.yAxis)
+        let plane: SketchPlane
+        if let source = context.datumSource {
+            var exact = source.basePlane
+            exact.origin += exact.normal * distance
+            plane = exact
+        } else {
+            plane = context.sourceBody != nil
+                ? SketchPlane.readable(origin: origin, normal: context.plane.normal)
+                : SketchPlane(origin: origin, xAxis: context.plane.xAxis, yAxis: context.plane.yAxis)
+        }
         return (plane, radius * 2.5)
     }
 
     private func commitOffsetPlane(_ context: ToolContext, distance: Double) {
-        guard abs(distance) > 1e-4 else {
-            cancelTool()
-            return
-        }
+        guard distance.isFinite, let source = context.datumSource else { return }
         let pending = offsetPlanePreview(context, distance: distance)
-        session.perform(AddConstructionPlaneCommand(
-            plane: ConstructionPlane(plane: pending.plane, size: pending.size)
-        ))
+        guard performDatumAction("datum.offsetPlane.create", args: [
+            "body_id": source.bodyID.raw.uuidString, "face_index": source.faceIndex,
+            "query_token": source.queryToken, "expression": String(distance), "size": pending.size
+        ]) != nil else { return }
         toolContext = nil
         selection.removeAll()
         mode = .idle
@@ -8129,6 +8259,34 @@ final class EditorViewModel {
     /// Commit a face push/pull: replace the source body with its truncated or
     /// extended mesh, preserving the pivot (rotation/scale bake in).
     private func commitFaceOperation(_ context: ToolContext, distance: Double) {
+        if let sourceID = context.sourceBody,
+           let source = session.document.body(with: sourceID), source.brep != nil {
+            do {
+                guard context.cylinderFace == nil else {
+                    throw KernelOps.ExactEditError.unsupported("Radial face movement")
+                }
+                guard let face = exactSelectedFace(context, source: source) else {
+                    throw KernelOps.ExactEditError.refused
+                }
+                let localDistance = distance / source.transform.scale
+                let after = try KernelOps.exactPushPull(body: source, face: face,
+                    distance: localDistance, revision: 0)
+                let replace = ReplaceBodyCommand(title: "Push/Pull", before: source, after: after)
+                if let owner = featureNode(owning: sourceID),
+                   let ref = pushPullFaceRef(context: context, source: source, creator: owner.id) {
+                    let node = FeatureNode(name: "Push/Pull", kind: .pushPull(face: ref,
+                        distance: Expr(value: localDistance), mode: .planarAxial), outputBodyIDs: [sourceID])
+                    session.perform(CompositeCommand(title: "Push/Pull", commands: [replace, AppendFeatureCommand(node: node)]))
+                } else { session.perform(replace) }
+                toolContext = nil
+                selection = [sourceID]
+                mode = .selected(sourceID)
+                session.save()
+            } catch {
+                errorMessage = (error as? KernelOps.ExactEditError)?.message ?? "Exact push/pull failed."
+            }
+            return
+        }
         guard let sourceID = context.sourceBody,
               let source = session.document.body(with: sourceID),
               let modified = faceModifiedMesh(context, distance: distance),
@@ -8459,6 +8617,19 @@ final class EditorViewModel {
     }
 
     func cancelTool() {
+        let originals = [faceMoveSession?.source, faceScaleSession?.source, faceRotateSession?.source].compactMap { $0 }
+        if !originals.isEmpty {
+            session.preview { document in
+                for original in originals {
+                    if let index = document.bodyIndex(of: original.id) {
+                        document.bodies[index] = original.keepingAppearance(of: document.bodies[index])
+                    }
+                }
+            }
+        }
+        faceMoveSession = nil
+        faceScaleSession = nil
+        faceRotateSession = nil
         toolContext = nil
         extrudeDragAnchor = nil
         cachedPullWorldBody = nil
@@ -9448,6 +9619,125 @@ final class EditorViewModel {
     }
     private var sketchEntityDrag: SketchEntityDrag?
 
+    /// Input identity, not document ownership. Every callback captures it at
+    /// begin; only Session retains the checkpoint and mutable source preview.
+    nonisolated struct SketchDragGestureID: Hashable, Sendable {
+        private let raw = UUID()
+    }
+    private struct SketchDragOwner {
+        var gesture: SketchDragGestureID
+        var sketchID: SketchID
+        var token: DocumentSession.SketchPreviewToken?
+    }
+    private var sketchDragOwner: SketchDragOwner?
+    var currentSketchDragGestureID: SketchDragGestureID? { sketchDragOwner?.gesture }
+
+    private var requiresAssociativeSketchDrag: Bool {
+        session.document.planes.contains { $0.definition != nil }
+            || session.document.sketches.contains { $0.support != nil }
+    }
+
+    private func beginSketchDragOwnership(sketchID: SketchID, title: String) -> Bool {
+        if let owner = sketchDragOwner { return owner.sketchID == sketchID }
+        let token: DocumentSession.SketchPreviewToken?
+        if requiresAssociativeSketchDrag {
+            guard let acquired = session.beginSketchPreview(sketchID: sketchID, title: title) else {
+                showNotice(session.writeBlock?.message ?? session.readOnlyMessage)
+                return false
+            }
+            token = acquired
+        } else { token = nil }
+        sketchDragOwner = SketchDragOwner(gesture: SketchDragGestureID(), sketchID: sketchID, token: token)
+        errorMessage = nil
+        return true
+    }
+
+    private func matchesSketchDrag(_ gesture: SketchDragGestureID?) -> Bool {
+        guard let owner = sketchDragOwner else { return gesture == nil }
+        // Legacy callers may omit an identity only on the unchanged plain path.
+        return gesture == owner.gesture || (gesture == nil && owner.token == nil)
+    }
+
+    @discardableResult
+    private func applySketchDragCommand(_ command: DocumentCommand,
+                                        sketchID: SketchID, amending: Bool) -> Bool {
+        if let owner = sketchDragOwner, let token = owner.token {
+            guard owner.sketchID == sketchID else { return false }
+            var candidate = session.document
+            command.apply(to: &candidate)
+            guard let sketch = candidate.sketches.first(where: { $0.id == sketchID }),
+                  session.updateSketchPreview(sketch, token: token) else { return false }
+            return true
+        }
+        guard !requiresAssociativeSketchDrag else { return false }
+        if amending { session.amend(command) } else { session.perform(command) }
+        return true
+    }
+
+    private func clearSketchDragInteraction() {
+        sketchEntityDrag = nil
+        sketchGizmoDrag = nil
+        rectangleEdgeDrag = nil
+        sketchRadialDrag = nil
+        activeSketchTransformControl = nil
+        let liveIDs = Set(session.document.sketches.flatMap { $0.entities.map(\.id) })
+        selectedSketchEntityIDs.formIntersection(liveIDs)
+        selectedSketchPoints = selectedSketchPoints.filter { liveIDs.contains($0.entityID) }
+    }
+
+    /// Only the captured owner can cancel. Plain legacy gestures retain their
+    /// existing end behavior; callers can fall back to that when this is false.
+    @discardableResult
+    func cancelSketchDragGesture(_ gesture: SketchDragGestureID) -> Bool {
+        guard let owner = sketchDragOwner, owner.gesture == gesture, let token = owner.token else { return false }
+        _ = session.cancelSketchPreview(token)
+        sketchDragOwner = nil
+        clearSketchDragInteraction()
+        return true
+    }
+
+    @discardableResult
+    private func cancelActiveAssociatedSketchDrag() -> Bool {
+        guard let gesture = sketchDragOwner?.gesture else { return false }
+        return cancelSketchDragGesture(gesture)
+    }
+
+    /// nil means the unchanged legacy path; false is an associated refusal.
+    private func finishAssociatedSketchDrag(_ gesture: SketchDragGestureID?, weld: Bool = false) -> Bool? {
+        guard matchesSketchDrag(gesture), let owner = sketchDragOwner else { return nil }
+        guard let token = owner.token else { sketchDragOwner = nil; return nil }
+        if weld, let drag = sketchEntityDrag { maybeAddDragCoincident(drag) }
+        let generation = session.changeCount
+        let accepted = session.commitSketchPreview(token)
+        sketchDragOwner = nil
+        clearSketchDragInteraction()
+        if !accepted, !showRebuildRefusal(since: generation) {
+            showNotice(FloeCADStrings.text("cad.sketch.editInterrupted", "The sketch edit was interrupted. Start the edit again."))
+        }
+        return accepted
+    }
+
+    func beginSketchTransformControlGesture(_ control: SketchTransformControl) -> SketchDragGestureID? {
+        guard sketchTransformActive, let sketch = activeSketch, sketchSelectionCentroid != nil else { return nil }
+        if sketchDragOwner != nil { _ = cancelActiveAssociatedSketchDrag(); sketchDragOwner = nil }
+        guard beginSketchDragOwnership(sketchID: sketch.id, title: control == .rotation ? "Rotate" : "Move") else { return nil }
+        return sketchDragOwner?.gesture
+    }
+
+    func beginRectangleEdgeDragGesture() -> SketchDragGestureID? {
+        guard let sketch = activeSketch, rectangleHandleGeometry != nil else { return nil }
+        if sketchDragOwner != nil { _ = cancelActiveAssociatedSketchDrag(); sketchDragOwner = nil }
+        guard beginSketchDragOwnership(sketchID: sketch.id, title: "Resize Rectangle") else { return nil }
+        return sketchDragOwner?.gesture
+    }
+
+    func beginRadialRadiusDragGesture() -> SketchDragGestureID? {
+        guard let sketch = activeSketch, selectedSingleRadialEntity != nil else { return nil }
+        if sketchDragOwner != nil { _ = cancelActiveAssociatedSketchDrag(); sketchDragOwner = nil }
+        guard beginSketchDragOwnership(sketchID: sketch.id, title: "Resize Radius") else { return nil }
+        return sketchDragOwner?.gesture
+    }
+
     /// Screen-sized acquisition targets at the current camera scale. Only a
     /// numerical epsilon floor remains; model-unit floors swallow short edges.
     private var worldPerPoint: Double { cameraControl?.worldUnitsPerPoint ?? 0.01 }
@@ -9470,7 +9760,12 @@ final class EditorViewModel {
     /// moves/rotates duplicates of the selection. Resets after each drag.
     var sketchCopyOnDrag = false
     var sketchTransformActive = false {
-        didSet { if !sketchTransformActive { retainedSketchTransform = nil } }
+        didSet {
+            if !sketchTransformActive {
+                _ = cancelActiveAssociatedSketchDrag()
+                retainedSketchTransform = nil
+            }
+        }
     }
 
     private struct RetainedSketchTransform {
@@ -9529,7 +9824,9 @@ final class EditorViewModel {
             || sketch.dimensions.contains { $0.refs.contains { ids.contains($0.entityID) } }
     }
 
-    func updateSketchTransformControl(_ control: SketchTransformControl, value: Double) {
+    func updateSketchTransformControl(_ control: SketchTransformControl, value: Double,
+                                      gestureID: SketchDragGestureID? = nil) {
+        guard matchesSketchDrag(gestureID), !requiresAssociativeSketchDrag || sketchDragOwner?.token != nil else { return }
         guard value.isFinite, sketchTransformActive, let center = sketchSelectionCentroid else { return }
         if control == .rotation, rotationWouldDiscardRectangleReferences {
             showNotice("Rotation of dimensioned or constrained rectangles isn't supported yet.")
@@ -9567,13 +9864,22 @@ final class EditorViewModel {
         updateSketchGizmoDrag(raw: raw, quantize: false)
     }
 
-    func endSketchTransformControl() {
-        guard let drag = sketchGizmoDrag else { return }
+    func endSketchTransformControl(gestureID: SketchDragGestureID? = nil) {
+        guard matchesSketchDrag(gestureID) else { return }
+        guard let drag = sketchGizmoDrag else {
+            _ = finishAssociatedSketchDrag(gestureID)
+            return
+        }
+        let finishedControl = activeSketchTransformControl
+        let associated = finishAssociatedSketchDrag(gestureID)
         sketchGizmoDrag = nil
+        if associated == false { return }
         if drag.pushed {
-            session.rebuildForSketchChange(drag.sketchID)
-            session.save()
-            if let control = activeSketchTransformControl, let result = activeSketch,
+            if associated == nil {
+                session.rebuildForSketchChange(drag.sketchID)
+                session.save()
+            }
+            if let control = finishedControl, let result = activeSketch,
                drag.originals.allSatisfy({
                    switch $0 { case .line, .circle, .arc: return true; default: return false }
                }) {
@@ -9601,9 +9907,12 @@ final class EditorViewModel {
         }
         let value = control == .rotation ? parsed :
             (Self.lengthUnit(forSuffix: suffix) ?? CADPreferences.shared.unit).mm(fromDisplay: parsed)
-        if abs(value) > 1e-10 || retainedSketchTransformValue(control) != nil { updateSketchTransformControl(control, value: value) }
-        endSketchTransformControl()
-        return true
+        guard let gesture = beginSketchTransformControlGesture(control) else { return false }
+        if abs(value) > 1e-10 || retainedSketchTransformValue(control) != nil {
+            updateSketchTransformControl(control, value: value, gestureID: gesture)
+        }
+        endSketchTransformControl(gestureID: gesture)
+        return errorMessage == nil
     }
 
     var selectedSingleRadialEntity: SketchEntity? {
@@ -9673,7 +9982,8 @@ final class EditorViewModel {
     }
     private var rectangleEdgeDrag: RectangleEdgeDrag?
 
-    func updateRectangleEdgeDrag(delta: Double) {
+    func updateRectangleEdgeDrag(delta: Double, gestureID: SketchDragGestureID? = nil) {
+        guard matchesSketchDrag(gestureID), !requiresAssociativeSketchDrag || sketchDragOwner?.token != nil else { return }
         if rectangleEdgeDrag == nil, let pick = selectedAxisRectangleEdge,
            let sketch = activeSketch, let edge = sketch.entities.first(where: { $0.id == pick.id }),
            let geometry = rectangleHandleGeometry {
@@ -9714,13 +10024,15 @@ final class EditorViewModel {
         if solved != drag.sketch.entities || drag.pushed {
             let command = UpdateSketchEntitiesCommand(sketchID: drag.sketch.id,
                 before: drag.sketch.entities, after: solved)
-            if drag.pushed { session.amend(command) }
-            else { session.perform(command); drag.pushed = true }
+            guard applySketchDragCommand(command, sketchID: drag.sketch.id, amending: drag.pushed) else { return }
+            drag.pushed = true
         }
         rectangleEdgeDrag = drag
     }
 
-    func endRectangleEdgeDrag() {
+    func endRectangleEdgeDrag(gestureID: SketchDragGestureID? = nil) {
+        guard matchesSketchDrag(gestureID) else { return }
+        if finishAssociatedSketchDrag(gestureID) != nil { return }
         if let drag = rectangleEdgeDrag, drag.pushed {
             session.rebuildForSketchChange(drag.sketch.id)
             session.save()
@@ -9742,7 +10054,8 @@ final class EditorViewModel {
     }
     private var sketchRadialDrag: SketchRadialDragState?
 
-    func updateRadialRadiusDrag(delta: Double) {
+    func updateRadialRadiusDrag(delta: Double, gestureID: SketchDragGestureID? = nil) {
+        guard matchesSketchDrag(gestureID), !requiresAssociativeSketchDrag || sketchDragOwner?.token != nil else { return }
         if sketchRadialDrag == nil {
             guard let sketch = activeSketch, let entity = selectedSingleRadialEntity else { return }
             let radius: Double
@@ -9766,12 +10079,14 @@ final class EditorViewModel {
         guard entities != drag.sketch.entities || drag.pushed else { return }
         let command = UpdateSketchEntitiesCommand(sketchID: drag.sketch.id,
             before: drag.sketch.entities, after: entities)
-        if drag.pushed { session.amend(command) }
-        else { session.perform(command); drag.pushed = true }
+        guard applySketchDragCommand(command, sketchID: drag.sketch.id, amending: drag.pushed) else { return }
+        drag.pushed = true
         sketchRadialDrag = drag
     }
 
-    func endRadialRadiusDrag() {
+    func endRadialRadiusDrag(gestureID: SketchDragGestureID? = nil) {
+        guard matchesSketchDrag(gestureID) else { return }
+        if finishAssociatedSketchDrag(gestureID) != nil { return }
         if let drag = sketchRadialDrag, drag.pushed {
             session.rebuildForSketchChange(drag.sketch.id)
             session.save()
@@ -9913,6 +10228,7 @@ final class EditorViewModel {
         }
         var entities = sketch.entities.filter { selectedSketchEntityIDs.contains($0.id) }
         guard !entities.isEmpty else { return false }
+        guard beginSketchDragOwnership(sketchID: sketchID, title: kind == .move ? "Move" : "Rotate") else { return false }
 
         if kind == .rotate, !sketchCopyOnDrag, entities.count == 1,
            let id = entities.first?.id,
@@ -9941,6 +10257,7 @@ final class EditorViewModel {
             sketchCopyOnDrag = false
             let retainTransformMode = sketchTransformActive
             entities = duplicateSketchEntities(entities, in: sketchID)
+            guard !entities.isEmpty else { _ = cancelActiveAssociatedSketchDrag(); return false }
             // The copied IDs are a continuation of this explicit operation,
             // not a new canvas selection that should dismiss Move/Rotate.
             sketchTransformActive = retainTransformMode
@@ -9954,6 +10271,7 @@ final class EditorViewModel {
         }
         if kind == .rotate, containsRect {
             entities = decomposeSelectedRects(entities, in: sketchID)
+            guard !entities.isEmpty else { _ = cancelActiveAssociatedSketchDrag(); return false }
         }
 
         sketchGizmoDrag = SketchGizmoDrag(
@@ -10022,9 +10340,10 @@ final class EditorViewModel {
                     afterEndpoints: sketch.disconnectedEndpoints + slots.map { $0.0 }))
             }
         }
-        session.perform(commands.count == 1
-            ? commands[0]
-            : CompositeCommand(title: "Copy", commands: commands))
+        let command = commands.count == 1 ? commands[0] : CompositeCommand(title: "Copy", commands: commands)
+        if sketchDragOwner?.token != nil {
+            guard applySketchDragCommand(command, sketchID: sketchID, amending: false) else { return [] }
+        } else { session.perform(command) }
         selectedSketchEntityIDs = Set(copies.map(\.id))
         return copies
     }
@@ -10057,7 +10376,10 @@ final class EditorViewModel {
             result.append(contentsOf: lines)
         }
         guard !commands.isEmpty else { return entities }
-        session.perform(CompositeCommand(title: "Rotate", commands: commands))
+        let command = CompositeCommand(title: "Rotate", commands: commands)
+        if sketchDragOwner?.token != nil {
+            guard applySketchDragCommand(command, sketchID: sketchID, amending: false) else { return [] }
+        } else { session.perform(command) }
         selectedSketchEntityIDs = Set(result.map(\.id))
         return result
     }
@@ -10123,9 +10445,8 @@ final class EditorViewModel {
                 command = UpdateSketchEntitiesCommand(sketchID: drag.sketchID,
                     before: drag.undoEntities ?? drag.baselineSketch.entities, after: solved)
             }
-            if drag.pushed { session.amend(command) }
-            else {
-                session.perform(command)
+            guard applySketchDragCommand(command, sketchID: drag.sketchID, amending: drag.pushed) else { return }
+            if !drag.pushed {
                 drag.pushed = true
                 if drag.replacementBefore != nil { selectedSketchEntityIDs = Set(drag.originals.map(\.id)) }
                 sketchGizmoDrag = drag
@@ -10141,13 +10462,9 @@ final class EditorViewModel {
             : CompositeCommand(
                 title: drag.kind == .move ? "Move" : "Rotate", commands: updates
             )
-        if drag.pushed {
-            session.amend(command)
-        } else {
-            session.perform(command)
-            drag.pushed = true
-            sketchGizmoDrag = drag
-        }
+        guard applySketchDragCommand(command, sketchID: drag.sketchID, amending: drag.pushed) else { return }
+        drag.pushed = true
+        sketchGizmoDrag = drag
     }
 
     /// Tap while sketching: Trim cuts the span under the tap; Offset picks the
@@ -10683,6 +11000,7 @@ final class EditorViewModel {
     private func beginSketchEntityDrag(at raw: SIMD2<Double>, in sketch: Sketch) -> Bool {
         if let (id, center) = migratedRectangleCenter(at: raw, in: sketch),
            let edges = RectangleConstruction.dimensionEdges(containing: id, in: sketch) {
+            guard beginSketchDragOwnership(sketchID: sketch.id, title: "Move") else { return false }
             selectedSketchEntityIDs = []
             selectedSketchPoints = [.init(entityID: id, role: .center)]
             sketchGizmoDrag = SketchGizmoDrag(kind: .move, sketchID: sketch.id,
@@ -10709,6 +11027,7 @@ final class EditorViewModel {
             to: raw, in: sketch.entities, tolerance: entityPickTolerance
         ) : nil
         guard let entity = control?.entity ?? body?.entity else { return false }
+        guard beginSketchDragOwnership(sketchID: sketch.id, title: "Edit Sketch") else { return false }
         if case .rectCorner? = control?.kind,
            sketch.constraints.contains(where: { $0.kind == .fixed && $0.refs == [.init(entityID: entity.id, role: .center)] }),
            Set(sketch.dimensions.filter { $0.refs.contains(where: { $0.entityID == entity.id }) }.map(\.kind)) == [.horizontal, .vertical],
@@ -10791,8 +11110,8 @@ final class EditorViewModel {
             guard solved != drag.baseline || drag.pushed else { return }
             let command = UpdateSketchEntitiesCommand(sketchID: drag.sketchID,
                 before: drag.baseline, after: solved)
-            if drag.pushed { session.amend(command) }
-            else { session.perform(command); drag.pushed = true }
+            guard applySketchDragCommand(command, sketchID: drag.sketchID, amending: drag.pushed) else { return }
+            drag.pushed = true
             sketchEntityDrag = drag
             return
         }
@@ -10834,13 +11153,9 @@ final class EditorViewModel {
         let command = UpdateSketchEntityCommand(
             sketchID: drag.sketchID, before: drag.before, after: after
         )
-        if drag.pushed {
-            session.amend(command)
-        } else {
-            session.perform(command)
-            drag.pushed = true
-            sketchEntityDrag = drag
-        }
+        guard applySketchDragCommand(command, sketchID: drag.sketchID, amending: drag.pushed) else { return }
+        drag.pushed = true
+        sketchEntityDrag = drag
     }
 
     /// Solve-on-edit drag frame (plan §C1): pull the grabbed control point
@@ -10899,12 +11214,8 @@ final class EditorViewModel {
         let command = UpdateSketchEntitiesCommand(
             sketchID: drag.sketchID, before: drag.baseline, after: solved
         )
-        if drag.pushed {
-            session.amend(command)
-        } else {
-            session.perform(command)
-            drag.pushed = true
-        }
+        guard applySketchDragCommand(command, sketchID: drag.sketchID, amending: drag.pushed) else { return }
+        drag.pushed = true
         sketchEntityDrag = drag
     }
 
@@ -11371,7 +11682,7 @@ final class EditorViewModel {
             selectedPlaneID = nil
             cancelTool()
             selection.removeAll()
-            beginSketch(on: plane.plane, tool: tool)
+            beginSketch(on: plane.plane, tool: tool, constructionPlaneID: plane.id)
             return
         }
         // Sketch-on-face: a selected planar face IS the sketch plane
@@ -11422,7 +11733,7 @@ final class EditorViewModel {
         let bodyHit = HitTester.pickBody(ray: ray, in: scene)
 
         if let tileHit, bodyHit == nil || tileHit.distance <= bodyHit!.distance + 1e-3 {
-            beginSketch(on: tileHit.tile.plane, tool: tool)
+            beginSketch(on: tileHit.tile.plane, tool: tool, constructionPlaneID: tileHit.tile.planeID)
             return
         }
         if let bodyHit {
@@ -11465,8 +11776,20 @@ final class EditorViewModel {
     /// An unselected plane-based entry creates an independent sketch, even on
     /// a coincident plane. Continue an existing sketch through its item/outline
     /// instead; geometric coincidence alone is not document identity.
-    private func beginSketch(on plane: SketchPlane, tool: SketchTool) {
-        let sketch = Sketch(name: session.document.uniqueSketchName(), plane: plane)
+    private func beginSketch(on plane: SketchPlane, tool: SketchTool,
+                             constructionPlaneID: ConstructionPlaneID? = nil) {
+        var support: PlaneRef?
+        if let id = constructionPlaneID {
+            guard session.document.planes.contains(where: { $0.id == id }),
+                  session.lastReferenceErrors[.plane(id)] == nil else {
+                errorMessage = FloeCADStrings.text("cad.error.brokenSketchSupport",
+                    "Repair this plane's references before starting a sketch.")
+                return
+            }
+            support = PlaneRef(source: .construction(id))
+        }
+        let sketch = Sketch(name: session.document.uniqueSketchName(), plane: plane,
+                            support: support)
         session.preview { $0.sketches.append(sketch) }
         provisionalSketch = (sketch.id, session.undoStack.undoCommands.count)
         mode = .sketching(sketch.id, tool: tool)
@@ -11484,6 +11807,10 @@ final class EditorViewModel {
     static let grazingSketchAngle: Double = 80
 
     func finishSketch() {
+        let settledAssociatedDrag = sketchDragOwner?.token != nil
+        if let owner = sketchDragOwner, owner.token != nil {
+            _ = finishAssociatedSketchDrag(owner.gesture, weld: sketchEntityDrag != nil)
+        }
         let itemSelectionToRetain: Set<UUID> = {
             guard let sketch = activeSketch, itemSelectedSketchID == sketch.id,
                   selectedSketchPoints.isEmpty,
@@ -11518,14 +11845,14 @@ final class EditorViewModel {
             // Phase D (belt-and-suspenders): rebuild dependent features on the
             // way out of the sketch, so any edit not caught at its own commit
             // boundary still propagates. No-op when nothing references it.
-            session.rebuildForSketchChange(sketchID)
+            if !settledAssociatedDrag { session.rebuildForSketchChange(sketchID) }
             mode = .idle
             removeSketchIfEmpty(sketchID)
         }
         if !itemSelectionToRetain.isEmpty {
             selectedSketchEntityIDs = itemSelectionToRetain
         }
-        session.save()
+        if !settledAssociatedDrag || session.hasUncommittedPersistenceChanges { session.save() }
     }
 
     /// Sketch rows materialize transiently at entry (`beginSketch` uses
@@ -11643,6 +11970,8 @@ final class EditorViewModel {
     }
 
     func beginSketchStroke(ray: Ray) -> Bool {
+        _ = cancelActiveAssociatedSketchDrag()
+        sketchDragOwner = nil
         guard !isPickingSymmetryAxis else { return false }
         guard case .sketching(_, let tool) = mode,
               let raw = rawSketchPoint(from: ray)
@@ -11736,7 +12065,8 @@ final class EditorViewModel {
         }
     }
 
-    func updateSketchStroke(ray: Ray) {
+    func updateSketchStroke(ray: Ray, gestureID: SketchDragGestureID? = nil) {
+        guard matchesSketchDrag(gestureID) else { return }
         guard case .sketching(_, let tool) = mode else { return }
         if adjustingArcBulge {
             guard var arc = pendingArc, let raw = rawSketchPoint(from: ray) else { return }
@@ -11795,7 +12125,19 @@ final class EditorViewModel {
         }
     }
 
-    func endSketchStroke(ray: Ray) {
+    func endSketchStroke(ray: Ray, gestureID: SketchDragGestureID? = nil) {
+        guard matchesSketchDrag(gestureID) else { return }
+        if sketchDragOwner?.token != nil {
+            _ = finishAssociatedSketchDrag(gestureID, weld: sketchEntityDrag != nil)
+            pendingEntity = nil
+            sketchStrokeStart = nil
+            sketchStrokeCurrent = nil
+            activeSnap = nil
+            activeGuides = []
+            pendingInferredConstraints = []
+            return
+        }
+        sketchDragOwner = nil
         defer {
             pendingEntity = nil
             sketchStrokeStart = nil
@@ -12266,8 +12608,13 @@ final class EditorViewModel {
         var proposed = sketch
         proposed.constraints.append(constraint)
         if SketchSolverBridge.residualNorm(proposed) > Self.overConstraintTolerance { return }
-        session.perform(AddSketchConstraintCommand(sketchID: sketchID, constraint: constraint))
-        session.save()
+        let command = AddSketchConstraintCommand(sketchID: sketchID, constraint: constraint)
+        if sketchDragOwner?.token != nil {
+            _ = applySketchDragCommand(command, sketchID: sketchID, amending: false)
+        } else {
+            session.perform(command)
+            session.save()
+        }
     }
 
     /// The solver `PointRole` a draggable control point maps to, or nil for
@@ -12497,10 +12844,12 @@ final class EditorViewModel {
     /// dependent features rebuild so an extrude follows it. One undo step.
     func changeSketchPlane(of sketchID: SketchID, to plane: SketchPlane) {
         guard let sketch = session.document.sketches.first(where: { $0.id == sketchID }),
-              sketch.plane != plane
+              (sketch.plane != plane || sketch.support != nil)
         else { return }
+        let rebuildGeneration = session.changeCount
         session.performWithSketchRebuild(ChangeSketchPlaneCommand(
-            sketchID: sketchID, before: sketch.plane, after: plane), sketchID: sketchID)
+            sketch: sketch, after: plane), sketchID: sketchID)
+        guard !showRebuildRefusal(since: rebuildGeneration) else { return }
         session.save()
     }
 
@@ -15598,6 +15947,63 @@ final class EditorViewModel {
         mode = body.primitive != nil ? .editingPrimitive(id) : .selected(id)
     }
 
+    /// Presentation hit routing shares the editor's runtime selection and
+    /// cleanup. Invalid picks preserve the existing selection; nil is blank.
+    @discardableResult
+    func selectPresentation(bodyID: BodyID?, instanceID: UUID? = nil,
+                            faceTriangles: [Int] = []) -> Bool {
+        let body = bodyID.flatMap { session.document.body(with: $0) }
+        if let instanceID {
+            guard let body, let assembly = try? CADAssembly.decode(from: session.document.assemblyData),
+                  assembly.instances.contains(where: { $0.id == instanceID && !$0.isHidden
+                      && ($0.copiedBodyID ?? $0.bodyID) == body.id.raw }) else { return false }
+        } else if bodyID != nil {
+            guard let body, !body.isHidden,
+                  faceTriangles.allSatisfy({ $0 >= 0 && $0 < body.render.triangleCount }) else { return false }
+        }
+        if bodyID == nil && instanceID == nil && selectionAdditive { return true }
+        let oldBodies = selection
+        let oldInstances = selectedAssemblyInstances
+        cancelTransientPicks()
+        cancelTool()
+        selectedImageID = nil
+        selectedSketchEntityIDs.removeAll()
+        selectedSketchPoints.removeAll()
+        selectedConstraintID = nil
+        selectedDimensionID = nil
+        editingDimension = nil
+        selection.removeAll()
+        selectedAssemblyInstances.removeAll()
+        mode = .idle
+        if let instanceID {
+            if selectionAdditive {
+                selection = oldBodies
+                selectedAssemblyInstances = oldInstances
+                if !selectedAssemblyInstances.insert(instanceID).inserted { selectedAssemblyInstances.remove(instanceID) }
+            } else { selectedAssemblyInstances = [instanceID] }
+            return true
+        }
+        guard let body else { return true }
+        if selectionAdditive {
+            selection = oldBodies
+            if !selection.insert(body.id).inserted { selection.remove(body.id) }
+            updateModeForSelection(anchor: body.id)
+        } else if let seed = faceTriangles.first {
+            selection = [body.id]
+            if let planar = FaceTopology.planarFace(in: body.render, seedTriangle: seed),
+               Set(planar.triangles) == Set(faceTriangles) {
+                toolContext = faceContext(body: body, face: planar)
+            } else {
+                toolContext = curvedFaceContext(body: body, triangles: faceTriangles, seedTriangle: seed)
+            }
+            mode = .faceSelected(body.id)
+        } else {
+            selection = [body.id]
+            mode = body.primitive != nil ? .editingPrimitive(body.id) : .selected(body.id)
+        }
+        return true
+    }
+
     /// Items entry is distinct from dimension/history-driven sketch reopening.
     func selectItemSketch(_ id: SketchID) {
         guard session.document.sketches.contains(where: { $0.id == id }) else { return }
@@ -15700,10 +16106,29 @@ final class EditorViewModel {
             if toolContext?.sketchID == id { cancelTool() }
             if case .sketching(let active, _) = mode, active == id { finishSketch() }
             guard let command = DeleteSketchCommand(id: id, document: session.document) else { return }
-            session.perform(command)
+            if session.document.planes.contains(where: { $0.definition != nil })
+                || session.document.sketches.contains(where: { $0.support != nil }) {
+                let generation = session.changeCount
+                guard session.performAssociativeTransaction([command], title: command.title) else {
+                    _ = showRebuildRefusal(since: generation)
+                    return
+                }
+            } else {
+                session.perform(command)
+            }
         case .plane(let id):
             guard let command = DeletePlaneCommand(id: id, document: session.document) else { return }
-            session.perform(command)
+            if session.document.planes.first(where: { $0.id == id })?.definition != nil {
+                guard performDatumAction("datum.offsetPlane.delete", args: ["plane_id": id.raw.uuidString]) != nil else { return }
+            } else if session.document.sketches.contains(where: { $0.support != nil }) {
+                let generation = session.changeCount
+                guard session.performAssociativeTransaction([command], title: command.title) else {
+                    _ = showRebuildRefusal(since: generation)
+                    return
+                }
+            } else {
+                session.perform(command)
+            }
         }
         session.save()
     }
@@ -16441,90 +16866,137 @@ final class EditorViewModel {
         }
     }
 
-    /// Append a new document variable with a unique default name ("var1",
-    /// "var2", …) and expression "0", then re-resolve + fan out to dependents.
-    /// The dimension pad's "Create …" action (Shapr3D offers
-    /// `Create "length1 = 440.1136"` right in the value field): mint a variable
-    /// holding `expression` and hand back its name so the field can reference
-    /// it. Returns nil if the expression will not evaluate.
+    /// Bound by the facade to the same parameter service as assistant edits.
+    @ObservationIgnored var datumActionHandler: (@MainActor (String, [String: Any]) -> [String: Any])?
+    @ObservationIgnored var datumQueryRevision: (@MainActor () -> Int?)?
+
     @discardableResult
-    func createVariable(holding expression: String,
-                        preferredName: String) -> String? {
-        guard ExpressionEvaluator.evaluate(
-            expression, variables: session.variableValues()) != nil else { return nil }
-        let existing = Set(session.document.variables.map(\.name))
-        var name = preferredName
-        var index = 1
-        while existing.contains(name) || !VariableTable.isValidName(name) {
-            index += 1
-            name = "\(preferredName)\(index)"
+    func updateOffsetPlane(_ id: ConstructionPlaneID, expression: String, expectedExpression: String) -> Bool {
+        guard let reply = performDatumAction("datum.offsetPlane.update", args: [
+            "plane_id": id.raw.uuidString, "expression": expression,
+            "expected_expression": expectedExpression
+        ], allowNoChange: true) else { return false }
+        if reply["mutated"] as? Bool == true { session.save() }
+        return true
+    }
+
+    @discardableResult
+    private func performDatumAction(_ action: String, args: [String: Any],
+                                    allowNoChange: Bool = false) -> [String: Any]? {
+        guard rotateAxisState == nil, let datumActionHandler else {
+            errorMessage = FloeCADStrings.text("cad.datum.finishCurrentEdit",
+                "Finish the current edit and reopen the document if needed.")
+            return nil
         }
-        let variable = Variable(name: name, expression: expression, value: 0)
-        session.perform(AddVariableCommand(variable: variable))
-        prepareForHistoryChange()
-        session.variablesDidChange()
-        session.save()
-        return name
+        let reply = datumActionHandler(action, args)
+        if allowNoChange, reply["error"] as? String == "no_change" {
+            errorMessage = nil
+            return reply
+        }
+        guard reply["ok"] as? Bool == true else {
+            errorMessage = FloeCADStrings.text("cad.datum.editRejected",
+                "Couldn't change the reference plane. Check its source, offset and dependent sketches.")
+            return nil
+        }
+        errorMessage = nil
+        return reply
+    }
+
+    /// Bound by the document facade to the same atomic variable service the
+    /// assistant uses. Standalone editor hosts must bind it explicitly.
+    @ObservationIgnored var variableActionHandler: (@MainActor (String, [String: Any]) -> [String: Any])?
+
+    /// The dimension pad references the actual name accepted by the service.
+    @discardableResult
+    func createVariable(holding expression: String, preferredName: String) -> String? {
+        guard let reply = performVariableAction("variable.create", args: [
+            "name": uniqueVariableName(preferred: preferredName), "expression": expression]),
+              let variable = reply["variable"] as? [String: Any] else { return nil }
+        return variable["name"] as? String
     }
 
     /// Names of every document variable, for the pad's insert menu.
     var variableNames: [String] { session.document.variables.map(\.name) }
 
     func addVariable() {
-        let existing = Set(session.document.variables.map { $0.name })
-        var index = existing.count + 1
-        var name = "var\(index)"
-        while existing.contains(name) {
-            index += 1
-            name = "var\(index)"
-        }
-        let variable = Variable(name: name, expression: "0", value: 0)
-        session.perform(AddVariableCommand(variable: variable))
-        prepareForHistoryChange()
-        session.variablesDidChange()
-        session.save()
+        _ = performVariableAction("variable.create", args: [
+            "name": uniqueVariableName(preferred: nil), "expression": "0"])
     }
 
-    /// Edit a variable's name and/or expression. The name is validated via
-    /// `VariableTable.isValidName`; an invalid name sets `errorMessage` and
-    /// makes no change. On success re-resolves the table and rebuilds every
-    /// dependent feature/sketch formula.
     func setVariable(_ id: VariableID, name: String, expression: String) {
-        guard let before = session.document.variables.first(where: { $0.id == id }) else { return }
-        let trimmedName = name.trimmingCharacters(in: .whitespaces)
-        guard VariableTable.isValidName(trimmedName) else {
-            errorMessage = "\"\(name)\" isn't a valid variable name."
-            return
-        }
-        // Uniqueness was unchecked: renaming `b` onto an existing `a` was
-        // accepted, `b` then resolved to 0 as a duplicate, and every formula
-        // that said `b` silently started reading `a`'s value instead
-        // (2026-08-25 review round 4).
-        guard !session.document.variables.contains(where: {
-            $0.id != id && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame
-        }) else {
-            errorMessage = "A variable named \"\(trimmedName)\" already exists."
-            return
-        }
-        guard before.name != trimmedName || before.expression != expression else { return }
-        var after = before
-        after.name = trimmedName
-        after.expression = expression
-        session.perform(EditVariableCommand(before: before, after: after))
-        prepareForHistoryChange()
-        session.variablesDidChange()
-        session.save()
+        _ = performVariableAction("variable.update", args: [
+            "variable_id": id.raw.uuidString, "name": name, "expression": expression])
     }
 
-    /// Remove a variable, preserving its creation-order index for undo, then
-    /// re-resolve + rebuild dependents (formulas that referenced it error to 0).
     func deleteVariable(_ id: VariableID) {
-        guard let index = session.document.variables.firstIndex(where: { $0.id == id }) else { return }
-        let variable = session.document.variables[index]
-        session.perform(RemoveVariableCommand(index: index, variable: variable))
+        _ = performVariableAction("variable.delete", args: ["variable_id": id.raw.uuidString])
+    }
+
+    /// This only chooses a UI default; validity, formulas, rename tokens and
+    /// dependencies remain the shared service's single authority.
+    private func uniqueVariableName(preferred: String?) -> String {
+        let existing = Set(session.document.variables.map { $0.name.lowercased() })
+        let trimmed = preferred?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let validPreferred = VariableTable.isValidName(trimmed)
+        let stem = validPreferred ? trimmed : "var"
+        if validPreferred, !existing.contains(stem.lowercased()) { return stem }
+        // At most n names can occupy n+1 candidates. Truncate the stem to
+        // leave room for the suffix, including a 100-character preferred name.
+        for index in 1...(existing.count + 1) {
+            let suffix = String(validPreferred ? index + 1 : index)
+            let candidate = String(stem.prefix(100 - suffix.count)) + suffix
+            if !existing.contains(candidate.lowercased()) { return candidate }
+        }
+        // The finite candidate bound above guarantees a return.
+        preconditionFailure("Variable default-name candidates exhausted")
+    }
+
+    @discardableResult
+    private func performVariableAction(_ action: String, args: [String: Any]) -> [String: Any]? {
+        // This preview owns pre-edit transforms. Cancelling it AFTER the
+        // service transaction would overwrite rebuilt geometry; cancelling
+        // BEFORE a refusal would change the user's still-live preview.
+        guard rotateAxisState == nil else {
+            errorMessage = FloeCADStrings.text("cad.variable.finishCurrentEdit", "Finish or cancel the current edit before changing variables.")
+            return nil
+        }
+        guard let variableActionHandler else {
+            errorMessage = FloeCADStrings.text("cad.variable.reopenDocument", "Reopen the document to edit variables.")
+            return nil
+        }
+        let reply = variableActionHandler(action, args)
+        guard reply["ok"] as? Bool == true else {
+            let code = reply["error"] as? String ?? "unknown"
+            errorMessage = code == "no_change" ? nil : Self.variableEditMessage(for: code)
+            return nil
+        }
+        // With a rotate preview fenced above, this is selection/UI cleanup
+        // only. Failed service validation/rebuild never reaches it.
         prepareForHistoryChange()
-        session.variablesDidChange()
+        errorMessage = nil
         session.save()
+        return reply
+    }
+
+    private static func variableEditMessage(for code: String) -> String {
+        switch code {
+        case "invalid_name", "bad_name":
+            return FloeCADStrings.text("cad.variable.invalidName", "Use a valid variable name.")
+        case "duplicate_name":
+            return FloeCADStrings.text("cad.variable.duplicateName", "That variable name is already in use.")
+        case "variable_in_use":
+            return FloeCADStrings.text("cad.variable.inUse", "This variable is still used. Update its formulas before deleting it.")
+        case "invalid_expression", "bad_expression", "missing_variable", "unknown_function", "unresolved_reference", "forward_reference", "cyclic_reference":
+            return FloeCADStrings.text("cad.variable.invalidExpression", "Check the formula and its variable references.")
+        case "rebuild_failed":
+            return FloeCADStrings.text("cad.variable.rebuildFailed", "This change couldn't rebuild the model. The previous values were kept.")
+        case "read_only", "closed":
+            return FloeCADStrings.text("cad.variable.notEditable", "This document can't be edited.")
+        case "unknown_variable", "expression_mismatch":
+            return FloeCADStrings.text("cad.variable.changed", "The variable changed. Reopen the panel and try again.")
+        default:
+            return FloeCADStrings.text("cad.variable.updateFailed", "Couldn't update this variable. Try again.")
+        }
     }
 
     /// Whether the History panel is shown beside the Items panel.
@@ -16605,13 +17077,26 @@ final class EditorViewModel {
     /// are rolled back — not evaluated, their bodies removed.
     var rollbackIndex: Int? { session.document.features.rollbackIndex }
 
+    /// A refused preflight advances the generation but leaves geometry/history
+    /// untouched. Surface that result before a caller saves or sanitizes state.
+    private func showRebuildRefusal(since generation: Int) -> Bool {
+        guard session.changeCount != generation,
+              !session.lastRebuildRejection.isEmpty || !session.lastRejectedFeatureErrors.isEmpty
+        else { return false }
+        errorMessage = FloeCADStrings.text("cad.error.associativeEditRejected",
+            "This change would break model references. Adjust the dependent features first.")
+        return true
+    }
+
     /// Roll the history back to just after `id`, so the target node still
     /// evaluates but everything after it is suppressed. Rolled-back nodes'
     /// bodies disappear, so clean up selection/mode the same way undo/redo do.
     func rollbackToFeature(_ id: FeatureID) {
         guard let idx = session.document.features.index(of: id) else { return }
         prepareForHistoryChange()
+        let rebuildGeneration = session.changeCount
         session.setRollback(idx + 1)
+        guard !showRebuildRefusal(since: rebuildGeneration) else { return }
         sanitizeAfterHistoryChange()
         session.save()
     }
@@ -16621,7 +17106,9 @@ final class EditorViewModel {
     /// but sanitize anyway for symmetry/safety.
     func clearRollback() {
         prepareForHistoryChange()
+        let rebuildGeneration = session.changeCount
         session.setRollback(nil)
+        guard !showRebuildRefusal(since: rebuildGeneration) else { return }
         sanitizeAfterHistoryChange()
         session.save()
     }
@@ -16658,7 +17145,9 @@ final class EditorViewModel {
     /// Delete a history node and rebuild everything downstream in one undo step.
     func deleteFeature(_ id: FeatureID) {
         prepareForHistoryChange()
+        let rebuildGeneration = session.changeCount
         session.deleteFeature(id)
+        guard !showRebuildRefusal(since: rebuildGeneration) else { return }
         // The deleted node's bodies are gone: a blend/shell pick or tool
         // context still holding one would keep drawing a ghost preview in a
         // stuck mode — the Items-panel bug, reachable from History too
@@ -16670,7 +17159,9 @@ final class EditorViewModel {
     /// Suppress / un-suppress a history node and rebuild downstream.
     func setFeatureSuppressed(_ id: FeatureID, _ value: Bool) {
         prepareForHistoryChange()
+        let rebuildGeneration = session.changeCount
         session.setSuppressed(id, value)
+        guard !showRebuildRefusal(since: rebuildGeneration) else { return }
         sanitizeAfterHistoryChange()
         session.save()
     }
@@ -16678,7 +17169,9 @@ final class EditorViewModel {
     /// Drag-reorder a history node to a new position and rebuild downstream.
     func moveFeature(_ id: FeatureID, to newIndex: Int) {
         prepareForHistoryChange()
+        let rebuildGeneration = session.changeCount
         session.moveFeature(id, to: newIndex)
+        guard !showRebuildRefusal(since: rebuildGeneration) else { return }
         sanitizeAfterHistoryChange()
         session.save()
     }

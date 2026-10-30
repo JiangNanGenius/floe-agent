@@ -34,8 +34,10 @@ public final class CADParameterService {
         "list", "update", "updateSketchEntity",
         "setSketchDimension", "removeSketchDimension",
         "feature.suppress", "feature.delete", "feature.move",
+        "variable.create", "variable.update", "variable.delete",
+        "feature.setExpression",
         "undo", "redo",
-    ]
+    ] + CADDatumService.actions
 
     /// Sketch-entity kinds with a real typed geometry edit.
     public static let editableSketchEntityKinds: Set<String> = ["line", "rect", "circle"]
@@ -53,7 +55,11 @@ public final class CADParameterService {
     }
 
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "parameter", action: action) { return refusal }
         if let failure = revisionPinFailure(args) { return failure }
+        if CADDatumService.actions.contains(action) {
+            return CADDatumService(document: document).handle(action: action, args: args)
+        }
         switch action {
         case "list": return list(args)
         case "update": return update(args)
@@ -63,6 +69,10 @@ public final class CADParameterService {
         case "feature.suppress": return featureSuppress(args)
         case "feature.delete": return featureDelete(args)
         case "feature.move": return featureMove(args)
+        case "variable.create": return variableCreate(args)
+        case "variable.update": return variableUpdate(args)
+        case "variable.delete": return variableDelete(args)
+        case "feature.setExpression": return featureSetExpression(args)
         case "undo": return undo(args)
         case "redo": return redo(args)
         default:
@@ -141,6 +151,41 @@ public final class CADParameterService {
                 "feature.delete": "{feature_id, force?: true}",
                 "feature.move": "{feature_id, to_index: 0-based history position}",
             ],
+            "variable_actions": [
+                "variable.create": "{name, expression}",
+                "variable.update": "{variable_id, name?, expression?, expected_expression?}",
+                "variable.delete": "{variable_id}",
+            ],
+            "datum_actions": [
+                "datum.offsetPlane.create": "{body_id, face_index (OCCT kernel 1-based), query_token, expression, size?}",
+                "datum.offsetPlane.update": "{plane_id, expression?, expected_expression?, size?, body_id? + face_index? + query_token? (all three for source reselect)}",
+                "datum.offsetPlane.delete": "{plane_id}",
+                "sketch.setSupport": "{sketch_id, plane_id}",
+                "sketch.clearSupport": "{sketch_id}",
+            ],
+            "datum_planes": CADDatumService.planeRows(document: document),
+            "expression_update": [
+                "action": "feature.setExpression",
+                "fields": ["feature_id", "parameter", "expression", "expected_expression?"],
+                "units": "The expression is written in the parameter's PUBLIC unit from "
+                    + "query kind=features: deg for angle, mm for lengths, unitless for a factor. "
+                    + "A public degree expression bound to a radian-persisted parameter is "
+                    + "converted explicitly (formula radians(...)); stored values never take "
+                    + "degrees as radians. Query rows expose formula/formula_unit (exact stored "
+                    + "source), source_expression/source_expression_unit only when the stored "
+                    + "source can be inverted safely, and public_expression/"
+                    + "public_expression_unit (derived=true when only an equivalent degree "
+                    + "expression is available for a legacy radian formula).",
+                "supported": "Only the formula-capable scalars query kind=features reports "
+                    + "with expression_action=feature.setExpression; other parameters refuse "
+                    + "unsupported_parameter instead of a value-only mutation.",
+                "expected_expression": "Compare with the parameter's current exact stored "
+                    + "`formula` from query kind=features (empty string means the parameter "
+                    + "currently has no formula). For a radian-persisted angle this is the "
+                    + "radian-valued source, NOT public_expression; a legacy arbitrary radian "
+                    + "formula must be fenced by that exact text. A mismatch refuses and "
+                    + "preserves the document and redo history.",
+            ],
             "revision": document.revision,
             "change_count": document.session.changeCount,
             "can_undo": document.session.undoStack.canUndo,
@@ -179,6 +224,7 @@ public final class CADParameterService {
         } else {
             document.session.editFeature(featureID, to: edited)
         }
+        if let rejection = Self.rebuildRejection(document) { return rejection }
         let afterErrors = document.session.lastEvalErrors
         let introduced = afterErrors.filter { id, error in
             guard let old = beforeErrors[id] else { return true }
@@ -1275,29 +1321,30 @@ public final class CADParameterService {
         guard clamped != from else {
             return Self.fail("no_change", "Feature '\(node.name)' is already at position \(from).")
         }
+        // Resolve the CURRENT history's input versions before considering the
+        // new order. Resolving against the candidate order would silently
+        // change which in-place edit a later feature consumes.
+        let dependencies = Self.resolvedBodyDependencies(in: nodes)
         var reordered = nodes
         reordered.remove(at: from)
         reordered.insert(node, at: clamped)
-        var producerPosition: [UUID: Int] = [:]
+        var producerPosition: [FeatureID: Int] = [:]
         for (index, candidate) in reordered.enumerated() {
-            for body in candidate.outputBodyIDs {
-                producerPosition[body.raw] = index
-            }
+            producerPosition[candidate.id] = index
         }
         var offenders: [[String: Any]] = []
         for (index, candidate) in reordered.enumerated() {
-            for body in Self.referencedBodyIDs(in: candidate) {
-                // A feature that MODIFIES a body in place (transform, mirror,
-                // pattern, fillet, shell, face edits) references that same
-                // body and also owns it as output. That is a self-reference,
-                // not a dependency on a later node.
-                guard let producerIndex = producerPosition[body.raw],
-                      producerIndex != index,
+            for ref in dependencies[candidate.id] ?? [] {
+                // The producer here is the original order's preceding writer,
+                // not necessarily the legacy BodyRef.producer. Several native
+                // operations reserve fresh output ids but actually overwrite
+                // the consumed body, leaving later refs bound to its creator.
+                guard let producerIndex = producerPosition[ref.producer],
                       producerIndex >= index else { continue }
                 offenders.append([
                     "feature_id": candidate.id.raw.uuidString,
                     "feature": candidate.name,
-                    "body_id": body.raw.uuidString,
+                    "body_id": ref.bodyID.raw.uuidString,
                     "producer_id": reordered[producerIndex].id.raw.uuidString,
                     "position": index,
                     "producer_position": producerIndex,
@@ -1342,6 +1389,1101 @@ public final class CADParameterService {
         ])
     }
 
+    // MARK: - Variables and formula binding
+
+    /// A precise, pre-commit refusal for a variable/expression edit.
+    private struct VariableEditFailure: Error, Equatable {
+        var code: String
+        var message: String
+        init(_ code: String, _ message: String) {
+            self.code = code
+            self.message = message
+        }
+    }
+
+    private static let variableCreateKeys: Set<String> = [
+        "action", "revision", "expected_revision", "name", "expression",
+    ]
+    private static let variableUpdateKeys: Set<String> = [
+        "action", "revision", "expected_revision",
+        "variable_id", "variableID", "id", "name", "expression", "expected_expression",
+    ]
+    private static let variableDeleteKeys: Set<String> = [
+        "action", "revision", "expected_revision", "variable_id", "variableID", "id",
+    ]
+    private static let featureExpressionKeys: Set<String> = [
+        "action", "revision", "expected_revision",
+        "feature_id", "featureID", "id", "parameter", "expression", "expected_expression",
+    ]
+
+    /// Exact-action refusal for a mistyped field: a typo must never silently
+    /// drop a safety fence (`expected_expression`) or a value.
+    private static func rejectUnknownArguments(_ args: [String: Any], allowed: Set<String>,
+                                               action: String) -> [String: Any]? {
+        let unknown = args.keys.filter { !allowed.contains($0) }.sorted()
+        guard unknown.isEmpty else {
+            return fail("unknown_argument",
+                        "Unknown argument(s) \(unknown.joined(separator: ", ")) for \(action). Allowed: "
+                            + allowed.sorted().joined(separator: ", ") + ".")
+        }
+        return nil
+    }
+
+    private func readOnlyRefusal() -> [String: Any]? {
+        CADServiceOperations.readOnlyRefusal(document: document, kind: "parameter", action: "update")
+    }
+
+    /// Commit one variable-side command set through the session's atomic
+    /// transaction and restore the EXACT checkpoint (document + undo/redo
+    /// histories) when the downstream rebuild introduces a new FeatureError.
+    /// Used by create, update and delete alike: a variable edit must never be
+    /// accepted while a feature it drives has failed geometry. Returns nil on
+    /// success, or the structured refusal to return to the caller.
+    private func performVariableEdit(_ commands: [DocumentCommand],
+                                     title: String) -> [String: Any]? {
+        let beforeErrors = document.session.lastEvalErrors
+        let beforeChangeCount = document.session.changeCount
+        let checkpoint = document.captureEditCheckpoint()
+        guard document.session.performVariableTransaction(commands, title: title) else {
+            return Self.rebuildRejection(document) ?? Self.fail(
+                "no_change", "The variable edit produced no document change.")
+        }
+        return Self.rollbackIfRebuildBroke(
+            document: document, beforeErrors: beforeErrors,
+            beforeChangeCount: beforeChangeCount, checkpoint: checkpoint,
+            message: "The variable edit broke the rebuild; it was rolled back (nothing was kept).")
+    }
+
+    // MARK: Variable add / update / delete
+
+    private func variableCreate(_ args: [String: Any]) -> [String: Any] {
+        if let failure = Self.rejectUnknownArguments(args, allowed: Self.variableCreateKeys,
+                                                     action: "variable.create") {
+            return failure
+        }
+        if let refusal = readOnlyRefusal() { return refusal }
+        guard let rawName = CADMaterialService.string(args["name"]),
+              let rawExpression = CADMaterialService.string(args["expression"]) else {
+            return Self.fail("missing_variable",
+                             "variable.create needs name and expression (both strings).")
+        }
+        let name = rawName.trimmingCharacters(in: .whitespaces)
+        let expression = rawExpression.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !expression.isEmpty else {
+            return Self.fail("missing_variable",
+                             "variable.create needs a non-empty name and expression.")
+        }
+        let previous = document.session.document.variables
+        let variable = Variable(name: name, expression: expression)
+        let prospective = previous + [variable]
+        if let failure = Self.validateVariableChange(
+            previous: previous, prospective: prospective, focus: [variable.id]) {
+            return Self.fail(failure.code, failure.message)
+        }
+        let resolved = VariableTable.resolve(prospective)
+        guard let resolvedVariable = resolved.resolved.last,
+              resolved.errors[variable.id] == nil else {
+            return Self.fail("invalid_expression",
+                             "Variable '\(name)' could not be resolved; nothing was changed.")
+        }
+        let command = AddVariableCommand(variable: resolvedVariable)
+        if let failure = performVariableEdit([command], title: "Add Variable") {
+            return failure
+        }
+        let row = Self.variableRow(for: resolvedVariable.id,
+                                   in: document.session.document)
+            ?? ["id": resolvedVariable.id.raw.uuidString,
+                "name": resolvedVariable.name,
+                "expression": resolvedVariable.expression,
+                "value": resolvedVariable.value,
+                "unit": "unitless"]
+        return Self.ok([
+            "action": "variable.create",
+            "mutated": true,
+            "variable": row,
+            "variable_count": document.session.document.variables.count,
+            "revision": document.revision,
+            "change_count": document.session.changeCount,
+            "can_undo": document.session.undoStack.canUndo,
+            "can_redo": document.session.undoStack.canRedo,
+        ])
+    }
+
+    private func variableUpdate(_ args: [String: Any]) -> [String: Any] {
+        if let failure = Self.rejectUnknownArguments(args, allowed: Self.variableUpdateKeys,
+                                                     action: "variable.update") {
+            return failure
+        }
+        if let refusal = readOnlyRefusal() { return refusal }
+        guard let rawID = CADMaterialService.string(args["variable_id"])
+            ?? CADMaterialService.string(args["variableID"])
+            ?? CADMaterialService.string(args["id"]),
+              let uuid = UUID(uuidString: rawID),
+              let targetIndex = document.session.document.variables.firstIndex(where: {
+                  $0.id.raw == uuid
+              }) else {
+            return Self.fail("unknown_variable",
+                             "variable.update needs variable_id from query kind=variables.")
+        }
+        let target = document.session.document.variables[targetIndex]
+        if let rawExpected = args["expected_expression"] {
+            guard let expected = CADMaterialService.string(rawExpected) else {
+                return Self.fail("bad_expected_expression",
+                                 "expected_expression must be the current expression string from query kind=variables.")
+            }
+            guard expected == target.expression else {
+                return Self.fail(
+                    "expression_mismatch",
+                    "Variable '\(target.name)' currently has expression \"\(target.expression)\", not "
+                        + "the expected \"\(expected)\". Re-query kind=variables before editing it.")
+            }
+        }
+        let newName: String
+        if let rawName = args["name"] {
+            guard let text = CADMaterialService.string(rawName) else {
+                return Self.fail("bad_name", "name must be a string.")
+            }
+            newName = text.trimmingCharacters(in: .whitespaces)
+            guard !newName.isEmpty else {
+                return Self.fail("bad_name", "name must not be empty.")
+            }
+        } else {
+            newName = target.name
+        }
+        let newExpression: String
+        if args["expression"] != nil {
+            guard let text = CADMaterialService.string(args["expression"]) else {
+                return Self.fail("bad_expression", "expression must be a string.")
+            }
+            newExpression = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !newExpression.isEmpty else {
+                return Self.fail("bad_expression", "expression must not be empty.")
+            }
+        } else {
+            newExpression = target.expression
+        }
+        let oldName = target.name.trimmingCharacters(in: .whitespaces)
+        let renamed = newName != oldName
+        let expressionChanged = newExpression != target.expression
+        guard renamed || expressionChanged else {
+            return Self.fail("no_change",
+                             "Variable '\(target.name)' already has that name and expression.")
+        }
+
+        let previous = document.session.document.variables
+        let oldValues = document.session.variableValues()
+        var prospective = previous
+        for index in prospective.indices {
+            if prospective[index].id == target.id {
+                prospective[index].name = newName
+                prospective[index].expression = newExpression
+            } else if renamed {
+                if let rewritten = Self.rewriteIdentifier(
+                    prospective[index].expression, from: oldName, to: newName) {
+                    prospective[index].expression = rewritten
+                }
+            }
+        }
+        if let failure = Self.validateVariableChange(
+            previous: previous, prospective: prospective, focus: [target.id]) {
+            return Self.fail(failure.code, failure.message)
+        }
+        let resolved = VariableTable.resolve(prospective)
+        for index in prospective.indices where index < resolved.resolved.count {
+            prospective[index].value = resolved.resolved[index].value
+        }
+        guard resolved.errors[target.id] == nil else {
+            return Self.fail("invalid_expression",
+                             "Variable '\(newName)' could not be resolved; nothing was changed.")
+        }
+        let values = resolved.values
+
+        var commands: [DocumentCommand] = []
+        for (before, after) in zip(previous, prospective)
+        where before.name != after.name || before.expression != after.expression {
+            commands.append(EditVariableCommand(before: before, after: after))
+        }
+
+        var rewrittenFeatureIDs: [String] = []
+        var rewrittenDimensionIDs: [String] = []
+        var rewrittenPlaneIDs: [String] = []
+        if renamed {
+            for node in document.session.document.features.nodes {
+                guard let after = DocumentSession.rewrittenKind(node.kind, rewriting: { formula in
+                    Self.rewriteIdentifier(formula, from: oldName, to: newName)
+                }) else { continue }
+                if let failure = Self.rewrittenExpressionsFailure(
+                    before: node.kind, after: after, featureName: node.name,
+                    oldValues: oldValues, newValues: values) {
+                    return Self.fail(failure.code, failure.message)
+                }
+                commands.append(EditFeatureCommand(
+                    featureID: node.id, before: node.kind, after: after))
+                rewrittenFeatureIDs.append(node.id.raw.uuidString)
+            }
+            for plane in document.session.document.planes {
+                guard case var .offset(definition)? = plane.definition,
+                      let formula = definition.distance.formula,
+                      let rewritten = Self.rewriteIdentifier(formula, from: oldName, to: newName),
+                      rewritten != formula else { continue }
+                if ExpressionEvaluator.evaluate(rewritten, variables: values) == nil,
+                   ExpressionEvaluator.evaluate(formula, variables: oldValues) != nil {
+                    return Self.fail("unsupported_rewrite",
+                        "Renaming '\(oldName)' would make plane \(plane.id.raw.uuidString) unreadable. Nothing was changed.")
+                }
+                definition.distance.formula = rewritten
+                commands.append(EditConstructionPlaneDefinitionCommand(
+                    planeID: plane.id, before: plane.definition, after: .offset(definition)))
+                rewrittenPlaneIDs.append(plane.id.raw.uuidString)
+            }
+            for sketch in document.session.document.sketches {
+                for dimension in sketch.dimensions {
+                    guard let formula = dimension.formula,
+                          let rewritten = Self.rewriteIdentifier(
+                            formula, from: oldName, to: newName),
+                          rewritten != formula else { continue }
+                    if ExpressionEvaluator.evaluate(rewritten, variables: values) == nil,
+                       ExpressionEvaluator.evaluate(formula, variables: oldValues) != nil {
+                        return Self.fail(
+                            "unsupported_rewrite",
+                            "Renaming '\(oldName)' would make the \(dimension.kind.rawValue) "
+                                + "dimension \(dimension.id.uuidString) unreadable ('\(rewritten)'). "
+                                + "Nothing was changed.")
+                    }
+                    var after = dimension
+                    after.formula = rewritten
+                    commands.append(UpdateSketchDimensionCommand(
+                        sketchID: sketch.id, before: dimension, after: after))
+                    rewrittenDimensionIDs.append(dimension.id.uuidString)
+                }
+            }
+        }
+        guard !commands.isEmpty else {
+            return Self.fail("no_change", "The variable edit produced no document change.")
+        }
+        if let failure = performVariableEdit(
+            commands, title: renamed ? "Rename Variable" : "Edit Variable") {
+            return failure
+        }
+        let row = Self.variableRow(for: target.id, in: document.session.document) ?? [:]
+        var reply: [String: Any] = [
+            "action": "variable.update",
+            "mutated": true,
+            "variable": row,
+            "rewritten_feature_ids": rewrittenFeatureIDs,
+            "rewritten_dimension_ids": rewrittenDimensionIDs,
+            "rewritten_plane_ids": rewrittenPlaneIDs,
+            "revision": document.revision,
+            "change_count": document.session.changeCount,
+            "can_undo": document.session.undoStack.canUndo,
+            "can_redo": document.session.undoStack.canRedo,
+        ]
+        if renamed { reply["renamed_from"] = oldName }
+        return Self.ok(reply)
+    }
+
+    private func variableDelete(_ args: [String: Any]) -> [String: Any] {
+        if let failure = Self.rejectUnknownArguments(args, allowed: Self.variableDeleteKeys,
+                                                     action: "variable.delete") {
+            return failure
+        }
+        if let refusal = readOnlyRefusal() { return refusal }
+        guard let rawID = CADMaterialService.string(args["variable_id"])
+            ?? CADMaterialService.string(args["variableID"])
+            ?? CADMaterialService.string(args["id"]),
+              let uuid = UUID(uuidString: rawID),
+              let index = document.session.document.variables.firstIndex(where: {
+                  $0.id.raw == uuid
+              }) else {
+            return Self.fail("unknown_variable",
+                             "variable.delete needs variable_id from query kind=variables.")
+        }
+        let variable = document.session.document.variables[index]
+        let name = variable.name.trimmingCharacters(in: .whitespaces)
+        let dependents = Self.variableDependents(of: name, in: document.session.document)
+        let count = dependents["count"] as? Int ?? 0
+        if count > 0 {
+            let featureIDs = (dependents["feature_parameters"] as? [[String: Any]] ?? [])
+                .compactMap { $0["feature_id"] as? String }
+            let dimensionIDs = (dependents["sketch_dimensions"] as? [[String: Any]] ?? [])
+                .compactMap { $0["dimension_id"] as? String }
+            let variableIDs = dependents["variable_ids"] as? [String] ?? []
+            return [
+                "ok": false,
+                "error": "variable_in_use",
+                "message": "Variable '\(name)' is still referenced by \(count) formula(s). "
+                    + "Rebind or delete those first; nothing was changed.",
+                "variable": ["id": variable.id.raw.uuidString, "name": variable.name],
+                "dependents": dependents,
+                "dependent_variable_ids": variableIDs,
+                "dependent_feature_ids": Array(Set(featureIDs)).sorted(),
+                "dependent_sketch_dimension_ids": Array(Set(dimensionIDs)).sorted(),
+                "dependent_plane_ids": dependents["plane_ids"] ?? [],
+                "revision": document.revision,
+                "change_count": document.session.changeCount,
+            ]
+        }
+        let command = RemoveVariableCommand(index: index, variable: variable)
+        if let failure = performVariableEdit([command], title: "Delete Variable") {
+            return failure
+        }
+        return Self.ok([
+            "action": "variable.delete",
+            "mutated": true,
+            "removed_variable": [
+                "id": variable.id.raw.uuidString,
+                "name": variable.name,
+                "expression": variable.expression,
+            ],
+            "dependents": dependents,
+            "revision": document.revision,
+            "change_count": document.session.changeCount,
+            "can_undo": document.session.undoStack.canUndo,
+            "can_redo": document.session.undoStack.canRedo,
+        ])
+    }
+
+    // MARK: Feature expression binding
+
+    /// Bind a variable/function expression to ONE existing formula-capable
+    /// scalar. The expression is authored in the parameter's PUBLIC unit; a
+    /// radian-persisted parameter (`.rotateFace.angle`) is converted exactly
+    /// once and stores an explicit `radians(...)` formula so later variable
+    /// fan-out never interprets degrees as radians.
+    private func featureSetExpression(_ args: [String: Any]) -> [String: Any] {
+        if let failure = Self.rejectUnknownArguments(args, allowed: Self.featureExpressionKeys,
+                                                     action: "feature.setExpression") {
+            return failure
+        }
+        if let refusal = readOnlyRefusal() { return refusal }
+        guard let rawFeature = CADMaterialService.string(args["feature_id"])
+            ?? CADMaterialService.string(args["featureID"])
+            ?? CADMaterialService.string(args["id"]),
+              let featureUUID = UUID(uuidString: rawFeature),
+              let node = document.session.document.features.node(FeatureID(raw: featureUUID)) else {
+            return Self.fail("missing_feature",
+                             "feature.setExpression needs feature_id from query kind=features.")
+        }
+        guard let rawParameter = CADMaterialService.string(args["parameter"]),
+              !rawParameter.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return Self.fail("missing_parameter",
+                             "feature.setExpression needs parameter (the name query kind=features reports).")
+        }
+        let parameter = Self.normalizedExpressionParameter(rawParameter)
+        let slots = DocumentSession.expressionSlots(in: node.kind)
+        guard let slot = slots.first(where: { $0.name == parameter }) else {
+            let descriptor = Self.describe(node, document: document.session.document)
+            let known = (descriptor["parameters"] as? [[String: Any]] ?? [])
+                .compactMap { $0["name"] as? String }
+            if known.contains(parameter) {
+                return Self.fail(
+                    "unsupported_parameter",
+                    "Feature '\(node.name)' parameter '\(parameter)' has no formula-capable "
+                        + "stored expression in this document model; it is not changed to avoid a "
+                        + "value-only edit that loses design intent. Formula-capable parameters: "
+                        + (slots.isEmpty ? "none for this feature kind"
+                            : slots.map(\.name).joined(separator: ", ")) + ".")
+            }
+            return Self.fail(
+                "unknown_parameter",
+                "Feature '\(node.name)' has no parameter '\(parameter)'. Parameters: "
+                    + known.sorted().joined(separator: ", ") + ".")
+        }
+        guard let rawExpression = CADMaterialService.string(args["expression"]) else {
+            return Self.fail("missing_expression",
+                             "feature.setExpression needs expression (a number or variable/formula string).")
+        }
+        let expression = rawExpression.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expression.isEmpty else {
+            return Self.fail("missing_expression", "feature.setExpression needs a non-empty expression.")
+        }
+        if let rawExpected = args["expected_expression"] {
+            guard let expected = CADMaterialService.string(rawExpected) else {
+                return Self.fail("bad_expected_expression",
+                                 "expected_expression must be the current formula string from query kind=features.")
+            }
+            let current = slot.expr.formula ?? ""
+            guard expected == current else {
+                return Self.fail(
+                    "expression_mismatch",
+                    "Feature '\(node.name)' parameter '\(slot.name)' currently has formula "
+                        + (current.isEmpty ? "(none)" : "\"\(current)\"")
+                        + ", not the expected \"\(expected)\". Re-query kind=features before editing it.")
+            }
+        }
+
+        let values = document.session.variableValues()
+        let publicValue: Double
+        switch Self.evaluateExpression(expression, values: values) {
+        case .failure(let failure):
+            return Self.fail(failure.code, failure.message)
+        case .success(let value):
+            publicValue = value
+        }
+        let numericKind: FeatureKind
+        switch Self.updated(node.kind, changes: [slot.name: publicValue]) {
+        case .failure(let error):
+            return Self.fail("invalid_parameter_value", error.message)
+        case .success(let kind):
+            numericKind = kind
+        }
+        guard let numericSlot = DocumentSession.expressionSlot(in: numericKind, named: slot.name),
+              let finalKindWithValue = DocumentSession.replacingExpression(
+                in: numericKind, named: slot.name,
+                with: Expr(value: numericSlot.expr.value,
+                           formula: Self.storedFormula(
+                            for: expression, slot: slot))) else {
+            return Self.fail("unsupported_parameter",
+                             "Feature '\(node.name)' parameter '\(slot.name)' cannot store a formula.")
+        }
+        guard let finalSlot = DocumentSession.expressionSlot(
+            in: finalKindWithValue, named: slot.name) else {
+            return Self.fail("unsupported_parameter",
+                             "Feature '\(node.name)' parameter '\(slot.name)' cannot store a formula.")
+        }
+        guard finalSlot.expr != slot.expr else {
+            return Self.fail("no_change",
+                             "Feature '\(node.name)' parameter '\(slot.name)' already has that expression.")
+        }
+
+        let beforeErrors = document.session.lastEvalErrors
+        let beforeChangeCount = document.session.changeCount
+        let checkpoint = document.captureEditCheckpoint()
+        document.session.editFeature(node.id, to: finalKindWithValue)
+        if let failure = Self.rollbackIfRebuildBroke(
+            document: document, beforeErrors: beforeErrors,
+            beforeChangeCount: beforeChangeCount, checkpoint: checkpoint,
+            message: "The expression broke the rebuild; it was rolled back (nothing was kept).") {
+            return failure
+        }
+        guard document.session.changeCount != beforeChangeCount else {
+            return Self.fail("no_change", "The expression produced no document change.")
+        }
+        let descriptor = document.session.document.features.node(node.id).map {
+            Self.describe($0, document: document.session.document)
+        } ?? [:]
+        var applied: [String: Any] = [
+            "parameter": slot.name,
+            "expression": expression,
+            "value": finalSlot.publicValue,
+            "unit": finalSlot.unit,
+            "stored_value": finalSlot.expr.value,
+            "stored_unit": finalSlot.storedUnit,
+            "converted": finalSlot.storedScale != 1,
+        ]
+        if let formula = finalSlot.expr.formula { applied["formula"] = formula }
+        return Self.ok([
+            "action": "feature.setExpression",
+            "mutated": true,
+            "feature": descriptor,
+            "applied": applied,
+            "revision": document.revision,
+            "change_count": document.session.changeCount,
+            "can_undo": document.session.undoStack.canUndo,
+            "can_redo": document.session.undoStack.canRedo,
+        ])
+    }
+
+    /// Query view of one stored formula in both units.
+    ///
+    /// A radian-persisted public-degree parameter needs a PUBLIC-degree source
+    /// for callers. Only an EXACT whole-expression `radians(<source>)` call can
+    /// be inverted safely: `radians(a) + sin(b)` also starts with `radians(`
+    /// and ends with `)`, but its outer expression is radians. For that legacy
+    /// case `source_expression` stays null (the radian source is not a degree
+    /// source) and `public_expression` is a clearly-marked derived equivalent
+    /// `(<stored>) * 180 / pi()`, which is valid syntax for the existing
+    /// evaluator. The exact stored text remains in `formula` for the
+    /// `expected_expression` fence.
+    private struct PublicExpressionView {
+        var sourceExpression: Any
+        var sourceExpressionUnit: Any
+        var publicExpression: Any
+        var publicExpressionUnit: Any
+        var publicExpressionDerived: Bool
+    }
+
+    private static func publicExpressionView(
+        for slot: DocumentSession.FeatureExpressionSlot
+    ) -> PublicExpressionView {
+        guard let formula = slot.expr.formula else {
+            return PublicExpressionView(
+                sourceExpression: NSNull(), sourceExpressionUnit: NSNull(),
+                publicExpression: NSNull(), publicExpressionUnit: NSNull(),
+                publicExpressionDerived: false)
+        }
+        if slot.storedUnit == slot.unit {
+            return PublicExpressionView(
+                sourceExpression: formula, sourceExpressionUnit: slot.unit,
+                publicExpression: formula, publicExpressionUnit: slot.unit,
+                publicExpressionDerived: false)
+        }
+        if let body = wholeRadiansCallArgument(formula) {
+            return PublicExpressionView(
+                sourceExpression: body, sourceExpressionUnit: slot.unit,
+                publicExpression: body, publicExpressionUnit: slot.unit,
+                publicExpressionDerived: false)
+        }
+        return PublicExpressionView(
+            sourceExpression: NSNull(), sourceExpressionUnit: NSNull(),
+            publicExpression: "(\(formula)) * 180 / pi()",
+            publicExpressionUnit: slot.unit,
+            publicExpressionDerived: true)
+    }
+
+    /// The argument of an EXACT whole-expression `radians(<argument>)` call.
+    ///
+    /// The closing parenthesis must be the last non-space character and must
+    /// match the opening one, so `radians(a) + sin(b)` is NOT unwrapped (its
+    /// first call closes early). Nested parentheses inside the argument are
+    /// balanced. No new evaluator is involved: this is the same token/operator
+    /// syntax the stored formula already uses.
+    private static func wholeRadiansCallArgument(_ formula: String) -> String? {
+        let chars = Array(formula)
+        var index = 0
+        while index < chars.count, chars[index] == " " { index += 1 }
+        let name = Array("radians")
+        guard index + name.count <= chars.count,
+              Array(chars[index..<(index + name.count)]) == name else { return nil }
+        index += name.count
+        while index < chars.count, chars[index] == " " { index += 1 }
+        guard index < chars.count, chars[index] == "(" else { return nil }
+        index += 1
+        let bodyStart = index
+        var depth = 1
+        var closeIndex: Int?
+        while index < chars.count {
+            let character = chars[index]
+            if character == "(" {
+                depth += 1
+            } else if character == ")" {
+                depth -= 1
+                if depth == 0 {
+                    closeIndex = index
+                    break
+                }
+            }
+            index += 1
+        }
+        guard let closeIndex else { return nil }
+        var trailing = closeIndex + 1
+        while trailing < chars.count, chars[trailing] == " " { trailing += 1 }
+        guard trailing == chars.count else { return nil }
+        let body = String(chars[bodyStart..<closeIndex])
+            .trimmingCharacters(in: .whitespaces)
+        return body.isEmpty ? nil : body
+    }
+
+    /// Public formula source -> persisted `Expr.formula`.
+    ///
+    /// Most parameters persist the same text. A radian-persisted public-degree
+    /// parameter must NOT persist the degree source unchanged: the existing
+    /// fan-out evaluates a stored formula in the stored unit, so the explicit
+    /// `radians(...)` conversion is part of the stored source. This keeps the
+    /// user's expression intact inside the conversion.
+    private static func storedFormula(for expression: String,
+                                      slot: DocumentSession.FeatureExpressionSlot) -> String? {
+        guard !ExpressionEvaluator.identifiers(in: expression).isEmpty else { return nil }
+        if slot.unit == "deg", slot.storedUnit == "rad" {
+            return "radians(\(expression))"
+        }
+        return expression
+    }
+
+    private static func normalizedExpressionParameter(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "-", with: "_")
+            .lowercased()
+        if value == "taperangle" { value = "taper_angle" }
+        if value == "totalangle" { value = "total_angle" }
+        return value
+    }
+
+    // MARK: Variable validation
+
+    /// Validate the whole prospective table BEFORE any command is built.
+    ///
+    /// Refuses: invalid/duplicate names, unknown functions, unresolved or
+    /// forward references, cycles, and any NEW resolution error on a variable
+    /// that resolved before (a later dependent must not silently break).
+    private static func validateVariableChange(
+        previous: [Variable],
+        prospective: [Variable],
+        focus: Set<VariableID>
+    ) -> VariableEditFailure? {
+        let oldErrors = VariableTable.resolve(previous).errors
+        let trimmedNames = prospective.map { $0.name.trimmingCharacters(in: .whitespaces) }
+
+        // 1. Name validity + case-insensitive uniqueness for the edited rows.
+        var firstIndexByName: [String: Int] = [:]
+        for (index, name) in trimmedNames.enumerated() where !name.isEmpty {
+            guard VariableTable.isValidName(name) else {
+                if focus.contains(prospective[index].id) {
+                    return VariableEditFailure(
+                        "invalid_name",
+                        "\"\(prospective[index].name)\" isn't a valid variable name. Use a letter or "
+                            + "underscore first, then letters/digits/underscore (max 100), and no "
+                            + "leading \"__\".")
+                }
+                continue
+            }
+            let key = name.lowercased()
+            if let existing = firstIndexByName[key], existing != index {
+                let involved = focus.contains(prospective[index].id)
+                    || focus.contains(prospective[existing].id)
+                if involved {
+                    return VariableEditFailure(
+                        "duplicate_name",
+                        "A variable named \"\(name)\" already exists (names are case-insensitive).")
+                }
+            } else {
+                firstIndexByName[key] = index
+            }
+        }
+
+        // 2. Cycles. A cycle that only involves variables already in error was
+        // not introduced by this edit and must not block an unrelated change.
+        if let cycle = firstVariableCycle(in: prospective) {
+            let names = cycle.map { prospective[$0].name }
+            let touchesThisEdit = cycle.contains { index in
+                focus.contains(prospective[index].id)
+                    || oldErrors[prospective[index].id] == nil
+            }
+            if touchesThisEdit {
+                return VariableEditFailure(
+                    "cyclic_reference",
+                    "The variables form a cycle: \(names.joined(separator: " -> ")). "
+                        + "A variable may only reference earlier variables. Nothing was changed.")
+            }
+        }
+
+        // 3. Precise diagnostics for the edited variable's own expression.
+        for (index, variable) in prospective.enumerated() where focus.contains(variable.id) {
+            if let failure = expressionFailure(
+                variable.expression, variableName: variable.name,
+                focusIndex: index, variables: prospective) {
+                return failure
+            }
+        }
+
+        // 4. Any newly introduced resolver error (downstream breakage).
+        let newErrors = VariableTable.resolve(prospective).errors
+        for (id, message) in newErrors where oldErrors[id] == nil {
+            let name = prospective.first { $0.id == id }?.name ?? id.raw.uuidString
+            let code: String
+            if message.hasPrefix("Invalid name") {
+                code = "invalid_name"
+            } else if message.hasPrefix("Duplicate name") {
+                code = "duplicate_name"
+            } else if message.contains("Unknown or forward reference") {
+                code = "unresolved_reference"
+            } else {
+                code = "invalid_expression"
+            }
+            return VariableEditFailure(
+                code,
+                "Variable '\(name)' would become invalid: \(message). Nothing was changed.")
+        }
+        return nil
+    }
+
+    /// Token-aware, parser-compatible diagnostics for one variable expression.
+    /// Uses `ExpressionEvaluator.identifiers` (real tokens, not substrings) and
+    /// the same creation-order value map the resolver uses.
+    private static func expressionFailure(
+        _ raw: String,
+        variableName: String,
+        focusIndex: Int,
+        variables: [Variable]
+    ) -> VariableEditFailure? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            return VariableEditFailure(
+                "invalid_expression",
+                "Variable '\(variableName)' needs a non-empty expression.")
+        }
+        let tokens = identifierTokens(in: text)
+        let unknownCalls = Set(tokens.filter(\.isCall).map(\.text))
+            .subtracting(ExpressionEvaluator.functionNames)
+        if let unknown = unknownCalls.sorted().first {
+            return VariableEditFailure(
+                "unknown_function",
+                "Unknown function '\(unknown)' in \"\(text)\". Supported functions: "
+                    + ExpressionEvaluator.functionNames.sorted().joined(separator: ", ") + ".")
+        }
+        var indexByName: [String: Int] = [:]
+        for (index, variable) in variables.enumerated() {
+            let name = variable.name.trimmingCharacters(in: .whitespaces)
+            if indexByName[name] == nil { indexByName[name] = index }
+        }
+        let references = ExpressionEvaluator.identifiers(in: text)
+        for name in references.sorted() {
+            if let index = indexByName[name] {
+                if index == focusIndex {
+                    return VariableEditFailure(
+                        "cyclic_reference",
+                        "Variable '\(variableName)' cannot reference itself. Nothing was changed.")
+                }
+                if index > focusIndex {
+                    return VariableEditFailure(
+                        "forward_reference",
+                        "Variable '\(variableName)' references '\(name)', which is defined later. "
+                            + "A variable may only reference earlier variables.")
+                }
+            } else if !ExpressionEvaluator.functionNames.contains(name) {
+                let unitHint = NumericParsing.trailingUnit(in: text) == name
+                    ? " A trailing unit suffix is not a variable; variables are unitless scalars."
+                    : ""
+                return VariableEditFailure(
+                    "unresolved_reference",
+                    "Variable '\(variableName)' references unknown variable '\(name)' in \"\(text)\". "
+                        + "Create it first (variables resolve in creation order)." + unitHint)
+            }
+        }
+        // A function library name used bare is a value reference, not a call.
+        // A variable may legally own that name; the evaluator resolves the bare
+        // token to the variable, so creation-order/cycle checks still apply.
+        for token in tokens where !token.isCall {
+            guard ExpressionEvaluator.functionNames.contains(token.text) else { continue }
+            if let index = indexByName[token.text] {
+                if index == focusIndex {
+                    return VariableEditFailure(
+                        "cyclic_reference",
+                        "Variable '\(variableName)' cannot reference itself. Nothing was changed.")
+                }
+                if index > focusIndex {
+                    return VariableEditFailure(
+                        "forward_reference",
+                        "Variable '\(variableName)' references '\(token.text)', which is defined "
+                            + "later. A variable may only reference earlier variables.")
+                }
+            } else {
+                return VariableEditFailure(
+                    "unknown_function",
+                    "'\(token.text)' is a function in \"\(text)\"; write \(token.text)(...) "
+                        + "instead of using it as a value.")
+            }
+        }
+        let earlier = VariableTable.resolve(Array(variables.prefix(focusIndex))).values
+        if let value = ExpressionEvaluator.evaluate(text, variables: earlier), value.isFinite {
+            return nil
+        }
+        let validation = ExpressionEvaluator.validationMessage(text, variables: earlier) ?? ""
+        if validation.lowercased().contains("divide by zero") {
+            return VariableEditFailure(
+                "divided_by_zero",
+                "Expression \"\(text)\" divides by zero. Nothing was changed.")
+        }
+        return VariableEditFailure(
+            "invalid_expression",
+            "Cannot evaluate \"\(text)\" for variable '\(variableName)'. "
+                + (validation.isEmpty ? "Fix the arithmetic and references." : validation))
+    }
+
+    /// Evaluate one feature expression in the document's variable context.
+    /// No unit conversion happens here; the caller applies the parameter's
+    /// public/stored contract.
+    private static func evaluateExpression(
+        _ raw: String, values: [String: Double]
+    ) -> Result<Double, VariableEditFailure> {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            return .failure(VariableEditFailure(
+                "missing_expression", "An expression is required."))
+        }
+        let tokens = identifierTokens(in: text)
+        let unknownCalls = Set(tokens.filter(\.isCall).map(\.text))
+            .subtracting(ExpressionEvaluator.functionNames)
+        if let unknown = unknownCalls.sorted().first {
+            return .failure(VariableEditFailure(
+                "unknown_function",
+                "Unknown function '\(unknown)'. Supported functions: "
+                    + ExpressionEvaluator.functionNames.sorted().joined(separator: ", ") + "."))
+        }
+        for token in tokens where !token.isCall {
+            if ExpressionEvaluator.functionNames.contains(token.text), values[token.text] == nil {
+                return .failure(VariableEditFailure(
+                    "unknown_function",
+                    "'\(token.text)' is a function; write \(token.text)(...) instead of "
+                        + "using it as a value."))
+            }
+        }
+        let references = ExpressionEvaluator.identifiers(in: text)
+        let unresolved = references.filter { values[$0] == nil }.sorted()
+        if let missing = unresolved.first {
+            let unitHint = NumericParsing.trailingUnit(in: text) == missing
+                ? " The parameter already uses its declared public unit; omit the unit suffix."
+                : ""
+            return .failure(VariableEditFailure(
+                "unresolved_reference",
+                "Unknown variable '\(missing)' in \"\(text)\". Create it first with "
+                    + "variable.create." + unitHint))
+        }
+        if let value = ExpressionEvaluator.evaluate(text, variables: values), value.isFinite {
+            return .success(value)
+        }
+        let validation = ExpressionEvaluator.validationMessage(text, variables: values) ?? ""
+        if validation.lowercased().contains("divide by zero") {
+            return .failure(VariableEditFailure(
+                "divided_by_zero", "Expression \"\(text)\" divides by zero."))
+        }
+        return .failure(VariableEditFailure(
+            "invalid_expression",
+            "Cannot evaluate \"\(text)\". "
+                + (validation.isEmpty ? "Fix the arithmetic and references." : validation)))
+    }
+
+    /// The feature's rewritten formulas must stay evaluable whenever they were
+    /// evaluable before the rename. This turns an unsupported rewrite into a
+    /// refusal instead of saving a dangling reference.
+    private static func rewrittenExpressionsFailure(
+        before: FeatureKind,
+        after: FeatureKind,
+        featureName: String,
+        oldValues: [String: Double],
+        newValues: [String: Double]
+    ) -> VariableEditFailure? {
+        for slot in DocumentSession.expressionSlots(in: after) {
+            guard let formula = slot.expr.formula else { continue }
+            guard ExpressionEvaluator.evaluate(formula, variables: newValues) == nil else { continue }
+            if let oldFormula = DocumentSession.expressionSlot(in: before, named: slot.name)?
+                .expr.formula,
+               ExpressionEvaluator.evaluate(oldFormula, variables: oldValues) != nil {
+                return VariableEditFailure(
+                    "unsupported_rewrite",
+                    "The rename would leave feature '\(featureName)' parameter '\(slot.name)' "
+                        + "with an unreadable formula \"\(formula)\". Nothing was changed.")
+            }
+        }
+        return nil
+    }
+
+    private struct IdentifierToken {
+        var text: String
+        var isCall: Bool
+    }
+
+    /// Same tokenization as `ExpressionEvaluator.identifiers`, but retaining
+    /// whether the identifier is followed by "(". Used for function checks and
+    /// the token-aware rename rewriter.
+    private static func identifierTokens(in text: String) -> [IdentifierToken] {
+        let chars = Array(text)
+        var result: [IdentifierToken] = []
+        var index = 0
+        while index < chars.count {
+            let character = chars[index]
+            if character.isLetter || character == "_" {
+                var name = ""
+                while index < chars.count,
+                      chars[index].isLetter || chars[index].isNumber || chars[index] == "_" {
+                    name.append(chars[index])
+                    index += 1
+                }
+                var lookahead = index
+                while lookahead < chars.count, chars[lookahead] == " " { lookahead += 1 }
+                result.append(IdentifierToken(
+                    text: name,
+                    isCall: lookahead < chars.count && chars[lookahead] == "("))
+            } else {
+                index += 1
+            }
+        }
+        return result
+    }
+
+    /// Every identifier token that the evaluator would resolve as a VALUE
+    /// (a function call's own name is excluded; its arguments are scanned).
+    /// `ExpressionEvaluator.identifiers` additionally drops reserved function
+    /// names even when used bare, which is right for diagnostics but would miss
+    /// a legal variable named e.g. `pi`; dependency/deletion checks need the
+    /// full value-token set.
+    static func variableReferences(in text: String) -> Set<String> {
+        Set(identifierTokens(in: text).filter { !$0.isCall }.map(\.text))
+    }
+
+    /// Replace the variable reference `old` with `new` using the SAME token
+    /// boundaries as the evaluator: `w` inside `width`, `w2`, or `sqrt(` is
+    /// never touched. Returns nil when the text does not reference `old`.
+    static func rewriteIdentifier(_ text: String, from old: String, to new: String) -> String? {
+        guard !old.isEmpty, old != new else { return nil }
+        let chars = Array(text)
+        var output = ""
+        output.reserveCapacity(text.count + max(0, new.count - old.count))
+        var index = 0
+        var changed = false
+        while index < chars.count {
+            let character = chars[index]
+            if character.isLetter || character == "_" {
+                var end = index
+                var token = ""
+                while end < chars.count,
+                      chars[end].isLetter || chars[end].isNumber || chars[end] == "_" {
+                    token.append(chars[end])
+                    end += 1
+                }
+                var lookahead = end
+                while lookahead < chars.count, chars[lookahead] == " " { lookahead += 1 }
+                let isCall = lookahead < chars.count && chars[lookahead] == "("
+                if token == old, !isCall {
+                    output += new
+                    changed = true
+                } else {
+                    output += token
+                }
+                index = end
+            } else {
+                output.append(character)
+                index += 1
+            }
+        }
+        return changed ? output : nil
+    }
+
+    /// First cycle in the variable-reference graph, as variable indexes.
+    private static func firstVariableCycle(in variables: [Variable]) -> [Int]? {
+        let names = variables.map { $0.name.trimmingCharacters(in: .whitespaces) }
+        var indexByName: [String: Int] = [:]
+        for (index, name) in names.enumerated() where !name.isEmpty {
+            if indexByName[name] == nil { indexByName[name] = index }
+        }
+        var adjacency: [Int: [Int]] = [:]
+        for (index, variable) in variables.enumerated() {
+            for reference in variableReferences(in: variable.expression) {
+                if let target = indexByName[reference] {
+                    adjacency[index, default: []].append(target)
+                }
+            }
+        }
+        var state: [Int: Int] = [:]  // 1 = visiting, 2 = done
+        var stack: [Int] = []
+        func visit(_ node: Int) -> [Int]? {
+            if state[node] == 1 {
+                if let start = stack.firstIndex(of: node) {
+                    return Array(stack[start...]) + [node]
+                }
+                return [node, node]
+            }
+            if state[node] == 2 { return nil }
+            state[node] = 1
+            stack.append(node)
+            for next in (adjacency[node] ?? []).sorted() {
+                if let cycle = visit(next) { return cycle }
+            }
+            stack.removeLast()
+            state[node] = 2
+            return nil
+        }
+        for index in variables.indices {
+            if let cycle = visit(index) { return cycle }
+        }
+        return nil
+    }
+
+    /// Everything that references this variable name, by exact IDs. Used by
+    /// deletion refusal and the variables query, so both agree on the same
+    /// token-aware reference set.
+    static func variableDependents(of name: String,
+                                   in document: DesignDocument) -> [String: Any] {
+        var variableIDs: [String] = []
+        var variableNames: [String] = []
+        for variable in document.variables {
+            guard variable.name.trimmingCharacters(in: .whitespaces) != name,
+                  variableReferences(in: variable.expression).contains(name) else {
+                continue
+            }
+            variableIDs.append(variable.id.raw.uuidString)
+            variableNames.append(variable.name)
+        }
+        var featureRows: [[String: Any]] = []
+        for node in document.features.nodes {
+            for slot in DocumentSession.expressionSlots(in: node.kind) {
+                guard let formula = slot.expr.formula,
+                      variableReferences(in: formula).contains(name) else { continue }
+                featureRows.append([
+                    "feature_id": node.id.raw.uuidString,
+                    "feature": node.name,
+                    "parameter": slot.name,
+                    "unit": slot.unit,
+                    "formula": formula,
+                ])
+            }
+        }
+        var dimensionRows: [[String: Any]] = []
+        for sketch in document.sketches {
+            for dimension in sketch.dimensions {
+                guard let formula = dimension.formula,
+                      variableReferences(in: formula).contains(name) else { continue }
+                dimensionRows.append([
+                    "sketch_id": sketch.id.raw.uuidString,
+                    "sketch": sketch.name,
+                    "dimension_id": dimension.id.uuidString,
+                    "kind": dimension.kind.rawValue,
+                    "formula": formula,
+                ])
+            }
+        }
+        let planeRows: [[String: Any]] = document.planes.compactMap { plane in
+            guard case let .offset(definition)? = plane.definition,
+                  let formula = definition.distance.formula,
+                  variableReferences(in: formula).contains(name) else { return nil }
+            return ["plane_id": plane.id.raw.uuidString, "parameter": "distance",
+                    "unit": "mm", "formula": formula]
+        }
+        return [
+            "variable_ids": variableIDs,
+            "variable_names": variableNames,
+            "feature_parameters": featureRows,
+            "sketch_dimensions": dimensionRows,
+            "plane_parameters": planeRows,
+            "plane_ids": planeRows.compactMap { $0["plane_id"] as? String },
+            "count": variableIDs.count + featureRows.count + dimensionRows.count + planeRows.count,
+        ]
+    }
+
+    static func variableRow(for id: VariableID,
+                            in document: DesignDocument) -> [String: Any]? {
+        variableRows(in: document).first {
+            ($0["id"] as? String) == id.raw.uuidString
+        }
+    }
+
+    /// One row per variable: identity, exact source, resolved value and unit
+    /// contract, validity, and both directions of its dependency set.
+    static func variableRows(in document: DesignDocument) -> [[String: Any]] {
+        let resolution = VariableTable.resolve(document.variables)
+        return document.variables.map { variable in
+            let name = variable.name.trimmingCharacters(in: .whitespaces)
+            let references = variableReferences(in: variable.expression)
+            let dependsOn = document.variables.compactMap { other -> [String: Any]? in
+                guard references.contains(other.name.trimmingCharacters(in: .whitespaces)) else {
+                    return nil
+                }
+                return ["id": other.id.raw.uuidString, "name": other.name]
+            }
+            var row: [String: Any] = [
+                "id": variable.id.raw.uuidString,
+                "name": variable.name,
+                "expression": variable.expression,
+                "formula": variable.expression,
+                "value": variable.value,
+                "unit": "unitless",
+                "editable": true,
+                "update_action": "variable.update",
+                "delete_action": "variable.delete",
+                "depends_on": dependsOn,
+                "referenced_by": variableDependents(of: name, in: document),
+            ]
+            if let error = resolution.errors[variable.id] {
+                row["status"] = "error"
+                row["error"] = error
+                row["editable"] = false
+            } else {
+                row["status"] = "ok"
+            }
+            return row
+        }
+    }
+
     private static func featureNode(_ args: [String: Any],
                                     document: DesignDocument) -> FeatureNode? {
         guard let raw = CADMaterialService.string(args["feature_id"])
@@ -1354,22 +2496,77 @@ public final class CADParameterService {
     /// Feature nodes whose input bodies are produced by `node`.
     private static func dependentFeatureIDs(of node: FeatureNode,
                                             in document: DesignDocument) -> [UUID] {
-        let outputs = Set(node.outputBodyIDs.map(\.raw))
-        guard !outputs.isEmpty else { return [] }
+        let dependencies = resolvedBodyDependencies(in: document.features.nodes)
         return document.features.nodes.compactMap { other in
             guard other.id != node.id else { return nil }
-            let refs = referencedBodyIDs(in: other).map(\.raw)
-            return refs.contains(where: { outputs.contains($0) }) ? other.id.raw : nil
+            return (dependencies[other.id] ?? []).contains(where: { $0.producer == node.id })
+                ? other.id.raw : nil
         }
     }
 
     /// Every body a feature reads (through body, face or edge references).
-    private static func referencedBodyIDs(in node: FeatureNode) -> [BodyID] {
-        var ids: [BodyID] = []
-        for ref in bodyReferences(in: node.kind) { ids.append(ref.bodyID) }
-        for ref in faceReferences(in: node.kind) { ids.append(ref.body.bodyID) }
-        for ref in edgeReferences(in: node.kind) { ids.append(ref.body.bodyID) }
-        return ids
+    /// Keep producer identity as well as the reused BodyID for dependency checks.
+    private static func referencedBodies(in node: FeatureNode) -> [BodyRef] {
+        let refs = bodyReferences(in: node.kind)
+            + faceReferences(in: node.kind).map(\.body)
+            + edgeReferences(in: node.kind).map(\.body)
+        var seen = Set<BodyRef>()
+        return refs.filter { seen.insert($0).inserted }
+    }
+
+    /// Capture the body VERSION each feature consumes in the current history.
+    /// BodyRef.producer remains the persisted provenance: older/native records
+    /// can name the initial creator even after in-place writes. The evaluator
+    /// reads the current body by BodyID, so its preceding writer is the actual
+    /// ordering dependency. No stored refs or output ids are rewritten here.
+    private static func resolvedBodyDependencies(
+        in nodes: [FeatureNode]
+    ) -> [FeatureID: [BodyRef]] {
+        var writer: [BodyID: FeatureID] = [:]
+        var result: [FeatureID: [BodyRef]] = [:]
+        for node in nodes {
+            var seen = Set<BodyRef>()
+            result[node.id] = referencedBodies(in: node).compactMap { ref in
+                let dependency = BodyRef(producer: writer[ref.bodyID] ?? ref.producer,
+                                         bodyID: ref.bodyID)
+                return seen.insert(dependency).inserted ? dependency : nil
+            }
+            // Declared ids cover new bodies (including mirror/pattern copies).
+            // In-place evaluation additionally writes its input/target id even
+            // when outputBodyIDs only contains a fresh placeholder.
+            for id in node.outputBodyIDs + overwrittenBodyIDs(in: node.kind) {
+                writer[id] = node.id
+            }
+        }
+        return result
+    }
+
+    static func bodyWriterDependencies(in nodes: [FeatureNode]) -> [FeatureID: Set<FeatureID>] {
+        resolvedBodyDependencies(in: nodes).mapValues { Set($0.map(\.producer)) }
+    }
+
+    /// Actual in-place outputs, matching FeatureGraph's dispatch. Do not mark
+    /// pattern/mirror sources as written: those operations emit separate ids.
+    private static func overwrittenBodyIDs(in kind: FeatureKind) -> [BodyID] {
+        switch kind {
+        case let .extrude(_, _, _, _, boolean, _),
+             let .draftExtrude(_, _, _, _, _, boolean),
+             let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _),
+             let .loft(_, boolean):
+            guard boolean.op != .newBody, let target = boolean.resolvedTargets.first else { return [] }
+            return [target.bodyID]
+        case let .boolean(_, target, _):
+            return [target.bodyID]
+        case let .transform(body, _), let .chamfer(body, _, _),
+             let .fillet(body, _, _), let .shell(body, _, _), let .deleteFace(body, _):
+            return [body.bodyID]
+        case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
+             let .rotateFace(face, _, _), let .draftFace(face, _, _, _),
+             let .replaceFace(face, _, _, _):
+            return [face.body.bodyID]
+        case .primitive, .mirror, .pattern:
+            return []
+        }
     }
 
     private static func featureReply(action: String, nodeID: FeatureID, suppressed: Bool,
@@ -1393,6 +2590,27 @@ public final class CADParameterService {
         return reply
     }
 
+    private static func rebuildRejection(_ document: FloeCADDocument) -> [String: Any]? {
+        let references = document.session.lastRebuildRejection
+        let features = document.session.lastRejectedFeatureErrors
+        guard !references.isEmpty || !features.isEmpty else { return nil }
+        var details: [[String: Any]] = references.map { key, error in
+            var row: [String: Any] = ["error": error.message]
+            switch key {
+            case let .plane(id): row["plane_id"] = id.raw.uuidString
+            case let .sketch(id): row["sketch_id"] = id.raw.uuidString
+            case let .feature(id): row["feature_id"] = id.raw.uuidString
+            }
+            return row
+        }
+        details += features.map { ["feature_id": $0.key.raw.uuidString,
+                                   "error": String(describing: $0.value)] }
+        return ["ok": false, "error": "rebuild_failed",
+                "message": "That edit would break dependent geometry; nothing was kept.",
+                "rolled_back": true, "errors": details,
+                "revision": document.revision, "change_count": document.session.changeCount]
+    }
+
     /// Shared rollback gate: a mutation that introduces a NEW rebuild error is
     /// restored from the exact checkpoint (document + undo/redo histories) and
     /// reported as `rebuild_failed`. Returns nil when nothing broke.
@@ -1403,6 +2621,7 @@ public final class CADParameterService {
         checkpoint: CADEditCheckpoint,
         message: String
     ) -> [String: Any]? {
+        if let rejection = rebuildRejection(document) { return rejection }
         let afterErrors = document.session.lastEvalErrors
         let introduced = afterErrors.filter { id, error in
             guard let old = beforeErrors[id] else { return true }
@@ -1562,7 +2781,7 @@ public final class CADParameterService {
             add("factor", "unitless", factor.value, minimum: 1e-6)
         case let .rotateFace(_, angle, _):
             kindName = "rotateFace"
-            add("angle", "deg", angle.value)
+            add("angle", "deg", angle.value * (180 / .pi))
             unit = "deg"
         case let .draftFace(_, _, _, angle):
             kindName = "draftFace"
@@ -1591,24 +2810,43 @@ public final class CADParameterService {
             add("flip", "unitless", flip, editable: false)
         }
 
+        // Formula contract for every expression-capable scalar. `formula` is
+        // the EXACT persisted source used by expected_expression; `unit` is
+        // the public input unit and `stored_unit` the persisted Expr unit.
+        let expressionSlots = DocumentSession.expressionSlots(in: node.kind)
+        for slot in expressionSlots {
+            guard let index = parameters.firstIndex(where: {
+                ($0["name"] as? String) == slot.name
+            }) else { continue }
+            parameters[index]["formula"] = slot.expr.formula ?? NSNull()
+            parameters[index]["formula_unit"] = slot.storedUnit
+            parameters[index]["stored_value"] = slot.expr.value
+            parameters[index]["stored_unit"] = slot.storedUnit
+            parameters[index]["set_expression_unit"] = slot.unit
+            parameters[index]["expression_action"] = "feature.setExpression"
+            parameters[index]["variable_references"] = slot.formulaReferences
+            // Both units stay explicit: a converted formula exposes its
+            // safely inverted source when (and only when) it is an exact
+            // whole radians(...) call; a legacy arbitrary radian source is
+            // never mislabeled as degrees.
+            let view = publicExpressionView(for: slot)
+            parameters[index]["source_expression"] = view.sourceExpression
+            parameters[index]["source_expression_unit"] = view.sourceExpressionUnit
+            parameters[index]["public_expression"] = view.publicExpression
+            parameters[index]["public_expression_unit"] = view.publicExpressionUnit
+            parameters[index]["public_expression_derived"] = view.publicExpressionDerived
+        }
+
         let sketchIDs = node.referencedSketchIDs.map(\.raw.uuidString).sorted()
-        var featureDeps = Set<String>()
-        var bodyDeps = Set<String>()
-        for bodyRef in bodyReferences(in: node.kind) {
-            featureDeps.insert(bodyRef.producer.raw.uuidString)
-            bodyDeps.insert(bodyRef.bodyID.raw.uuidString)
-        }
-        for ref in faceReferences(in: node.kind) {
-            featureDeps.insert(ref.body.producer.raw.uuidString)
-            bodyDeps.insert(ref.body.bodyID.raw.uuidString)
-        }
-        for ref in edgeReferences(in: node.kind) {
-            featureDeps.insert(ref.body.producer.raw.uuidString)
-            bodyDeps.insert(ref.body.bodyID.raw.uuidString)
-        }
+        let refs = referencedBodies(in: node)
+        let resolved = resolvedBodyDependencies(in: document.features.nodes)[node.id] ?? refs
+        let featureDeps = Set(resolved.map { $0.producer.raw.uuidString })
+        let bodyDeps = Set(refs.map { $0.bodyID.raw.uuidString })
+        let referenceProducers = Set(refs.map { $0.producer.raw.uuidString })
         let updateSupported = Self.updateSupported(node.kind)
         var actions = ["feature.suppress", "feature.delete", "feature.move"]
         if updateSupported { actions.insert("parameter.update", at: 0) }
+        if !expressionSlots.isEmpty { actions.append("feature.setExpression") }
         var row: [String: Any] = [
             "id": node.id.raw.uuidString,
             "name": node.name,
@@ -1620,10 +2858,30 @@ public final class CADParameterService {
             "dependencies": [
                 "sketch_ids": sketchIDs,
                 "feature_ids": featureDeps.sorted(),
+                "reference_producer_ids": referenceProducers.sorted(),
                 "body_ids": bodyDeps.union(node.outputBodyIDs.map(\.raw.uuidString)).sorted(),
             ],
             "actions": actions,
             "update_supported": updateSupported,
+            "expression_parameters": expressionSlots.map { slot -> [String: Any] in
+                let view = publicExpressionView(for: slot)
+                return [
+                    "name": slot.name,
+                    "unit": slot.unit,
+                    "stored_unit": slot.storedUnit,
+                    "value": slot.publicValue,
+                    "stored_value": slot.expr.value,
+                    "formula": slot.expr.formula ?? NSNull(),
+                    "source_expression": view.sourceExpression,
+                    "source_expression_unit": view.sourceExpressionUnit,
+                    "public_expression": view.publicExpression,
+                    "public_expression_unit": view.publicExpressionUnit,
+                    "public_expression_derived": view.publicExpressionDerived,
+                    "action": "feature.setExpression",
+                ]
+            },
+            "variable_references": Array(Set(
+                expressionSlots.flatMap(\.formulaReferences))).sorted(),
         ]
         if let data = try? JSONEncoder().encode(node.kind),
            let definition = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
@@ -1650,6 +2908,11 @@ public final class CADParameterService {
 
     private static func bodyReferences(in kind: FeatureKind) -> [BodyRef] {
         switch kind {
+        case let .extrude(_, _, _, _, boolean, _),
+             let .draftExtrude(_, _, _, _, _, boolean),
+             let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _),
+             let .loft(_, boolean):
+            return boolean.resolvedTargets
         case let .boolean(_, target, tools): return [target] + tools
         // Profile features consume the bodies their boolean intent names
         // (union/subtract/intersect), e.g. an extruded hole cut. Omitting them
@@ -1667,7 +2930,8 @@ public final class CADParameterService {
              let .fillet(body, _, _), let .shell(body, _, _),
              let .deleteFace(body, _):
             return [body]
-        case .primitive, .pushPull, .moveFace, .scaleFace, .rotateFace, .draftFace, .replaceFace:
+        case .primitive,
+             .pushPull, .moveFace, .scaleFace, .rotateFace, .draftFace, .replaceFace:
             return []
         }
     }
@@ -1830,7 +3094,10 @@ public final class CADParameterService {
         case let .rotateFace(face, angle, axis):
             guard changes.keys.allSatisfy({ $0 == "angle" }) else { return unknown(["angle"]) }
             guard let a = value("angle"), a.isFinite else { return fail("angle", "angle must be finite degrees.") }
-            return .success(.rotateFace(face: face, angle: Expr(value: a, formula: nil), axis: axis))
+            // Match feature.rotateFace creation and the native editor: the
+            // public parameter is degrees, the persisted Expr is radians.
+            return .success(.rotateFace(face: face,
+                                        angle: Expr(value: a * (.pi / 180), formula: nil), axis: axis))
         case let .draftFace(face, origin, normal, angle):
             guard changes.keys.allSatisfy({ $0 == "angle" }) else { return unknown(["angle"]) }
             guard let a = value("angle"), abs(a) < 89, a != 0 else {

@@ -815,9 +815,14 @@ public struct CadDocumentTool: AgentTool {
     parameter list/update/undo/redo; updateSketchEntity for an existing line's \
     endpoints, a rectangle's position/size or a circle's center/radius; \
     setSketchDimension/removeSketchDimension for driving length/distance/ \
-    angle/radius/diameter/width/height values; feature.suppress/delete/move \
-    with dependency checks and checkpoint rollback — units and actions come \
-    from query kind=features/sketches/constraints), action "animation" \
+    angle/radius/diameter/width/height values; variable.create/update/delete \
+    for named scalar formulas (one atomic undo including every dependent \
+    feature/sketch rebuild; delete refuses while referenced and rename \
+    rewrites identifier tokens); feature.setExpression to bind a formula to an \
+    existing formula-capable feature scalar in its PUBLIC unit; \
+    feature.suppress/delete/move with dependency checks and checkpoint \
+    rollback — units and actions come from \
+    query kind=features/sketches/variables/constraints), action "animation" \
     (native camera/assembly keyframe clips: list/query/evaluate, \
     createClip/updateClip/deleteClip/setActiveClip, addTrack/deleteTrack, \
     setKeyframe/setCameraKeyframe/setPartKeyframe/deleteKeyframe, \
@@ -871,7 +876,7 @@ public struct CadDocumentTool: AgentTool {
         "revision": { "type": "integer", "minimum": 0, "description": "apply/capture/material/parameters/animation: optional base revision pin. For apply it is bound into the approved call; for the other actions the host refuses with revision_mismatch before any mutation/capture when the live document is at a different revision." },
         "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
         "task_id": { "type": "string", "description": "Durable native task id (status reports one task; cancel requires it)." },
-        "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|variables|materials|assembly|drawings|scene|detail|snapshot|selection|animation. selection returns the current live workbench bodies/faces/edges/sketch/instances with document revision and change_count; query it for deictic edits such as this face, then resolve exact face/edge query tokens before modifying. Features carry typed parameters/units/dependencies/actions; sketches carry entityRows with stable entity ids and each circle's current radius/diameter (the addressable source of an existing hole); faces/edges carry stable-matching indices, signatures and query_token/generation (revision, change_count, mesh_revision) required for index-based edits, and face rows identify planar/cylindrical kind with the actual radiusMM for a cylinder. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind). capabilities: pass drawing|assembly|script|mesh to get that service's exact operations with arguments and examples." },
+        "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|planes|variables|materials|assembly|drawings|scene|detail|snapshot|selection|animation. selection returns the current live workbench bodies/faces/edges/sketch/instances with document revision and change_count; query it for deictic edits such as this face, then resolve exact face/edge query tokens before modifying. Features carry typed parameters/units/dependencies/actions; sketches carry entityRows with stable entity ids and each circle's current radius/diameter (the addressable source of an existing hole); faces/edges carry stable-matching indices, signatures and query_token/generation (revision, change_count, mesh_revision) required for index-based edits, and face rows identify planar/cylindrical kind with the actual radiusMM for a cylinder. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind). capabilities: pass drawing|assembly|script|mesh to get that service's exact operations with arguments and examples." },
         "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points: 2D distance exactly 2, angle exactly 3, area 3+; snap point (first row). Native distance exactly 2 [x,y,z] rows." },
         "handles": { "type": "array", "items": { "type": "string" }, "description": "2D entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+. Native: one handle per action, body:<uuid> / face:<uuid>:<index> / edge:<uuid>:<index>; body, mesh and bounds accept body:<uuid> (a bare body UUID is also accepted); bounds takes one or more body handles." },
         "tolerance": { "type": "number", "description": "snap/check tolerance in drawing units; native interference tolerance in mm." },
@@ -884,7 +889,7 @@ public struct CadDocumentTool: AgentTool {
         "page_id": { "type": "string", "format": "uuid", "description": "export: the native drawing page id for pdf/svg/dxf exports, exactly as query with kind=drawings returned it." },
         "op": { "type": "string", "description": "Native typed operation name at the TOP LEVEL beside action and path, never inside args. Native propose requires it; native measure may use it to name the measurement kind. Exact vocabulary (also reported by capabilities as operation_names): sketch.create, sketch.addEntities, feature.extrude, feature.revolve, feature.pattern, feature.mirror, feature.transform, feature.boolean, feature.fillet, feature.chamfer, feature.shell, feature.sweep, feature.loft, feature.pushPull, feature.moveFace, feature.scaleFace, feature.rotateFace, feature.deleteFace, feature.replaceFace, feature.draftFace, body.setMaterial, item.setHidden." },
         "args": { "type": "string", "description": "JSON object STRING containing ONLY the typed operation's arguments, not an {op,args} envelope. Send op separately at the top level. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:\"line\",a:[x,y],b:[x,y]} | {kind:\"circle\",center:[x,y],radius} | {kind:\"arc\",center:[x,y],radius,startAngle,endAngle} | {kind:\"spline\",points:[[x,y],...],closed?} | {kind:\"rect\",min:[x,y],max:[x,y]} | {kind:\"polygon\",center:[x,y],radius,sides,rotation?} | {kind:\"ellipse\",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:\"throughAll\"|\"upToNext\"|\"blind\", boolean?:\"newBody\"|\"union\"|\"subtract\"|\"intersect\", booleanTargets?:[bodyID]}. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"seedPoint\":[40,20],\"distance\":10}. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet {bodyID,radius,edges,query_token?} / feature.chamfer {bodyID,setback,edges,query_token?}, feature.shell {bodyID,thickness,openFaces,query_token?}, feature.pattern {bodyID,kind,count,...}); Face/edge index operations require query_token from query kind=faces/edges (or the row's stable face signature/edge midpoint); index existence alone is rejected with requery_required because a rebuild can reuse an index for a different face/edge. measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild)." },
-        "payload": { "type": "string", "description": "JSON object string for the native workbench services (three_d_assembly / three_d_drawing) and the material/parameters/capture/animation actions. Animation actions: list|query|evaluate (real timeline data), createClip|updateClip|deleteClip|setActiveClip, addTrack|deleteTrack, setKeyframe|setCameraKeyframe|setPartKeyframe|deleteKeyframe, preset {kind:turntable|explodeReturn}, undo|redo, capture {clip_id?,time?|frame?,fps?,width?,height?,format?}, export {output? (workspace .mp4),width?,height?,fps?,codec?,bitrate?,overwrite?,poster?}. Animation edits are ordinary undoable document commands; capture returns a real animated native frame, export returns a verified MP4 with task_id and publishes it through RunOutput. Material actions: list|read|create|update|remove|apply|applyFaces|reassignFaces|mapping|textures|unresolved|libraryExport|libraryImport|libraryList|undo|redo; create/update/apply accept color [r,g,b(,a)] 0…1 (or #RRGGBB[AA]), metallic/roughness/opacity, emissive + emissive_strength, uv_mapping {source:mesh|planarProjection|boxProjection, axis:x|y|z, scale_mm:[u,v], rotation_degrees, offset:[u,v], flip_u, flip_v}, textures [{slot:baseColor|metallic|roughness|normal|emissive|opacity, asset_path? or asset_base64?, color_space?, orientation?}]. Parameter actions: list|update|updateSketchEntity|setSketchDimension|removeSketchDimension|feature.suppress|feature.delete|feature.move|undo|redo; update {feature_id, changes:{distance|angle|taper_angle|radius|setback|thickness|factor|count|spacing|total_angle|symmetric|rotate_instances:...}} uses the units query kind=features reports; updateSketchEntity {sketch_id, entity_id, a?, b? | min?, max?, center?, width?, height? | center?, radius?, diameter?, expected_*} edits one existing line/rect/circle and updates its matching driving dimension in the same undo step (refused as constraint_conflict if the saved sketch would become unsatisfied; unsupported entity kinds report editable:false); setSketchDimension {sketch_id, entity_id|entity_ids|refs, kind:length|distance|angle|diameter|radius|width|height, value, expected_value?, dimension_id?} creates or updates one driving value, solves with the existing solver and commits one undo step (angle is degrees; length is a line's distance; width/height store as horizontal/vertical); removeSketchDimension {sketch_id, dimension_id}; feature.suppress {feature_id, suppressed}; feature.delete {feature_id, force?} refuses when later features consume its bodies unless forced and always rolls back a broken rebuild; feature.move {feature_id, to_index} verifies body dependency order before moving. Discover exact ids/flags with query kind=sketches/constraints/features. Capture: {width?,height?} returns a real viewport PNG artifact with renderer=presentation only while Present is active, otherwise renderer=engineering; it is bound to revision/change_count and image_sha256 is separate from content_sha256. applyFaces/reassignFaces require query_token from query kind=faces or face_signatures; index-only edits are refused with requery_required (query tokens are generation proof, not permission). Workbench service payloads MUST name one operation via payload.action or legacy payload.op; mutating workbench services still use propose→apply, while material/parameter edits are ordinary authorized undoable document commands. A global libraryExport/libraryImport uses the single app-owned personal library (libraryList reads it with global:true); global export writes a file so it is refused in temporary/read-only contexts. Never contains file paths other than the guarded asset_path/output/import fields above." }
+        "payload": { "type": "string", "description": "JSON object string for the native workbench services (three_d_assembly / three_d_drawing) and the material/parameters/capture/animation actions. Animation actions: list|query|evaluate (real timeline data), createClip|updateClip|deleteClip|setActiveClip, addTrack|deleteTrack, setKeyframe|setCameraKeyframe|setPartKeyframe|deleteKeyframe, preset {kind:turntable|explodeReturn}, undo|redo, capture {clip_id?,time?|frame?,fps?,width?,height?,format?}, export {output? (workspace .mp4),width?,height?,fps?,codec?,bitrate?,overwrite?,poster?}. Animation edits are ordinary undoable document commands; capture returns a real animated native frame, export returns a verified MP4 with task_id and publishes it through RunOutput. Material actions: list|read|create|update|remove|apply|applyFaces|reassignFaces|mapping|textures|unresolved|libraryExport|libraryImport|libraryList|undo|redo; create/update/apply accept color [r,g,b(,a)] 0…1 (or #RRGGBB[AA]), metallic/roughness/opacity, emissive + emissive_strength, uv_mapping {source:mesh|planarProjection|boxProjection, axis:x|y|z, scale_mm:[u,v], rotation_degrees, offset:[u,v], flip_u, flip_v}, textures [{slot:baseColor|metallic|roughness|normal|emissive|opacity, asset_path? or asset_base64?, color_space?, orientation?}]. Parameter actions: list|update|updateSketchEntity|setSketchDimension|removeSketchDimension|variable.create|variable.update|variable.delete|feature.setExpression|datum.offsetPlane.create|datum.offsetPlane.update|datum.offsetPlane.delete|sketch.setSupport|sketch.clearSupport|feature.suppress|feature.delete|feature.move|undo|redo; update {feature_id, changes:{distance|angle|taper_angle|radius|setback|thickness|factor|count|spacing|total_angle|symmetric|rotate_instances:...}} uses the units query kind=features reports; updateSketchEntity {sketch_id, entity_id, a?, b? | min?, max?, center?, width?, height? | center?, radius?, diameter?, expected_*} edits one existing line/rect/circle and updates its matching driving dimension in the same undo step (refused as constraint_conflict if the saved sketch would become unsatisfied; unsupported entity kinds report editable:false); setSketchDimension {sketch_id, entity_id|entity_ids|refs, kind:length|distance|angle|diameter|radius|width|height, value, expected_value?, dimension_id?} creates or updates one driving value, solves with the existing solver and commits one undo step (angle is degrees; length is a line's distance; width/height store as horizontal/vertical); removeSketchDimension {sketch_id, dimension_id}; variable.create {name, expression} creates a named unitless scalar; variable.update {variable_id, name?, expression?, expected_expression?} edits/renames one variable and rewrites every variable/feature/sketch formula reference by identifier token (never substring); variable.delete {variable_id} refuses with exact dependent variable/feature/dimension ids while the name is still referenced; both create and update validate names, functions, references and cycles BEFORE commit, and one variable edit plus every dependent feature/sketch rebuild is ONE undo/redo transaction. feature.setExpression {feature_id, parameter, expression, expected_expression?} binds a formula to a parameter query kind=features reports with expression_action=feature.setExpression; expression is written in the PUBLIC unit (deg/mm/unitless) and a radian-persisted public-degree parameter stores an explicit radians(...) conversion rather than an unconverted degree value; expected_expression fences the exact stored `formula` row (radian-valued for a radian-persisted angle), not public_expression; parameters without a formula-capable Expr refuse unsupported_parameter instead of a value-only edit. feature.suppress {feature_id, suppressed}; feature.delete {feature_id, force?} refuses when later features consume its bodies unless forced and always rolls back a broken rebuild; feature.move {feature_id, to_index} verifies body dependency order before moving. datum.offsetPlane.create {body_id, face_index, query_token, expression, size?} creates an associative offset plane in mm from one exact named planar OCCT face; face_index is the kernel index from query kind=faces, never a render triangle. datum.offsetPlane.update {plane_id, expression?, expected_expression?, body_id?, face_index?, query_token?, size?} edits the same plane; source re-selection requires the complete fresh face triple. datum.offsetPlane.delete {plane_id} refuses while referenced. sketch.setSupport {sketch_id, plane_id} rehosts local sketch geometry on that construction plane; sketch.clearSupport {sketch_id} detaches at its current frame. All five operations are ordinary atomic undoable edits; invalid references/formulas refuse before commit. Discover exact ids/formulas/units/dependencies with query kind=planes/sketches/variables/constraints/features. Capture: {width?,height?} returns a real viewport PNG artifact with renderer=presentation only while Present is active, otherwise renderer=engineering; it is bound to revision/change_count and image_sha256 is separate from content_sha256. applyFaces/reassignFaces require query_token from query kind=faces or face_signatures; index-only edits are refused with requery_required (query tokens are generation proof, not permission). Workbench service payloads MUST name one operation via payload.action or legacy payload.op; mutating workbench services still use propose→apply, while material/parameter edits are ordinary authorized undoable document commands. A global libraryExport/libraryImport uses the single app-owned personal library (libraryList reads it with global:true); global export writes a file so it is refused in temporary/read-only contexts. Never contains file paths other than the guarded asset_path/output/import fields above." }
       }
     }
     """#
@@ -1306,6 +1311,106 @@ public struct CadDocumentTool: AgentTool {
                         "parameters feature.move requires to_index as a non-negative 0-based history position.")
                 }
             }
+            if action == "variable.create" {
+                guard let name = payload["name"] as? String,
+                      !name.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    throw FloeError.validationFailed(
+                        "parameters variable.create requires a non-empty name.")
+                }
+                guard let expression = payload["expression"] as? String,
+                      !expression.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw FloeError.validationFailed(
+                        "parameters variable.create requires a non-empty expression.")
+                }
+            }
+            if action == "variable.update" {
+                guard payload["variable_id"] as? String != nil
+                        || payload["variableID"] as? String != nil
+                        || payload["id"] as? String != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters variable.update requires variable_id from query kind=variables.")
+                }
+                let hasName = (payload["name"] as? String)?.trimmingCharacters(in: .whitespaces).isEmpty == false
+                let hasExpression = payload["expression"] is String
+                guard hasName || hasExpression else {
+                    throw FloeError.validationFailed(
+                        "parameters variable.update requires name and/or expression.")
+                }
+                if let expected = payload["expected_expression"], !(expected is String) {
+                    throw FloeError.validationFailed(
+                        "parameters variable.update expected_expression must be a string.")
+                }
+            }
+            if action == "variable.delete" {
+                guard payload["variable_id"] as? String != nil
+                        || payload["variableID"] as? String != nil
+                        || payload["id"] as? String != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters variable.delete requires variable_id from query kind=variables.")
+                }
+            }
+            if ["datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
+                "sketch.setSupport", "sketch.clearSupport"].contains(action) {
+                func requireString(_ key: String) throws {
+                    guard let value = payload[key] as? String,
+                          !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw FloeError.validationFailed("parameters \(action) requires \(key).")
+                    }
+                }
+                if action == "datum.offsetPlane.update" || action == "datum.offsetPlane.delete" {
+                    try requireString("plane_id")
+                }
+                if action == "sketch.setSupport" || action == "sketch.clearSupport" {
+                    try requireString("sketch_id")
+                }
+                if action == "sketch.setSupport" { try requireString("plane_id") }
+                let hasSource = ["body_id", "face_index", "query_token"].contains { payload[$0] != nil }
+                if action == "datum.offsetPlane.create" || (action == "datum.offsetPlane.update" && hasSource) {
+                    try requireString("body_id")
+                    try requireString("query_token")
+                    guard let index = Self.intValue(payload["face_index"]), index > 0,
+                          Self.doubleValue(payload["face_index"]) == Double(index) else {
+                        throw FloeError.validationFailed("parameters \(action) requires a positive integer face_index from query kind=faces.")
+                    }
+                }
+                if action == "datum.offsetPlane.create" || payload["expression"] != nil {
+                    try requireString("expression")
+                }
+                if action == "datum.offsetPlane.update",
+                   !hasSource && payload["expression"] == nil && payload["size"] == nil {
+                    throw FloeError.validationFailed("parameters datum.offsetPlane.update requires expression, size or a complete source face.")
+                }
+                if let size = payload["size"] {
+                    guard let value = Self.doubleValue(size), value.isFinite, value > 0 else {
+                        throw FloeError.validationFailed("parameters \(action) size must be positive finite millimetres.")
+                    }
+                }
+                if let expected = payload["expected_expression"], !(expected is String) {
+                    throw FloeError.validationFailed("parameters \(action) expected_expression must be a string.")
+                }
+            }
+            if action == "feature.setExpression" {
+                guard payload["feature_id"] as? String != nil
+                        || payload["featureID"] as? String != nil
+                        || payload["id"] as? String != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters feature.setExpression requires feature_id from query kind=features.")
+                }
+                guard let parameter = payload["parameter"] as? String,
+                      !parameter.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    throw FloeError.validationFailed(
+                        "parameters feature.setExpression requires parameter (query kind=features expression_parameters).")
+                }
+                guard let expression = payload["expression"] as? String,
+                      !expression.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw FloeError.validationFailed(
+                        "parameters feature.setExpression requires a non-empty expression.")
+                }
+                if let expected = payload["expected_expression"], !(expected is String) {
+                    throw FloeError.validationFailed(
+                        "parameters feature.setExpression expected_expression must be a string.")
+                }
+            }
         case .capture:
             guard native else {
                 throw FloeError.validationFailed(
@@ -1363,6 +1468,7 @@ public struct CadDocumentTool: AgentTool {
     /// Native read scopes served by `query` on a `.floecad` document.
     public static let nativeQueryScopes: Set<String> = [
         "bodies", "sketches", "constraints", "features", "edges", "faces",
+        "planes",
         "variables", "materials", "assembly", "drawings", "scene", "detail",
         "snapshot", "selection", "animation",
     ]

@@ -380,19 +380,37 @@ nonisolated struct EvalResult: Sendable {
     /// only `performRebuild` acts on them, inside its own undo step.
     var proposedUpgrades: [FeatureID: FeatureKind]
     var errors: [FeatureID: FeatureError]
+    /// Pure derived-coordinate proposals; only the rebuild transaction applies them.
+    var resolvedPlaneUpdates: [ConstructionPlaneID: SketchPlane]
+    var resolvedSketchSupportUpdates: [SketchID: SketchPlane]
+    var referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError]
+    /// Actual successful live PUT writers; independent of BodyRef provenance.
+    var lastBodyWriters: [BodyID: FeatureID]
+    /// Only requested historical versions (including every datum source).
+    var geometryVersions: [GeometryVersionRef: GeometryVersionSnapshot]
 
     init(
         bodies: [Body] = [],
         faceTables: [BodyID: FaceTable] = [:],
         kernelNames: [BodyID: [Int: ElementName]] = [:],
         proposedUpgrades: [FeatureID: FeatureKind] = [:],
-        errors: [FeatureID: FeatureError] = [:]
+        errors: [FeatureID: FeatureError] = [:],
+        resolvedPlaneUpdates: [ConstructionPlaneID: SketchPlane] = [:],
+        resolvedSketchSupportUpdates: [SketchID: SketchPlane] = [:],
+        referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError] = [:],
+        lastBodyWriters: [BodyID: FeatureID] = [:],
+        geometryVersions: [GeometryVersionRef: GeometryVersionSnapshot] = [:]
     ) {
         self.bodies = bodies
         self.faceTables = faceTables
         self.kernelNames = kernelNames
         self.proposedUpgrades = proposedUpgrades
         self.errors = errors
+        self.resolvedPlaneUpdates = resolvedPlaneUpdates
+        self.resolvedSketchSupportUpdates = resolvedSketchSupportUpdates
+        self.referenceErrors = referenceErrors
+        self.lastBodyWriters = lastBodyWriters
+        self.geometryVersions = geometryVersions
     }
 }
 
@@ -413,6 +431,8 @@ nonisolated extension FeatureGraph {
         sketches: [Sketch],
         planes: [ConstructionPlane],
         naming: TopoNaming,
+        variables: [String: Double] = [:],
+        requestedVersions: Set<GeometryVersionRef> = [],
         nextRevision: () -> UInt64
     ) -> EvalResult {
         // Uncached: every node runs. The behaviour from before the memo, and
@@ -420,7 +440,8 @@ nonisolated extension FeatureGraph {
         // cache get.
         var scratch = EvalCache()
         return evaluate(sketches: sketches, planes: planes, naming: naming,
-                        nextRevision: nextRevision, cache: &scratch)
+                        nextRevision: nextRevision, cache: &scratch,
+                        variables: variables, requestedVersions: requestedVersions)
     }
 
     /// Memoised replay (docs/INCREMENTAL_EVAL_DESIGN.md).
@@ -440,9 +461,15 @@ nonisolated extension FeatureGraph {
         planes: [ConstructionPlane],
         naming: TopoNaming,
         nextRevision: () -> UInt64,
-        cache: inout EvalCache
+        cache: inout EvalCache,
+        variables: [String: Double] = [:],
+        requestedVersions: Set<GeometryVersionRef> = []
     ) -> EvalResult {
-        var state = EvalState(sketches: sketches, planes: planes, naming: naming)
+        var state = EvalState(
+            sketches: sketches, planes: planes, naming: naming,
+            associative: AssociativeGeometryResolver(
+                graph: self, sketches: sketches, planes: planes,
+                variables: variables, requestedVersions: requestedVersions))
         // Input hashes once per replay, not once per node.
         let sketchHash = Dictionary(sketches.map { ($0.id, EvalFingerprint.hash($0)) },
                                     uniquingKeysWith: { first, _ in first })
@@ -454,8 +481,11 @@ nonisolated extension FeatureGraph {
         // evaluated (their bodies never enter the live set). `prefix` clamps to the
         // node count, so an out-of-range marker is safe. `nil` = all nodes active.
         for node in nodes.prefix(rollbackIndex ?? nodes.count) where !node.suppressed {
+            state.associative.begin(node)
+            let prepared = state.associative.prepare(node)
             let fingerprint = Self.fingerprint(
-                of: node, sketchHash: sketchHash, planeHash: planeHash, stamps: state.stamps)
+                of: node, sketchHash: sketchHash, planeHash: planeHash, stamps: state.stamps,
+                resolvedSketchHash: prepared.sketches, resolvedPlaneHash: prepared.planes)
             let delta: EvalNodeDelta
             if let hit = cache.entries[node.id], hit.fingerprint == fingerprint {
                 state.apply(hit.delta, for: node.id)
@@ -464,7 +494,11 @@ nonisolated extension FeatureGraph {
             } else {
                 state.currentNode = node.id
                 state.journal[node.id] = EvalNodeDelta()
-                evaluate(node, into: &state, nextRevision: nextRevision)
+                if let error = prepared.error {
+                    state.errors[node.id] = .brokenRef(error.message)
+                } else {
+                    evaluate(node, into: &state, nextRevision: nextRevision)
+                }
                 state.currentNode = nil
                 var recorded = state.journal[node.id] ?? EvalNodeDelta()
                 // Ops write kernel-face names AFTER their put; capture each
@@ -478,6 +512,7 @@ nonisolated extension FeatureGraph {
                 next.lastRan += 1
             }
             next.entries[node.id] = EvalCacheEntry(fingerprint: fingerprint, delta: delta)
+            state.associative.finish(node, delta: delta, stamp: fingerprint)
             // Whatever this node put now carries its fingerprint as its stamp;
             // whatever it consumed loses one.
             for op in delta.ops {
@@ -488,13 +523,19 @@ nonisolated extension FeatureGraph {
             }
         }
         cache = next
+        state.associative.finishDisplayReferences()
 
         return EvalResult(
             bodies: state.order.compactMap { state.bodies[$0] },
             faceTables: state.faceTables,
             kernelNames: state.kernelNames,
             proposedUpgrades: state.proposedUpgrades,
-            errors: state.errors
+            errors: state.errors,
+            resolvedPlaneUpdates: state.associative.resolvedPlaneUpdates,
+            resolvedSketchSupportUpdates: state.associative.resolvedSketchSupportUpdates,
+            referenceErrors: state.associative.referenceErrors,
+            lastBodyWriters: state.associative.lastBodyWriters,
+            geometryVersions: state.associative.snapshots
         )
     }
 
@@ -503,7 +544,9 @@ nonisolated extension FeatureGraph {
         of node: FeatureNode,
         sketchHash: [SketchID: UInt64],
         planeHash: [ConstructionPlaneID: UInt64],
-        stamps: [BodyID: UInt64]
+        stamps: [BodyID: UInt64],
+        resolvedSketchHash: [SketchID: UInt64],
+        resolvedPlaneHash: [ConstructionPlaneID: UInt64]
     ) -> UInt64 {
         var f = EvalFingerprint()
         if let kind = EvalFingerprint.json(node.kind) {
@@ -514,10 +557,10 @@ nonisolated extension FeatureGraph {
             f.combine(UInt64.random(in: .min ... .max))
         }
         for sid in node.referencedSketchIDs.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
-            f.combine(sketchHash[sid] ?? 0)
+            f.combine(resolvedSketchHash[sid] ?? sketchHash[sid] ?? 0)
         }
         for cid in node.referencedConstructionPlaneIDs.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
-            f.combine(planeHash[cid] ?? 0)
+            f.combine(resolvedPlaneHash[cid] ?? planeHash[cid] ?? 0)
         }
         for bid in node.consumedBodyIDs.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
             f.combine(stamps[bid] ?? 0)
@@ -676,15 +719,17 @@ nonisolated extension FeatureGraph {
         // the OCCT render mesh — a box looks identical either way, so it keeps the
         // Euclid render and existing coverage is unperturbed.
         var adoptedHandle: BRepHandle?
+        var boxFaces: OCCTKernel.PrimitiveBoxFaceIndices?
         if OCCTKernel.useOCCTAsSourceOfTruth,
-           let handle = OCCTKernel.primitiveShape(spec, placement: placement) {
+           let built = OCCTKernel.primitiveShapeWithBoxFaces(spec, placement: placement) {
             if OCCTKernel.hasCurvedFaces(spec) {
                 // Curved primitive: OCCT owns render AND CSG (one tessellation).
-                if body.adoptBRep(handle) { adoptedHandle = handle }
+                if body.adoptBRep(built.handle) { adoptedHandle = built.handle }
             } else {
                 // A box looks identical either way — keep the Euclid mesh it was
                 // built with, but still carry the brep so booleans stay analytic.
-                body.brep = handle
+                body.brep = built.handle
+                boxFaces = built.boxFaces
             }
         }
         // A primitive's role IS its identity, so its entries are named
@@ -695,15 +740,81 @@ nonisolated extension FeatureGraph {
                                    scheme: .primitive(spec)),
             creator: node.id)
         state.put(body, table: table)
-        // The composable layer booleans inherit through — recoverable only
-        // where the render IS the OCCT tessellation. The box keeps its
-        // Euclid render, so its map waits for a direct derivation (noted in
-        // the design doc); its faces then simply have nothing to pass on.
-        if let adoptedHandle {
-            state.kernelNames[body.id] = ElementNaming.kernelNames(
-                from: table,
-                channel: OCCTKernel.renderMeshFaceChannel(from: adoptedHandle))
+        // The composable layer booleans inherit through. Curved primitives
+        // recover it through the tessellation channel because their render IS
+        // the OCCT mesh. The box keeps its Euclid render, so its map comes
+        // from the kernel's OWN named construction faces of the same handle
+        // (never Euclid entry/triangle indices or face ordinals).
+        //
+        // The named-association identity is LOCAL construction. The render
+        // roles for cylinder caps and box faces are chosen in the BAKED
+        // world frame, so a non-identity baked rotation can relabel them.
+        // Refuse the exact kernel map for every primitive in that case
+        // (display roles stay); translation and positive uniform scale keep
+        // the construction axes intact and stay supported.
+        if Self.primitivePlacementKeepsLocalRoles(placement) {
+            if let adoptedHandle {
+                state.kernelNames[body.id] = ElementNaming.kernelNames(
+                    from: table,
+                    channel: OCCTKernel.renderMeshFaceChannel(from: adoptedHandle))
+            } else if let boxFaces {
+                state.kernelNames[body.id] = Self.primitiveBoxKernelNames(
+                    table: table, faces: boxFaces)
+            }
         }
+    }
+
+    /// A primitive's named roles are LOCAL construction identities (a box's
+    /// `boxFace(.px)` is its XMax face; a cylinder's cap `top` is its +Y
+    /// construction cap). `SignatureNaming.rolesForBox`/`rolesForCylinder`
+    /// derive render-side roles in the BAKED world frame, so a baked rotation
+    /// can relabel the same face relative to its construction identity.
+    /// Rotation therefore refuses name association entirely rather than
+    /// inventing a mapping; translation and a positive uniform scale leave
+    /// every construction axis intact and are safe.
+    private static func primitivePlacementKeepsLocalRoles(_ placement: Transform3D) -> Bool {
+        guard placement.scale.isFinite, placement.scale > 0 else { return false }
+        let q = placement.rotation
+        guard abs(simd_length(q) - 1) <= 1e-9 else { return false }
+        return abs(abs(q.real) - 1) <= 1e-12
+            && abs(q.imag.x) <= 1e-12
+            && abs(q.imag.y) <= 1e-12
+            && abs(q.imag.z) <= 1e-12
+    }
+
+    /// Map the box's exact construction-face indices to the names the render
+    /// table already minted for those same roles. No geometry is compared here:
+    /// the kernel face index comes from `BRepPrimAPI_MakeBox`'s named faces,
+    /// and the role→name comes from ElementNaming. A partial or contradictory
+    /// claim yields no map at all, so the resolver refuses instead of guessing.
+    private static func primitiveBoxKernelNames(
+        table: FaceTable,
+        faces: OCCTKernel.PrimitiveBoxFaceIndices
+    ) -> [Int: ElementName] {
+        let indexByRole: [BoxFace: Int] = [
+            .nx: faces.xMin, .px: faces.xMax,
+            .ny: faces.yMin, .py: faces.yMax,
+            .nz: faces.zMin, .pz: faces.zMax
+        ]
+        var namesByRole: [BoxFace: ElementName] = [:]
+        for entry in table.entries {
+            guard let name = entry.elementName,
+                  case let .primitiveFace(.boxFace(role)) = name.source else { continue }
+            if let existing = namesByRole[role], existing != name { return [:] }
+            namesByRole[role] = name
+        }
+        var out: [Int: ElementName] = [:]
+        var namesByFace: [Int: ElementName] = [:]
+        for (role, name) in namesByRole {
+            guard let index = indexByRole[role] else { return [:] }
+            if let existing = namesByFace[index], existing != name { return [:] }
+            namesByFace[index] = name
+            out[index] = name
+        }
+        // A valid box has exactly six planar faces, one per role. Anything
+        // less means the table or the construction metadata is incomplete.
+        guard out.count == 6, Set(out.values).count == 6 else { return [:] }
+        return out
     }
 
     // MARK: Extrude
@@ -1146,6 +1257,19 @@ nonisolated extension FeatureGraph {
             return
         }
         proposeUpgrade(node, ref: face, resolved: resolved, into: &state)
+        if body.brep != nil {
+            do {
+                let result = try KernelOps.exactPushPull(body: body, face: planar, distance: distance.value, revision: nextRevision())
+                let newTable = table.map { state.naming.propagate(inputs: [$0], output: result, op: .pushPull) }
+                    ?? state.naming.faceTable(for: result, createdBy: node.id, scheme: .generic)
+                state.put(result, table: newTable)
+            } catch {
+                state.errors[node.id] = .kernelFailure((error as? KernelOps.ExactEditError)?.message
+                    ?? "Exact geometry operation failed; original body preserved.")
+            }
+            return
+        }
+
         let mesh = KernelOps.pushPullPlanarFace(
             mesh: body.euclidMesh(), face: planar, distance: distance.value)
         guard !mesh.polygons.isEmpty else {
@@ -1196,6 +1320,19 @@ nonisolated extension FeatureGraph {
             Double(planar.normal.x), Double(planar.normal.y), Double(planar.normal.z)))
         let localDelta = bx * components.x + by * components.y + n * components.z
 
+        if body.brep != nil {
+            do {
+                let result = try KernelOps.exactMoveFace(body: body, face: planar, delta: localDelta, revision: nextRevision())
+                let newTable = table.map { state.naming.propagate(inputs: [$0], output: result, op: .pushPull) }
+                    ?? state.naming.faceTable(for: result, createdBy: node.id, scheme: .generic)
+                state.put(result, table: newTable)
+            } catch {
+                state.errors[node.id] = .kernelFailure((error as? KernelOps.ExactEditError)?.message
+                    ?? "Exact geometry operation failed; original body preserved.")
+            }
+            return
+        }
+
         let mesh = KernelOps.moveFace(
             mesh: body.euclidMesh(), face: planar, delta: localDelta)
         guard !mesh.polygons.isEmpty else {
@@ -1228,6 +1365,10 @@ nonisolated extension FeatureGraph {
     ) {
         guard let body = state.bodies[face.body.bodyID] else {
             state.errors[node.id] = .brokenRef("scaleFace body unresolved")
+            return
+        }
+        guard body.brep == nil else {
+            state.errors[node.id] = .kernelFailure(KernelOps.ExactEditError.unsupported("Face scaling").message)
             return
         }
         let table = state.faceTables[body.id]
@@ -1271,6 +1412,10 @@ nonisolated extension FeatureGraph {
     ) {
         guard let body = state.bodies[face.body.bodyID] else {
             state.errors[node.id] = .brokenRef("rotateFace body unresolved")
+            return
+        }
+        guard body.brep == nil else {
+            state.errors[node.id] = .kernelFailure(KernelOps.ExactEditError.unsupported("Face rotation").message)
             return
         }
         let table = state.faceTables[body.id]
@@ -1337,9 +1482,8 @@ nonisolated extension FeatureGraph {
         // where the mesh path below only shears render polygons and left the
         // body mesh-only (the Level 12/13 practice sheets stopped there). The
         // picked face is handed to OCCT by a point on it, like the shell's
-        // openings. A brep body whose OCCT draft is refused falls through to
-        // the mesh path rather than erroring: the mesh result is the same
-        // geometry to within the tessellation, unlike a failed blend.
+        // openings. Kernel refusal preserves an exact body; only mesh-only
+        // bodies use the deformation fallback below.
         if OCCTKernel.useOCCTAsSourceOfTruth, let brep = body.brep,
            let point = Self.pointOnFace(resolved, mesh: body.render) {
             let worldPoint = body.transform.applying(to: point)
@@ -1361,6 +1505,11 @@ nonisolated extension FeatureGraph {
                     return
                 }
             }
+        }
+
+        guard body.brep == nil else {
+            state.errors[node.id] = .kernelFailure("Exact draft failed; original body preserved.")
+            return
         }
 
         // The mesh shear only knows planar faces; a curved face that the
@@ -2594,6 +2743,7 @@ private nonisolated struct EvalState {
     let sketches: [Sketch]
     let planes: [ConstructionPlane]
     let naming: TopoNaming
+    var associative: AssociativeGeometryResolver
 
     var bodies: [BodyID: Body] = [:]
     var order: [BodyID] = []
@@ -2666,12 +2816,14 @@ private nonisolated struct EvalState {
     // MARK: Reference resolution
 
     /// A `PlaneRef` → concrete `SketchPlane`.
-    func resolvePlane(_ ref: PlaneRef) -> SketchPlane? {
+    mutating func resolvePlane(_ ref: PlaneRef) -> SketchPlane? {
         switch ref.source {
         case let .sketch(sid):
             return sketch(sid)?.plane
         case let .construction(cid):
-            return planes.first { $0.id == cid }?.plane
+            guard let record = planes.first(where: { $0.id == cid }) else { return nil }
+            if record.definition != nil { return try? associative.plane(ref).plane }
+            return record.plane
         case .ground:
             return .ground
         case let .explicit(plane):
@@ -2682,7 +2834,7 @@ private nonisolated struct EvalState {
     /// A `ProfileRef` → the outer `Profile` plus its hole profiles, detected from
     /// the referenced sketch. Matches the outer loop by entity ids (falling back
     /// to the seed point) and each hole loop by its recorded entity ids.
-    func resolveProfile(_ ref: ProfileRef) -> (outer: Profile, holes: [Profile])? {
+    mutating func resolveProfile(_ ref: ProfileRef) -> (outer: Profile, holes: [Profile])? {
         guard let sketch = sketch(ref.sketchID) else { return nil }
         let detected = ProfileDetector.detectProfiles(in: sketch)
         guard !detected.isEmpty else { return nil }
@@ -2728,7 +2880,7 @@ private nonisolated struct EvalState {
     /// An `AxisRef` → a plane-local `RevolveAxis`. `.explicit` passes through;
     /// `.sketchLine` finds the named `.line` entity in the referenced sketch and
     /// builds an axis from its endpoints: point = a, direction = b − a.
-    func resolveAxis(_ ref: AxisRef) -> RevolveAxis? {
+    mutating func resolveAxis(_ ref: AxisRef) -> RevolveAxis? {
         switch ref.source {
         case let .explicit(axis):
             return axis
@@ -2743,8 +2895,10 @@ private nonisolated struct EvalState {
         }
     }
 
-    private func sketch(_ id: SketchID) -> Sketch? {
-        sketches.first { $0.id == id }
+    private mutating func sketch(_ id: SketchID) -> Sketch? {
+        guard let record = sketches.first(where: { $0.id == id }) else { return nil }
+        if record.support != nil { return try? associative.sketch(id).sketch }
+        return record
     }
 }
 

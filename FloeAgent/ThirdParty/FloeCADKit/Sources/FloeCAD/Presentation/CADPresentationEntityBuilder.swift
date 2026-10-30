@@ -34,6 +34,7 @@ final class CADPresentationBuildResult {
     let stage: Entity
     let bodyEntities: [UUID: CADPresentationBodyNodes]
     let issues: [CADPresentationIssue]
+    let pickTargets: [ObjectIdentifier: CADPresentationPick]
     let buildKey: String
     let meshCount: Int
     let textureCount: Int
@@ -41,12 +42,14 @@ final class CADPresentationBuildResult {
     init(stage: Entity,
          bodyEntities: [UUID: CADPresentationBodyNodes],
          issues: [CADPresentationIssue],
+         pickTargets: [ObjectIdentifier: CADPresentationPick],
          buildKey: String,
          meshCount: Int,
          textureCount: Int) {
         self.stage = stage
         self.bodyEntities = bodyEntities
         self.issues = issues
+        self.pickTargets = pickTargets
         self.buildKey = buildKey
         self.meshCount = meshCount
         self.textureCount = textureCount
@@ -70,6 +73,7 @@ final class CADPresentationEntityBuilder {
         stage.name = "CADPresentationStage"
         var issues = scene.issues
         var entities: [UUID: CADPresentationBodyNodes] = [:]
+        let picks = CADPresentationPickIndex()
         var imagesByID: [String: CADPresentationImage] = [:]
         for image in scene.images { imagesByID[image.id] = image }
 
@@ -94,7 +98,7 @@ final class CADPresentationEntityBuilder {
                 baseMesh: mesh,
                 images: imagesByID,
                 castsShadow: scene.environment.shadowsEnabled,
-                issues: &issues)
+                picks: picks, issues: &issues)
             // Never publish a body entity from a superseded or cancelled
             // build; the caller additionally fences the whole result by
             // scene.buildKey before swapping the stage.
@@ -120,6 +124,7 @@ final class CADPresentationEntityBuilder {
             stage: stage,
             bodyEntities: entities,
             issues: issues,
+            pickTargets: picks.targets,
             buildKey: scene.buildKey,
             meshCount: cache.meshCount,
             textureCount: cache.textureCount)
@@ -148,6 +153,7 @@ final class CADPresentationEntityBuilder {
                           baseMesh: MeshResource,
                           images: [String: CADPresentationImage],
                           castsShadow: Bool,
+                          picks: CADPresentationPickIndex,
                           issues: inout [CADPresentationIssue]) async throws -> CADPresentationBodyNodes {
         try Task.checkCancellation()
         if body.faceGroups.isEmpty {
@@ -160,6 +166,7 @@ final class CADPresentationEntityBuilder {
             try Task.checkCancellation()
             let entity = ModelEntity(mesh: baseMesh, materials: [material])
             entity.name = body.name
+            try await picks.register(entity, mesh: baseMesh, pick: CADPresentationSelection.pick(for: body))
             entity.transform = Transform(matrix: body.transform)
             entity.components.set(GroundingShadowComponent(
                 castsShadow: castsShadow, receivesShadow: true))
@@ -167,6 +174,15 @@ final class CADPresentationEntityBuilder {
                                             faceEntities: [:])
         }
 
+        // Correlating a large triangle table is value-only work. Keep it
+        // cancellable and off the UI actor; RealityKit resources stay here.
+        let mapping = Task.detached(priority: .userInitiated) {
+            CADPresentationSelection.triangleGroups(in: body)
+        }
+        let triangleGroups = await withTaskCancellationHandler {
+            await mapping.value
+        } onCancel: { mapping.cancel() }
+        try Task.checkCancellation()
         let parent = Entity()
         parent.name = body.name
         parent.transform = Transform(matrix: body.transform)
@@ -187,6 +203,7 @@ final class CADPresentationEntityBuilder {
             try Task.checkCancellation()
             let entity = ModelEntity(mesh: mesh, materials: [material])
             entity.name = body.name
+            try await picks.register(entity, mesh: mesh, pick: CADPresentationSelection.pick(for: body))
             entity.components.set(GroundingShadowComponent(
                 castsShadow: castsShadow, receivesShadow: true))
             parent.addChild(entity)
@@ -213,6 +230,8 @@ final class CADPresentationEntityBuilder {
             try Task.checkCancellation()
             let entity = ModelEntity(mesh: mesh, materials: [material])
             entity.name = "\(body.name) · \(group.faceIndex)"
+            try await picks.register(entity, mesh: mesh,
+                pick: CADPresentationSelection.pick(for: body, group: group, triangleGroups: triangleGroups))
             entity.components.set(GroundingShadowComponent(
                 castsShadow: castsShadow, receivesShadow: true))
             parent.addChild(entity)

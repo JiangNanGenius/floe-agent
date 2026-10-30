@@ -72,35 +72,64 @@ nonisolated struct ConstructionPlaneID: Hashable, Codable, Sendable {
 
 /// A construction plane in the document: a sketch plane plus the edge length
 /// of the translucent quad that visualizes it.
+///
+/// M07: `definition` is the associative source of truth when present;
+/// `plane` is then the last resolved coordinate cache and must NOT be used as
+/// solve input after the definition fails to resolve. Nil keeps the legacy
+/// absolute construction plane exactly as before, including its encoding:
+/// the optional field is omitted rather than written as null.
 nonisolated struct ConstructionPlane: Identifiable, Codable, Equatable, Sendable {
     let id: ConstructionPlaneID
     var plane: SketchPlane
     var size: Double
     /// Items Manager visibility (spec §11).
     var isHidden: Bool
+    /// Associative offset definition (M07). Nil = the legacy static plane.
+    var definition: ConstructionPlaneDefinition?
 
     init(
         id: ConstructionPlaneID = ConstructionPlaneID(),
         plane: SketchPlane,
         size: Double,
-        isHidden: Bool = false
+        isHidden: Bool = false,
+        definition: ConstructionPlaneDefinition? = nil
     ) {
         self.id = id
         self.plane = plane
         self.size = size
         self.isHidden = isHidden
+        self.definition = definition
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, plane, size, isHidden
+        case id, plane, size, isHidden, definition
     }
 
-    /// `isHidden` is optional on decode so pre-A8 documents load.
+    /// `isHidden` is optional on decode so pre-A8 documents load. A present
+    /// but unsupported `definition` throws out of
+    /// `ConstructionPlaneDefinition.init(from:)`; it is never swallowed into
+    /// nil (which would silently turn the definition back into an absolute
+    /// plane).
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(ConstructionPlaneID.self, forKey: .id)
         plane = try container.decode(SketchPlane.self, forKey: .plane)
         size = try container.decode(Double.self, forKey: .size)
         isHidden = try container.decodeIfPresent(Bool.self, forKey: .isHidden) ?? false
+        definition = try container.decodeIfPresent(
+            ConstructionPlaneDefinition.self, forKey: .definition)
+    }
+
+    /// Encoding is explicit so a legacy (definition == nil) value keeps the
+    /// exact pre-M07 key set and byte identity. `plane` remains encoded even
+    /// for an associative plane: it is the last resolved display cache, and
+    /// older readers ignore it according to their own format gate.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(plane, forKey: .plane)
+        try container.encode(size, forKey: .size)
+        try container.encode(isHidden, forKey: .isHidden)
+        try container.encodeIfPresent(definition, forKey: .definition)
     }
 }

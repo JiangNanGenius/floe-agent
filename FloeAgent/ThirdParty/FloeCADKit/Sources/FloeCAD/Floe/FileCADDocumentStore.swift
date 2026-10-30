@@ -47,6 +47,7 @@ nonisolated enum CADDocumentStoreError: Error, LocalizedError {
     case packageMissing(URL)
     case corruptManifest(String)
     case corruptDocument(String)
+    case integrityFailed(String)
     case commitFailed(String)
     case revisionMoved(expected: Int, actual: Int)
 
@@ -60,6 +61,8 @@ nonisolated enum CADDocumentStoreError: Error, LocalizedError {
             return "CAD document manifest is unreadable: \(detail)"
         case .corruptDocument(let detail):
             return "CAD document metadata is unreadable: \(detail)"
+        case .integrityFailed(let detail):
+            return "CAD document integrity check failed: \(detail)"
         case .commitFailed(let detail):
             return "CAD document commit failed: \(detail)"
         case .revisionMoved(let expected, let actual):
@@ -224,7 +227,8 @@ protocol CADDocumentStore: AnyObject {
     /// Content identity of the last successful commit.
     var contentSHA256: String { get }
     /// Canonical model identity of the last successful read/write. Empty when
-    /// the manifest predates the additive `modelSHA256` field.
+    /// the manifest predates it or contains unknown fields this build cannot
+    /// include in a verified canonical identity.
     var modelSHA256: String { get }
 }
 
@@ -232,12 +236,13 @@ protocol CADDocumentStore: AnyObject {
 
 final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     static let packageExtension = "floecad"
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = CADDocumentFormat.supportedVersion
 
     private let packageURL: URL
     private let fileManager: FileManager
     private let lock = NSLock()
     private var storedRevision: Int = 0
+    private var storedSchemaVersion = CADDocumentFormat.legacyVersion
     private var storedContentSHA256: String = ""
     private var storedModelSHA256: String = ""
     /// Fenced release flag. Set by `revoke()` under the same lock every
@@ -253,8 +258,16 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
 
     var url: URL { packageURL }
     var revision: Int { lock.withLock { storedRevision } }
+    var schemaVersion: Int { lock.withLock { storedSchemaVersion } }
     var contentSHA256: String { lock.withLock { storedContentSHA256 } }
     var modelSHA256: String { lock.withLock { storedModelSHA256 } }
+
+    /// Atomic identity snapshot of this store's last verified read/commit.
+    /// It reuses the public save outcome value; no new digest or identity path.
+    var committedIdentity: CADSaveOutcome {
+        lock.withLock { CADSaveOutcome(revision: storedRevision, contentSHA256: storedContentSHA256,
+            modelSHA256: storedModelSHA256, error: nil) }
+    }
 
     /// Fence the store: after this returns, no commit can land. Any write
     /// already in flight is waited out (both share `lock`), so the caller may
@@ -274,30 +287,205 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     // MARK: Read
 
     func read() throws -> Project {
+        try read(recoverInterruptedCommit: true)
+    }
+
+    /// Identity queries must never turn a missing current commit into a write.
+    /// A normal open retains the existing interrupted-commit recovery route.
+    func readWithoutRecovery() throws -> Project {
+        try read(recoverInterruptedCommit: false)
+    }
+
+    private func read(recoverInterruptedCommit: Bool) throws -> Project {
         if !fileManager.fileExists(atPath: manifestURL.path) {
-            // Interrupted commit: a complete previous snapshot is the
-            // recoverable truth.
             let previousManifest = previousURL.appendingPathComponent("manifest.json")
-            if fileManager.fileExists(atPath: previousManifest.path) {
+            if recoverInterruptedCommit, fileManager.fileExists(atPath: previousManifest.path) {
                 try restorePrevious()
             } else {
                 throw CADDocumentStoreError.packageMissing(packageURL)
             }
         }
 
-        let manifest = try readManifest(at: packageURL)
-        let document = try readDocument(at: packageURL)
+        let verified = try verifiedPackage(at: packageURL)
+        let manifest = verified.manifest
         // Newer schema: decoded best-effort (unknown extra keys are ignored by
         // JSONDecoder) and surfaced so the session refuses to save. Never
-        // rewritten by an older build.
+        // rewritten by an older build. Publish identities only after the
+        // complete read succeeded, never from an unchecked manifest.
         lock.withLock {
             storedRevision = manifest.revision
+            storedSchemaVersion = manifest.schemaVersion
             storedContentSHA256 = manifest.contentSHA256
-            // Historical manifests predate the additive field: absent => "".
-            storedModelSHA256 = manifest.modelSHA256 ?? ""
+            storedModelSHA256 = verified.modelSHA256 ?? ""
         }
 
-        return makeProject(manifest: manifest, document: document, root: packageURL)
+        let project = makeProject(manifest: manifest, document: verified.document,
+                                  blobs: verified.blobs, thumbnail: verified.thumbnail)
+        project.hasOpaqueAssociations = verified.formatAssessment.isOpaqueReadOnly
+        return project
+    }
+
+    private struct VerifiedPackage {
+        let manifest: CADManifest
+        let document: CADDocumentRecord
+        let blobs: [String: Data]
+        let thumbnail: Data?
+        let modelSHA256: String?
+        let formatAssessment: CADDocumentFormat.Assessment
+    }
+
+    /// Replays the EXISTING writer's digest inputs: original document bytes,
+    /// sorted blob paths and content digests, then the declared preview digest.
+    /// The returned bytes are also used to construct the Project, so a file is
+    /// not read again after validation. This is consistency, not authentication:
+    /// the manifest itself is not signed.
+    private func verifiedPackage(at root: URL) throws -> VerifiedPackage {
+        let manifestURL = root.appendingPathComponent("manifest.json")
+        let manifestData = try Data(contentsOf: manifestURL)
+        let manifest: CADManifest
+        do {
+            manifest = try JSONDecoder().decode(CADManifest.self, from: manifestData)
+        } catch {
+            throw CADDocumentStoreError.corruptManifest(error.localizedDescription)
+        }
+        let documentData = try Data(contentsOf: root.appendingPathComponent("document.json"))
+        let document: CADDocumentRecord
+        do {
+            document = try JSONDecoder().decode(CADDocumentRecord.self, from: documentData)
+        } catch {
+            throw CADDocumentStoreError.corruptDocument(error.localizedDescription)
+        }
+
+        var blobs: [String: Data] = [:]
+        let blobRoot = root.appendingPathComponent("blobs", isDirectory: true)
+        if fileManager.fileExists(atPath: blobRoot.path) {
+            var enumerationError: Error?
+            guard let enumerator = fileManager.enumerator(
+                at: blobRoot,
+                includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles],
+                errorHandler: { _, error in enumerationError = error; return false }
+            ) else {
+                throw CADDocumentStoreError.integrityFailed("blob directory is unreadable")
+            }
+            let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
+            for case let url as URL in enumerator {
+                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
+                guard values.isSymbolicLink != true,
+                      url.standardizedFileURL.resolvingSymlinksInPath().path.hasPrefix(rootPath) else {
+                    throw CADDocumentStoreError.integrityFailed("blob path is not a package-owned regular file")
+                }
+                if values.isDirectory == true { continue }
+                guard values.isRegularFile == true else {
+                    throw CADDocumentStoreError.integrityFailed("blob is not a regular file")
+                }
+                let prefix = root.standardizedFileURL.path + "/"
+                let path = String(url.standardizedFileURL.path.dropFirst(prefix.count))
+                // A preview is a separate, OPTIONAL writer input. An old or
+                // thumbnail-free manifest does not claim an orphan preview.
+                if path != "blobs/thumbnail.img" {
+                    blobs[path] = try Data(contentsOf: url)
+                }
+            }
+            if let enumerationError { throw enumerationError }
+        }
+
+        func checkBlob(path: String?, digest: String?, label: String) throws {
+            guard let path else {
+                guard digest == nil else {
+                    throw CADDocumentStoreError.integrityFailed("\(label) declares a digest without a blob")
+                }
+                return
+            }
+            guard path.hasPrefix("blobs/"), !path.split(separator: "/").contains(".."),
+                  let data = blobs[path] else {
+                throw CADDocumentStoreError.integrityFailed("\(label) blob is missing or outside the package")
+            }
+            // Old records may omit an individual digest; the complete content
+            // digest below still binds their bytes. An omitted blob+digest is
+            // valid for empty bodies/images and is not made mandatory here.
+            if let digest, Self.sha256(data) != digest {
+                throw CADDocumentStoreError.integrityFailed("\(label) blob digest mismatch")
+            }
+        }
+        for body in document.bodies {
+            try checkBlob(path: body.meshBlob, digest: body.meshSHA256, label: "body mesh")
+            try checkBlob(path: body.brepBlob, digest: body.brepSHA256, label: "body B-rep")
+        }
+        for image in document.images {
+            try checkBlob(path: image.imageBlob, digest: image.imageSHA256, label: "image")
+        }
+        for row in document.sketches + document.planes + document.axes + document.symbols {
+            guard Self.sha256(row.data) == row.sha256 else {
+                throw CADDocumentStoreError.integrityFailed("inline record digest mismatch")
+            }
+        }
+        var thumbnail: Data?
+        if let digest = manifest.thumbnailSHA256 {
+            do {
+                thumbnail = try Data(contentsOf: root.appendingPathComponent("blobs/thumbnail.img"))
+            } catch {
+                throw CADDocumentStoreError.integrityFailed("declared preview is missing")
+            }
+            guard let thumbnail, Self.sha256(thumbnail) == digest else {
+                throw CADDocumentStoreError.integrityFailed("preview digest mismatch")
+            }
+        }
+        var contentHasher = SHA256()
+        contentHasher.update(data: documentData)
+        for (path, data) in blobs.sorted(by: { $0.key < $1.key }) {
+            contentHasher.update(data: Data(path.utf8))
+            contentHasher.update(data: Data(Self.sha256(data).utf8))
+        }
+        if let thumbnail {
+            contentHasher.update(data: Data(Self.sha256(thumbnail).utf8))
+        }
+        guard Self.hex(contentHasher.finalize()) == manifest.contentSHA256 else {
+            throw CADDocumentStoreError.integrityFailed("committed content digest mismatch")
+        }
+
+        var verifiedModelSHA256: String?
+        if let expected = manifest.modelSHA256 {
+            let knownDocumentData = try JSONEncoder().encode(document)
+            let raw = try JSONSerialization.jsonObject(with: documentData)
+            let known = try JSONSerialization.jsonObject(with: knownDocumentData)
+            // A future additive field remains covered by the raw content
+            // digest, but cannot be discarded while claiming its canonical
+            // semantic identity. Keep viewing compatibility; do not attest an
+            // identity this build cannot reconstruct.
+            if !Self.hasUnknownFields(raw, comparedTo: known) {
+                let actual = try Self.modelDigest(name: manifest.name, unit: manifest.unit,
+                                                  tolerance: manifest.tolerance,
+                                                  document: document, blobs: blobs)
+                guard actual == expected else {
+                    throw CADDocumentStoreError.integrityFailed("model digest mismatch")
+                }
+                verifiedModelSHA256 = actual
+            }
+        }
+        // A supported writer rotating the package during this read cannot
+        // leave us publishing a mixed generation. Validated snapshot bytes
+        // are used below; an identity query never tries to repair a race.
+        guard try Data(contentsOf: manifestURL) == manifestData else {
+            throw CADDocumentStoreError.integrityFailed("package changed while it was read")
+        }
+        let formatAssessment = try CADDocumentFormat.assess(document)
+        return VerifiedPackage(manifest: manifest, document: document, blobs: blobs,
+                               thumbnail: thumbnail, modelSHA256: verifiedModelSHA256,
+                               formatAssessment: formatAssessment)
+    }
+
+    private static func hasUnknownFields(_ raw: Any, comparedTo known: Any) -> Bool {
+        if let raw = raw as? [String: Any], let known = known as? [String: Any] {
+            for (key, value) in raw {
+                guard let knownValue = known[key] else { return true }
+                if hasUnknownFields(value, comparedTo: knownValue) { return true }
+            }
+        } else if let raw = raw as? [Any], let known = known as? [Any] {
+            guard raw.count == known.count else { return true }
+            return zip(raw, known).contains { hasUnknownFields($0.0, comparedTo: $0.1) }
+        }
+        return false
     }
 
     private func readManifest(at root: URL) throws -> CADManifest {
@@ -322,7 +510,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
 
     private func makeProject(manifest: CADManifest,
                              document: CADDocumentRecord,
-                             root: URL) -> Project {
+                             blobs: [String: Data], thumbnail: Data?) -> Project {
         let project = Project(name: manifest.name)
         project.createdAt = manifest.createdAt
         project.modifiedAt = manifest.modifiedAt
@@ -338,14 +526,10 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         project.sceneSettingsData = document.sceneSettings
         project.materialsData = document.materials
         project.animationData = document.animation
-        if manifest.thumbnailSHA256 != nil {
-            project.thumbnail = try? Data(contentsOf: root.appendingPathComponent("blobs/thumbnail.img"))
-        }
+        project.thumbnail = thumbnail
 
         for record in document.bodies {
-            let meshData = record.meshBlob.flatMap {
-                try? Data(contentsOf: root.appendingPathComponent($0))
-            } ?? Data()
+            let meshData = record.meshBlob.flatMap { blobs[$0] } ?? Data()
             let persisted = PersistedBody(
                 bodyID: record.bodyID,
                 name: record.name,
@@ -356,9 +540,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             persisted.isHidden = record.isHidden
             persisted.materialData = record.material
             persisted.faceMaterialsData = record.faceMaterials
-            persisted.brepData = record.brepBlob.flatMap {
-                try? Data(contentsOf: root.appendingPathComponent($0))
-            }
+            persisted.brepData = record.brepBlob.flatMap { blobs[$0] }
             persisted.project = project
             project.bodies.append(persisted)
         }
@@ -378,9 +560,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             project.axes.append(axis)
         }
         for record in document.images {
-            let imageData = record.imageBlob.flatMap {
-                try? Data(contentsOf: root.appendingPathComponent($0))
-            } ?? Data()
+            let imageData = record.imageBlob.flatMap { blobs[$0] } ?? Data()
             let image = PersistedImage(imageID: record.imageID,
                                        infoData: record.info,
                                        imageData: imageData)
@@ -416,9 +596,9 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
 
     // MARK: Payload (session actor: cheap, no encode/hash/IO)
 
-    /// Slice the in-memory record graph into a Sendable payload. No JSON
-    /// encoding, no hashing and no file I/O happen here: callers may run this
-    /// on the main actor, then hand the value to `performWrite` off-main.
+    /// Slice the in-memory record graph and validate inline association
+    /// semantics before choosing its writer version. The complete package
+    /// verification, staging and I/O remain in `performWrite` off-main.
     func makePayload(_ project: Project) throws -> CADWritePayload {
         var document = CADDocumentRecord(
             bodies: [], sketches: [], planes: [], axes: [], images: [],
@@ -504,7 +684,10 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
                               name: $0.name, expression: $0.expression, value: $0.value)
         }
 
-        let schemaVersion = max(project.formatVersion, 1)
+        guard !project.hasOpaqueAssociations else { throw CADDocumentFormatError.opaqueAssociations }
+        let assessment = try CADDocumentFormat.assess(document)
+        guard !assessment.isOpaqueReadOnly else { throw CADDocumentFormatError.opaqueAssociations }
+        let schemaVersion = max(project.formatVersion, max(assessment.requiredVersion, self.schemaVersion))
         let manifest = CADManifest(
             schemaVersion: schemaVersion,
             revision: revision + 1,
@@ -519,7 +702,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             appBuild: Self.appBuild,
             counts: [:]
         )
-        return CADWritePayload(
+        let payload = CADWritePayload(
             expectedRevision: revision,
             schemaVersion: schemaVersion,
             name: manifest.name,
@@ -532,6 +715,8 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             blobs: blobs,
             thumbnail: project.thumbnail
         )
+        try CADDocumentFormat.validateWrite(payload)
+        return payload
     }
 
     // MARK: Write (off-main: encode + hash + I/O)
@@ -541,6 +726,15 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     /// than clobbering the newer revision.
     @discardableResult
     func performWrite(_ payload: CADWritePayload) throws -> (revision: Int, contentSHA256: String) {
+        let committed = try performWriteWithIdentity(payload)
+        return (committed.revision, committed.contentSHA256)
+    }
+
+    /// File-store-only additive receipt API. The generic CADDocumentStore
+    /// protocol and its legacy tuple return stay unchanged for other stores.
+    /// Return the exact already-calculated hashes before releasing commit lock.
+    @discardableResult
+    func performWriteWithIdentity(_ payload: CADWritePayload) throws -> CADSaveOutcome {
         // Serialize every supported writer of this package with the
         // cancellation route's verify→delete critical section and with other
         // store instances for the same path (see `CADPackageGate`).
@@ -565,20 +759,15 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         // (revision guard passes on the stale in-memory value). Refusing here
         // preserves the foreign package; the caller surfaces the failure and
         // the draft/node are kept.
+        try CADDocumentFormat.validateWrite(payload)
         if fileManager.fileExists(atPath: manifestURL.path) {
-            let onDisk: CADManifest
-            do {
-                onDisk = try readManifest(at: packageURL)
-            } catch {
-                throw CADDocumentStoreError.commitFailed(
-                    "on-disk manifest unreadable: \(error.localizedDescription)")
+            let onDisk = try verifiedPackage(at: packageURL)
+            guard onDisk.manifest.revision == storedRevision else {
+                throw CADDocumentStoreError.revisionMoved(expected: storedRevision, actual: onDisk.manifest.revision)
             }
-            guard onDisk.revision == storedRevision else {
-                throw CADDocumentStoreError.revisionMoved(expected: storedRevision,
-                                                          actual: onDisk.revision)
-            }
+            guard !onDisk.formatAssessment.isOpaqueReadOnly else { throw CADDocumentFormatError.opaqueAssociations }
+            try CADDocumentFormat.validateWrite(payload, storedSchema: max(onDisk.manifest.schemaVersion, onDisk.formatAssessment.requiredVersion))
         } else if storedRevision != 0 {
-            // A package this store committed to is gone from disk.
             throw CADDocumentStoreError.commitFailed("package manifest missing")
         }
         let commitRevision = storedRevision + 1
@@ -649,9 +838,9 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             try JSONEncoder().encode(manifest)
                 .write(to: staging.appendingPathComponent("manifest.json"))
 
-            // Verify the staged commit decodes before rotating anything.
-            _ = try readManifest(at: staging)
-            let stagedDocument = try readDocument(at: staging)
+            // Verify the same complete digest/blob contract as an open before
+            // rotating anything. Do not redefine either writer identity.
+            let stagedDocument = try verifiedPackage(at: staging).document
             guard stagedDocument.bodies.count == payload.document.bodies.count else {
                 throw CADDocumentStoreError.commitFailed("staged body count mismatch")
             }
@@ -668,9 +857,11 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             try CADDocumentFaultInjection.beforeCommit?()
             try commit(staging: staging, transaction: transaction)
             storedRevision = commitRevision
+            storedSchemaVersion = payload.schemaVersion
             storedContentSHA256 = contentDigest
             storedModelSHA256 = modelDigest
-            return (commitRevision, contentDigest)
+            return CADSaveOutcome(revision: commitRevision, contentSHA256: contentDigest,
+                                  modelSHA256: modelDigest, error: nil)
         } catch {
             transaction.rollback()
             throw error
@@ -682,6 +873,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     func write(_ project: Project) throws {
         let payload = try makePayload(project)
         _ = try performWrite(payload)
+        project.formatVersion = max(project.formatVersion, payload.schemaVersion)
     }
 
     // MARK: Package-level staged create/overwrite
@@ -694,15 +886,23 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
                               payload: CADWritePayload,
                               overwrite: Bool,
                               fileManager: FileManager = .default) throws {
+        CADPackageGate.acquire(packageURL)
+        defer { CADPackageGate.release(packageURL) }
         let packageExists = fileManager.fileExists(atPath: packageURL.path)
         guard !packageExists || overwrite else {
             throw CADDocumentStoreError.commitFailed("package already exists")
         }
-        // The package-level swap is a supported write of THIS package path:
-        // serialize it with the same gate as in-place commits and the
-        // cancellation critical section.
-        CADPackageGate.acquire(packageURL)
-        defer { CADPackageGate.release(packageURL) }
+        try CADDocumentFormat.validateWrite(payload)
+        if packageExists {
+            let existing = try FileCADDocumentStore(packageURL: packageURL, fileManager: fileManager).verifiedPackage(at: packageURL)
+            guard existing.manifest.revision == payload.expectedRevision else {
+                throw CADDocumentStoreError.revisionMoved(expected: payload.expectedRevision, actual: existing.manifest.revision)
+            }
+            guard !existing.formatAssessment.isOpaqueReadOnly else { throw CADDocumentFormatError.opaqueAssociations }
+            try CADDocumentFormat.validateWrite(payload, storedSchema: max(existing.manifest.schemaVersion, existing.formatAssessment.requiredVersion))
+        } else if payload.expectedRevision != 0 {
+            throw CADDocumentStoreError.revisionMoved(expected: payload.expectedRevision, actual: 0)
+        }
         let staging = packageURL.deletingLastPathComponent()
             .appendingPathComponent(".\(packageURL.lastPathComponent).create-\(UUID().uuidString)")
         let backup = packageURL.deletingLastPathComponent()
@@ -715,8 +915,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             // Stage + verify a complete package at the sibling path.
             let stagedStore = FileCADDocumentStore(packageURL: staging, fileManager: fileManager)
             try stagedStore.writePayloadDirect(payload)
-            _ = try stagedStore.readManifest(at: staging)
-            _ = try stagedStore.readDocument(at: staging)
+            _ = try stagedStore.verifiedPackage(at: staging)
 
             try CADDocumentFaultInjection.beforeCreateSwap?()
 
@@ -750,6 +949,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     /// the staging package of `createPackage`). Assumes the directory is
     /// empty/new; no rotation.
     fileprivate func writePayloadDirect(_ payload: CADWritePayload) throws {
+        try CADDocumentFormat.validateWrite(payload)
         try fileManager.createDirectory(at: packageURL, withIntermediateDirectories: true)
         for (path, data) in payload.blobs {
             let url = packageURL.appendingPathComponent(path)
@@ -841,19 +1041,37 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     }
 
     private func restorePrevious() throws {
+        // Only ordinary open calls this method. Identity inspection must not
+        // acquire this gate: cancellation already owns it while it verifies.
+        CADPackageGate.acquire(packageURL)
+        defer { CADPackageGate.release(packageURL) }
+        // A supported writer may have completed between the missing-manifest
+        // observation and acquiring its gate. Read that current commit instead.
+        guard !fileManager.fileExists(atPath: manifestURL.path) else { return }
+        _ = try verifiedPackage(at: previousURL)
         let parent = packageURL.deletingLastPathComponent()
         let restoring = parent.appendingPathComponent(".\(packageURL.lastPathComponent).recover-\(UUID().uuidString)")
-        try fileManager.moveItem(at: previousURL, to: restoring)
-        if fileManager.fileExists(atPath: packageURL.path) {
-            try? fileManager.removeItem(at: packageURL)
+        let interrupted = parent.appendingPathComponent(".\(packageURL.lastPathComponent).interrupted-\(UUID().uuidString)")
+        var movedOriginal = false
+        do {
+            // Copy, then verify the copy. The original current/previous bytes
+            // remain recoverable even if copying or promotion fails.
+            try fileManager.copyItem(at: previousURL, to: restoring)
+            _ = try verifiedPackage(at: restoring)
+            if fileManager.fileExists(atPath: packageURL.path) {
+                try fileManager.moveItem(at: packageURL, to: interrupted)
+                movedOriginal = true
+            }
+            try fileManager.moveItem(at: restoring, to: packageURL)
+            // Keep the interrupted package as a sibling recovery point. It
+            // may contain newer residual geometry not present in `previous`.
+        } catch {
+            if movedOriginal, !fileManager.fileExists(atPath: packageURL.path) {
+                try? fileManager.moveItem(at: interrupted, to: packageURL)
+            }
+            try? fileManager.removeItem(at: restoring)
+            throw error
         }
-        try fileManager.createDirectory(at: packageURL, withIntermediateDirectories: true)
-        for name in ["manifest.json", "document.json", "blobs"] {
-            let source = restoring.appendingPathComponent(name)
-            guard fileManager.fileExists(atPath: source.path) else { continue }
-            try fileManager.moveItem(at: source, to: packageURL.appendingPathComponent(name))
-        }
-        try? fileManager.removeItem(at: restoring)
     }
 
     // MARK: Helpers

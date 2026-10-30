@@ -432,24 +432,68 @@ nonisolated enum OCCTKernel {
         }
     }
 
+    /// Exact `BRepPrimAPI_MakeBox` construction-face indices of one built box,
+    /// in the shared 1-based kernel face numbering (the numbering
+    /// `faceInfo` and the render channel use). The indices come from the SAME
+    /// handle's named maker faces — never from a second build or face order.
+    nonisolated struct PrimitiveBoxFaceIndices: Sendable, Equatable {
+        var xMin: Int
+        var xMax: Int
+        var yMin: Int
+        var yMax: Int
+        var zMin: Int
+        var zMax: Int
+    }
+
     /// Build the analytic OCCT solid for a primitive, matching Euclid's placement
     /// conventions so B-rep and CSG mesh coincide. `placement` is baked in.
     static func primitiveShape(_ spec: PrimitiveSpec, placement: Transform3D) -> BRepHandle? {
-        let kind: Int, a: Double, b: Double, c: Double
+        primitiveShapeWithBoxFaces(spec, placement: placement)?.handle
+    }
+
+    /// The primitive handle plus, for a box, the six exact construction-face
+    /// indices read from that SAME bridge result. `boxFaces` is nil for a
+    /// non-box primitive or when the bridge could not prove every named face
+    /// through its own transform history; callers must then refuse named
+    /// association instead of falling back to face ordinals.
+    static func primitiveShapeWithBoxFaces(
+        _ spec: PrimitiveSpec, placement: Transform3D
+    ) -> (handle: BRepHandle, boxFaces: PrimitiveBoxFaceIndices?)? {
+        let args = primitiveArguments(spec)
+        guard let built = OCCTBridge.primitiveShape(
+            withBoxFaceIndicesOfKind: args.kind, a: args.a, b: args.b, c: args.c,
+            transform: packedPrimitivePlacement(placement))
+        else { return nil }
+        let values: [Int32] = built.boxFaceIndices.withUnsafeBytes {
+            Array($0.bindMemory(to: Int32.self))
+        }
+        let faces: PrimitiveBoxFaceIndices?
+        if values.count == 6, values.allSatisfy({ $0 > 0 }) {
+            faces = PrimitiveBoxFaceIndices(
+                xMin: Int(values[0]), xMax: Int(values[1]),
+                yMin: Int(values[2]), yMax: Int(values[3]),
+                zMin: Int(values[4]), zMax: Int(values[5]))
+        } else {
+            faces = nil
+        }
+        return (BRepHandle(built.shape), faces)
+    }
+
+    private static func primitiveArguments(_ spec: PrimitiveSpec)
+        -> (kind: Int, a: Double, b: Double, c: Double) {
         switch spec {
-        case let .box(width, depth, height): kind = 0; a = width; b = depth; c = height
-        case let .cylinder(radius, height):  kind = 1; a = radius; b = height; c = 0
-        case let .sphere(radius):            kind = 2; a = radius; b = 0; c = 0
+        case let .box(width, depth, height): return (0, width, depth, height)
+        case let .cylinder(radius, height):  return (1, radius, height, 0)
+        case let .sphere(radius):            return (2, radius, 0, 0)
         }
-        var data: Data?
-        if placement != .identity {
-            let m = placement.matrix  // simd is column-major: m[col][row]
-            var flat = [Double]()
-            for r in 0..<3 { for col in 0..<4 { flat.append(m[col][r]) } }
-            data = flat.withUnsafeBytes { Data($0) }
-        }
-        return OCCTBridge.primitiveShape(ofKind: kind, a: a, b: b, c: c, transform: data)
-            .map(BRepHandle.init)
+    }
+
+    private static func packedPrimitivePlacement(_ placement: Transform3D) -> Data? {
+        guard placement != .identity else { return nil }
+        let m = placement.matrix  // simd is column-major: m[col][row]
+        var flat = [Double]()
+        for r in 0..<3 { for col in 0..<4 { flat.append(m[col][r]) } }
+        return flat.withUnsafeBytes { Data($0) }
     }
 
     /// True when a primitive has curved faces worth re-rendering through OCCT.

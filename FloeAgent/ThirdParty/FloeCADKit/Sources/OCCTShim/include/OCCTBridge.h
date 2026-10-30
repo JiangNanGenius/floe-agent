@@ -146,6 +146,23 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 @property (nonatomic, readonly) NSInteger rootCount;
 @end
 
+/// A primitive B-rep plus the exact construction-face identities of the SAME
+/// constructed handle. `boxFaceIndices` is six little-endian int32 values in
+/// XMin, XMax, YMin, YMax, ZMin, ZMax order — the `BRepPrimAPI_MakeBox`
+/// BackFace, FrontFace, LeftFace, RightFace, BottomFace and TopFace accessors
+/// (pinned OCCT 7.8.1: Bottom=ZMin, Back=XMin, Front=XMax, Left=YMin,
+/// Right=YMax, Top=ZMax) mapped into the result's
+/// `TopExp::MapShapes(..., TopAbs_FACE)` numbering. When a placement is
+/// applied, each named face is followed through the transform builder's own
+/// `ModifiedShape()` history — never re-created, re-ordered or inferred from
+/// face ordinals. Empty for a non-box primitive or when a mapping cannot be
+/// proven; geometry is still returned in the latter case so callers can
+/// refuse names without losing the solid.
+@interface OCCTPrimitiveShape : NSObject
+@property (nonatomic, readonly, strong) OCCTShape *shape;
+@property (nonatomic, readonly, copy) NSData *boxFaceIndices;
+@end
+
 @interface OCCTBridge : NSObject
 
 /// OCCT version string (e.g. "7.8.1") — proves the library linked and runs.
@@ -330,6 +347,15 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
                                            c:(double)c
                                    transform:(nullable NSData *)transform;
 
+/// Build a primitive and its exact box construction-face metadata from one
+/// handle. Callers that only need geometry keep using
+/// `primitiveShapeOfKind:...`.
++ (nullable OCCTPrimitiveShape *)primitiveShapeWithBoxFaceIndicesOfKind:(NSInteger)kind
+                                                                      a:(double)a
+                                                                      b:(double)b
+                                                                      c:(double)c
+                                                              transform:(nullable NSData *)transform;
+
 /// Apply a rigid placement to a solid. `transform` is 12 packed doubles
 /// (row-major 3×4). Needed because a `Body` carries its own transform, which
 /// must be baked in before two solids can be booleaned in a common space.
@@ -385,6 +411,16 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
                                     op:(NSInteger)op
                                 status:(nullable OCCTOpStatus *)status
                                history:(nullable OCCTShapeHistory *)history;
+
+/// Sweep the selected exact planar face, including its analytic inner wires,
+/// then fuse/cut using the ordinary validated, non-destructive boolean path.
++ (nullable OCCTShape *)pushedPlanarFaceOfShape:(OCCTShape *)shape
+                                      atPointX:(double)x y:(double)y z:(double)z
+                                      normalX:(double)nx normalY:(double)ny normalZ:(double)nz
+                                      distance:(double)distance
+                                     tolerance:(double)tolerance
+                                        status:(nullable OCCTOpStatus *)status
+    NS_SWIFT_NAME(pushedPlanarFace(of:atPointX:y:z:normalX:normalY:normalZ:distance:tolerance:status:));
 
 /// Remove the faces nearest `worldPoints` and heal the result
 /// (`BRepAlgoAPI_Defeaturing`) — spec §4.16 Delete Face. A face counts as picked

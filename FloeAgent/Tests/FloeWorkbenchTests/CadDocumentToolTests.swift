@@ -1767,6 +1767,116 @@ struct CadNativeEditToolTests {
         }
     }
 
+    @Test("variable and feature expression actions route through parameters with typed fields")
+    func variableAndExpressionActionsRouteAndValidate() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"mutated":true,"revision":8,"change_count":5}"#)
+        let tool = CadDocumentTool(host: host)
+        let variableID = UUID().uuidString
+        let featureID = UUID().uuidString
+
+        let cases: [(String, String)] = [
+            ("variable.create",
+             #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"variable.create\",\"name\":\"width\",\"expression\":\"40\"}"}"#),
+            ("variable.update",
+             #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"variable.update\",\"variable_id\":\"\#(variableID)\",\"name\":\"span\",\"expected_expression\":\"40\"}"}"#),
+            ("variable.delete",
+             #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"variable.delete\",\"variable_id\":\"\#(variableID)\"}"}"#),
+            ("feature.setExpression",
+             #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"feature.setExpression\",\"feature_id\":\"\#(featureID)\",\"parameter\":\"distance\",\"expression\":\"width + 2\",\"expected_expression\":\"\"}"}"#),
+        ]
+        for (action, json) in cases {
+            _ = try await execute(tool, json, context: makeContext())
+            let requests = await host.threeDRequests
+            let lastRequest = try #require(requests.last)
+            let request = try #require((try JSONSerialization.jsonObject(
+                with: Data(lastRequest.utf8))) as? [String: Any])
+            #expect(request["kind"] as? String == "parameters")
+            let payload = try #require(request["payload"] as? [String: Any])
+            #expect(payload["action"] as? String == action)
+        }
+
+        // The schema and capability text advertise the same executable names
+        // and the unit/fence contract; a typo or missing typed field is refused
+        // before the host.
+        let schema = CadDocumentTool.parametersJSON
+        for token in ["variable.create", "variable.update", "variable.delete",
+                      "feature.setExpression", "radians(", "expected_expression"] {
+            #expect(schema.contains(token), "schema must advertise \(token)")
+        }
+        let invalid: [String] = [
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"variable.create\",\"name\":\"x\"}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"variable.update\",\"variable_id\":\"x\"}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"variable.delete\"}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"feature.setExpression\",\"feature_id\":\"x\",\"parameter\":\"distance\"}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"feature.setExpression\",\"feature_id\":\"x\",\"expression\":\"a\"}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"variable.update\",\"variable_id\":\"x\",\"expression\":\"1\",\"expected_expression\":3}"}"#,
+        ]
+        for json in invalid {
+            let args = try decode(json)
+            #expect(throws: FloeError.self) { try tool.validate(args) }
+        }
+    }
+
+    @Test("datum and support edits route to parameters and validate complete source selections")
+    func datumActionsRouteAndValidate() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"mutated":true}"#)
+        let tool = CadDocumentTool(host: host)
+        let plane = UUID().uuidString
+        let sketch = UUID().uuidString
+        let body = UUID().uuidString
+        func request(_ payload: [String: Any]) throws -> String {
+            let encoded = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+            return String(decoding: try JSONSerialization.data(withJSONObject: [
+                "action": "parameters", "path": "part.floecad", "payload": encoded
+            ]), as: UTF8.self)
+        }
+        let valid: [[String: Any]] = [
+            ["action": "datum.offsetPlane.create", "body_id": body, "face_index": 1,
+             "query_token": "fresh-face-proof", "expression": "gap + 2"],
+            ["action": "datum.offsetPlane.update", "plane_id": plane, "expression": "0"],
+            ["action": "datum.offsetPlane.update", "plane_id": plane, "body_id": body,
+             "face_index": 2, "query_token": "new-face-proof"],
+            ["action": "datum.offsetPlane.delete", "plane_id": plane],
+            ["action": "sketch.setSupport", "sketch_id": sketch, "plane_id": plane],
+            ["action": "sketch.clearSupport", "sketch_id": sketch],
+        ]
+        for payload in valid {
+            _ = try await execute(tool, try request(payload), context: makeContext())
+            let requests = await host.threeDRequests
+            let last = try #require(requests.last)
+            let routed = try #require(try JSONSerialization.jsonObject(with: Data(last.utf8)) as? [String: Any])
+            #expect(routed["kind"] as? String == "parameters")
+            let fields = try #require(routed["payload"] as? [String: Any])
+            #expect(fields["action"] as? String == payload["action"] as? String)
+        }
+        let invalid: [[String: Any]] = [
+            ["action": "datum.offsetPlane.create", "body_id": body, "face_index": 1, "expression": "2"],
+            ["action": "datum.offsetPlane.create", "body_id": body, "face_index": 1.5,
+             "query_token": "proof", "expression": "2"],
+            ["action": "datum.offsetPlane.create", "body_id": body, "face_index": 0,
+             "query_token": "proof", "expression": "2"],
+            ["action": "datum.offsetPlane.update", "plane_id": plane, "body_id": body],
+            ["action": "datum.offsetPlane.update", "plane_id": plane],
+            ["action": "datum.offsetPlane.update", "plane_id": plane, "expression": " "],
+            ["action": "datum.offsetPlane.update", "plane_id": plane, "size": -1],
+            ["action": "datum.offsetPlane.update", "plane_id": plane, "expression": "2", "expected_expression": 4],
+            ["action": "datum.offsetPlane.delete"],
+            ["action": "sketch.setSupport", "sketch_id": sketch],
+            ["action": "sketch.clearSupport"],
+        ]
+        for payload in invalid {
+            let args = try decode(request(payload))
+            #expect(throws: FloeError.self) { try tool.validate(args) }
+        }
+        #expect(CadDocumentTool.nativeQueryScopes.contains("planes"))
+        for token in ["datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
+                      "sketch.setSupport", "sketch.clearSupport", "query_token", "face_index"] {
+            #expect(CadDocumentTool.parametersJSON.contains(token))
+        }
+    }
+
     @Test("capture returns a real image artifact bound to revision/change count")
     func captureReturnsArtifact() async throws {
         let host = FakeCadHost()

@@ -347,7 +347,7 @@ extension FloeCADDocument {
             documentRevision: revision,
             changeCount: session.changeCount,
             contentSHA256: contentSHA256,
-            modelSHA256: store.modelSHA256,
+            modelSHA256: session.savedIdentity.modelSHA256,
             unit: "mm",
             coordinateSystem: "right-handed-y-up-mm",
             bodies: bodies,

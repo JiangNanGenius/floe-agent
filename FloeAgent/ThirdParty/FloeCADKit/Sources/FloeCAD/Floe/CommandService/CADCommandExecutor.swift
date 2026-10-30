@@ -402,6 +402,7 @@ final class CADCommandExecutor {
         // before it (practice problems round 6, bug 4, 2026-09-16). And one
         // undo of a feature that built reverted only its rebuild, leaving the
         // node in History over the old bodies.
+        let checkpoint = session.captureEditCheckpoint()
         session.recordAndRebuild([node], title: node.name)
 
         var produced: [BodyID] = []
@@ -435,9 +436,13 @@ final class CADCommandExecutor {
         // bodies and bumps `meshRevision` on nodes it did not semantically
         // touch, so a failed feature can still look like it moved something.
         if let mine = errors[node.id] {
+            session.restoreEditCheckpoint(checkpoint)
             payload["failed"] = true
-            payload["message"] = "\(node.name) was recorded but did not build: \(mine). "
-                + "For a profile feature the usual cause is a seed point outside any closed region."
+            payload["message"] = "\(node.name) could not be completed: \(mine). The document was preserved."
+            payload["error"] = "feature_failed"
+            payload["ok"] = false
+            payload["undoSteps"] = 0
+            return .json(422, "Unprocessable Entity", payload)
         } else if produced.isEmpty && changed.isEmpty && removed.isEmpty {
             payload["warning"] = "The feature was recorded but changed nothing — no body was "
                 + "added, modified or removed. For a boolean, check the tools actually "
@@ -925,7 +930,22 @@ final class CADCommandExecutor {
         case let .ok(minted): refs = minted
         case let .reply(reply): return reply
         }
-        return record(FeatureNode(name: name, kind: kind(refs[0]),
+        let feature = kind(refs[0])
+        // Refuse the known unsupported exact edits before a speculative
+        // rebuild, preserving clean/undo/redo state as well as the B-rep.
+        let refusal: KernelOps.ExactEditError?
+        switch feature {
+        case .scaleFace: refusal = .unsupported("Face scaling")
+        case .rotateFace: refusal = .unsupported("Face rotation")
+        case .pushPull(_, _, .cylinderRadial): refusal = .unsupported("Radial face movement")
+        case let .moveFace(_, delta) where abs(delta.point.x) > 1e-7 || abs(delta.point.y) > 1e-7:
+            refusal = .unsupported("Tangential face movement")
+        default: refusal = nil
+        }
+        if let refusal {
+            return .failure(422, "Unprocessable Entity", error: "exact_edit_unsupported", message: refusal.message)
+        }
+        return record(FeatureNode(name: name, kind: feature,
                                   outputBodyIDs: [bodyID]), on: viewModel)
     }
 

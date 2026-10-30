@@ -53,6 +53,8 @@
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Curve2d.hxx>
+#include <GeomAbs_CurveType.hxx>
 #include <BRepAlgoAPI_Section.hxx>
 #include <GCPnts_UniformDeflection.hxx>
 #include <GCPnts_AbscissaPoint.hxx>
@@ -170,6 +172,17 @@
 }
 @end
 @implementation OCCTShape
+@end
+
+@interface OCCTPrimitiveShape () {
+@public
+    OCCTShape *_shape;
+    NSData *_boxFaceIndices;
+}
+@end
+@implementation OCCTPrimitiveShape
+@synthesize shape = _shape;
+@synthesize boxFaceIndices = _boxFaceIndices;
 @end
 
 @interface OCCTPlaneBasis () {
@@ -606,6 +619,38 @@ static OCCTRenderMesh *TessellateShape(const TopoDS_Shape &solid,
 - (NSData *)indices { return _indices; }
 - (NSData *)faceIndices { return _faceIndices; }
 @end
+
+// Pack the six NAMED construction faces of a box into the result's 1-based
+// TopExp face numbering. `builder` is the transform that produced `shape`, or
+// null when the placement was identity; when present, each named face is
+// followed through the builder's OWN ModifiedShape() history so every index
+// refers to the SAME result handle. Nil means "this provenance is incomplete"
+// — callers must refuse name-based association instead of pairing ordinals.
+static NSData *OS3DBoxFaceIndices(
+    const TopoDS_Shape &shape,
+    const BRepBuilderAPI_Transform *builder,
+    const TopoDS_Face &xMin, const TopoDS_Face &xMax,
+    const TopoDS_Face &yMin, const TopoDS_Face &yMax,
+    const TopoDS_Face &zMin, const TopoDS_Face &zMax) {
+    TopoDS_Face faces[6] = {xMin, xMax, yMin, yMax, zMin, zMax};
+    if (builder != nullptr) {
+        for (int i = 0; i < 6; ++i) {
+            if (faces[i].IsNull()) return nil;
+            const TopoDS_Shape mapped = builder->ModifiedShape(faces[i]);
+            if (mapped.IsNull() || mapped.ShapeType() != TopAbs_FACE) return nil;
+            faces[i] = TopoDS::Face(mapped);
+        }
+    }
+    TopTools_IndexedMapOfShape faceMap;
+    TopExp::MapShapes(shape, TopAbs_FACE, faceMap);
+    int32_t packed[6];
+    for (int i = 0; i < 6; ++i) {
+        const Standard_Integer index = faceMap.FindIndex(faces[i]);
+        if (index <= 0) return nil;
+        packed[i] = (int32_t)index;
+    }
+    return [NSData dataWithBytes:packed length:sizeof(packed)];
+}
 
 @implementation OCCTBridge
 
@@ -1112,13 +1157,42 @@ static gp_Trsf OS3DBasisTransform(OCCTPlaneBasis *basis) {
                                            b:(double)b
                                            c:(double)c
                                    transform:(nullable NSData *)transform {
+    return [self primitiveShapeWithBoxFaceIndicesOfKind:kind
+                                                      a:a
+                                                      b:b
+                                                      c:c
+                                              transform:transform].shape;
+}
+
++ (nullable OCCTPrimitiveShape *)primitiveShapeWithBoxFaceIndicesOfKind:(NSInteger)kind
+                                                                      a:(double)a
+                                                                      b:(double)b
+                                                                      c:(double)c
+                                                              transform:(nullable NSData *)transform {
     try {
         TopoDS_Shape shape;
+        // The named construction faces EXIST only for a box. They are fetched
+        // from the maker itself, never derived from face order.
+        bool isBox = (kind == 0);
+        TopoDS_Face xMin, xMax, yMin, yMax, zMin, zMax;
         switch (kind) {
-            case 0:  // box: Euclid centers x/z and puts the base on y=0
+            case 0: {  // box: Euclid centers x/z and puts the base on y=0
                 if (a <= 0 || b <= 0 || c <= 0) return nil;
-                shape = BRepPrimAPI_MakeBox(gp_Pnt(-a / 2.0, 0.0, -b / 2.0), a, c, b).Shape();
+                BRepPrimAPI_MakeBox maker(gp_Pnt(-a / 2.0, 0.0, -b / 2.0), a, c, b);
+                maker.Build();
+                shape = maker.Shape();
+                // Pinned OCCT 7.8.1 BRepPrimAPI_MakeBox accessor semantics:
+                // Bottom=ZMin, Back=XMin, Front=XMax, Left=YMin, Right=YMax,
+                // Top=ZMax. The maker is built with dx=a, dy=c, dz=b, so the
+                // local construction axes are X=width, Y=height, Z=depth.
+                xMin = maker.BackFace();
+                xMax = maker.FrontFace();
+                yMin = maker.LeftFace();
+                yMax = maker.RightFace();
+                zMin = maker.BottomFace();
+                zMax = maker.TopFace();
                 break;
+            }
             case 1:  // cylinder: base on y=0, axis +Y
                 if (a <= 0 || b <= 0) return nil;
                 shape = BRepPrimAPI_MakeCylinder(
@@ -1129,16 +1203,44 @@ static gp_Trsf OS3DBasisTransform(OCCTPlaneBasis *basis) {
                 shape = BRepPrimAPI_MakeSphere(gp_Pnt(0.0, a, 0.0), a).Shape();
                 break;
         }
+
+        NSData *boxFaceIndices = [NSData data];
         if (transform != nil && transform.length >= 12 * sizeof(double)) {
             const double *m = (const double *)transform.bytes;  // row-major 3x4
             gp_Trsf t;
             t.SetValues(m[0], m[1], m[2],  m[3],
                         m[4], m[5], m[6],  m[7],
                         m[8], m[9], m[10], m[11]);
-            shape = BRepBuilderAPI_Transform(shape, t, Standard_True).Shape();
+            BRepBuilderAPI_Transform builder(shape, t, Standard_True);
+            const TopoDS_Shape placed = builder.Shape();
+            if (isBox) {
+                // Follow each named construction face through the builder's
+                // OWN history. An empty mapping is reported honestly rather
+                // than pairing the transformed shape by ordinal position.
+                try {
+                    NSData *mapped = OS3DBoxFaceIndices(
+                        placed, &builder, xMin, xMax, yMin, yMax, zMin, zMax);
+                    if (mapped != nil) boxFaceIndices = mapped;
+                } catch (...) {
+                    boxFaceIndices = [NSData data];
+                }
+            }
+            shape = placed;
+        } else if (isBox) {
+            try {
+                NSData *mapped = OS3DBoxFaceIndices(
+                    shape, nullptr, xMin, xMax, yMin, yMax, zMin, zMax);
+                if (mapped != nil) boxFaceIndices = mapped;
+            } catch (...) {
+                boxFaceIndices = [NSData data];
+            }
         }
-        OCCTShape *out = [OCCTShape new];
-        out->_shape = shape;
+
+        OCCTShape *handle = [OCCTShape new];
+        handle->_shape = shape;
+        OCCTPrimitiveShape *out = [OCCTPrimitiveShape new];
+        out->_shape = handle;
+        out->_boxFaceIndices = boxFaceIndices;
         return out;
     } catch (...) {
         return nil;
@@ -2130,6 +2232,53 @@ static std::set<Standard_Integer> OS3DNearestFaces(
         }
     }
     return chosen;
+}
+
+// Preserve the exact selected face; rebuilding a polygon outline here would
+// facet circular holes and turn an apparently successful pull into data loss.
++ (nullable OCCTShape *)pushedPlanarFaceOfShape:(OCCTShape *)shape
+                                      atPointX:(double)x y:(double)y z:(double)z
+                                      normalX:(double)nx normalY:(double)ny normalZ:(double)nz
+                                      distance:(double)distance
+                                     tolerance:(double)tolerance
+                                        status:(nullable OCCTOpStatus *)status {
+    OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"invalid planar push/pull");
+    if (shape == nil || !std::isfinite(distance) || fabs(distance) < 1e-9) return nil;
+    try {
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(shape->_shape, TopAbs_FACE, faces);
+        const double point[] = {x, y, z};
+        const auto chosen = OS3DNearestFaces(faces, point, 1, tolerance);
+        if (chosen.size() != 1) {
+            OS3DSetStatus(status, OCCTOpCodeNoTargetMatched, @"no exact planar face at the pick");
+            return nil;
+        }
+        const TopoDS_Face face = TopoDS::Face(faces(*chosen.begin()));
+        BRepAdaptor_Surface surface(face);
+        if (surface.GetType() != GeomAbs_Plane) return nil;
+        gp_Dir normal = surface.Plane().Axis().Direction();
+        if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
+        const gp_Dir requested(nx, ny, nz);
+        if (normal.Dot(requested) < 1.0 - 1e-6) return nil;
+        // A private copy keeps snapshots/undo handles immutable, including
+        // topology touched by OCCT's prism builder.
+        const TopoDS_Face copied = TopoDS::Face(BRepBuilderAPI_Copy(face, Standard_True, Standard_False).Shape());
+        BRepPrimAPI_MakePrism prism(copied, gp_Vec(normal) * distance, Standard_True);
+        OS3D_GUARDED(status, "planar push/pull", prism.Build());
+        if (!prism.IsDone() || prism.Shape().IsNull()) return nil;
+        if (prism.Shape().ShapeType() != TopAbs_SOLID) return nil;
+        TopoDS_Solid solid = TopoDS::Solid(prism.Shape());
+        if (!BRepLib::OrientClosedSolid(solid)) return nil;
+        OCCTShape *tool = [OCCTShape new];
+        tool->_shape = solid;
+        return [self booleanOfShape:shape withShape:tool op:(distance > 0 ? 0 : 1) status:status];
+    } catch (Standard_Failure &e) {
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused, [NSString stringWithUTF8String:e.GetMessageString()]);
+        return nil;
+    } catch (...) {
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"kernel exception");
+        return nil;
+    }
 }
 
 + (nullable OCCTShape *)defeaturedShape:(OCCTShape *)shape
@@ -3124,22 +3273,84 @@ static bool OS3DFilletBuilds(const TopoDS_Shape &shape,
     }
 }
 
-// Exact volume via BRepGProp; 0 on any failure. Shared by the public
-// volumeOfShape: and the shell sanity check.
-//
-// The ADAPTIVE overload, integrating per knot span to a relative precision.
-// The default fixed-order Gauss rule is exact for planar and analytic faces
-// but not across a B-spline's knot spans: a spline-walled extrude read 0.4–
-// 1.3% high depending only on how the same curve was parameterised (found by
-// the spline-profile pin, 2026-09-02). With Eps + IsUseSpan the B-rep volume
-// matches the closed-form area × height to 1e-6.
-static double OS3DVolume(const TopoDS_Shape &shape) {
+// Keep OCCT's existing knot-span Gauss-Kronrod path for spline/Bezier or
+// unclassified geometry. Certified elementary surfaces with elementary 3D
+// and parametric boundary curves can use OCCT's adaptive Gauss algorithm;
+// this avoids nested Kronrod refinement on nearly cancelling plane terms.
+// Both algorithms integrate the exact B-rep at Eps1e-7, not its mesh.
+static bool OS3DIsElementaryVolumeCurve(GeomAbs_CurveType type) {
+    switch (type) {
+        case GeomAbs_Line:
+        case GeomAbs_Circle:
+        case GeomAbs_Ellipse:
+        case GeomAbs_Hyperbola:
+        case GeomAbs_Parabola:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool OS3DHasElementaryVolumeGeometry(const TopoDS_Shape &shape) {
+    bool sawFace = false;
+    try {
+        for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next()) {
+            const TopoDS_Face face = TopoDS::Face(faces.Current());
+            sawFace = true;
+            BRepAdaptor_Surface surface(face, Standard_False);
+            switch (surface.GetType()) {
+                case GeomAbs_Plane:
+                case GeomAbs_Cylinder:
+                case GeomAbs_Cone:
+                case GeomAbs_Sphere:
+                case GeomAbs_Torus:
+                    break;
+                default:
+                    return false;
+            }
+            for (TopExp_Explorer edges(face, TopAbs_EDGE); edges.More(); edges.Next()) {
+                const TopoDS_Edge edge = TopoDS::Edge(edges.Current());
+                // Integration follows the face's pcurve. Analytic supporting
+                // surfaces alone are insufficient for spline-trimmed faces.
+                BRepAdaptor_Curve2d pcurve(edge, face);
+                if (!OS3DIsElementaryVolumeCurve(pcurve.GetType())) return false;
+                if (!BRep_Tool::Degenerated(edge)) {
+                    BRepAdaptor_Curve curve(edge);
+                    if (!OS3DIsElementaryVolumeCurve(curve.GetType())) return false;
+                }
+            }
+        }
+        return sawFace;
+    } catch (...) {
+        // Unknown geometry retains the original precision-preserving path.
+        return false;
+    }
+}
+
+enum class OS3DVolumeIntegration { AdaptiveGauss, SpanKronrod };
+
+// Exact-geometry volume via existing OCCT algorithms;0 on any exception.
+// The historical spline-profile pin needs GK(Eps1e-7,IsUseSpantrue): default
+// fixed-order Gauss was0.4-1.3% high across knot spans. Do not remove that
+// path or replace it with triangulation when repairing analytic performance.
+static double OS3DVolume(const TopoDS_Shape &shape,
+                         OS3DVolumeIntegration *integration = nullptr) {
     if (shape.IsNull()) return 0.0;
     try {
         GProp_GProps props;
-        BRepGProp::VolumePropertiesGK(shape, props, /*Eps*/ 1e-7,
-                                      /*OnlyClosed*/ Standard_False,
-                                      /*IsUseSpan*/ Standard_True);
+        if (OS3DHasElementaryVolumeGeometry(shape)) {
+            if (integration) *integration = OS3DVolumeIntegration::AdaptiveGauss;
+            // OCCT7.8.1's Eps overload internally passes UseTriangulationfalse.
+            // An explicit Standard_Real selects it, not the bool overload.
+            BRepGProp::VolumeProperties(shape, props, Standard_Real(1e-7),
+                                        /*OnlyClosed*/ Standard_False,
+                                        /*SkipShared*/ Standard_False);
+        } else {
+            if (integration) *integration = OS3DVolumeIntegration::SpanKronrod;
+            BRepGProp::VolumePropertiesGK(shape, props, /*Eps*/ 1e-7,
+                                          /*OnlyClosed*/ Standard_False,
+                                          /*IsUseSpan*/ Standard_True);
+        }
         return props.Mass();
     } catch (...) {
         return 0.0;
@@ -3909,7 +4120,10 @@ static const NSUInteger kOS3DMaxFindings = 200;
             counts[kind.key] = @((NSInteger)map.Extent());
         }
         report[@"counts"] = counts;
-        report[@"volumeMM3"] = @(OS3DVolume(root));
+        OS3DVolumeIntegration volumeIntegration = OS3DVolumeIntegration::SpanKronrod;
+        report[@"volumeMM3"] = @(OS3DVolume(root, &volumeIntegration));
+        report[@"volumeIntegration"] = volumeIntegration == OS3DVolumeIntegration::AdaptiveGauss
+            ? @"occt-adaptive-gauss" : @"occt-kronrod-spans";
         ShapeAnalysis_ShapeTolerance tolAnalysis;
         report[@"tolerance"] = @{
             @"min": @(tolAnalysis.Tolerance(root, -1)),

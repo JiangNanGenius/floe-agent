@@ -26,6 +26,7 @@ struct ItemsPanelView: View {
 
     /// Folders shown collapsed (view state — not part of the document).
     @State private var collapsedFolders: Set<ItemFolderID> = []
+    @State private var editingOffsetPlane: ConstructionPlane?
 
     var body: some View {
         let document = viewModel.session.document
@@ -155,6 +156,9 @@ struct ItemsPanelView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
         .shadow(color: .black.opacity(0.15), radius: 10, y: 3)
         .accessibilityIdentifier("ItemsPanel")
+        .sheet(item: $editingOffsetPlane) { plane in
+            OffsetPlaneEditSheet(viewModel: viewModel, plane: plane)
+        }
     }
 
     // MARK: Header
@@ -290,6 +294,8 @@ struct ItemsPanelView: View {
                 renameable: false, isSelected: viewModel.selectedPlane?.id == id,
                 depth: depth, dragPayload: payload, moveTargets: targets,
                 onMove: onMove, onNewFolder: onNewFolder,
+                onEdit: plane.definition != nil && !viewModel.session.isReadOnly
+                    ? { editingOffsetPlane = plane } : nil,
                 onSelect: { viewModel.selectItemPlane(id) },
                 onToggleVisibility: { viewModel.setItemHidden(.plane(id), hidden: !plane.isHidden) },
                 onRename: { _ in },
@@ -610,6 +616,7 @@ private struct ItemRowView: View {
     var moveTargets: [ItemsMoveTarget] = []
     var onMove: ((ItemFolderID?) -> Void)? = nil
     var onNewFolder: (() -> Void)? = nil
+    var onEdit: (() -> Void)? = nil
     let onSelect: () -> Void
     let onToggleVisibility: () -> Void
     let onRename: (String) -> Void
@@ -697,6 +704,11 @@ private struct ItemRowView: View {
 
     @ViewBuilder
     private var menuItems: some View {
+        if let onEdit {
+            Button(action: onEdit) {
+                Label(FloeCADStrings.text("cad.datum.editOffset", "Edit Offset"), systemImage: "slider.horizontal.3")
+            }
+        }
             if renameable && nameTapSelects {
                 Button {
                     draft = name
@@ -758,6 +770,71 @@ private struct OptionalDraggable: ViewModifier {
             content.draggable(payload)
         } else {
             content
+        }
+    }
+}
+
+
+/// The same formula/CAS service used by assistant edits; the sheet owns only
+/// the user's draft and never a second geometry or undo state.
+private struct OffsetPlaneEditSheet: View {
+    @Bindable var viewModel: EditorViewModel
+    let planeID: ConstructionPlaneID
+    let expectedExpression: String
+    @State private var expression: String
+    @State private var feedback: String?
+    @Environment(\.dismiss) private var dismiss
+
+    init(viewModel: EditorViewModel, plane: ConstructionPlane) {
+        self.viewModel = viewModel
+        planeID = plane.id
+        if case let .offset(definition)? = plane.definition {
+            expectedExpression = definition.distance.formula ?? ""
+            _expression = State(initialValue: definition.distance.formula ?? String(definition.distance.value))
+        } else {
+            expectedExpression = ""
+            _expression = State(initialValue: "0")
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField(FloeCADStrings.text("cad.datum.offsetMillimetres", "Offset (mm)"), text: $expression)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit(apply)
+                        .accessibilityIdentifier("DatumOffsetExpression")
+                } footer: {
+                    Text(FloeCADStrings.text("cad.datum.formulaHint", "Enter a distance or a formula using document variables."))
+                }
+                if let feedback {
+                    Text(feedback).foregroundStyle(.red).accessibilityIdentifier("DatumOffsetError")
+                }
+            }
+            .navigationTitle(FloeCADStrings.text("cad.datum.editOffset", "Edit Offset"))
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(FloeCADStrings.text("cad.ui.common.done", "Done"), action: apply)
+                        .disabled(expression.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("DatumOffsetApply")
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func apply() {
+        if viewModel.updateOffsetPlane(planeID, expression: expression, expectedExpression: expectedExpression) {
+            dismiss()
+        } else {
+            feedback = viewModel.errorMessage
+            viewModel.errorMessage = nil
         }
     }
 }

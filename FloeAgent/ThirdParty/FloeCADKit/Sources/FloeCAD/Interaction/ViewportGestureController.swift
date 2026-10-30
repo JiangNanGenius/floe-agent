@@ -26,6 +26,11 @@ protocol ViewportGestureDelegate: AnyObject {
     func gestureDragBegan(at point: CGPoint, isPencil: Bool) -> Bool
     func gestureDragChanged(at point: CGPoint)
     func gestureDragEnded(at point: CGPoint)
+    func gestureDragCancelled(at point: CGPoint)
+    func gestureDragBegan(at point: CGPoint, isPencil: Bool, gestureID: UUID) -> Bool
+    func gestureDragChanged(at point: CGPoint, gestureID: UUID)
+    func gestureDragEnded(at point: CGPoint, gestureID: UUID)
+    func gestureDragCancelled(at point: CGPoint, gestureID: UUID)
     /// Long-press (plan §B13, spec §8.3): Select Through popup listing every
     /// body under the point through depth.
     func gestureLongPressed(at point: CGPoint)
@@ -34,6 +39,16 @@ protocol ViewportGestureDelegate: AnyObject {
     func gestureHovered(at point: CGPoint?)
     /// The Apple Pencil's double-tap (or squeeze) gesture fired.
     func gesturePencilDoubleTapped()
+}
+
+extension ViewportGestureDelegate {
+    func gestureDragCancelled(at point: CGPoint) { gestureDragEnded(at: point) }
+    func gestureDragBegan(at point: CGPoint, isPencil: Bool, gestureID: UUID) -> Bool {
+        gestureDragBegan(at: point, isPencil: isPencil)
+    }
+    func gestureDragChanged(at point: CGPoint, gestureID: UUID) { gestureDragChanged(at: point) }
+    func gestureDragEnded(at point: CGPoint, gestureID: UUID) { gestureDragEnded(at: point) }
+    func gestureDragCancelled(at point: CGPoint, gestureID: UUID) { gestureDragCancelled(at: point) }
 }
 
 final class ViewportGestureController: NSObject {
@@ -132,7 +147,28 @@ final class ViewportGestureController: NSObject {
 
     // MARK: - Handlers
 
-    private var dragClaimed = false
+    private var claimedDragID: UUID?
+    private var dragClaimed: Bool { claimedDragID != nil }
+
+    /// The actual recognizer and component input tests share this delivery
+    /// path. Every delivery carries the identity acquired at touch begin.
+    @discardableResult
+    func claimDrag(at point: CGPoint, isPencil: Bool) -> Bool {
+        if claimedDragID != nil { finishClaimedDrag(at: point, cancelled: true) }
+        let id = UUID()
+        guard delegate?.gestureDragBegan(at: point, isPencil: isPencil, gestureID: id) == true else { return false }
+        claimedDragID = id
+        return true
+    }
+    func changeClaimedDrag(at point: CGPoint) {
+        if let id = claimedDragID { delegate?.gestureDragChanged(at: point, gestureID: id) }
+    }
+    func finishClaimedDrag(at point: CGPoint, cancelled: Bool) {
+        guard let id = claimedDragID else { return }
+        claimedDragID = nil
+        if cancelled { delegate?.gestureDragCancelled(at: point, gestureID: id) }
+        else { delegate?.gestureDragEnded(at: point, gestureID: id) }
+    }
 
     @objc private func handleOrbit(_ gesture: UIPanGestureRecognizer) {
         guard let view, let renderer else { return }
@@ -159,14 +195,14 @@ final class ViewportGestureController: NSObject {
                 ?? CGPoint(x: location.x - translation.x, y: location.y - translation.y)
             orbitTouchDown = nil
             lastPanLocation = start
-            dragClaimed = delegate?.gestureDragBegan(at: start, isPencil: orbitTouchIsPencil) ?? false
+            claimDrag(at: start, isPencil: orbitTouchIsPencil)
             if dragClaimed, start != location {
-                delegate?.gestureDragChanged(at: location)
+                changeClaimedDrag(at: location)
                 redraw()
             }
         case .changed:
             if dragClaimed {
-                delegate?.gestureDragChanged(at: location)
+                changeClaimedDrag(at: location)
                 redraw()
             } else if orbitTouchIsPencil {
                 // Pencil never orbits (spec §7.1) — unclaimed pencil drags
@@ -181,12 +217,11 @@ final class ViewportGestureController: NSObject {
                 redraw()
                 cameraChanged?()
             }
-        case .ended, .cancelled, .failed:
-            if dragClaimed {
-                delegate?.gestureDragEnded(at: location)
-                dragClaimed = false
-                redraw()
-            }
+        case .ended:
+            if dragClaimed { finishClaimedDrag(at: location, cancelled: false); redraw() }
+            endInteractive()
+        case .cancelled, .failed:
+            if dragClaimed { finishClaimedDrag(at: location, cancelled: true); redraw() }
             endInteractive()
         default:
             break

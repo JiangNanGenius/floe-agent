@@ -35,6 +35,7 @@ public final class CADMaterialService {
     // MARK: - Router
 
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "material", action: action) { return refusal }
         if let failure = revisionPinFailure(args) { return failure }
         switch action {
         case "list": return list(args)

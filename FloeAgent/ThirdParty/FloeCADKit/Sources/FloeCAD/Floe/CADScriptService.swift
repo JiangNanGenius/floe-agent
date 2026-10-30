@@ -110,6 +110,7 @@ public final class CADScriptService {
     /// limit and task cancellation, so a hostile script never blocks the main
     /// actor. The cheap record actions complete without suspension.
     public func handle(action: String, args: [String: Any]) async -> [String: Any] {
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "script", action: action) { return refusal }
         switch action {
         case "list": return list()
         case "put": return put(args)
@@ -326,6 +327,9 @@ public final class CADScriptService {
         }
 
         let outcome = await Self.evaluateScript(source: record.source, parameters: record.parameters)
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "script", action: "apply") {
+            return refusal
+        }
         recordEvaluation(action: "apply", scriptID: recordIndex.map { records[$0].id }, outcome: outcome)
         if let code = outcome.errorCode {
             var response = Self.fail(code, outcome.errorMessage ?? "Evaluation failed.")

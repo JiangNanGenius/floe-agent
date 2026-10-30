@@ -248,6 +248,10 @@ public enum CadNativeEditActions {
         "list", "update", "updateSketchEntity",
         "setSketchDimension", "removeSketchDimension",
         "feature.suppress", "feature.delete", "feature.move",
+        "variable.create", "variable.update", "variable.delete",
+        "feature.setExpression",
+        "datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
+        "sketch.setSupport", "sketch.clearSupport",
         "undo", "redo",
     ]
     /// Authored/read animation operations. `capture`/`export` are media

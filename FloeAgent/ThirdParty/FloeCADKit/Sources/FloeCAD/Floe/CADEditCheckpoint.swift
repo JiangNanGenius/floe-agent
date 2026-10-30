@@ -16,24 +16,33 @@ import Foundation
 /// create or consume it; the app cannot inspect or fabricate the contents.
 public nonisolated struct CADEditCheckpoint {
     var document: DesignDocument
+    var persistenceChangeCount: Int
     var undo: UndoStack.Checkpoint
     var evalCache: EvalCache
     var lastEvalErrors: [FeatureID: FeatureError]
+    var lastReferenceErrors: [AssociativeReferenceKey: AssociativeReferenceError]
+    var lastBodyWriters: [BodyID: FeatureID]
     var lastFaceTables: [BodyID: FaceTable]
     var lastKernelNames: [BodyID: [Int: ElementName]]
     var lastNamingRevisions: [BodyID: UInt64]
 
     init(document: DesignDocument,
+         persistenceChangeCount: Int,
          undo: UndoStack.Checkpoint,
          evalCache: EvalCache,
          lastEvalErrors: [FeatureID: FeatureError],
+         lastReferenceErrors: [AssociativeReferenceKey: AssociativeReferenceError],
+         lastBodyWriters: [BodyID: FeatureID],
          lastFaceTables: [BodyID: FaceTable],
          lastKernelNames: [BodyID: [Int: ElementName]],
          lastNamingRevisions: [BodyID: UInt64]) {
         self.document = document
+        self.persistenceChangeCount = persistenceChangeCount
         self.undo = undo
         self.evalCache = evalCache
         self.lastEvalErrors = lastEvalErrors
+        self.lastReferenceErrors = lastReferenceErrors
+        self.lastBodyWriters = lastBodyWriters
         self.lastFaceTables = lastFaceTables
         self.lastKernelNames = lastKernelNames
         self.lastNamingRevisions = lastNamingRevisions

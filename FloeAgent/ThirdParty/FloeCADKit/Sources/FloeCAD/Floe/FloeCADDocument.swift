@@ -68,8 +68,8 @@ public nonisolated struct CADDocumentError: Error, LocalizedError, Sendable {
 public final class FloeCADDocument {
     public let url: URL
     public private(set) var name: String
-    public private(set) var revision: Int
-    public private(set) var contentSHA256: String
+    public var revision: Int { session.savedIdentity.revision }
+    public var contentSHA256: String { session.savedIdentity.contentSHA256 }
 
     let project: Project
     let context: CADModelContext
@@ -78,11 +78,6 @@ public final class FloeCADDocument {
 
     private var cachedViewModel: EditorViewModel?
     private var closed = false
-    /// `session.changeCount` at the last successful commit. Used to decide
-    /// whether a proposal preview must flush first; a clean document is never
-    /// re-committed just to draft a preview.
-    private var lastCommittedChangeCount = 0
-
     private init(url: URL,
                  project: Project,
                  store: FileCADDocumentStore,
@@ -93,9 +88,6 @@ public final class FloeCADDocument {
         self.project = project
         self.context = CADModelContext(project: project, store: store)
         self.session = session
-        self.revision = store.revision
-        self.contentSHA256 = store.contentSHA256
-        self.lastCommittedChangeCount = session.changeCount
     }
 
     // MARK: Open / create
@@ -115,11 +107,14 @@ public final class FloeCADDocument {
 
     /// Verified committed identity of a package on disk WITHOUT opening a
     /// live document: the versioned store reads the manifest, the document
-    /// JSON and every blob, and the returned identity binds them (the
+    /// JSON and every claimed blob, and the returned identity binds them (the
     /// content digest incorporates each blob's SHA-256). `modelSHA256` is the
     /// additive canonical model identity (document records + blobs, preview
-    /// excluded) — nil on historical manifests that predate the field.
-    /// Nil overall when the package is unreadable or corrupt. Recovery code
+    /// excluded) — nil on historical manifests that predate the field or
+    /// future additive records this build cannot canonicalize completely.
+    /// Nil overall when the package is unreadable or corrupt. This inspection
+    /// is strictly read-only: it never promotes `previous` over a missing
+    /// current manifest. Recovery code
     /// must use this — hashing a package directory is meaningless, and
     /// trusting a bare manifest without the store's read path skips blob
     /// validation.
@@ -128,7 +123,7 @@ public final class FloeCADDocument {
         let store = FileCADDocumentStore(packageURL: url)
         do {
             _ = try await Task.detached(priority: .userInitiated) {
-                try store.read()
+                try store.readWithoutRecovery()
             }.value
         } catch {
             return nil
@@ -151,7 +146,15 @@ public final class FloeCADDocument {
             throw CADDocumentError(code: "exists",
                                    message: "A CAD document already exists at \(url.path).")
         }
+        if exists, overwrite {
+            let previous = try await Task.detached(priority: .userInitiated) { try store.readWithoutRecovery() }.value
+            guard previous.formatVersion <= Project.currentFormatVersion else {
+                throw CADDocumentFormatError.unsupportedFormat(previous.formatVersion)
+            }
+            guard !previous.hasOpaqueAssociations else { throw CADDocumentFormatError.opaqueAssociations }
+        }
         let project = Project(name: name)
+        project.formatVersion = store.schemaVersion
         project.unitRaw = DisplayUnit.millimeters.rawValue
         let payload = try store.makePayload(project)
         try await Task.detached(priority: .userInitiated) {
@@ -170,13 +173,13 @@ public final class FloeCADDocument {
 
     // MARK: Lifecycle
 
-    public var isReadOnly: Bool { session.storeIsNewerThanApp }
+    public var isReadOnly: Bool { session.isReadOnly }
 
     /// True when the in-memory document has edits that have not been written
     /// to the package. Assistant previews must flush these before snapshotting
     /// so a proposal can never be drafted against stale bytes.
     public var hasUnsavedChanges: Bool {
-        session.changeCount != lastCommittedChangeCount
+        session.hasUncommittedPersistenceChanges
     }
 
     public func markClosed() {
@@ -187,6 +190,7 @@ public final class FloeCADDocument {
         CADAnimationExportCenter.shared.cancelAll(
             documentKey: url.standardizedFileURL.path)
         #endif
+        session.cancelSketchPreviewForClose()
         session.flushPendingAutosave()
         closed = true
         // Fence the store: waits out any in-flight commit and forbids later
@@ -233,6 +237,17 @@ public final class FloeCADDocument {
     /// gates propose/apply, grants and CAS around this call.
     @discardableResult
     public func execute(_ operation: [String: Any], documentName: String? = nil) -> CADCommandOutcome {
+        if closed {
+            let message = "The CAD document is closed."
+            return CADCommandOutcome(status: 409,
+                payload: Self.jsonEnvelope(ok: false, error: "read_only", message: message),
+                errorCode: "read_only", message: message)
+        }
+        if let block = session.writeBlock {
+            return CADCommandOutcome(status: 409,
+                payload: Self.jsonEnvelope(ok: false, error: block.code, message: block.message),
+                errorCode: block.code, message: block.message)
+        }
         let executor = CADCommandExecutor(viewModel: viewModel(), documentName: documentName ?? name)
         switch AgentExec.parse(operation) {
         case .failure(let error):
@@ -366,20 +381,19 @@ public final class FloeCADDocument {
         // package from the still-cached in-memory session.
         guard !closed else {
             return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256,
-                                  modelSHA256: store.modelSHA256,
+                                  modelSHA256: session.savedIdentity.modelSHA256,
                                   error: "The CAD document is closed and cannot be saved.")
         }
-        guard !isReadOnly else {
+        if let block = session.writeBlock {
             return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256,
-                                  modelSHA256: store.modelSHA256,
-                                  error: "This CAD document uses a newer format and is read-only.")
+                                  modelSHA256: session.savedIdentity.modelSHA256,
+                                  error: block.message)
         }
-        // Pin the generation BEFORE any await. An edit arriving while a save
-        // is in flight must not be acknowledged as part of its older payload.
-        // The session path may include a newer edit during serialization; in
-        // that case retaining a dirty flag is deliberately conservative.
-        let savedChangeCount = session.changeCount
-        if savedChangeCount == lastCommittedChangeCount, session.lastSaveError == nil {
+        // Pin the clean-branch persistence marker before any await so a newer
+        // edit cannot be acknowledged by this prepared payload. The async
+        // Session path captures its own marker when it prepares its payload.
+        let savedChangeCount = session.persistenceChangeCount
+        if !session.hasUncommittedPersistenceChanges {
             // No document commands ran since the validated load/last save.
             // Preserve its opaque record/B-rep bytes. Re-encoding a loaded
             // transform/sketch/feature with JSONEncoder's unspecified key
@@ -394,28 +408,17 @@ public final class FloeCADDocument {
                 let committed = try await Task.detached(priority: .utility) {
                     try Self.writePreparedPayload(payload, to: targetStore)
                 }.value
-                if committed.0 >= revision {
-                    revision = committed.0
-                    contentSHA256 = committed.1
-                }
-                lastCommittedChangeCount = max(lastCommittedChangeCount, savedChangeCount)
-                return CADSaveOutcome(revision: committed.0, contentSHA256: committed.1,
-                                      modelSHA256: committed.2, error: nil)
+                session.adoptCommittedIdentity(committed, persistenceCount: savedChangeCount)
+                project.formatVersion = max(project.formatVersion, payload.schemaVersion)
+                return committed
             } catch {
-                return CADSaveOutcome(revision: store.revision, contentSHA256: store.contentSHA256,
-                                      modelSHA256: store.modelSHA256, error: error.localizedDescription)
+                return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256,
+                                      modelSHA256: session.savedIdentity.modelSHA256, error: error.localizedDescription)
             }
         }
-        await session.saveAsync()
-        if let error = session.lastSaveError {
-            return CADSaveOutcome(revision: store.revision, contentSHA256: store.contentSHA256,
-                                  modelSHA256: store.modelSHA256, error: error)
-        }
-        revision = store.revision
-        contentSHA256 = store.contentSHA256
-        lastCommittedChangeCount = max(lastCommittedChangeCount, savedChangeCount)
-        return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256,
-                              modelSHA256: store.modelSHA256, error: nil)
+        let outcome = await session.saveWithIdentityAsync()
+        if outcome.succeeded { project.formatVersion = max(project.formatVersion, store.schemaVersion) }
+        return outcome
     }
 
     // Keep the entire hashing/commit boundary explicitly nonisolated. With
@@ -424,12 +427,8 @@ public final class FloeCADDocument {
     // blocking the actor while a competing package writer holds the gate.
     private nonisolated static func writePreparedPayload(
         _ payload: CADWritePayload, to store: FileCADDocumentStore
-    ) throws -> (revision: Int, contentSHA256: String, modelSHA256: String) {
-        let modelSHA = try FileCADDocumentStore.modelDigest(
-            name: payload.name, unit: payload.unit, tolerance: payload.tolerance,
-            document: payload.document, blobs: payload.blobs)
-        let result = try store.performWrite(payload)
-        return (result.revision, result.contentSHA256, modelSHA)
+    ) throws -> CADSaveOutcome {
+        try store.performWriteWithIdentity(payload)
     }
 
     /// Flush only when there is something to flush; used by the proposal
@@ -451,9 +450,13 @@ public final class FloeCADDocument {
     /// a late flush must neither write nor mutate a released draft.
     @discardableResult
     public func saveViewportPreview(_ png: Data?) async -> CADSaveOutcome {
+        if let block = session.writeBlock {
+            return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256,
+                                  modelSHA256: session.savedIdentity.modelSHA256, error: block.message)
+        }
         guard !closed else {
             return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256,
-                                  modelSHA256: store.modelSHA256,
+                                  modelSHA256: session.savedIdentity.modelSHA256,
                                   error: "The CAD document is closed and cannot be saved.")
         }
         if let png, !png.isEmpty {
@@ -467,6 +470,20 @@ public final class FloeCADDocument {
     func viewModel() -> EditorViewModel {
         if let cachedViewModel { return cachedViewModel }
         let model = EditorViewModel(session: session)
+        model.variableActionHandler = { [weak self] action, args in
+            guard let self, !self.isClosed else {
+                return ["ok": false, "error": "closed"]
+            }
+            return CADParameterService(document: self).handle(action: action, args: args)
+        }
+        model.datumQueryRevision = { [weak self] in
+            guard let self, !self.isClosed else { return nil }
+            return self.revision
+        }
+        model.datumActionHandler = { [weak self] action, args in
+            guard let self, !self.isClosed else { return ["ok": false, "error": "closed"] }
+            return CADParameterService(document: self).handle(action: action, args: args)
+        }
         cachedViewModel = model
         return model
     }

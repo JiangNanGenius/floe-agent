@@ -75,6 +75,17 @@ nonisolated enum ExpressionEvaluator {
         evaluate(text, variables: [:])
     }
 
+    /// Parse the complete expression with the existing grammar, without the
+    /// legacy trailing-unit retry. New typed entry points can enforce their
+    /// declared unit policy while saved legacy formulas keep evaluate's rules.
+    static func evaluateStrict(_ text: String, variables: [String: Double]) -> Double? {
+        var source = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if source.hasPrefix("=") { source.removeFirst() }
+        source = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else { return nil }
+        return tryParse(source, variables: variables)
+    }
+
     /// Evaluate `text` against a `[name: value]` variable context.
     static func evaluate(_ text: String, variables: [String: Double]) -> Double? {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -6,6 +6,7 @@ struct SketchTransformControlsOverlay: View {
     @Bindable var viewModel: EditorViewModel
     @State private var editing: EditorViewModel.SketchTransformControl?
     @State private var dragging: EditorViewModel.SketchTransformControl?
+    @State private var gestureID: EditorViewModel.SketchDragGestureID?
     @State private var dragX = SIMD2<Double>(1, 0)
     @State private var dragY = SIMD2<Double>(0, 1)
     @State private var dragOffset = SIMD2<Double>.zero
@@ -77,9 +78,13 @@ struct SketchTransformControlsOverlay: View {
             }
         }
         .onChange(of: viewModel.sketchTransformActive) { _, active in
-            if !active { editing = nil; dragging = nil }
+            if !active {
+                if let id = gestureID { cancelGesture(id) }
+                editing = nil; dragging = nil
+            }
         }
         .onChange(of: viewModel.selectedSketchEntityIDs) { _, _ in editing = nil }
+        .onDisappear { if let id = gestureID { cancelGesture(id) } }
     }
 
     private func control(_ part: EditorViewModel.SketchTransformControl,
@@ -103,13 +108,15 @@ struct SketchTransformControlsOverlay: View {
         .accessibilityIdentifier("SketchTransform-\(part.rawValue)")
         .accessibilityLabel(part == .rotation ? "Rotate sketch" : "Move sketch \(part.title)")
         .accessibilityAddTraits(.isButton)
-        .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global).onChanged { value in
-            let delta = SIMD2(Double(value.translation.width), Double(value.translation.height))
+        .gesture(CADSketchControlDragGesture(onBegan: {
+            guard let id = viewModel.beginSketchTransformControlGesture(part) else { return nil }
+            gestureID = id
+            dragX = x; dragY = y; dragOffset = offset
+            return id
+        }, onChanged: { delta, id in
+            guard gestureID == id else { return }
             guard simd_length(delta) > 2 || dragging != nil else { return }
-            if dragging == nil {
-                editing = nil; dragging = part
-                dragX = x; dragY = y; dragOffset = offset
-            }
+            if dragging == nil { editing = nil; dragging = part }
             let amount: Double
             if part == .rotation {
                 let initialX = simd_normalize(dragX), initialY = simd_normalize(dragY)
@@ -120,15 +127,25 @@ struct SketchTransformControlsOverlay: View {
                 let axis = part == .x ? dragX : dragY
                 amount = simd_dot(delta, simd_normalize(axis)) / simd_length(axis)
             }
-            viewModel.updateSketchTransformControl(part, value: amount)
-        }.onEnded { _ in
+            viewModel.updateSketchTransformControl(part, value: amount, gestureID: id)
+        }, onEnded: { id in
+            guard gestureID == id else { return }
             if dragging != nil {
-                viewModel.endSketchTransformControl()
-                dragging = nil
+                viewModel.endSketchTransformControl(gestureID: id)
             } else {
+                // A touch with <=2pt movement still opens the exact input.
+                // Cancel its unchanged lease before presenting that editor.
+                _ = viewModel.cancelSketchDragGesture(id)
+                viewModel.endSketchTransformControl(gestureID: id)
                 openInput(part)
             }
-        })
+            gestureID = nil; dragging = nil
+        }, onCancelled: { id in cancelGesture(id) }))
+    }
+
+    private func cancelGesture(_ id: EditorViewModel.SketchDragGestureID) {
+        if !viewModel.cancelSketchDragGesture(id) { viewModel.endSketchTransformControl(gestureID: id) }
+        if gestureID == id { gestureID = nil; dragging = nil }
     }
 
     private func formattedValue(_ value: Double, part: EditorViewModel.SketchTransformControl) -> String {

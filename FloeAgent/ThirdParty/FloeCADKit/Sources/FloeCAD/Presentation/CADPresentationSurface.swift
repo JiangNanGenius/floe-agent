@@ -90,6 +90,7 @@ final class CADPresentationHandle {
     /// Set only when the RealityKit build actually failed; the host can offer
     /// the engineering viewport without implying the geometry was lost.
     private(set) var failureMessage: String?
+    private(set) var selectionTitle: String?
     /// Camera pose remembered across a Present/Edit switch. GPU resources are
     /// still released on exit; only the value camera survives.
     var savedCamera: CADPresentationCamera?
@@ -115,6 +116,8 @@ final class CADPresentationHandle {
         lastBuiltKey = key
     }
 
+    func markSelection(_ title: String?) { selectionTitle = title }
+
     func markFailure(_ message: String?) {
         failureMessage = message
     }
@@ -139,6 +142,12 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     private var cameraRestored = false
     private var currentScene: CADPresentationScene?
     private var bodyEntities: [UUID: CADPresentationBodyNodes] = [:]
+    private var pickTargets: [ObjectIdentifier: CADPresentationPick] = [:]
+    private weak var selectionDocument: FloeCADDocument?
+    private var selectionDecorations: [Entity] = []
+    private var lastSelectionState: CADPresentationSelectionState?
+    private var interactionGeneration: UInt64 = 0
+    private var pendingTapStamp: CADPresentationSelectionStamp?
     private var originalMaterials: [ObjectIdentifier: [any RealityFoundation.Material]] = [:]
     private var buildKey: String?
     private var buildTask: Task<Void, Never>?
@@ -169,6 +178,12 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         hasher.combine(buildKey)
         hasher.combine(animationToken)
         hasher.combine(renderGeneration)
+        if let selectionDocument {
+            let state = CADPresentationSelection.state(document: selectionDocument)
+            hasher.combine(state.bodyIDs.sorted { $0.uuidString < $1.uuidString })
+            hasher.combine(state.instanceIDs.sorted { $0.uuidString < $1.uuidString })
+            for face in state.faces { hasher.combine(face.bodyID); hasher.combine(face.triangles) }
+        }
         hasher.combine(arView.bounds.width)
         hasher.combine(arView.bounds.height)
         return "render-\(hasher.finalize())"
@@ -184,6 +199,8 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     private var orbitStartCamera: CADPresentationCamera?
     private var lastPanTranslation: CGPoint = .zero
     private let doubleTap = UITapGestureRecognizer()
+    private let singleTap = UITapGestureRecognizer()
+    private var cameraGestures: [UIGestureRecognizer] = []
 
     override init() {
         arView = ARView(frame: .zero, cameraMode: .nonAR,
@@ -220,15 +237,22 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         self.handle = handle
     }
 
+    func bindSelection(to document: FloeCADDocument) { selectionDocument = document }
+
     func apply(_ scene: CADPresentationScene) {
         currentScene = scene
         currentBounds = scene.bounds
         if buildKey == scene.buildKey, stage != nil {
+            refreshSelection()
             // Material-only changes still produce a new key; reaching here
             // means the same bytes/environment, so nothing is rebuilt.
             return
         }
         buildTask?.cancel()
+        pendingTapStamp = nil
+        // The old visible stage cannot accept hits while its replacement
+        // builds. The live document fence also rejects the polling interval.
+        handle?.markReady(false)
         let token = scene.buildKey
         buildTask = Task { [weak self] in
             guard let self else { return }
@@ -246,6 +270,9 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             }
             stage = result.stage
             bodyEntities = result.bodyEntities
+            pickTargets = result.pickTargets
+            selectionDecorations.removeAll()
+            lastSelectionState = nil
             originalMaterials.removeAll()
             // A replaced stage always starts from its document baseline; any
             // transient animation frame belonged to the previous generation.
@@ -263,10 +290,13 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             camera.fitIfInvalid(scene.bounds, aspect: viewportAspect)
             applyCamera()
             await applyBackground(scene.environment)
+            try Task.checkCancellation()
+            guard currentScene?.buildKey == token else { return }
             buildKey = token
             handle?.markFailure(nil)
             handle?.markReady(true)
             handle?.markBuilt(token)
+            refreshSelection()
         } catch is CancellationError {
             return
         } catch {
@@ -291,6 +321,11 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         stage?.removeFromParent()
         stage = nil
         bodyEntities.removeAll()
+        pickTargets.removeAll()
+        selectionDecorations.removeAll()
+        selectionDocument = nil
+        lastSelectionState = nil
+        pendingTapStamp = nil
         originalMaterials.removeAll()
         animationToken = "static"
         animationRestoreCamera = nil
@@ -304,6 +339,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         handle?.setIssues([])
         handle?.markReady(false)
         handle?.markFailure(nil)
+        handle?.markSelection(nil)
         handle?.controller = nil
         handle = nil
     }
@@ -414,6 +450,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     }
 
     func fit() {
+        interactionGeneration &+= 1
         camera.fit(currentBounds, aspect: viewportAspect)
         applyCamera()
     }
@@ -442,7 +479,20 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         pinch.delegate = self
         arView.addGestureRecognizer(pinch)
 
+        cameraGestures = [orbit, pan, pinch]
+        singleTap.numberOfTapsRequired = 1
+        singleTap.numberOfTouchesRequired = 1
+        singleTap.delegate = self
+        singleTap.addTarget(self, action: #selector(handleSingleTap(_:)))
+        singleTap.require(toFail: doubleTap)
+        for gesture in cameraGestures {
+            singleTap.require(toFail: gesture)
+            doubleTap.require(toFail: gesture)
+        }
+        arView.addGestureRecognizer(singleTap)
         doubleTap.numberOfTapsRequired = 2
+        doubleTap.numberOfTouchesRequired = 1
+        doubleTap.delegate = self
         doubleTap.addTarget(self, action: #selector(handleDoubleTap))
         arView.addGestureRecognizer(doubleTap)
     }
@@ -450,6 +500,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     @objc private func handleOrbit(_ recognizer: UIPanGestureRecognizer) {
         switch recognizer.state {
         case .began:
+            interactionGeneration &+= 1
             orbitStartCamera = camera
         case .changed:
             guard orbitStartCamera != nil else { return }
@@ -468,6 +519,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
         let translation = recognizer.translation(in: arView)
         if recognizer.state == .began {
+            interactionGeneration &+= 1
             lastPanTranslation = translation
             return
         }
@@ -486,6 +538,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     }
 
     @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+        if recognizer.state == .began { interactionGeneration &+= 1 }
         guard recognizer.state == .changed else { return }
         camera.zoom(by: Float(recognizer.scale))
         recognizer.scale = 1
@@ -498,7 +551,82 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        true
+        cameraGestures.contains(where: { $0 === gestureRecognizer })
+            && cameraGestures.contains(where: { $0 === other })
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if gestureRecognizer === singleTap {
+            pendingTapStamp = activeSelectionStamp
+            return pendingTapStamp != nil
+        }
+        return true
+    }
+
+    private var activeSelectionStamp: CADPresentationSelectionStamp? {
+        guard let scene = currentScene, stage != nil, buildKey == scene.buildKey,
+              selectionDocument != nil, animationToken == "static", animationLease == nil,
+              !cameraGestures.contains(where: { $0.state == .began || $0.state == .changed }) else { return nil }
+        return CADPresentationSelectionStamp(documentKey: scene.documentKey,
+            documentRevision: scene.documentRevision, changeCount: scene.changeCount,
+            buildKey: scene.buildKey, renderGeneration: renderGeneration,
+            interactionGeneration: interactionGeneration)
+    }
+
+    @objc private func handleSingleTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended, let stamp = pendingTapStamp,
+              let scene = currentScene, let document = selectionDocument,
+              stamp == activeSelectionStamp else { return }
+        pendingTapStamp = nil
+        let hits = arView.hitTest(recognizer.location(in: arView), query: .all)
+        let pick = hits.sorted { $0.distance < $1.distance }.compactMap {
+            pickTargets[ObjectIdentifier($0.entity)]
+        }.first
+        if CADPresentationSelection.apply(pick, stamp: stamp, currentStamp: activeSelectionStamp,
+                                           scene: scene, document: document) {
+            refreshSelection()
+        }
+    }
+
+    /// A small render-only overlay uses the selected entity's existing mesh.
+    /// It has no collision shape and cannot intercept the next tap.
+    func refreshSelection() {
+        guard let document = selectionDocument, let scene = currentScene,
+              buildKey == scene.buildKey else { return }
+        let state = CADPresentationSelection.state(document: document)
+        guard state != lastSelectionState else { return }
+        lastSelectionState = state
+        selectionDecorations.forEach { $0.removeFromParent() }
+        selectionDecorations.removeAll()
+        for body in scene.bodies {
+            guard let nodes = bodyEntities[body.id] else { continue }
+            let isInstance = body.sourceBodyID != nil
+            guard isInstance ? state.instanceIDs.contains(body.id) : state.bodyIDs.contains(body.id) else { continue }
+            var selected = nodes.entities
+            if !isInstance, let face = state.faces.first(where: { $0.bodyID == body.id }) {
+                selected = selected.filter { pickTargets[ObjectIdentifier($0)]?.triangles == face.triangles.sorted() }
+            }
+            for entity in selected {
+                guard let model = entity.model else { continue }
+                var material = PhysicallyBasedMaterial()
+                material.baseColor = .init(tint: .systemOrange)
+                material.emissiveColor = .init(color: .systemOrange)
+                material.emissiveIntensity = 0.5
+                material.blending = .transparent(opacity: .init(scale: 0.25))
+                let highlight = ModelEntity(mesh: model.mesh, materials: [material])
+                highlight.scale = SIMD3(repeating: 1.001)
+                entity.addChild(highlight)
+                selectionDecorations.append(highlight)
+            }
+        }
+        if !state.instanceIDs.isEmpty,
+           let assembly = try? CADAssembly.decode(from: document.session.document.assemblyData) {
+            let names = assembly.instances.filter { state.instanceIDs.contains($0.id) }.map(\.name)
+            handle?.markSelection(names.prefix(3).joined(separator: ", "))
+        } else {
+            let target = CADMaterialTargetResolver.resolve(document: document)
+            handle?.markSelection(target.isEmpty ? nil : target.title)
+        }
     }
 
     // MARK: Transient animation frame
@@ -622,10 +750,12 @@ private extension CADPresentationCamera {
 struct CADPresentationSurface: UIViewRepresentable {
     let scene: CADPresentationScene
     let handle: CADPresentationHandle
+    let document: FloeCADDocument
 
     func makeUIView(context: Context) -> ARView {
         let controller = CADPresentationRenderController()
         controller.attach(handle: handle)
+        controller.bindSelection(to: document)
         if let saved = handle.savedCamera {
             controller.restoreCamera(saved)
         }
@@ -636,6 +766,7 @@ struct CADPresentationSurface: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: ARView, context: Context) {
+        context.coordinator.controller?.bindSelection(to: document)
         context.coordinator.controller?.apply(scene)
     }
 

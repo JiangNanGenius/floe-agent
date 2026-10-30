@@ -478,6 +478,22 @@ struct ChangeSketchPlaneCommand: DocumentCommand {
     let sketchID: SketchID
     let before: SketchPlane
     let after: SketchPlane
+    /// Rehosting onto explicit coordinates detaches support. Callers editing
+    /// an associated sketch capture this value so undo restores the relation.
+    var beforeSupport: PlaneRef? = nil
+
+    init(sketchID: SketchID, before: SketchPlane, after: SketchPlane, beforeSupport: PlaneRef? = nil) {
+        self.sketchID = sketchID
+        self.before = before
+        self.after = after
+        self.beforeSupport = beforeSupport
+    }
+
+    /// Prefer this initializer once support can be authored, so undo cannot
+    /// accidentally omit the old relation. Legacy explicit callers still work.
+    init(sketch: Sketch, after: SketchPlane) {
+        self.init(sketchID: sketch.id, before: sketch.plane, after: after, beforeSupport: sketch.support)
+    }
 
     private func setPlane(_ plane: SketchPlane, in document: inout DesignDocument) {
         guard let index = document.sketches.firstIndex(where: { $0.id == sketchID })
@@ -485,8 +501,53 @@ struct ChangeSketchPlaneCommand: DocumentCommand {
         document.sketches[index].plane = plane
     }
 
-    func apply(to document: inout DesignDocument) { setPlane(after, in: &document) }
-    func revert(in document: inout DesignDocument) { setPlane(before, in: &document) }
+    func apply(to document: inout DesignDocument) {
+        setPlane(after, in: &document)
+        if let index = document.sketches.firstIndex(where: { $0.id == sketchID }) {
+            document.sketches[index].support = nil
+        }
+    }
+    func revert(in document: inout DesignDocument) {
+        setPlane(before, in: &document)
+        if let index = document.sketches.firstIndex(where: { $0.id == sketchID }) {
+            document.sketches[index].support = beforeSupport
+        }
+    }
+}
+
+/// Changes the semantic support and its display coordinates as one value edit.
+/// Local sketch geometry, constraints and stable entity IDs are untouched.
+struct ChangeSketchSupportCommand: DocumentCommand {
+    let title = "Change Sketch Support"
+    let sketchID: SketchID
+    let before: PlaneRef?
+    let after: PlaneRef?
+    let beforePlane: SketchPlane
+    let afterPlane: SketchPlane
+
+    private func set(_ support: PlaneRef?, plane: SketchPlane, in document: inout DesignDocument) {
+        guard let index = document.sketches.firstIndex(where: { $0.id == sketchID }) else { return }
+        document.sketches[index].support = support
+        document.sketches[index].plane = plane
+    }
+    func apply(to document: inout DesignDocument) { set(after, plane: afterPlane, in: &document) }
+    func revert(in document: inout DesignDocument) { set(before, plane: beforePlane, in: &document) }
+}
+
+/// A derived update must not replace the whole Sketch: a leading definition,
+/// support or local-geometry command may have changed those fields already.
+struct UpdateResolvedSketchPlaneCommand: DocumentCommand {
+    let title = "Update Sketch Support"
+    let sketchID: SketchID
+    let before: SketchPlane
+    let after: SketchPlane
+
+    private func set(_ plane: SketchPlane, in document: inout DesignDocument) {
+        guard let index = document.sketches.firstIndex(where: { $0.id == sketchID }) else { return }
+        document.sketches[index].plane = plane
+    }
+    func apply(to document: inout DesignDocument) { set(after, in: &document) }
+    func revert(in document: inout DesignDocument) { set(before, in: &document) }
 }
 
 /// Disconnect changes topology only; dimensions, geometry and unrelated
@@ -1457,6 +1518,36 @@ struct AddConstructionPlaneCommand: DocumentCommand {
     func revert(in document: inout DesignDocument) {
         document.planes.removeAll { $0.id == plane.id }
     }
+}
+
+struct EditConstructionPlaneDefinitionCommand: DocumentCommand {
+    let title = "Edit Construction Plane"
+    let planeID: ConstructionPlaneID
+    let before: ConstructionPlaneDefinition?
+    let after: ConstructionPlaneDefinition?
+
+    private func set(_ definition: ConstructionPlaneDefinition?, in document: inout DesignDocument) {
+        guard let index = document.planes.firstIndex(where: { $0.id == planeID }) else { return }
+        document.planes[index].definition = definition
+    }
+    func apply(to document: inout DesignDocument) { set(after, in: &document) }
+    func revert(in document: inout DesignDocument) { set(before, in: &document) }
+}
+
+/// Coordinate cache only. In particular this never overwrites a definition
+/// installed by an earlier command in the same rebuild transaction.
+struct UpdateResolvedConstructionPlaneCommand: DocumentCommand {
+    let title = "Update Construction Plane"
+    let planeID: ConstructionPlaneID
+    let before: SketchPlane
+    let after: SketchPlane
+
+    private func set(_ plane: SketchPlane, in document: inout DesignDocument) {
+        guard let index = document.planes.firstIndex(where: { $0.id == planeID }) else { return }
+        document.planes[index].plane = plane
+    }
+    func apply(to document: inout DesignDocument) { set(after, in: &document) }
+    func revert(in document: inout DesignDocument) { set(before, in: &document) }
 }
 
 // MARK: - Construction axes (spec §6.2)
