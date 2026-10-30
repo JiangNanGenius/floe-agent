@@ -72,10 +72,11 @@ internal fun IdeEditorArea(
     onOpenTree: () -> Unit,
     onBack: () -> Unit,
     showTreeButton: Boolean,
+    backContentDescription: Int = R.string.ide_back_cd,
 ) {
     val colors = Floe.colors
     Column(Modifier.fillMaxSize().background(colors.readingSurface)) {
-        IdeCommandBar(presenter, state, compact, onOpenTree, onBack, showTreeButton)
+        IdeCommandBar(presenter, state, compact, onOpenTree, onBack, showTreeButton, backContentDescription)
         if (state.tabs.isNotEmpty()) {
             IdeTabBar(
                 tabs = state.tabs,
@@ -205,6 +206,7 @@ private fun IdeCommandBar(
     onOpenTree: () -> Unit,
     onBack: () -> Unit,
     showTreeButton: Boolean,
+    backContentDescription: Int,
 ) {
     val colors = Floe.colors
     val caps = state.snapshot?.capabilities
@@ -225,7 +227,7 @@ private fun IdeCommandBar(
                 iconSize = 16.dp,
             )
         }
-        val backCd = stringResource(R.string.ide_back_cd)
+        val backCd = stringResource(backContentDescription)
         FloeCircleButton(
             icon = FloeIcons.ChevronBack,
             contentDescription = backCd,

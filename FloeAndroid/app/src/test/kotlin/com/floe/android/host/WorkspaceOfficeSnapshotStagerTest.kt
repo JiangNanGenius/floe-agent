@@ -20,18 +20,19 @@ class WorkspaceOfficeSnapshotStagerTest {
         var closes = 0
         var closeStatus = 0
         var size = body.size.toLong()
+        var path = "Reports/report.docx"
         var sha = MessageDigest.getInstance("SHA-256").digest(body).joinToString("") { "%02x".format(it) }
         var afterRead: () -> Unit = {}
         var extraEOF = false
         override fun open(owner: WorkspaceOfficeSnapshotStager.Owner, path: String): Long {
             assertEquals(this@WorkspaceOfficeSnapshotStagerTest.owner, owner)
-            assertEquals("Reports/report.docx", path)
+            assertEquals(this.path, path)
             opens++
             return 123
         }
         override fun info(ticket: Long, reply: ByteArray): Int {
             assertEquals(123L, ticket)
-            val json = """{"ok":1,"mode":"export","logicalPath":"Reports/report.docx","sha256":"$sha","bytes":$size}""".toByteArray()
+            val json = """{"ok":1,"mode":"export","logicalPath":"$path","sha256":"$sha","bytes":$size}""".toByteArray()
             json.copyInto(reply)
             return json.size
         }
@@ -131,5 +132,69 @@ class WorkspaceOfficeSnapshotStagerTest {
         }
         assertEquals(0, channel.opens)
         assertEquals(0, channel.closes)
+    }
+
+    @Test fun defaultPurposeStaysTheReviewedOfficeTriple() {
+        // Adding preview purposes must not widen the existing Office open:
+        // PDF/image paths are refused BEFORE any native egress is opened.
+        val channel = Transport()
+        val stager = WorkspaceOfficeSnapshotStager(temporary.newFolder(), channel)
+        for (path in listOf("Reports/report.pdf", "shots/frame.png", "data/report.xlsm")) {
+            assertEquals("invalidOfficePath", expectFailure { stager.stage(owner, path) { true } }.code)
+        }
+        assertEquals(0, channel.opens)
+    }
+
+    @Test fun explicitPdfPurposeAcceptsOnlyItsOwnFormatAndKeepsTheExtension() {
+        val channel = Transport().apply { path = "Reports/report.pdf" }
+        val root = temporary.newFolder()
+        val snapshot = WorkspaceOfficeSnapshotStager(root, channel).stage(
+            owner = owner,
+            relativePath = "Reports/report.pdf",
+            formats = setOf("pdf"),
+            isCurrent = { true },
+        )
+        assertEquals("document.pdf", snapshot.file.name)
+        assertEquals(1, channel.opens)
+        assertEquals(1, channel.closes)
+        assertArrayEquals(body, snapshot.file.readBytes())
+        // A PDF-purpose instance must NOT silently accept an Office name.
+        channel.path = "Reports/report.docx"
+        val other = WorkspaceOfficeSnapshotStager(root, channel)
+        assertEquals("invalidOfficePath", expectFailure {
+            other.stage(owner, "Reports/report.docx", setOf("pdf")) { true }
+        }.code)
+    }
+
+    @Test fun explicitImagePurposeUsesItsTighterCapBeforePublishingAnything() {
+        val channel = Transport().apply { path = "shots/frame.PNG" }
+        val root = temporary.newFolder()
+        val stager = WorkspaceOfficeSnapshotStager(root, channel)
+        val accepted = stager.stage(
+            owner = owner,
+            relativePath = "shots/frame.PNG",
+            formats = setOf("png", "jpg", "jpeg", "webp", "gif", "bmp", "heic", "heif"),
+            maxBytes = body.size.toLong(),
+            isCurrent = { true },
+        )
+        assertEquals("document.png", accepted.file.name)
+        // One byte over the caller's closed cap is refused before a
+        // snapshot directory is created (the channel open is released).
+        val oversize = Transport().apply {
+            path = "shots/frame.png"
+            size = body.size.toLong() + 1
+        }
+        val cap = body.size.toLong()
+        assertEquals("contentTooLarge", expectFailure {
+            WorkspaceOfficeSnapshotStager(root, oversize).stage(
+                owner = owner,
+                relativePath = "shots/frame.png",
+                formats = setOf("png"),
+                maxBytes = cap,
+                isCurrent = { true },
+            )
+        }.code)
+        assertEquals(1, oversize.closes)
+        assertEquals(1, root.listFiles()!!.size) // only the accepted snapshot remains
     }
 }

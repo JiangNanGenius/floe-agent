@@ -50,3 +50,6 @@ include(":feature:notescontracts")
 
 // G06 Notes presentation and verified PDF/Ink media integration.
 include(":core:notesmedia", ":feature:notes")
+
+// G07 phone-native network measurements and shared workbench presentation.
+include(":core:network", ":feature:network")

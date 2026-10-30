@@ -82,7 +82,10 @@ internal class LinuxRuntimeOperations(
 
     private class Running(val lease: LinuxAuthorityClient.Lease, val job: SupervisedPtyJob,
                           val deadline: Long, val scratch: File,
-                          val workspace: RuntimeWorkspaceSession, val imported: WorkspaceImportReceipt) {
+                          val workspace: RuntimeWorkspaceSession, val imported: WorkspaceImportReceipt,
+                          /** G07.1 terminal04: bounded runtime phase composition for
+                           *  THIS workload (diagnostic only; no admission effect). */
+                          val latency: LinuxRuntimePhaseTiming.Run) {
         val terminal = AtomicReference<WorkloadTerminal?>()
         val finished = AtomicBoolean()
         @Volatile var authorityBound = false
@@ -228,13 +231,17 @@ internal class LinuxRuntimeOperations(
 
     private fun start(payload: JSONObject, workspaceGrant: android.os.IBinder, cancelled: () -> Boolean): JSONObject {
         RuntimeExecutionTrace.mark(Stage.OPS_START_ENTER)
+        // G07.1 terminal04: the runtime half of this start's composition.
+        val latency = LinuxRuntimePhaseTiming.begin()
         fields(payload, setOf("projectID", "runID", "conversationID", "environmentID", "command", "cwd", "env", "rows", "columns", "timeoutSeconds", "stdinDelivery"))
         check(heldLease.get() == null && installID.get() == null)
         cancelPreparation.set(false)
         RuntimeExecutionTrace.mark(Stage.OPS_RECOVER)
         recover()
+        latency.mark(LinuxRuntimePhaseTiming.Phase.RECOVER)
         RuntimeExecutionTrace.mark(Stage.OPS_CONFIGURE)
         configure()
+        latency.mark(LinuxRuntimePhaseTiming.Phase.CONFIGURE)
         val command = payload.getString("command")
         require(command.isNotBlank() && command.toByteArray(Charsets.UTF_8).size <= 16_384 && '\u0000' !in command)
         val extraEnvironment = mutableMapOf<String, String>()
@@ -269,6 +276,7 @@ internal class LinuxRuntimeOperations(
         require(stdinDelivery in setOf("pty", "pipe")) { "stdinDelivery invalid" }
         RuntimeExecutionTrace.mark(Stage.OPS_ACQUIRE)
         val lease = authority.acquire(payload)
+        latency.mark(LinuxRuntimePhaseTiming.Phase.ACQUIRE)
         RuntimeExecutionTrace.mark(Stage.OPS_ACQUIRED)
         heldLease.set(lease)
         var child: Running? = null
@@ -284,6 +292,7 @@ internal class LinuxRuntimeOperations(
             RuntimeExecutionTrace.mark(Stage.OPS_MATERIALIZE)
             LinuxRootfsMaterializer().prepare(LinuxRootfsMaterializer.Plan(lease.environmentID,
                 descriptor.getString("baseRevision"), writable, ordered)) { cancelPreparation.get() || cancelled() }
+            latency.mark(LinuxRuntimePhaseTiming.Phase.MATERIALIZE)
             check(!cancelPreparation.get() && !cancelled())
             RuntimeExecutionTrace.mark(Stage.OPS_MATERIALIZED)
             val workspace = ownedPath(descriptor.getString("workspaceRoot"))
@@ -294,6 +303,7 @@ internal class LinuxRuntimeOperations(
             val imported = workspaceSession.importBeforeLaunch(WorkspaceCancelSignal {
                 cancelPreparation.get() || cancelled()
             })
+            latency.mark(LinuxRuntimePhaseTiming.Phase.IMPORT)
             RuntimeExecutionTrace.mark(Stage.OPS_IMPORTED)
             check(imported.skippedCount == 0) { "Workspace snapshot contains unsupported entries" }
             check(!cancelPreparation.get() && !cancelled())
@@ -315,6 +325,7 @@ internal class LinuxRuntimeOperations(
                         mapOf("FLOE_ENVIRONMENT_ID" to lease.environmentID), rows, columns,
                     stdinDelivery = if (stdinDelivery == "pipe") StdinDelivery.OneShotPipe
                     else StdinDelivery.PtyInput)
+            latency.mark(LinuxRuntimePhaseTiming.Phase.SPEC)
             RuntimeExecutionTrace.mark(Stage.OPS_SPEC_READY)
             RuntimeExecutionTrace.mark(Stage.OPS_SPAWN)
             when (val outcome = supervisor.start(spec, LeaseToken(lease.id, descriptor.getString("runID"))) { terminal.set(it) }) {
@@ -326,16 +337,18 @@ internal class LinuxRuntimeOperations(
                     error("Linux process launch failed")
                 }
                 is StartOutcome.Accepted -> {
+                    latency.mark(LinuxRuntimePhaseTiming.Phase.SPAWN)
                     RuntimeExecutionTrace.mark(Stage.OPS_SPAWN_ACCEPTED)
                     safeToAbandon = false
                     child = Running(lease, outcome.job, SystemClock.elapsedRealtime() + (seconds * 1000).toLong(), scratch,
-                        workspaceSession, imported)
+                        workspaceSession, imported, latency)
                     running.set(child)
                     val owned = checkNotNull(child)
                     synchronized(owned) {
                         authority.started(lease, outcome.job.rootBirth)
                         owned.authorityBound = true
                     }
+                    latency.mark(LinuxRuntimePhaseTiming.Phase.BIND)
                     RuntimeExecutionTrace.mark(Stage.OPS_BIND_STARTED)
                     pumpExecutor.execute {
                         RuntimeExecutionTrace.mark(Stage.OPS_PUMP_ENTER)
@@ -365,6 +378,11 @@ internal class LinuxRuntimeOperations(
             }
         } catch (failure: Exception) {
             RuntimeExecutionTrace.mark(Stage.OPS_START_EXCEPTION)
+            // Diagnostic only: a start that never reached a live workload has
+            // no terminal; name the honest state and the phases it did reach.
+            latency.publish(
+                if (safeToAbandon) LinuxRuntimePhaseTiming.TERMINAL_FAILED
+                else LinuxRuntimePhaseTiming.TERMINAL_RETAINED)
             if (safeToAbandon) {
                 runCatching { preparedWorkspace?.close() }
                 RuntimeNetworkConfiguration.release() // real use ended before spawn
@@ -416,6 +434,10 @@ internal class LinuxRuntimeOperations(
         synchronized(owned) {
             if (owned.finished.get()) return
             val terminal = owned.terminal.get() ?: return
+            // G07.1 terminal04: the pump loop ended on a REAL terminal, so the
+            // process/stop-proof window closes here; export + native release
+            // are measured separately below (diagnostic only).
+            owned.latency.mark(LinuxRuntimePhaseTiming.Phase.RUN)
             val exit: ExitResult
             val proof: Quiescence.Proven
             when (terminal) {
@@ -441,9 +463,15 @@ internal class LinuxRuntimeOperations(
                 owned.workspaceResult = workspaceResult(outcome, owned.imported)
                 runCatching { owned.workspace.close() }
             }
+            owned.latency.mark(LinuxRuntimePhaseTiming.Phase.EXPORT)
             try {
                 authority.complete(owned.lease, owned.job.rootBirth, exit, proof)
-            } catch (failure: Exception) { owned.nativeReleaseFailed = true; throw failure }
+            } catch (failure: Exception) {
+                owned.nativeReleaseFailed = true
+                owned.latency.publish(LinuxRuntimePhaseTiming.TERMINAL_RETAINED)
+                throw failure
+            }
+            owned.latency.mark(LinuxRuntimePhaseTiming.Phase.COMPLETE)
             // Native completion is authoritative. A later scratch-cleanup
             // failure must not turn a released lease into a fabricated live one.
             owned.nativeReleaseFailed = false
@@ -461,6 +489,10 @@ internal class LinuxRuntimeOperations(
             // monitor, so a failed or duplicate notification can never
             // un-release the lease, admit work or bypass any stop.
             runCatching { onOwnedWorkReleased() }
+            // Published exactly once, after the REAL release path succeeded.
+            owned.latency.publish(
+                if (terminal is WorkloadTerminal.Cancelled) LinuxRuntimePhaseTiming.TERMINAL_CANCELLED
+                else LinuxRuntimePhaseTiming.TERMINAL_EXITED)
         }
     }
 

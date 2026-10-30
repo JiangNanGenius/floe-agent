@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_document_back_to_files">返回文件列表</string>
+    <string name="workspace_document_open_full_window">在整窗中打开</string>
+    <string name="workspace_document_unavailable_body">此版本暂不支持在应用内查看此类型文件，文件未被读取或修改。</string>
+    <string name="workspace_document_type_text">文本文件</string>
+    <string name="workspace_document_type_office">Office 文档</string>
+    <string name="workspace_document_type_pdf">PDF 文档</string>
+    <string name="workspace_document_type_image">图片</string>
+    <string name="workspace_document_type_media">音视频</string>
+    <string name="workspace_document_type_cad">图纸</string>
+    <string name="workspace_document_type_archive">压缩包</string>
+    <string name="workspace_document_type_binary">二进制文件</string>
+</resources>

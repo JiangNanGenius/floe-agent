@@ -220,3 +220,15 @@ G06尚未关闭或发布。文本保存与重开状态已修复，并通过三�
 ### 2026-10-30：G06 阶段交付后的最终增量复核
 
 G06以Android Alpha15/code17交付，源码标签`86b20a34a14ebda636213fa480cdf14f8d4fee05`，实际APK与公开附件哈希已通过。收尾读回公共main为`b7feb3f8fe749ec730e27444dda02f909d7d47c9`；`ac11bdf05f7c829dd712c6c0c7a8ad198996c73d`之后的`FloeAgent/FloeApp`和`FloeAgent/Sources`差异为零。本次只关闭安卓交付和文档，不自动重钉共享源码；此前D01..D33与D34安排完整保留。下一目标仍为G07网络/Wi-Fi，后续从本次iOS基线继续做增量核对。实体笔硬件、OCR真实推理和紧凑列表优先的验证/精修边界保留。
+
+
+### 2026-10-30：G07 文档交互补欠检查点（尚未收尾）
+
+公共主线读回 `f9a052e3628f69df7dff6daea93c743a97946030`；与上次 `b7feb3f8fe749ec730e27444dda02f909d7d47c9` 相比，`FloeAgent/FloeApp` 和 `FloeAgent/Sources` 无增量。本轮没有重置 D01–D34 或重新钉住全部共享源。另以当前 iOS 工作线 `c5e7a3c1c41b766173f2d17d9516ef8f79ed62bc` 的实际文件作交互参照；相关四个 Workspace 文件无未提交修改，不能将此参照当作已发布 iOS 版本。
+
+用户指出的文档打开差距属于 D15 已有布局／导航缺口，补强如下：
+
+- `FileInspectorView` 的文件选择先进入预览；`fullScreenCover` 承载 `WorkspaceIDEView`。`WorkspaceIDEView` 紧凑窗口使用抽屉，宽窗口才使用固定侧栏；关闭时处理未保存修改。
+- `WorkspaceFileRouter` 对文本、Office、PDF、图像／工程／媒体分别路由。`FilePreviewView` 的 Office 使用独立全屏编辑面，不能把所有格式塞进文本编辑器。
+- Android 本轮实现手机文本／代码全屏与返回列表、同一草稿拥有者；横屏手机不因宽度增加变成平板三列；平板文本保留分栏和显式展开。PDF／常见栅格图片接已有快照和渲染器，Office 保留真实已有 Activity。尚未实现的格式、真实材质／图标精修与完整最新交互继续保留 D15／G14。
+- 本条为源码与合同补强；App 双渠道编译、三星与 API37 实际交互、发行结果仍待本轮统一验证后补录。

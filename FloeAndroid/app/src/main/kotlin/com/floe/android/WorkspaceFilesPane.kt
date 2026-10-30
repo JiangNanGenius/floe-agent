@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,6 +30,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -47,8 +49,10 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import com.floe.android.design.*
+import com.floe.android.feature.ide.FloeIdeExpandGlyph
 import com.floe.android.feature.ide.FloeIdeWorkspace
 import com.floe.android.feature.ide.IdeBottomAccessory
+import com.floe.android.feature.ide.IdeWorkspacePresentation
 import com.floe.android.host.G04WorkspaceEditorController
 import com.floe.android.host.G04WorkspaceBridgeClient
 import com.floe.android.host.RuntimeHost
@@ -56,6 +60,8 @@ import com.floe.android.host.RuntimeHostReadiness
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
@@ -88,7 +94,8 @@ private enum class WorkspaceToolbarMenu { NEW, MORE }
  */
 @Composable
 internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: String, onDismiss: () -> Unit) {
-    val context = LocalContext.current.applicationContext
+    val uiContext = LocalContext.current
+    val context = uiContext.applicationContext
     val entry = taskID?.let { host?.conversations?.entryFor(it) }
     if (host == null || taskID == null || entry == null || entry.isTemporary) {
         Column(Modifier.fillMaxSize()) {
@@ -149,6 +156,77 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
         return
     }
     val presenter = bound.presenter
+    // Only the active DOCUMENT PATH drives this pane's chrome (the tablet
+    // expand entry). Selecting it as a flow avoids recomposing the whole pane
+    // on every keystroke/caret update inside the editor subtree.
+    val activeDocumentPath by remember(presenter) {
+        presenter.state.map { it.snapshot?.relativePath }.distinctUntilChanged()
+    }.collectAsState(initial = presenter.state.value.snapshot?.relativePath)
+    // The explicit full-window document presentation (G07.1). This is
+    // NAVIGATION state only: the owning task/workspace/path plus a token. The
+    // editor, drafts, undo lineage and Office/workspace authority stay in the
+    // presenter/host. Saved across a configuration change (rotation keeps the
+    // document focused); dropped with this pane, so a task switch can never
+    // launch the previous task's document.
+    var documentTaskID by rememberSaveable(owner) { mutableStateOf<String?>(null) }
+    var documentWorkspaceID by rememberSaveable(owner) { mutableStateOf<String?>(null) }
+    var documentPath by rememberSaveable(owner) { mutableStateOf<String?>(null) }
+    var documentSurfaceName by rememberSaveable(owner) { mutableStateOf<String?>(null) }
+    var documentToken by rememberSaveable(owner) { mutableStateOf(0L) }
+    val documentRequest = remember(documentTaskID, documentWorkspaceID, documentPath, documentSurfaceName, documentToken) {
+        val surface = documentSurfaceName?.let { name ->
+            runCatching { WorkspaceDocumentSurface.valueOf(name) }.getOrNull()
+        }
+        val task = documentTaskID
+        val workspace = documentWorkspaceID
+        val path = documentPath
+        if (task != null && workspace != null && path != null && surface != null) {
+            WorkspaceDocumentRequest(task, workspace, path, surface, documentToken)
+        } else {
+            null
+        }
+    }
+    fun closeDocument() {
+        documentTaskID = null
+        documentWorkspaceID = null
+        documentPath = null
+        documentSurfaceName = null
+        // Leaving the document level closes its attached bottom slot; the
+        // service-owned terminal session itself is untouched.
+        presenter.toggleBottomPane(false)
+    }
+    fun raiseDocument(path: String, surface: WorkspaceDocumentSurface) {
+        documentToken += 1
+        documentTaskID = bound.client.taskID
+        documentWorkspaceID = bound.client.workspaceID
+        documentPath = path
+        documentSurfaceName = surface.name
+    }
+    // Phone list-first is a property of the actual window, not of this pane's
+    // measured width: the 430dp inspector column on a tablet window keeps its
+    // existing compact editor root. The configuration width is the live
+    // window width (multi-window included), so a 360dp phone and a 1280dp
+    // tablet resolve differently even though both render a narrow child.
+    val windowConfiguration = LocalConfiguration.current
+    val windowWidthDp = windowConfiguration.screenWidthDp.toFloat()
+    val minimumWindowWidthDp = windowConfiguration.smallestScreenWidthDp.toFloat()
+    val phoneWindow = IdeWorkspacePresentation.isPhoneWindow(windowWidthDp, minimumWindowWidthDp)
+    // Whichever way the pane leaves (Close, scrim, inspector route switch,
+    // task switch), the next open on a phone starts at the file list. This
+    // only resets navigation chrome: the presenter keeps active tabs, dirty
+    // buffers, undo lineage and recovery rows.
+    if (phoneWindow) {
+        DisposableEffect(owner, presenter) {
+            onDispose {
+                // Activity reconstruction is not navigation. Keep the editor
+                // level through rotation/configuration changes; real pane
+                // dismissal still returns the next entry to its file list.
+                if ((uiContext as? android.app.Activity)?.isChangingConfigurations != true) {
+                    presenter.showCompactFileList()
+                }
+            }
+        }
+    }
     val sourceLane = remember(bound, host) {
         host.nativeRootEpoch()?.let { epoch ->
             host.workspaceSourceHost?.laneFor(
@@ -189,17 +267,88 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
         }
         return true
     }
-    fun openFile(path: String) { if (!openOffice(path)) presenter.openFile(path) }
+    /**
+     * Type-aware document open (the Android mapping of iOS
+     * `WorkspaceFileRouter.allowsCodeEditor` + FileInspectorView's preview
+     * header policy):
+     * - Office -> the owned standalone Office viewer (already full screen);
+     *   the text workbench never receives an Office path.
+     * - text/code on a phone -> the full-window document editor, keeping the
+     *   pane rooted at its file list.
+     * - text/code in the tablet inspector -> the accepted in-pane editor
+     *   (explicit "open full window" is offered by the panel header).
+     * - PDF/image/media/CAD/archive/binary -> the typed full-window document
+     *   surface; bytes are never decoded as text.
+     *
+     * Returns true when this call took ownership of the open, mirroring
+     * `FloeIdeWorkspace.onOpenDocument` (true means the host accepted the
+     * request, not that rendering succeeded).
+     */
+    fun openDocument(path: String): Boolean {
+        val surface = WorkspaceDocumentRouter.surfaceFor(path)
+        if (surface == WorkspaceDocumentSurface.OFFICE) {
+            if (openOffice(path)) return true
+            // The Office engine cannot take this format (for example .doc): it
+            // must never fall through to the UTF-8 text workbench. The typed
+            // surface states the honest limitation instead.
+            raiseDocument(path, surface)
+            return true
+        }
+        return if (WorkspaceDocumentPresentation.presentsFullWindow(windowWidthDp, surface, minimumWindowWidthDp)) {
+            // The cover itself issues the one open intent (without claiming
+            // the pane's level), so a rotation during loading and the first
+            // composition cannot dispatch the same open twice.
+            raiseDocument(path, surface)
+            true
+        } else {
+            // Tablet/wide inspector: the existing in-pane editor. Never opens
+            // twice from FloeIdeWorkspace's own fallback.
+            presenter.openFile(path)
+            true
+        }
+    }
+    fun openFromPanel(path: String) { openDocument(path) }
+    // The attached terminal slot is composed by whichever surface currently
+    // owns the editor. Its content is the conversation's REAL owned session
+    // (Application-owned controller); dismissing either surface never closes
+    // the session. One slot owner at a time avoids a second attachment for the
+    // same session while the full-window cover is up.
+    val terminalAccessory = IdeBottomAccessory(
+        id = "terminal",
+        label = stringResource(R.string.inspector_terminal),
+        content = { WorkspaceTerminalPane(host.workspaceTerminal, bound.client.taskID) },
+    )
+    val expandableDocumentPath = activeDocumentPath?.takeIf { path ->
+        WorkspaceDocumentPresentation.offersExplicitFullWindow(
+            windowWidthDp, WorkspaceDocumentRouter.surfaceFor(path), minimumWindowWidthDp,
+        )
+    }
     Column(Modifier.fillMaxSize()) {
-        // One header row: title + New (+) + More (…) + close. The six REAL
-        // actions are unchanged and simply regroup the way the iPad files
-        // toolbar groups them — (+) opens New file / New folder, (…) opens
-        // File actions / Provider files / Network storage / Recover edits —
-        // each popup anchored to its measured trigger inside the live window
-        // (never a full-screen dialog). System Back / outside tap dismiss the
-        // menu first; the secondary forms then open normally on the next
-        // explicit selection, exactly like the previous pills did.
+        // One header row: title + (expand when a document is open on a
+        // tablet) + New (+) + More (…) + close. The six REAL actions are
+        // unchanged and simply regroup the way the iPad files toolbar groups
+        // them — (+) opens New file / New folder, (…) opens File actions /
+        // Provider files / Network storage / Recover edits — each popup
+        // anchored to its measured trigger inside the live window (never a
+        // full-screen dialog). System Back / outside tap dismiss the menu
+        // first; the secondary forms then open normally on the next explicit
+        // selection, exactly like the previous pills did.
         WorkspacePaneHeader(title = title, onDismiss = onDismiss) {
+            // Explicit full-window entry for the tablet inspector (iOS
+            // FileInspectorView's expand control, L142-146/L256-287): the
+            // pane keeps its preview-sized editor and only the user's tap
+            // promotes the same document to the full-window cover. Phones
+            // open the cover directly, so this control is absent there.
+            if (expandableDocumentPath != null) {
+                FloeCircleButton(
+                    icon = FloeIdeExpandGlyph,
+                    contentDescription = stringResource(R.string.workspace_document_open_full_window),
+                    onClick = { raiseDocument(expandableDocumentPath, WorkspaceDocumentSurface.CODE_EDITOR) },
+                    visualSize = 34.dp,
+                    iconSize = 16.dp,
+                    modifier = Modifier.testTag("workspace.documentExpand"),
+                )
+            }
             FloeCircleButton(
                 icon = FloeIcons.Plus,
                 contentDescription = stringResource(R.string.workspace_new_menu),
@@ -232,16 +381,46 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
         // Slot visibility alone never mints a second PTY: an already-live
         // session is attached, not restarted; dismissing this presentation
         // never closes the owned session (service-owned lifecycle).
-        FloeIdeWorkspace(
-            presenter,
-            onBack = onDismiss,
-            modifier = Modifier.weight(1f),
-            onOpenDocument = ::openOffice,
-            bottomAccessory = IdeBottomAccessory(
-                id = "terminal",
-                label = stringResource(R.string.inspector_terminal),
-                content = { WorkspaceTerminalPane(host.workspaceTerminal, bound.client.taskID) },
-            ),
+        if (documentRequest == null) {
+            FloeIdeWorkspace(
+                presenter,
+                onBack = onDismiss,
+                modifier = Modifier.weight(1f),
+                onOpenDocument = ::openDocument,
+                windowWidthDp = windowWidthDp,
+                smallestWindowWidthDp = minimumWindowWidthDp,
+                bottomAccessory = terminalAccessory,
+            )
+        } else {
+            // The full-window cover owns the ONLY editor view (and the only
+            // attached terminal slot) for this presenter. Mounting the
+            // covered pane's IDE as well would create a second Sora editor /
+            // terminal attachment bound to the same drafts and selection. The
+            // pane yields its body while the cover is up; the presenter keeps
+            // every tab, draft, undo step and recovery row, and the pane
+            // re-mounts on that exact projection when the cover closes.
+            Box(Modifier.weight(1f).fillMaxWidth()) {}
+        }
+    }
+    // The full-window document cover. One opaque page over the whole window —
+    // never a sidebar/tree/editor row squeezed into the pane. Back/system
+    // Back returns to this pane's exact file list; the typed surface's Close
+    // leaves the pane to the owning task. Neither path discards a draft.
+    documentRequest?.let { request ->
+        WorkspaceDocumentDestination(
+            request = request,
+            host = host,
+            presenter = presenter,
+            bottomAccessory = terminalAccessory,
+            ownerTaskID = bound.client.taskID,
+            ownerWorkspaceID = bound.client.workspaceID,
+            ownerCurrent = bound.isCurrent(),
+            temporary = entry.isTemporary,
+            onBackToFiles = ::closeDocument,
+            onCloseTask = {
+                closeDocument()
+                onDismiss()
+            },
         )
     }
     val newAnchor = newTriggerBounds
@@ -293,13 +472,13 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
         )
     }
     WorkspaceRecoveryPanel(host, bound.client, recoveryVisible, onDismiss = { recoveryVisible = false },
-        onOpenFile = ::openFile, onTreeChanged = { bound.ide.refreshWorkspace(); presenter.refreshTreeKeepingExpansion() })
+        onOpenFile = ::openFromPanel, onTreeChanged = { bound.ide.refreshWorkspace(); presenter.refreshTreeKeepingExpansion() })
     FloeActionSheet(visible = networkVisible, onDismiss = { networkVisible = false }, maxCardWidth = 640.dp) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
             WorkspaceNetworkPanel(
                 host = host, taskID = bound.client.taskID, workspaceID = bound.client.workspaceID,
                 isOwnerCurrent = bound.isCurrent,
-                onOpenWorkspaceFile = { path -> openFile(path); networkVisible = false },
+                onOpenWorkspaceFile = { path -> openFromPanel(path); networkVisible = false },
                 onWorkspaceTreeChanged = { bound.ide.refreshWorkspace(); presenter.refreshTreeKeepingExpansion() },
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -308,7 +487,7 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
     FloeActionSheet(visible = sourcesVisible, onDismiss = { sourcesVisible = false }, maxCardWidth = 640.dp) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
             WorkspaceSourcePanel(sourceLane,
-                onOpenWorkspaceFile = { path -> openFile(path); sourcesVisible = false },
+                onOpenWorkspaceFile = { path -> openFromPanel(path); sourcesVisible = false },
                 onWorkspaceTreeChanged = { bound.ide.refreshWorkspace(); presenter.refreshTreeKeepingExpansion() },
                 modifier = Modifier.fillMaxWidth())
         }

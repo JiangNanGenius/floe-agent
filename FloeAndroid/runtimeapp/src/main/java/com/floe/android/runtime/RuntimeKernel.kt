@@ -66,23 +66,32 @@ class RuntimeKernel(context: Context) {
     fun exchange(request: RuntimeWire.Request, workspaceGrant: IBinder?, foregroundAllowed: () -> Boolean): JSONObject {
         val traceStart = request.operation == "shell.start"
         if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_START_ENTER)
-        if (request.operation == "status") return JSONObject()
-            .put("protocol", RuntimeWire.VERSION).put("foreground", foregroundAllowed())
-            .put("active", hasOwnedWork()).put("stopping", fence.isStopping)
-            .put("localNetworkGranted", android.os.Build.VERSION.SDK_INT < 37 || context.checkSelfPermission(
-                RuntimeAccessActivity.PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED)
-            // Loading metadata or binding the component does not enable a tool.
-            .put("modelExecutionReady", false)
-            // Actual applied guest resolver state (additive diagnostics;
-            // counts/classes only, never raw server addresses).
-            .put("resolver", RuntimeNetworkConfiguration.statusSnapshot())
-            // Process-generation identity for the host's live anchoring.
-            .put("runtimePid", runtimePid).put("runtimeBootToken", runtimeBootToken)
-            // The workload contract version is advertised ONLY when this
-            // kernel genuinely runs a single-slot executor with the
-            // exclusive-start admission below. It is the engine's own real
-            // attestation; an idle check belongs to the host ingest.
-            .put("workloadContractVersion", if (executor.maximumPoolSize == 1) WORKLOAD_CONTRACT else "")
+        if (request.operation == "status") {
+            val reply = JSONObject()
+                .put("protocol", RuntimeWire.VERSION).put("foreground", foregroundAllowed())
+                .put("active", hasOwnedWork()).put("stopping", fence.isStopping)
+                .put("localNetworkGranted", android.os.Build.VERSION.SDK_INT < 37 || context.checkSelfPermission(
+                    RuntimeAccessActivity.PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED)
+                // Loading metadata or binding the component does not enable a tool.
+                .put("modelExecutionReady", false)
+                // Actual applied guest resolver state (additive diagnostics;
+                // counts/classes only, never raw server addresses).
+                .put("resolver", RuntimeNetworkConfiguration.statusSnapshot())
+                // Process-generation identity for the host's live anchoring.
+                .put("runtimePid", runtimePid).put("runtimeBootToken", runtimeBootToken)
+                // The workload contract version is advertised ONLY when this
+                // kernel genuinely runs a single-slot executor with the
+                // exclusive-start admission below. It is the engine's own real
+                // attestation; an idle check belongs to the host ingest.
+                .put("workloadContractVersion", if (executor.maximumPoolSize == 1) WORKLOAD_CONTRACT else "")
+            // G07.1 terminal04 (ADDITIVE, diagnostics only): this engine
+            // process's OWN settled phase composition for its most recent
+            // workload. Absent until a first terminal; stage names and
+            // integer durations only — no command, path, payload or id. A
+            // metadata read never consults or changes it.
+            LinuxRuntimePhaseTiming.lastSummary()?.let { reply.put("lastTerminalPhases", it) }
+            return reply
+        }
         if (request.operation == "request.status") {
             require(request.payload.keys().asSequence().toSet() == setOf("requestID"))
             val id = request.payload.getString("requestID")

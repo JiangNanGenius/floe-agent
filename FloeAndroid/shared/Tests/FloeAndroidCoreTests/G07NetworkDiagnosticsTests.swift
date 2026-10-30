@@ -162,9 +162,9 @@ final class G07NetworkDiagnosticsTests: XCTestCase {
         let mailbox = G07NetworkHostMailbox()
         XCTAssertTrue(mailbox.bind(epoch: 15))
         let request = try NetworkToolRequest.status(operationID: operationID)
+        let owner = G07NetworkOwner(taskID: taskID, runID: runID, epoch: 15)
         async let reply = mailbox.submit(
-            request: request,
-            owner: G07NetworkOwner(taskID: taskID, runID: runID, epoch: 15),
+            request: request, owner: owner,
             cancellation: CancellationToken())
         try await Task.sleep(nanoseconds: 20_000_000)
         let claim = mailbox.nextClaim(timeoutMillis: 100)

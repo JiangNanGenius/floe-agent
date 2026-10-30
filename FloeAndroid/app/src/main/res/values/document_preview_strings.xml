@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_document_preview_opening">Opening…</string>
+    <string name="workspace_document_preview_failed_title">Can\'t open this file</string>
+    <string name="workspace_document_preview_owner">This document is no longer available.</string>
+    <string name="workspace_document_preview_source">The file couldn\'t be read from this workspace.</string>
+    <string name="workspace_document_preview_too_large">This file is too large to preview.</string>
+    <string name="workspace_document_preview_invalid">This file doesn\'t match its type.</string>
+    <string name="workspace_document_preview_unsupported">This format can\'t be displayed on this device.</string>
+    <string name="workspace_document_preview_transport">The preview isn\'t available right now. Try again.</string>
+    <string name="workspace_document_preview_render">This page couldn\'t be displayed. Try again.</string>
+    <string name="workspace_document_preview_retry">Try again</string>
+    <string name="workspace_document_preview_password_title">Protected PDF</string>
+    <string name="workspace_document_preview_password_needed">Enter the password to open this PDF.</string>
+    <string name="workspace_document_preview_password_rejected">That password didn\'t work.</string>
+    <string name="workspace_document_preview_password_unsupported">This device\'s PDF viewer can\'t open protected PDFs.</string>
+    <string name="workspace_document_image_unsupported_body">This build can\'t display SVG or TIFF images. The file was not read or changed.</string>
+    <string name="workspace_document_pdf_page_indicator">%1$d of %2$d</string>
+    <string name="workspace_document_pdf_prev">Previous page</string>
+    <string name="workspace_document_pdf_next">Next page</string>
+    <string name="workspace_document_zoom_out">Zoom out</string>
+    <string name="workspace_document_zoom_in">Zoom in</string>
+    <string name="workspace_document_zoom_fit">Fit</string>
+</resources>

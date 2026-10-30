@@ -66,6 +66,17 @@ public fun rememberIdePresenter(host: IdeHost): IdePresenter {
  * the split filetree + editor like the iPad; compact windows get a full-screen
  * editor with the tree behind a modal.
  *
+ * On an ACTUAL phone window ([windowWidthDp] below the tablet boundary) the
+ * surface follows the iOS Inspector file-list-first flow: the list is the
+ * root, selecting a text file pushes the editor, editor Back returns to the
+ * list, and list Back leaves the workspace. The 430dp tablet pane keeps the
+ * existing compact editor root because its window is still a tablet: phone
+ * mode is never inferred from the measured child width alone.
+ *
+ * The App's `WorkspaceFilesPane` may instead intercept a phone selection and
+ * present [FloeIdeDocumentWindow] (the iOS `fullScreenCover` equivalent); in
+ * that case the list stays this surface's root and the cover returns to it.
+ *
  * [isTemporarySession] keeps the temporary-chat file ceiling: no tree, no
  * open, no save — an honest unavailable explanation instead of samples.
  * [onOpenDocument] lets the App route supported binary documents to its
@@ -80,11 +91,13 @@ public fun FloeIdeWorkspace(
     bottomAccessory: IdeBottomAccessory? = null,
     isTemporarySession: Boolean = false,
     onOpenDocument: ((String) -> Boolean)? = null,
+    windowWidthDp: Float? = null,
+    smallestWindowWidthDp: Float? = null,
 ) {
     val state by presenter.state.collectAsState()
-    BackHandler(onBack = onBack)
     val colors = Floe.colors
     if (isTemporarySession) {
+        BackHandler(onBack = onBack)
         FloeUnavailableView(
             icon = FloeIdeIcons.DocPage,
             title = stringResource(R.string.ide_title_no_document),
@@ -95,7 +108,22 @@ public fun FloeIdeWorkspace(
     }
     var compactTreeOpen by remember { mutableStateOf(false) }
     BoxWithConstraints(modifier.fillMaxSize().background(colors.readingSurface)) {
-        val wide = maxWidth >= FloeLayout.PersistentTwoColumnMinWidth
+        val phoneListFirst = IdeWorkspacePresentation.usesPhoneFileList(windowWidthDp, maxWidth.value, smallestWindowWidthDp)
+        val wide = maxWidth >= FloeLayout.PersistentTwoColumnMinWidth && !phoneListFirst
+        // One handler for the whole surface: on the phone list, Back leaves
+        // the workspace; in the phone editor it returns to the list first.
+        // Tablet and wide layouts keep their existing dismiss semantics.
+        BackHandler {
+            // Read the live level, not this composition's captured state: a
+            // second Back pressed before recomposition must still leave the
+            // workspace instead of replaying "editor -> list".
+            if (IdeWorkspacePresentation.backReturnsToTask(
+                    phoneListFirst, presenter.state.value.compactLevel)) {
+                onBack()
+            } else {
+                presenter.showCompactFileList()
+            }
+        }
         if (wide) {
             Row(Modifier.fillMaxSize()) {
                 IdeFileTreePanel(
@@ -116,6 +144,39 @@ public fun FloeIdeWorkspace(
                 com.floe.android.design.FloeVerticalDivider()
                 EditorColumn(presenter, state, compact = false, onOpenTree = {}, onBack = onBack, showTreeButton = false)
             }
+        } else if (phoneListFirst && state.compactLevel == IdeCompactLevel.FILE_LIST) {
+            // Phone root: the workspace list itself, exactly like the iOS
+            // inspector Files root. Selecting a text file pushes the editor;
+            // a document the host routes to its native viewer keeps the list
+            // behind that viewer, so dismissing the viewer returns here.
+            IdeFileTreePanel(
+                state = state.tree,
+                onQuery = presenter::setTreeSearchQuery,
+                onToggle = presenter::toggleTreeExpansion,
+                onOpenFile = { path ->
+                    if (onOpenDocument?.invoke(path) != true) presenter.openFile(path)
+                },
+                onOpenHit = { hit ->
+                    if (onOpenDocument?.invoke(hit.relativePath) != true) {
+                        presenter.openFile(hit.relativePath, com.floe.android.feature.ide.api.IdeOpenReason.SEARCH)
+                    }
+                },
+                onRefresh = presenter::refreshTreeKeepingExpansion,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else if (phoneListFirst) {
+            // Phone editor level. Back is the editor's own return to the
+            // list; the pane Close above this surface returns to the task.
+            // The folder control would duplicate that level, so it is absent.
+            EditorColumn(
+                presenter = presenter,
+                state = state,
+                compact = true,
+                onOpenTree = {},
+                onBack = presenter::showCompactFileList,
+                showTreeButton = false,
+                backContentDescription = R.string.ide_back_to_files_cd,
+            )
         } else {
             EditorColumn(
                 presenter = presenter,
@@ -170,6 +231,7 @@ private fun EditorColumn(
     onOpenTree: () -> Unit,
     onBack: () -> Unit,
     showTreeButton: Boolean,
+    backContentDescription: Int = R.string.ide_back_cd,
 ) {
     IdeEditorArea(
         presenter = presenter,
@@ -178,8 +240,50 @@ private fun EditorColumn(
         onOpenTree = onOpenTree,
         onBack = onBack,
         showTreeButton = showTreeButton,
+        backContentDescription = backContentDescription,
     )
 }
+
+/**
+ * The explicit full-window document surface — the Android equivalent of the
+ * iOS `WorkspaceIDEView` full-screen cover (FileInspectorView.swift L97-107)
+ * opened by a document's expand entry. It is the SAME [IdePresenter] editor
+ * column the inspector pane hosts: one tab strip, one set of native buffers,
+ * one undo lineage and one save path. Only the available size changes.
+ *
+ * [onClose] returns to the file list that owns the document; it never closes
+ * a tab, discards a draft or releases the presenter. The App closes this
+ * cover when the owning task/workspace retires.
+ */
+@Composable
+public fun FloeIdeDocumentWindow(
+    presenter: IdePresenter,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+    bottomAccessory: IdeBottomAccessory? = null,
+) {
+    val state by presenter.state.collectAsState()
+    Box(modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
+        EditorColumn(
+            presenter = presenter,
+            state = state,
+            compact = true,
+            onOpenTree = {},
+            onBack = onClose,
+            showTreeButton = false,
+            backContentDescription = R.string.ide_back_to_files_cd,
+        )
+        if (bottomAccessory != null && state.bottomPaneOpen) {
+            BottomAccessoryOverlay(presenter, bottomAccessory)
+        }
+    }
+}
+
+/** Public expand glyph for the App's explicit full-window entry (the shared
+ * design-system icon inventory is owned by Main; this re-exports the feature's
+ * own glyph instead of editing it). */
+public val FloeIdeExpandGlyph: androidx.compose.ui.graphics.vector.ImageVector
+    get() = FloeIdeIcons.Expand
 
 /**
  * Bottom-half overlay for the attached host pane. Dismiss returns to the

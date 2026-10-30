@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="network_workbench">Network</string>
+    <string name="shell_more">More</string>
+    <string name="network_permission_notice_title">Network access needed</string>
+    <string name="network_permission_notice_body">Allow access to use this network tool. After granting permission, start the check again.</string>
+    <string name="network_permission_allow">Allow access</string>
+    <string name="network_permission_later">Not now</string>
+</resources>

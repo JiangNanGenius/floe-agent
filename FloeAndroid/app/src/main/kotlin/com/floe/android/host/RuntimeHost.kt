@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -71,6 +72,30 @@ class RuntimeHost internal constructor(
     internal val browser = BrowserHostController(this)
     internal val workspaceGit = G04GitHostController(this)
     internal val workspaceActions = G04ActionsHostController(this)
+    /**
+     * G07.1 Application-owned read-only full-window PDF/raster preview. It
+     * owns the verified immutable snapshot, the isolated PDF renderer host
+     * and the transient decoded bitmap, so rotation, background and the
+     * dialog's own recomposition never duplicate a stage/render. Created
+     * lazily on the first explicit document open; [prepareWorkspaceDocumentPreviewForRootStop]
+     * is the real root-stop gate.
+     */
+    private val workspaceDocumentPreviewDelegate = lazy {
+        WorkspaceDocumentPreviewController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            currentHostGeneration = { commandClient.generation() },
+            isTemporaryTask = { id -> conversations.entryFor(id)?.isTemporary == true },
+            admitsPasswordPrompt = {
+                nativeRootEpoch() != null &&
+                    (appContext as? com.floe.android.FloeApplication)?.isActivityInForeground() != false
+            },
+        )
+    }
+    internal val workspaceDocumentPreview: WorkspaceDocumentPreviewController
+        get() = workspaceDocumentPreviewDelegate.value
     internal var workspaceGitTrust: G04GitTrustController? = null
     internal var workspaceTerminal: G04TerminalHostController? = null
 
@@ -83,6 +108,72 @@ class RuntimeHost internal constructor(
     internal var workspaceSources: WorkspaceSourcePump? = null
     /** Same Application owner and native epoch as the provider transport. */
     internal var networkWorkspaceHost: NetworkWorkspaceHostController? = null
+    /** One phone-native measurement service shared by workbench and Agent pump. */
+    internal val networkService by lazy { com.floe.android.core.network.PhoneNetworkService(appContext) }
+    internal val networkWorkbench by lazy { NetworkWorkbenchController(this) }
+    internal data class NetworkPermissionNotice(
+        val request: com.floe.android.host.network.NetworkPermissionRequest,
+        val generation: Long,
+        val epoch: Long?,
+    )
+    internal val networkPermissionNotice = MutableStateFlow<NetworkPermissionNotice?>(null)
+    internal val networkDiagnostics by lazy {
+        com.floe.android.host.network.NetworkDiagnosticsHostController(
+            scope = scope, ioDispatcher = ioDispatcher, currentNativeEpoch = ::nativeRootEpoch,
+            serviceProvider = { com.floe.android.host.network.PhoneNetworkServiceAdapter(networkService) },
+            onPermissionRequired = { request ->
+                networkPermissionNotice.value = NetworkPermissionNotice(request, commandClient.generation(), nativeRootEpoch())
+            },
+        )
+    }
+    private var networkDiagnosticsControl: Job? = null
+    private val networkDiagnosticsLock = Any()
+
+    internal fun currentNetworkPermissionNotice(notice: NetworkPermissionNotice): Boolean =
+        networkPermissionNotice.value === notice && commandClient.generation() == notice.generation && nativeRootEpoch() == notice.epoch
+
+    private fun startNetworkDiagnosticsLane() {
+        if (!::appContext.isInitialized) return
+        synchronized(networkDiagnosticsLock) {
+            if (networkDiagnosticsControl?.isActive == true) return
+            networkDiagnosticsControl = scope.launch(ioDispatcher) {
+                for (attempt in 0 until 5) {
+                    val epoch = nativeRootEpoch()
+                    if (epoch != null && epoch > 0) {
+                        val previous = networkDiagnostics.boundEpoch()
+                        if (previous > 0 && previous != epoch && !networkDiagnostics.stopAndJoin(previous, 5_000)) return@launch
+                        if (networkDiagnostics.start(epoch)) return@launch
+                    }
+                    delay(250L * (attempt + 1))
+                }
+            }
+        }
+    }
+
+    internal suspend fun prepareNetworkForRootStop(): Boolean {
+        networkWorkbench.leave()
+        networkPermissionNotice.value = null
+        networkDiagnosticsControl?.cancelAndJoin()
+        networkDiagnosticsControl = null
+        val epoch = networkDiagnostics.boundEpoch()
+        return epoch <= 0 || networkDiagnostics.stopAndJoin(epoch, 5_000)
+    }
+
+    /**
+     * Root-stop gate for the owned workspace document preview: cancel a
+     * still-staging read, release the isolated renderer, and wait for the
+     * real snapshot-deletion quiescence BEFORE the native root is retired.
+     * True when nothing was ever created. An unproven drain returns false so
+     * the coordinator keeps the old generation honestly pending (the same
+     * contract as the network lane, which remains the LAST drain clause).
+     */
+    internal suspend fun prepareWorkspaceDocumentPreviewForRootStop(): Boolean =
+        if (workspaceDocumentPreviewDelegate.isInitialized()) {
+            workspaceDocumentPreview.prepareForRootStop(WORKSPACE_PREVIEW_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
     internal var workspaceSourceHost: WorkspaceSourceHostController? = null
     /** D04 owned run-output lane (list / verified Save Copy / Office egress
      * helper). Stateless per call: every query carries the CURRENT accepted
@@ -205,6 +296,11 @@ class RuntimeHost internal constructor(
      * RB-1 owner stop. The host never cancels another owner's work.
      */
     suspend fun stop() {
+        // A real preview reader still holding a native-root snapshot must
+        // close before the root retires; a refused drain keeps the old
+        // generation rather than pretending the document work is gone.
+        if (!prepareWorkspaceDocumentPreviewForRootStop()) return
+        prepareNetworkForRootStop()
         commandClient.bumpGeneration()
         providers.stop()
         conversations.stop()
@@ -337,9 +433,16 @@ class RuntimeHost internal constructor(
                 // G02: republish the REAL native domain readiness (handler
                 // registry + composition constructors), not source optimism.
                 g02ReadinessAdapter.pollAndPublish()
+                // A REAL accepted store generation re-admits the owned
+                // document preview after a completed stop/rebind cycle; an
+                // unproven old-generation drain never reached here.
+                if (workspaceDocumentPreviewDelegate.isInitialized()) {
+                    workspaceDocumentPreview.onOwnedStoreReady()
+                }
                 // Office AI host lane follows the ACTUAL accepted root epoch
                 // with bounded attempts (same doctrine as the browser lane).
                 startOfficeAiLane()
+                startNetworkDiagnosticsLane()
             }
             is RuntimeBootstrapCapability.Failed ->
                 update { it.copy(store = RuntimeHostReadiness.StoreReadiness.Failed(value.reason)) }
@@ -352,6 +455,7 @@ class RuntimeHost internal constructor(
                 }
                 g02ReadinessAdapter.reset()
                 stopOfficeAiLane()
+                scope.launch(ioDispatcher) { prepareNetworkForRootStop() }
             }
         }
     }
@@ -629,6 +733,10 @@ class RuntimeHost internal constructor(
         internal const val OFFICE_AI_STOP_WAIT_MS = 8_000L
         internal const val OFFICE_AI_RETIRE_ATTEMPTS = 8
         internal const val OFFICE_AI_RETIRE_BACKOFF_MILLIS = 1_000L
+
+        /** Bounded join for the owned document-preview renderer/snapshot
+         * drain, matching the other lane stop waits. */
+        internal const val WORKSPACE_PREVIEW_STOP_WAIT_MS = 8_000L
 
         /** Structural refusal metadata only — never echo the goal/payload. */
         private val RUN_FAILURE_DETAIL_KEYS = listOf(

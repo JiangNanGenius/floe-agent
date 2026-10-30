@@ -144,6 +144,10 @@ public class IdePresenter(
     private var syncErrorMessage: String? = null
     private var closeRequestState: IdeCloseRequest? = null
     private var bottomPaneOpen = false
+    // Phone file-list-first chrome only. The active document, tabs, drafts and
+    // recovery rows stay in their existing authorities; this level never
+    // rewrites them, so returning to the list cannot discard editor state.
+    private var compactLevel = IdeCompactLevel.FILE_LIST
     private var caretLine = 0
     private var caretColumn = 0
     private var selectionLength = 0
@@ -551,11 +555,50 @@ public class IdePresenter(
         }
     }
 
-    public fun openFile(relativePath: String, reason: IdeOpenReason = IdeOpenReason.TREE) {
+    /**
+     * Explicitly show the compact file list. Phone-only chrome: the editor's
+     * active document and every draft/undo/recovery row stay untouched, so a
+     * later reopen of the same file restores the exact editor state. A late
+     * native tabs/snapshot replay (persisted selection) never moves the level
+     * back to the editor on its own.
+     */
+    public fun showCompactFileList() {
+        synchronized(lock) {
+            if (released) return
+            if (compactLevel == IdeCompactLevel.FILE_LIST && !bottomPaneOpen) return
+            compactLevel = IdeCompactLevel.FILE_LIST
+            // Leaving the editor level also leaves its attached bottom pane;
+            // the owned terminal session itself is service-scoped and stays.
+            bottomPaneOpen = false
+            _state.value = buildState()
+        }
+    }
+
+    /**
+     * Opens [relativePath] in the one editor authority.
+     *
+     * [claimsPaneLevel] is the phone-list navigation intent: the accepted
+     * list-first flow sets EDITOR so the in-pane editor appears. A full-window
+     * document cover ([FloeIdeDocumentWindow]) passes false because the file
+     * list must stay the pane's root underneath the cover — closing the cover
+     * returns to that exact list instead of leaving a stale editor level
+     * behind. Document/tab/draft truth is identical in both cases.
+     */
+    public fun openFile(
+        relativePath: String,
+        reason: IdeOpenReason = IdeOpenReason.TREE,
+        claimsPaneLevel: Boolean = true,
+    ) {
         if (released) return
         val request = newRequest("open")
         synchronized(lock) {
             commandKinds[request] = CmdKind.OPEN
+            // Selecting a file is the explicit editor activation. Note this is
+            // the selection intent, not proof the open succeeded: the actual
+            // snapshot/tabs still arrive through the fenced receiver, and a
+            // stale replay alone can never restore this level after Back.
+            if (claimsPaneLevel) compactLevel = IdeCompactLevel.EDITOR
+            _state.value = buildState()
         }
         dispatchCommand(IdeCommandRequest.OpenFile(request, hostOwner(), relativePath, reason))
     }
@@ -1690,6 +1733,7 @@ public class IdePresenter(
             tabs = tabs,
             closeRequest = closeRequestState,
             bottomPaneOpen = bottomPaneOpen,
+            compactLevel = compactLevel,
             caretLine = caretLine,
             caretColumn = caretColumn,
             selectionLengthUtf16 = selectionLength,

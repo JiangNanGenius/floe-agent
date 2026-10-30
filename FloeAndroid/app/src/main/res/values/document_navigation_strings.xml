@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_document_back_to_files">Back to file list</string>
+    <string name="workspace_document_open_full_window">Open in full window</string>
+    <string name="workspace_document_unavailable_body">This build has no in-app viewer for this type yet. The file was not read or changed.</string>
+    <string name="workspace_document_type_text">Text document</string>
+    <string name="workspace_document_type_office">Office document</string>
+    <string name="workspace_document_type_pdf">PDF document</string>
+    <string name="workspace_document_type_image">Image</string>
+    <string name="workspace_document_type_media">Video or audio</string>
+    <string name="workspace_document_type_cad">Drawing</string>
+    <string name="workspace_document_type_archive">Archive</string>
+    <string name="workspace_document_type_binary">Binary file</string>
+</resources>
