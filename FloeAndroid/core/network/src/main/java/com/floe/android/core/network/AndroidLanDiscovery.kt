@@ -16,8 +16,7 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -81,12 +80,6 @@ internal object AndroidLanDiscovery {
     )
 
     private class NsdResolveFailure(val code: Int) : Exception("NsdManager resolve failed with code $code")
-
-    private class TypeState {
-        @Volatile var state: String = "startPending"
-        @Volatile var errorCode: Int? = null
-        @Volatile var errorText: String? = null
-    }
 
     suspend fun discover(session: AndroidNetworkSession, request: LanDiscoveryRequest): ProbeResult {
         val network = session.activeNetwork ?: return LanDiscoveryResult.build(
@@ -167,13 +160,12 @@ internal object AndroidLanDiscovery {
                 ),
                 networkChanged = false,
             )
-        val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "floe-nsd").apply { isDaemon = true }
-        }
-        session.trackAction { executor.shutdownNow() }
+        val executor = NsdCallbackExecutor()
+        session.trackAction { executor.close() }
 
+        val callbacksClosed = AtomicBoolean(false)
         val started = SystemClock.elapsedRealtime()
-        val states = ConcurrentHashMap<String, TypeState>()
+        val states = ConcurrentHashMap<String, LanDiscoveryTypeState>()
         val listeners = ConcurrentHashMap<String, NsdManager.DiscoveryListener>()
         val found = ConcurrentHashMap<String, NsdServiceInfo>()
         val lostKeys = ConcurrentHashMap.newKeySet<String>()
@@ -186,6 +178,7 @@ internal object AndroidLanDiscovery {
         }
 
         fun publishIfChanged(): Boolean {
+            if (callbacksClosed.get()) return true
             if (session.hasCapturedNetworkChanged()) {
                 networkChanged.set(true)
                 return true
@@ -194,175 +187,192 @@ internal object AndroidLanDiscovery {
         }
 
         try {
-            request.serviceTypes.forEach { serviceType ->
-                val state = TypeState()
-                states[serviceType] = state
-                val listener = object : NsdManager.DiscoveryListener {
-                    override fun onDiscoveryStarted(serviceType: String) {
-                        state.state = "started"
-                    }
-
-                    override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                        if (stopped.get()) return
-                        if (publishIfChanged()) return
-                        val infoHandle = serviceNetworkHandle(serviceInfo)
-                        if (infoHandle != null && capturedHandle != null && infoHandle != capturedHandle) {
-                            filteredForeign.incrementAndGet()
-                            return
+            try {
+                request.serviceTypes.forEach { serviceType ->
+                    val state = LanDiscoveryTypeState()
+                    states[serviceType] = state
+                    val listener = object : NsdManager.DiscoveryListener {
+                        override fun onDiscoveryStarted(serviceType: String) {
+                            if (callbacksClosed.get()) return
+                            state.started()
                         }
-                        val key = serviceKey(serviceInfo)
-                        if (found.size >= NetworkLimits.MAX_LAN_SERVICES) {
-                            truncated.set(true)
-                            return
-                        }
-                        found.putIfAbsent(key, serviceInfo)
-                    }
 
-                    override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                        if (stopped.get()) return
-                        lostKeys.add(serviceKey(serviceInfo))
-                    }
-
-                    override fun onDiscoveryStopped(serviceType: String) {
-                        if (state.state != "startFailed") state.state = "stopped"
-                    }
-
-                    override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-                        state.state = "startFailed"
-                        state.errorCode = errorCode
-                        state.errorText = nsdErrorName(errorCode)
-                    }
-
-                    override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
-                        state.state = "stopFailed"
-                        state.errorCode = errorCode
-                        state.errorText = nsdErrorName(errorCode)
-                    }
-                }
-                listeners[serviceType] = listener
-                try {
-                    when {
-                        Build.VERSION.SDK_INT >= API_37 -> manager.discoverServices(
-                            buildDiscoveryRequest(serviceType, network, noPicker = true),
-                            executor,
-                            listener,
-                        )
-                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM -> manager.discoverServices(
-                            buildDiscoveryRequest(serviceType, network, noPicker = false),
-                            executor,
-                            listener,
-                        )
-                        else -> manager.discoverServices(
-                            serviceType,
-                            NsdManager.PROTOCOL_DNS_SD,
-                            network,
-                            executor,
-                            listener,
-                        )
-                    }
-                } catch (failure: Exception) {
-                    state.state = "startFailed"
-                    state.errorText = failure.javaClass.simpleName.take(64)
-                }
-            }
-
-            val discoveryEnd = minOf(started + request.discoveryDurationMs, deadline)
-            while (true) {
-                if (publishIfChanged()) break
-                val now = SystemClock.elapsedRealtime()
-                if (now >= discoveryEnd) break
-                delay(minOf(POLL_MS, discoveryEnd - now))
-            }
-        } finally {
-            stopped.set(true)
-            listeners.values.forEach { listener ->
-                runCatching { manager.stopServiceDiscovery(listener) }
-            }
-        }
-
-        if (session.hasCapturedNetworkChanged()) networkChanged.set(true)
-
-        val remainingForResolve = deadline - SystemClock.elapsedRealtime()
-        val resolved: Map<String, ResolvedInfo> = if (networkChanged.get() || remainingForResolve < 200L) {
-            emptyMap()
-        } else {
-            val infos = found.entries.toList()
-            val results = ConcurrentHashMap<String, ResolvedInfo>()
-            coroutineScope {
-                val semaphore = Semaphore(MAX_RESOLVE_CONCURRENCY)
-                infos.map { (key, info) ->
-                    launch {
-                        val timeout = minOf(RESOLVE_TIMEOUT_MS, deadline - SystemClock.elapsedRealtime())
-                        val infoResult = semaphore.withPermit {
-                            if (timeout < 200L) {
-                                ResolvedInfo(resolution = "unresolved")
-                            } else {
-                                resolveService(manager, executor, info, timeout)
+                        override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                            if (callbacksClosed.get() || stopped.get()) return
+                            if (publishIfChanged()) return
+                            val infoHandle = serviceNetworkHandle(serviceInfo)
+                            if (infoHandle != null && capturedHandle != null && infoHandle != capturedHandle) {
+                                filteredForeign.incrementAndGet()
+                                return
                             }
+                            val key = serviceKey(serviceInfo)
+                            if (found.size >= NetworkLimits.MAX_LAN_SERVICES) {
+                                truncated.set(true)
+                                return
+                            }
+                            found.putIfAbsent(key, serviceInfo)
                         }
-                        results[key] = infoResult
+
+                        override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                            if (callbacksClosed.get() || stopped.get()) return
+                            lostKeys.add(serviceKey(serviceInfo))
+                        }
+
+                        override fun onDiscoveryStopped(serviceType: String) {
+                            if (callbacksClosed.get()) return
+                            state.stopped()
+                        }
+
+                        override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                            if (callbacksClosed.get()) return
+                            state.startedFailure(errorCode, nsdErrorName(errorCode))
+                        }
+
+                        override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+                            if (callbacksClosed.get()) return
+                            state.stopFailure(errorCode, nsdErrorName(errorCode))
+                        }
                     }
-                }.forEach { it.join() }
-            }
-            results.toMap()
-        }
+                    listeners[serviceType] = listener
+                    try {
+                        when {
+                            Build.VERSION.SDK_INT >= API_37 -> manager.discoverServices(
+                                buildDiscoveryRequest(serviceType, network, noPicker = true),
+                                executor,
+                                listener,
+                            )
+                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM -> manager.discoverServices(
+                                buildDiscoveryRequest(serviceType, network, noPicker = false),
+                                executor,
+                                listener,
+                            )
+                            else -> manager.discoverServices(
+                                serviceType,
+                                NsdManager.PROTOCOL_DNS_SD,
+                                network,
+                                executor,
+                                listener,
+                            )
+                        }
+                    } catch (failure: Exception) {
+                        state.startedFailure(null, failure.javaClass.simpleName.take(64))
+                    }
+                }
 
-        val serviceRecords = found.entries.mapNotNull { (key, info) ->
-            val infoResult = resolved[key] ?: ResolvedInfo(resolution = "unresolved")
-            val discoveryHandle = serviceNetworkHandle(info)
-            val resolvedHandle = infoResult.networkHandle ?: discoveryHandle
-            if (resolvedHandle != null && capturedHandle != null && resolvedHandle != capturedHandle) {
-                filteredForeign.incrementAndGet()
-                return@mapNotNull null
+                val discoveryEnd = minOf(started + request.discoveryDurationMs, deadline)
+                while (true) {
+                    if (publishIfChanged()) break
+                    val now = SystemClock.elapsedRealtime()
+                    if (now >= discoveryEnd) break
+                    delay(minOf(POLL_MS, discoveryEnd - now))
+                }
+            } finally {
+                stopped.set(true)
+                listeners.values.forEach { listener ->
+                    runCatching { manager.stopServiceDiscovery(listener) }
+                }
             }
-            val matches = if (resolvedHandle == null || capturedHandle == null) {
-                null
+
+            if (session.hasCapturedNetworkChanged()) networkChanged.set(true)
+
+            val remainingForResolve = deadline - SystemClock.elapsedRealtime()
+            val resolved: Map<String, ResolvedInfo> = if (networkChanged.get() || remainingForResolve < 200L) {
+                emptyMap()
             } else {
-                resolvedHandle == capturedHandle
+                val infos = found.entries.toList()
+                val results = ConcurrentHashMap<String, ResolvedInfo>()
+                coroutineScope {
+                    val semaphore = Semaphore(MAX_RESOLVE_CONCURRENCY)
+                    infos.map { (key, info) ->
+                        launch {
+                            val timeout = minOf(RESOLVE_TIMEOUT_MS, deadline - SystemClock.elapsedRealtime())
+                            val infoResult = semaphore.withPermit {
+                                if (timeout < 200L) {
+                                    ResolvedInfo(resolution = "unresolved")
+                                } else {
+                                    resolveService(manager, executor, callbacksClosed, info, timeout)
+                                }
+                            }
+                            results[key] = infoResult
+                        }
+                    }.forEach { it.join() }
+                }
+                results.toMap()
             }
-            LanServiceRecord(
-                serviceName = info.serviceName.orEmpty(),
-                serviceType = info.serviceType.orEmpty(),
-                subtypes = subtypesOf(info),
-                hostname = infoResult.hostname,
-                addresses = infoResult.addresses,
-                port = infoResult.port,
-                networkHandle = resolvedHandle,
-                networkMatchesCaptured = matches,
-                state = if (lostKeys.contains(key)) "lost" else "active",
-                resolution = infoResult.resolution,
-                resolveErrorCode = infoResult.errorCode,
-                resolveError = infoResult.errorText,
-                attributes = if (request.includeAttributes) infoResult.attributes else null,
-            )
-        }.sortedWith(compareBy({ it.serviceType }, { it.serviceName }))
 
-        val perType = request.serviceTypes.map { serviceType ->
-            val state = states[serviceType] ?: TypeState()
-            LanTypeRecord(serviceType, state.state, state.errorCode, state.errorText)
+            // All resolutions are complete. Fence late platform callbacks and
+            // stop the worker before composing the result so nothing can
+            // mutate a result that is already being read.
+            callbacksClosed.set(true)
+            executor.close()
+            val callbacksDropped = executor.droppedCallbackCount > 0
+
+            val serviceRecords = found.entries.mapNotNull { (key, info) ->
+                val infoResult = resolved[key] ?: ResolvedInfo(resolution = "unresolved")
+                val discoveryHandle = serviceNetworkHandle(info)
+                val resolvedHandle = infoResult.networkHandle ?: discoveryHandle
+                if (resolvedHandle != null && capturedHandle != null && resolvedHandle != capturedHandle) {
+                    filteredForeign.incrementAndGet()
+                    return@mapNotNull null
+                }
+                val matches = if (resolvedHandle == null || capturedHandle == null) {
+                    null
+                } else {
+                    resolvedHandle == capturedHandle
+                }
+                LanServiceRecord(
+                    serviceName = info.serviceName.orEmpty(),
+                    serviceType = info.serviceType.orEmpty(),
+                    subtypes = subtypesOf(info),
+                    hostname = infoResult.hostname,
+                    addresses = infoResult.addresses,
+                    port = infoResult.port,
+                    networkHandle = resolvedHandle,
+                    networkMatchesCaptured = matches,
+                    state = if (lostKeys.contains(key)) "lost" else "active",
+                    resolution = infoResult.resolution,
+                    resolveErrorCode = infoResult.errorCode,
+                    resolveError = infoResult.errorText,
+                    attributes = if (request.includeAttributes) infoResult.attributes else null,
+                )
+            }.sortedWith(compareBy({ it.serviceType }, { it.serviceName }))
+
+            val perType = request.serviceTypes.map { serviceType ->
+                val state = states[serviceType]?.snapshot()
+                    ?: LanDiscoveryTypeState.Snapshot("startPending")
+                LanTypeRecord(serviceType, state.state, state.errorCode, state.errorText)
+            }
+            val allStarted = states.isNotEmpty() && states.values.all { state ->
+                val current = state.snapshot().state
+                current == "started" || current == "stopped"
+            }
+            val truncatedResult = truncated.get() || callbacksDropped
+            val noReplies = found.isEmpty() && allStarted && !truncatedResult
+            val elapsed = SystemClock.elapsedRealtime() - started
+            val summary = LanMdnsSummary(
+                requestedServiceTypes = request.serviceTypes,
+                scope = "capturedNetwork",
+                networkScoped = true,
+                discoveryDurationMs = request.discoveryDurationMs,
+                elapsedMs = elapsed,
+                services = serviceRecords,
+                perType = perType,
+                filteredForeignNetwork = filteredForeign.get(),
+                truncated = truncatedResult,
+                noReplies = noReplies,
+                multicastLockHeld = null,
+                stoppedReason = when {
+                    networkChanged.get() -> "networkChanged"
+                    callbacksDropped -> "callbackOverflow"
+                    truncated.get() -> "serviceLimit"
+                    else -> "duration"
+                },
+            )
+            return MdnsOutcome(summary, networkChanged.get())
+        } finally {
+            callbacksClosed.set(true)
+            executor.close()
         }
-        val allStarted = states.isNotEmpty() && states.values.all { it.state == "started" || it.state == "stopped" }
-        val noReplies = found.isEmpty() && allStarted && !truncated.get()
-        val elapsed = SystemClock.elapsedRealtime() - started
-        val summary = LanMdnsSummary(
-            requestedServiceTypes = request.serviceTypes,
-            scope = "capturedNetwork",
-            networkScoped = true,
-            discoveryDurationMs = request.discoveryDurationMs,
-            elapsedMs = elapsed,
-            services = serviceRecords,
-            perType = perType,
-            filteredForeignNetwork = filteredForeign.get(),
-            truncated = truncated.get(),
-            noReplies = noReplies,
-            multicastLockHeld = null,
-            stoppedReason = when {
-                networkChanged.get() -> "networkChanged"
-                truncated.get() -> "serviceLimit"
-                else -> "duration"
-            },
-        )
-        return MdnsOutcome(summary, networkChanged.get())
     }
 
     private suspend fun scanTcp(
@@ -505,7 +515,8 @@ internal object AndroidLanDiscovery {
 
     private suspend fun resolveService(
         manager: NsdManager,
-        executor: ExecutorService,
+        executor: Executor,
+        callbacksClosed: AtomicBoolean,
         info: NsdServiceInfo,
         timeoutMs: Long,
     ): ResolvedInfo {
@@ -514,24 +525,26 @@ internal object AndroidLanDiscovery {
             val resolvedInfo = withTimeoutOrNull(timeoutMs) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     suspendCancellableCoroutine<NsdServiceInfo> { continuation ->
+                        val settled = AtomicBoolean(false)
+                        fun resumeOnce(serviceInfo: NsdServiceInfo) {
+                            if (callbacksClosed.get() || !settled.compareAndSet(false, true)) return
+                            if (continuation.isActive) continuation.resume(serviceInfo)
+                        }
+                        fun resumeFailureOnce(failure: NsdResolveFailure) {
+                            if (callbacksClosed.get() || !settled.compareAndSet(false, true)) return
+                            if (continuation.isActive) continuation.resumeWithException(failure)
+                        }
                         val serviceCallback = object : NsdManager.ServiceInfoCallback {
-                            override fun onServiceUpdated(serviceInfo: NsdServiceInfo) {
-                                if (continuation.isActive) continuation.resume(serviceInfo)
-                            }
+                            override fun onServiceUpdated(serviceInfo: NsdServiceInfo) =
+                                resumeOnce(serviceInfo)
 
                             override fun onServiceLost() = Unit
 
-                            override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
-                                if (continuation.isActive) {
-                                    continuation.resumeWithException(NsdResolveFailure(errorCode))
-                                }
-                            }
+                            override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) =
+                                resumeFailureOnce(NsdResolveFailure(errorCode))
 
-                            override fun onServiceInfoCallbackUnregistered() {
-                                if (continuation.isActive) {
-                                    continuation.resumeWithException(NsdResolveFailure(-1))
-                                }
-                            }
+                            override fun onServiceInfoCallbackUnregistered() =
+                                resumeFailureOnce(NsdResolveFailure(-1))
                         }
                         callback = serviceCallback
                         manager.registerServiceInfoCallback(info, executor, serviceCallback)
@@ -541,16 +554,21 @@ internal object AndroidLanDiscovery {
                     }
                 } else {
                     suspendCancellableCoroutine<NsdServiceInfo> { continuation ->
+                        val settled = AtomicBoolean(false)
+                        fun resumeOnce(serviceInfo: NsdServiceInfo) {
+                            if (callbacksClosed.get() || !settled.compareAndSet(false, true)) return
+                            if (continuation.isActive) continuation.resume(serviceInfo)
+                        }
+                        fun resumeFailureOnce(failure: NsdResolveFailure) {
+                            if (callbacksClosed.get() || !settled.compareAndSet(false, true)) return
+                            if (continuation.isActive) continuation.resumeWithException(failure)
+                        }
                         val listener = object : NsdManager.ResolveListener {
-                            override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                                if (continuation.isActive) continuation.resume(serviceInfo)
-                            }
+                            override fun onServiceResolved(serviceInfo: NsdServiceInfo) =
+                                resumeOnce(serviceInfo)
 
-                            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                                if (continuation.isActive) {
-                                    continuation.resumeWithException(NsdResolveFailure(errorCode))
-                                }
-                            }
+                            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) =
+                                resumeFailureOnce(NsdResolveFailure(errorCode))
                         }
                         manager.resolveService(info, executor, listener)
                     }

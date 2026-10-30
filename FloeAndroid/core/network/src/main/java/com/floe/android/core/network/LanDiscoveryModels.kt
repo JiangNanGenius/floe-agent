@@ -309,7 +309,9 @@ internal object LanDiscoveryResult {
             if (summary.noReplies) {
                 limitations += "Discovery completed with zero services for every requested service type (no replies observed)."
             }
-            if (summary.truncated) limitations += "Discovery reached the bounded service list or time limit."
+            if (summary.truncated) {
+                limitations += "Discovery reached the bounded service list, time limit or callback delivery queue."
+            }
             if (summary.filteredForeignNetwork > 0) {
                 limitations += "Services observed on a different Network were excluded from the inventory."
             }
