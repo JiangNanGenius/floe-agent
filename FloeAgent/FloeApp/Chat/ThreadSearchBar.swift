@@ -77,6 +77,12 @@ struct ThreadSearchBar: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(.bar)
+        // An explicit container keeps the bar identity separate from the
+        // child controls' identifiers. Without containment the bar identifier
+        // replaces every child identifier (thread.find.field/count/previous/
+        // next/done), so the real field and controls cannot be observed
+        // independently.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("thread.find.bar")
         .task {
             // Focus without stealing focus permanently: Done dismisses find.

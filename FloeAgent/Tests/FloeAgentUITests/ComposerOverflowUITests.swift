@@ -136,6 +136,10 @@ final class ComposerOverflowUITests: XCTestCase {
         let stagedDraft = "one\ntwo\nthree\nfour\nCARET-VISIBLE-END"
         input.tap()
         input.typeText("one\ntwo")
+        // The product contract: two explicit lines are two visible rows in
+        // the live field, not one row clipped inside a taller slot.
+        XCTAssertGreaterThan(input.frame.height, restHeight + 8,
+                             "Two explicit lines must grow the field past its resting row")
         XCTAssertFalse(app.buttons["composer.expand"].exists,
                        "Two short visual lines do not need an expand control")
         input.typeText("\nthree")

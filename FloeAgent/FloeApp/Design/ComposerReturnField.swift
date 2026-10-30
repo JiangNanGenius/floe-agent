@@ -135,6 +135,16 @@ final class HardwareReturnTextView: UITextView {
         if textContainer.lineFragmentPadding != 0 {
             textContainer.lineFragmentPadding = 0
         }
+        // The non-scrolling composer sizes its container to the view, so a
+        // draft that grows the slot must never be laid out against the
+        // previous one-row container. UIKit updates this on the
+        // `isScrollEnabled` flip, but the composer owns this seam and a
+        // desynced flag clips the new line: the shipped two-line launchpad
+        // failure painted only its first row while the text storage and the
+        // model held both.
+        if textContainer.heightTracksTextView != !scrolls {
+            textContainer.heightTracksTextView = !scrolls
+        }
         if scrolls, revealCaret {
             scrollRangeToVisible(selectedRange)
         }
@@ -152,6 +162,13 @@ final class HardwareReturnTextView: UITextView {
         }
         if textContainer.lineFragmentPadding != 0 {
             textContainer.lineFragmentPadding = 0
+        }
+        // Same container contract as `applyComposerScrollState`: a live
+        // layout pass keeps the non-scrolling container tracking this view's
+        // height, so a slot that grew by a row lays out (and paints) it.
+        let tracksHeight = !isScrollEnabled
+        if textContainer.heightTracksTextView != tracksHeight {
+            textContainer.heightTracksTextView = tracksHeight
         }
         let width = bounds.width
         guard width > 1, abs(width - lastNotifiedLayoutWidth) >= 0.5 else { return }
@@ -233,6 +250,15 @@ struct ComposerReturnField: UIViewRepresentable {
     /// resets its own state on that switch). Nil keeps callers that do not
     /// need the signal unchanged.
     var onOverflowChange: ((Bool) -> Void)? = nil
+    /// Reports the measured height the host must give this field for the
+    /// current draft and width. A host that pins its field slot to this
+    /// value keeps the live UITextView's laid-out area equal to the area the
+    /// detached measurement reserved; without it a growing draft can reserve
+    /// a second row while the text view keeps its resting one-row frame, so
+    /// its container clips the new line and the caret at the end is out of
+    /// view. Delivered on the same coalesced main-queue hop as
+    /// `onOverflowChange`, change-only, never synchronously from layout.
+    var onHeightChange: ((CGFloat) -> Void)? = nil
     /// Live focus callback for hosts that switch between voice and text panels.
     var onEditingChange: ((Bool) -> Void)? = nil
     var onReturn: () -> Void
@@ -430,6 +456,7 @@ struct ComposerReturnField: UIViewRepresentable {
             context.coordinator.scheduleOverflowReport(
                 hostVerdict.scrolls,
                 canExpand: hostVerdict.canExpand,
+                height: hostVerdict.height,
                 textView: uiView,
                 report: context.coordinator.field.onOverflowChange ?? onOverflowChange
             )
@@ -451,11 +478,11 @@ struct ComposerReturnField: UIViewRepresentable {
     ) -> ComposerFieldLayout.Verdict {
         let sizeClass = textView.traitCollection.horizontalSizeClass
         let category = textView.traitCollection.preferredContentSizeCategory
-        let natural = coordinator.cachedNaturalHeight(
+        let natural = coordinator.cachedNaturalMetrics(
             width: width,
             contentSizeCategory: category
         ) { [self] in
-            measuredNaturalHeight(of: textView, width: width)
+            measuredNaturalText(of: textView, width: width)
         }
         // Uniform single-line fragments stack exactly: an N-line budget is
         // N × the memoized one-line height.
@@ -470,13 +497,14 @@ struct ComposerReturnField: UIViewRepresentable {
             )
         }
         return ComposerFieldLayout.verdict(
-            naturalTextHeight: natural,
+            naturalTextHeight: natural.height,
             lineHeight: lineHeight,
             verticalInsets: textInsets.top + textInsets.bottom,
             lineLimit: lineLimit,
             deviceLineCap: ComposerFieldMetrics.lineCap(horizontalSizeClass: sizeClass),
             availableHeight: maxHeightBudget,
-            restingMinimumHeight: restingMinHeight
+            restingMinimumHeight: restingMinHeight,
+            visualLineCount: natural.lineCount
         )
     }
 
@@ -513,17 +541,27 @@ struct ComposerReturnField: UIViewRepresentable {
     /// Measure only a detached TextKit stack. Even requesting live layout
     /// here can re-enter UIKit while SwiftUI is measuring this view. The
     /// coordinator memo avoids repeating work for the same content and width.
-    private func measuredNaturalHeight(of uiView: UITextView, width: CGFloat) -> CGFloat {
+    private func measuredNaturalText(of uiView: UITextView, width: CGFloat) -> MeasuredComposerText {
         let textWidth = contentWidth(width)
         if uiView.textStorage.string.isEmpty {
-            return Self.textKitHeight(of: FloeL10n.l("design.composer_return_field.chars"), width: textWidth, font: bodyFont)
-                + textInsets.top + textInsets.bottom
+            return MeasuredComposerText(
+                height: Self.textKitHeight(
+                    of: FloeL10n.l("design.composer_return_field.chars"),
+                    width: textWidth,
+                    font: bodyFont
+                ) + textInsets.top + textInsets.bottom,
+                lineCount: 1
+            )
         }
-        return ComposerFieldMeasurement.detachedHeight(
+        let metrics = ComposerFieldMeasurement.detachedMetrics(
             of: uiView.textStorage,
             width: textWidth,
             fallbackFont: uiView.font ?? bodyFont
-        ) + textInsets.top + textInsets.bottom
+        )
+        return MeasuredComposerText(
+            height: metrics.height + textInsets.top + textInsets.bottom,
+            lineCount: metrics.lineCount
+        )
     }
 
     private static func textKitHeight(of string: String, width: CGFloat, font: UIFont) -> CGFloat {
@@ -545,7 +583,9 @@ struct ComposerReturnField: UIViewRepresentable {
         /// Bumped on every real text mutation; keys the height memo so
         /// unchanged text never re-measures.
         private var contentGeneration = 0
-        private var naturalHeightMemo = ComposerFieldMetrics.HeightCache()
+        /// Natural metrics memo: height and painted rows from one layout,
+        /// keyed exactly like the old height-only memo.
+        private var naturalMetricsMemo = ComposerFieldMetrics.MetricsCache()
         /// One-line height, keyed by width + content-size category only.
         private var lineHeightMemo = ComposerFieldMetrics.HeightCache()
         /// Last selection this coordinator restored or reported, so the
@@ -560,6 +600,12 @@ struct ComposerReturnField: UIViewRepresentable {
         private var latestCanExpand: Bool?
         private var latestOverflow: Bool?
         private var latestOverflowCallback: ((Bool) -> Void)?
+        /// Newest measured height and its host callback. Delivered on the
+        /// same coalesced hop as the overflow verdict so the host's slot and
+        /// the field's own laid-out height change in one update; change-only
+        /// so a steady layout never churns the host.
+        private var latestHeight: (value: CGFloat, callback: ((CGFloat) -> Void)?)?
+        private var lastDeliveredHeight: CGFloat?
         /// Live view the pending verdict belongs to, so the deferred
         /// `isScrollEnabled` change is applied to the same field that was
         /// measured (never a reused coordinator's older view).
@@ -586,6 +632,7 @@ struct ComposerReturnField: UIViewRepresentable {
         func scheduleOverflowReport(
             _ overflow: Bool,
             canExpand: Bool? = nil,
+            height: CGFloat? = nil,
             textView: HardwareReturnTextView?,
             report: ((Bool) -> Void)?
         ) {
@@ -593,8 +640,14 @@ struct ComposerReturnField: UIViewRepresentable {
             latestOverflow = overflow
             latestCanExpand = canExpand
             latestOverflowCallback = report
+            if let height { latestHeight = (height, field.onHeightChange) }
             let needsScrollChange = textView.map { $0.isScrollEnabled != overflow } ?? false
-            guard needsScrollChange || report != nil || field.onExpansionAvailableChange != nil else { return }
+            let heightChanged = height.map { value in
+                lastDeliveredHeight.map { abs($0 - value) >= 0.5 } ?? true
+            } ?? false
+            guard needsScrollChange || report != nil
+                || field.onExpansionAvailableChange != nil
+                || heightChanged else { return }
             guard !pendingOverflowReport else { return }
             pendingOverflowReport = true
             DispatchQueue.main.async { [weak self] in
@@ -608,6 +661,8 @@ struct ComposerReturnField: UIViewRepresentable {
             let canExpand = latestCanExpand
             latestCanExpand = nil
             let report = latestOverflowCallback
+            let height = latestHeight
+            latestHeight = nil
             let textView = latestOverflowView
             latestOverflow = nil
             latestOverflowCallback = nil
@@ -640,6 +695,11 @@ struct ComposerReturnField: UIViewRepresentable {
             // IME composition never defers the report itself.
             report?(overflow)
             if let canExpand { field.onExpansionAvailableChange?(canExpand) }
+            if let height, let callback = height.callback,
+               lastDeliveredHeight.map({ abs($0 - height.value) >= 0.5 }) ?? true {
+                lastDeliveredHeight = height.value
+                callback(height.value)
+            }
             textView?.revealCurrentCaretAfterLayout()
         }
 
@@ -674,6 +734,7 @@ struct ComposerReturnField: UIViewRepresentable {
             scheduleOverflowReport(
                 verdict.scrolls,
                 canExpand: verdict.canExpand,
+                height: verdict.height,
                 textView: textView,
                 report: field.onOverflowChange
             )
@@ -693,6 +754,7 @@ struct ComposerReturnField: UIViewRepresentable {
             // it against the CURRENT text.
             latestOverflow = nil
             latestCanExpand = nil
+            latestHeight = nil
             deferredScrollTarget = nil
             deferredScrollView = nil
         }
@@ -709,6 +771,7 @@ struct ComposerReturnField: UIViewRepresentable {
             scheduleOverflowReport(
                 verdict.scrolls,
                 canExpand: verdict.canExpand,
+                height: verdict.height,
                 textView: textView,
                 report: field.onOverflowChange
             )
@@ -731,12 +794,12 @@ struct ComposerReturnField: UIViewRepresentable {
             textView.selectedRange = target
         }
 
-        func cachedNaturalHeight(
+        func cachedNaturalMetrics(
             width: CGFloat,
             contentSizeCategory: UIContentSizeCategory,
-            compute: () -> CGFloat
-        ) -> CGFloat {
-            naturalHeightMemo.value(
+            compute: () -> MeasuredComposerText
+        ) -> MeasuredComposerText {
+            naturalMetricsMemo.value(
                 generation: contentGeneration,
                 width: width,
                 contentSizeCategory: contentSizeCategory,
@@ -1109,7 +1172,16 @@ struct ComposerResponsiveRow<Content: View>: View {
 @MainActor
 enum ComposerFieldMeasurement {
     /// Height of `storage` wrapped at `width`, without any view mutation.
-    static func detachedHeight(of storage: NSTextStorage, width: CGFloat, fallbackFont: UIFont? = nil) -> CGFloat {
+    /// The natural height AND the number of visible rows, from ONE detached
+    /// layout. The expand control is gated on the row count, never on a
+    /// fractional height comparison, so a two-line draft can never reveal
+    /// the third-line editor because its measured height rounded just past
+    /// a separately measured one-line yardstick.
+    static func detachedMetrics(
+        of storage: NSTextStorage,
+        width: CGFloat,
+        fallbackFont: UIFont? = nil
+    ) -> MeasuredComposerText {
         let boundedWidth = max(width, 1)
         let detachedStorage: NSTextStorage
         if let fallbackFont {
@@ -1133,8 +1205,31 @@ enum ComposerFieldMeasurement {
         detachedStorage.addLayoutManager(manager)
         // `glyphRange` forces layout for the container; `usedRect` is then the
         // same quantity `sizeThatFits` reports for the live field.
-        _ = manager.glyphRange(for: container)
-        return manager.usedRect(for: container).height
+        let glyphs = manager.glyphRange(for: container)
+        var lineCount = 0
+        manager.enumerateLineFragments(forGlyphRange: glyphs) { _, usedRect, _, _, _ in
+            if usedRect.height > 0.5 { lineCount += 1 }
+        }
+        // `enumerateLineFragments` skips the empty fragment a trailing
+        // newline adds, but the user sees that caret row; count it so a
+        // draft ending in a newline offers the editor on its third row, not
+        // its fourth.
+        if detachedStorage.string.hasSuffix("\n") { lineCount += 1 }
+        let usedHeight = manager.usedRect(for: container).maxY
+        // TextKit can keep the final empty caret row outside usedRect. The
+        // host must reserve that row too, otherwise pressing Return hides
+        // the insertion point even though the visual line count is correct.
+        let caretRowHeight = manager.extraLineFragmentTextContainer === container
+            ? manager.extraLineFragmentUsedRect.maxY : 0
+        return MeasuredComposerText(
+            height: max(usedHeight, caretRowHeight),
+            lineCount: max(1, lineCount)
+        )
+    }
+
+    /// Height-only compatibility wrapper (existing callers/tests).
+    static func detachedHeight(of storage: NSTextStorage, width: CGFloat, fallbackFont: UIFont? = nil) -> CGFloat {
+        detachedMetrics(of: storage, width: width, fallbackFont: fallbackFont).height
     }
 }
 #endif

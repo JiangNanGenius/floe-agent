@@ -95,6 +95,43 @@ enum ComposerFieldMetrics {
     }
 }
 
+/// One detached TextKit measurement: the natural height the field reports
+/// and the visible rows that layout actually paints. Both come from the SAME
+/// layout, so the expand verdict can never disagree with the reported height.
+struct MeasuredComposerText: Equatable {
+    var height: CGFloat
+    var lineCount: Int
+}
+
+extension ComposerFieldMetrics {
+    /// Metrics memo around the detached TextKit measurement. Same cache key
+    /// as `HeightCache`, but it keeps the painted line count beside the
+    /// height so one pass answers both questions.
+    struct MetricsCache: Equatable {
+        private(set) var metrics = MeasuredComposerText(height: 0, lineCount: 1)
+        private var generation: Int = -1
+        private var width: CGFloat = -1
+        private var contentSizeCategory: UIContentSizeCategory = .unspecified
+
+        mutating func value(
+            generation: Int,
+            width: CGFloat,
+            contentSizeCategory: UIContentSizeCategory,
+            compute: () -> MeasuredComposerText
+        ) -> MeasuredComposerText {
+            if generation != self.generation
+                || width != self.width
+                || contentSizeCategory != self.contentSizeCategory {
+                metrics = compute()
+                self.generation = generation
+                self.width = width
+                self.contentSizeCategory = contentSizeCategory
+            }
+            return metrics
+        }
+    }
+}
+
 /// Sizing + overflow verdict for the growing composer field.
 ///
 /// One pure rule, computed at the width the field is ACTUALLY laid out at:
@@ -131,7 +168,8 @@ enum ComposerFieldLayout {
         lineLimit: ClosedRange<Int>,
         deviceLineCap: Int,
         availableHeight: CGFloat?,
-        restingMinimumHeight: CGFloat
+        restingMinimumHeight: CGFloat,
+        visualLineCount: Int? = nil
     ) -> Verdict {
         let upperBound = max(1, min(lineLimit.upperBound, deviceLineCap))
         let cap = max(
@@ -148,11 +186,21 @@ enum ComposerFieldLayout {
             restingMinimumHeight,
             lineHeight * CGFloat(max(1, lineLimit.lowerBound)) + verticalInsets
         )
+        let scrolls = naturalTextHeight > cap
+        // The third VISUAL row offers the editor, before the field starts
+        // scrolling. When the detached layout reports the rows it paints,
+        // use that count: a fractional height comparison against a
+        // separately measured one-line yardstick is not stable to a fraction
+        // of a point, and a real two-line Latin draft at the launchpad width
+        // crossed the old `2 * lineHeight + 0.5` boundary, revealing Expand
+        // on the second row. Callers without a count (previews, synthetic
+        // budget tests) keep the historical height rule.
+        let canExpand = visualLineCount.map { scrolls || $0 >= 3 }
+            ?? (scrolls || naturalTextHeight > lineHeight * 2 + verticalInsets + 0.5)
         return Verdict(
             height: min(max(naturalTextHeight, floor), cap),
-            scrolls: naturalTextHeight > cap,
-            canExpand: naturalTextHeight > cap
-                || naturalTextHeight > lineHeight * 2 + verticalInsets + 0.5
+            scrolls: scrolls,
+            canExpand: canExpand
         )
     }
 }

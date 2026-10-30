@@ -202,17 +202,22 @@ final class ThreadSearchScheduleUITests: XCTestCase {
 
         let prompt = app.textViews["home.schedule.prompt"].firstMatch
         XCTAssertTrue(prompt.waitForExistence(timeout: 10))
-        prompt.tap()
-        prompt.typeText("UI 合成计划")
 
-        // A repeating plan so Skip next keeps it enabled and Cancel future is
-        // still available afterwards. The picker shows the current value.
+        // Choose the repeating cadence before typing. The sheet resizes by
+        // about 128 pt when the software keyboard appears/disappears on iPad.
+        // A Picker element resolved in the keyboard-up layout then receives
+        // its tap at that stale activation point in the keyboard-down layout,
+        // which re-focuses the prompt instead of opening the menu. Select the
+        // cadence while the form is keyboard-free, and tap its trailing value.
         let cadence = app.buttons["home.schedule.cadence"]
         XCTAssertTrue(cadence.waitForExistence(timeout: 5))
-        cadence.tap()
+        cadence.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
         let daily = anyLabel(app, ["每天", "Daily"])
         XCTAssertNotNil(daily, "Daily cadence row is missing")
         daily?.tap()
+
+        prompt.tap()
+        prompt.typeText("UI 合成计划")
 
         let save = app.buttons["home.schedule.save"]
         XCTAssertTrue(save.waitForExistence(timeout: 5))

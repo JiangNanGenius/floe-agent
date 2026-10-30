@@ -69,7 +69,17 @@ final class TaskEnvironmentUITests: XCTestCase {
         if (start.exists && !start.isEnabled) || sawLossToggle || losses.exists {
             XCTAssertTrue(bringIntoView(losses, in: app), "loss acceptance must be reachable")
             let value = losses.value as? String
-            if value == "0" || value == "off" || value == nil { losses.tap() }
+            if value != "1" && value != "on" && value != "On" {
+                // SwiftUI exposes the full form row as a Switch. Its midpoint
+                // can hit the label rather than the thumb on iPad; target the
+                // native control's trailing thumb, then verify its state.
+                losses.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+            }
+            let accepted = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == '1' OR value == 'on' OR value == 'On'"),
+                object: losses)
+            XCTAssertEqual(XCTWaiter.wait(for: [accepted], timeout: 5), .completed,
+                           "optional capability loss must be accepted before Start")
         }
         XCTAssertTrue(bringIntoView(start, in: app), "start must be reachable after checking")
         XCTAssertTrue(start.isEnabled, "start stays disabled after the destination check")

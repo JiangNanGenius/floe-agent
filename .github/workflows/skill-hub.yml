@@ -11,6 +11,11 @@ on:
         required: false
         type: boolean
         default: false
+      publish_content:
+        description: Sign and commit only content packages (Skill Hub catalogs and app seeds stay untouched)
+        required: false
+        type: boolean
+        default: false
       publish_android:
         description: Sign and commit only the Android skill catalog (legacy iOS feed and content hub stay untouched)
         required: false
@@ -71,6 +76,18 @@ jobs:
             echo "$unexpected"
             exit 1
           fi
+      - name: Verify content-only publication boundary
+        if: ${{ needs.publish.outputs.commit != '' && needs.publish.outputs.channels == 'content' }}
+        env:
+          DISPATCHED: ${{ github.sha }}
+          PUBLISHED: ${{ needs.publish.outputs.commit }}
+        run: |
+          unexpected="$(git diff --name-only "$DISPATCHED" "$PUBLISHED" | grep -Ev '^content-hub/(index\.(json|sig)$|packages/)' || true)"
+          if [ -n "$unexpected" ]; then
+            echo 'Content-only publication changed unrelated paths:'
+            echo "$unexpected"
+            exit 1
+          fi
       - run: python -m unittest discover -s content-hub -p 'test_*.py'
       - run: python content-hub/build.py --check
       - name: Reject changes to published ZIP versions
@@ -91,11 +108,17 @@ jobs:
     outputs:
       commit: ${{ steps.commit.outputs.sha }}
       channels: ${{ steps.scope.outputs.channels }}
-    if: github.event_name == 'workflow_dispatch' && (inputs.publish || inputs.publish_android)
+    if: github.event_name == 'workflow_dispatch' && (inputs.publish || inputs.publish_android || inputs.publish_content)
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: Require a branch for signed feed publication
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "branch" ]; then
+            echo 'Signed feed publication requires a branch; immutable App tags are never updated.'
+            exit 1
+          fi
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
@@ -108,8 +131,13 @@ jobs:
         run: |
           if [ "${{ inputs.publish }}" = "true" ]; then
             echo "channels=both" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "${{ inputs.publish_android }}" = "true" ] && [ "${{ inputs.publish_content }}" = "true" ]; then
+            echo 'Choose one channel, or use full publication.'
+            exit 1
+          elif [ "${{ inputs.publish_android }}" = "true" ]; then
             echo "channels=android" >> "$GITHUB_OUTPUT"
+          else
+            echo "channels=content" >> "$GITHUB_OUTPUT"
           fi
       - name: Build signed iOS and content feeds
         if: ${{ inputs.publish }}
@@ -120,6 +148,13 @@ jobs:
           python skill-hub/build.py
           python content-hub/build.py --sign
           python skill-hub/build.py --check
+          python content-hub/build.py --check
+      - name: Build signed content feed only
+        if: ${{ inputs.publish_content && !inputs.publish && !inputs.publish_android }}
+        env:
+          FLOE_CONTENT_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
+        run: |
+          python content-hub/build.py --sign
           python content-hub/build.py --check
       - name: Build signed Android skill catalog
         if: ${{ inputs.publish || inputs.publish_android }}
@@ -134,11 +169,14 @@ jobs:
           TARGET_BRANCH: ${{ github.ref_name }}
           PUBLISH_LEGACY: ${{ inputs.publish }}
           PUBLISH_ANDROID: ${{ inputs.publish || inputs.publish_android }}
+          PUBLISH_CONTENT: ${{ inputs.publish || inputs.publish_content }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [ "$PUBLISH_LEGACY" = "true" ]; then
+          if [ "$PUBLISH_CONTENT" = "true" ]; then
             git add content-hub/index.json content-hub/index.sig content-hub/packages
+          fi
+          if [ "$PUBLISH_LEGACY" = "true" ]; then
             git add skill-hub/catalog.json skill-hub/catalog.sig skill-hub/packages \
               FloeAgent/Sources/FloeSkills/OfficialBundledSkills.generated.swift \
               FloeAgent/Sources/FloeSkills/OfficialSkillHubKeys.generated.swift
@@ -146,13 +184,21 @@ jobs:
           if [ "$PUBLISH_ANDROID" = "true" ]; then
             git add skill-hub/android
           fi
-          if [ "$PUBLISH_LEGACY" != "true" ]; then
+          if [ "$PUBLISH_LEGACY" != "true" ] && [ "$PUBLISH_ANDROID" = "true" ]; then
             # Enforce the Android-only boundary on the exact staged set: an
             # Android publication must never carry the legacy signed feed,
             # generated app seed or content hub.
             unexpected="$(git diff --cached --name-only | grep -v '^skill-hub/android/' || true)"
             if [ -n "$unexpected" ]; then
               echo 'Android-only publication staged unrelated paths:'
+              echo "$unexpected"
+              exit 1
+            fi
+          fi
+          if [ "$PUBLISH_LEGACY" != "true" ] && [ "$PUBLISH_CONTENT" = "true" ]; then
+            unexpected="$(git diff --cached --name-only | grep -Ev '^content-hub/(index\.(json|sig)$|packages/)' || true)"
+            if [ -n "$unexpected" ]; then
+              echo 'Content-only publication staged unrelated paths:'
               echo "$unexpected"
               exit 1
             fi
@@ -164,6 +210,8 @@ jobs:
           fi
           if [ "$PUBLISH_LEGACY" = "true" ]; then
             message="Publish signed official skill and content packages"
+          elif [ "$PUBLISH_CONTENT" = "true" ]; then
+            message="Publish signed content packages"
           else
             message="Publish signed Android skill catalog"
           fi

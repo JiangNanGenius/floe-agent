@@ -246,6 +246,13 @@ struct ThreadComposerView: View {
     /// launchpad's bottom `safeAreaInset` band — that may answer content
     /// changes from a cached sizing pass without a finite proposal.
     @State private var composerFieldHostWidth: CGFloat?
+    /// Height the field's own detached measurement reported for this draft
+    /// and slot width. The slot is pinned to it so the live UITextView is
+    /// always laid out at exactly the measured height; a stale one-row frame
+    /// inside a two-row slot is what clipped the second typed line on the
+    /// New Task launchpad. Change-only, keyed to the same draft identity as
+    /// the overflow verdict.
+    @State private var inlineFieldMeasuredHeight: CGFloat?
     /// Conversation whose draft produced the latest accepted overflow
     /// report. A delayed layout callback from a previous conversation must
     /// not reveal (or hide) the control of the conversation on screen now.
@@ -416,6 +423,7 @@ struct ThreadComposerView: View {
             // so a large restored draft comes back with the control visible.
             overflowReportKey = newKey
             isInlineFieldExpandable = false
+            inlineFieldMeasuredHeight = nil
         }
         .onChange(of: draft) { _, newValue in
             // A send consumed this draft; the store keeps the sent content
@@ -969,9 +977,23 @@ struct ThreadComposerView: View {
                         isInlineFieldExpandable = overflowing
                     }
                 },
+                onHeightChange: { height in
+                    // Same fence as the overflow verdict. The slot below is
+                    // pinned to this height so the live text view can never
+                    // be laid out one row shorter than the text it holds.
+                    guard overflowReportKey == nil || overflowReportKey == draftKey else { return }
+                    if let current = inlineFieldMeasuredHeight,
+                       abs(current - height) < 0.5 { return }
+                    inlineFieldMeasuredHeight = height
+                },
                 onReturn: { onSend() }
             )
-            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            // The field's own measured height, not a cached ideal: a fixed
+            // height proposal reaches the representable, so a two-row draft
+            // always lays out in a two-row UITextView and both lines paint.
+            .frame(height: inlineFieldMeasuredHeight ?? FloeTheme.minimumTarget,
+                   alignment: .topLeading)
             // The slot's real width, reported by SwiftUI's own layout —
             // including rotation, split-view drags, keyboard insets and the
             // expand control appearing or leaving (which widens/narrows

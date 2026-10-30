@@ -879,6 +879,67 @@ struct ComposerOverflowRegressionTests {
         }
         return found
     }
+
+    @Test("A real Latin two-line draft hides Expand and lays out both rows inside the reported height")
+    func latinTwoLineDraftDoesNotExpandAndFitsTheReportedHeight() async {
+        var expansion: [Bool] = []
+        var heights: [CGFloat] = []
+        let field = ComposerReturnField(
+            text: .constant("one\ntwo"),
+            placeholder: "composer.test.placeholder",
+            canSend: true,
+            lineLimit: 1...3,
+            onExpansionAvailableChange: { expansion.append($0) },
+            onHeightChange: { heights.append($0) },
+            onReturn: {}
+        )
+        let coordinator = field.makeCoordinator()
+        let view = HardwareReturnTextView()
+        field.configure(view: view, coordinator: coordinator)
+        // The launchpad field is full-row and stacked at the canonical
+        // iPad width; 380 is the measured slot width from the failing run.
+        view.frame = CGRect(x: 0, y: 0, width: 380, height: 44)
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        await drainMainQueue()
+
+        let verdict = field.verdict(at: 380, textView: view, coordinator: coordinator)
+        #expect(!verdict.scrolls)
+        #expect(verdict.height > 44,
+                "two explicit lines grow the field past the resting one-row height")
+        #expect(expansion.last == false,
+                "two visual lines must never reveal the third-line editor")
+        #expect(heights.last == verdict.height,
+                "the host receives the exact height it must pin the slot to")
+
+        // Production pins the slot to the reported height. The live text
+        // container must then lay out BOTH rows inside that height — the
+        // shipped launchpad failure painted only the first row while the
+        // text storage and the model held both.
+        view.frame.size.height = verdict.height
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        let glyphs = view.layoutManager.glyphRange(for: view.textContainer)
+        var lastLineBottom: CGFloat = 0
+        view.layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, usedRect, _, _, _ in
+            lastLineBottom = max(lastLineBottom, usedRect.maxY)
+        }
+        #expect(lastLineBottom <= view.textContainer.size.height + 0.001,
+                "the second row must sit inside the field's visible text area")
+    }
+
+    @Test("A trailing newline reserves its empty caret row as well as counting it")
+    func trailingNewlineReservesCaretRow() {
+        let font = UIFont.systemFont(ofSize: 17)
+        let two = ComposerFieldMeasurement.detachedMetrics(
+            of: NSTextStorage(string: "one\ntwo"), width: 380, fallbackFont: font)
+        let thirdCaret = ComposerFieldMeasurement.detachedMetrics(
+            of: NSTextStorage(string: "one\ntwo\n"), width: 380, fallbackFont: font)
+        #expect(two.lineCount == 2)
+        #expect(thirdCaret.lineCount == 3)
+        #expect(thirdCaret.height > two.height + 8,
+                "the empty third row must have visible space for the insertion point")
+    }
 }
 
 /// Frames the hosted row actually placed, in window coordinates.
