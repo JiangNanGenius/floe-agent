@@ -128,7 +128,7 @@ private final class FakeRemoteShellConnection: SSHRemoteShellConnection, @unchec
         deadline: SSHStreamExecDeadline,
         cancellation: CancellationToken?,
         maxPreviewBytes: Int,
-        onOutput: @escaping nonisolated(nonsending) @Sendable (SSHStreamChannel, Data) async throws -> Void
+        onOutput: @escaping SSHRemoteShellOutputHandler
     ) async throws -> SSHStreamExecResult {
         let execution = FakeExecution(command: command, deadline: deadline, previewLimit: maxPreviewBytes)
         lock.withLock { executions.append(execution) }

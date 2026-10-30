@@ -200,6 +200,10 @@ public struct RemoteEnvironmentShellLimits: Sendable, Equatable {
 
 /// The subset of a real SSH connection this backend needs. Production
 /// conformance is `SSHSessionHandle`; tests substitute an in-memory fake.
+/// Preserve the package’s async callback isolation when conformers are
+/// compiled by an App test host with different upcoming-feature defaults.
+public typealias SSHRemoteShellOutputHandler = @Sendable (SSHStreamChannel, Data) async throws -> Void
+
 public protocol SSHRemoteShellConnection: Sendable {
     var isConnected: Bool { get }
     func executeStreaming(
@@ -207,7 +211,7 @@ public protocol SSHRemoteShellConnection: Sendable {
         deadline: SSHStreamExecDeadline,
         cancellation: CancellationToken?,
         maxPreviewBytes: Int,
-        onOutput: @escaping @Sendable (SSHStreamChannel, Data) async throws -> Void
+        onOutput: @escaping SSHRemoteShellOutputHandler
     ) async throws -> SSHStreamExecResult
     func openRemotePTY(term: String, columns: Int, rows: Int) async throws -> any SSHRemoteShellPTY
     func close() async
