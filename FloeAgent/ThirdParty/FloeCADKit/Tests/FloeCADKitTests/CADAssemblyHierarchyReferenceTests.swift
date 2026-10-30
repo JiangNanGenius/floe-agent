@@ -901,6 +901,7 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         let (sourceURL, _) = try await makeSourceDocument(name: "Gear")
         let beforeChanges = document.session.changeCount
         let beforeUndo = document.session.undoStack.undoCommands.count
+        let beforeAssembly = document.session.document.assemblyData
         let target = try XCTUnwrap(document)
         CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = { url in
             if url == target.url { target.close() }
@@ -912,7 +913,7 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         XCTAssertEqual(reply["mutated"] as? Bool, false)
         XCTAssertEqual(target.session.changeCount, beforeChanges)
         XCTAssertEqual(target.session.undoStack.undoCommands.count, beforeUndo)
-        XCTAssertTrue(target.session.document.assembly.partReferences.isEmpty)
+        XCTAssertEqual(target.session.document.assemblyData, beforeAssembly)
     }
 
     func testLegacyReferenceDecodesAndReencodesWithReaderProvenance() throws {
