@@ -22,10 +22,12 @@
 //  * Conversation authority: every open attaches the ACTUAL ORIGINAL
 //    conversation `.conversation` owned-work receipt through
 //    `FacadeRunDomain.beginG04WorkspaceOperation` BEFORE the engine awaits,
-//    keeps it attached until the real session/IO settlement, and the
-//    ORIGINAL deletion fence / retirement cancel the receipt (which the
-//    pump observes and drives through the original close/reconciliation
-//    path — a cancelled lease is a REQUEST, never a proven stop).
+//    keeps it attached through the real UI settlement and, when the runtime
+//    retains a `deferred` shared export, through that exact Core grant's own
+//    session_close drain, and the ORIGINAL deletion fence / retirement cancel
+//    the receipt (which the pump observes and drives through the original
+//    close/reconciliation path — a cancelled lease is a REQUEST, never a
+//    proven stop).
 //  * Durable admission: the conversation must exist in the installed
 //    cluster store with `purpose == .ordinary` (temporary chat has no
 //    persisted row and is barred by construction), the workspace binding
@@ -784,11 +786,13 @@ public actor G04TerminalStore {
                 await finishSession(sessionToken: result.sessionID, reason: "exited-immediately")
             }
         } catch {
-            // The open never produced a session: clear the exact operation
-            // mapping and release the receipt (writeback truth unchanged —
-            // nothing is completed, nothing is fabricated).
-            LinuxWorkspaceAuthority.retireWorkspaceOperation(operationID: operationGrantID)
-            await runDomain.endG04WorkspaceOperation(receipt)
+            // The open never produced a usable UI session. If the dispatch
+            // did open the Core grant before the transport failed, that
+            // grant may still own a deferred workspace export; retain the
+            // exact operation until its real session_close. With no bound
+            // grant the normal immediate release runs here (no leak). Either
+            // way nothing is completed and nothing is fabricated.
+            await settleWorkspaceOperationForUI(receipt, domain: runDomain)
             reply(requestID, ok: false, code: .backendFailed, reason: Self.faultToken(error))
         }
     }
@@ -1201,15 +1205,26 @@ public actor G04TerminalStore {
 
     // MARK: Settlement
 
-    /// Settlement: detaches the receipt and its operation mapping ONLY once
+    /// Settlement: the UI session record and its TTY role end exactly once
     /// the terminal is real — an engine-proven exit/stop (the pump calls this
     /// after `leaseReleased`, which the runtime publishes only after its
     /// whole-UID stop proof and workspace export), a typed fault, or a
     /// lifecycle cancellation/fence. The explicit manual Close never calls
-    /// this directly: it requests the owned stop and leaves the session and
-    /// its operation lease to the pump's real terminal. A cancelled deletion
-    /// fence keeps the ORIGINAL request-then-retire path; it fabricates no
-    /// stop and claims no export.
+    /// this directly: it requests the owned stop and leaves the session to
+    /// the pump's real terminal. A cancelled deletion fence keeps the
+    /// ORIGINAL request-then-retire path; it fabricates no stop and claims no
+    /// export.
+    ///
+    /// The ORIGINAL operation lease/registration follows its ACTUAL Core
+    /// grant: when the runtime reports a `deferred` shared export it retains
+    /// the CoreWorkspaceGrant (and this operation's grant currency) beyond
+    /// this UI settlement. Releasing the operation here would refuse that
+    /// later export with `runCurrency` and lose the user's files, so the
+    /// registration stays live until the existing Core grant
+    /// `floe_linux_workspace_session_close` drained hook ends this exact
+    /// operation. With no bound/live grant (ordinary settle or no grant at
+    /// all) the normal exactly-once end runs immediately. Either way the UI
+    /// process is closed and its TTY slot released; nothing is faked alive.
     private func finishSession(sessionToken: String, reason: String) async {
         guard let record = sessions[sessionToken] else { return }
         sessions.removeValue(forKey: sessionToken)
@@ -1219,14 +1234,38 @@ public actor G04TerminalStore {
             await components.sessions.close(sessionID: sessionToken, runID: record.ownerRunID,
                                             clientSessionID: nil)
         }
-        if let (runDomain, _) = RunDomainFacade.current(epoch: epoch) {
-            await runDomain.endG04WorkspaceOperation(record.receipt)
-        }
-        // G04-R2: the operation mapping ends exactly with its real lease
-        // (settle/stop/exit/fault/cancel/retirement all route here).
-        LinuxWorkspaceAuthority.retireWorkspaceOperation(operationID: record.receipt.operationID)
+        await settleWorkspaceOperationForUI(record.receipt,
+                                            domain: RunDomainFacade.current(epoch: epoch)?.0)
         pumpTasks[sessionToken]?.cancel()
         pumpTasks[sessionToken] = nil
+    }
+
+    /// End the exact UI operation only when the Authority's recorded Core
+    /// grant state says it may be released: no grant was ever opened, or the
+    /// ACTUAL `session_close` event was already recorded. A retained deferred
+    /// operation is deliberately left to that same hook (bound to the
+    /// ORIGINAL operation and epoch), which ends it exactly once after the
+    /// runtime's shared export and grant drain; repeating this settlement
+    /// cannot double-end it.
+    private func settleWorkspaceOperationForUI(_ operation: G04WorkspaceOwnedOperation,
+                                               domain: FacadeRunDomain?) async {
+        switch LinuxWorkspaceAuthority.releaseWorkspaceOperationAfterUISettlement(
+            operationID: operation.operationID) {
+        case .retainedForCoreGrantClose:
+            return
+        case .releasedNow:
+            if let domain {
+                await domain.endG04WorkspaceOperation(operation)
+            }
+            // The released decision means no live Core grant remains. If the
+            // accepted domain/generation is gone (or a replaced domain no
+            // longer owns the lease map), detach ONLY this exact captured
+            // token; a newer task/session/epoch is never touched.
+            if RuntimeOwnedWorkRegistry.shared.isAttached(operation.token) {
+                _ = RuntimeOwnedWorkRegistry.shared.detach(operation.token)
+            }
+            LinuxWorkspaceAuthority.retireWorkspaceOperation(operationID: operation.operationID)
+        }
     }
 
     private func requestCloseOfCancelled(sessionToken: String) async {

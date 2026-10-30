@@ -211,6 +211,9 @@ final class G04TerminalDomainTests: XCTestCase {
         XCTAssertEqual(G04TerminalStore.settledPhase(closeRequested: true, cancelled: true,
                                                     exitCode: 0, workspaceStatus: "synced"), .closed,
                        "a real stop plus synced export is the only settled close, even when the cancelled terminal reports an exit code")
+        XCTAssertEqual(G04TerminalStore.settledPhase(closeRequested: true, cancelled: true,
+                                                    exitCode: nil, workspaceStatus: "deferred"), .closed,
+                       "a deferred shared export is a real settled UI close; the ORIGINAL operation lease follows its live Core grant until session_close")
         for status in [nil, "error", "conflict", "aborted", "unknown"] {
             XCTAssertEqual(G04TerminalStore.settledPhase(closeRequested: true, cancelled: true,
                                                          exitCode: nil, workspaceStatus: status), .fault,

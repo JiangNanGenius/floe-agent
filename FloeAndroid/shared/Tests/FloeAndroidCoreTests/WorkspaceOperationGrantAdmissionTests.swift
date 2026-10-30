@@ -27,8 +27,12 @@
 //  * registrations follow the REAL lease: retire clears the exact mapping,
 //    saturation reclaims ONLY proven-dead entries and refuses while every
 //    entry is live (Main 2026-10-25 correction: live work never expires by
-//    clock). All identities synthetic; no device, engine, provider key, model
-//    call or private data.
+//    clock); a deferred owner keeps the EXACT original operation registered
+//    and currency-valid after its UI terminal settles, until the ACTUAL Core
+//    grant session_close drains, while a participant close/duplicate close
+//    and the ORIGINAL cancellation fence stay exact and fail closed. All
+//    identities synthetic; no device, engine, provider key, model call or
+//    private data.
 
 import XCTest
 import Foundation
@@ -263,6 +267,36 @@ final class WorkspaceOperationGrantAdmissionTests: XCTestCase {
         _ = key.withCString { floe_linux_workspace_session_close($0) }
     }
 
+    /// Mint + open exactly like the trusted Kotlin pump does for one
+    /// operation-scoped UI grant; returns the ACTUAL Core session key.
+    private func openRegisteredOperation(
+        _ prepared: (operation: G04WorkspaceOwnedOperation, uiRunID: UUID, grantID: String),
+        epoch: UInt64, file: StaticString = #filePath, line: UInt = #line
+    ) throws -> String {
+        let mint = try callBindingForOperation(epoch: epoch,
+                                               operationID: prepared.operation.operationID.uuidString,
+                                               runID: prepared.uiRunID.uuidString,
+                                               grantID: prepared.grantID)
+        let reply = try object(mint.body, file: file, line: line)
+        XCTAssertEqual(reply["ok"] as? Bool, true,
+                       "a live registered operation must mint: \(mint.body)",
+                       file: file, line: line)
+        let open = try callOpen(mint.body)
+        let opened = try object(open.body, file: file, line: line)
+        XCTAssertEqual(opened["ok"] as? Bool, true,
+                       "operation open must succeed: \(open.body)",
+                       file: file, line: line)
+        return try XCTUnwrap(opened["sessionKey"] as? String, file: file, line: line)
+    }
+
+    /// The EXACT decision `G04TerminalDomain.finishSession` /
+    /// `settleWorkspaceOperationForUI` makes when the UI terminal settles.
+    private func settleUI(_ operation: G04WorkspaceOwnedOperation)
+        -> LinuxWorkspaceAuthority.G04WorkspaceOperationSettlement {
+        LinuxWorkspaceAuthority.releaseWorkspaceOperationAfterUISettlement(
+            operationID: operation.operationID)
+    }
+
     private func callExportBegin(_ key: String) throws -> (code: Int32, body: Data) {
         var out = [CChar](repeating: 0, count: 65_537)
         let n = key.withCString { pointer in
@@ -274,6 +308,43 @@ final class WorkspaceOperationGrantAdmissionTests: XCTestCase {
             Data(bytes: raw.baseAddress!, count: Int(max(n, 0)))
         }
         return (n, n > 0 ? body : Data())
+    }
+
+    /// Shared keyed C-ABI call shape for the baseline/export helpers below.
+    private func callKeyEngine(
+        _ key: String,
+        _ call: (UnsafePointer<CChar>, UnsafeMutablePointer<CChar>?, Int32) -> Int32
+    ) -> (code: Int32, body: Data) {
+        var out = [CChar](repeating: 0, count: 65_537)
+        let n = key.withCString { pointer in
+            out.withUnsafeMutableBufferPointer { buffer in
+                call(pointer, buffer.baseAddress, Int32(buffer.count))
+            }
+        }
+        let body = out.withUnsafeBufferPointer { raw in
+            Data(bytes: raw.baseAddress!, count: Int(max(n, 0)))
+        }
+        return (n, n > 0 ? body : Data())
+    }
+
+    private func callBaselineBegin(_ key: String) -> (code: Int32, body: Data) {
+        callKeyEngine(key) { pointer, buffer, capacity in
+            floe_linux_workspace_baseline_begin(pointer, buffer, capacity)
+        }
+    }
+
+    private func callBaselineFinish(_ key: String, appliedCount: Int64,
+                                    appliedBytes: Int64) -> (code: Int32, body: Data) {
+        callKeyEngine(key) { pointer, buffer, capacity in
+            floe_linux_workspace_baseline_finish(pointer, appliedCount, appliedBytes,
+                                                 buffer, capacity)
+        }
+    }
+
+    private func callExportFinish(_ key: String) -> (code: Int32, body: Data) {
+        callKeyEngine(key) { pointer, buffer, capacity in
+            floe_linux_workspace_export_finish(pointer, buffer, capacity)
+        }
     }
 
     // MARK: - Positive round trip
@@ -352,6 +423,208 @@ final class WorkspaceOperationGrantAdmissionTests: XCTestCase {
         XCTAssertEqual(refused["ok"] as? Bool, false)
         XCTAssertEqual(refused["code"] as? String, "workspaceProofRefused:runCurrency",
                        "retiring the operation lease before export must refuse the export (the G06 loss): \(refused)")
+    }
+
+    // MARK: - Deferred shared export: UI settlement follows the REAL Core grant
+
+    /// THE confirmed G07.3A gap: the runtime keeps a `deferred` owner's
+    /// CoreWorkspaceGrant (and therefore this operation's grant currency)
+    /// alive for the LATE shared export, while the UI terminal is already
+    /// closed and its TTY slot released. Retiring the operation at UI
+    /// settlement refused the runtime's first real export transaction at
+    /// `runCurrency` and lost the user's files. The exact original operation
+    /// must stay registered/attached until the Core grant's own
+    /// `session_close`, then end exactly once.
+    func testDeferredUISettlementRetainsOriginalOperationUntilCoreGrantClose() async throws {
+        let boot = try await bootInstalledGenerationWithRunDomain()
+        let seeded = try await seedConversationOwnedWorkspace()
+        let prepared = try await beginAndRegisterOperation(conversationID: seeded.conversationID,
+                                                           epoch: boot.epoch)
+        let sessionKey = try openRegisteredOperation(prepared, epoch: boot.epoch)
+
+        // UI terminal settles (record removed, TTY already released by the
+        // engine terminal) while the real Core grant remains open for export.
+        XCTAssertEqual(settleUI(prepared.operation), .retainedForCoreGrantClose)
+        XCTAssertTrue(RuntimeOwnedWorkRegistry.shared.isAttached(prepared.operation.token),
+                      "the ORIGINAL operation token must survive the deferred UI settlement")
+
+        // The runtime's late EXPORT_BEGIN passes the REAL currency gate; this
+        // fixture's untouched baseline is the only (typed) refusal.
+        let live = try object(callExportBegin(sessionKey).body)
+        XCTAssertEqual(live["ok"] as? Bool, false)
+        XCTAssertEqual(live["code"] as? String, "workspaceMalformed",
+                       "the deferred owner must stay export-currency-valid: \(live)")
+
+        // Repeating the UI settlement must not double-release anything.
+        XCTAssertEqual(settleUI(prepared.operation), .retainedForCoreGrantClose)
+
+        // The ACTUAL Core grant close (the existing drained hook) retires the
+        // exact original operation exactly once.
+        closeSession(sessionKey)
+        XCTAssertFalse(RuntimeOwnedWorkRegistry.shared.isAttached(prepared.operation.token),
+                       "session_close must end the retained operation")
+        let afterClose = try object(callExportBegin(sessionKey).body)
+        XCTAssertEqual(afterClose["code"] as? String, "workspaceNoSession",
+                       "the closed grant session must not serve another transaction")
+
+        // Duplicate close and a post-close UI settlement stay idempotent.
+        closeSession(sessionKey)
+        XCTAssertEqual(settleUI(prepared.operation), .releasedNow)
+        XCTAssertFalse(RuntimeOwnedWorkRegistry.shared.isAttached(prepared.operation.token))
+
+        // The retired mapping mints nothing (the EXISTING closed vocabulary).
+        let replay = try object(callBindingForOperation(
+            epoch: boot.epoch, operationID: prepared.operation.operationID.uuidString,
+            runID: prepared.uiRunID.uuidString, grantID: prepared.grantID).body)
+        XCTAssertEqual(replay["ok"] as? Bool, false)
+        XCTAssertEqual(replay["code"] as? String, "bindingUnavailable")
+    }
+
+    /// Independent owner + participant grants on ONE conversation workspace.
+    /// The owner's UI settles deferred and stays export-currency-valid; the
+    /// participant remains genuinely usable. The participant's OWN grant close
+    /// retires only that operation and cannot detach the deferred owner. The
+    /// last owner grant close ends the owner exactly once.
+    func testParticipantGrantCloseNeverRetiresADeferredOwner() async throws {
+        let boot = try await bootInstalledGenerationWithRunDomain()
+        let seeded = try await seedConversationOwnedWorkspace()
+        let owner = try await beginAndRegisterOperation(conversationID: seeded.conversationID,
+                                                        epoch: boot.epoch)
+        let participant = try await beginAndRegisterOperation(conversationID: seeded.conversationID,
+                                                              epoch: boot.epoch)
+        let ownerKey = try openRegisteredOperation(owner, epoch: boot.epoch)
+        let participantKey = try openRegisteredOperation(participant, epoch: boot.epoch)
+
+        XCTAssertEqual(settleUI(owner.operation), .retainedForCoreGrantClose)
+        XCTAssertEqual(settleUI(participant.operation), .retainedForCoreGrantClose)
+        XCTAssertTrue(RuntimeOwnedWorkRegistry.shared.isAttached(owner.operation.token))
+        XCTAssertTrue(RuntimeOwnedWorkRegistry.shared.isAttached(participant.operation.token))
+
+        // Participant's Core grant closes FIRST: only its own operation ends.
+        closeSession(participantKey)
+        XCTAssertFalse(RuntimeOwnedWorkRegistry.shared.isAttached(participant.operation.token))
+        XCTAssertTrue(RuntimeOwnedWorkRegistry.shared.isAttached(owner.operation.token),
+                      "a participant close must not revoke the deferred owner")
+        let ownerStillLive = try object(callExportBegin(ownerKey).body)
+        XCTAssertEqual(ownerStillLive["code"] as? String, "workspaceMalformed",
+                       "the deferred owner must remain export-currency-valid after the participant close: \(ownerStillLive)")
+
+        // Its own late UI settlement is now an immediate no-op.
+        XCTAssertEqual(settleUI(participant.operation), .releasedNow)
+
+        // Last owner grant close ends the owner exactly once; a duplicate
+        // participant close still touches nothing.
+        closeSession(ownerKey)
+        closeSession(participantKey)
+        XCTAssertFalse(RuntimeOwnedWorkRegistry.shared.isAttached(owner.operation.token))
+    }
+
+    /// No Core grant (the open never dispatched one), a grant closed BEFORE
+    /// the UI settles, and a cancelled/deleted but still-live grant must all
+    /// keep the ORIGINAL fail-closed semantics without leaking a lease.
+    func testUnboundClosedAndFencedOperationsReleaseWithoutLeaks() async throws {
+        let boot = try await bootInstalledGenerationWithRunDomain()
+        let seeded = try await seedConversationOwnedWorkspace()
+
+        // (a) No Core grant session ever bound: immediate normal release.
+        let unopened = try await beginAndRegisterOperation(conversationID: seeded.conversationID,
+                                                           epoch: boot.epoch)
+        XCTAssertEqual(settleUI(unopened.operation), .releasedNow)
+        let (domain, _) = try XCTUnwrap(RunDomainFacade.current(epoch: boot.epoch))
+        await domain.endG04WorkspaceOperation(unopened.operation)
+        XCTAssertFalse(RuntimeOwnedWorkRegistry.shared.isAttached(unopened.operation.token))
+        XCTAssertEqual(settleUI(unopened.operation), .releasedNow,
+                       "repeated settlement after release stays idempotent")
+
+        // (b) The real grant closed before the UI settled: that close alone
+        // never ends a still-UI-owned operation; the UI's own settlement then
+        // releases it immediately (no live session remains) and close no-ops.
+        let alreadyClosed = try await beginAndRegisterOperation(conversationID: seeded.conversationID,
+                                                                epoch: boot.epoch)
+        let closedKey = try openRegisteredOperation(alreadyClosed, epoch: boot.epoch)
+        closeSession(closedKey)
+        XCTAssertTrue(RuntimeOwnedWorkRegistry.shared.isAttached(alreadyClosed.operation.token),
+                      "a grant close without UI settlement leaves the UI release in charge")
+        XCTAssertEqual(settleUI(alreadyClosed.operation), .releasedNow)
+        await domain.endG04WorkspaceOperation(alreadyClosed.operation)
+        XCTAssertFalse(RuntimeOwnedWorkRegistry.shared.isAttached(alreadyClosed.operation.token))
+        closeSession(closedKey)
+
+        // (c) A cancelled operation (ORIGINAL deletion/generation fence) has
+        // its live grant retained, but the domain validator still refuses the
+        // late export; its own grant close retires exactly it and leaves a
+        // fresh operation untouched.
+        let fenced = try await beginAndRegisterOperation(conversationID: seeded.conversationID,
+                                                         epoch: boot.epoch)
+        let fencedKey = try openRegisteredOperation(fenced, epoch: boot.epoch)
+        fenced.operation.cancellation.cancel()
+        XCTAssertEqual(settleUI(fenced.operation), .retainedForCoreGrantClose)
+        let refused = try object(callExportBegin(fencedKey).body)
+        XCTAssertEqual(refused["code"] as? String, "workspaceProofRefused:runCurrency",
+                       "a cancelled lease must remain fail-closed for the late export: \(refused)")
+        closeSession(fencedKey)
+        XCTAssertFalse(RuntimeOwnedWorkRegistry.shared.isAttached(fenced.operation.token))
+
+        let fresh = try await beginAndRegisterOperation(conversationID: seeded.conversationID,
+                                                        epoch: boot.epoch)
+        let freshKey = try openRegisteredOperation(fresh, epoch: boot.epoch)
+        let freshLive = try object(callExportBegin(freshKey).body)
+        XCTAssertEqual(freshLive["code"] as? String, "workspaceMalformed",
+                       "the retired fenced operation must not affect a fresh live operation")
+        XCTAssertEqual(settleUI(fresh.operation), .retainedForCoreGrantClose)
+        closeSession(freshKey)
+        XCTAssertFalse(RuntimeOwnedWorkRegistry.shared.isAttached(fresh.operation.token))
+    }
+
+    /// The exact leak shape Main found: a NORMAL successful export leaves the
+    /// engine session `.finished`, and `closeSession(terminal: true)` keeps a
+    /// finished/aborted session addressable (for idempotent receipt re-reads).
+    /// Therefore `binding(forSessionKey:)` is NOT a live-grant proof. The
+    /// ACTUAL C ABI session_close event must mark the Core grant closed, and
+    /// the later UI settlement must release immediately instead of retaining
+    /// forever with no later close to wait for.
+    func testFinishedExportGrantCloseBeforeUISettlementReleasesWithoutLeak() async throws {
+        let boot = try await bootInstalledGenerationWithRunDomain()
+        let seeded = try await seedConversationOwnedWorkspace()
+        let prepared = try await beginAndRegisterOperation(conversationID: seeded.conversationID,
+                                                           epoch: boot.epoch)
+        // The operation-scoped mint resolves (and materializes) the ORIGINAL
+        // PrivateTasks/<uuid> workspace, so the real baseline scan has its
+        // actual root.
+        let sessionKey = try openRegisteredOperation(prepared, epoch: boot.epoch)
+
+        // A real baseline + empty export reaches `.finished` through the SAME
+        // engine path a successful terminal export uses.
+        let baseline = try object(callBaselineBegin(sessionKey).body)
+        XCTAssertEqual(baseline["ok"] as? Bool, true, "baseline begin: \(baseline)")
+        let baselineDone = try object(callBaselineFinish(sessionKey, appliedCount: 0,
+                                                         appliedBytes: 0).body)
+        XCTAssertEqual(baselineDone["ok"] as? Bool, true, "baseline finish: \(baselineDone)")
+        let export = try object(callExportBegin(sessionKey).body)
+        XCTAssertEqual(export["ok"] as? Bool, true, "export begin: \(export)")
+        let finished = try object(callExportFinish(sessionKey).body)
+        XCTAssertEqual(finished["result"] as? String, "synced",
+                       "a successful empty export must finish synced: \(finished)")
+
+        // The ACTUAL grant close happens BEFORE any UI settlement. The engine
+        // intentionally keeps the finished session inspectable; this test
+        // must not rely on binding removal for the close decision.
+        closeSession(sessionKey)
+        XCTAssertTrue(RuntimeOwnedWorkRegistry.shared.isAttached(prepared.operation.token),
+                      "the UI still owns the operation until its own settlement")
+        XCTAssertNotNil(WorkspaceTransferEngine.shared.binding(forSessionKey: sessionKey),
+                        "a finished session stays addressable after close; inspectability is NOT liveness")
+
+        // The UI settlement sees the recorded EVENT and releases; the normal
+        // G04 end detaches the exact token. No later close exists, so
+        // retaining here would leak forever.
+        XCTAssertEqual(settleUI(prepared.operation), .releasedNow)
+        let (domain, _) = try XCTUnwrap(RunDomainFacade.current(epoch: boot.epoch))
+        await domain.endG04WorkspaceOperation(prepared.operation)
+        XCTAssertFalse(RuntimeOwnedWorkRegistry.shared.isAttached(prepared.operation.token),
+                       "a finished inspectable session must not keep the operation alive")
+        closeSession(sessionKey)
+        XCTAssertEqual(settleUI(prepared.operation), .releasedNow)
     }
 
     // MARK: - Negative admissions (closed vocabulary, fail-closed)

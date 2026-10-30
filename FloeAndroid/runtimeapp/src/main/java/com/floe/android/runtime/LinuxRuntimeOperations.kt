@@ -58,6 +58,14 @@ internal class LinuxRuntimeOperations(
     // R3 first-use preflight ownership (kernel admission serializes install /
     // preflight / first-start through the exclusive-work gate).
     private val activePreflightID = AtomicReference<String?>()
+    /**
+     * The preflight request id whose ORIGINAL never-started lease may still
+     * be retained AFTER execute returned (a failed release keeps the lease in
+     * `preflightLease`). It stays owned until that lease is really gone, so
+     * the service never retires a still-required foreground permit merely
+     * because the execute window closed.
+     */
+    private val retainedPreflightID = AtomicReference<String?>()
     private val preflightCancelled = AtomicBoolean()
     // The ACTUAL verified published-revision archive digest, set only after
     // the ORIGINAL installer manifest verification succeeds in configure().
@@ -77,6 +85,13 @@ internal class LinuxRuntimeOperations(
         }.apply { allowCoreThreadTimeOut(true) }
     /** Live environment leases keyed by the engine session/lease id. */
     private val heldLeases = java.util.concurrent.ConcurrentHashMap<String, LinuxAuthorityClient.Lease>()
+    /**
+     * Live lease id -> the exact `shell.start` request id that acquired it.
+     * Removed only with the lease itself, so a preparation/acquire retained
+     * after a failed start (or a failed cleanup) is still owned by its exact
+     * permit association, never silently treated as settled.
+     */
+    private val leaseStartIDs = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val leaseRoles = java.util.concurrent.ConcurrentHashMap<String, WorkloadRole>()
     /** Live workloads keyed by their engine lease id (== sessionID on the wire). */
     private val running = java.util.concurrent.ConcurrentHashMap<String, Running>()
@@ -130,14 +145,19 @@ internal class LinuxRuntimeOperations(
         val workspaceOwner: Boolean,
         val workspace: RuntimeWorkspaceSession?,
         val imported: WorkspaceImportReceipt?,
+        /** The exact `shell.start` request id that admitted this workload. */
         val startID: String,
+        /** The SAME cancellation token as `cancelledStarts[startID]`, so a
+         *  target stop can arm it before OR after this Running is published
+         *  without a gap between the map handoff and `running[...]`. */
+        startCancellation: AtomicBoolean,
         /** G07.1 terminal04: bounded runtime phase composition for
          *  THIS workload (diagnostic only; no admission effect). */
         val latency: LinuxRuntimePhaseTiming.Run,
     ) {
         val terminal = AtomicReference<WorkloadTerminal?>()
         val finished = AtomicBoolean()
-        val startCancelled = AtomicBoolean()
+        val startCancelled: AtomicBoolean = startCancellation
         @Volatile var authorityBound = false
         @Volatile var nativeReleaseFailed = false
         @Volatile var cleanupDeferred = false
@@ -152,6 +172,11 @@ internal class LinuxRuntimeOperations(
         val workspaceRoot: java.io.File,
         val workspace: RuntimeWorkspaceSession,
         val imported: WorkspaceImportReceipt,
+        /** The exact `shell.start` request id of the OWNER whose foreground
+         *  grant/permit the deferred export still needs. This keeps the
+         *  owner's permit association alive until the LAST global workload
+         *  proves whole-UID quiescence and the real export settles. */
+        val ownerStartID: String,
     ) {
         val completed = AtomicBoolean()
         val outcome = AtomicReference<JSONObject?>()
@@ -203,6 +228,29 @@ internal class LinuxRuntimeOperations(
     override fun hasExclusiveWork(): Boolean =
         installID.get() != null || activePreflightID.get() != null
     override fun isExecuting(): Boolean = running.isNotEmpty()
+
+    /**
+     * Every exact request id that still owns runtime work: install/preflight,
+     * pending start, retained lease/failed lease, live Running.startID and
+     * the OWNER start id of every retained deferred export. A completed/stale
+     * target is absent here; only that positive removal may retire its
+     * foreground-permit association. No elapsed-time/budget term exists.
+     */
+    override fun ownedRequestIDs(): Set<String> {
+        val ids = LinkedHashSet<String>()
+        installID.get()?.let(ids::add)
+        activePreflightID.get()?.let { ids.add(it) }
+        if (preflightLease.get() != null) {
+            (activePreflightID.get() ?: retainedPreflightID.get())?.let(ids::add)
+        }
+        ids.addAll(pendingShellStartIDs)
+        ids.addAll(leaseStartIDs.values)
+        for (owned in running.values) {
+            if (!owned.finished.get()) ids.add(owned.startID)
+        }
+        for (deferred in deferredExports.values) ids.add(deferred.ownerStartID)
+        return ids
+    }
     override fun snapshot(request: RuntimeWire.Request): JSONObject? = when (request.operation) {
         "install.status" -> { fields(request.payload, emptySet()); JSONObject(progress.get().toString()) }
         "shell.poll" -> poll(request.payload)
@@ -301,7 +349,12 @@ internal class LinuxRuntimeOperations(
                     ensureConfigured = { recover(); configure() },
                     ownedPath = ::ownedPath, heldLease = preflightLease, installID = installID),
                 request.payload, grant) { cancelled() || preflightCancelled.get() }
-        } finally { activePreflightID.compareAndSet(request.id, null) }
+        } finally {
+            activePreflightID.compareAndSet(request.id, null)
+            // A failed ORIGINAL release keeps the never-started lease; the
+            // exact request id remains owned until that lease really clears.
+            if (preflightLease.get() != null) retainedPreflightID.set(request.id)
+        }
     }
 
     private fun start(request: RuntimeWire.Request, workspaceGrant: android.os.IBinder,
@@ -378,6 +431,7 @@ internal class LinuxRuntimeOperations(
         latency.mark(LinuxRuntimePhaseTiming.Phase.ACQUIRE)
         RuntimeExecutionTrace.mark(Stage.OPS_ACQUIRED)
         heldLeases[lease.id] = lease
+        leaseStartIDs[lease.id] = request.id
         leaseRoles[lease.id] = role
         var child: Running? = null
         var preparedScratch: File? = null
@@ -511,11 +565,17 @@ internal class LinuxRuntimeOperations(
                     RuntimeExecutionTrace.mark(Stage.OPS_SPAWN_ACCEPTED)
                     safeToAbandon = false
                     val isOwner = !isReuseParticipant
+                    // Hand the START's OWN cancellation token to the Running;
+                    // the map entry is removed only by this start's finally,
+                    // after Running is published. A target stop that lands in
+                    // that handoff window therefore cannot be lost.
+                    val startCancellation = checkNotNull(cancelledStarts[request.id]) {
+                        "startCancellationMissing"
+                    }
                     val owned = Running(lease, outcome.job, SystemClock.elapsedRealtime() + (seconds * 1000).toLong(),
                         scratch, role, projectID, workspace, isOwner, workspaceSession, imported,
-                        request.id, latency)
+                        request.id, startCancellation, latency)
                     owned.startCancelled.set(isCancelled())
-                    cancelledStarts.remove(request.id)
                     child = owned
                     if (isOwner) {
                         workspaceOwners[projectID] = lease.id
@@ -570,13 +630,23 @@ internal class LinuxRuntimeOperations(
             if (safeToAbandon) {
                 runCatching { preparedWorkspace?.close() }
                 preparedScratch?.let { RuntimeNetworkConfiguration.release(it) }
-                runCatching { authority.abandonUnstarted(lease) }
-                heldLeases.remove(lease.id)
-                leaseRoles.remove(lease.id)
-                if (startedOwner) workspaceOwners.remove(projectID, lease.id)
-                if (registeredParticipant) {
-                    workspaceParticipants[projectID]?.remove(lease.id)
-                }
+                // The native abandon reply is the ONLY ack that settles this
+                // never-started lease. A failed abandon retains the exact
+                // held lease/start/role maps (and any owner/participant
+                // registration) so a later foreground-permit loss is not
+                // misread as an already-settled participant. The original
+                // start failure is still the exception rethrown below.
+                val abandonAcknowledged = runCatching { authority.abandonUnstarted(lease) }.isSuccess
+                val cleanup = startAbandonCleanup(
+                    abandonAcknowledged = abandonAcknowledged,
+                    startedOwner = startedOwner,
+                    registeredParticipant = registeredParticipant,
+                )
+                if (cleanup.removeHeldLease) heldLeases.remove(lease.id)
+                if (cleanup.removeLeaseStart) leaseStartIDs.remove(lease.id)
+                if (cleanup.removeLeaseRole) leaseRoles.remove(lease.id)
+                if (cleanup.removeWorkspaceOwner) workspaceOwners.remove(projectID, lease.id)
+                if (cleanup.removeParticipant) workspaceParticipants[projectID]?.remove(lease.id)
                 preparedScratch?.let { cleanupScratch(it, lease.id) }
             } else child?.let { owned ->
                 owned.startCancelled.set(true)
@@ -663,6 +733,7 @@ internal class LinuxRuntimeOperations(
                                 workspaceRoot = owned.workspaceRoot,
                                 workspace = checkNotNull(owned.workspace),
                                 imported = checkNotNull(owned.imported),
+                                ownerStartID = owned.startID,
                             )
                             preparation.invalidate(owned.projectID)
                         }
@@ -726,6 +797,7 @@ internal class LinuxRuntimeOperations(
             while (completed.size > 32) completed.keys.firstOrNull()?.let { completed.remove(it) }
             running.remove(owned.lease.id, owned)
             heldLeases.remove(owned.lease.id)
+            leaseStartIDs.remove(owned.lease.id)
             leaseRoles.remove(owned.lease.id)
             if (owned.workspaceOwner) {
                 workspaceOwners.remove(owned.projectID, owned.lease.id)
@@ -1030,54 +1102,89 @@ internal class LinuxRuntimeOperations(
         }
     }
 
+    /**
+     * ORIGINAL global / target-scoped stop receiver. The scope is resolved
+     * from the CURRENT lifecycle facts at execution time, never from the
+     * admission-time validation alone: a target that settled while queued is
+     * a NO-OP, and it must never fall through to every held lease.
+     */
     override fun stopOwnedWork(request: RuntimeWire.Request?) {
-        // Recheck at execution time; a stale cancellation never stops a new task.
-        if (request != null) validateCancellation(request)
-        if (request?.operation == RuntimeWire.PREFLIGHT_CANCEL ||
-            (request == null && activePreflightID.get() != null)
-        ) {
-            // A preflight has NO process: authority.cancel (the started-lease
-            // path) does not apply. Flag the owning thread; it performs the
-            // real recoverable abort and the no-children lease release itself.
-            preflightCancelled.set(true)
-            return
-        }
-        if (request?.operation == "install.cancel") {
-            cancelPreparation.set(true)
-            return
-        }
-        val targetSession = request?.payload?.optString("sessionID")?.takeIf { it.isNotEmpty() }
-        val targetRequest = request?.payload?.optString("requestID")?.takeIf { it.isNotEmpty() }
-        if (targetRequest != null) {
-            // A start that has not surfaced a session id yet: request ITS
-            // cancellation only. The owning start thread observes the flag
-            // between materialize/import/spawn steps.
-            cancelledStarts[targetRequest]?.set(true)
-            return
-        }
-        val targets: List<Running> = if (targetSession != null) {
-            listOfNotNull(running[targetSession])
+        val resolution = if (request == null) {
+            StopResolution(StopTarget.ALL)
         } else {
-            running.values.toList()
+            resolveStop(
+                operation = request.operation,
+                keys = request.payload.keys().asSequence().toSet(),
+                requestID = request.payload.optString("requestID").takeIf { it.isNotEmpty() },
+                sessionID = request.payload.optString("sessionID").takeIf { it.isNotEmpty() },
+                installID = installID.get(),
+                preflightID = activePreflightID.get(),
+                heldLeaseIDs = heldLeases.keys,
+                pendingStartIDs = cancelledStarts.keys,
+                runningStartIDs = running.values.map { it.startID },
+            )
         }
-        if (targets.isEmpty()) {
-            // Preparation or failed-spawn ownership still counts as real work.
-            // A stop request only cancels its token; it never invents an exit.
-            heldLeases.values.forEach { authority.cancel(it) }
-            return
-        }
-        for (owned in targets) {
-            owned.startCancelled.set(true)
-            authority.cancel(owned.lease)
-            val cancelled = supervisor.cancelActive(owned.job.lease, "user-stop")
-            if (cancelled is CancelOutcome.Terminated) {
-                owned.terminal.set(cancelled.terminal)
-                finish(owned)
-            } else if (cancelled is CancelOutcome.Rejected && owned.job.stateNow == JobState.TERMINATED) {
-                // The job already reached its REAL terminal but an earlier
-                // release attempt failed; retry only the designed completion.
-                runCatching { finish(owned) }
+        when (resolution.target) {
+            StopTarget.NONE -> Unit
+            StopTarget.ALL -> {
+                // A preflight has NO process: authority.cancel (the started-
+                // lease path) does not apply. Flag the owning thread; it
+                // performs the real recoverable abort and the no-children
+                // lease release itself. (ORIGINAL global rule.)
+                if (activePreflightID.get() != null) {
+                    preflightCancelled.set(true)
+                    return
+                }
+                val targets = running.values.toList()
+                if (targets.isEmpty()) {
+                    // Preparation or failed-spawn ownership still counts as
+                    // real work. A stop request only cancels its token; it
+                    // never invents an exit. This is the ONLY path that may
+                    // touch every held lease, and ONLY for a genuine global
+                    // stop (null request).
+                    heldLeases.values.forEach { runCatching { authority.cancel(it) } }
+                    return
+                }
+                // One failing target must not suppress the other exact
+                // targets of a genuine global stop.
+                targets.forEach { runCatching { cancelOwned(it) } }
             }
+            StopTarget.INSTALL -> cancelPreparation.set(true)
+            StopTarget.PREFLIGHT -> preflightCancelled.set(true)
+            StopTarget.PENDING_START -> {
+                // Session-less start cancellation: arm its OWN shared token
+                // (covers a start before Running) and stop the exact published
+                // start if it already exists. A settled/foreign id is a no-op.
+                val target = checkNotNull(resolution.id)
+                cancelledStarts[target]?.set(true)
+                running.values.firstOrNull { it.startID == target && !it.finished.get() }
+                    ?.let { runCatching { cancelOwned(it) } }
+            }
+            StopTarget.SESSION -> {
+                val target = checkNotNull(resolution.id)
+                running[target]?.let { runCatching { cancelOwned(it) } }
+                    ?: heldLeases[target]?.let { lease ->
+                        // Exact held lease (pre-Running/finish window): arm
+                        // only ITS start token, then cancel only THIS lease.
+                        leaseStartIDs[target]?.let { cancelledStarts[it]?.set(true) }
+                        runCatching { authority.cancel(lease) }
+                    }
+            }
+        }
+    }
+
+    /** Real stop + the designed completion retry for exactly this workload. */
+    private fun cancelOwned(owned: Running) {
+        owned.startCancelled.set(true)
+        authority.cancel(owned.lease)
+        val cancelled = supervisor.cancelActive(owned.job.lease, "user-stop")
+        if (cancelled is CancelOutcome.Terminated) {
+            owned.terminal.set(cancelled.terminal)
+            finish(owned)
+        } else if (cancelled is CancelOutcome.Rejected && owned.job.stateNow == JobState.TERMINATED) {
+            // The job already reached its REAL terminal but an earlier
+            // release attempt failed; retry only the designed completion.
+            runCatching { finish(owned) }
         }
     }
 
@@ -1174,6 +1281,25 @@ internal class LinuxRuntimeOperations(
 
     internal enum class ReconcileAction { DONE, REQUEST_STOP, ENFORCE_DEADLINE, SETTLE, RETRY_FINISH, WAIT }
 
+    /** Exact execution-time stop scope. */
+    internal enum class StopTarget { NONE, ALL, INSTALL, PREFLIGHT, PENDING_START, SESSION }
+
+    internal data class StopResolution(val target: StopTarget, val id: String? = null)
+
+    /**
+     * Exact ownership-map cleanup for the safe-to-abandon start path.
+     * A failed/native-unacknowledged abandon is NOT settlement: every map
+     * stays retained so the foreground permit association and the original
+     * failure/recovery path keep the exact owned lease.
+     */
+    internal data class StartAbandonCleanup(
+        val removeHeldLease: Boolean,
+        val removeLeaseStart: Boolean,
+        val removeLeaseRole: Boolean,
+        val removeWorkspaceOwner: Boolean,
+        val removeParticipant: Boolean,
+    )
+
     companion object {
         /** Hard ceiling: 2 interactive + ONE shared Agent/run execution slot. */
         const val MAX_CONCURRENT_WORKLOADS = 3
@@ -1215,6 +1341,84 @@ internal class LinuxRuntimeOperations(
             heldLeaseIDs = listOfNotNull(heldLeaseID),
             pendingStartIDs = listOfNotNull(pendingStartID),
         )
+
+        /**
+         * Pure safe-to-abandon ownership decision (no Android, no org.json).
+         * The ORIGINAL native `abandonUnstarted` reply is the ONLY settlement
+         * of this never-started lease. A thrown/failed abandon keeps the
+         * held lease, its exact start id and its role (and any owner /
+         * participant registration) retained; it must never be reported as
+         * settled merely because the start itself failed.
+         */
+        internal fun startAbandonCleanup(
+            abandonAcknowledged: Boolean,
+            startedOwner: Boolean,
+            registeredParticipant: Boolean,
+        ): StartAbandonCleanup =
+            if (!abandonAcknowledged) {
+                StartAbandonCleanup(
+                    removeHeldLease = false,
+                    removeLeaseStart = false,
+                    removeLeaseRole = false,
+                    removeWorkspaceOwner = false,
+                    removeParticipant = false,
+                )
+            } else {
+                StartAbandonCleanup(
+                    removeHeldLease = true,
+                    removeLeaseStart = true,
+                    removeLeaseRole = true,
+                    removeWorkspaceOwner = startedOwner,
+                    removeParticipant = registeredParticipant,
+                )
+            }
+
+        /**
+         * Pure EXECUTION-TIME stop resolution (no Android, no org.json). The
+         * admission-time validation is deliberately NOT repeated here: a
+         * target may settle while the bounded stop task is queued, and the
+         * correct answer then is [StopTarget.NONE] — never a broad cancel of
+         * other held leases. Only a null request is [StopTarget.ALL].
+         *
+         * A started session is addressed by its live lease id; a pending or
+         * already-published start is addressed by the exact `shell.start`
+         * request id (the same id the kernel/service ownership seam uses).
+         * Install/preflight cancellations are exact request-id matches,
+         * including a mismatch/absent owner -> NONE.
+         */
+        internal fun resolveStop(
+            operation: String?,
+            keys: Set<String>,
+            requestID: String?,
+            sessionID: String?,
+            installID: String?,
+            preflightID: String?,
+            heldLeaseIDs: Collection<String>,
+            pendingStartIDs: Collection<String>,
+            runningStartIDs: Collection<String>,
+        ): StopResolution {
+            if (operation == null) return StopResolution(StopTarget.ALL)
+            return when (operation) {
+                "install.cancel" ->
+                    if (keys == setOf("requestID") && requestID != null && requestID == installID) {
+                        StopResolution(StopTarget.INSTALL, requestID)
+                    } else StopResolution(StopTarget.NONE)
+                RuntimeWire.PREFLIGHT_CANCEL ->
+                    if (keys == setOf("requestID") && requestID != null && requestID == preflightID) {
+                        StopResolution(StopTarget.PREFLIGHT, requestID)
+                    } else StopResolution(StopTarget.NONE)
+                "shell.cancel" -> when {
+                    keys == setOf("sessionID") && sessionID != null &&
+                        sessionID in heldLeaseIDs ->
+                        StopResolution(StopTarget.SESSION, sessionID)
+                    keys == setOf("requestID") && requestID != null &&
+                        (requestID in pendingStartIDs || requestID in runningStartIDs) ->
+                        StopResolution(StopTarget.PENDING_START, requestID)
+                    else -> StopResolution(StopTarget.NONE)
+                }
+                else -> StopResolution(StopTarget.NONE)
+            }
+        }
 
         /**
          * Pure next-step decision for the bounded owned release

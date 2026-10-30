@@ -129,6 +129,15 @@
 //    real lease (retire clears the exact operationID mapping; saturation
 //    reclaims only proven-dead entries). Every session transaction re-checks
 //    the live lease through `revalidateRun`'s operation branch.
+//    A successful operation-scoped `session_open` binds its ACTUAL Core grant
+//    session key to the original operation. When the UI terminal settles
+//    first but the runtime still owns that grant for a deferred shared
+//    export, the registration/token remain live exactly until the existing
+//    `floe_linux_workspace_session_close` drained hook records that grant's
+//    close EVENT; the UI record and TTY role still release immediately (no
+//    fake alive). The hook is idempotent and only touches registrations bound
+//    to its own key. Engine-table inspectability of a finished/aborted session
+//    is never used as a liveness proof.
 
 import Foundation
 import FloeCore
@@ -236,10 +245,44 @@ public enum LinuxWorkspaceAuthority {
     /// accepted epoch — states no authority check could ever pass again) are
     /// reclaimed; if none are, a new registration is REFUSED (the UI action
     /// gets an honest refusal, nothing is silently evicted).
+    ///
+    /// G07.3A deferred shared export: `sessionKey` is the ACTUAL Core grant
+    /// session opened under this operation (`floe_linux_workspace_session_open`
+    /// after its single-use mint). The UI terminal may settle while the
+    /// runtime still owns that grant for a deferred workspace export; the
+    /// registration and the ORIGINAL operation token then stay live until the
+    /// existing `floe_linux_workspace_session_close` drained hook records the
+    /// ACTUAL close EVENT (`coreGrantClosed`). That hook is the only
+    /// retirement path for such an entry (the UI side releases its session/TTY
+    /// immediately and never fabricates a stop). One operation owns at most
+    /// one Core grant session; a second concurrent open for the same operation
+    /// is refused rather than ambiguously re-bound.
     private struct OperationRegistration: Sendable {
         let conversationID: UUID
         let uiRunID: UUID
         let operation: G04WorkspaceOwnedOperation
+        var sessionKey: String? = nil
+        /// Set by the ACTUAL C ABI `floe_linux_workspace_session_close` hook
+        /// for this bound session. This is the grant-close EVENT, never
+        /// engine-table inspectability: a finished/aborted session remains
+        /// addressable for idempotent receipt re-reads, so
+        /// `WorkspaceTransferEngine.binding(forSessionKey:) != nil` does NOT
+        /// prove the grant is still open.
+        var coreGrantClosed: Bool = false
+        /// Set ONLY by the UI settlement decision when its bound Core grant
+        /// has not actually closed. The session_close hook then ends this
+        /// exact entry; a grant that closes while the UI still owns the action
+        /// leaves the normal UI retirement path in charge (unchanged).
+        var awaitingCoreGrantClose: Bool = false
+    }
+
+    /// UI settlement vs the runtime-owned Core grant. `releasedNow` means the
+    /// caller still owns the normal `endG04WorkspaceOperation` call;
+    /// `retainedForCoreGrantClose` means the operation must stay attached and
+    /// registered until `floe_linux_workspace_session_close` retires it.
+    enum G04WorkspaceOperationSettlement: Sendable, Equatable {
+        case releasedNow
+        case retainedForCoreGrantClose
     }
     nonisolated(unsafe) private static var operationRegistrations: [String: OperationRegistration] = [:]
     private static let maximumOperationRegistrations = 64
@@ -306,9 +349,20 @@ public enum LinuxWorkspaceAuthority {
         proofSecret = nil
         externalGate = nil
         mintedGrants.removeAll()
+        // Test-only generation teardown: no session_close can arrive after
+        // the engine reset below, so a still-bound deferred operation must be
+        // ended by its ORIGINAL receipt/epoch here instead of being silently
+        // dropped with the table. Production never calls this seam; the real
+        // deferred drain is the session_close hook.
+        let abandonedOperations = operationRegistrations.values
+            .filter { $0.awaitingCoreGrantClose }
+            .map { $0.operation }
         operationRegistrations.removeAll()
         lock.unlock()
         WorkspaceTransferEngine.shared.resetInstallationForTesting()
+        for operation in abandonedOperations {
+            endRegisteredOperation(operation)
+        }
     }
 
     public static var isInstalled: Bool {
@@ -664,13 +718,120 @@ public enum LinuxWorkspaceAuthority {
     }
 
     /// Remove the EXACT operation mapping. Called by the owning UI action on
-    /// every terminal transition (open failure, failed/immediate-exit start,
-    /// stop, exit, fault, retirement sweep, LSP close). Idempotent; removing
-    /// an already-gone mapping is a no-op (never touches another operation).
+    /// every terminal transition that does NOT retain a Core grant session
+    /// (open failure without a grant, failed/immediate-exit start, stop,
+    /// exit, fault, retirement sweep, LSP close). Idempotent; removing an
+    /// already-gone mapping is a no-op (never touches another operation).
+    /// The Core grant session binding is dropped with the entry, so a later
+    /// `session_close` for that key has nothing to retire.
     static func retireWorkspaceOperation(operationID: UUID) {
         lock.lock()
         operationRegistrations.removeValue(forKey: operationID.uuidString)
         lock.unlock()
+    }
+
+    /// The owning UI action finished its terminal/UI lifetime. This decision
+    /// uses ONLY recorded Core grant events, never engine-table
+    /// inspectability: a FINISHED session stays addressable for idempotent
+    /// receipt re-reads, so `binding(forSessionKey:) != nil` is NOT proof
+    /// that the grant is open.
+    ///  * a bound session whose ACTUAL `session_close` drained hook has not
+    ///    run => mark `awaitingCoreGrantClose` and retain BOTH the
+    ///    registration and the ORIGINAL operation token; that hook ends them;
+    ///  * no bound session, or the Core grant already closed => remove the
+    ///    registration and answer `releasedNow`; the caller performs its
+    ///    normal exactly-once `endG04WorkspaceOperation`.
+    /// Atomic under the authority lock; never detaches a lease itself and
+    /// never takes the lock across an engine/domain callback.
+    static func releaseWorkspaceOperationAfterUISettlement(operationID: UUID)
+        -> G04WorkspaceOperationSettlement {
+        let key = operationID.uuidString
+        lock.lock()
+        defer { lock.unlock() }
+        guard var registration = operationRegistrations[key] else { return .releasedNow }
+        if registration.sessionKey != nil, !registration.coreGrantClosed {
+            // The bind happened; the ACTUAL grant-close event has not. The
+            // UI may close now while the runtime still owns this grant for a
+            // deferred shared export. session_close will end this exact entry.
+            registration.awaitingCoreGrantClose = true
+            operationRegistrations[key] = registration
+            return .retainedForCoreGrantClose
+        }
+        // No grant was ever opened, or it really closed (even if the engine
+        // session is still inspectable as finished/aborted). Release now.
+        operationRegistrations.removeValue(forKey: key)
+        return .releasedNow
+    }
+
+    /// Bind the ACTUAL Core grant session returned by a successful
+    /// operation-scoped `session_open` to its original registration. Written
+    /// under the same authority lock as register/retire; a missing/retired
+    /// registration or a second concurrent session for one operation is
+    /// refused so the caller can close the just-opened grant and fail closed.
+    fileprivate static func bindWorkspaceSession(_ sessionKey: String, operationID: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var registration = operationRegistrations[operationID.uuidString] else { return false }
+        // A late open after the ACTUAL grant close can never bind: there is
+        // no later session_close for this operation, so it would leak.
+        guard !registration.coreGrantClosed else { return false }
+        if let existing = registration.sessionKey {
+            return existing == sessionKey
+        }
+        registration.sessionKey = sessionKey
+        operationRegistrations[operationID.uuidString] = registration
+        return true
+    }
+
+    /// End the ORIGINAL operation lease bound to its now-closed Core grant.
+    /// Runs OUTSIDE the authority lock (bridge may await the original domain
+    /// actor). The exact token/epoch is captured, so a replaced generation,
+    /// a new task/session or a newer operation can never be touched. If the
+    /// originating domain is gone, only that exact token is detached.
+    private static func endRegisteredOperation(_ operation: G04WorkspaceOwnedOperation) {
+        let epoch = operation.token.epoch
+        let ended: Bool = bridge(timeoutSeconds: 4.0) { () -> Bool? in
+            guard let (domain, _) = RunDomainFacade.current(epoch: epoch) else { return nil }
+            await domain.endG04WorkspaceOperation(operation)
+            return true
+        } ?? false
+        // A replaced/finished domain can no-op for an operation it never
+        // owned; only this exact captured token is then detached. A token the
+        // original domain really ended is already gone (idempotent no-op).
+        if !ended || RuntimeOwnedWorkRegistry.shared.isAttached(operation.token) {
+            _ = RuntimeOwnedWorkRegistry.shared.detach(operation.token)
+        }
+    }
+
+    /// Record the ACTUAL C ABI Core grant close (`CoreWorkspaceGrant.close`
+    /// -> `floe_linux_workspace_session_close`) for this exact session key.
+    /// This is the event, not engine-table inspectability: `closeSession`
+    /// deliberately keeps an already-finished/aborted session addressable for
+    /// idempotent receipt re-reads. If the UI already settled
+    /// (`awaitingCoreGrantClose`), remove and end the original operation now;
+    /// otherwise mark the registration closed so the later UI settlement
+    /// releases it immediately. No callback runs under the lock; repeated
+    /// closes and an unrelated session/task/epoch are no-ops.
+    fileprivate static func recordCoreGrantClose(_ sessionKey: String) {
+        var operations: [G04WorkspaceOwnedOperation] = []
+        lock.lock()
+        let keys = operationRegistrations.compactMap { key, registration in
+            registration.sessionKey == sessionKey ? key : nil
+        }
+        for key in keys {
+            guard var registration = operationRegistrations[key] else { continue }
+            if registration.awaitingCoreGrantClose {
+                operationRegistrations.removeValue(forKey: key)
+                operations.append(registration.operation)
+            } else if !registration.coreGrantClosed {
+                registration.coreGrantClosed = true
+                operationRegistrations[key] = registration
+            }
+        }
+        lock.unlock()
+        for operation in operations {
+            endRegisteredOperation(operation)
+        }
     }
 
     /// Copy-out under the existing lock (no callback work while held). The
@@ -1155,6 +1316,18 @@ public func floe_linux_workspace_session_open(_ bindingJson: UnsafePointer<CChar
     }
     do {
         let sessionKey = try WorkspaceTransferEngine.shared.openSession(binding: binding)
+        if let operationID {
+            // Remember the ACTUAL Core grant session for this original UI
+            // operation. The UI terminal may settle first (deferred shared
+            // export); the session_close drained hook then ends the exact
+            // operation only after this real grant closes. A missing/retired
+            // registration or a second concurrent session refuses instead of
+            // leaving an unbound grant with no retirement path.
+            guard LinuxWorkspaceAuthority.bindWorkspaceSession(sessionKey, operationID: operationID) else {
+                WorkspaceTransferEngine.shared.closeSession(sessionKey: sessionKey, terminal: true)
+                return workspaceError("bindingUnresolved", buffer: outBuffer, capacity: capacity)
+            }
+        }
         return workspaceReply(["ok": true, "sessionKey": sessionKey], buffer: outBuffer, capacity: capacity)
     } catch let error as WorkspaceTransferError {
         return workspaceError(error.wireCode, buffer: outBuffer, capacity: capacity)
@@ -1336,6 +1509,13 @@ public func floe_linux_workspace_abort(_ sessionKey: UnsafePointer<CChar>?,
 public func floe_linux_workspace_session_close(_ sessionKey: UnsafePointer<CChar>?) -> Int32 {
     guard let key = workspaceCString(sessionKey, maximum: 64) else { return -1 }
     WorkspaceTransferEngine.shared.closeSession(sessionKey: key, terminal: true)
+    // Record the ACTUAL grant-close event for this bound operation. If its
+    // UI already settled, end the exact original operation now; otherwise
+    // mark it so the later UI settlement releases immediately. This event is
+    // authoritative even when the engine keeps a finished/aborted session
+    // addressable for idempotent receipt re-reads. No other session/task/
+    // epoch can match this key; repeated closes are no-ops.
+    LinuxWorkspaceAuthority.recordCoreGrantClose(key)
     return 0
 }
 

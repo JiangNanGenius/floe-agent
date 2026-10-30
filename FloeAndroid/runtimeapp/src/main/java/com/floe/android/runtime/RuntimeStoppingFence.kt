@@ -31,10 +31,13 @@ package com.floe.android.runtime
  *    against settles, so no externally-sampled boolean can ever drive a
  *    clear (Main review r3-stop-fence-atomicity-20261023: an unlocked
  *    snapshot->set(false) is a TOCTOU, not a generation fence);
- *  * raise/queue-claim semantics are the ORIGINAL requestStop rule: the
- *    fence rises on every stop, ONE queued stopOwnedWork task drains at a
- *    time, and the requestStop tail clears the fence only while the engine
- *    provably owns nothing;
+ *  * raise/queue-claim semantics are the ORIGINAL GLOBAL requestStop rule:
+ *    the fence rises on every genuine global stop (null request), ONE queued
+ *    global stopOwnedWork task drains at a time, and the requestStop tail
+ *    clears the fence only while the engine provably owns nothing. A
+ *    TARGET-scoped cancellation (closure A of a live B) must NOT call
+ *    [beginStop]: the kernel routes it to its exact work only, so a sibling
+ *    keeps its input/resize/admission rights while that target settles;
  *  * a FRESH stop (queued, or converging on live ownership) keeps refusing:
  *    [settleAfterOwnedWorkReleased] drops the fence ONLY when no stop is
  *    queued AND the engine's own live ownership reads empty — the same
@@ -59,9 +62,10 @@ internal class RuntimeStoppingFence(private val ownedWork: () -> Boolean) {
     /** Pure read: the kernel `status` snapshot and every admission check. */
     val isStopping: Boolean get() = synchronized(monitor) { stopping }
 
-    /** requestStop entry (ORIGINAL rule, monitor-atomic): raise the fence.
-     *  TRUE is returned only to the raiser that claimed the single queued
-     *  stop slot and must therefore run the real stopOwnedWork drain. */
+    /** GLOBAL requestStop entry (ORIGINAL rule, monitor-atomic): raise the
+     *  fence. TRUE is returned only to the raiser that claimed the single
+     *  queued global stop slot and must therefore run the real stopOwnedWork
+     *  drain. Target-scoped stops never call this. */
     fun beginStop(): Boolean = synchronized(monitor) {
         stopping = true
         if (stopQueued) false else { stopQueued = true; true }
