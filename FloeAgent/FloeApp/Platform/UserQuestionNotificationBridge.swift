@@ -109,6 +109,13 @@ private final class UserQuestionNotificationCompletion: @unchecked Sendable {
     }
 }
 
+// UserNotifications returns immutable category/action snapshots. This narrow
+// value wrapper only transfers that read-only Foundation collection; mutable
+// notification content and response objects never cross this boundary.
+private struct UserQuestionNotificationCategories: @unchecked Sendable {
+    let values: Set<UNNotificationCategory>
+}
+
 public enum UserQuestionNotificationAction: Sendable, Equatable {
     case text(String)
     case option(String)
@@ -171,15 +178,15 @@ public final class UserQuestionNotificationBridge {
 
         let category = makeCategory(for: question, payload: payload)
         registeredCategories[category.identifier] = category
-        let existing: Set<UNNotificationCategory> = await withCheckedContinuation { continuation in
+        let existing: UserQuestionNotificationCategories = await withCheckedContinuation { continuation in
             center.getNotificationCategories { categories in
-                continuation.resume(returning: categories)
+                continuation.resume(returning: UserQuestionNotificationCategories(values: categories))
             }
         }
         guard presentations[snapshot.requestID]?.generation == generation else { return }
         // Several conversations may register questions across the await.
         // Merge the current owned categories, not an earlier single category.
-        center.setNotificationCategories(Set(existing.filter {
+        center.setNotificationCategories(Set(existing.values.filter {
             !retiredCategoryIDs.contains($0.identifier)
         }).union(registeredCategories.values))
         retiredCategoryIDs.removeAll()
