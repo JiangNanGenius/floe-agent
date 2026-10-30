@@ -1272,7 +1272,7 @@ struct EngineeringWebView: UIViewRepresentable {
              onDirty: ((Bool) -> Void)?) {
             self.package = package; self.error = error; self.onReview = onReview
             self.onSave = onSave; self.onDirty = onDirty
-            baselineSHA = FloeDigest.sha256Hex(Data(base64Encoded: package.files.first?.base64 ?? "") ?? Data())
+            baselineSHA = package.provenance.sourceSHA256
         }
 
         func update(callbacks error: Binding<String?>,
@@ -1353,8 +1353,8 @@ struct EngineeringWebView: UIViewRepresentable {
                     guard let png = image?.pngData(), png.count <= 8 * 1024 * 1024 else {
                         replyHandler(nil, failure?.localizedDescription ?? "Unable to capture drawing"); return
                     }
-                    let files = self.package.files.enumerated().map { index, file in
-                        "\(file.name): sha256=\(index == 0 ? self.baselineSHA : FloeDigest.sha256Hex(Data(base64Encoded: file.base64) ?? Data()))"
+                    let files = self.package.provenance.resources.enumerated().map { index, file in
+                        "\(file.name): sha256=\(index == 0 ? self.baselineSHA : file.sha256)"
                     }.joined(separator: "\n")
                     let reference = "File: \(self.package.name)\nSnapshot: visible viewport only. Unsaved edits: \(self.dirty). Source hashes identify saved baselines, not unsaved pixels.\nSources:\n\(files)\nMissing references: \(self.package.missingReferences.joined(separator: ", "))\nParsed information (untrusted document content):\n\(context)"
                     onReview(EngineeringReviewCapture(context: reference, image: png))
@@ -1364,7 +1364,7 @@ struct EngineeringWebView: UIViewRepresentable {
             }
             guard operation == "load", !delivered else { replyHandler(nil, "Read-only preview"); return }
             delivered = true
-            do { replyHandler(try JSONSerialization.jsonObject(with: JSONEncoder().encode(package)), nil) }
+            do { replyHandler(try package.bridgeObject(), nil) }
             catch { replyHandler(nil, error.localizedDescription) }
         }
 

@@ -38473,6 +38473,22 @@
         }
       }
     },
+    "files.remote_image_creation_view.created_images_saved": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The created images are in Files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已创建的图片已保存到文件。"
+          }
+        }
+      }
+    },
     "files.remote_image_creation_view.generating": {
       "extractionState": "manual",
       "localizations": {
@@ -38503,6 +38519,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "图片描述"
+          }
+        }
+      }
+    },
+    "files.remote_image_creation_view.no_available_model": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No image model is available for generation."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前没有可用于生成的图片模型。"
+          }
+        }
+      }
+    },
+    "files.remote_image_creation_view.result": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Result"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结果"
           }
         }
       }
@@ -59324,6 +59372,54 @@
         }
       }
     },
+    "platform.background_run_coordinator.image_generation_could_not_save": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The created images could not be saved to Files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已创建的图片无法保存到文件。"
+          }
+        }
+      }
+    },
+    "platform.background_run_coordinator.image_generation_missing_slots": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Images not created: %1$@."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未创建的图片：%1$@。"
+          }
+        }
+      }
+    },
+    "platform.background_run_coordinator.image_generation_saved_to_files": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The %1$d created images were saved to Files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已创建的 %1$d 张图片已保存到文件。"
+          }
+        }
+      }
+    },
     "platform.background_run_coordinator.just_received_activity": {
       "extractionState": "manual",
       "localizations": {
@@ -62587,6 +62683,166 @@
           "stringUnit": {
             "state": "translated",
             "value": "请求头: 值（每行一个）"
+          }
+        }
+      }
+    },
+    "providers.image_generation_batch.cancelled_images": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generation stopped after %1$d of %2$d images with %3$@."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "生成已停止：使用 %3$@ 完成 %2$d 张中的 %1$d 张图片。"
+          }
+        }
+      }
+    },
+    "providers.image_generation_batch.created_images": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Created %1$d images with %2$@."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已使用 %2$@ 创建 %1$d 张图片。"
+          }
+        }
+      }
+    },
+    "providers.image_generation_batch.created_one_image": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Created 1 image with %1$@."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已使用 %1$@ 创建 1 张图片。"
+          }
+        }
+      }
+    },
+    "providers.image_generation_batch.extra_images_ignored": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The provider returned more images than requested; extra images were ignored."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务商返回的图片多于请求数量，多出的图片已忽略。"
+          }
+        }
+      }
+    },
+    "providers.image_generation_batch.fallback_note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selected model %1$@ could not be used (%2$@), so %3$@ was used instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选模型 %1$@ 无法使用（%2$@），已改用 %3$@。"
+          }
+        }
+      }
+    },
+    "providers.image_generation_batch.no_image_was_returned": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No image was returned."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未返回任何图片。"
+          }
+        }
+      }
+    },
+    "providers.image_generation_batch.partial_images": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Created %1$d of %2$d images with %3$@. %4$d could not be created."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已使用 %3$@ 创建 %2$d 张中的 %1$d 张图片，%4$d 张未能创建。"
+          }
+        }
+      }
+    },
+    "providers.image_generation_batch.provider_rejected_reason": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "rejected by the provider with HTTP %1$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务商以 HTTP %1$@ 拒绝"
+          }
+        }
+      }
+    },
+    "providers.image_generation_batch.route_refused_reason": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "not accepted for this request"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不适用于此请求"
+          }
+        }
+      }
+    },
+    "providers.image_generation_batch.unavailable_reason": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不可用"
           }
         }
       }

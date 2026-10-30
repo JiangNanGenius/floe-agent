@@ -247,6 +247,24 @@ public struct EngineeringPreviewPackage: Codable, Sendable {
         }
     }
 
+    /// Preserve the exact Codable wire shape without JSON-encoding and then
+    /// parsing every large base64 resource on the main thread. Resource strings
+    /// are already prepared by the bounded loader; metadata stays typed.
+    public func bridgeObject() throws -> [String: Any] {
+        struct Metadata: Encodable {
+            let name: String
+            let kind: EngineeringPreviewKind
+            let missingReferences: [String]
+            let provenance: EngineeringPreviewProvenance
+            let diagnostics: EngineeringPreviewDiagnostics
+        }
+        let metadata = Metadata(name: name, kind: kind, missingReferences: missingReferences,
+                                provenance: provenance, diagnostics: diagnostics)
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(metadata)) as? [String: Any] ?? [:]
+        object["files"] = files.map { ["name": $0.name, "base64": $0.base64] }
+        return object
+    }
+
     /// The WebView receives immutable bytes, no filesystem or tool capabilities.
     /// Only explicit OBJ/MTL/glTF references below the selected folder are read.
     public static func load(path: String, service: WorkspaceFileService,

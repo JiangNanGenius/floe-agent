@@ -477,25 +477,45 @@ struct CadServiceOperationCatalogTests {
             #expect(failure.code == "unknown_kind")
         }
 
-        // A plain merge keeps a host-provided catalog untouched; a detail
-        // merge replaces the (potentially huge) engine reply with the
-        // catalog-focused page and stays inside the model-visible budget.
+        // An old host cannot leave a contradictory second action table.
+        // Kernel-specific facts remain, while the shared operation catalog
+        // replaces stale service lists. Only explicit presentation budgets
+        // shrink a page; default retained output is complete.
         let merged = CadServiceOperationCatalog.mergingCapabilities(
             into: #"{"ok":true,"service_operations":{"kinds":{"drawing":{}}}}"#,
             detailKind: nil, offset: 0, limit: nil)
         let mergedObject = try #require((try? JSONSerialization.jsonObject(with: Data(merged.utf8))) as? [String: Any])
         let existing = try #require(mergedObject["service_operations"] as? [String: Any])
-        #expect(existing["detail_hint"] == nil, "a host-provided catalog must not be overwritten")
+        #expect(existing["detail_hint"] != nil, "the shared catalog replaces an incomplete legacy host copy")
+        #expect(mergedObject["drawing_actions"] as? [String]
+            == CadServiceOperationCatalog.actionNames(forKind: "drawing"))
+        #expect(!(mergedObject["mesh_actions"] as? [String] ?? []).contains("text"))
+        #expect(mergedObject["unavailable_actions"] != nil)
 
         let bigEngineReply = #"{"ok":true,"padding":"\#(String(repeating: "x", count: 3700))"}"#
         let detailReply = CadServiceOperationCatalog.mergingCapabilities(
-            into: bigEngineReply, detailKind: "drawing", offset: 0, limit: 8)
+            into: bigEngineReply, detailKind: "drawing", offset: 0, limit: 8,
+            maximumCharacters: CadServiceOperationCatalog.modelSummaryBudget)
         #expect(detailReply.utf8.count <= CadServiceOperationCatalog.modelSummaryBudget)
         let detailObject = try #require((try? JSONSerialization.jsonObject(with: Data(detailReply.utf8))) as? [String: Any])
         let serviceDetail = try #require((detailObject["service_operations"] as? [String: Any])?["detail"] as? [String: Any])
         #expect(serviceDetail["kind"] as? String == "drawing")
         #expect((serviceDetail["operations"] as? [[String: Any]])?.isEmpty == false,
                 "the page shrinks to what fits instead of truncating the JSON")
+
+        let completePage = CadServiceOperationCatalog.mergingCapabilities(
+            into: bigEngineReply, detailKind: "drawing", offset: 0, limit: 8)
+        let completeObject = try #require(try JSONSerialization.jsonObject(with: Data(completePage.utf8)) as? [String: Any])
+        let completeDetail = try #require((completeObject["service_operations"] as? [String: Any])?["detail"] as? [String: Any])
+        #expect((completeDetail["operations"] as? [Any])?.count == 8)
+        #expect(completeDetail["next_offset"] as? Int == 8)
+        let fullPadding = String(repeating: "complete-host-fact", count: 1000)
+        let retainedContract = CadServiceOperationCatalog.mergingCapabilities(
+            into: ["ok": true, "kernelFact": fullPadding, "mesh_actions": ["text"]],
+            detailKind: nil, offset: 0, limit: nil)
+        let fullObject = try #require(try JSONSerialization.jsonObject(with: Data(retainedContract.utf8)) as? [String: Any])
+        #expect(fullObject["kernelFact"] as? String == fullPadding)
+        #expect(fullObject["service_operations"] != nil)
     }
 }
 

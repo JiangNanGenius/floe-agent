@@ -1085,11 +1085,6 @@ public enum CadServiceOperationCatalog: Sendable {
                               arg("opacity", "number"), arg("metallic", "number"), arg("roughness", "number")],
                   examples: [##"{"bodyID":"<body uuid>","color":[0.53,0.6,0.67],"roughness":0.4}"##,
                              ##"{"bodyID":"<body uuid>","color":"#8899AA","roughness":0.4}"##]),
-        Operation(kind: "mesh", action: "text", mutating: true,
-                  summary: "Create text geometry as a mesh body.",
-                  arguments: [arg("text", "string", required: true), arg("size", "number"),
-                              arg("position", "[x,y,z]"), arg("name", "string")],
-                  examples: [#"{"text":"FLOE","size":10,"position":[0,0,0]}"#]),
         Operation(kind: "mesh", action: "image", mutating: true,
                   summary: "Apply an image texture to a body.",
                   arguments: [arg("bodyID", "uuid"), arg("imageBase64", "string"), arg("imageID", "string")],
@@ -1378,10 +1373,9 @@ public enum CadServiceOperationCatalog: Sendable {
         ]
     }
 
-    /// Merges the catalog into a capabilities reply. The `cad.document` runtime
-    /// summary cap is respected: a detail request replaces the model-facing
-    /// reply with the catalog page (shrunk page-by-page until it fits), and a
-    /// plain request only adds the compact summary when the reply has room.
+    /// Merges complete contracts into retained output. The runtime chooses
+    /// what fits the real model window; only callers explicitly supplying a
+    /// presentation budget request a smaller, still pageable contract.
     /// Returns the reply unchanged on any non-object input.
     public static func mergingCapabilities(into reply: String, detailKind: String?,
                                            offset: Int, limit: Int?,
@@ -1397,7 +1391,9 @@ public enum CadServiceOperationCatalog: Sendable {
     public static func mergingCapabilities(into object: [String: Any], detailKind: String?,
                                            offset: Int, limit: Int?,
                                            maximumCharacters: Int? = nil) -> String {
-        let budget = max(256, maximumCharacters ?? modelSummaryBudget)
+        // The runtime owns the model's real context budget. A UI's 4 KiB
+        // summary must not destroy the retained capabilities before paging.
+        let budget = maximumCharacters.map { max(256, $0) } ?? Int.max
         func encoded(_ value: [String: Any]) -> String? {
             guard JSONSerialization.isValidJSONObject(value),
                   let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
@@ -1442,9 +1438,14 @@ public enum CadServiceOperationCatalog: Sendable {
             return encoded(["ok": true, "service_operations": fallback]) ?? "{}"
         }
         var merged = object
-        if merged["service_operations"] == nil {
-            merged["service_operations"] = summaryJSON(compact: true)
-        }
+        merged["service_operations"] = summaryJSON(compact: true)
+        // Legacy host arrays are replaced, not merely supplemented by a
+        // second contradictory list of callable actions.
+        for kind in kinds { merged["\(kind)_actions"] = actionNames(forKind: kind) }
+        merged["unavailable_actions"] = ["mesh.text": [
+            "code": "text_mesh_unavailable",
+            "message": "No standalone mesh-text operation. The native editor supports text outlines in a sketch followed by extrusion; an Agent text-sketch command is not yet available."
+        ]]
         if let text = encoded(merged), text.count <= budget { return text }
         // The engine reply alone is already at the budget: dropping the summary
         // keeps the JSON parseable instead of emitting a truncated object.

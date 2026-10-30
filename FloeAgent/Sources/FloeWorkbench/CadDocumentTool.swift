@@ -1905,23 +1905,15 @@ public struct CadDocumentTool: AgentTool {
                         throw error
                     }
                 }
-                if nativeCaps["service_operations"] == nil {
-                    nativeCaps["service_operations"] = CadServiceOperationCatalog.summaryJSON(compact: true)
-                }
-                var merged: [String: Any] = [
+                let nativeJSON = CadServiceOperationCatalog.mergingCapabilities(
+                    into: nativeCaps, detailKind: nil, offset: 0, limit: nil)
+                nativeCaps = (try? JSONSerialization.jsonObject(with: Data(nativeJSON.utf8))) as? [String: Any]
+                    ?? nativeCaps
+                let merged: [String: Any] = [
                     "two_dimensional": twoD,
                     "native_three_dimensional": nativeCaps,
                 ]
-                var text = jsonString(merged)
-                if text.utf8.count > CadServiceOperationCatalog.modelSummaryBudget {
-                    // The engine matrices already approach the 4 KiB cap:
-                    // dropping the catalog keeps the JSON parseable (the detail
-                    // request above is the reliable way to read it).
-                    nativeCaps["service_operations"] = nil
-                    merged["native_three_dimensional"] = nativeCaps
-                    text = jsonString(merged)
-                }
-                return completeOutput("cad.document capabilities: \(text)", 32_000)
+                return completeOutput("cad.document capabilities: \(jsonString(merged))", 32_000)
             }
             let caps = try await host.capabilities(access: access)
             return completeOutput("cad.document capabilities: \(caps)", 24_000)
@@ -2987,7 +2979,7 @@ public struct CadDocumentTool: AgentTool {
         ToolExecutionOutput(
             digesting: text,
             artifacts: artifacts,
-            maximumSummaryCharacters: min(4096, maximum),
+            maximumSummaryCharacters: maximum,
             capturedOutput: text
         )
     }

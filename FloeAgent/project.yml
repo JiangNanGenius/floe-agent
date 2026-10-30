@@ -785,6 +785,9 @@ targets:
       - path: Tests/FloeAppTests/ComposerOverflowRegressionTests.swift
       - path: Tests/FloeProvidersTests/KimiFunctionNameCompatibilityTests.swift
       - path: Tests/FloeProvidersTests/AgentPlanImageContractTests.swift
+      - path: Tests/FloeAppTests/MediaGenerationImageBatchContractTests.swift
+      - path: Tests/FloeAppTests/MediaGenerationDesignPortTests.swift
+      - path: Tests/FloeProvidersTests/ImageGenerationBatchTests.swift
       - path: Tests/FloeProvidersTests/ArkToolNameRegressionTests.swift
       - path: Tests/FloeAppTests/SkillWorkspaceResourceStagerTests.swift
       - path: Tests/FloeSkillsTests/SkillManagementTests.swift
@@ -955,6 +958,7 @@ targets:
       - path: Tests/FloeAppTests/NativeCADCanvasBackupTests.swift
       - path: Tests/FloeAppTests/EngineeringWebSessionReparentTests.swift
       - path: Tests/FloeAppTests/EngineeringObservationServiceTests.swift
+      - path: Tests/FloeAppTests/NativeCADCapabilityDiscoveryTests.swift
       # K3: App-level default-ask ordinary-document policy regression (real
       # runtime + production PDF/media tool hosts). Registering the file here
       # requires regenerating the Xcode project (scripts/gen_project.sh) in the
@@ -1212,6 +1216,7 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHoleWorkflowTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchEditTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADParameterCorrectnessTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADCapabilitySurfaceTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADStoredIntegrityTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADExactnessPreservationTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADUSDZMaterialExportTests.swift

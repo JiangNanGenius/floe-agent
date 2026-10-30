@@ -1528,9 +1528,9 @@ struct CadDocumentServiceRequestTests {
         let output = try await execute(nativeTool,
             #"{"action":"capabilities","path":"part.floecad","kind":"drawing","offset":2,"limit":1}"#)
         #expect(output.summary.contains("service_operations"))
-        // The reply must stay inside the runtime's 4 KiB model-visible cap so
-        // the JSON is never silently truncated.
-        #expect(output.summary.utf8.count <= 4096)
+        // Complete operation JSON is retained; the runtime applies its real
+        // context window rather than a hard-coded UI preview limit.
+        #expect(output.capturedOutput == output.summary)
         let object = try payloadObject(output)
         let catalog = try #require(object["service_operations"] as? [String: Any])
         let detail = try #require(catalog["detail"] as? [String: Any])
@@ -1565,10 +1565,13 @@ struct CadDocumentServiceRequestTests {
         // Without a document the detail request is served the same way.
         let noPath = try await execute(CadDocumentTool(host: FakeCadHost()),
                                        #"{"action":"capabilities","kind":"assembly"}"#)
-        #expect(noPath.summary.utf8.count <= 4096)
+        #expect(noPath.capturedOutput == noPath.summary)
         let noPathObject = try payloadObject(noPath)
         let noPathDetail = try #require((noPathObject["service_operations"] as? [String: Any])?["detail"] as? [String: Any])
         #expect(noPathDetail["kind"] as? String == "assembly")
+        #expect((noPathDetail["operations"] as? [Any])?.count
+            == min(CadServiceOperationCatalog.defaultPageSize,
+                   CadServiceOperationCatalog.actionNames(forKind: "assembly").count))
 
         // Discovery without a document carries the compact catalog under the
         // native surface when it fits.

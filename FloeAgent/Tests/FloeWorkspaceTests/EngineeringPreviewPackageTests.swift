@@ -339,3 +339,18 @@ struct EngineeringPreviewReadBudgetTests {
         #expect(EngineeringPreviewLimits.expandedReadOnly.maximumBytes == 64 * 1024 * 1024)
     }
 }
+
+@Suite("Engineering preview bridge payload")
+struct EngineeringPreviewBridgePayloadTests {
+    @Test func directBridgePreservesTheCompleteCodableContract() throws {
+        let package = try EngineeringPreviewPackage.single(name: "part.obj",
+            bytes: Data("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n".utf8))
+        let expected = try JSONSerialization.jsonObject(with: JSONEncoder().encode(package))
+        let actual = try package.bridgeObject()
+        let a = try JSONSerialization.data(withJSONObject: actual, options: [.sortedKeys])
+        let b = try JSONSerialization.data(withJSONObject: expected, options: [.sortedKeys])
+        #expect(a == b)
+        let files = try #require(actual["files"] as? [[String: String]])
+        #expect(files.first?["base64"] == package.files.first?.base64)
+    }
+}
