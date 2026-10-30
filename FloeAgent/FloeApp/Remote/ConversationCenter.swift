@@ -20,6 +20,7 @@ import FloeLocalModels
 import FloePersistence
 import FloeProviders
 import FloeSecurity
+import FloeSkills
 import FloeSync
 import FloeTools
 import FloeExecution
