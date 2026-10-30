@@ -847,6 +847,14 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     let decoder = JSONDecoder()
                     var aggregator = ToolCallAggregator()
                     var deferredCompletion: AgentEvent.CompletionInfo?
+                    // Some OpenAI-compatible gateways (observed with Ark)
+                    // repeat the same usage frame for one HTTP request. Usage
+                    // is billed once per request, so suppress an identical
+                    // report here, before the runtime enriches each copy with
+                    // timings. This set belongs to this `stream` call only:
+                    // distinct values are all kept, and an identical report in
+                    // a separate request starts with a fresh set and counts.
+                    var emittedUsageReports = Set<AgentEvent.UsageReport>()
                     for try await sseEvent in pump.events() {
                         if let errorEvent = httpErrorEvent(from: sseEvent) {
                             if case .error(let error) = errorEvent {
@@ -876,6 +884,10 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                                     // finish_reason chunk. Do not terminate the
                                     // runtime until the SSE stream has drained.
                                     deferredCompletion = completion
+                                } else if case .usage(let report) = event {
+                                    if emittedUsageReports.insert(report).inserted {
+                                        continuation.yield(.usage(report))
+                                    }
                                 } else {
                                     continuation.yield(event)
                                 }

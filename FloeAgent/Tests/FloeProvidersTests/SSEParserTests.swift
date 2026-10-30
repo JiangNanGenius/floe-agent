@@ -509,3 +509,231 @@ struct WireTranslatorTests {
         #expect(true)
     }
 }
+
+// MARK: - Chat usage deduplication
+
+/// Local-only URLProtocol fixture for the actual Chat adapter stream. It
+/// claims one reserved `.invalid` host and never reaches a network, DNS or
+/// credential path. Registration is process-global because ordinary provider
+/// traffic travels on `URLSession.shared`; every other host is untouched.
+private final class ChatUsageDedupeURLProtocol: URLProtocol, @unchecked Sendable {
+    struct Stub {
+        var body: Data
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var stubs: [String: Stub] = [:]
+    nonisolated(unsafe) private static var registered = false
+
+    static func register() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !registered else { return }
+        registered = true
+        URLProtocol.registerClass(ChatUsageDedupeURLProtocol.self)
+    }
+
+    static func prepare(_ newStubs: [String: Stub]) {
+        lock.lock()
+        stubs = newStubs
+        lock.unlock()
+    }
+
+    private static func stub(for path: String) -> Stub? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stubs[path]
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "chat-usage-dedupe.floe.invalid"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url, let stub = Self.stub(for: url.path) else {
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 500,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/plain"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data("missing chat usage fixture".utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: stub.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+@Suite("FloeProviders.ChatUsageDedupe", .serialized)
+struct ChatUsageDedupeTests {
+    init() { ChatUsageDedupeURLProtocol.register() }
+
+    private func request(path: String) -> ProviderStreamRequest {
+        let provider = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "http://chat-usage-dedupe.floe.invalid/\(path)/v1")!
+        )
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "chat-usage-fixture",
+            displayName: "Chat usage fixture",
+            limits: ModelLimits(contextTokens: 4_096, maxOutputTokens: 1_024)
+        )
+        return ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [(role: "user", content: "fixture")]
+        )
+    }
+
+    private func body(_ frames: [String]) -> Data {
+        Data((frames.map { "data: \($0)\n\n" }.joined() + "data: [DONE]\n\n").utf8)
+    }
+
+    private func finishFrame(usage: String? = nil) -> String {
+        guard let usage else {
+            return #"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#
+        }
+        return #"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":\#(usage)}"#
+    }
+
+    private func usageJSON(
+        promptTokens: Int,
+        completionTokens: Int,
+        reasoningTokens: Int
+    ) -> String {
+        #"{"prompt_tokens":\#(promptTokens),"completion_tokens":\#(completionTokens),"total_tokens":\#(promptTokens + completionTokens),"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":\#(reasoningTokens)}}"#
+    }
+
+    private func usageOnlyFrame(_ usage: String) -> String {
+        #"{"choices":[],"usage":\#(usage)}"#
+    }
+
+    private func collect(_ path: String) async throws -> [AgentEvent] {
+        var events: [AgentEvent] = []
+        for try await event in OpenAIChatCompletionsAdapter().stream(
+            request: request(path: path),
+            credentials: ProviderCredentials(apiKey: "fixture-key")
+        ) {
+            events.append(event)
+        }
+        return events
+    }
+
+    private func usages(in events: [AgentEvent]) -> [AgentEvent.UsageReport] {
+        events.compactMap { event in
+            guard case .usage(let report) = event else { return nil }
+            return report
+        }
+    }
+
+    @Test("Duplicate usage in one response emits once, before completed")
+    func duplicateUsageIsSuppressed() async throws {
+        let usage = usageJSON(promptTokens: 87, completionTokens: 20, reasoningTokens: 17)
+        ChatUsageDedupeURLProtocol.prepare([
+            "/duplicate/v1/chat/completions": .init(body: body([
+                #"{"choices":[{"index":0,"delta":{"content":"hello"}}]}"#,
+                finishFrame(usage: usage),
+                usageOnlyFrame(usage)
+            ]))
+        ])
+
+        let events = try await collect("duplicate")
+        let reports = usages(in: events)
+        #expect(reports.count == 1)
+        #expect(reports.first?.inputTokens == 87)
+        #expect(reports.first?.outputTokens == 20)
+        #expect(reports.first?.reasoningTokens == 17)
+        let usageIndex = try #require(events.firstIndex { event in
+            if case .usage = event { return true }
+            return false
+        })
+        let completedIndex = try #require(events.firstIndex { event in
+            if case .completed = event { return true }
+            return false
+        })
+        #expect(usageIndex < completedIndex)
+    }
+
+    @Test("Ordinary single usage still emits once")
+    func singleUsageStillEmits() async throws {
+        let usage = usageJSON(promptTokens: 10_422, completionTokens: 175, reasoningTokens: 72)
+        ChatUsageDedupeURLProtocol.prepare([
+            "/single/v1/chat/completions": .init(body: body([
+                #"{"choices":[{"index":0,"delta":{"content":"hello"}}]}"#,
+                finishFrame(usage: usage)
+            ]))
+        ])
+
+        let reports = usages(in: try await collect("single"))
+        #expect(reports.count == 1)
+        #expect(reports.first?.inputTokens == 10_422)
+        #expect(reports.first?.outputTokens == 175)
+        #expect(reports.first?.reasoningTokens == 72)
+    }
+
+    @Test("Identical usage in separate requests counts for each request")
+    func identicalUsageAcrossRequestsCountsEach() async throws {
+        let usage = usageJSON(promptTokens: 10_422, completionTokens: 175, reasoningTokens: 72)
+        ChatUsageDedupeURLProtocol.prepare([
+            "/separate-a/v1/chat/completions": .init(body: body([finishFrame(usage: usage)])),
+            "/separate-b/v1/chat/completions": .init(body: body([finishFrame(usage: usage)]))
+        ])
+
+        let first = usages(in: try await collect("separate-a"))
+        let second = usages(in: try await collect("separate-b"))
+        #expect(first.count == 1)
+        #expect(second.count == 1)
+        #expect(first == second)
+    }
+
+    @Test("Distinct usage reports in one response are all kept")
+    func distinctUsageReportsAreKept() async throws {
+        let first = usageJSON(promptTokens: 10_422, completionTokens: 175, reasoningTokens: 72)
+        let second = usageJSON(promptTokens: 10_422, completionTokens: 176, reasoningTokens: 73)
+        ChatUsageDedupeURLProtocol.prepare([
+            "/distinct/v1/chat/completions": .init(body: body([
+                usageOnlyFrame(first),
+                usageOnlyFrame(second),
+                finishFrame()
+            ]))
+        ])
+
+        let reports = usages(in: try await collect("distinct"))
+        #expect(reports.count == 2)
+        #expect(reports.map(\.outputTokens) == [175, 176])
+    }
+
+    @Test("A repeated report is suppressed after a distinct report")
+    func repeatedReportAfterDistinctIsSuppressed() async throws {
+        let first = usageJSON(promptTokens: 10_422, completionTokens: 175, reasoningTokens: 72)
+        let second = usageJSON(promptTokens: 10_422, completionTokens: 176, reasoningTokens: 73)
+        ChatUsageDedupeURLProtocol.prepare([
+            "/repeat-after-distinct/v1/chat/completions": .init(body: body([
+                usageOnlyFrame(first),
+                usageOnlyFrame(second),
+                usageOnlyFrame(first),
+                finishFrame()
+            ]))
+        ])
+
+        let reports = usages(in: try await collect("repeat-after-distinct"))
+        #expect(reports.count == 2)
+        #expect(reports.map(\.outputTokens) == [175, 176])
+    }
+}

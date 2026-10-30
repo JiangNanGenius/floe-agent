@@ -376,6 +376,12 @@ struct CadDocumentToolTests {
         #expect(throws: FloeError.self) {
             try tool.validate(try decode(#"{"action":"propose","path":"p.floecad"}"#))
         }
+        // A complete operation envelope accidentally placed inside args must
+        // not become an implicit top-level operation (seen in the live run).
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(
+                #"{"action":"propose","path":"p.floecad","args":"{\"op\":\"feature.extrude\",\"args\":{\"sketchID\":\"x\"}}"}"#))
+        }
         try tool.validate(try decode(
             #"{"action":"propose","path":"p.floecad","op":"feature.extrude","args":"{\"sketchID\":\"x\"}"}"#))
         // Native query scopes are enumerated.

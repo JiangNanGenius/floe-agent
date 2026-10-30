@@ -1190,6 +1190,7 @@ targets:
       - path: Tests/FloeProvidersTests/ProviderConnectionProbeTests.swift
       - path: Tests/FloeAgentRuntimeTests/ProviderImageEvidenceTests.swift
       - path: Tests/FloeProvidersTests/SubscriptionRouteTests.swift
+      - path: Tests/FloeProvidersTests/SSEParserTests.swift
       - path: Tests/FloeProvidersTests/LocalModelToolPolicyTests.swift
       - path: Tests/FloeLocalModelsTests/LocalCADAdmissionTests.swift
       - path: Tests/FloeLocalModelsTests/LocalBaseToolSchemaTests.swift
