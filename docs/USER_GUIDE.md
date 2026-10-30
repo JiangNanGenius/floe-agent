@@ -1,6 +1,6 @@
 <!-- docs-updated: 2026-10-28 -->
 
-> This guide primarily describes iOS/iPadOS. In Android Alpha15, open **Task list → Notes → New** for the independent Notes workspace. Basic editing needs no provider; AI actions use your cloud configuration. See the [Android release notes](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.15) and [installation notes](../README.md#get-started) for platform availability and current verification limits.
+> This guide primarily describes iOS/iPadOS. Android Alpha16 adds a phone network workbench and list-first full-window documents. Open **More → Network** to start a check; the app asks for the system permission it needs (location on the verified build) only after you choose **Allow access**, and it does not replay the check automatically after you grant it—start the check again. In Files, text/code can expand to a full-window editor, while PDFs and common raster images open in a read-only full-window preview. The first Linux terminal use in a new task may spend time preparing the workspace; later entries in the same task reuse it. Notes remains available from **Task list → Notes → New**; basic editing needs no provider, and AI actions use your cloud configuration. See the [Android release notes](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.16) and [installation notes](../README.md#get-started) for platform availability and current verification limits.
 
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual

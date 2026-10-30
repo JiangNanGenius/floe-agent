@@ -222,7 +222,7 @@ G06尚未关闭或发布。文本保存与重开状态已修复，并通过三�
 G06以Android Alpha15/code17交付，源码标签`86b20a34a14ebda636213fa480cdf14f8d4fee05`，实际APK与公开附件哈希已通过。收尾读回公共main为`b7feb3f8fe749ec730e27444dda02f909d7d47c9`；`ac11bdf05f7c829dd712c6c0c7a8ad198996c73d`之后的`FloeAgent/FloeApp`和`FloeAgent/Sources`差异为零。本次只关闭安卓交付和文档，不自动重钉共享源码；此前D01..D33与D34安排完整保留。下一目标仍为G07网络/Wi-Fi，后续从本次iOS基线继续做增量核对。实体笔硬件、OCR真实推理和紧凑列表优先的验证/精修边界保留。
 
 
-### 2026-10-30：G07 文档交互补欠检查点（尚未收尾）
+### 2026-10-30：G07 文档交互补欠检查点（历史，已被下方 G07.1 收尾复核取代）
 
 公共主线读回 `f9a052e3628f69df7dff6daea93c743a97946030`；与上次 `b7feb3f8fe749ec730e27444dda02f909d7d47c9` 相比，`FloeAgent/FloeApp` 和 `FloeAgent/Sources` 无增量。本轮没有重置 D01–D34 或重新钉住全部共享源。另以当前 iOS 工作线 `c5e7a3c1c41b766173f2d17d9516ef8f79ed62bc` 的实际文件作交互参照；相关四个 Workspace 文件无未提交修改，不能将此参照当作已发布 iOS 版本。
 
@@ -232,3 +232,11 @@ G06以Android Alpha15/code17交付，源码标签`86b20a34a14ebda636213fa480cdf1
 - `WorkspaceFileRouter` 对文本、Office、PDF、图像／工程／媒体分别路由。`FilePreviewView` 的 Office 使用独立全屏编辑面，不能把所有格式塞进文本编辑器。
 - Android 本轮实现手机文本／代码全屏与返回列表、同一草稿拥有者；横屏手机不因宽度增加变成平板三列；平板文本保留分栏和显式展开。PDF／常见栅格图片接已有快照和渲染器，Office 保留真实已有 Activity。尚未实现的格式、真实材质／图标精修与完整最新交互继续保留 D15／G14。
 - 本条为源码与合同补强；App 双渠道编译、三星与 API37 实际交互、发行结果仍待本轮统一验证后补录。
+
+### 2026-10-30：G07.1 收尾增量复核（`b7feb3f8` → `bde65bf0`）
+
+- 本次以 GitHub API 读回公共 `main` 为 `bde65bf0b4fb6bfeae2597b0bc558b1df67f3cd2`（tree `ff1bf043bd45b719273c09208693c11e3b62b614`，提交时间 2026-10-30T05:56:04Z）；上一 iOS 收尾基线为 `b7feb3f8fe749ec730e27444dda02f909d7d47c9`。比较结果为 ahead 6／behind 0，祖先关系成立。
+- 区间共 6 个提交、119 个变更文件，`FloeAgent/FloeApp`、`FloeAgent/Sources` 与 `FloeAgent/Tests` 变更均为 0。逐段：`b7feb3f8`→`aaeb0a4a` 的 5 个提交只修改 FloeAndroid、Android 文档与 README；`aaeb0a4a`→`bde65bf0` 仅修改根目录 `README.md` 与 `README.zh-CN.md` 的 iPad-first 产品描述。
+- 既有 `IOS-D01..D34` 的身份、归属和完成证据全部保留。本次没有新的 iOS 功能族，未新增 `IOS-D35`；也不整体重钉 Android 共享源，不把 iOS 1.7.64 已发布的界面、材质或图标当作 Android 已对齐。
+- G07.1 文档交互只使用只读工作线 `c5e7a3c1` 的四个 Workspace 文件作为源码参照；该工作线不是公开基线或已发布 iOS 版本。本轮手机全窗口、PDF／图片预览与返回层级仍归 D15 及后续精修，不另起差异编号。
+- 结论：G07.1 收尾没有 iOS 源码新增阻断。下次大目标收尾从 `bde65bf0` 之后的实际 `FloeAgent/FloeApp` 与 `FloeAgent/Sources` 增量继续，只做增量核对，不重启全量审计。以上为源码／元数据静态比对，未运行 iOS 编译、测试、设备安装或发布。
