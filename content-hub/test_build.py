@@ -39,17 +39,18 @@ STAGED_IDS = set()
 # equality applies again. A downgrade, an unapproved candidate, or a
 # same-version rewrite is rejected.
 STAGED_VERSIONS = {
-    "floe.providers.compatibility": ("1.1.0", "1.1.2"),
+    "floe.providers.compatibility": ("1.1.2", "1.1.3"),
     "floe.search.providers": ("1.0.0", "1.1.0"),
 }
 
 # The immutable provider archives that must survive this staging step
-# byte-for-byte. The signed feed pins 1.1.0 through its Ed25519 signature;
-# 1.0.0 predates that feed and is pinned here so a stray rebuild cannot
-# silently rewrite either historical version.
+# byte-for-byte. The signed feed pins 1.1.2 through its Ed25519 signature;
+# 1.0.0/1.1.0 predate that feed and are pinned here so a stray rebuild cannot
+# silently rewrite any historical version.
 IMMUTABLE_PROVIDER_PACKAGE_SHA256 = {
     "1.0.0": "e91cd711624abbd6cec518b0abe8abe2cad9198bc40e8ec8172fdb339aaffdc3",
     "1.1.0": "290e7962f9659eb8d22d08586176bb9559c4b98532a50a57abe72fe444a1f33d",
+    "1.1.2": "18918f534afa7fd9b378d7f18dce457f28935f8e7675ea004e2af2916b546ec9",
 }
 
 # Historical search archives remain immutable before and after promotion.
@@ -68,11 +69,11 @@ PINNED_PUBLIC_KEY = {
 # sources by build.plan(); these constants ensure a future source drift cannot
 # slip through without an explicit version/review update.
 PROVIDER_CANDIDATE = {
-    "version": "1.1.2",
+    "version": "1.1.3",
     "minimumAppVersion": "1.7.64",
-    "size": 161018,
-    "sha256": "18918f534afa7fd9b378d7f18dce457f28935f8e7675ea004e2af2916b546ec9",
-    "contentDigest": "72a182a32b61a4bdfa1ca66a2358e8b653afa031371ccd5a192d0ca2f8e60bc4",
+    "size": 160903,
+    "sha256": "d1451266092fd058489bac8b9a6d59d261abb33b908c847b8e19daa69655ca56",
+    "contentDigest": "c856365cef34d8053280d482bf7709da47706a5b589dfec539c1fe690150152c",
 }
 
 # Exact reviewed search-catalog candidate. 1.1.0 adds the compiled DeepSeek
@@ -134,7 +135,7 @@ class ContentHubBuildTests(unittest.TestCase):
             PINNED_PUBLIC_KEY,
         )
         # The signed feed keeps its old entries and signature, while the
-        # approved 1.1.2 candidate package must already carry exactly the
+        # approved 1.1.3 candidate package must already carry exactly the
         # deterministic archive built from the current sources.
         state = build.check_staged(
             build.ROOT,
@@ -166,15 +167,15 @@ class ContentHubBuildTests(unittest.TestCase):
         self.assertEqual(candidate_files["ProviderCatalog.json"], (source / "ProviderCatalog.json").read_bytes())
         self.assertEqual(candidate_files["content.json"], (source / "content.json").read_bytes())
 
-        # Before promotion the feed still points at the immutable 1.1.0
+        # Before promotion the feed points at the immutable signed 1.1.2
         # package; after promotion it must equal the candidate source entry.
-        # Either way both historical provider archives remain intact.
+        # Either way every historical provider archive remains intact.
         published_provider = next(
             entry for entry in state["index"]["entries"] if entry["id"] == identifier
         )
-        self.assertIn(published_provider["version"], ("1.1.0", PROVIDER_CANDIDATE["version"]))
-        if published_provider["version"] == "1.1.0":
-            self.assertEqual(published_provider["sha256"], IMMUTABLE_PROVIDER_PACKAGE_SHA256["1.1.0"])
+        self.assertIn(published_provider["version"], ("1.1.2", PROVIDER_CANDIDATE["version"]))
+        if published_provider["version"] == "1.1.2":
+            self.assertEqual(published_provider["sha256"], IMMUTABLE_PROVIDER_PACKAGE_SHA256["1.1.2"])
         else:
             self.assertEqual(published_provider, provider)
         for version, digest in IMMUTABLE_PROVIDER_PACKAGE_SHA256.items():
@@ -239,12 +240,12 @@ class ContentHubBuildTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be newer"):
             build.validate_staged_sources(
                 entries, published, EXPECTED_IDS, STAGED_IDS,
-                {identifier: ("1.1.2", "1.1.1")},
+                {identifier: ("1.1.3", "1.1.2")},
             )
         with self.assertRaisesRegex(ValueError, "is not the approved staged candidate"):
             build.validate_staged_sources(
                 entries, published, EXPECTED_IDS, STAGED_IDS,
-                {identifier: ("1.1.0", "1.1.3")},
+                {identifier: ("1.1.2", "1.1.4")},
             )
         with self.assertRaisesRegex(ValueError, "must be newer"):
             build.validate_staged_sources(
@@ -258,18 +259,18 @@ class ContentHubBuildTests(unittest.TestCase):
             )
         source_downgrade = copy.deepcopy(entries)
         source_provider = next(entry for entry in source_downgrade if entry["id"] == identifier)
-        source_provider["version"] = "1.1.1"
-        source_provider["path"] = source_provider["path"].replace("/1.1.2/", "/1.1.1/")
+        source_provider["version"] = "1.1.2"
+        source_provider["path"] = source_provider["path"].replace("/1.1.3/", "/1.1.2/")
         with self.assertRaisesRegex(ValueError, "is not the approved staged candidate"):
             build.validate_staged_sources(source_downgrade, published, EXPECTED_IDS, STAGED_IDS, STAGED_VERSIONS)
         moved = copy.deepcopy(published)
         provider = next(entry for entry in moved if entry["id"] == identifier)
         provider["version"] = "1.1.1"
-        provider["path"] = provider["path"].replace("/1.1.0/", "/1.1.1/")
+        provider["path"] = provider["path"].replace("/1.1.2/", "/1.1.1/")
         with self.assertRaisesRegex(ValueError, "neither the pinned published"):
             build.validate_staged_sources(
                 entries, moved, EXPECTED_IDS, STAGED_IDS,
-                {identifier: ("1.1.0", "1.1.2")},
+                {identifier: ("1.1.2", "1.1.3")},
             )
 
     def test_staged_validation_rejects_rewrites_and_requires_exact_promotion(self):
@@ -284,7 +285,7 @@ class ContentHubBuildTests(unittest.TestCase):
         promoted = copy.deepcopy(entries)
         provider = next(entry for entry in promoted if entry["id"] == identifier)
         provider["releaseNotes"]["en"] = "Promoted with rewritten metadata"
-        with self.assertRaisesRegex(ValueError, "promoted 1.1.2 source differs"):
+        with self.assertRaisesRegex(ValueError, "promoted 1.1.3 source differs"):
             build.validate_staged_sources(entries, promoted, EXPECTED_IDS, STAGED_IDS, STAGED_VERSIONS)
 
         source_provider = next(entry for entry in entries if entry["id"] == identifier)
@@ -308,7 +309,7 @@ class ContentHubBuildTests(unittest.TestCase):
         identifier = "floe.providers.compatibility"
         with tempfile.TemporaryDirectory() as temporary:
             repository, root = self.mirror_published_repository(temporary)
-            candidate = root / f"packages/{identifier}/1.1.2/{identifier}.zip"
+            candidate = root / f"packages/{identifier}/{PROVIDER_CANDIDATE['version']}/{identifier}.zip"
             original = candidate.read_bytes()
             arguments = (root, repository, build.PATH_PREFIX, root / "public-key.json")
             keywords = dict(required_ids=EXPECTED_IDS, staged_ids=STAGED_IDS, staged_versions=STAGED_VERSIONS)

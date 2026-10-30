@@ -6443,15 +6443,6 @@
             "image"
           ]
         },
-        "doubao-seedream-5.0-lite": {
-          "input": [
-            "image",
-            "text"
-          ],
-          "output": [
-            "image"
-          ]
-        },
         "glm-5.3": {
           "contextTokens": 1048576,
           "maxOutputTokens": 131072,
@@ -6517,8 +6508,7 @@
         {
           "models": [
             "doubao-seedream-5-0-pro",
-            "doubao-seedream-5.0-flash",
-            "doubao-seedream-5.0-lite"
+            "doubao-seedream-5.0-flash"
           ],
           "role": "image"
         }

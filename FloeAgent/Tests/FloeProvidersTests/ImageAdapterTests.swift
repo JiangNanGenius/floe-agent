@@ -462,7 +462,7 @@ struct ImageAdapterTests {
         #expect(try ImageGenerationPresetResolver.nativeSize(provider: .volcengineArk, modelRemoteID: "doubao-seedream-5-0-lite-260128", operation: .generate, selection: .init(aspectRatio: "1:1", resolution: "3K")) == "3072x3072")
     }
 
-    @Test("Agent Plan Seedream 5 pro/flash use their documented single-image family limits")
+    @Test("Agent Plan pro/flash use documented single-image limits; lite is not a plan model")
     func agentPlanSeedream5FamilyLimits() throws {
         let plan = ProviderProfile(
             kind: .custom,
@@ -482,13 +482,21 @@ struct ImageAdapterTests {
             let contract = ImageGenerationPresetResolver.parameterContract(
                 provider: plan, model: model, operation: .generate
             )
-            #expect(contract.verifiedModel, "\(remoteID) must be a verified plan model")
+            #expect(contract.verifiedModel, "\(remoteID) must be a reviewed plan model")
+            #expect(contract.verificationBasis == .officialAgentPlanVisualModels)
+            #expect(contract.accountUsability == "notChecked")
             #expect(contract.resolution == ["1K", "1.5K", "2K"])
-            #expect(contract.maximumCount == 1)
+            #expect(contract.defaultResolution == "2K")
+            #expect(contract.defaultAspectRatio == nil, "the plan size control does not imply a 1:1 crop")
+            #expect(contract.maximumCount == 4)
+            #expect(contract.maximumCountPerRequest == 1)
+            #expect(contract.countStrategy == .sequentialSingleImageRequests)
+            #expect(ImageGenerationPresetResolver.isEligible(
+                provider: plan, model: model, operation: .generate))
             try ImageGenerationPresetResolver.validateSelection(
                 .init(aspectRatio: "1:1", resolution: "2K"),
                 provider: plan, model: model, operation: .generate,
-                count: 1, referenceCount: 0
+                count: 4, referenceCount: 0
             )
             #expect(throws: RemoteImageError.self) {
                 try ImageGenerationPresetResolver.validateSelection(
@@ -501,7 +509,7 @@ struct ImageAdapterTests {
                 try ImageGenerationPresetResolver.validateSelection(
                     .init(aspectRatio: "1:1", resolution: "2K"),
                     provider: plan, model: model, operation: .generate,
-                    count: 2, referenceCount: 0
+                    count: 5, referenceCount: 0
                 )
             }
             #expect(try ImageGenerationPresetResolver.nativeSize(
@@ -509,6 +517,16 @@ struct ImageAdapterTests {
                 operation: .generate,
                 selection: .init(aspectRatio: "1:1", resolution: "1.5K")
             ) == "1536x1536")
+            #expect(try ImageGenerationPresetResolver.nativeSize(
+                provider: .volcengineArk, modelRemoteID: remoteID,
+                operation: .generate,
+                selection: .init(aspectRatio: "16:9", resolution: "2K")
+            ) == "2816x1584")
+            #expect(try ImageGenerationPresetResolver.nativeSize(
+                provider: .volcengineArk, modelRemoteID: remoteID,
+                operation: .generate,
+                selection: .init(resolution: "2K")
+            ) == "2K", "no aspect request must not be replaced with a 1:1 pixel size")
         }
 
         let lite = ModelProfile(
@@ -521,14 +539,19 @@ struct ImageAdapterTests {
         let liteContract = ImageGenerationPresetResolver.parameterContract(
             provider: plan, model: lite, operation: .generate
         )
-        #expect(liteContract.verifiedModel)
-        #expect(liteContract.resolution == ["2K", "3K", "4K"])
-        #expect(liteContract.maximumCount == 4)
-        try ImageGenerationPresetResolver.validateSelection(
-            .init(aspectRatio: "1:1", resolution: "4K"),
-            provider: plan, model: lite, operation: .generate,
-            count: 4, referenceCount: 0
-        )
+        #expect(!liteContract.verifiedModel)
+        #expect(liteContract.countStrategy == .unsupported)
+        #expect(liteContract.maximumCount == 0)
+        #expect(liteContract.defaultAspectRatio == nil)
+        #expect(!ImageGenerationPresetResolver.isEligible(
+            provider: plan, model: lite, operation: .generate))
+        #expect(throws: RemoteImageError.self) {
+            try ImageGenerationPresetResolver.validateSelection(
+                .init(aspectRatio: "1:1", resolution: "2K"),
+                provider: plan, model: lite, operation: .generate,
+                count: 1, referenceCount: 0
+            )
+        }
     }
 
     @Test("Provider preset resolver never sends an aspect label as native size")

@@ -133,15 +133,17 @@ struct AgentPlanCatalogTests {
         #expect(Set(metadata.keys).isSubset(of: declared))
     }
 
-    @Test("Image offer is the plan-only Seedream set and never leaks into chat")
+    @Test("Image offer is the plan-only Seedream pro/flash set and never leaks into chat")
     func imageRoleBoundary() throws {
         let entry = try agentPlan(in: try bundledCatalog())
         let offer = try #require(entry.serviceOffers?.first { $0.role == .image })
         #expect(offer.models == [
             "doubao-seedream-5-0-pro",
             "doubao-seedream-5.0-flash",
-            "doubao-seedream-5.0-lite",
         ])
+        // Lite is a PAYG-only id: it must not be a plan candidate or a verified
+        // plan model. Its PAYG descriptor remains covered by OfficialMediaModelCatalog.
+        #expect(!offer.models.contains("doubao-seedream-5.0-lite"))
         // The official table also lists Seedance video; this round explicitly
         // keeps Agent Plan video closed and preserves the PAYG route.
         #expect(entry.serviceOffers?.contains { $0.role == .video } != true)
@@ -162,6 +164,7 @@ struct AgentPlanCatalogTests {
         #expect(imageSpec.imageOperations.contains(.edit))
         #expect(!imageSpec.imageOperations.contains(.upscale))
         #expect(imageSpec.isVerifiedMediaModel("doubao-seedream-5.0-flash"))
+        #expect(!imageSpec.isVerifiedMediaModel("doubao-seedream-5.0-lite"))
         #expect(!imageSpec.isVerifiedMediaModel("glm-5.3"))
         #expect(!imageSpec.isVerifiedMediaModel("doubao-seedance-2.0"))
 

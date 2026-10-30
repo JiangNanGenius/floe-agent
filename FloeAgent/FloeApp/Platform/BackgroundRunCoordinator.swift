@@ -6263,6 +6263,9 @@ final class MediaArtifactBackgroundEvents: @unchecked Sendable {
 enum MediaGenerationImageBatchContract {
     static let maximumImageBytes = 24 * 1_024 * 1_024
 
+    /// Full Canvas commit path: the prepared result graph and the asset batch
+    /// must agree exactly. Partial batches take `validatedPartialImages` and
+    /// are preserved outside Canvas instead of being published as ready.
     static func validatedImages(
         _ images: [Data],
         requestedOutputCount: Int
@@ -6277,11 +6280,63 @@ enum MediaGenerationImageBatchContract {
         }
         return images
     }
+
+    /// Partial success keeps already-paid bytes, but never claims the missing
+    /// slots were produced. Fewer than the reserved count is allowed; more than
+    /// requested is not silently truncated.
+    static func validatedPartialImages(
+        _ images: [Data],
+        requestedOutputCount: Int
+    ) throws -> [Data] {
+        let expected = max(1, min(requestedOutputCount, 4))
+        guard images.count <= expected else {
+            throw FloeError.validationFailed(FloeL10n.l("platform.background_run_coordinator.the_image_service_should_return_images", expected, images.count)
+            )
+        }
+        guard images.allSatisfy({ $0.count <= maximumImageBytes }) else {
+            throw FloeError.validationFailed(FloeL10n.l("platform.background_run_coordinator.the_generated_image_exceeds_24_mib"))
+        }
+        return images
+    }
+}
+
+/// Honest terminal error for a paid image batch that produced some but not all
+/// reserved slots. The successful bytes are already persisted in Files by the
+/// time this is thrown; Canvas must not mark the generation ready.
+struct MediaGenerationImageBatchFailure: LocalizedError, Sendable {
+    let report: ImageGenerationBatchReport
+    let requestedOutputCount: Int
+    let preservedCount: Int
+    let persistenceFailedCount: Int
+
+    var errorDescription: String? {
+        var parts = [report.userSummary]
+        let missing = report.missingSlotNumbers
+        if !missing.isEmpty {
+            parts.append(FloeL10n.l(
+                "platform.background_run_coordinator.image_generation_missing_slots",
+                missing.map(String.init).joined(separator: ", ")))
+        }
+        if preservedCount > 0 {
+            parts.append(FloeL10n.l(
+                "platform.background_run_coordinator.image_generation_saved_to_files",
+                preservedCount))
+        }
+        if persistenceFailedCount > 0 {
+            parts.append(FloeL10n.l(
+                "platform.background_run_coordinator.image_generation_could_not_save"))
+        }
+        return parts.joined(separator: " ")
+    }
 }
 
 enum MediaGenerationAssetReusePolicy {
     static func generatedRelativePath(assetID: UUID, isPNG: Bool) -> String {
         "Materials/\(assetID.uuidString)-generated.\(isPNG ? "png" : "jpg")"
+    }
+
+    static func generatedRelativePath(assetID: UUID, fileExtension: String) -> String {
+        "Materials/\(assetID.uuidString)-generated.\(fileExtension)"
     }
 
     static func localURL(
@@ -6580,32 +6635,11 @@ final class MediaGenerationService {
         sourceImages: [Data] = [],
         modelID: UUID? = nil,
         owner: GeneratedImageReservationOwner,
-        agentInitiated: Bool = false
+        agentInitiated: Bool = false,
+        routing requestedRouting: ImageGenerationRouting? = nil
     ) async throws -> ReservedGeneratedImageBatch {
         let center = environment.conversationCenter
         let operation: RemoteImageOperation = sourceImages.isEmpty ? .generate : .edit
-        let selected = modelID.flatMap { center.mediaProviderAndModel(modelID: $0) }
-            ?? center.auxiliaryProviderAndModel(for: operation == .generate ? .generate : .edit)
-        guard var (provider, model) = selected,
-              let adapter = ImageProviderAdapterFactory().adapter(for: provider),
-              adapter.supports(operation, for: provider) else {
-            throw FloeError.invalidConfiguration(
-                operation == .generate
-                    ? FloeL10n.l("platform.background_run_coordinator.choose_a_usable_image_generation_model")
-                    : FloeL10n.l("platform.background_run_coordinator.the_selected_model_or_provider_does")
-            )
-        }
-        let traceID = UUID()
-        let startedAt = Date()
-        let maximumReferences = operation == .generate ? 0
-            : ImageReferenceCapabilityResolver.maximumReferenceImages(
-                provider: provider,
-                model: model
-            )
-        guard sourceImages.count <= maximumReferences else {
-            throw FloeError.validationFailed(FloeL10n.l("platform.background_run_coordinator.the_selected_image_model_supports_up", maximumReferences, sourceImages.count)
-            )
-        }
         let requestedOutputCount = max(1, min(options.count, 4))
         guard owner.resultNodeIDs.count == requestedOutputCount,
               !owner.generationAttemptID.isEmpty,
@@ -6614,50 +6648,59 @@ final class MediaGenerationService {
                 "Generated asset reservation owner does not match the requested output count"
             )
         }
-        let maximumOutputs = max(1, adapter.maximumOutputImages(
-            modelRemoteID: model.remoteModelID
-        ))
-        guard requestedOutputCount <= maximumOutputs else {
-            throw FloeError.validationFailed(FloeL10n.l("platform.background_run_coordinator.the_selected_image_model_can_generate", maximumOutputs, requestedOutputCount)
-            )
-        }
+        // Canvas manual calls pass a user-selected id and must keep it exact;
+        // agent calls preserve the existing autonomous/preferred policy. The
+        // design port can force `.selected` while retaining its initiation
+        // metadata because it already resolved the real replacement target.
+        let routing: ImageGenerationRouting = requestedRouting
+            ?? (agentInitiated ? .agent : .selected)
         let qualityLooksLikeResolution = options.quality.map {
-            ["1K", "2K", "4K"].contains($0.uppercased())
+            ["1K", "1.5K", "2K", "3K", "4K"].contains($0.uppercased())
         } ?? false
-        var selection = ImageGenerationSelection(
+        let selection = ImageGenerationSelection(
             aspectRatio: options.aspectRatio,
             resolution: options.resolution ?? (qualityLooksLikeResolution ? options.quality : nil),
             quality: qualityLooksLikeResolution ? nil : options.quality,
             nativeSizeOverride: options.size
         )
-        let resolvedSize = try ImageGenerationPresetResolver.nativeSize(
-            provider: provider.kind, modelRemoteID: model.remoteModelID,
+        let initialRoute = try center.resolveAgentImageRoute(
+            operation: operation, modelID: modelID, selection: selection,
+            count: requestedOutputCount, referenceCount: sourceImages.count,
+            routing: routing)
+        var (provider, model) = initialRoute
+        let contract = ImageGenerationPresetResolver.parameterContract(
+            provider: provider, model: model, operation: operation)
+        guard requestedOutputCount >= max(1, contract.minimumCount),
+              requestedOutputCount <= contract.maximumCount else {
+            throw FloeError.validationFailed(FloeL10n.l(
+                "platform.background_run_coordinator.the_selected_image_model_can_generate",
+                contract.maximumCount, requestedOutputCount))
+        }
+        let traceID = UUID()
+        let startedAt = Date()
+        let imageKind: ProviderKind =
+            ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan
+                ? .volcengineArk : provider.kind
+        let resolvedSize = try? ImageGenerationPresetResolver.nativeSize(
+            provider: imageKind, modelRemoteID: model.remoteModelID,
             operation: operation, selection: selection
         )
         let referenceBytes = sourceImages.reduce(0) { $0 + $1.count }
         FloeLogger(category: .providers).info(
-            "imageGenerationStarted trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) model=\(model.remoteModelID) aspect=\(selection.aspectRatio ?? "auto") size=\(resolvedSize ?? selection.resolution ?? "auto") references=\(sourceImages.count) referenceBytes=\(referenceBytes) count=\(requestedOutputCount)"
+            "imageGenerationStarted trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) model=\(model.remoteModelID) aspect=\(selection.aspectRatio ?? "auto") size=\(resolvedSize ?? selection.resolution ?? "auto") references=\(sourceImages.count) referenceBytes=\(referenceBytes) count=\(requestedOutputCount) routing=\(routing == .selected ? "selected" : "agent")"
         )
         let result: RemoteImageResult
         do {
-            if agentInitiated {
-                let routed = try await center.performAgentImage(operation: operation, prompt: prompt,
-                    sourceImages: sourceImages, modelID: model.id, selection: selection, count: requestedOutputCount)
-                result = routed.0; provider = routed.1; model = routed.2
-                selection = ImageGenerationPresetResolver.applyingDefaults(selection, provider: provider, model: model, operation: operation)
-            } else {
-            result = try await adapter.perform(
-                RemoteImageRequest(
-                    operation: operation, prompt: prompt,
-                    sourceImages: sourceImages,
-                    selection: selection,
-                    count: requestedOutputCount,
-                    modelRemoteID: model.remoteModelID
-                ),
-                provider: provider,
-                credentials: center.resolveCredentials(for: provider)
-            )
-            }
+            let routed = try await center.performAgentImage(
+                operation: operation, prompt: prompt,
+                sourceImages: sourceImages,
+                modelID: agentInitiated ? modelID : model.id,
+                selection: selection,
+                count: requestedOutputCount,
+                routing: routing)
+            result = routed.0
+            provider = routed.1
+            model = routed.2
         } catch {
             let nsError = error as NSError
             let elapsed = Int(Date().timeIntervalSince(startedAt) * 1_000)
@@ -6666,8 +6709,38 @@ final class MediaGenerationService {
             )
             throw error
         }
+        let report = ImageGenerationBatchReport(metadata: result.metadata)
+        if !report.isComplete {
+            // A paid partial/cancelled batch is never published as a ready
+            // Canvas graph. Keep every returned byte in Files first, then
+            // report the exact missing count and slots; no succeeded request
+            // is replayed and the task cannot claim all results are ready.
+            let partialImages = try MediaGenerationImageBatchContract.validatedPartialImages(
+                result.images,
+                requestedOutputCount: requestedOutputCount
+            )
+            let persistence = environment.filesCenter
+                .persistGeneratedImagesOutcome(partialImages, operation: operation)
+            let preservedCount = persistence.attachments.count
+            if let failure = persistence.failure {
+                FloeLogger(category: .providers).warning(
+                    "imageGenerationPartialPreserveFailed trace=\(traceID.uuidString) saved=\(preservedCount) failed=\(persistence.failedCount) detail=\(String(failure.prefix(240)))"
+                )
+            }
+            FloeLogger(category: .providers).warning(
+                "imageGenerationPartial trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) model=\(model.remoteModelID) requested=\(requestedOutputCount) completed=\(partialImages.count) cancelled=\(report.cancelled) preserved=\(preservedCount) preserveFailed=\(persistence.failedCount) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            if report.cancelled || Task.isCancelled {
+                throw CancellationError()
+            }
+            throw MediaGenerationImageBatchFailure(
+                report: report,
+                requestedOutputCount: requestedOutputCount,
+                preservedCount: preservedCount,
+                persistenceFailedCount: persistence.failedCount)
+        }
         FloeLogger(category: .providers).info(
-            "imageGenerationCompleted trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) images=\(result.images.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            "imageGenerationCompleted trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) model=\(model.remoteModelID) images=\(result.images.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
         )
         // This must remain above every file/database write. Otherwise a short
         // or oversized provider response leaves zero-reference orphan assets.
@@ -6675,6 +6748,29 @@ final class MediaGenerationService {
             result.images,
             requestedOutputCount: requestedOutputCount
         )
+        let formats: [ImageGenerationImageFormat]
+        do {
+            formats = try returnedImages.map {
+                try ImageGenerationImageFormatResolver.resolve($0)
+            }
+        } catch {
+            // One malformed payload must not discard the valid, already-paid
+            // images in the same batch. Preserve what Files can validate and
+            // fail the Canvas commit honestly instead of marking it ready.
+            let validImages = returnedImages.compactMap { data in
+                (try? ImageGenerationImageFormatResolver.resolve(data)) == nil ? nil : data
+            }
+            let persistence = environment.filesCenter
+                .persistGeneratedImagesOutcome(validImages, operation: operation)
+            FloeLogger(category: .providers).warning(
+                "imageGenerationFormatValidationFailed trace=\(traceID.uuidString) requested=\(requestedOutputCount) valid=\(validImages.count) saved=\(persistence.attachments.count)"
+            )
+            throw MediaGenerationImageBatchFailure(
+                report: ImageGenerationBatchReport(metadata: result.metadata),
+                requestedOutputCount: requestedOutputCount,
+                preservedCount: persistence.attachments.count,
+                persistenceFailedCount: returnedImages.count - persistence.attachments.count)
+        }
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
@@ -6682,18 +6778,18 @@ final class MediaGenerationService {
         let reservationID = UUID()
         let preparedImages = returnedImages.enumerated().map { index, data in
             let candidateID = UUID()
-            let isPNG = data.starts(with: [0x89, 0x50, 0x4E, 0x47])
+            let format = formats[index]
             return (
                 index: index,
                 data: data,
                 contentHash: SHA256.hash(data: data)
                     .map { String(format: "%02x", $0) }.joined(),
-                isPNG: isPNG,
+                format: format,
                 candidateID: candidateID,
                 candidateRelativePath: MediaGenerationAssetReusePolicy
                     .generatedRelativePath(
                         assetID: candidateID,
-                        isPNG: isPNG
+                        fileExtension: format.fileExtension
                     )
             )
         }
@@ -6740,7 +6836,7 @@ final class MediaGenerationService {
                     kind: .image,
                     displayName: result.images.count > 1
                         ? FloeL10n.l("platform.background_run_coordinator.generate_image", prepared.index + 1) : FloeL10n.l("files.files_view.generate_image"),
-                    mimeType: prepared.isPNG ? "image/png" : "image/jpeg",
+                    mimeType: prepared.format.mimeType,
                     localRelativePath: prepared.candidateRelativePath,
                     byteCount: Int64(prepared.data.count),
                     tags: [FloeL10n.l("platform.background_run_coordinator.generate_content")],
@@ -6775,7 +6871,7 @@ final class MediaGenerationService {
                     let canonicalRelativePath = MediaGenerationAssetReusePolicy
                         .generatedRelativePath(
                             assetID: canonical.id,
-                            isPNG: prepared.isPNG
+                            fileExtension: prepared.format.fileExtension
                         )
                     let canonicalDestination = try MediaGenerationAssetReusePolicy.localURL(
                         relativePath: canonicalRelativePath,
@@ -6795,7 +6891,7 @@ final class MediaGenerationService {
                         writtenURLs.append(canonicalDestination)
                     }
                     canonical.localRelativePath = canonicalRelativePath
-                    canonical.mimeType = prepared.isPNG ? "image/png" : "image/jpeg"
+                    canonical.mimeType = prepared.format.mimeType
                     canonical.byteCount = Int64(prepared.data.count)
                     try await environment.creativeAssetStore.save(canonical)
                     writtenURLs.removeAll { $0 == canonicalDestination }
@@ -6825,7 +6921,9 @@ final class MediaGenerationService {
         }
         return ReservedGeneratedImageBatch(
             reservationID: reservationID,
-            assets: assets, modelID: model.id, providerID: provider.id, selection: selection,
+            assets: assets, modelID: model.id, providerID: provider.id,
+            selection: ImageGenerationPresetResolver.applyingDefaults(
+                selection, provider: provider, model: model, operation: operation),
             fallbackUsed: result.metadata["fallbackUsed"] == "true"
         )
     }

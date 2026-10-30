@@ -226,7 +226,6 @@ TOKEN_PLAN_MODELS = [
 AGENT_PLAN_IMAGE = [
     "doubao-seedream-5-0-pro",
     "doubao-seedream-5.0-flash",
-    "doubao-seedream-5.0-lite",
 ]
 TOKEN_PLAN_IMAGE = ["qwen-image-3.0-pro", "wan2.7-image", "wan2.7-image-pro"]
 TOKEN_PLAN_VIDEO = ["happyhorse-1.1-i2v", "happyhorse-1.1-t2v", "wan3.0-video"]
@@ -326,14 +325,14 @@ class CommittedCatalogTests(unittest.TestCase):
                 self.assertIsNotNone(provider["baseURL"])
         self.assertEqual(offered, 18)
         self.assertEqual(model_count, 609)
-        self.assertEqual(metadata_count, 459)
+        self.assertEqual(metadata_count, 458)
 
     def test_plan_entries_are_exact_and_agent_plan_has_no_video(self):
         providers = self.providers()
         agent = providers["volcengine-agent-plan"]
         self.assertEqual(agent["models"], AGENT_PLAN_MODELS)
         self.assertEqual(agent["serviceOffers"], [{"models": AGENT_PLAN_IMAGE, "role": "image"}])
-        self.assertEqual(len(agent["modelMetadata"]), 17)
+        self.assertEqual(len(agent["modelMetadata"]), 16)
         self.assertEqual(
             agent["modelMetadata"]["ark-code-latest"],
             {"attachment": True, "input": ["image", "text"], "output": ["text"]},
@@ -480,9 +479,9 @@ class CommittedCatalogTests(unittest.TestCase):
         self.assertEqual(source["availableCount"], 18)
         self.assertEqual(source["unsupportedCount"], 4)
         self.assertEqual(source["modelEntryCount"], 609)
-        self.assertEqual(source["modelMetadataEntryCount"], 459)
+        self.assertEqual(source["modelMetadataEntryCount"], 458)
         self.assertEqual(source["serviceOfferCount"], 6)
-        self.assertEqual(source["serviceOfferModelEntryCount"], 39)
+        self.assertEqual(source["serviceOfferModelEntryCount"], 38)
         self.assertEqual(source["generatedBy"], "content-hub/providers/import_models_dev.py")
         self.assertEqual(
             source["generatedWith"],
@@ -502,7 +501,7 @@ class CommittedCatalogTests(unittest.TestCase):
 
     def test_content_source_version_and_plan_mappings(self):
         content = json.loads(CONTENT.read_text(encoding="utf-8"))
-        self.assertEqual(content["version"], "1.1.2")
+        self.assertEqual(content["version"], "1.1.3")
         self.assertEqual(content["minimumAppVersion"], "1.7.64")
         self.assertEqual(content["id"], "floe.providers.compatibility")
         self.assertEqual(content["kind"], "providers")
@@ -526,7 +525,7 @@ class DeclarativeOverrideTests(unittest.TestCase):
     def test_config_is_versioned_pinned_and_provenanced(self):
         overrides, raw = self.load()
         self.assertEqual(overrides["schemaVersion"], 1)
-        self.assertEqual(overrides["revision"], "2026-10-30.1")
+        self.assertEqual(overrides["revision"], "2026-10-31.1")
         self.assertEqual(overrides["upstreamPin"]["documentSHA256"], PIN)
         self.assertEqual(overrides["upstreamPin"]["fetchedAt"], "2026-10-15T12:36:41Z")
         expected = set(overrides["providerPatches"]) | {
@@ -550,7 +549,7 @@ class DeclarativeOverrideTests(unittest.TestCase):
         agent = providers["volcengine-agent-plan"]
         self.assertEqual(agent["models"], AGENT_PLAN_MODELS)
         self.assertEqual(agent["serviceOffers"], [{"models": AGENT_PLAN_IMAGE, "role": "image"}])
-        self.assertEqual(len(agent["modelMetadata"]), 17)
+        self.assertEqual(len(agent["modelMetadata"]), 16)
         token = providers["alibaba-token-plan"]
         self.assertEqual(token["models"], TOKEN_PLAN_MODELS)
         self.assertEqual(

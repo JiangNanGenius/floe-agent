@@ -1,20 +1,56 @@
 import Foundation
 import FloeCore
 
+/// Where a media parameter contract came from. This is deliberately a catalog
+/// fact, not an account probe: a reviewed identifier can still be unavailable
+/// to a specific plan, region or key, so the product must not present
+/// "contract checked" as "this account can use it now".
+public enum ImageParameterVerificationBasis: String, Codable, Sendable, Equatable {
+    case officialAgentPlanVisualModels
+    case officialMediaModelCatalog
+    case unreviewed
+}
+
+/// How a requested candidate count is fulfilled. `nativeBatch` means the
+/// provider documents multiple images in one request. `sequentialSingleImageRequests`
+/// means the image service must issue bounded one-image requests for the
+/// remaining candidates instead of silently returning fewer images.
+public enum ImageCountStrategy: String, Codable, Sendable, Equatable {
+    case nativeBatch
+    case sequentialSingleImageRequests
+    case unsupported
+}
+
 /// Converts the product's aspect-ratio and resolution controls into the
 /// provider-native `size` value. Keeping this at the adapter boundary prevents
 /// UI labels such as `16:9` from leaking into incompatible wire fields.
 public enum ImageGenerationPresetResolver {
     public struct ParameterContract: Codable, Sendable {
+        /// True only when the reviewed catalog has a parameter contract for
+        /// this identifier. It does not prove account/region entitlement or
+        /// that a live generation will succeed.
         public var verifiedModel: Bool
+        public var verificationBasis: ImageParameterVerificationBasis
+        /// Offline state only. No model listing or name recognition is an
+        /// account-usability probe, so this stays `notChecked` until a real
+        /// user-authorized generation verifies the account.
+        public var accountUsability: String
         public var aspectRatio: [String]
         public var resolution: [String]
         public var quality: [String]
-        public var defaultAspectRatio: String
+        /// Nil means the provider has no documented default aspect control and
+        /// the service must not inject `1:1` on the user's behalf.
+        public var defaultAspectRatio: String?
         public var defaultResolution: String?
         public var defaultQuality: String?
         public var minimumCount: Int
+        /// Maximum candidate images one user/agent request may ask for. Values
+        /// above `maximumCountPerRequest` are fulfilled by bounded sequential
+        /// single-image requests.
         public var maximumCount: Int
+        /// Maximum images the provider returns in one HTTP request.
+        public var maximumCountPerRequest: Int
+        public var countStrategy: ImageCountStrategy
         public var maximumReferenceImages: Int
         public var nativeSizeOverride: Bool
         /// These provider features are not accepted by the current image tool.
@@ -40,21 +76,50 @@ public enum ImageGenerationPresetResolver {
         // authority; this branch supplies only the documented family limits.
         // It must run before the PAYG-descriptor lookup because a plan
         // connection has custom kind and therefore no media family.
-        if ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan,
-           let planFamily = Seedream5ImageFamily.resolve(model.remoteModelID) {
+        if ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan {
+            guard let planFamily = Seedream5ImageFamily.resolve(model.remoteModelID),
+                  planFamily.isAvailableOnAgentPlan else {
+                // Lite (and any unreviewed plan identifier) is not a plan
+                // model. Return an explicitly unsupported contract so callers
+                // cannot mistake a recognised Seedream family name for a
+                // verified candidate.
+                return ParameterContract(
+                    verifiedModel: false,
+                    verificationBasis: .officialAgentPlanVisualModels,
+                    accountUsability: "notChecked",
+                    aspectRatio: [],
+                    resolution: [],
+                    quality: [],
+                    defaultAspectRatio: nil,
+                    defaultResolution: nil,
+                    defaultQuality: nil,
+                    minimumCount: 1,
+                    maximumCount: 0,
+                    maximumCountPerRequest: 0,
+                    countStrategy: .unsupported,
+                    maximumReferenceImages: 0,
+                    nativeSizeOverride: false,
+                    unavailableControls: ["seed", "watermark", "promptOptimization"]
+                )
+            }
+            let nativeMaximum = planFamily.maximumOutputImages
             return ParameterContract(
                 verifiedModel: true,
+                verificationBasis: .officialAgentPlanVisualModels,
+                accountUsability: "notChecked",
                 aspectRatio: planFamily.supportedAspectRatios,
                 resolution: planFamily.supportedResolutions,
                 quality: [],
-                defaultAspectRatio: "1:1",
+                // The documented plan request controls the size tier; the
+                // prompt describes the shape. No ratio control means no
+                // injected 1:1.
+                defaultAspectRatio: nil,
                 defaultResolution: planFamily.defaultResolution,
                 defaultQuality: nil,
                 minimumCount: 1,
-                maximumCount: min(
-                    planFamily.maximumOutputImages,
-                    max(1, adapter?.maximumOutputImages(modelRemoteID: model.remoteModelID) ?? 1)
-                ),
+                maximumCount: planFamily.maximumCandidateCount,
+                maximumCountPerRequest: nativeMaximum,
+                countStrategy: nativeMaximum > 1 ? .nativeBatch : .sequentialSingleImageRequests,
                 maximumReferenceImages: operation == .generate
                     ? 0
                     : ImageReferenceCapabilityResolver.maximumReferenceImages(provider: provider, model: model),
@@ -65,17 +130,36 @@ public enum ImageGenerationPresetResolver {
         let resolutions = (descriptor?.supportedResolutions ?? []).filter {
             !(provider.kind == .alibabaStudio && operation != .generate && $0 == "4K")
         }
+        let nativeMaximum = max(1, adapter?.maximumOutputImages(modelRemoteID: model.remoteModelID) ?? 1)
         return ParameterContract(
             verifiedModel: descriptor != nil,
-            aspectRatio: descriptor?.supportedAspectRatios ?? [], resolution: resolutions,
-            quality: descriptor?.supportedQualities ?? [], defaultAspectRatio: "1:1",
+            verificationBasis: descriptor != nil ? .officialMediaModelCatalog : .unreviewed,
+            accountUsability: "notChecked",
+            aspectRatio: descriptor?.supportedAspectRatios ?? [],
+            resolution: resolutions,
+            quality: descriptor?.supportedQualities ?? [],
+            defaultAspectRatio: descriptor?.supportedAspectRatios.contains("1:1") == true ? "1:1" : nil,
             defaultResolution: descriptor?.defaultResolution,
             defaultQuality: descriptor?.defaultQuality,
-            minimumCount: 1, maximumCount: min(4, adapter?.maximumOutputImages(modelRemoteID: model.remoteModelID) ?? 1),
-            maximumReferenceImages: operation == .generate ? 0 : ImageReferenceCapabilityResolver.maximumReferenceImages(provider: provider, model: model),
+            minimumCount: 1,
+            maximumCount: 4,
+            maximumCountPerRequest: nativeMaximum,
+            countStrategy: nativeMaximum > 1 ? .nativeBatch : .sequentialSingleImageRequests,
+            maximumReferenceImages: operation == .generate
+                ? 0
+                : ImageReferenceCapabilityResolver.maximumReferenceImages(provider: provider, model: model),
             nativeSizeOverride: provider.kind != .googleGemini,
             unavailableControls: ["seed", "watermark", "promptOptimization"]
         )
+    }
+
+    /// Route eligibility for one selected model. An unsupported plan model is
+    /// excluded from `image.models`, public selection and autonomous fallback
+    /// instead of being sent once and then silently remapped.
+    public static func isEligible(
+        provider: ProviderProfile, model: ModelProfile, operation: RemoteImageOperation
+    ) -> Bool {
+        parameterContract(provider: provider, model: model, operation: operation).countStrategy != .unsupported
     }
 
     public static func applyingDefaults(
@@ -83,11 +167,17 @@ public enum ImageGenerationPresetResolver {
         operation: RemoteImageOperation
     ) -> ImageGenerationSelection {
         let contract = parameterContract(provider: provider, model: model, operation: operation)
+        let rawOverride = cleaned(selection.nativeSizeOverride)
+        let overrideAspect = rawOverride.flatMap { isAspectRatio($0) ? $0 : nil }
+        let overrideResolution = rawOverride.flatMap { isResolutionTier($0) ? $0.uppercased() : nil }
+        let retainedOverride = rawOverride.flatMap {
+            ($0 == overrideAspect || $0 == overrideResolution) ? nil : $0
+        }
         return ImageGenerationSelection(
-            aspectRatio: selection.aspectRatio ?? contract.defaultAspectRatio,
-            resolution: selection.resolution ?? contract.defaultResolution,
+            aspectRatio: selection.aspectRatio ?? overrideAspect ?? contract.defaultAspectRatio,
+            resolution: selection.resolution ?? overrideResolution ?? contract.defaultResolution,
             quality: selection.quality ?? contract.defaultQuality,
-            nativeSizeOverride: selection.nativeSizeOverride)
+            nativeSizeOverride: retainedOverride)
     }
 
     public static func validateSelection(
@@ -95,7 +185,12 @@ public enum ImageGenerationPresetResolver {
         operation: RemoteImageOperation, count: Int, referenceCount: Int
     ) throws {
         let contract = parameterContract(provider: provider, model: model, operation: operation)
-        guard (contract.minimumCount...max(contract.minimumCount, contract.maximumCount)).contains(count),
+        guard contract.countStrategy != .unsupported else {
+            throw RemoteImageError.requestFailed(
+                "This image model is not available on the selected billing channel; choose a reviewed candidate from image.models."
+            )
+        }
+        guard count >= contract.minimumCount, count <= contract.maximumCount,
               referenceCount >= 0, referenceCount <= contract.maximumReferenceImages else {
             throw RemoteImageError.requestFailed("Image count or reference count exceeds this model's limit; inspect image.models.")
         }
@@ -108,12 +203,28 @@ public enum ImageGenerationPresetResolver {
                 throw RemoteImageError.requestFailed("Unsupported or unverified \(label)=\(value) for \(model.remoteModelID); inspect image.models.")
             }
         }
-        if let size = selection.nativeSizeOverride {
-            let parts = size.replacingOccurrences(of: "*", with: "x").split(separator: "x")
-            guard contract.nativeSizeOverride, parts.count == 2,
-                  let width = Int(parts[0]), let height = Int(parts[1]),
-                  width > 0, height > 0, width <= 8192, height <= 8192 else {
-                throw RemoteImageError.requestFailed("Invalid or unsupported native image size")
+        if let size = cleaned(selection.nativeSizeOverride) {
+            if isAspectRatio(size) {
+                guard contract.aspectRatio.contains(size) else {
+                    throw RemoteImageError.requestFailed("Unsupported or unverified aspectRatio=\(size) for \(model.remoteModelID); inspect image.models.")
+                }
+            } else if isResolutionTier(size) {
+                guard contract.resolution.contains(size.uppercased()) else {
+                    throw RemoteImageError.requestFailed("Unsupported or unverified resolution=\(size) for \(model.remoteModelID); inspect image.models.")
+                }
+            } else {
+                let parts = size.replacingOccurrences(of: "*", with: "x").split(separator: "x")
+                guard contract.nativeSizeOverride, parts.count == 2,
+                      let width = Int(parts[0]), let height = Int(parts[1]),
+                      width > 0, height > 0, width <= 8192, height <= 8192 else {
+                    throw RemoteImageError.requestFailed("Invalid or unsupported native image size")
+                }
+                if let family = Seedream5ImageFamily.resolve(model.remoteModelID),
+                   !family.isValidNativeSize(width: width, height: height) {
+                    throw RemoteImageError.requestFailed(
+                        "Invalid or unsupported native image size for \(model.remoteModelID); inspect image.models."
+                    )
+                }
             }
         }
         // Agent Plan is a Volcengine Ark image contract behind a subscription
@@ -139,38 +250,52 @@ public enum ImageGenerationPresetResolver {
         operation: RemoteImageOperation,
         selection: ImageGenerationSelection
     ) throws -> String? {
-        if let override = cleaned(selection.nativeSizeOverride), !isAspectRatio(override) {
+        let rawOverride = cleaned(selection.nativeSizeOverride)
+        if let override = rawOverride, !isAspectRatio(override), !isResolutionTier(override) {
             return provider == .alibabaStudio
                 ? override.replacingOccurrences(of: "x", with: "*")
                 : override.replacingOccurrences(of: "*", with: "x")
         }
         let aspect = cleaned(selection.aspectRatio)
-            ?? cleaned(selection.nativeSizeOverride).flatMap { isAspectRatio($0) ? $0 : nil }
-            ?? "1:1"
-        guard supportedAspects.contains(aspect) else {
+            ?? rawOverride.flatMap { isAspectRatio($0) ? $0 : nil }
+        let resolution = cleaned(selection.resolution)?.uppercased()
+            ?? rawOverride.flatMap { isResolutionTier($0) ? $0.uppercased() : nil }
+            ?? defaultResolution(provider: provider, modelRemoteID: modelRemoteID)
+        if let aspect, !supportedAspects.contains(aspect) {
             throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.the_current_image_model_does_not", aspect))
         }
-        let resolution = cleaned(selection.resolution)?.uppercased()
-            ?? defaultResolution(provider: provider, modelRemoteID: modelRemoteID)
         guard (["1K", "2K", "4K"].contains(resolution) || (provider == .volcengineArk && ["1.5K", "3K"].contains(resolution))) else {
             throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.the_current_image_model_does_not_2", resolution))
         }
 
         switch provider {
         case .openAI:
-            return openAISize(aspect: aspect, resolution: resolution)
+            return openAISize(aspect: aspect ?? "1:1", resolution: resolution)
         case .volcengineArk:
             // Normalize both official spellings (`5.0`/`5-0`) before applying
-            // the family limits. The previous substring check missed dotted
-            // plan ids and treated flash as a batch-capable lite model.
+            // the family limits. Pro/flash (Agent Plan or PAYG) document only
+            // single-image generation and the 1K/1.5K/2K tiers. When no aspect
+            // ratio is requested, send the documented size tier and let the
+            // prompt decide the shape instead of inventing a 1:1 crop.
+            let planFamily = Seedream5ImageFamily.resolve(modelRemoteID)
+            if let planFamily {
+                guard planFamily.supportedResolutions.contains(resolution) else {
+                    throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.the_selected_seedream_model_does_not", resolution))
+                }
+                guard let aspect else { return resolution }
+                guard let size = planFamily.nativeSize(aspect: aspect, resolution: resolution) else {
+                    throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.the_current_image_model_does_not", aspect))
+                }
+                return size
+            }
             let model = (modelRemoteID ?? "")
                 .lowercased()
                 .replacingOccurrences(of: ".", with: "-")
             if model.contains("seedream-5-0") {
-                let allowed = Seedream5ImageFamily.resolve(modelRemoteID)?.supportedResolutions
-                    ?? ["2K", "3K", "4K"]
+                let allowed = ["2K", "3K", "4K"]
                 guard allowed.contains(resolution) else { throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.the_selected_seedream_model_does_not", resolution)) }
             }
+            guard let aspect else { return resolution }
             return volcengineSize(aspect: aspect, resolution: resolution)
         case .alibabaStudio:
             if operation != .generate, resolution == "4K" {
@@ -180,7 +305,7 @@ public enum ImageGenerationPresetResolver {
             if resolution == "4K", !model.contains("wan2.7-image-pro") {
                 throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.the_selected_alibaba_cloud_image_model"))
             }
-            return alibabaSize(aspect: aspect, resolution: resolution)
+            return alibabaSize(aspect: aspect ?? "1:1", resolution: resolution)
         case .googleGemini:
             return nil
         case .anthropic, .local, .custom:
@@ -277,5 +402,9 @@ public enum ImageGenerationPresetResolver {
 
     private static func isAspectRatio(_ value: String) -> Bool {
         value.range(of: #"^\d{1,2}:\d{1,2}$"#, options: .regularExpression) != nil
+    }
+
+    private static func isResolutionTier(_ value: String) -> Bool {
+        ["1K", "1.5K", "2K", "3K", "4K"].contains(value.uppercased())
     }
 }

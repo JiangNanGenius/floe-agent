@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "revision": "2026-10-30.1",
-  "reviewedAt": "2026-10-29T18:25:00Z",
+  "revision": "2026-10-31.1",
+  "reviewedAt": "2026-10-31T00:00:00Z",
   "upstreamPin": {
     "project": "models.dev",
     "url": "https://models.dev",
@@ -37,7 +37,7 @@
     },
     "volcengine-agent-plan": {
       "scope": "official Agent Plan chat/image candidates and limits",
-      "tableUpdated": "2026-10-29",
+      "tableUpdated": "2026-10-31",
       "sources": [
         {
           "url": "https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-plan-overview",
@@ -47,7 +47,7 @@
         {
           "url": "https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-visual-models",
           "markdownSHA256": "fd0416c2f2b1933882a4d99597e5a892a4b4b0988b0ddf8631955c4808700a9a",
-          "usedFor": "plan-only Seedream image offer and the explicit absence of a plan video entry"
+          "usedFor": "plan-only Seedream pro/flash image offer; lite is a PAYG-only id and is not a plan candidate"
         },
         {
           "url": "https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-opencode",
@@ -205,8 +205,7 @@
           "role": "image",
           "models": [
             "doubao-seedream-5-0-pro",
-            "doubao-seedream-5.0-flash",
-            "doubao-seedream-5.0-lite"
+            "doubao-seedream-5.0-flash"
           ]
         }
       ],
@@ -359,15 +358,6 @@
           ]
         },
         "doubao-seedream-5.0-flash": {
-          "input": [
-            "image",
-            "text"
-          ],
-          "output": [
-            "image"
-          ]
-        },
-        "doubao-seedream-5.0-lite": {
           "input": [
             "image",
             "text"

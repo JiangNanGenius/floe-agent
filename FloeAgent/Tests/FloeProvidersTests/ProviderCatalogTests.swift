@@ -219,13 +219,18 @@ struct ProviderCatalogTests {
 
         let agentPlan = try #require(index.entry(presetID: "volcengine-agent-plan"))
         #expect(agentPlan.serviceOffers?.first { $0.role == .image }?.models
-                == ["doubao-seedream-5-0-pro", "doubao-seedream-5.0-flash", "doubao-seedream-5.0-lite"])
+                == ["doubao-seedream-5-0-pro", "doubao-seedream-5.0-flash"])
         #expect(agentPlan.serviceOffers?.contains(where: { $0.role == .video }) != true)
-        #expect(agentPlan.modelMetadata?["doubao-seedream-5.0-lite"] != nil)
+        #expect(agentPlan.modelMetadata?["doubao-seedream-5.0-lite"] == nil)
         #expect(agentPlan.modelMetadata?["doubao-seedream-5-0-pro"] != nil)
         #expect(agentPlan.modelMetadata?["doubao-seedream-5.0-flash"] != nil)
         // No PAYG Seedream/Seedance identifier leaks into the plan entry.
         #expect(agentPlan.models.allSatisfy { !$0.contains("seedream") && !$0.contains("seedance") })
+        // The PAYG Seedream 5.0 Lite descriptor is intentionally retained.
+        #expect(OfficialMediaModelCatalog.models.contains {
+            $0.provider == .volcengineArk
+                && $0.remoteModelID == "doubao-seedream-5-0-lite-260128"
+        })
 
         let tokenPlan = try #require(index.entry(presetID: "alibaba-token-plan"))
         #expect(tokenPlan.serviceOffers?.first { $0.role == .image }?.models

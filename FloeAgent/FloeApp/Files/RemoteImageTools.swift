@@ -344,6 +344,15 @@ struct RemoteImageInspectTool: AgentTool {
     }
 }
 
+/// Which selection policy an image attempt follows. `.agent` keeps the
+/// existing agent contract (autonomous or preferred-only); `.selected` is for an
+/// exact user-selected route from a manual Files/Canvas surface and never falls
+/// back to another paid model.
+enum ImageGenerationRouting: Sendable, Equatable {
+    case agent
+    case selected
+}
+
 /// Shared by ordinary chat and the Canvas agent; manual pickers keep their own route.
 @MainActor
 extension ConversationCenter {
@@ -354,6 +363,7 @@ extension ConversationCenter {
             guard model.isEnabled,
                   model.capabilities.contains(operation == .generate ? .imageGeneration : .imageEditing),
                   let provider = providers.first(where: { $0.id == model.providerID && $0.isEnabled }),
+                  ImageGenerationPresetResolver.isEligible(provider: provider, model: model, operation: operation),
                   let adapter = factory.adapter(for: provider), adapter.supports(operation, for: provider)
             else { return nil }
             return (provider, model)
@@ -372,57 +382,184 @@ extension ConversationCenter {
         return try ImageModelRouteResolver.resolve(selection: selection, models: models).id
     }
 
+    /// The exact route for one request plus at most one autonomous fallback.
+    /// An explicit public/name/internal selection is returned alone so a
+    /// refusal surfaces against that exact model instead of silently changing
+    /// it. The fallback is limited to the same billing channel.
+    func agentImageRouteCandidates(
+        operation: RemoteImageOperation, modelID: UUID?, selection: ImageGenerationSelection,
+        count: Int, referenceCount: Int, routing: ImageGenerationRouting = .agent
+    ) throws -> [(ProviderProfile, ModelProfile)] {
+        let initial = try resolveAgentImageRoute(
+            operation: operation, modelID: modelID, selection: selection,
+            count: count, referenceCount: referenceCount, routing: routing)
+        let explicitSelection = modelID != nil
+        let automatic = routing == .agent
+            && modelPreferences.autonomousImageRouting == true
+        guard routing == .agent, !explicitSelection, automatic else { return [initial] }
+        guard let fallback = agentImageRoutes(operation: operation).first(where: { candidate in
+            guard candidate.1.id != initial.1.id else { return false }
+            guard ImageRouteFallbackPolicy.allowsFallback(
+                explicitSelection: explicitSelection,
+                autonomous: automatic,
+                initialProvider: initial.0,
+                candidateProvider: candidate.0
+            ) else { return false }
+            return (try? ImageGenerationPresetResolver.validateSelection(
+                selection, provider: candidate.0, model: candidate.1,
+                operation: operation, count: count, referenceCount: referenceCount)) != nil
+        }) else { return [initial] }
+        return [initial, fallback]
+    }
+
     func performAgentImage(
         operation: RemoteImageOperation, prompt: String, sourceImages: [Data], modelID: UUID?,
-        selection: ImageGenerationSelection, count: Int
+        selection: ImageGenerationSelection, count: Int,
+        routing: ImageGenerationRouting = .agent
     ) async throws -> (RemoteImageResult, ProviderProfile, ModelProfile) {
-        let initial = try resolveAgentImageRoute(operation: operation, modelID: modelID,
-            selection: selection, count: count, referenceCount: sourceImages.count)
-        let automatic = modelPreferences.autonomousImageRouting == true
-        var candidates = [initial]
-        if automatic, let fallback = agentImageRoutes(operation: operation).first(where: {
-            guard $0.1.id != initial.1.id else { return false }
-            return (try? ImageGenerationPresetResolver.validateSelection(selection, provider: $0.0,
-                model: $0.1, operation: operation, count: count, referenceCount: sourceImages.count)) != nil
-        }) { candidates.append(fallback) }
-        for (index, route) in candidates.enumerated() {
-            try Task.checkCancellation()
-            guard let adapter = ImageProviderAdapterFactory().adapter(for: route.0) else {
-                throw FloeError.invalidConfiguration("Image adapter unavailable")
-            }
-            let effective = ImageGenerationPresetResolver.applyingDefaults(selection,
-                provider: route.0, model: route.1, operation: operation)
+        let explicitSelection = modelID != nil
+        let candidates = try agentImageRouteCandidates(
+            operation: operation, modelID: modelID, selection: selection,
+            count: count, referenceCount: sourceImages.count, routing: routing)
+        let requestedRoute = candidates[0]
+        var actualRoute = requestedRoute
+        var outcome: ImageGenerationBatchOutcome?
+        var lastError: Error?
+        var fallbackUsed = false
+        var fallbackReason = ""
+        var cancelled = false
+
+        outer: for (index, route) in candidates.enumerated() {
+            actualRoute = route
+            let effective = ImageGenerationPresetResolver.applyingDefaults(
+                selection, provider: route.0, model: route.1, operation: operation)
             do {
-                let result = try await adapter.perform(RemoteImageRequest(operation: operation, prompt: prompt,
-                    sourceImages: sourceImages, selection: effective, count: count, modelRemoteID: route.1.remoteModelID),
-                    provider: route.0, credentials: resolveCredentials(for: route.0))
-                var traced = result
-                traced.metadata["providerID"] = route.0.id.uuidString
-                traced.metadata["modelID"] = route.1.id.uuidString
-                traced.metadata["fallbackUsed"] = String(index > 0)
-                traced.metadata["parameters"] = String(decoding: try JSONEncoder().encode(effective), as: UTF8.self)
-                return (traced, route.0, route.1)
+                let contract = ImageGenerationPresetResolver.parameterContract(
+                    provider: route.0, model: route.1, operation: operation)
+                let plan = try ImageGenerationBatchPlan(
+                    contract: contract, requestedCount: count)
+                guard let adapter = ImageProviderAdapterFactory().adapter(for: route.0) else {
+                    throw FloeError.invalidConfiguration("Image adapter unavailable")
+                }
+                let provider = route.0
+                let modelRemoteID = route.1.remoteModelID
+                let credentials = resolveCredentials(for: provider)
+                outcome = try await ImageGenerationBatchRunner.run(plan: plan) { requestCount in
+                    try Task.checkCancellation()
+                    let result = try await adapter.perform(RemoteImageRequest(
+                        operation: operation, prompt: prompt, sourceImages: sourceImages,
+                        selection: effective, count: requestCount,
+                        modelRemoteID: modelRemoteID),
+                        provider: provider, credentials: credentials)
+                    return ImageGenerationBatchResponse(
+                        images: result.images,
+                        revisedPrompt: result.revisedPrompt,
+                        metadata: result.metadata)
+                }
+                break outer
+            } catch is CancellationError {
+                cancelled = true
+                break outer
+            } catch let error as FloeError where error == .cancelled {
+                cancelled = true
+                break outer
             } catch {
-                guard !Task.isCancelled, modelPreferences.autonomousImageRouting == true, index == 0, candidates.count > 1,
-                      (error as? RemoteImageError)?.allowsRouteFallback == true else { throw error }
+                lastError = error
+                if index == 0, candidates.count > 1,
+                   (error as? RemoteImageError)?.allowsRouteFallback == true {
+                    fallbackUsed = true
+                    fallbackReason = imageRouteFallbackReason(error)
+                    continue outer
+                }
+                break outer
             }
         }
-        throw FloeError.internalError("Image route attempts exhausted")
+
+        guard let outcome, !outcome.images.isEmpty else {
+            if cancelled { throw CancellationError() }
+            if let lastError { throw lastError }
+            throw FloeError.internalError("Image route attempts exhausted")
+        }
+
+        let actualContract = ImageGenerationPresetResolver.parameterContract(
+            provider: actualRoute.0, model: actualRoute.1, operation: operation)
+        let effective = ImageGenerationPresetResolver.applyingDefaults(
+            selection, provider: actualRoute.0, model: actualRoute.1, operation: operation)
+        var metadata: [String: String] = [
+            "requestedModel": requestedRoute.1.remoteModelID,
+            "requestedModelID": requestedRoute.1.id.uuidString,
+            "requestedProviderID": requestedRoute.0.id.uuidString,
+            "requestedProvider": requestedRoute.0.displayName ?? requestedRoute.0.kind.rawValue,
+            "actualModel": actualRoute.1.remoteModelID,
+            "actualModelID": actualRoute.1.id.uuidString,
+            "actualProviderID": actualRoute.0.id.uuidString,
+            "actualProvider": actualRoute.0.displayName ?? actualRoute.0.kind.rawValue,
+            "fallbackUsed": String(fallbackUsed),
+            "fallbackReason": fallbackReason,
+            "selectionMode": explicitSelection
+                ? "explicit"
+                : (routing == .selected ? "selected" : "autonomous"),
+            "routing": routing == .selected ? "selected" : "agent",
+            "requestedCount": String(count),
+            "completedCount": String(outcome.completedCount),
+            "failedCount": String(outcome.failedCount),
+            "partialFailure": String(outcome.partialFailure || outcome.failure != nil),
+            "cancelled": String(outcome.cancelled),
+            "providerExcess": String(outcome.providerExcess),
+            "slotStatuses": outcome.slotStatusesDescription,
+            "countStrategy": actualContract.countStrategy.rawValue,
+            "verificationBasis": actualContract.verificationBasis.rawValue,
+            "accountUsability": actualContract.accountUsability,
+            "providerID": actualRoute.0.id.uuidString,
+            "modelID": actualRoute.1.id.uuidString,
+            "model": actualRoute.1.remoteModelID
+        ]
+        if let failure = outcome.failure {
+            metadata["failure"] = String(failure.prefix(400))
+        }
+        metadata["parameters"] = String(decoding: try JSONEncoder().encode(effective), as: UTF8.self)
+        return (RemoteImageResult(
+                    images: outcome.images,
+                    revisedPrompt: outcome.revisedPrompt,
+                    metadata: metadata),
+                actualRoute.0, actualRoute.1)
+    }
+
+    /// Per-HTTP-request counts for one route. Kept as the single source of the
+    /// documented native/per-request split; the actual execution lives in
+    /// `ImageGenerationBatchRunner` so callers cannot drift into ad-hoc loops.
+    func agentImageRequestCounts(
+        route: (ProviderProfile, ModelProfile),
+        selection: ImageGenerationSelection,
+        operation: RemoteImageOperation,
+        count: Int
+    ) throws -> [Int] {
+        let contract = ImageGenerationPresetResolver.parameterContract(
+            provider: route.0, model: route.1, operation: operation)
+        return try ImageGenerationBatchPlan(
+            contract: contract, requestedCount: count).requestCounts
     }
 
     func resolveAgentImageRoute(
         operation: RemoteImageOperation, modelID: UUID?, selection: ImageGenerationSelection,
-        count: Int, referenceCount: Int = 0
+        count: Int, referenceCount: Int = 0,
+        routing: ImageGenerationRouting = .agent
     ) throws -> (ProviderProfile, ModelProfile) {
         let automatic = modelPreferences.autonomousImageRouting == true
         let preferred = auxiliaryProviderAndModel(for: operation)?.1.id
-        if !automatic, let modelID, modelID != preferred {
+        if routing == .agent, !automatic, let modelID, modelID != preferred {
             throw FloeError.validationFailed("Autonomous image routing is disabled. Use the preferred model from image.models.")
         }
         let routes = agentImageRoutes(operation: operation)
-        let selectedID = automatic ? modelID : preferred
+        let selectedID: UUID?
+        switch routing {
+        case .agent:
+            selectedID = automatic ? modelID : preferred
+        case .selected:
+            selectedID = modelID ?? preferred
+        }
         let candidates = selectedID.map { id in routes.filter { $0.1.id == id } }
-            ?? (automatic ? routes : [])
+            ?? (routing == .agent && automatic ? routes : [])
         guard !candidates.isEmpty else {
             throw FloeError.invalidConfiguration("No compatible configured image route. Inspect image.models; configure a preferred model or enable autonomous selection.")
         }
@@ -438,6 +575,14 @@ extension ConversationCenter {
         }
         throw lastError ?? FloeError.invalidConfiguration("No image model accepts these parameters")
     }
+}
+
+private func imageRouteFallbackReason(_ error: Error) -> String {
+    if let remote = error as? RemoteImageError,
+       case .providerRejected(let status, _) = remote {
+        return "providerRejected:\(status)"
+    }
+    return "routeRefused"
 }
 
 struct RemoteImageModelsTool: AgentTool {
@@ -472,7 +617,7 @@ struct RemoteImageModelsTool: AgentTool {
                 "autonomyEnabled": conversation.modelPreferences.autonomousImageRouting == true,
                 "operation": operation.rawValue, "total": routes.count, "models": entries,
                 "nextOffset": end < routes.count ? end as Any : NSNull(),
-                "fallbackPolicy": "These are the only usable image routes. Pass a public candidate (`model`, its remote model ID, or `modelName`) to image.generate; the internal modelID is the legacy alternative and must never be requested from the user. `model` and `modelID` are a mutually exclusive one-of: pass at most one. When several candidates exist, choose the one that fits the request from its public parameters yourself. Prefer the configured preset when suitable; explicitly selected model IDs remain exact. If modelID is omitted in autonomous mode, the first compatible route is selected before networking. A definite HTTP 401/404/429 may try one compatible fallback within the same generation. No fallback after cancellation, timeout, policy refusal, server error or unknown result. Never automatically submit a second generation to work around this policy."]
+                "fallbackPolicy": "These are the only usable image routes. Pass a public candidate (`model`, its remote model ID, or `modelName`) to image.generate; the internal modelID is the legacy alternative and must never be requested from the user. `model` and `modelID` are a mutually exclusive one-of: pass at most one. An explicit `model`, `modelName` or legacy modelID is exact: a 401/404/429 is returned and never silently remapped. Only when modelID is omitted in autonomous mode is the first compatible route selected before networking, and only then may a definite HTTP 401/404/429 try one fallback on the same billing channel. No fallback after cancellation, timeout, policy refusal, server error or unknown result. Count is the number of requested candidates (1-4): models with a native batch use it in one request, while single-image models receive separate bounded requests and report partial failures. Never automatically submit a second generation to work around this policy."]
             return String(decoding: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), as: UTF8.self)
         }
     }
@@ -543,17 +688,26 @@ struct RemoteImageGenerateTool: AgentTool {
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .mutating
 
-    private let generate: @MainActor @Sendable (Arguments) async throws -> ([AttachmentRef], String)
+    private let generate: @MainActor @Sendable (
+        Arguments, UUID, Int
+    ) async throws -> ([AttachmentRef], ImageGenerationBatchReport)
     private let resolveURL: @MainActor @Sendable (AttachmentRef) throws -> URL
     private let resolvePublicModel: @MainActor @Sendable (String) throws -> UUID
 
     init(center: FilesCenter) {
-        self.generate = { args in
-            try await center.performRemoteImageResult(operation: .generate,
-                prompt: args.prompt.trimmingCharacters(in: .whitespacesAndNewlines), count: args.count ?? 1,
-                modelID: args.modelID, selection: ImageGenerationSelection(aspectRatio: args.aspectRatio,
-                    resolution: args.resolution, quality: args.quality, nativeSizeOverride: args.size),
-                agentInitiated: true)
+        self.generate = { args, modelID, count in
+            try await center.performRemoteImageResult(
+                operation: .generate,
+                prompt: args.prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+                count: count,
+                modelID: modelID,
+                selection: ImageGenerationSelection(
+                    aspectRatio: args.aspectRatio,
+                    resolution: args.resolution,
+                    quality: args.quality,
+                    nativeSizeOverride: args.size),
+                agentInitiated: true,
+                routing: .agent)
         }
         self.resolveURL = { attachment in
             try center.resolveURL(for: attachment)
@@ -586,7 +740,16 @@ struct RemoteImageGenerateTool: AgentTool {
             args.modelID = try await resolvePublicModel(model)
             args.model = nil
         }
-        let (attachments, routeDescription) = try await generate(args)
+        let requestedCount = args.count ?? 1
+        // One product request resolves and executes its bounded batch exactly
+        // once. `performAgentImage` owns native/sequential chunking and route
+        // fallback; this tool must not loop over request counts a second time.
+        let generated = try await generate(args, args.modelID, requestedCount)
+        let attachments = generated.0
+        let report = generated.1
+        FloeLogger(category: .tools).info(
+            "imageGenerateBatchCompleted run=\(context.runID.uuidString) requested=\(report.requestedCount) completed=\(report.completedCount) failed=\(report.failedCount) fallback=\(report.fallbackUsed) cancelled=\(report.cancelled)"
+        )
         let workspacePaths = try await persistInTaskWorkspace(
             attachments,
             context: context
@@ -645,17 +808,21 @@ struct RemoteImageGenerateTool: AgentTool {
                 }
             }
         }
-        let summary = routeDescription + "\n" + zip(attachments, workspacePaths).map { attachment, path in
-            "\(attachment.displayName) saved to \(path) [attachment:\(attachment.id.uuidString) sha256:\(attachment.sha256)]"
+        let summary = report.userSummary + "\n" + zip(attachments, workspacePaths).map { attachment, path in
+            "\(attachment.displayName) saved to \(path)"
         }.joined(separator: "\n")
-        let summaryDigest = SHA256.hash(data: Data(summary.utf8))
+        let details = report.technicalDetails + "\n" + zip(attachments, workspacePaths).map { attachment, path in
+            "artifact=\(attachment.id.uuidString) path=\(path) sha256=\(attachment.sha256)"
+        }.joined(separator: "\n")
+        let summaryDigest = SHA256.hash(data: Data((summary + "\n" + details).utf8))
             .map { String(format: "%02x", $0) }.joined()
         return ToolExecutionOutput(
             summary: summary.isEmpty ? "No image was returned" : summary,
             fullOutputSHA256: summaryDigest,
-            exitStatus: attachments.isEmpty ? 2 : 0,
+            exitStatus: report.isComplete ? 0 : 2,
             artifacts: artifacts,
-            outputFiles: publishedOutputs
+            outputFiles: publishedOutputs,
+            capturedOutput: details
         )
     }
 

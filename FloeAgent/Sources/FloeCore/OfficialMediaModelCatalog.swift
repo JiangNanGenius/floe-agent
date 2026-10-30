@@ -2,6 +2,10 @@ import Foundation
 
 /// Versioned, product-owned presets for official first-party endpoints. The
 /// remote IDs remain editable because providers retire model revisions.
+///
+/// `verifiedAt`/`manifestVersion` record catalog review of the parameter
+/// contract only. They do not prove that a particular account, plan or region
+/// can call the model, and no model-listing probe upgrades that claim.
 public enum OfficialMediaModelCatalog {
     public static let manifestVersion = 4
     public static let verifiedAt = ISO8601DateFormatter().date(from: "2026-08-29T00:00:00Z")!

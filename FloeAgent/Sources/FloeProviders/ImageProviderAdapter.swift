@@ -213,6 +213,33 @@ public struct ImageProviderAdapterFactory: Sendable {
     }
 }
 
+/// Fallback rules shared by Agent image routing and the image tool.
+///
+/// An explicit public `model`/`modelName` (or legacy internal modelID) is an
+/// exact request: a 401/404/429 must surface instead of silently changing the
+/// model. Only autonomous routing without a selection may try one compatible
+/// fallback, and it must stay on the same billing channel so an Agent Plan
+/// request can never consume a PAYG credential/route (or vice versa).
+public enum ImageRouteFallbackPolicy {
+    public static func allowsFallback(
+        explicitSelection: Bool,
+        autonomous: Bool,
+        initialProvider: ProviderProfile,
+        candidateProvider: ProviderProfile
+    ) -> Bool {
+        guard !explicitSelection, autonomous else { return false }
+        let initial = ProviderBillingEndpoint.resolve(initialProvider.baseURL)
+        let candidate = ProviderBillingEndpoint.resolve(candidateProvider.baseURL)
+        if let initial, let candidate { return initial == candidate }
+        // nil means unclassified, never "the same billing channel". Preserve
+        // same-account model fallback without crossing unrelated PAYG/custom
+        // providers merely because neither URL is a subscription endpoint.
+        return initial == nil && candidate == nil
+            && initialProvider.id == candidateProvider.id
+            && initialProvider.baseURL == candidateProvider.baseURL
+    }
+}
+
 /// Resolves the strictest reference-image limit declared by the selected
 /// model catalog and its concrete provider adapter. The adapter remains the
 /// wire-contract authority for custom/new remote IDs; the first-party catalog

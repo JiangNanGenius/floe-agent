@@ -658,12 +658,43 @@ struct CreativeAssetDesignImportPort: DesignAssetImportPort {
 struct MediaGenerationDesignPort: DesignImageGenerationPort {
     let environment: AppEnvironment
 
+    /// The saved auxiliary choice is kept exact: an ineligible saved id (for
+    /// example lite on Agent Plan) is not silently replaced with another paid
+    /// model. The user must choose a usable model first.
+    private func preferredRoute(
+        for operation: RemoteImageOperation
+    ) -> (ProviderProfile, ModelProfile)? {
+        guard let preferred = environment.conversationCenter
+            .auxiliaryProviderAndModel(for: operation) else { return nil }
+        return environment.conversationCenter
+            .agentImageRoutes(operation: operation)
+            .first { $0.1.id == preferred.1.id }
+    }
+
     func isGenerationConfigured() -> Bool {
-        let center = environment.conversationCenter
         let operation = RemoteImageOperation.generate
-        guard let (provider, _) = center.auxiliaryProviderAndModel(for: operation) else { return false }
-        let adapter = ImageProviderAdapterFactory().adapter(for: provider)
-        return adapter?.supports(operation, for: provider) == true
+        guard let route = preferredRoute(for: operation) else { return false }
+        return ImageProviderAdapterFactory().adapter(for: route.0)?
+            .supports(operation, for: route.0) == true
+    }
+
+    /// The design workflow already owns the real replacement target `nodeID`.
+    /// The reservation must name that target so the generated slot is bound to
+    /// the node whose retained snapshot will reference it; inventing a UUID or
+    /// leaving the list empty breaks the reservation owner/count contract.
+    static func reservationOwner(
+        canvasID: UUID,
+        documentID: UUID,
+        nodeID: UUID,
+        operationID: String
+    ) -> GeneratedImageReservationOwner {
+        GeneratedImageReservationOwner(
+            canvasID: canvasID,
+            documentID: documentID,
+            configurationNodeID: nodeID,
+            generationAttemptID: "design.\(operationID)",
+            resultNodeIDs: [nodeID]
+        )
     }
 
     func generate(
@@ -676,10 +707,12 @@ struct MediaGenerationDesignPort: DesignImageGenerationPort {
         agentInitiated: Bool
     ) async throws -> DesignAdapterGeneratedResult {
         let operation: RemoteImageOperation = sourceImage == nil ? .generate : .edit
-        guard let (provider, model) = environment.conversationCenter.auxiliaryProviderAndModel(for: operation) else {
-            throw FloeError.invalidConfiguration("Image generation needs a configured image model (Settings → Models)")
+        guard let (provider, model) = preferredRoute(for: operation) else {
+            throw FloeError.invalidConfiguration(
+                "The saved image model is not available on its billing channel; choose another model in Settings → Models.")
         }
-        guard ImageProviderAdapterFactory().adapter(for: provider)?.supports(operation, for: provider) == true else {
+        guard ImageProviderAdapterFactory().adapter(for: provider)?
+            .supports(operation, for: provider) == true else {
             throw FloeError.invalidConfiguration("The selected image model or provider does not support \(operation.rawValue)")
         }
         let batch: ReservedGeneratedImageBatch
@@ -688,14 +721,14 @@ struct MediaGenerationDesignPort: DesignImageGenerationPort {
                 prompt: prompt,
                 sourceImages: sourceImage.map { [$0] } ?? [],
                 modelID: model.id,
-                owner: GeneratedImageReservationOwner(
+                owner: Self.reservationOwner(
                     canvasID: canvasID,
                     documentID: documentID,
-                    configurationNodeID: nodeID,
-                    generationAttemptID: "design.\(operationID)",
-                    resultNodeIDs: []
+                    nodeID: nodeID,
+                    operationID: operationID
                 ),
-                agentInitiated: agentInitiated
+                agentInitiated: agentInitiated,
+                routing: .selected
             )
         } catch {
             // Nothing was reserved for us to leak.

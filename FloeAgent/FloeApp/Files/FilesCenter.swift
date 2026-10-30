@@ -297,6 +297,38 @@ final class FilesCenter: ObservableObject {
 
     // MARK: - Provider image generation/editing
 
+    /// One eligible image route plus its reviewed parameter contract. Manual
+    /// controls must be derived from this contract instead of hard-coded
+    /// resolution/count ranges that may not exist on the selected provider.
+    struct RemoteImageModelOption: Identifiable {
+        let provider: ProviderProfile
+        let model: ModelProfile
+        let contract: ImageGenerationPresetResolver.ParameterContract
+
+        var id: UUID { model.id }
+        var title: String {
+            let name = model.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? model.remoteModelID : name
+        }
+        var providerTitle: String {
+            let name = (provider.displayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? provider.kind.rawValue : name
+        }
+    }
+
+    /// Eligible manual candidates in the same preferred-first order used by
+    /// `image.models`. Plan-ineligible saved ids (for example lite on Agent
+    /// Plan) never become a manual choice.
+    func remoteImageModelOptions(operation: RemoteImageOperation) -> [RemoteImageModelOption] {
+        environment.conversationCenter.agentImageRoutes(operation: operation).map { route in
+            RemoteImageModelOption(
+                provider: route.0,
+                model: route.1,
+                contract: ImageGenerationPresetResolver.parameterContract(
+                    provider: route.0, model: route.1, operation: operation))
+        }
+    }
+
     @discardableResult
     func performRemoteImage(
         operation: RemoteImageOperation, prompt: String, source: AttachmentRef? = nil,
@@ -315,19 +347,12 @@ final class FilesCenter: ObservableObject {
         size: String? = nil,
         modelID: UUID? = nil,
         selection: ImageGenerationSelection? = nil,
-        agentInitiated: Bool = false
-    ) async throws -> ([AttachmentRef], String) {
+        agentInitiated: Bool = false,
+        routing: ImageGenerationRouting = .agent
+    ) async throws -> ([AttachmentRef], ImageGenerationBatchReport) {
         let center = environment.conversationCenter
-        let chosen = agentInitiated
-            ? try center.resolveAgentImageRoute(operation: operation, modelID: modelID,
-                selection: selection ?? .init(nativeSizeOverride: size), count: count, referenceCount: source == nil ? 0 : 1)
-            : modelID.flatMap({ center.mediaProviderAndModel(modelID: $0) }) ?? center.auxiliaryProviderAndModel(for: operation)
-        guard var (provider, model) = chosen,
-              let adapter = ImageProviderAdapterFactory().adapter(for: provider),
-              adapter.supports(operation, for: provider) else {
-            throw FloeError.invalidConfiguration("No compatible image model is configured for this operation")
-        }
-        var sources: [Data] = []
+        let effectiveSelection = selection ?? .init(nativeSizeOverride: size)
+        let sourceImages: [Data]
         if let source {
             let url = try resolveURL(for: source)
             let accessing = url.startAccessingSecurityScopedResource()
@@ -336,56 +361,175 @@ final class FilesCenter: ObservableObject {
             guard data.count <= 12 * 1_024 * 1_024 else {
                 throw FloeError.validationFailed("Source image exceeds 12 MiB")
             }
-            sources = [data]
-        }
-        let result: RemoteImageResult
-        if agentInitiated {
-            let routed = try await center.performAgentImage(operation: operation, prompt: prompt,
-                sourceImages: sources, modelID: model.id, selection: selection ?? .init(nativeSizeOverride: size), count: count)
-            result = routed.0; provider = routed.1; model = routed.2
+            sourceImages = [data]
         } else {
-            result = try await adapter.perform(
-            RemoteImageRequest(
-                operation: operation,
-                prompt: prompt,
-                sourceImages: sources,
-                sizeHint: size,
-                selection: selection,
-                count: count,
-                modelRemoteID: model.remoteModelID
-            ),
-            provider: provider,
-            credentials: center.resolveCredentials(for: provider)
-        )
+            sourceImages = []
         }
-        try FileManager.default.createDirectory(
-            at: generatedImageDirectory,
-            withIntermediateDirectories: true
-        )
-        let attachments = try result.images.enumerated().map { index, data in
+
+        let routed: (RemoteImageResult, ProviderProfile, ModelProfile)
+        if agentInitiated {
+            // Preserve the caller's original intent. Passing a pre-resolved
+            // model id here would turn autonomous routing into an exact
+            // explicit selection and suppress the reviewed fallback policy.
+            routed = try await center.performAgentImage(
+                operation: operation, prompt: prompt, sourceImages: sourceImages,
+                modelID: modelID, selection: effectiveSelection, count: count,
+                routing: routing)
+        } else {
+            // Legacy/manual callers still use the same executable batch path,
+            // but an exact route id is passed deliberately: manual generation
+            // must not fall back to another paid model. The eligible route list
+            // excludes unsupported plan ids before any network call.
+            let routes = center.agentImageRoutes(operation: operation)
+            let chosen: (ProviderProfile, ModelProfile)?
+            if let modelID {
+                chosen = routes.first { $0.1.id == modelID }
+            } else if let preferred = center.auxiliaryProviderAndModel(for: operation) {
+                chosen = routes.first { $0.1.id == preferred.1.id }
+            } else {
+                chosen = nil
+            }
+            guard let chosen else {
+                throw FloeError.invalidConfiguration(
+                    modelID == nil
+                        ? "The saved image model is not available on its billing channel; choose another model."
+                        : "The selected image model is not available on its billing channel; choose another model.")
+            }
+            routed = try await center.performAgentImage(
+                operation: operation, prompt: prompt, sourceImages: sourceImages,
+                modelID: chosen.1.id, selection: effectiveSelection,
+                count: count, routing: .selected)
+        }
+
+        let attachments = try persistGeneratedImages(
+            routed.0.images, operation: operation)
+        let report = ImageGenerationBatchReport(metadata: routed.0.metadata)
+        return (attachments, report)
+    }
+
+    /// Per-image result of a Files persistence attempt. `attachments` are the
+    /// bytes that are actually written, recorded and visible in Files; a mixed
+    /// batch never hides those references because one later image failed.
+    struct GeneratedImagePersistenceOutcome: Sendable {
+        var attachments: [AttachmentRef]
+        var failedCount: Int
+        /// Technical detail for logs/handoff. User-facing copy uses counts.
+        var failure: String?
+    }
+
+    struct GeneratedImagePersistenceError: LocalizedError, Sendable {
+        let failedCount: Int
+        let savedCount: Int
+        let technicalFailure: String
+
+        var errorDescription: String? {
+            var parts: [String] = []
+            if failedCount > 0 {
+                parts.append(FloeL10n.l(
+                    "files.remote_image_creation_view.image_save_failed_count",
+                    failedCount))
+            }
+            if savedCount > 0 {
+                parts.append(FloeL10n.l(
+                    "files.remote_image_creation_view.images_saved_count",
+                    savedCount))
+            }
+            return parts.isEmpty ? technicalFailure : parts.joined(separator: " ")
+        }
+    }
+
+    /// Persists already-paid image bytes into the Files generated-image store
+    /// and the recents list. Shared by normal generation and the Canvas partial
+    /// path so a failed batch never discards successful provider output.
+    ///
+    /// Every payload is sniffed before it is named: an unchanged WebP/GIF/JPEG
+    /// keeps its real extension and UTI instead of being relabelled JPEG. A
+    /// later write failure returns the earlier attachments rather than losing
+    /// their references.
+    @discardableResult
+    func persistGeneratedImages(
+        _ images: [Data],
+        operation: RemoteImageOperation
+    ) throws -> [AttachmentRef] {
+        let outcome = persistGeneratedImagesOutcome(images, operation: operation)
+        if let failure = outcome.failure {
+            throw GeneratedImagePersistenceError(
+                failedCount: outcome.failedCount,
+                savedCount: outcome.attachments.count,
+                technicalFailure: failure)
+        }
+        return outcome.attachments
+    }
+
+    func persistGeneratedImagesOutcome(
+        _ images: [Data],
+        operation: RemoteImageOperation
+    ) -> GeneratedImagePersistenceOutcome {
+        guard !images.isEmpty else {
+            return GeneratedImagePersistenceOutcome(
+                attachments: [], failedCount: 0, failure: nil)
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: generatedImageDirectory,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            return GeneratedImagePersistenceOutcome(
+                attachments: [], failedCount: images.count,
+                failure: "The generated-image directory is unavailable: \(error.localizedDescription)")
+        }
+
+        var attachments: [AttachmentRef] = []
+        var failures: [String] = []
+        for (index, data) in images.enumerated() {
+            let label = operation == .generate
+                ? "Generated \(index + 1)" : "Edited \(index + 1)"
+            guard !data.isEmpty else {
+                failures.append("\(label) is empty.")
+                continue
+            }
             guard data.count <= 12 * 1_024 * 1_024 else {
-                throw FloeError.validationFailed("Generated image exceeds 12 MiB")
+                failures.append("\(label) exceeds 12 MiB.")
+                continue
+            }
+            let format: ImageGenerationImageFormat
+            do {
+                format = try ImageGenerationImageFormatResolver.resolve(data)
+            } catch {
+                failures.append("\(label) has unsupported or unrecognized image bytes.")
+                continue
             }
             let id = UUID()
-            let isPNG = data.starts(with: [0x89, 0x50, 0x4E, 0x47])
-            let ext = isPNG ? "png" : "jpg"
-            let relative = "\(id.uuidString).\(ext)"
-            try data.write(to: generatedImageDirectory.appendingPathComponent(relative), options: .atomic)
-            return AttachmentRef(
+            let relative = "\(id.uuidString).\(format.fileExtension)"
+            let destination = generatedImageDirectory.appendingPathComponent(relative)
+            do {
+                try data.write(to: destination, options: .atomic)
+            } catch {
+                // A failed atomic write must not leave an unreferenced file
+                // that looks like a saved generated image.
+                try? FileManager.default.removeItem(at: destination)
+                failures.append("\(label) could not be saved: \(error.localizedDescription)")
+                continue
+            }
+            attachments.append(AttachmentRef(
                 id: id,
                 kind: .image,
-                displayName: operation == .generate
-                    ? "Generated \(index + 1).\(ext)"
-                    : "Edited \(index + 1).\(ext)",
-                uti: isPNG ? UTType.png.identifier : UTType.jpeg.identifier,
+                displayName: "\(label).\(format.fileExtension)",
+                uti: format.uti,
                 byteCount: data.count,
                 sha256: FloeDigest.sha256Hex(data),
                 storage: .applicationSupport,
                 relativePath: relative
-            )
+            ))
         }
-        recentFiles.insert(contentsOf: attachments, at: 0)
-        return (attachments, "providerID=\(provider.id.uuidString) modelID=\(model.id.uuidString) model=\(model.remoteModelID) fallbackUsed=\(result.metadata["fallbackUsed"] ?? "false") parameters=\(result.metadata["parameters"] ?? "{}")")
+        if !attachments.isEmpty {
+            recentFiles.insert(contentsOf: attachments, at: 0)
+        }
+        return GeneratedImagePersistenceOutcome(
+            attachments: attachments,
+            failedCount: failures.count,
+            failure: failures.isEmpty ? nil : failures.joined(separator: " "))
     }
 
     // MARK: - Document working copies

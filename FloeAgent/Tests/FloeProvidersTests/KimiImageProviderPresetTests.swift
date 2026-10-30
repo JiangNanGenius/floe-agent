@@ -51,6 +51,38 @@ struct KimiImageProviderPresetTests {
         ).id == .custom)
     }
 
+    @Test("Kimi exposes no ratio control, so no aspect value is injected")
+    func noInjectedAspectDefault() throws {
+        let profile = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://api.kimi.com/coding/v1")!,
+            presetID: "kimi-code"
+        )
+        let model = ModelProfile(
+            providerID: profile.id,
+            remoteModelID: "kimi-k3",
+            displayName: "Kimi K3",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 1_024),
+            capabilities: [.imageGeneration, .imageEditing]
+        )
+        let contract = ImageGenerationPresetResolver.parameterContract(
+            provider: profile, model: model, operation: .generate)
+        #expect(contract.aspectRatio.isEmpty)
+        #expect(contract.defaultAspectRatio == nil)
+        #expect(contract.countStrategy == .sequentialSingleImageRequests)
+        #expect(contract.maximumCount == 4)
+        #expect(contract.maximumCountPerRequest == 1)
+
+        let effective = ImageGenerationPresetResolver.applyingDefaults(
+            .init(), provider: profile, model: model, operation: .generate)
+        #expect(effective.aspectRatio == nil)
+        #expect(try ImageGenerationPresetResolver.nativeSize(
+            provider: .custom, modelRemoteID: "kimi-k3",
+            operation: .generate, selection: effective
+        ) == nil)
+    }
+
     @Test("Template identity round-trips separately from the generic custom template")
     func stableTemplateIdentity() throws {
         let data = try JSONEncoder().encode(ProviderTemplateID.kimiCode)

@@ -38523,6 +38523,38 @@
         }
       }
     },
+    "files.remote_image_creation_view.image_save_failed_count": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some generated images could not be saved (%1$d)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分生成的图片无法保存（%1$d 张）。"
+          }
+        }
+      }
+    },
+    "files.remote_image_creation_view.images_saved_count": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$d generated images were saved to Files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存 %1$d 张生成的图片到文件。"
+          }
+        }
+      }
+    },
     "files.remote_image_creation_view.no_available_model": {
       "localizations": {
         "en": {
@@ -59377,13 +59409,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The created images could not be saved to Files."
+            "value": "Some created images could not be saved to Files."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已创建的图片无法保存到文件。"
+            "value": "部分已创建的图片无法保存到文件。"
           }
         }
       }
