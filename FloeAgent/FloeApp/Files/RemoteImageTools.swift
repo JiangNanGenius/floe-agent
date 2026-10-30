@@ -6,6 +6,7 @@ import CryptoKit
 import ImageIO
 import PDFKit
 import UIKit
+import UniformTypeIdentifiers
 import FloeCore
 import FloeModels
 import FloeProviders
@@ -689,7 +690,7 @@ struct RemoteImageGenerateTool: AgentTool {
     static let toolEffect: ToolEffect = .mutating
 
     private let generate: @MainActor @Sendable (
-        Arguments, UUID, Int
+        Arguments, UUID?, Int
     ) async throws -> ([AttachmentRef], ImageGenerationBatchReport)
     private let resolveURL: @MainActor @Sendable (AttachmentRef) throws -> URL
     private let resolvePublicModel: @MainActor @Sendable (String) throws -> UUID
@@ -759,7 +760,7 @@ struct RemoteImageGenerateTool: AgentTool {
             return ToolArtifactReference(
                 id: attachment.id,
                 relativePath: "GeneratedImages/\(relative)",
-                mimeType: attachment.uti.contains("png") ? "image/png" : "image/jpeg",
+                mimeType: UTType(attachment.uti)?.preferredMIMEType ?? "application/octet-stream",
                 byteCount: attachment.byteCount,
                 sha256: attachment.sha256
             )
@@ -796,7 +797,7 @@ struct RemoteImageGenerateTool: AgentTool {
                                 sha256: attachment.sha256,
                                 byteCount: attachment.byteCount,
                                 displayName: displayName,
-                                mimeType: attachment.uti.contains("png") ? "image/png" : "image/jpeg",
+                                mimeType: UTType(attachment.uti)?.preferredMIMEType ?? "application/octet-stream",
                                 uti: attachment.uti.utf8.count <= 128 ? attachment.uti : nil
                             )
                         ),

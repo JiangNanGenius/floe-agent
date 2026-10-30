@@ -136,8 +136,8 @@ struct RemoteImageCreationView: View {
                 operation: .generate,
                 prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
                 count: count,
-                selection: selection,
                 modelID: selectedOption.id,
+                selection: selection,
                 agentInitiated: true,
                 routing: .selected
             )
