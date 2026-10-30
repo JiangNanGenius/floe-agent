@@ -61,6 +61,7 @@ import com.floe.android.host.output.runOutputPdfOpenAgreement
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -83,6 +84,20 @@ private const val MAXIMUM_CONTENT_CHUNKS = 128
 
 /** Bounded wait for the App-owned Notes platform (store/recovery) to open. */
 private const val NOTES_PLATFORM_WAIT_MILLIS = 15_000L
+
+/**
+ * A `user.ask` question is registered inside tool execution, AFTER the durable
+ * `toolRequest` frame and the provider-complete live hint have already been
+ * observed. That single coalesced hint can race the registration, and the
+ * ordinary 750 ms question-refresh throttle then suppresses the only later
+ * opportunity. This bounded window re-reads the authoritative
+ * `question.pending` command while THIS exact run/session still owns the
+ * user.ask call. It never fabricates a question and stops on the first real
+ * snapshot, a terminal run, a holder/session/generation change or after the
+ * fixed attempts.
+ */
+private const val QUESTION_DISCOVERY_ATTEMPTS = 8
+private const val QUESTION_DISCOVERY_INTERVAL_MILLIS = 400L
 
 
 /**
@@ -126,8 +141,10 @@ class ConversationHostController internal constructor(
                 if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
                 rememberUserQuestionSnapshot(session, snapshot)
                 entry.holder.applyUserQuestionSnapshot(session, snapshot)
-                com.floe.android.host.questions.UserQuestionNotifications.onSnapshot(
-                    context = host.appContext, session = session, snapshot = snapshot)
+                host.appContextOrNull?.let { context ->
+                    com.floe.android.host.questions.UserQuestionNotifications.onSnapshot(
+                        context = context, session = session, snapshot = snapshot)
+                }
             }
 
             override fun publishReceipt(
@@ -138,8 +155,10 @@ class ConversationHostController internal constructor(
                 if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
                 entry.holder.applyUserQuestionReceipt(receipt)
                 if (receipt.settled) {
-                    com.floe.android.host.questions.UserQuestionNotifications.cancel(
-                        host.appContext, session.conversationId)
+                    host.appContextOrNull?.let { context ->
+                        com.floe.android.host.questions.UserQuestionNotifications.cancel(
+                            context, session.conversationId)
+                    }
                 }
             }
 
@@ -327,6 +346,9 @@ class ConversationHostController internal constructor(
     private val launchOutcomeListeners =
         ConcurrentHashMap<Long, (admitted: Boolean, reason: String?) -> Unit>()
     private val eventPumps = ConcurrentHashMap<String, EventPumpHandle>()
+
+    /** Bounded question-discovery windows keyed by conversation/run/call. */
+    private val questionDiscoveryJobs = ConcurrentHashMap<String, Job>()
 
     /** At most ONE explicit terminal→model handoff per conversation: a second
      * consent is refused instead of racing the same captured session, and the
@@ -1001,8 +1023,10 @@ class ConversationHostController internal constructor(
         // holder instead of retaining question text after task navigation.
         userQuestions.forget(conversationId)
         runCatching {
-            com.floe.android.host.questions.UserQuestionNotifications.cancel(
-                host.appContext, conversationId)
+            host.appContextOrNull?.let { context ->
+                com.floe.android.host.questions.UserQuestionNotifications.cancel(
+                    context, conversationId)
+            }
         }
     }
 
@@ -1014,6 +1038,9 @@ class ConversationHostController internal constructor(
         host.scope.launch(host.ioDispatcher) { host.attachments.drainSession(retiredSession) }
         eventPumps.values.filter { it.runID in entry.builder.runIds() }
             .forEach { it.close() }
+        // A released holder ends every still-running question-discovery
+        // window for THIS session; no late read may publish into it.
+        cancelQuestionDiscovery(conversationId, entry.holder.session.sessionEpoch)
         // C09: holder retire ends observation for exactly this conversation
         // (identity-CAS: a replacement surface's watch is never touched).
         closeQueueSettleWatchesFor(conversationId)
@@ -2322,7 +2349,22 @@ class ConversationHostController internal constructor(
         if (ConversationWire.isTerminalFrame(frame)) host.runForeground?.agentRunSettled(runID)
         entry.builder.applyRunEvent(frame)
         entry.holder.applyHostSnapshot(entry.builder.build())
+        if (frame.kind == "toolRequest") {
+            val tool = frame.payload?.string("tool")
+            val callID = frame.payload?.string("id") ?: frame.payload?.string("callID")
+            if (tool == "user.ask" && callID != null) {
+                // The coordinator registers and parks the durable question
+                // inside this tool execution, i.e. AFTER this frame. Start
+                // the bounded authoritative re-read window now; it is the
+                // only deterministic discovery point while the parked run
+                // emits no further live frames.
+                beginQuestionDiscovery(
+                    entry, runID, callID, conversationId, sessionEpoch, streamGeneration,
+                )
+            }
+        }
         if (ConversationWire.isTerminalFrame(frame)) {
+            cancelQuestionDiscovery(conversationId, sessionEpoch, runID)
             // A terminal run can no longer consume an answer: cancel the
             // still-pending question owned by THIS run instead of leaving an
             // actionable card that would silently settle nothing.
@@ -2356,6 +2398,65 @@ class ConversationHostController internal constructor(
                 entry, runID, streamGeneration = streamGeneration,
             )
         }
+    }
+
+    /**
+     * Starts (or reuses) the bounded discovery window for one real
+     * `user.ask` tool call. Attempt 0 runs immediately; the remaining
+     * attempts are spaced by [QUESTION_DISCOVERY_INTERVAL_MILLIS]. Every
+     * attempt re-checks the exact holder/session/stream incarnation and the
+     * run's durable state, and the window stops as soon as the authoritative
+     * snapshot projects a pending question. This is not a background poll:
+     * it exists only for a call the durable journal proved, and it dies with
+     * the holder/run/terminal.
+     */
+    private fun beginQuestionDiscovery(
+        entry: ConversationFlowHolderEntry,
+        runID: String,
+        callID: String,
+        conversationId: String,
+        sessionEpoch: Long,
+        streamGeneration: Long,
+    ) {
+        val key = "$conversationId/$sessionEpoch/$runID/$callID"
+        if (questionDiscoveryJobs[key]?.isActive == true) return
+        val job = host.scope.launch(host.ioDispatcher) {
+            repeat(QUESTION_DISCOVERY_ATTEMPTS) { attempt ->
+                if (attempt > 0) delay(QUESTION_DISCOVERY_INTERVAL_MILLIS)
+                if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return@launch
+                if (entry.holder.retired) return@launch
+                if (currentRunStreamGeneration(conversationId, runID) != streamGeneration) {
+                    return@launch
+                }
+                val runState = entry.builder.runStateName(runID)
+                if (runState != null && ConversationWire.isTerminalState(runState)) {
+                    return@launch
+                }
+                // A real projected question already reached the owning
+                // surface; later reads are handled by answer/settlement
+                // refreshes, never by this window.
+                if (entry.holder.currentUserQuestion != null) return@launch
+                userQuestions.refresh(entry.holder.session, force = true)
+            }
+        }
+        questionDiscoveryJobs[key] = job
+        job.invokeOnCompletion { questionDiscoveryJobs.remove(key, job) }
+    }
+
+    /** Cancels every discovery window for this exact session (or run). */
+    private fun cancelQuestionDiscovery(
+        conversationId: String,
+        sessionEpoch: Long,
+        runID: String? = null,
+    ) {
+        val prefix = if (runID == null) {
+            "$conversationId/$sessionEpoch/"
+        } else {
+            "$conversationId/$sessionEpoch/$runID/"
+        }
+        questionDiscoveryJobs.keys
+            .filter { it.startsWith(prefix) }
+            .forEach { questionDiscoveryJobs.remove(it)?.cancel() }
     }
 
     // -------------------------------------------------- C09 queue-settle watch

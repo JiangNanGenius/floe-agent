@@ -37,7 +37,11 @@
 import XCTest
 import Foundation
 import GRDB
+import FloeCore
+import FloeModels
 import FloePersistence
+import FloeTools
+@testable import FloeAgentRuntime
 @testable import FloeAndroidCore
 
 final class G02CompositionIntegrationTests: XCTestCase {
@@ -775,6 +779,281 @@ final class G02CompositionIntegrationTests: XCTestCase {
         // The sweep attached REAL owned work and detached its exact token;
         // it can never be an unowned detached task.
         XCTAssertEqual(RuntimeOwnedWorkRegistry.shared.count(for: boot.epoch), 0)
+    }
+
+    // MARK: - G07.3A interaction command ingress over the real DB
+
+    /// Builds the SAME envelope shape the App submits for one
+    /// conversationLifecycle command. The domain processor is the actual
+    /// registered production handler, not a direct domain call.
+    private func interactionJob(
+        command: String,
+        taskID: UUID,
+        payload: [String: Any]? = nil
+    ) throws -> RuntimeCommandEnvelopeJob {
+        var inner: [String: Any] = [
+            "schema": "floe.command-envelope/3",
+            "scope": "conversationLifecycle",
+            "command": command,
+            "stateful": false,
+            "owner": ["taskID": taskID.uuidString],
+            "correlationID": "itest-\(UUID().uuidString)",
+        ]
+        if let payload { inner["payload"] = payload }
+        let data = try JSONSerialization.data(withJSONObject: inner, options: [.sortedKeys])
+        let correlation = try XCTUnwrap(inner["correlationID"] as? String)
+        return RuntimeCommandEnvelopeJob(
+            correlationID: correlation,
+            handlerKey: BridgeV3.handlerKey(scope: .conversationLifecycle, command: command),
+            command: command,
+            scope: .conversationLifecycle,
+            configurationScope: nil,
+            receipt: "op:test:\(UUID().uuidString)",
+            envelope: data)
+    }
+
+    private func interactionProcessor(
+        _ command: String,
+        installed: G02InstalledComposition
+    ) throws -> RuntimeAsyncProcessor {
+        let key = BridgeV3.handlerKey(scope: .conversationLifecycle, command: command)
+        return try XCTUnwrap(
+            installed.registry.processor(for: key, configurationScope: nil),
+            "real composition must bind \(key)")
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 5,
+        _ check: @escaping () async -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await check() { return }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        throw InteractionIngressError.timeout
+    }
+
+    private enum InteractionIngressError: Error {
+        case timeout
+        case malformedValue
+    }
+
+    /// Actual `conversation.messageSearch` processor over the composition's
+    /// real file-backed DB: a persisted, current-owned ordinary user message
+    /// must be found by visible text (not just by the pure matcher fixture).
+    func testMessageSearchCommandProcessorFindsPersistedOrdinaryUserMessage() async throws {
+        _ = try await bootInstalledGeneration()
+        let installed = try XCTUnwrap(
+            G02RuntimeComposition.shared.installedComposition)
+        let conversations = SQLiteConversationStore(database: installed.cluster.database)
+        let conversation = ConversationRecord(
+            id: UUID(),
+            title: "A19 fixed-schema check",
+            createdAt: Date(timeIntervalSince1970: 1_760_000_100),
+            updatedAt: Date(timeIntervalSince1970: 1_760_000_100),
+            purpose: .ordinary)
+        try await conversations.saveConversation(conversation)
+        let visible = "A19 fixed-schema check. Use user.ask once to ask two questions."
+        let message = PersistedMessage(
+            id: UUID(),
+            conversationID: conversation.id,
+            role: "user",
+            content: visible,
+            createdAt: Date(timeIntervalSince1970: 1_760_000_101),
+            parts: [],
+            runID: nil)
+        try await conversations.appendMessage(message)
+
+        let processor = try interactionProcessor("conversation.messageSearch", installed: installed)
+        let result = await processor.execute(try interactionJob(
+            command: "conversation.messageSearch",
+            taskID: conversation.id,
+            payload: ["query": "fixed-schema", "limit": 200]))
+        XCTAssertEqual(result.kind, .accepted)
+        guard case .object(let body)? = result.value,
+              case .string(let schema)? = body["schema"],
+              case .array(let rows)? = body["rows"] else {
+            throw InteractionIngressError.malformedValue
+        }
+        XCTAssertEqual(schema, "floe.threadsearch.v1")
+        XCTAssertEqual(rows.count, 1)
+        guard case .object(let row) = rows[0],
+              case .string(let messageID)? = row["messageID"],
+              case .string(let role)? = row["role"],
+              case .string(let snippet)? = row["snippet"] else {
+            throw InteractionIngressError.malformedValue
+        }
+        XCTAssertEqual(messageID, message.id.uuidString)
+        XCTAssertEqual(role, "user")
+        XCTAssertTrue(snippet.contains("fixed-schema"))
+    }
+
+    /// Actual `question.pending` + `question.answer` processors, with the
+    /// process-installed coordinator genuinely parked in `ask`, settle the
+    /// first (choice) and second (free text) question and resume the tool
+    /// exactly once. This proves the owner/task/epoch/DB ingress path before
+    /// any App-side UI exists.
+    func testQuestionIngressProcessorsReachParkedAskAndResumeOnce() async throws {
+        _ = try await bootInstalledGeneration()
+        let installed = try XCTUnwrap(
+            G02RuntimeComposition.shared.installedComposition)
+        let coordinator = try XCTUnwrap(
+            UserQuestionHostAPI.shared.current(epoch: installed.epoch))
+        let conversationID = UUID()
+        let runID = UUID()
+        let toolCallID = "call_question_ingress"
+        // The question store's durable FK rows are the REAL owner rows the
+        // App would already have created before a run can ask anything.
+        try await installed.cluster.database.writer { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO conversations (
+                        id, title, created_at, updated_at, title_origin,
+                        mode, is_searchable, archived_at, purpose
+                    ) VALUES (?, 'question-ingress', ?, ?, 'manual', 'chat', 1, NULL, 'ordinary')
+                    """,
+                arguments: [conversationID.uuidString,
+                            "2026-10-01T00:00:00.000Z", "2026-10-01T00:00:00.000Z"])
+            try db.execute(
+                sql: """
+                    INSERT INTO runs (id, conversation_id, state, goal, started_at)
+                    VALUES (?, ?, 'executingTool', 'question-ingress', ?)
+                    """,
+                arguments: [runID.uuidString, conversationID.uuidString,
+                            "2026-10-01T00:00:00.000Z"])
+        }
+        let request = try UserQuestionRequest(
+            waitPolicy: .required,
+            questions: [
+                UserQuestionDraft(
+                    id: "color",
+                    question: "Choose Red or Blue.",
+                    options: [
+                        UserQuestionOption(id: "red", label: "Red"),
+                        UserQuestionOption(id: "blue", label: "Blue"),
+                    ],
+                    selection: .single,
+                    allowsFreeText: false,
+                    waitPolicy: .required),
+                UserQuestionDraft(
+                    id: "note",
+                    question: "Short note (text only).",
+                    options: [],
+                    selection: .single,
+                    allowsFreeText: true,
+                    waitPolicy: .required),
+            ])
+        let askTask = Task {
+            try await coordinator.ask(
+                request, runID: runID, conversationID: conversationID,
+                toolCallID: toolCallID, cancellation: CancellationToken(),
+                temporaryReadOnly: false)
+        }
+        addTeardownBlock {
+            try? await coordinator.cancelPending(runID: runID)
+            _ = try? await askTask.value
+        }
+        let requestID = UserQuestionCoordinator.requestID(
+            runID: runID, toolCallID: toolCallID)
+        try await waitUntil { await coordinator.isActivelyWaiting(requestID: requestID) }
+
+        let pendingProcessor = try interactionProcessor("question.pending", installed: installed)
+        let pendingResult = await pendingProcessor.execute(try interactionJob(
+            command: "question.pending", taskID: conversationID))
+        XCTAssertEqual(pendingResult.kind, .accepted)
+        guard case .object(let pendingBody)? = pendingResult.value,
+              case .string(let schema)? = pendingBody["schema"],
+              case .array(let requests)? = pendingBody["requests"],
+              case .object(let pendingRequest)? = requests.first,
+              case .array(let pendingQuestions)? = pendingRequest["questions"],
+              case .object(let firstWireQuestion)? = pendingQuestions.first,
+              case .string(let pendingNonce)? = firstWireQuestion["answerNonce"] else {
+            throw InteractionIngressError.malformedValue
+        }
+        XCTAssertEqual(schema, "floe.question.v1")
+        XCTAssertEqual(pendingQuestions.count, 2)
+        guard case .string(let questionText)? = firstWireQuestion["text"],
+              case .array(let options)? = firstWireQuestion["options"],
+              case .object(let secondOption)? = options.last,
+              case .string(let secondLabel)? = secondOption["label"] else {
+            throw InteractionIngressError.malformedValue
+        }
+        XCTAssertEqual(questionText, "Choose Red or Blue.")
+        XCTAssertEqual(secondLabel, "Blue")
+
+        let snapshotValue = try await coordinator.snapshot(requestID: requestID)
+        let snapshot = try XCTUnwrap(snapshotValue)
+        let first = try XCTUnwrap(snapshot.currentQuestion)
+        let expectedNonce = UserQuestionHostWire.answerNonce(
+            requestID: snapshot.requestID,
+            questionID: first.questionID,
+            revision: first.revision,
+            requestDigest: snapshot.requestDigest)
+        XCTAssertEqual(pendingNonce, expectedNonce)
+
+        let answerProcessor = try interactionProcessor("question.answer", installed: installed)
+        let firstAnswer = await answerProcessor.execute(try interactionJob(
+            command: "question.answer",
+            taskID: conversationID,
+            payload: [
+                "requestID": snapshot.requestID,
+                "requestDigest": snapshot.requestDigest,
+                "questionID": first.questionID,
+                "runID": snapshot.runID.uuidString,
+                "expectedRevision": first.revision,
+                "answerNonce": expectedNonce,
+                "source": "human",
+                "selectedOptionIDs": ["blue"],
+                "freeText": NSNull(),
+            ]))
+        XCTAssertEqual(firstAnswer.kind, .accepted)
+        guard case .object(let firstReceipt)? = firstAnswer.value,
+              case .bool(let accepted)? = firstReceipt["accepted"],
+              case .bool(let alreadySettled)? = firstReceipt["alreadySettled"] else {
+            throw InteractionIngressError.malformedValue
+        }
+        XCTAssertTrue(accepted)
+        XCTAssertFalse(alreadySettled)
+
+        var second: UserQuestion?
+        let secondDeadline = Date().addingTimeInterval(5)
+        while Date() < secondDeadline {
+            if let snap = try await coordinator.snapshot(requestID: requestID),
+               let current = snap.currentQuestion,
+               current.questionID != first.questionID {
+                second = current
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let secondQuestion = try XCTUnwrap(second)
+        let secondNonce = UserQuestionHostWire.answerNonce(
+            requestID: snapshot.requestID,
+            questionID: secondQuestion.questionID,
+            revision: secondQuestion.revision,
+            requestDigest: snapshot.requestDigest)
+        let secondAnswer = await answerProcessor.execute(try interactionJob(
+            command: "question.answer",
+            taskID: conversationID,
+            payload: [
+                "requestID": snapshot.requestID,
+                "requestDigest": snapshot.requestDigest,
+                "questionID": secondQuestion.questionID,
+                "runID": snapshot.runID.uuidString,
+                "expectedRevision": secondQuestion.revision,
+                "answerNonce": secondNonce,
+                "source": "human",
+                "selectedOptionIDs": [String](),
+                "freeText": "my note",
+            ]))
+        XCTAssertEqual(secondAnswer.kind, .accepted)
+        let receipt = try await askTask.value
+        XCTAssertEqual(receipt.status, .answered)
+        XCTAssertEqual(receipt.humanAnsweredQuestionIDs.count, 2)
+        XCTAssertEqual(
+            Set(receipt.answers.map(\.questionID)),
+            Set([first.questionID, secondQuestion.questionID]))
     }
 }
 

@@ -184,6 +184,12 @@ class ConversationLiveStreamSnapshotTest {
                                 )
                             }
                         }
+                        "op:v1:questionPending" -> effect(
+                            correlation, "questionPending",
+                            accepted(
+                                """{"schema":"floe.question.v1","conversationID":"$conversationId","requests":[]}""",
+                            ),
+                        )
                         "op:v1:runSnapshot" -> {
                             // Select the scripted page BEFORE counting/holding
                             // so request order (and the incarnation-fence
@@ -236,6 +242,8 @@ class ConversationLiveStreamSnapshotTest {
                 }
                 request.contains("\"command\":\"conversation.get\"") ->
                     receipt(correlation, "cget")
+                request.contains("\"command\":\"question.pending\"") ->
+                    receipt(correlation, "questionPending")
                 request.contains("\"command\":\"run.snapshot\"") ->
                     receipt(correlation, "runSnapshot")
                 request.contains("\"command\":\"run.retry\"") ->

@@ -154,7 +154,13 @@ internal class UserQuestionHostController(
             HostCommandRequest(
                 command = "question.answer",
                 scope = HostScope.ConversationLifecycle(session.conversationId),
-                stateful = true,
+                // `stateful` is the ENVELOPE revision flag, not "mutates
+                // state": the frozen bridge matrix declares question.answer
+                // revisionRequired=false because identity/CAS travel in the
+                // payload (requestDigest/runID/expectedRevision/answerNonce).
+                // Sending true fails the native statefulMismatch check before
+                // the question handler is ever reached.
+                stateful = false,
                 correlationID = "qanswer-${correlation.incrementAndGet()}",
                 payload = payload,
             ),
@@ -190,7 +196,10 @@ internal class UserQuestionHostController(
             HostCommandRequest(
                 command = "question.cancel",
                 scope = HostScope.ConversationLifecycle(session.conversationId),
-                stateful = true,
+                // Same frozen rule as question.answer: revisionRequired=false,
+                // while requestID is the payload identity. A true envelope
+                // stateful flag would be rejected as statefulMismatch.
+                stateful = false,
                 correlationID = "qcancel-${correlation.incrementAndGet()}",
                 payload = JsonObject(mapOf("requestID" to JsonPrimitive(requestId))),
             ),

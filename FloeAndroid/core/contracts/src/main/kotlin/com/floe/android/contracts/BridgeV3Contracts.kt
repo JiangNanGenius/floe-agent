@@ -300,6 +300,19 @@ object BridgeV3CommandMatrix {
         rule("workspace.read", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
         rule("workspace.write", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
         rule("workspace.activate", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
+
+        // G07.3A interaction batch (2026-10-30): current-thread visible search
+        // + durable user questions. APPEND-ONLY on top of the preserved
+        // 90-entry baseline, exactly mirroring the Swift matrix tuples and
+        // the 95-entry golden. `question.answer`/`question.cancel` stay
+        // revisionRequired=false: their CAS identity (requestDigest/runID/
+        // expectedRevision/nonce) travels in the payload, so the envelope
+        // `stateful` flag is false.
+        rule("conversation.messageSearch", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
+        rule("conversation.messageWindow", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
+        rule("question.pending", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
+        rule("question.answer", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
+        rule("question.cancel", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
     )
 
     fun entry(command: String, scope: BridgeV3Scope.Kind): BridgeV3CommandRule? =

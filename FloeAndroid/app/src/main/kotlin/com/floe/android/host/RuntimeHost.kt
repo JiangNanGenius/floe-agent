@@ -639,6 +639,16 @@ class RuntimeHost internal constructor(
     lateinit var appContext: android.content.Context
         internal set
 
+    /**
+     * Null until the Application owner binds [appContext]. Pure controller
+     * fixtures and component hosts have no platform surface, so every
+     * optional platform affordance (share sheet, notification reminder) must
+     * no-op instead of dereferencing an unbound context from a background
+     * effect callback.
+     */
+    internal val appContextOrNull: android.content.Context?
+        get() = if (::appContext.isInitialized) appContext else null
+
     /** Share text through the platform share sheet (off the UI thread). */
     internal fun shareText(text: String, mimeType: String): Boolean {
         if (!::appContext.isInitialized) return false
