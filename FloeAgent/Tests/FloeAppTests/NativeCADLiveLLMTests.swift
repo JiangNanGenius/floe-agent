@@ -3293,4 +3293,151 @@ private final class NativeCADContextCompactionSession {
     }
 }
 
+// MARK: - Non-paid save-identity App-host regression
+
+/// App-hosted, deterministic, NON-PAID regression for the cadlive-6 failure.
+/// It uses the real `FloeCADDocument` create/open/save path in the App test
+/// host. No opt-in file, provider, credential, model call, conversation or
+/// paid route is used. Adding this class to this already-registered file needs
+/// no project regeneration.
+@MainActor
+final class NativeCADSaveIdentityAppTests: XCTestCase {
+    private var root: URL!
+    private var documentURL: URL!
+
+    override func setUp() async throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NativeCADSaveIdentity-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        documentURL = root.appendingPathComponent("CleanIdentity.floecad")
+    }
+
+    override func tearDown() async throws {
+        if let root { try? FileManager.default.removeItem(at: root) }
+    }
+
+    func testCreateAndLoadedCleanSavePreserveModelIdentityAndTrueEditMovesIt() async throws {
+        let document = try await FloeCADDocument.create(at: documentURL, name: "CleanIdentity")
+        try addBox(to: document, size: 12, name: "First")
+
+        let created = await document.save()
+        XCTAssertTrue(created.succeeded, created.error ?? "")
+        XCTAssertFalse(created.modelSHA256.isEmpty)
+        let baseModelSHA = created.modelSHA256
+        let baseDocument = try documentObject(at: documentURL)
+        let baseBreps = try brepBytes(in: baseDocument, at: documentURL)
+
+        // A clean save on the just-created, non-empty document must preserve
+        // the canonical model identity and the opaque record/BRep bytes.
+        let createdClean = await document.save()
+        XCTAssertTrue(createdClean.succeeded, createdClean.error ?? "")
+        XCTAssertEqual(createdClean.revision, created.revision + 1)
+        XCTAssertEqual(createdClean.modelSHA256, baseModelSHA,
+                       "a clean create-path save must not move modelSHA256")
+        try assertOpaqueRecordsUnchanged(
+            base: baseDocument,
+            current: try documentObject(at: documentURL),
+            baseBRep: baseBreps, url: documentURL)
+
+        // Reload from disk, perform the exact read-only work of the failing
+        // third live turn, then save cleanly. The loaded path must also keep
+        // the same identity.
+        document.close()
+        let loaded = try await FloeCADDocument.open(at: documentURL)
+        for scope in ["bodies", "edges", "faces", "sketches", "features"] {
+            let query = loaded.nativeQueryJSON(["scope": scope])
+            XCTAssertTrue(query.isOK, "query \(scope): \(query.message ?? "")")
+        }
+        let bodies = loaded.nativeQueryJSON(["scope": "bodies"])
+        let bodyObject = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: bodies.payload) as? [String: Any])
+        let bodyRows = try XCTUnwrap(bodyObject["rows"] as? [[String: Any]])
+        let bodyID = try XCTUnwrap(bodyRows.first?["id"] as? String)
+        XCTAssertTrue(loaded.measureJSON(["kind": "body", "bodyID": bodyID]).isOK)
+        let capture = try loaded.captureViewportPNG(width: 320, height: 240)
+        XCTAssertEqual(capture.revision, createdClean.revision)
+
+        let loadedClean = await loaded.save()
+        XCTAssertTrue(loadedClean.succeeded, loadedClean.error ?? "")
+        XCTAssertEqual(loadedClean.revision, createdClean.revision + 1)
+        XCTAssertEqual(loadedClean.modelSHA256, baseModelSHA,
+                       "readbacks + loaded clean save must not move modelSHA256")
+        try assertOpaqueRecordsUnchanged(
+            base: baseDocument,
+            current: try documentObject(at: documentURL),
+            baseBRep: baseBreps, url: documentURL)
+
+        // A real geometry edit still moves the canonical identity.
+        try addBox(to: loaded, size: 4, name: "Second")
+        let edited = await loaded.save()
+        XCTAssertTrue(edited.succeeded, edited.error ?? "")
+        XCTAssertGreaterThan(edited.revision, loadedClean.revision)
+        XCTAssertNotEqual(edited.modelSHA256, baseModelSHA,
+                          "a real model edit must still move modelSHA256")
+        loaded.close()
+    }
+
+    func testClosedSaveIsRefusedWithoutRewritingThePackage() async throws {
+        let document = try await FloeCADDocument.create(at: documentURL, name: "ClosedIdentity")
+        try addBox(to: document, size: 8, name: "Only")
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+
+        let manifestURL = documentURL.appendingPathComponent("manifest.json")
+        let before = try Data(contentsOf: manifestURL)
+        document.close()
+        let refused = await document.save()
+        XCTAssertFalse(refused.succeeded, "a save after close must be refused")
+        XCTAssertEqual(try Data(contentsOf: manifestURL), before,
+                       "a refused closed save must not rewrite the package")
+    }
+
+    // MARK: Fixtures
+
+    private func addBox(to document: FloeCADDocument, size: Double, name: String) throws {
+        let sketch = document.executeJSON(Data(#"{"op":"sketch.create","args":{"name":"\#(name)"}}"#.utf8))
+        XCTAssertTrue(sketch.isOK, sketch.message ?? "")
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: sketch.payload) as? [String: Any])
+        let sketchID = try XCTUnwrap(object["sketchID"] as? String)
+        let entities = document.executeJSON(Data("""
+        {"op":"sketch.addEntities","args":{"sketchID":"\(sketchID)",
+         "entities":[{"kind":"rect","min":[0,0],"max":[\(size),\(size)]}]}}
+        """.utf8))
+        XCTAssertTrue(entities.isOK, entities.message ?? "")
+        let extrude = document.executeJSON(Data("""
+        {"op":"feature.extrude","args":{"sketchID":"\(sketchID)",
+         "seedPoint":[1,1],"distance":\(size / 2)}}
+        """.utf8))
+        XCTAssertTrue(extrude.isOK, extrude.message ?? "")
+    }
+
+    private func documentObject(at url: URL) throws -> [String: Any] {
+        let data = try Data(contentsOf: url.appendingPathComponent("document.json"))
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func brepBytes(in document: [String: Any], at url: URL) throws -> Data {
+        let bodies = try XCTUnwrap(document["bodies"] as? [[String: Any]])
+        let relative = try XCTUnwrap(bodies.first?["brepBlob"] as? String)
+        return try Data(contentsOf: url.appendingPathComponent(relative))
+    }
+
+    private func assertOpaqueRecordsUnchanged(
+        base: [String: Any], current: [String: Any], baseBRep: Data, url: URL,
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        func strings(_ object: [String: Any], _ section: String, _ field: String) -> [String] {
+            (object[section] as? [[String: Any]])?.compactMap { $0[field] as? String } ?? []
+        }
+        XCTAssertEqual(strings(current, "bodies", "transform"),
+                       strings(base, "bodies", "transform"), file: file, line: line)
+        XCTAssertEqual(strings(current, "sketches", "data"),
+                       strings(base, "sketches", "data"), file: file, line: line)
+        XCTAssertEqual(strings(current, "features", "kind"),
+                       strings(base, "features", "kind"), file: file, line: line)
+        XCTAssertEqual(try brepBytes(in: current, at: url), baseBRep, file: file, line: line)
+    }
+}
+
 #endif

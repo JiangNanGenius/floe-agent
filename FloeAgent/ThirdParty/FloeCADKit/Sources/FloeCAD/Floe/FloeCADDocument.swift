@@ -369,6 +369,43 @@ public final class FloeCADDocument {
                                   modelSHA256: store.modelSHA256,
                                   error: "The CAD document is closed and cannot be saved.")
         }
+        guard !isReadOnly else {
+            return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256,
+                                  modelSHA256: store.modelSHA256,
+                                  error: "This CAD document uses a newer format and is read-only.")
+        }
+        // Pin the generation BEFORE any await. An edit arriving while a save
+        // is in flight must not be acknowledged as part of its older payload.
+        // The session path may include a newer edit during serialization; in
+        // that case retaining a dirty flag is deliberately conservative.
+        let savedChangeCount = session.changeCount
+        if savedChangeCount == lastCommittedChangeCount, session.lastSaveError == nil {
+            // No document commands ran since the validated load/last save.
+            // Preserve its opaque record/B-rep bytes. Re-encoding a loaded
+            // transform/sketch/feature with JSONEncoder's unspecified key
+            // order (and reserializing B-reps) changes those bytes despite an
+            // unchanged model. The historical model digest intentionally
+            // includes them; do not redefine the digest to hide that churn.
+            // Project metadata and thumbnail updates still enter the payload.
+            do {
+                project.modifiedAt = Date()
+                let payload = try store.makePayload(project)
+                let targetStore = store
+                let committed = try await Task.detached(priority: .utility) {
+                    try Self.writePreparedPayload(payload, to: targetStore)
+                }.value
+                if committed.0 >= revision {
+                    revision = committed.0
+                    contentSHA256 = committed.1
+                }
+                lastCommittedChangeCount = max(lastCommittedChangeCount, savedChangeCount)
+                return CADSaveOutcome(revision: committed.0, contentSHA256: committed.1,
+                                      modelSHA256: committed.2, error: nil)
+            } catch {
+                return CADSaveOutcome(revision: store.revision, contentSHA256: store.contentSHA256,
+                                      modelSHA256: store.modelSHA256, error: error.localizedDescription)
+            }
+        }
         await session.saveAsync()
         if let error = session.lastSaveError {
             return CADSaveOutcome(revision: store.revision, contentSHA256: store.contentSHA256,
@@ -376,9 +413,23 @@ public final class FloeCADDocument {
         }
         revision = store.revision
         contentSHA256 = store.contentSHA256
-        lastCommittedChangeCount = session.changeCount
+        lastCommittedChangeCount = max(lastCommittedChangeCount, savedChangeCount)
         return CADSaveOutcome(revision: revision, contentSHA256: contentSHA256,
                               modelSHA256: store.modelSHA256, error: nil)
+    }
+
+    // Keep the entire hashing/commit boundary explicitly nonisolated. With
+    // default MainActor isolation, an inline detached closure can otherwise
+    // infer actor isolation from its synchronous work and hop back to main,
+    // blocking the actor while a competing package writer holds the gate.
+    private nonisolated static func writePreparedPayload(
+        _ payload: CADWritePayload, to store: FileCADDocumentStore
+    ) throws -> (revision: Int, contentSHA256: String, modelSHA256: String) {
+        let modelSHA = try FileCADDocumentStore.modelDigest(
+            name: payload.name, unit: payload.unit, tolerance: payload.tolerance,
+            document: payload.document, blobs: payload.blobs)
+        let result = try store.performWrite(payload)
+        return (result.revision, result.contentSHA256, modelSHA)
     }
 
     /// Flush only when there is something to flush; used by the proposal

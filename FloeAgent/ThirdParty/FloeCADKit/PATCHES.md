@@ -110,3 +110,12 @@ and viewport-aware fitting. The shared inline title survives Edit/Present change
 Texture cache identities use the complete content digest with bounded exact-byte
 reuse; stale metadata and small image edits cannot alias another texture. GLB PNG
 packing preserves straight-alpha RGB without a lossy premultiplication round trip.
+
+## 2026-10-31: preserve clean-save model identity
+
+Clean saves reuse the committed opaque record and BRep bytes rather than
+re-encoding unchanged geometry. Content revisions still advance for metadata
+and preview commits, while model identity remains stable. Saves pin the
+change generation before suspension so a later edit remains dirty, and closed
+or newer-format documents remain protected. The staged commit and digest
+calculation run outside the main actor.
