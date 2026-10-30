@@ -896,6 +896,29 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         XCTAssertEqual(CADAssemblyGeometryDigest.digest(of: staged), after.stagedGeometryHash)
     }
 
+    func testLegacyReferenceDecodesAndReencodesWithReaderProvenance() throws {
+        let original = CADPartReference(
+            name: "Legacy gear", sourceDocumentID: UUID(), sourceBodyID: UUID(),
+            sourceDocumentName: "Source", sourceBodyName: "Gear",
+            verifierSchemaVersion: 3, sourceSchemaVersion: 2, sourceRevision: 7,
+            sourceContentHash: String(repeating: "a", count: 64),
+            stagedBodyID: UUID(), stagedGeometryHash: String(repeating: "b", count: 64))
+        let encoded = try JSONEncoder().encode(original)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacy["sourceWriterVersion"] = legacy.removeValue(forKey: "verifierSchemaVersion")
+        let recovered = try JSONDecoder().decode(
+            CADPartReference.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertEqual(recovered, original)
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(recovered)) as? [String: Any])
+        XCTAssertEqual(saved["verifierSchemaVersion"] as? Int, 3)
+        XCTAssertEqual(saved["sourceSchemaVersion"] as? Int, 2)
+        XCTAssertEqual(saved["sourceRevision"] as? Int, 7)
+        XCTAssertNil(saved["sourceWriterVersion"])
+        XCTAssertEqual(try JSONDecoder().decode(
+            CADPartReference.self, from: JSONEncoder().encode(recovered)), original)
+    }
+
     /// Provenance reports the ACTUAL source schema plus this reader's verified
     /// capability — never a fabricated historical writer fact.
     func testReferenceProvenanceReportsReaderCapabilityAndSourceSchema() async throws {

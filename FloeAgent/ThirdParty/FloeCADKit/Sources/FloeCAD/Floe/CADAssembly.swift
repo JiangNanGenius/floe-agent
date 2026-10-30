@@ -341,9 +341,11 @@ public nonisolated struct CADPartReference: Codable, Sendable, Equatable, Identi
         case sourceContentHash, stagedBodyID, stagedGeometryHash, stagedRevision
         case pinnedAt, availableSourceRevision, availableSourceContentHash
         case availableSchemaVersion, lastCheckedAt, missingReason
-        /// Only read, for documents written by the unreleased E01 build that
-        /// still used the misnamed field. Encoding never emits it.
-        case legacySourceWriterVersion = "sourceWriterVersion"
+    }
+
+    /// Legacy names stay outside the synthesized encoder's keys.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case sourceWriterVersion
     }
 
     public init(from decoder: Decoder) throws {
@@ -358,8 +360,9 @@ public nonisolated struct CADPartReference: Codable, Sendable, Equatable, Identi
         if let value = try container.decodeIfPresent(Int.self, forKey: .verifierSchemaVersion) {
             verifierSchemaVersion = value
         } else {
-            verifierSchemaVersion = try container.decodeIfPresent(
-                Int.self, forKey: .legacySourceWriterVersion) ?? 0
+            let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+            verifierSchemaVersion = try legacy.decodeIfPresent(
+                Int.self, forKey: .sourceWriterVersion) ?? 0
         }
         sourceSchemaVersion = try container.decodeIfPresent(Int.self, forKey: .sourceSchemaVersion) ?? 0
         sourceRevision = try container.decodeIfPresent(Int.self, forKey: .sourceRevision) ?? 0
