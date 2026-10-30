@@ -313,7 +313,7 @@ public final class UserQuestionNotificationBridge {
         _ response: UserQuestionNotificationResponse,
         answering: any UserQuestionNotificationAnswering,
         onOpen: (@MainActor @Sendable (UserQuestionNotificationPayload) -> Void)? = nil,
-        completion: @escaping @Sendable () -> Void
+        completion: @escaping () -> Void
     ) -> Bool {
         let payload = response.payload
         let action = response.action

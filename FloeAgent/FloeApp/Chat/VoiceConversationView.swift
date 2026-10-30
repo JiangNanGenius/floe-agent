@@ -150,10 +150,14 @@ final class ContinuousVoiceScreenSession: ObservableObject {
         environment.userQuestions.$pending.sink { [weak self] pending in
             guard let self, let owner = self.driver.conversationID else { return }
             let questionID = pending[owner]?.currentQuestion?.questionID
-            self.coordinator.setUserQuestionReply(questionID: questionID, reply: questionID == nil ? nil : { [weak self] text in
-                guard let self, self.isActive, self.driver.conversationID == owner else { return false }
-                return try await self.environment.userQuestions.answerSpokenText(text, conversationID: owner)
-            })
+            let reply: (@MainActor (String) async throws -> Bool)?
+            if questionID != nil {
+                reply = { [weak self] text in
+                    guard let self, self.isActive, self.driver.conversationID == owner else { return false }
+                    return try await self.environment.userQuestions.answerSpokenText(text, conversationID: owner)
+                }
+            } else { reply = nil }
+            self.coordinator.setUserQuestionReply(questionID: questionID, reply: reply)
         }.store(in: &subscriptions)
         bridge = ContinuousVoiceSpeechBridge(output: coordinator, synthesize: { [weak self] unit in
             guard let self else {
