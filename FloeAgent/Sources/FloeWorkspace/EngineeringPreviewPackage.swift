@@ -43,6 +43,10 @@ public struct EngineeringPreviewLimits: Sendable, Equatable {
         maximumBytes: EngineeringPreviewPackage.maximumBytes,
         maximumFiles: EngineeringPreviewPackage.maximumFiles)
 
+    /// Opt-in only; this never changes ordinary file reads or the default route.
+    public static let expandedReadOnly = EngineeringPreviewLimits(
+        maximumBytes: 64 * 1024 * 1024, maximumFiles: 128)
+
     public init(maximumBytes: Int, maximumFiles: Int) {
         self.maximumBytes = max(1, maximumBytes)
         self.maximumFiles = max(1, maximumFiles)

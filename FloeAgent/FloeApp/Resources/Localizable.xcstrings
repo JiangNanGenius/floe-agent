@@ -32694,6 +32694,38 @@
         }
       }
     },
+    "engineering.large_model.limit": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This model exceeds the larger preview limit (64 MiB / 128 resources). Reduce the model or split its resources, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模型超过较大预览上限（64 MiB／128 个资源）。请缩小模型或拆分资源后重试。"
+          }
+        }
+      }
+    },
+    "engineering.large_model.open": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open larger model preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开大模型预览"
+          }
+        }
+      }
+    },
     "engineering.retry": {
       "localizations": {
         "en": {

@@ -1852,6 +1852,11 @@ struct EngineeringPreviewURLView: View {
     @State private var package: EngineeringPreviewPackage?
     @State private var error: String?
     @State private var isLoading = true
+    @State private var largeSourceID: UUID?
+    @State private var retry = 0
+    @State private var loadID: UUID?
+    @State private var mayOpenLargeModel = false
+    private var usesExpandedReadOnly: Bool { largeSourceID == source.id }
 
     var body: some View {
         NavigationStack {
@@ -1865,7 +1870,10 @@ struct EngineeringPreviewURLView: View {
                     } description: {
                         Text(error)
                     } actions: {
-                        Button("engineering.retry") { Task { await load() } }
+                        if mayOpenLargeModel {
+                            Button("engineering.large_model.open") { largeSourceID = source.id }
+                        }
+                        Button("engineering.retry") { retry += 1 }
                     }
                 } else if isLoading {
                     ProgressView(EngineeringSceneText.t("正在载入", "Loading"))
@@ -1880,10 +1888,14 @@ struct EngineeringPreviewURLView: View {
                 }
             }
         }
-        .task(id: source.id) { await load() }
+        .task(id: "\(source.id)-\(usesExpandedReadOnly)-\(retry)") { await load() }
     }
 
     private func load() async {
+        let attempt = UUID()
+        loadID = attempt
+        let limits: EngineeringPreviewLimits = usesExpandedReadOnly ? .expandedReadOnly : .standard
+        mayOpenLargeModel = false
         package = nil
         error = nil
         isLoading = true
@@ -1894,7 +1906,7 @@ struct EngineeringPreviewURLView: View {
                 try EngineeringPreviewPackage.load(
                     fileURL: source.url,
                     displayName: source.displayName,
-                    includeSiblingResources: source.includeSiblingResources)
+                    includeSiblingResources: source.includeSiblingResources, limits: limits)
             }
             let loaded = try await withTaskCancellationHandler {
                 try await worker.value
@@ -1905,13 +1917,19 @@ struct EngineeringPreviewURLView: View {
                expected.caseInsensitiveCompare(loaded.provenance.sourceSHA256) != .orderedSame {
                 throw EngineeringPreviewURLFailure.changed
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, loadID == attempt else { return }
             package = loaded
         } catch is CancellationError {
         } catch {
-            self.error = Self.message(for: error)
+            guard !Task.isCancelled, loadID == attempt else { return }
+            let tooLarge = (error as NSError).domain == NSCocoaErrorDomain
+                && (error as NSError).code == NSFileReadTooLargeError
+            mayOpenLargeModel = tooLarge && !usesExpandedReadOnly
+                && [EngineeringPreviewKind.mesh, .cadSurface].contains(where: { $0 == EngineeringPreviewKind.identify(source.displayName) })
+            self.error = usesExpandedReadOnly && tooLarge
+                ? String(localized: "engineering.large_model.limit") : Self.message(for: error)
         }
-        isLoading = false
+        if loadID == attempt { isLoading = false }
     }
 
     private static func message(for error: Error) -> String {

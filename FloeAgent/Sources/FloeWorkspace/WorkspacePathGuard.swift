@@ -41,6 +41,13 @@ public struct WorkspacePathGuard: Sendable {
         })
     }
 
+    /// An operation-specific read budget, retaining the same canonical root,
+    /// mounts, secret-file rules and write budget. It grants no new path.
+    public func withReadLimit(_ maximumBytes: Int) -> Self {
+        Self(rootURL: rootURL, maxReadBytes: max(1, maximumBytes),
+             maxWriteBytes: maxWriteBytes, mounts: mounts)
+    }
+
     /// Basename denylist: exact matches and prefixes (case-insensitive).
     private static let secretExactNames: Set<String> = [
         ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".htpasswd"

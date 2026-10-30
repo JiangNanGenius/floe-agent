@@ -313,3 +313,29 @@ struct EngineeringScenePagingContractTests {
         #expect(page.sourceSHA256 == "source")
     }
 }
+
+@Suite("Preview-specific read budgets")
+struct EngineeringPreviewReadBudgetTests {
+    @Test func largerPreviewKeepsPathMountAndWriteRestrictions() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("preview-budgets-\(UUID())")
+        let root = folder.appendingPathComponent("workspace")
+        let mount = folder.appendingPathComponent("mounted")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let bytes = Data(repeating: 1, count: 64)
+        try bytes.write(to: root.appendingPathComponent("part.glb"))
+        try bytes.write(to: mount.appendingPathComponent("mounted.glb"))
+        let original = WorkspacePathGuard(rootURL: root, maxReadBytes: 16,
+            maxWriteBytes: 4, mounts: ["Shared": mount])
+        let preview = original.withReadLimit(128)
+        #expect(throws: Error.self) { try original.assertReadableSize(original.resolve("part.glb")) }
+        try preview.assertReadableSize(preview.resolve("part.glb"))
+        #expect(preview.maxWriteBytes == original.maxWriteBytes)
+        #expect(try preview.resolve("Mounts/Shared/mounted.glb") == original.resolve("Mounts/Shared/mounted.glb"))
+        #expect(throws: Error.self) { try preview.resolve("../escape.glb") }
+        #expect(throws: Error.self) { try preview.resolve(".env") }
+        #expect(EngineeringPreviewLimits.standard.maximumBytes == 20 * 1024 * 1024)
+        #expect(EngineeringPreviewLimits.expandedReadOnly.maximumBytes == 64 * 1024 * 1024)
+    }
+}

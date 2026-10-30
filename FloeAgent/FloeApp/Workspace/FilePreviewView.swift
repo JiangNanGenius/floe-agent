@@ -60,6 +60,10 @@ struct FilePreviewView: View {
     @State private var isArchiveBrowserPresented = false
     @State private var imageEditRequest: WorkspaceImageEditRequest?
     @State private var engineeringPackage: EngineeringPreviewPackage?
+    @State private var largePreviewPath: String?
+    @State private var mayOpenLargeModel = false
+    private var usesExpandedReadOnly: Bool { largePreviewPath == relativePath }
+
     /// Native FloeCAD document (`.floecad` package) opened in the workbench.
     @State private var floecadDocument: FloeCADDocument?
     @State private var isEngineeringFullScreen = false
@@ -87,6 +91,10 @@ struct FilePreviewView: View {
                     Label("inspector.preview.error", systemImage: "exclamationmark.triangle")
                 } description: {
                     Text(loadError)
+                } actions: {
+                    if mayOpenLargeModel {
+                        Button("engineering.large_model.open") { largePreviewPath = relativePath }
+                    }
                 }
             } else if let floecadDocument {
                 // The Canvas entry path (Apply to canvas / Make variant) is
@@ -186,7 +194,7 @@ struct FilePreviewView: View {
         .sheet(item: $fileDesignTarget) { target in
             CreativeDesignStartView(previousTarget: nil, fileTarget: target)
         }
-        .task(id: relativePath) { await load() }
+        .task(id: "\(relativePath)-\(usesExpandedReadOnly)") { await load() }
         .fullScreenCover(isPresented: $isIDEPresented, onDismiss: {
             // The IDE can be swipe-dismissed on a clean session without
             // invoking onSaved. The Office preview session was released
@@ -955,6 +963,7 @@ struct FilePreviewView: View {
         binaryPreviewURL = nil
         nativeOfficeURL = nil
         engineeringPackage = nil
+        mayOpenLargeModel = false
         engineeringRoot = nil
         cadDirty = false
         // Flush the document this preview owned BEFORE releasing it: a failed
@@ -1038,15 +1047,26 @@ struct FilePreviewView: View {
                 } else {
                     engineeringRoot = service.guardResolver.rootURL
                     let path = relativePath
+                    let limits: EngineeringPreviewLimits = usesExpandedReadOnly ? .expandedReadOnly : .standard
+                    let previewService = WorkspaceFileService(guard: service.guardResolver.withReadLimit(limits.maximumBytes))
                     let work = Task.detached(priority: .userInitiated) {
-                        try EngineeringPreviewPackage.load(path: path, service: service)
+                        try EngineeringPreviewPackage.load(path: path, service: previewService, limits: limits)
                     }
                     package = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
                 }
                 try Task.checkCancellation()
                 engineeringPackage = package
                 await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
-            } catch is CancellationError {} catch { loadError = error.localizedDescription }
+            } catch is CancellationError {} catch {
+                guard !Task.isCancelled else { return }
+                let tooLarge = (error as NSError).domain == NSCocoaErrorDomain
+                    && (error as NSError).code == NSFileReadTooLargeError
+                mayOpenLargeModel = tooLarge && !usesExpandedReadOnly
+                    && !center.isCloudWorkspacePath(relativePath) && !center.isNetworkWorkspacePath(relativePath)
+                    && [EngineeringPreviewKind.mesh, .cadSurface].contains(where: { $0 == EngineeringPreviewKind.identify(relativePath) })
+                loadError = usesExpandedReadOnly && tooLarge
+                    ? String(localized: "engineering.large_model.limit") : error.localizedDescription
+            }
             return
         }
         if isOfficeDocument, !OfficeFileSession.available {
