@@ -313,6 +313,59 @@ struct ComposerOverflowRegressionTests {
         withExtendedLifetime(fixture) {}
     }
 
+    @Test("The live field reports third-line expansion independently from internal scrolling")
+    func liveThirdLineExpansionAndDeletion() async {
+        var expansion: [Bool] = []
+        var scrolling: [Bool] = []
+        let field = ComposerReturnField(
+            text: .constant("第一行\n第二行\n第三行"),
+            placeholder: "composer.test.placeholder", canSend: true,
+            lineLimit: 1...3,
+            onExpansionAvailableChange: { expansion.append($0) },
+            onOverflowChange: { scrolling.append($0) }, onReturn: {}
+        )
+        let coordinator = field.makeCoordinator()
+        let view = HardwareReturnTextView()
+        field.configure(view: view, coordinator: coordinator)
+        view.frame = CGRect(x: 0, y: 0, width: 500, height: 100)
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        await drainMainQueue()
+        #expect(expansion.last == true)
+        #expect(scrolling.last == false)
+        view.text = "第一行\n第二行\n第三行\n第四行"
+        coordinator.textViewDidChange(view)
+        await drainMainQueue()
+        #expect(expansion.last == true)
+        #expect(view.isScrollEnabled)
+        view.text = "第一行\n第二行"
+        coordinator.textViewDidChange(view)
+        await drainMainQueue()
+        #expect(expansion.last == false)
+        #expect(!view.isScrollEnabled)
+        withExtendedLifetime(coordinator) {}
+    }
+
+    @Test("The third visual line offers expansion while only the fourth starts scrolling")
+    func threeLineComposerHasIndependentExpansionAndScrolling() {
+        func layout(_ lines: Int) -> ComposerFieldLayout.Verdict {
+            ComposerFieldLayout.verdict(
+                naturalTextHeight: CGFloat(lines) * 22 + 16,
+                lineHeight: 22, verticalInsets: 16, lineLimit: 1...3,
+                deviceLineCap: 8, availableHeight: nil, restingMinimumHeight: 44
+            )
+        }
+        #expect(!layout(2).canExpand)
+        #expect(!layout(2).scrolls)
+        #expect(layout(3).canExpand)
+        #expect(!layout(3).scrolls)
+        #expect(layout(3).height == 82)
+        #expect(layout(4).canExpand)
+        #expect(layout(4).scrolls)
+        #expect(layout(4).height == 82)
+        #expect(!layout(1).canExpand)
+    }
+
     @Test("The shared layout rule keeps the line budget, one-third cap and row minimum")
     func layoutRuleMatchesBudgets() {
         func verdict(natural: CGFloat, deviceLineCap: Int, available: CGFloat?)

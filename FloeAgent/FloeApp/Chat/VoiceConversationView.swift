@@ -554,13 +554,13 @@ struct VoiceConversationView: View {
                     text: $draft,
                     placeholder: FloeL10n.l("voice.action.type"),
                     canSend: canSendTyped,
-                    lineLimit: 1...4,
+                    lineLimit: 1...3,
                     maxHeightBudget: viewportHeight,
                     hostAvailableWidth: composerWidth,
                     restoredSelection: editorSelection,
                     undoManager: composerUndoManager,
                     onSelectionChange: { editorSelection = $0 },
-                    onOverflowChange: { composerOverflows = $0 },
+                    onExpansionAvailableChange: { composerOverflows = $0 },
                     onEditingChange: { typing = $0 },
                     onReturn: { sendTyped() }
                 )

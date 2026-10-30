@@ -238,7 +238,7 @@ struct ThreadComposerView: View {
     /// keystroke passes share one rule; deleting text re-reports false).
     /// Only then is the full-editor control worth a row slot: a short
     /// prompt keeps the input calm and uncluttered.
-    @State private var isInlineFieldOverflowing = false
+    @State private var isInlineFieldExpandable = false
     /// The width the row ACTUALLY gives the input field, measured on the
     /// row's own layout (never proposed/blind-guessed). Fed into the shared
     /// field so the first verdict for a restored or pasted large draft can
@@ -415,7 +415,7 @@ struct ThreadComposerView: View {
             // inline field re-reports its newest measured layout (coalesced),
             // so a large restored draft comes back with the control visible.
             overflowReportKey = newKey
-            isInlineFieldOverflowing = false
+            isInlineFieldExpandable = false
         }
         .onChange(of: draft) { _, newValue in
             // A send consumed this draft; the store keeps the sent content
@@ -865,7 +865,7 @@ struct ThreadComposerView: View {
         // the SAME subview in both placements (one `Layout`, never a
         // re-created branch), so first responder, caret, undo and an active
         // IME composition survive the reflow.
-        ComposerResponsiveRow(isFieldOverflowing: isInlineFieldOverflowing) {
+        ComposerResponsiveRow(isFieldOverflowing: isInlineFieldExpandable) {
             if !temporary {
                 Menu {
                 Button {
@@ -942,7 +942,7 @@ struct ThreadComposerView: View {
                 text: $draft,
                 placeholder: composerPlaceholder,
                 canSend: canSend && !isAttachmentProcessing && !isSavingChatReasoning,
-                lineLimit: 1...8,
+                lineLimit: 1...3,
                 maxHeightBudget: composerHeightBudget,
                 hostAvailableWidth: composerFieldHostWidth,
                 restoredSelection: editorSelection,
@@ -954,7 +954,7 @@ struct ThreadComposerView: View {
                     editorSelection = range
                     draftStore.updateSelection(range, conversationID: draftKey)
                 },
-                onOverflowChange: { overflowing in
+                onExpansionAvailableChange: { overflowing in
                     // Delivered on the next main-queue turn after the
                     // field re-measured its current text at the width it
                     // is actually laid out at (a verdict measured against
@@ -964,8 +964,8 @@ struct ThreadComposerView: View {
                     // conversation on screen may change the control, and
                     // the field re-reports the newest draft's layout.
                     guard overflowReportKey == nil || overflowReportKey == draftKey else { return }
-                    if isInlineFieldOverflowing != overflowing {
-                        isInlineFieldOverflowing = overflowing
+                    if isInlineFieldExpandable != overflowing {
+                        isInlineFieldExpandable = overflowing
                     }
                 },
                 onReturn: { onSend() }
@@ -988,13 +988,13 @@ struct ThreadComposerView: View {
             .accessibilityIdentifier("composer.input")
             .composerResponsiveFieldSlot()
 
-            // The full editor control appears only once the inline field has
-            // reached its height cap and scrolls: short prompts keep the
+            // The full editor is available from the third visual line, before
+            // the field reaches its three-line scrolling cap: short prompts keep the
             // calm, uncluttered row, while any draft that no longer fits
             // stays one tap away from the full editor. Its state is bound to
             // the field's real TextKit overflow, so deleting text, rotation,
             // dynamic type or a height-budget change hides it again.
-            if isInlineFieldOverflowing {
+            if isInlineFieldExpandable {
                 Button {
                     // Bind this editor presentation to the conversation it was
                     // opened from, and start from the freshest captured caret.

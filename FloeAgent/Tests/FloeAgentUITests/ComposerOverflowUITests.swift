@@ -119,12 +119,35 @@ final class ComposerOverflowUITests: XCTestCase {
         let restHeight = input.frame.height
         XCTAssertLessThan(restHeight, 120, "An empty launchpad composer rests near one line")
 
+        // Exercise the exact third-line affordance on the real Home surface.
+        // These are real keyboard edits of a synthetic draft, not a seeded
+        // text snapshot or a detached sizing fixture.
+        let stagedDraft = "one\ntwo\nthree\nfour\nCARET-VISIBLE-END"
+        input.tap()
+        input.typeText("one\ntwo")
+        XCTAssertFalse(app.buttons["composer.expand"].exists,
+                       "Two short visual lines do not need an expand control")
+        input.typeText("\nthree")
+        XCTAssertTrue(app.buttons["composer.expand"].waitForExistence(timeout: 10),
+                      "The third visual line must expose the editor before scrolling")
+        let threeLineHeight = input.frame.height
+        input.typeText("\nfour\nCARET-VISIBLE-END")
+        XCTAssertEqual(input.value as? String, stagedDraft)
+        XCTAssertEqual(input.frame.height, threeLineHeight, accuracy: 1,
+                       "Further lines scroll internally instead of growing past three")
+        let caretShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        caretShot.name = "Home three-line viewport: inspect CARET-VISIBLE-END and insertion point"
+        caretShot.lifetime = .keepAlways
+        add(caretShot)
+        input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: stagedDraft.count))
+        XCTAssertEqual(input.value as? String ?? "", "")
+
         // One logical line mixing CJK, spaced Latin and an unbroken URL —
         // the actual screenshot shape. Nothing is sent; send stays
         // hardware Cmd+Return-only.
         let mixed = String(
             repeating: "新建任务里这段中文mixed with English plus an unbroken https://example.invalid/",
-            count: 24)
+            count: 24) + "TAIL-VISIBLE-END"
         input.tap()
         input.typeText(mixed)
 
@@ -139,7 +162,7 @@ final class ComposerOverflowUITests: XCTestCase {
                       "A one-line mixed draft must wrap and grow the composer at the real row width")
 
         // 2. Beyond the collapsed visible area the Expand control appears
-        //    at the cap (one third of the page, ≤ 8 lines).
+        //    from the third visual line, with a three-line scrolling cap.
         let expand = app.buttons["composer.expand"]
         XCTAssertTrue(expand.waitForExistence(timeout: 15),
                       "The launchpad composer must expose Expand once the draft passes its cap")

@@ -89,6 +89,22 @@ final class HardwareReturnTextView: UITextView {
         markedTextProbe?() ?? (markedTextRange != nil)
     }
 
+    private var caretRevealPending = false
+
+    /// Re-read the current selection after UIKit lays out this edit, rather
+    /// than scrolling using the previous text layout or a stale captured range.
+    func revealCurrentCaretAfterLayout() {
+        guard !caretRevealPending else { return }
+        caretRevealPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.caretRevealPending = false
+            guard self.isFirstResponder, self.isScrollEnabled else { return }
+            self.layoutIfNeeded()
+            self.scrollRangeToVisible(self.selectedRange)
+        }
+    }
+
     private var lastNotifiedLayoutWidth: CGFloat = -1
 
     override var undoManager: UndoManager? {
@@ -180,7 +196,7 @@ struct ComposerReturnField: UIViewRepresentable {
     /// `lineLimit(_:)` on a multiline `TextField`. The upper bound is
     /// additionally clamped by the device line cap (6 compact / 8 regular)
     /// and by `maxHeightBudget`.
-    var lineLimit: ClosedRange<Int> = 1...5
+    var lineLimit: ClosedRange<Int> = 1...3
     /// Height available to the hosting page; the field never grows beyond
     /// one third of it. Nil disables the height rule.
     var maxHeightBudget: CGFloat? = nil
@@ -202,6 +218,8 @@ struct ComposerReturnField: UIViewRepresentable {
     /// Reports the live caret/selection so the caller can persist it and the
     /// full editor can reopen exactly where editing stopped.
     var onSelectionChange: ((NSRange?) -> Void)? = nil
+    /// Independent of scrolling: the third visual line offers the full editor.
+    var onExpansionAvailableChange: ((Bool) -> Void)? = nil
     /// Reports whether the field currently overflows its height cap and
     /// scrolls internally (true) or fits completely (false). The verdict is
     /// derived at the width the field is ACTUALLY laid out at (sizing pass,
@@ -411,6 +429,7 @@ struct ComposerReturnField: UIViewRepresentable {
                                coordinator: context.coordinator)
             context.coordinator.scheduleOverflowReport(
                 hostVerdict.scrolls,
+                canExpand: hostVerdict.canExpand,
                 textView: uiView,
                 report: context.coordinator.field.onOverflowChange ?? onOverflowChange
             )
@@ -538,6 +557,7 @@ struct ComposerReturnField: UIViewRepresentable {
         /// the newest measured revision reaches the host and older queued
         /// width/layout reports cannot bounce the host's control.
         private var pendingOverflowReport = false
+        private var latestCanExpand: Bool?
         private var latestOverflow: Bool?
         private var latestOverflowCallback: ((Bool) -> Void)?
         /// Live view the pending verdict belongs to, so the deferred
@@ -565,14 +585,16 @@ struct ComposerReturnField: UIViewRepresentable {
         /// UIKit layout on build 272.
         func scheduleOverflowReport(
             _ overflow: Bool,
+            canExpand: Bool? = nil,
             textView: HardwareReturnTextView?,
             report: ((Bool) -> Void)?
         ) {
             latestOverflowView = textView
             latestOverflow = overflow
+            latestCanExpand = canExpand
             latestOverflowCallback = report
             let needsScrollChange = textView.map { $0.isScrollEnabled != overflow } ?? false
-            guard needsScrollChange || report != nil else { return }
+            guard needsScrollChange || report != nil || field.onExpansionAvailableChange != nil else { return }
             guard !pendingOverflowReport else { return }
             pendingOverflowReport = true
             DispatchQueue.main.async { [weak self] in
@@ -583,6 +605,8 @@ struct ComposerReturnField: UIViewRepresentable {
         private func deliverPendingOverflowReport() {
             pendingOverflowReport = false
             let overflow = latestOverflow
+            let canExpand = latestCanExpand
+            latestCanExpand = nil
             let report = latestOverflowCallback
             let textView = latestOverflowView
             latestOverflow = nil
@@ -615,6 +639,8 @@ struct ComposerReturnField: UIViewRepresentable {
             // visibility); delivering it cannot touch the text container, so
             // IME composition never defers the report itself.
             report?(overflow)
+            if let canExpand { field.onExpansionAvailableChange?(canExpand) }
+            textView?.revealCurrentCaretAfterLayout()
         }
 
         /// Applies whatever the layout actually requires NOW that an input
@@ -647,6 +673,7 @@ struct ComposerReturnField: UIViewRepresentable {
             let verdict = field.verdict(at: width, textView: textView, coordinator: self)
             scheduleOverflowReport(
                 verdict.scrolls,
+                canExpand: verdict.canExpand,
                 textView: textView,
                 report: field.onOverflowChange
             )
@@ -665,6 +692,7 @@ struct ComposerReturnField: UIViewRepresentable {
             // updateUIView re-derive after a programmatic swap) re-establishes
             // it against the CURRENT text.
             latestOverflow = nil
+            latestCanExpand = nil
             deferredScrollTarget = nil
             deferredScrollView = nil
         }
@@ -680,6 +708,7 @@ struct ComposerReturnField: UIViewRepresentable {
             let verdict = field.verdict(at: width, textView: textView, coordinator: self)
             scheduleOverflowReport(
                 verdict.scrolls,
+                canExpand: verdict.canExpand,
                 textView: textView,
                 report: field.onOverflowChange
             )
@@ -748,6 +777,7 @@ struct ComposerReturnField: UIViewRepresentable {
             placeholderLabel(of: textView)?.isHidden = !textView.text.isEmpty
             if textView.isScrollEnabled {
                 textView.scrollRangeToVisible(textView.selectedRange)
+                (textView as? HardwareReturnTextView)?.revealCurrentCaretAfterLayout()
             }
             // The keystroke itself is the freshest possible overflow truth:
             // re-derive at the laid-out width so deleting back under the cap
@@ -770,6 +800,7 @@ struct ComposerReturnField: UIViewRepresentable {
             // visible even when the text itself did not change.
             if textView.isScrollEnabled {
                 textView.scrollRangeToVisible(textView.selectedRange)
+                (textView as? HardwareReturnTextView)?.revealCurrentCaretAfterLayout()
             }
             reportSelectionIfChanged(textView)
         }

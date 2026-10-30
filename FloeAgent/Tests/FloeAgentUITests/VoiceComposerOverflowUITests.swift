@@ -25,7 +25,7 @@ final class VoiceComposerOverflowUITests: XCTestCase {
         XCTAssertTrue(input.waitForExistence(timeout: 30))
         if compact { XCTAssertLessThanOrEqual(input.frame.width, 390) }
         let initialHeight = input.frame.height
-        let text = String(repeating: "语音聊天里编辑完整的一句话 Mixed English 日本語 https://example.com/averylongunbrokenpath1234567890 ", count: 16)
+        let text = String(repeating: "语音聊天里编辑完整的一句话 Mixed English 日本語 https://example.com/averylongunbrokenpath1234567890 ", count: 16) + "VOICE-TAIL-VISIBLE"
         input.tap()
         input.typeText(text)
         let expand = app.buttons["voice.composer.expand"]

@@ -117,6 +117,8 @@ enum ComposerFieldLayout {
         /// True when the natural TextKit height passed the cap: the tail of
         /// the text is no longer visible inline and the field scrolls.
         let scrolls: Bool
+        /// Expansion is offered from the third measured line, before scrolling starts.
+        let canExpand: Bool
     }
 
     /// The single budget rule, parameterised so every caller passes the
@@ -148,7 +150,8 @@ enum ComposerFieldLayout {
         )
         return Verdict(
             height: min(max(naturalTextHeight, floor), cap),
-            scrolls: naturalTextHeight > cap
+            scrolls: naturalTextHeight > cap,
+            canExpand: naturalTextHeight > lineHeight * 2 + verticalInsets + 0.5
         )
     }
 }
