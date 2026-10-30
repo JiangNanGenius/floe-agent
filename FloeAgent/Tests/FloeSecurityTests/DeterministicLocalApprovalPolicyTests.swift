@@ -291,6 +291,61 @@ struct DeterministicLocalApprovalPolicyTests {
         }
     }
 
+    @Test("Native 3D document edits bypass human and model review, including repository documents")
+    func nativeCADEditsDoNotRequestReview() async throws {
+        let tree = try makeTree(git: ("directory", "cad-project"))
+        defer { tree.cleanup() }
+        let target = tree.root.appendingPathComponent("part.floecad").path
+        for operation in ["create", "apply", "three_d_apply", "save", "import", "parameters", "material", "animation"] {
+            let arguments = String(decoding: try JSONSerialization.data(withJSONObject: [
+                "action": operation, "path": "part.floecad",
+                "payload": "{\"action\":\"undo\"}"
+            ]), as: UTF8.self)
+            let proposed = try action("cad.document", arguments,
+                                      targets: [target], typedCovered: true,
+                                      workspace: tree.root.path)
+            #expect(DeterministicLocalApprovalPolicy.isOrdinaryNativeCADWork(proposed))
+            #expect(try await HumanApprovalPolicy().decide(proposed).permitsExecution)
+            let backend = RecordingBackend(decision: .escalateToHuman(reason: "must not be consulted"))
+            let model = ModelApprovalPolicy(backend: backend)
+            let automatic = AutomaticApprovalPolicy(backend: backend)
+            #expect(!model.requiresModelReview(proposed))
+            #expect(!automatic.requiresModelReview(proposed))
+            #expect(try await model.decide(proposed).permitsExecution)
+            #expect(try await automatic.decide(proposed).permitsExecution)
+            #expect(backend.actions.isEmpty)
+        }
+    }
+
+    @Test("The 3D exception cannot authorize an unknown extent, another file or an external export")
+    func nativeCADNoReviewDoesNotWidenFileAuthority() async throws {
+        let tree = try makeTree(git: ("directory", "cad-project"))
+        defer { tree.cleanup() }
+        let target = tree.root.appendingPathComponent("part.floecad").path
+        let base = #"{"action":"save","path":"part.floecad","safe":true}"#
+        let cases = [
+            try action("cad.document", base, targets: [target], unresolvedExtent: true,
+                       typedCovered: true, workspace: tree.root.path),
+            try action("cad.document", base, targets: [target], workspace: tree.root.path),
+            try action("cad.document", base,
+                       targets: [tree.root.appendingPathComponent("other.floecad").path],
+                       typedCovered: true, workspace: tree.root.path),
+            try action("cad.document", #"{"action":"export","path":"part.floecad","output":"out.step"}"#,
+                       targets: [tree.root.appendingPathComponent("out.step").path],
+                       typedCovered: true, workspace: tree.root.path),
+            try action("cad.document", base, scope: .host(UUID()),
+                       targets: [target], typedCovered: true, workspace: tree.root.path)
+        ]
+        for proposed in cases {
+            #expect(!DeterministicLocalApprovalPolicy.isOrdinaryNativeCADWork(proposed))
+            let backend = RecordingBackend()
+            let model = ModelApprovalPolicy(backend: backend)
+            #expect(model.requiresModelReview(proposed))
+            _ = try await model.decide(proposed)
+            #expect(backend.actions.count == 1)
+        }
+    }
+
     @Test("Read-only sources are never classified: repo source + outside copy is an ordinary save")
     func readOnlyRepositorySourceWithOutsideCopyIsAllowed() async throws {
         let tree = try makeTree()

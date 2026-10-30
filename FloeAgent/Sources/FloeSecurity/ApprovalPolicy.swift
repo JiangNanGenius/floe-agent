@@ -147,7 +147,8 @@ public struct ModelApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     }
 
     public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
-        if action.isPreapprovedSkillPythonRequest {
+        if action.isPreapprovedSkillPythonRequest
+            || DeterministicLocalApprovalPolicy.isOrdinaryNativeCADWork(action) {
             return .allow(scope: AutomaticApprovalPolicyScope.scope(for: action.toolCall), expiresAt: nil)
         }
         do {
@@ -159,6 +160,7 @@ public struct ModelApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
 
     public func requiresModelReview(_ action: ProposedAction) -> Bool {
         !action.isPreapprovedSkillPythonRequest
+            && !DeterministicLocalApprovalPolicy.isOrdinaryNativeCADWork(action)
     }
 }
 

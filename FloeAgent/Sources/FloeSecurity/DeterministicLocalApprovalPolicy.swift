@@ -70,11 +70,42 @@ public enum DeterministicLocalApprovalPolicy {
     static func allowedScope(for action: ProposedAction) -> ApprovalScope? {
         // Managed package acquisition keeps its dedicated source review.
         guard !action.isSoftwareInstallRequest else { return nil }
-        guard isOrdinaryDocumentEdit(action)
+        guard isOrdinaryNativeCADWork(action)
+            || isOrdinaryDocumentEdit(action)
             || isOrdinaryDocumentReadOrDraft(action)
             || isLocalGuestRoutineCommand(action)
             || isRemoteReadOnlyDiagnostic(action) else { return nil }
         return AutomaticApprovalPolicyScope.scope(for: action.toolCall)
+    }
+
+    /// Native 3D editing is an ordinary no-review feature, including when
+    /// the document is kept in a repository. This changes review routing only:
+    /// task ownership, containment and revision-bound commits still execute.
+    /// External exports and shared-library writes retain their own policy.
+    public static func isOrdinaryNativeCADWork(_ action: ProposedAction) -> Bool {
+        guard case .local = action.toolCall.scope,
+              action.toolCall.toolName == "cad.document",
+              let context = action.trustedContext, !context.hasUnresolvedExtent,
+              let arguments = action.argumentObject,
+              let path = arguments["path"] as? String,
+              (path as NSString).pathExtension.lowercased() == "floecad" else { return false }
+        if isOrdinaryDocumentReadOrDraft(action) { return true }
+        guard let operation = arguments["action"] as? String,
+              ["create", "apply", "three_d_apply", "save", "import",
+               "material", "parameters", "animation"].contains(operation),
+              context.typedContractCovered,
+              context.mutableTargetPaths.count == 1 else { return false }
+        // The trusted typed target must be precisely this document, rather
+        // than a model-claimed safe flag or an unrelated output/library file.
+        let target: URL
+        if (path as NSString).isAbsolutePath {
+            target = URL(fileURLWithPath: path)
+        } else if let root = context.workspaceRootPath {
+            target = URL(fileURLWithPath: root, isDirectory: true).appendingPathComponent(path)
+        } else { return false }
+        return target.standardizedFileURL.resolvingSymlinksInPath().path
+            == URL(fileURLWithPath: context.mutableTargetPaths[0])
+                .standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     // MARK: - Ordinary document reads and drafts
