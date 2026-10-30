@@ -1,7 +1,19 @@
-<!-- docs-updated: 2026-10-27 -->
+<!-- docs-updated: 2026-10-30 -->
 # 当前版本与验证状态 / Current release and verification status
 
-文档更新时间 / Document updated: 2026-10-27. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
+文档更新时间 / Document updated: 2026-10-30. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
+
+## 1.7.65（306）候选：整合与验证中 / Candidate integration
+
+本轮整合长输入、浏览器多标签与可授权的网站数据、完整工具结果读取、原生 3D 连续编辑与装配／图纸／动画、macOS 挂起存储处理，以及 DeepSeek 搜索、任务内提问、聊天查找和定时任务展示。当前为源码整合状态；完整 App 编译、相关行为测试、固定 iPad 模拟器验收和各发布渠道读回尚未完成。306 尚未上传，不代表已可安装。
+
+The candidate is being integrated. Source and selected component checks do not establish full-App, Simulator or distribution acceptance. Build 306 has not been uploaded. No production App Store publication is scheduled.
+
+## 1.7.64（305）已交付；外部审核仍在等待 / Delivered; external review pending
+
+[305 交付记录](releases/builds/FLOE_1.7.64_BUILD305_DELIVERY.md)保存固定源码、编译与测试、内部 TestFlight、无签名安装包及 Feather 证据。2026-10-30 通过 Safari 重新读取 App Store Connect：最新可见版本仍为 1.7.64（305），Floe QA 与 publictest1 均已关联，显示“正在等待审核”、90 天后过期；此读回不表示外部审核已经通过。
+
+The immutable delivery record separates internal availability from external review. The current Apple page still shows 305 waiting for review; the new candidate does not replace its tag or artifacts.
 
 ## 1.7.60（301）内测与无签名已交付，公测已送审 / Delivered; external review pending
 

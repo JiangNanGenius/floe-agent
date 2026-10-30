@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import FloeCore
+import FloeModels
 import FloePersistence
 
 public enum MemoryEntryStatus: String, Sendable, Codable, Hashable {
@@ -1015,6 +1016,266 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         }
     }
 
+
+    // MARK: - Typed library / in-chat search (query is a shared normalizer)
+
+    /// Typed library search for the global search screen. Every body hit names
+    /// the ACTUAL message it came from (so the UI can jump to it and highlight
+    /// it); a conversation-title-only match keeps `messageID == nil` and is
+    /// never given a fabricated body hit. The shared query normalizer applies
+    /// the same whitespace-AND / quoted-phrase semantics as the in-chat find.
+    /// Filters are the existing durable ones: `is_searchable = 1`,
+    /// `purpose = 'ordinary'`, user/assistant message bodies only.
+    ///
+    /// Matching runs through the shared visible-text predicate registered on
+    /// the SQLite connection. A raw `LIKE` prefilter is not a valid shortcut:
+    /// it misses quoted phrases split by inline Markdown (`hello **world**`)
+    /// and accent/width-folded text, and its raw/hidden hits consume the
+    /// `LIMIT` before the visible projection can reject them. The predicate
+    /// keeps the same bounded result count and exact message ids; the Swift
+    /// re-check below is a final projection guard, not a second search.
+    public func conversationSearchMatches(
+        _ rawQuery: String,
+        limit: Int = 40
+    ) async throws -> [ConversationSearchMatch] {
+        let query = ConversationSearchQuery(raw: rawQuery)
+        guard !query.isEmpty else { return [] }
+        let bounded = min(50, max(1, limit))
+        return try await database.reader { db in
+            try Task.checkCancellation()
+            db.add(function: ConversationSearchQuery.visibleMatchFunction)
+            var matches: [ConversationSearchMatch] = []
+            var seenConversations: Set<UUID> = []
+            var seenMessages: Set<UUID> = []
+            // `CROSS JOIN` keeps the searchable-conversation scan outermost;
+            // the normal plan filters Notes/non-searchable rows before the
+            // per-message visible projection.
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT m.id AS message_id, m.conversation_id, m.role, m.content,
+                       m.created_at, c.title
+                FROM conversations c
+                CROSS JOIN messages m ON m.conversation_id = c.id
+                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'
+                  AND m.role IN ('user', 'assistant')
+                  AND floe_conversation_search_match(m.role, m.content, ?) = 1
+                ORDER BY m.created_at DESC, m.id DESC
+                LIMIT ?
+                """, arguments: [rawQuery, bounded])
+            for row in rows {
+                guard matches.count < bounded,
+                      let messageID = UUID(uuidString: row["message_id"]),
+                      let conversationID = UUID(uuidString: row["conversation_id"]),
+                      let role: String = row["role"],
+                      let content: String = row["content"],
+                      let createdAtRaw: String = row["created_at"],
+                      seenMessages.insert(messageID).inserted else { continue }
+                let visible = ConversationSearchText.visibleText(role: role, content: content)
+                guard query.matches(visible) else { continue }
+                matches.append(ConversationSearchMatch(
+                    conversationID: conversationID,
+                    conversationTitle: row["title"],
+                    messageID: messageID,
+                    role: role,
+                    snippet: ConversationSearchText.snippet(in: visible, query: query),
+                    createdAt: Self.parseDate(createdAtRaw)
+                ))
+                seenConversations.insert(conversationID)
+            }
+            guard matches.count < bounded else { return matches }
+            // Title-only matches: conversations with no body hit above. The
+            // row carries the title itself as its hit line and NO message id.
+            // Titles are rendered as plain text, so no Markdown projection is
+            // applied — but the same Unicode/case folding and term semantics.
+            try Task.checkCancellation()
+            let titleRows = try Row.fetchAll(db, sql: """
+                SELECT c.id AS conversation_id, c.title, c.updated_at
+                FROM conversations c
+                WHERE c.is_searchable = 1 AND c.purpose = 'ordinary'
+                  AND floe_conversation_search_match('title', c.title, ?) = 1
+                ORDER BY c.updated_at DESC
+                LIMIT ?
+                """, arguments: [rawQuery, bounded])
+            for row in titleRows {
+                guard matches.count < bounded,
+                      let conversationID = UUID(uuidString: row["conversation_id"]),
+                      !seenConversations.contains(conversationID) else { continue }
+                let title: String = row["title"]
+                guard query.matches(title) else { continue }
+                seenConversations.insert(conversationID)
+                matches.append(ConversationSearchMatch(
+                    conversationID: conversationID,
+                    conversationTitle: title,
+                    messageID: nil,
+                    role: nil,
+                    snippet: String(title.prefix(ConversationSearchText.maximumSnippetCharacters)),
+                    createdAt: Self.parseDate(row["updated_at"])
+                ))
+            }
+            return matches
+        }
+    }
+
+    /// Message hits inside ONE conversation, chronological. Used by the
+    /// in-chat find to address history that is not in the currently loaded
+    /// page window; the UI still loads a bounded window around the selected
+    /// hit and highlights the rendered visible text.
+    ///
+    /// The SQL predicate is the SAME visible-text matcher as the global
+    /// search, so a phrase split by inline Markdown or an accent/width-folded
+    /// term is found before `LIMIT` is applied. Hidden link targets and other
+    /// raw matches never take a result slot.
+    public func conversationMessageMatches(
+        conversationID: UUID,
+        rawQuery: String,
+        limit: Int = 200
+    ) async throws -> [ConversationMessageMatch] {
+        let query = ConversationSearchQuery(raw: rawQuery)
+        guard !query.isEmpty else { return [] }
+        let bounded = min(200, max(1, limit))
+        return try await database.reader { db in
+            try Task.checkCancellation()
+            db.add(function: ConversationSearchQuery.visibleMatchFunction)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT m.id AS message_id, m.role, m.content, m.created_at
+                FROM conversations c
+                CROSS JOIN messages m ON m.conversation_id = c.id
+                WHERE c.id = ?
+                  AND c.is_searchable = 1 AND c.purpose = 'ordinary'
+                  AND m.role IN ('user', 'assistant')
+                  AND floe_conversation_search_match(m.role, m.content, ?) = 1
+                ORDER BY m.created_at ASC, m.id ASC
+                LIMIT ?
+                """, arguments: [conversationID.uuidString, rawQuery, bounded])
+            var matches: [ConversationMessageMatch] = []
+            for row in rows {
+                guard matches.count < bounded,
+                      let messageID = UUID(uuidString: row["message_id"]),
+                      let role: String = row["role"],
+                      let content: String = row["content"],
+                      let createdAtRaw: String = row["created_at"] else { continue }
+                let visible = ConversationSearchText.visibleText(role: role, content: content)
+                guard query.matches(visible) else { continue }
+                matches.append(ConversationMessageMatch(
+                    conversationID: conversationID,
+                    messageID: messageID,
+                    role: role,
+                    snippet: ConversationSearchText.snippet(in: visible, query: query),
+                    createdAt: Self.parseDate(createdAtRaw)
+                ))
+            }
+            return matches
+        }
+    }
+
+    /// A bounded, chronological window containing one exact message plus a
+    /// few of its neighbours. `before` older rows and `after` newer rows are
+    /// returned, never the whole conversation. Parts (attachment chips) are
+    /// hydrated so the merged rows render exactly like a page read.
+    public func conversationMessageWindow(
+        conversationID: UUID,
+        around messageID: UUID,
+        before: Int = 40,
+        after: Int = 4
+    ) async throws -> [PersistedMessage] {
+        let olderLimit = min(200, max(1, before))
+        let newerLimit = min(20, max(0, after))
+        return try await database.reader { db in
+            guard let target = try Row.fetchOne(db, sql: """
+                SELECT created_at FROM messages
+                WHERE id = ? AND conversation_id = ?
+                """, arguments: [messageID.uuidString, conversationID.uuidString]),
+                  let createdAtRaw: String = target["created_at"] else { return [] }
+            let older = try Row.fetchAll(db, sql: """
+                SELECT * FROM messages
+                WHERE conversation_id = ?
+                  AND (created_at < ? OR (created_at = ? AND id <= ?))
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """, arguments: [
+                    conversationID.uuidString, createdAtRaw, createdAtRaw,
+                    messageID.uuidString, olderLimit + 1
+                ])
+            let newer = try Row.fetchAll(db, sql: """
+                SELECT * FROM messages
+                WHERE conversation_id = ?
+                  AND (created_at > ? OR (created_at = ? AND id > ?))
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """, arguments: [
+                    conversationID.uuidString, createdAtRaw, createdAtRaw,
+                    messageID.uuidString, newerLimit
+                ])
+            let rows = Array(older.reversed()) + newer
+            var seen: Set<UUID> = []
+            let ids: [UUID] = rows.compactMap { row in
+                guard let id = UUID(uuidString: row["id"]), seen.insert(id).inserted else {
+                    return nil
+                }
+                return id
+            }
+            let parts = try Self.messageParts(db: db, messageIDs: ids)
+            return rows.compactMap { row -> PersistedMessage? in
+                guard let id = UUID(uuidString: row["id"]),
+                      let role: String = row["role"],
+                      let content: String = row["content"],
+                      let createdAtRaw: String = row["created_at"] else { return nil }
+                return PersistedMessage(
+                    id: id,
+                    conversationID: conversationID,
+                    role: role,
+                    content: content,
+                    createdAt: Self.parseDate(createdAtRaw),
+                    parts: parts[id, default: []],
+                    runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:))
+                )
+            }.sorted {
+                ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString)
+            }
+        }
+    }
+
+    private static func messageParts(
+        db: Database,
+        messageIDs: [UUID]
+    ) throws -> [UUID: [MessagePart]] {
+        guard !messageIDs.isEmpty else { return [:] }
+        var result: [UUID: [MessagePart]] = [:]
+        for chunkStart in stride(from: 0, to: messageIDs.count, by: 400) {
+            let chunk = Array(messageIDs[chunkStart..<min(chunkStart + 400, messageIDs.count)])
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT * FROM message_parts
+                WHERE message_id IN (\(placeholders))
+                ORDER BY message_id, part_index
+                """, arguments: StatementArguments(chunk.map(\.uuidString)))
+            for row in rows {
+                guard let messageID = UUID(uuidString: row["message_id"]),
+                      let id = UUID(uuidString: row["id"]),
+                      let kind = MessagePart.Kind(rawValue: row["kind"]) else { continue }
+                let createdAt = (row["created_at"] as String?).map(Self.parseDate) ?? Date()
+                let metadata: [String: String]
+                if let raw: String = row["metadata_json"],
+                   let data = raw.data(using: .utf8),
+                   let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
+                    metadata = decoded
+                } else {
+                    metadata = [:]
+                }
+                result[messageID, default: []].append(MessagePart(
+                    id: id,
+                    messageID: messageID,
+                    partIndex: row["part_index"],
+                    kind: kind,
+                    text: row["text"],
+                    attachmentID: (row["attachment_id"] as String?).flatMap(UUID.init(uuidString:)),
+                    metadata: metadata,
+                    createdAt: createdAt
+                ))
+            }
+        }
+        return result
+    }
+
     public func search(_ request: ConversationSearchRequest) async throws -> [ConversationSearchHit] {
         let match = Self.ftsQuery(request.query)
         let trimmed = request.query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1608,4 +1869,427 @@ private struct HybridRecallDatabaseRow: Sendable {
     var importance: Double
     var isPinned: Bool
     var updatedAt: Date
+}
+
+// MARK: - Shared search query / visible-text normalizer
+
+/// The ONE query normalizer shared by the global search screen and the in-chat
+/// find bar.
+///
+/// Semantics:
+///  * whitespace separates terms; EVERY term must be present in the same
+///    message (`AND`, any order);
+///  * a double-quoted run (also curly quotes) is one literal phrase that may
+///    contain spaces;
+///  * matching is case/diacritic/width insensitive, so mixed Chinese/English
+///    and full-width punctuation behave naturally;
+///  * the empty/whitespace-only query has no terms and matches nothing.
+///
+/// The normalizer never produces SQL itself. Durable typed search uses
+/// `visibleMatchFunction` so SQL filters with the same visible-text matcher;
+/// `sqlPatterns()` remains for callers that can prove a raw-bytes prefilter is
+/// a superset, and they must still re-verify with `matches(_:)` against the
+/// VISIBLE text so a hit in Markdown syntax or a hidden link target is not
+/// presented as a body match.
+public struct ConversationSearchQuery: Sendable, Equatable {
+    public enum Term: Sendable, Equatable, Hashable {
+        case word(String)
+        case phrase(String)
+
+        public var text: String {
+            switch self {
+            case .word(let value), .phrase(let value): value
+            }
+        }
+    }
+
+    public static let maximumTerms = 8
+    public static let maximumWordCharacters = 64
+    public static let maximumPhraseCharacters = 128
+
+    public let raw: String
+    public let terms: [Term]
+
+    public init(raw: String) {
+        self.raw = raw
+        var parsed: [Term] = []
+        var buffer = ""
+        var inPhrase = false
+
+        func emit(_ value: String, phrase: Bool) {
+            let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            let bounded = String(
+                text.prefix(phrase ? Self.maximumPhraseCharacters : Self.maximumWordCharacters))
+            let normalized = bounded.lowercased()
+            guard !parsed.contains(where: { $0.text.lowercased() == normalized }) else { return }
+            parsed.append(phrase ? .phrase(bounded) : .word(bounded))
+        }
+
+        for character in raw {
+            if character == "\"" || character == "“" || character == "”" {
+                if inPhrase {
+                    emit(buffer, phrase: true)
+                    buffer = ""
+                    inPhrase = false
+                } else {
+                    emit(buffer, phrase: false)
+                    buffer = ""
+                    inPhrase = true
+                }
+                continue
+            }
+            if !inPhrase, character.isWhitespace {
+                emit(buffer, phrase: false)
+                buffer = ""
+            } else {
+                buffer.append(character)
+            }
+        }
+        emit(buffer, phrase: inPhrase)
+        self.terms = Array(parsed.prefix(Self.maximumTerms))
+    }
+
+    public var isEmpty: Bool { terms.isEmpty }
+
+    /// Human-readable terms used for the accessibility summary ("2 terms").
+    public var displayTerms: [String] { terms.map(\.text) }
+
+    /// SQL `LIKE` patterns (with `%` wrapping and `\`/`%`/`_` escaped). The
+    /// caller must use `ESCAPE '\'`. Typed conversation search does NOT use
+    /// these as a candidate prefilter: raw Markdown bytes are not a superset
+    /// of the rendered text (see `visibleMatchFunction`).
+    public func sqlPatterns() -> [String] {
+        terms.map { "%" + Self.escapeLike($0.text) + "%" }
+    }
+
+    public static func escapeLike(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+    }
+
+    /// Connection-local SQLite predicate implementing exactly `matches(_:)`
+    /// over `ConversationSearchText`'s visible projection.
+    ///
+    /// Typed search must not prefilter raw Markdown bytes: a quoted phrase can
+    /// be split by inline syntax (`hello **world**`), and SQLite `LIKE`
+    /// cannot apply case/diacritic/width folding. The predicate therefore
+    /// applies the same normalizer inside SQL, so `LIMIT` counts actual
+    /// visible matches instead of raw/hidden candidates. The query text is an
+    /// SQL argument, so callers never build SQL from user input.
+    static let visibleMatchFunction = DatabaseFunction(
+        "floe_conversation_search_match",
+        argumentCount: 3,
+        pure: true
+    ) { values in
+        guard let role = String.fromDatabaseValue(values[0]),
+              let content = String.fromDatabaseValue(values[1]),
+              let rawQuery = String.fromDatabaseValue(values[2]) else { return 0 }
+        let query = ConversationSearchQuery(raw: rawQuery)
+        guard !query.isEmpty else { return 0 }
+        let visible = ConversationSearchText.visibleText(role: role, content: content)
+        return query.matches(visible) ? 1 : 0
+    }
+
+    private static let compareOptions: String.CompareOptions = [
+        .caseInsensitive, .diacriticInsensitive, .widthInsensitive
+    ]
+
+    /// True when every term occurs in the supplied VISIBLE text. Uses a direct
+    /// substring probe instead of collecting ranges: the store evaluates this
+    /// for every candidate row and only needs the boolean.
+    public func matches(_ text: String) -> Bool {
+        terms.allSatisfy { term in
+            !term.text.isEmpty
+                && text.range(of: term.text, options: Self.compareOptions) != nil
+        }
+    }
+
+    /// Character offsets (into `text`) of every term occurrence, merged and
+    /// sorted. Offsets are for the SAME visible string the UI renders, never
+    /// for Markdown source or a different display projection.
+    public func ranges(in text: String) -> [Range<Int>] {
+        guard !text.isEmpty else { return [] }
+        var found: [Range<Int>] = []
+        for term in terms {
+            for range in Self.occurrences(of: term.text, in: text) {
+                let lower = text.distance(from: text.startIndex, to: range.lowerBound)
+                let upper = text.distance(from: text.startIndex, to: range.upperBound)
+                guard upper > lower else { continue }
+                found.append(lower..<upper)
+            }
+        }
+        found.sort { lhs, rhs in
+            lhs.lowerBound != rhs.lowerBound
+                ? lhs.lowerBound < rhs.lowerBound
+                : lhs.upperBound < rhs.upperBound
+        }
+        var merged: [Range<Int>] = []
+        for range in found {
+            if let last = merged.last, range.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else {
+                merged.append(range)
+            }
+        }
+        return merged
+    }
+
+    static func occurrences(of term: String, in text: String) -> [Range<String.Index>] {
+        guard !term.isEmpty, !text.isEmpty else { return [] }
+        var result: [Range<String.Index>] = []
+        var searchStart = text.startIndex
+        while searchStart < text.endIndex,
+              let range = text.range(
+                of: term, options: Self.compareOptions, range: searchStart..<text.endIndex) {
+            result.append(range)
+            // Non-overlapping occurrences; a pathological zero-width match
+            // cannot loop because term is non-empty.
+            searchStart = range.upperBound
+            if result.count >= 512 { break }
+        }
+        return result
+    }
+}
+
+/// One global library search result. A body hit names its ACTUAL message; a
+/// title-only hit has `messageID == nil` so the UI can open the conversation
+/// without pretending a message matched.
+public struct ConversationSearchMatch: Sendable, Codable, Hashable, Identifiable {
+    public var conversationID: UUID
+    public var conversationTitle: String
+    public var messageID: UUID?
+    public var role: String?
+    public var snippet: String
+    public var createdAt: Date
+
+    public var id: String {
+        "\(conversationID.uuidString):\(messageID?.uuidString ?? "title")"
+    }
+
+    public var isTitleOnly: Bool { messageID == nil }
+
+    public init(
+        conversationID: UUID,
+        conversationTitle: String,
+        messageID: UUID?,
+        role: String?,
+        snippet: String,
+        createdAt: Date
+    ) {
+        self.conversationID = conversationID
+        self.conversationTitle = String(conversationTitle.prefix(256))
+        self.messageID = messageID
+        self.role = role
+        self.snippet = String(snippet.prefix(ConversationSearchText.maximumSnippetCharacters))
+        self.createdAt = createdAt
+    }
+}
+
+/// One in-conversation message hit (chronological order from the store).
+public struct ConversationMessageMatch: Sendable, Codable, Hashable, Identifiable {
+    public var conversationID: UUID
+    public var messageID: UUID
+    public var role: String
+    public var snippet: String
+    public var createdAt: Date
+
+    public var id: UUID { messageID }
+
+    public init(
+        conversationID: UUID,
+        messageID: UUID,
+        role: String,
+        snippet: String,
+        createdAt: Date
+    ) {
+        self.conversationID = conversationID
+        self.messageID = messageID
+        self.role = role
+        self.snippet = String(snippet.prefix(ConversationSearchText.maximumSnippetCharacters))
+        self.createdAt = createdAt
+    }
+}
+
+/// Visible-text projection used by every search surface.
+///
+/// Assistant content is Markdown SOURCE. Search must address what the reader
+/// actually sees, so inline syntax is flattened before matching/snippeting;
+/// code fence markers and language hints are dropped while the code itself is
+/// kept. User content is shown verbatim, so it is used verbatim. The returned
+/// string is the one whose character offsets the UI highlights.
+public enum ConversationSearchText {
+    public static let maximumSnippetCharacters = 160
+
+    private struct InlineRule: @unchecked Sendable {
+        let regex: NSRegularExpression
+        let template: String
+    }
+
+    /// Compiled once. NSRegularExpression is immutable and documented as
+    /// thread-safe for matching, so sharing these rules is safe.
+    private static let inlineRules: [InlineRule] = {
+        let rules: [(String, String)] = [
+            (#"<!--[\s\S]*?-->"#, ""),
+            (#"!\[([^\]]*)\]\([^)]*\)"#, "$1"),
+            (#"\[([^\]]+)\]\([^)]*\)"#, "$1"),
+            (#"`([^`\n]+)`"#, "$1"),
+            (#"\*\*([^*\n]+)\*\*"#, "$1"),
+            (#"__([^_\n]+)__"#, "$1"),
+            (#"~~([^~\n]+)~~"#, "$1"),
+            (#"(?<![*\w])\*([^*\n]+)\*(?![*\w])"#, "$1"),
+            (#"(?<![\w_])_([^_\n]+)_(?![\w_])"#, "$1"),
+            (#"\\([\\`*_{}\[\]()#+\-.!>])"#, "$1"),
+        ]
+        return rules.compactMap { pattern, template in
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+            return InlineRule(regex: regex, template: template)
+        }
+    }()
+
+    /// Every inline rule needs at least one of these characters. A line with
+    /// none of them already equals its flattened form, which keeps the bounded
+    /// search scan off the regex engine for ordinary prose.
+    private static let inlineTriggerCharacters = CharacterSet(
+        charactersIn: "*_~`[]()<>!\\\t")
+
+    public static func visibleText(role: String, content: String) -> String {
+        role == "assistant" ? visibleText(markdown: content) : content
+    }
+
+    public static func visibleText(markdown source: String) -> String {
+        var output: [String] = []
+        var inFence = false
+        for rawLine in source.components(separatedBy: "\n") {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                inFence.toggle()
+                continue
+            }
+            if inFence {
+                output.append(rawLine)
+                continue
+            }
+            if isTableSeparator(trimmed) || isThematicBreak(trimmed) { continue }
+            var line = stripBlockMarkers(rawLine)
+            if line.rangeOfCharacter(from: Self.inlineTriggerCharacters) != nil {
+                line = flattenInline(line)
+            }
+            let cleaned = line.trimmingCharacters(in: .whitespaces)
+            if cleaned.isEmpty {
+                if output.last?.isEmpty == false { output.append("") }
+            } else {
+                output.append(cleaned)
+            }
+        }
+        return output.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// One readable line around the first match, never longer than
+    /// `maximumCharacters`. Used as the global/detail hit line.
+    public static func snippet(
+        in text: String,
+        query: ConversationSearchQuery,
+        maximumCharacters: Int = 160
+    ) -> String {
+        let limit = max(24, maximumCharacters)
+        guard let first = query.ranges(in: text).first,
+              first.lowerBound < text.count else {
+            let firstLine = text.split(separator: "\n", omittingEmptySubsequences: true)
+                .first.map(String.init) ?? text
+            return String(firstLine.prefix(limit))
+        }
+        let matchStart = text.index(text.startIndex, offsetBy: first.lowerBound)
+        var lineStart = matchStart
+        while lineStart > text.startIndex {
+            let previous = text.index(before: lineStart)
+            if text[previous] == "\n" { break }
+            lineStart = previous
+        }
+        var lineEnd = matchStart
+        while lineEnd < text.endIndex, text[lineEnd] != "\n" {
+            lineEnd = text.index(after: lineEnd)
+        }
+        let line = String(text[lineStart..<lineEnd])
+        let matchOffset = text.distance(from: lineStart, to: matchStart)
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.count <= limit { return trimmed }
+        let windowStart = max(0, min(matchOffset - limit / 3, max(0, line.count - limit)))
+        let startIndex = line.index(line.startIndex, offsetBy: windowStart)
+        let endIndex = line.index(
+            startIndex,
+            offsetBy: min(limit, line.distance(from: startIndex, to: line.endIndex)))
+        var window = String(line[startIndex..<endIndex])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if windowStart > 0 { window = "…" + window }
+        if endIndex < line.endIndex { window += "…" }
+        return window
+    }
+
+    private static func isTableSeparator(_ line: String) -> Bool {
+        guard line.hasPrefix("|") || line.contains("|") else { return false }
+        let cells = line.split(separator: "|", omittingEmptySubsequences: false)
+        guard cells.count > 1 else { return false }
+        return cells.allSatisfy { cell in
+            let value = String(cell).trimmingCharacters(in: .whitespaces)
+            return !value.isEmpty && value.allSatisfy { $0 == "-" || $0 == ":" }
+        }
+    }
+
+    private static func isThematicBreak(_ line: String) -> Bool {
+        guard line.count >= 3 else { return false }
+        let allowed: Set<Character> = ["-", "*", "_", " "]
+        guard line.allSatisfy({ allowed.contains($0) }) else { return false }
+        return line.contains("-") || line.contains("*") || line.contains("_")
+    }
+
+    private static func stripBlockMarkers(_ rawLine: String) -> String {
+        var line = rawLine.trimmingCharacters(in: .whitespaces)
+        if line.hasPrefix("|") && line.hasSuffix("|") && line.count > 1 {
+            let cells = line.split(separator: "|", omittingEmptySubsequences: false)
+                .map { String($0).trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            return cells.joined(separator: " ")
+        }
+        while line.hasPrefix(">") {
+            line.removeFirst()
+            line = line.trimmingCharacters(in: .whitespaces)
+        }
+        for marker in ["#", "######", "#####", "####", "###", "##"] {
+            if line.hasPrefix(marker + " ") {
+                line = String(line.dropFirst(marker.count + 1))
+                break
+            }
+        }
+        for marker in ["- ", "* ", "+ "] {
+            if line.hasPrefix(marker) {
+                line = String(line.dropFirst(marker.count))
+                break
+            }
+        }
+        if let first = line.first, first.isNumber,
+           let range = line.range(of: #"^\d{1,3}[.)]\s+"#, options: .regularExpression) {
+            line.removeSubrange(range)
+        }
+        if line.hasPrefix("["),
+           let range = line.range(of: #"^\[[ xX]\]\s+"#, options: .regularExpression) {
+            line.removeSubrange(range)
+        }
+        return line
+    }
+
+    private static func flattenInline(_ line: String) -> String {
+        var value = line
+        for rule in inlineRules {
+            value = rule.regex.stringByReplacingMatches(
+                in: value,
+                options: [],
+                range: NSRange(value.startIndex..<value.endIndex, in: value),
+                withTemplate: rule.template)
+        }
+        return value.replacingOccurrences(of: "\t", with: " ")
+    }
 }

@@ -9,6 +9,7 @@ public enum WebSearchProviderKind: String, Codable, CaseIterable, Identifiable, 
     case bochaAI
     case tencentWSA
     case volcengine
+    case deepseek
     case brave
     case tavily
     case exa
@@ -243,6 +244,53 @@ public struct VolcengineSearchOptions: Sendable, Hashable {
     }
 }
 
+/// DeepSeek Search options exposed through the existing provider catalog
+/// options dictionary. The only adjustable request field is `need_content`;
+/// query, count and every filter are derived from the frozen tool arguments,
+/// never from unrelated configuration. Absent values keep the documented
+/// upstream default (`false`).
+public struct DeepSeekSearchOptions: Sendable, Hashable {
+    public enum Key {
+        public static let needContent = "needContent"
+        /// Historical/compatibility spelling accepted when a record was
+        /// authored outside the catalog editor. The catalog itself only ever
+        /// emits `needContent`.
+        public static let needContentAlias = "need_content"
+    }
+
+    /// Official `query` bound: 1...128 Unicode characters after every
+    /// translated site/date filter is appended.
+    public static let maximumQueryScalars = 128
+
+    public var needContent: Bool
+
+    public init(needContent: Bool = false) {
+        self.needContent = needContent
+    }
+
+    public init(options: [String: String]) throws {
+        let raw = options[Key.needContent] ?? options[Key.needContentAlias]
+        guard let raw else {
+            needContent = false
+            return
+        }
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "", "false", "0":
+            needContent = false
+        case "true", "1":
+            needContent = true
+        default:
+            throw WebRetrievalError.invalidResponse(
+                "Invalid DeepSeek search option needContent"
+            )
+        }
+    }
+
+    public var dictionary: [String: String] {
+        [Key.needContent: needContent ? "true" : "false"]
+    }
+}
+
 /// A bounded, explicitly provider-generated answer. It is auxiliary model
 /// text, never a fetched page or a citation snippet; normalized URL results
 /// stay separate.
@@ -471,6 +519,17 @@ public struct WebSearchResult: Codable, Hashable, Sendable {
     /// Explicit evidence state. `nil` means `.searchMetadataOnly`, so records
     /// written before this field existed keep their exact meaning.
     public var contentState: WebSearchContentState?
+    /// Provider-returned long summary intended for model reading. It is still
+    /// search-index/provider text, not independently fetched or verified page
+    /// content. Optional so every older payload decodes unchanged.
+    public var summary: String?
+    /// Provider-returned page body (DeepSeek `need_content=true`). It is
+    /// supplied by the provider and is NOT fetched or verified by Floe;
+    /// `contentState` stays `.searchMetadataOnly` so callers cannot confuse it
+    /// with a local `web.fetch` result.
+    public var content: String?
+    /// Provider-reported authority score (DeepSeek: 0...4, `-1` unknown).
+    public var authority: Int?
 
     public var effectiveContentState: WebSearchContentState {
         contentState ?? .searchMetadataOnly
@@ -493,7 +552,10 @@ public struct WebSearchResult: Codable, Hashable, Sendable {
         sourceProfileURL: String? = nil,
         faviconURL: String? = nil,
         displayPath: String? = nil,
-        contentState: WebSearchContentState? = nil
+        contentState: WebSearchContentState? = nil,
+        summary: String? = nil,
+        content: String? = nil,
+        authority: Int? = nil
     ) {
         self.title = title
         self.url = url
@@ -512,6 +574,9 @@ public struct WebSearchResult: Codable, Hashable, Sendable {
         self.faviconURL = faviconURL
         self.displayPath = displayPath
         self.contentState = contentState
+        self.summary = summary
+        self.content = content
+        self.authority = authority
     }
 }
 

@@ -76,6 +76,12 @@ struct StorageOperationBudgetTests {
     @Test("Background admission is fenced only while canceling or finalizing")
     func admissionPolicy() {
         #expect(StorageSuspensionAdmission.permitsOperation(
+            backgroundNow: true, needsForeground: true, finalizingHandoff: false,
+            authorizedSystemCallback: true))
+        #expect(!StorageSuspensionAdmission.permitsOperation(
+            backgroundNow: true, needsForeground: true, finalizingHandoff: true,
+            authorizedSystemCallback: true))
+        #expect(StorageSuspensionAdmission.permitsOperation(
             backgroundNow: true, needsForeground: false, finalizingHandoff: false))
         #expect(!StorageSuspensionAdmission.permitsOperation(
             backgroundNow: true, needsForeground: true, finalizingHandoff: false))

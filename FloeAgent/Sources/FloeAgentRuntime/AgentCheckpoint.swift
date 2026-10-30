@@ -305,6 +305,13 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// explicit authorization. Optional so older checkpoints decode.
     public var sensitiveToolCallIDs: [String]?
 
+    /// Request identifiers of durable user questions that still blocked or
+    /// optionally waited when this checkpoint was written. Only identifiers
+    /// are stored here; question text, options and answers stay in the
+    /// UserQuestionStore. Nil for runs without questions and for temporary
+    /// conversations (RAM-only questions never enter a durable checkpoint).
+    public var pendingUserQuestionRequestIDs: [String]?
+
     /// Current checkpoint file format.
     public static let currentFormatVersion = 5
     /// Current GRDB schema version.
@@ -337,7 +344,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         pendingAssistantReasoning: String? = nil,
         replayedToolPairs: [ReplayedToolPair]? = nil,
         ownedSystemContextID: UUID? = nil,
-        sensitiveToolCallIDs: [String]? = nil
+        sensitiveToolCallIDs: [String]? = nil,
+        pendingUserQuestionRequestIDs: [String]? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -366,6 +374,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.replayedToolPairs = replayedToolPairs
         self.ownedSystemContextID = ownedSystemContextID
         self.sensitiveToolCallIDs = sensitiveToolCallIDs
+        self.pendingUserQuestionRequestIDs = pendingUserQuestionRequestIDs
     }
 
     public func encoded() throws -> Data {

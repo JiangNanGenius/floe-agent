@@ -161,7 +161,7 @@ final class ContentUpdateCenter: ObservableObject {
     /// Version of the search catalog compiled into the app bundle. A signed
     /// package at this version or newer wins; a strictly newer built-in takes
     /// over exactly like every other bundled baseline.
-    nonisolated static let builtInSearchProvidersVersion = "1.0.0"
+    nonisolated static let builtInSearchProvidersVersion = "1.1.0"
 
     /// Version of the prompt sections compiled into the app. This is a
     /// content version (not the app marketing version): bump it whenever the

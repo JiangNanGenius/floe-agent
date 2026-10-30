@@ -147,6 +147,14 @@ final class ContinuousVoiceScreenSession: ObservableObject {
         selection.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &subscriptions)
         selection.$modelID.dropFirst().removeDuplicates().sink { id in request.onModelSelected(id) }.store(in: &subscriptions)
         coordinator.onSessionEnded = { [weak self] _ in self?.close() }
+        environment.userQuestions.$pending.sink { [weak self] pending in
+            guard let self, let owner = self.driver.conversationID else { return }
+            let questionID = pending[owner]?.currentQuestion?.questionID
+            self.coordinator.setUserQuestionReply(questionID: questionID, reply: questionID == nil ? nil : { [weak self] text in
+                guard let self, self.isActive, self.driver.conversationID == owner else { return false }
+                return try await self.environment.userQuestions.answerSpokenText(text, conversationID: owner)
+            })
+        }.store(in: &subscriptions)
         bridge = ContinuousVoiceSpeechBridge(output: coordinator, synthesize: { [weak self] unit in
             guard let self else {
                 let (stream, sender) = TTSAudioChunkStream.make()
@@ -203,6 +211,7 @@ final class ContinuousVoiceScreenSession: ObservableObject {
     }
 
     var temporary: Bool { wasTemporary }
+    var conversationID: UUID? { driver.conversationID }
     var isActive: Bool { !ended && presentation.request?.id == request.id }
 
     func start() async {
@@ -389,6 +398,12 @@ struct VoiceConversationView: View {
                         .textSelection(.enabled)
                         .padding(.horizontal, 20)
                     Spacer(minLength: 8)
+                }
+                if let owner = session.conversationID {
+                    UserQuestionPanel(questions: environment.userQuestions, conversationID: owner,
+                                      maximumHeight: viewportHeight.map { $0 * 0.45 })
+                        .environment(\.continuousVoiceActive, true)
+                        .padding(.horizontal)
                 }
                 if let failure = session.failureKey ?? stateFailureKey {
                     VStack(spacing: 8) {

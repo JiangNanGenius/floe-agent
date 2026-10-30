@@ -40,6 +40,16 @@ public actor ConversationRunService {
         /// The exact runtime payload awaiting approval. UI code must display
         /// this value rather than reconstructing authority from an event.
         public var pendingApproval: AgentState.WaitingApproval?
+        /// Live durable question that currently blocks this run. It is a RAM
+        /// projection only; question text/answers stay in the question store
+        /// and this value never enters the checkpoint.
+        public var pendingUserQuestion: UserQuestionWaitingSnapshot?
+
+        /// True while the run is parked on a durable question. Background
+        /// audio/location ownership must not claim this run is working.
+        public var isWaitingForUserQuestion: Bool {
+            pendingUserQuestion != nil || stateName == "waitingUserQuestion"
+        }
         public var checkpointReason: String?
 
         public init(
@@ -57,6 +67,7 @@ public actor ConversationRunService {
             providerAttempt: ProviderAttemptSnapshot? = nil,
             isTerminal: Bool,
             pendingApproval: AgentState.WaitingApproval? = nil,
+            pendingUserQuestion: UserQuestionWaitingSnapshot? = nil,
             checkpointReason: String? = nil
         ) {
             self.runID = runID
@@ -69,6 +80,7 @@ public actor ConversationRunService {
             self.providerAttempt = providerAttempt
             self.isTerminal = isTerminal
             self.pendingApproval = pendingApproval
+            self.pendingUserQuestion = pendingUserQuestion
             self.checkpointReason = checkpointReason
         }
     }
@@ -163,6 +175,7 @@ public actor ConversationRunService {
     private var providerAttempt: ProviderAttemptSnapshot?
     private var latestState: AgentState = .idle
     private var isReviewingApproval = false
+    private var pendingUserQuestion: UserQuestionWaitingSnapshot?
     /// Set only while handling the provider's terminal event, after the final
     /// assistant/outbox boundary and terminal event have both flushed. The
     /// runtime transitions to `.completed` after this callback returns, so
@@ -444,8 +457,27 @@ public actor ConversationRunService {
             providerAttempt: providerAttempt,
             isTerminal: isTerminal(latestState),
             pendingApproval: pendingApproval,
+            pendingUserQuestion: pendingUserQuestion,
             checkpointReason: checkpointReason
         )
+    }
+
+    /// Sets or clears the truthful live question projection and asks the
+    /// runtime to park exactly the executing tool call in
+    /// `.waitingUserQuestion`. The app calls this from the coordinator's
+    /// presented/settled events; nil restores the captured executing state.
+    public func setUserQuestionWait(_ snapshot: UserQuestionWaitingSnapshot?) async {
+        // A published snapshot may contain only optionalContinue questions;
+        // those do NOT block the run or its background ownership. The card and
+        // notification still show them, but only a blocking required/deadline
+        // question parks the runtime.
+        let blocking = snapshot?.hasBlockingPending == true
+        pendingUserQuestion = blocking ? snapshot : nil
+        if blocking, let snapshot {
+            await runtime.setUserQuestionWait(AgentState.WaitingUserQuestion(snapshot: snapshot))
+        } else {
+            await runtime.setUserQuestionWait(nil)
+        }
     }
 
     /// Keeps the durable state vocabulary checkpoint-compatible while making
@@ -478,6 +510,7 @@ public actor ConversationRunService {
         // `checkpointed` and that is the name the completion classifier keys
         // on.
         if case .checkpointed = state { return "checkpointed" }
+        if case .waitingUserQuestion = state { return "waitingUserQuestion" }
         if isReviewingApproval { return "reviewingApproval" }
         switch liveness.phase {
         case .preparingToolCall:
@@ -1061,6 +1094,12 @@ public actor ConversationRunService {
             )
         }
         latestState = projectedState
+        switch projectedState {
+        case .completed, .failed, .cancelling:
+            pendingUserQuestion = nil
+        default:
+            break
+        }
         if case .verifying = state {
             verificationDraftPersisted = true
         }
@@ -2091,6 +2130,7 @@ public actor ConversationRunService {
         case .preparing: .preparing
         case .streamingModel: .streaming
         case .waitingApproval: .waitingApproval
+        case .waitingUserQuestion: .waitingUser
         case .executingTool: .executingTool
         case .compacting: .compacting
         case .verifying: .verifying

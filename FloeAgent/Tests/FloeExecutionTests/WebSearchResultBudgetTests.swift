@@ -8,6 +8,7 @@
 
 import Foundation
 import Testing
+import FloeCore
 import FloeTools
 @testable import FloeExecution
 
@@ -218,5 +219,86 @@ struct WebSearchResultBudgetTests {
         #expect(object["omittedOversizeURLRows"] as? Int == 1)
         // The kept rows carry the EXACT original targets.
         #expect(urls.first == rows[0].url.absoluteString)
+    }
+
+    // MARK: - Complete normalized capture (not the UI budget)
+
+    @Test("Complete capture preserves every row and long provider text beyond the UI budget")
+    func completeCapturePreservesTailBeyondUIBudget() throws {
+        let snippet = String(repeating: "短摘要", count: 500)
+        let summary = String(repeating: "长摘要", count: 1_500)
+        let content = String(repeating: "网页正文", count: 3_000)
+        let rows = (1...6).map { index in
+            WebSearchResult(
+                title: "DeepSeek result \(index)",
+                url: URL(string: "https://example.com/deepseek/\(index)")!,
+                snippet: snippet,
+                sourceName: "Example \(index)",
+                publishedAt: "2026-10-30T00:00:00Z",
+                score: 2.4,
+                provider: .deepseek,
+                citationID: String(format: "ds%09d", index),
+                faviconURL: "https://example.com/icon-\(index).png",
+                summary: summary,
+                content: content,
+                authority: 3
+            )
+        }
+        let response = WebSearchResponse(
+            query: "DeepSeek 最新发布",
+            results: rows,
+            providersUsed: [.deepseek]
+        )
+        let output = try WebSearchTool.output(response)
+
+        // The display projection is still one bounded, valid JSON page.
+        #expect(output.summary.count <= 4_096)
+        _ = try Self.object(output)
+
+        // The complete normalized capture is separate from that projection
+        // and keeps the sixth row and every long field byte-for-byte.
+        let capture = try #require(output.capturedOutput)
+        #expect(capture.count > 4_096)
+        #expect(output.capturedOutputTruncated == false)
+        let captured = try #require(
+            try JSONSerialization.jsonObject(with: Data(capture.utf8)) as? [String: Any]
+        )
+        #expect(captured["captureState"] as? String == "normalizedFullResponse")
+        #expect(captured["returned"] as? Int == 6)
+        #expect(captured["available"] as? Int == 6)
+        #expect(captured["truncated"] as? Bool == false)
+        let capturedRows = try #require(captured["results"] as? [[String: Any]])
+        #expect(capturedRows.count == 6)
+        let last = try #require(capturedRows.last)
+        #expect(last["url"] as? String == rows[5].url.absoluteString)
+        #expect(last["citation"] as? String == rows[5].citationID)
+        #expect(last["snippet"] as? String == snippet)
+        #expect(last["summary"] as? String == summary)
+        #expect(last["content"] as? String == content)
+        #expect(last["authority"] as? Int == 3)
+        #expect(last["score"] as? Double == 2.4)
+        #expect(output.fullOutputSHA256 == FloeDigest.sha256Hex(Data(capture.utf8)))
+    }
+
+    @Test("Complete capture retains provider failures instead of hiding them")
+    func completeCaptureRetainsFailures() throws {
+        let rows = [Self.row(1, snippetLength: 100)]
+        let response = WebSearchResponse(
+            query: "q",
+            results: rows,
+            providersUsed: [.volcengine],
+            failures: [
+                "deepseek: authentication failed (HTTP 401)",
+                "bochaWeb: HTTP 429"
+            ]
+        )
+        let output = try WebSearchTool.output(response)
+        let capture = try #require(output.capturedOutput)
+        let captured = try #require(
+            try JSONSerialization.jsonObject(with: Data(capture.utf8)) as? [String: Any]
+        )
+        #expect(captured["failures"] as? [String] == response.failures)
+        #expect(captured["returned"] as? Int == 1)
+        #expect(captured["truncated"] as? Bool == false)
     }
 }

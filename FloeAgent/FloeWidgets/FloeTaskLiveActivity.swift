@@ -41,6 +41,13 @@ private enum FloeTaskLiveActivityPresentation {
         return title.isEmpty ? FloeL10n.l("widget.untitled_task") : title
     }
 
+    /// Inline bilingual fallback for the planned-wait vocabulary. The widget
+    /// extension resolves the App language itself, so this stays aligned with
+    /// the App's English/Simplified Chinese copy without a second catalog.
+    static func localized(zh: String, en: String) -> String {
+        FloeL10n.isChinese ? zh : en
+    }
+
     static func stateLabel(_ state: WidgetTaskState) -> String {
         switch state {
         case .starting: FloeL10n.l("widget.state.starting")
@@ -65,9 +72,25 @@ private enum FloeTaskLiveActivityPresentation {
         String(format: FloeL10n.l("liveactivity.active_count"), Int64(count))
     }
 
+    /// The header's planned-plan count. It is a total ("3 scheduled"), not a
+    /// row list: at most one wait row is shown, so other plans never become
+    /// extra activities.
+    static func scheduledLabel(_ count: Int) -> String {
+        localized(zh: "\(count) 个计划", en: "\(count) scheduled")
+    }
+
+    static func startingInLabel() -> String {
+        localized(zh: "即将开始", en: "Starts in")
+    }
+
+    static func dueLabel() -> String {
+        localized(zh: "即将开始", en: "Starting soon")
+    }
+
     /// The displayed rows. The header still reports the full active count,
-    /// which can be larger than the Lock Screen list.
-    static let visibleRowLimit = 3
+    /// which can be larger than the Lock Screen list. The snapshot itself caps
+    /// rows (three real runs + at most one planned wait).
+    static let visibleRowLimit = FloeTaskActivitySnapshot.maximumRows
 }
 
 // MARK: - Lock screen / banner
@@ -90,11 +113,14 @@ private struct FloeTaskLiveActivityLockScreenView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(context.state.rows.prefix(FloeTaskLiveActivityPresentation.visibleRowLimit)) { row in
+                let shown = Array(context.state.rows.prefix(
+                    FloeTaskLiveActivityPresentation.visibleRowLimit))
+                ForEach(shown) { row in
                     rowView(row)
                 }
-                if context.state.activeCount > FloeTaskLiveActivityPresentation.visibleRowLimit {
-                    Text("+\(context.state.activeCount - FloeTaskLiveActivityPresentation.visibleRowLimit)")
+                let shownRuns = shown.filter { $0.waitingUntil == nil }.count
+                if context.state.activeCount > shownRuns {
+                    Text("+\(context.state.activeCount - shownRuns)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .accessibilityLabel(Text(FloeL10n.l("widget.more_tasks")))
@@ -119,10 +145,19 @@ private struct FloeTaskLiveActivityLockScreenView: View {
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Text(context.attributes.startDate, style: .timer)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 34, alignment: .trailing)
+            if let scheduled = context.state.scheduledCount, scheduled > 0 {
+                Text(FloeTaskLiveActivityPresentation.scheduledLabel(scheduled))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            if context.state.activeCount > 0 {
+                // Elapsed time only for REAL running work. A planned-wait
+                // activity has no runtime clock to show.
+                Text(context.attributes.startDate, style: .timer)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 34, alignment: .trailing)
+            }
         }
     }
 
@@ -147,10 +182,26 @@ private struct FloeTaskLiveActivityLockScreenView: View {
             Text(FloeTaskLiveActivityPresentation.stateLabel(row.state))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            Text(row.startedAt, style: .timer)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 30, alignment: .trailing)
+            if let waitingUntil = row.waitingUntil {
+                // The SYSTEM advances this text; the App never polls the
+                // database or keeps a timer alive for the countdown.
+                if waitingUntil > Date() {
+                    Text(timerInterval: Date()...waitingUntil, countsDown: true)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 44, alignment: .trailing)
+                        .accessibilityLabel(Text(FloeTaskLiveActivityPresentation.startingInLabel()))
+                } else {
+                    Text(FloeTaskLiveActivityPresentation.dueLabel())
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text(row.startedAt, style: .timer)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 30, alignment: .trailing)
+            }
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)

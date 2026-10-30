@@ -154,6 +154,29 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     // MARK: - Published surface (voice UI reads only these)
 
     @Published private(set) var state: VoiceConversationState = .idle
+    private var userQuestionID: String?
+    private var userQuestionReply: (@MainActor (String) async throws -> Bool)?
+
+    /// A question is part of the current run. Answering it must not cancel
+    /// that run as a barge-in or create a second conversation turn.
+    func setUserQuestionReply(
+        questionID: String?,
+        reply: (@MainActor (String) async throws -> Bool)?
+    ) {
+        guard userQuestionID != questionID else { return }
+        userQuestionID = questionID
+        userQuestionReply = reply
+        clearEndpointTimer()
+        stagedTranscript = ""
+        transcriptBaseline = rawTranscript
+        resumePrefix = nil
+        if questionID != nil, state == .waitingModel, round != nil {
+            state = .listening
+            bargeGate.reset()
+        } else if questionID == nil, state == .listening, round != nil {
+            state = .waitingModel
+        }
+    }
     /// The current utterance being staged (incremental REPLACE). Survives
     /// pause; never auto-submitted while muted.
     @Published private(set) var stagedTranscript = ""
@@ -624,6 +647,8 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     /// Ends the session entirely (close / navigation). Cancels any owned
     /// round, tears the stack down and hands the summary to the app layer.
     func end() {
+        userQuestionID = nil
+        userQuestionReply = nil
         guard state != .idle else { return }
         teardownInFlight = true
         // Fence synchronously before any await so no observation (including a
@@ -1484,6 +1509,27 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         // From here on, new backend text belongs to the NEXT utterance.
         transcriptBaseline = rawTranscript
         resumePrefix = nil
+        if let questionID = userQuestionID, let reply = userQuestionReply {
+            let attempt = activeAttempt
+            autoSubmitIdentity.noteSubmit(text)
+            stagedTranscript = ""
+            state = .waitingModel
+            Task { @MainActor [weak self] in
+                do {
+                    let accepted = try await reply(text)
+                    guard let self, self.isCurrent(attempt), self.userQuestionID == questionID else { return }
+                    if !accepted {
+                        self.turnErrorMessage = String(localized: "user_question.voice.choose_or_answer")
+                        self.state = .listening
+                    }
+                } catch {
+                    guard let self, self.isCurrent(attempt), self.userQuestionID == questionID else { return }
+                    self.turnErrorMessage = String(localized: "user_question.voice.retry_answer")
+                    self.state = .listening
+                }
+            }
+            return
+        }
         let token = VoiceConversationRoundToken(id: UUID(), sessionGeneration: activeAttempt)
         round = Round(token: token)
         currentRound = token

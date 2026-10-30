@@ -4,7 +4,7 @@
 // Pure and deterministic: no network, no Keychain, no app target. The bundled
 // catalog is read from the checkout so the shipped defaults are part of the
 // contract, and the staged content-hub envelope is checked for the
-// catalog-aware minimum app version (1.7.47).
+// catalog-aware minimum app version (1.7.65).
 
 import Foundation
 import Testing
@@ -124,13 +124,14 @@ struct SearchProviderCatalogTests {
     func bundledCatalogMatchesCompiledAdapters() throws {
         let index = try Self.bundledIndex()
         #expect(index.document.id == "floe.search.providers")
-        #expect(index.document.version == "1.0.0")
-        #expect(index.entries.count == 9)
+        #expect(index.document.version == "1.1.0")
+        #expect(index.entries.count == 10)
         let mapping = Dictionary(uniqueKeysWithValues: index.entries.map { ($0.presetID, $0.adapterKind) })
         #expect(mapping == [
             "bocha": "bochaWeb",
             "tencent-wsa": "tencentWSA",
             "volcengine": "volcengine",
+            "deepseek": "deepseek",
             "brave": "brave",
             "tavily": "tavily",
             "exa": "exa",
@@ -162,7 +163,9 @@ struct SearchProviderCatalogTests {
     @Test("Local catalog search is deterministic and bilingual")
     func searchIsDeterministicAndLocalized() throws {
         let index = try Self.bundledIndex()
-        #expect(index.search(query: "", localePrimary: "en").count == 9)
+        #expect(index.search(query: "", localePrimary: "en").count == 10)
+        #expect(index.search(query: "deepseek", localePrimary: "en").map(\.presetID) == ["deepseek"])
+        #expect(index.search(query: "DeepSeek", localePrimary: "zh-Hans").map(\.presetID) == ["deepseek"])
         #expect(index.search(query: "brave", localePrimary: "en").map(\.presetID) == ["brave"])
         #expect(index.search(query: "博查", localePrimary: "zh-Hans").map(\.presetID) == ["bocha"])
         #expect(index.search(query: "  BOCHA  ", localePrimary: "en").map(\.presetID) == ["bocha"])
@@ -240,7 +243,7 @@ struct SearchProviderCatalogTests {
         let filtered = try SearchProviderCatalogDocument.validated(
             from: JSONSerialization.data(withJSONObject: object)
         )
-        #expect(filtered.entries.count == 9)
+        #expect(filtered.entries.count == 10)
         #expect(!filtered.entries.contains { $0.presetID == "quantum-search" })
 
         object["entries"] = [future]
@@ -262,10 +265,11 @@ struct SearchProviderCatalogTests {
         )
         #expect(envelope["id"] as? String == "floe.search.providers")
         #expect(envelope["kind"] as? String == "providers")
-        #expect(envelope["version"] as? String == "1.0.0")
+        #expect(envelope["version"] as? String == "1.1.0")
         // A search catalog must never activate on an older app that does not
-        // understand the payload/flow.
-        #expect(envelope["minimumAppVersion"] as? String == "1.7.47")
+        // understand the payload/flow. 1.7.65 is the first build that compiles
+        // the DeepSeek adapter kind, so 1.7.64 would fail closed and drop it.
+        #expect(envelope["minimumAppVersion"] as? String == "1.7.65")
         #expect(envelope["containsScripts"] as? Bool == false)
         #expect((envelope["releaseNotes"] as? [String: String])?["en"]?.isEmpty == false)
         #expect((envelope["releaseNotes"] as? [String: String])?["zh-Hans"]?.isEmpty == false)
@@ -292,6 +296,23 @@ struct SearchProviderCatalogTests {
         #expect(brave.configuration.credentialAccount.hasPrefix("web-search.instance."))
         #expect(brave.presetID == "brave")
         #expect(brave.appliedCatalogVersion == nil)
+
+        let deepSeekEntry = try #require(index.entry(presetID: "deepseek"))
+        #expect(deepSeekEntry.adapterKind == "deepseek")
+        #expect(deepSeekEntry.defaultEndpoint == "https://api.deepseek.com/v1/tools/search")
+        #expect(deepSeekEntry.credentialKeys == ["apiKey"])
+        #expect(deepSeekEntry.optionFields.map(\.key) == [DeepSeekSearchOptions.Key.needContent])
+        #expect(deepSeekEntry.optionFields.first?.defaultValue == "false")
+        let deepSeek = try #require(SearchProviderDraftFactory.draftInstance(
+            for: deepSeekEntry,
+            localePrimary: "en"
+        ))
+        #expect(deepSeek.configuration.kind == .deepseek)
+        #expect(deepSeek.configuration.enabled == false)
+        #expect(deepSeek.configuration.endpoint == nil)
+        #expect(deepSeek.configuration.options[DeepSeekSearchOptions.Key.needContent] == "false")
+        #expect(deepSeek.configuration.credentialAccount.hasPrefix("web-search.instance."))
+        #expect(deepSeek.presetID == "deepseek")
 
         let customEntry = try #require(index.entry(presetID: "custom-interface"))
         let custom = try #require(SearchProviderDraftFactory.draftInstance(for: customEntry, localePrimary: "en"))
@@ -324,6 +345,8 @@ struct SearchProviderCatalogTests {
         #expect(SearchProviderPresets.presetID(for: .bochaWeb) == "bocha")
         #expect(SearchProviderPresets.presetID(for: .bochaAI) == "bocha")
         #expect(SearchProviderPresets.presetID(for: .tencentWSA) == "tencent-wsa")
+        #expect(SearchProviderPresets.presetID(for: .volcengine) == "volcengine")
+        #expect(SearchProviderPresets.presetID(for: .deepseek) == "deepseek")
         #expect(SearchProviderPresets.presetID(for: .custom) == "custom-interface")
         #expect(SearchProviderPresets.presetID(for: .searxng) == "searxng")
         #expect(WebSearchProviderInstance.credentialAccount(for: UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEEFF")!)

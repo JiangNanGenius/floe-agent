@@ -187,6 +187,7 @@ public actor WebSearchService {
         .bochaWeb: URL(string: "https://api.bochaai.com/v1/web-search")!,
         .bochaAI: URL(string: "https://api.bochaai.com/v1/web-search")!,
         .tencentWSA: URL(string: "https://wsa.tencentcloudapi.com")!,
+        .deepseek: URL(string: "https://api.deepseek.com/v1/tools/search")!,
         .brave: URL(string: "https://api.search.brave.com/res/v1/web/search")!,
         .tavily: URL(string: "https://api.tavily.com/search")!,
         .exa: URL(string: "https://api.exa.ai/search")!,
@@ -299,6 +300,9 @@ public actor WebSearchService {
                 FloeLogger(category: .tools).warning(
                     "webSearchProviderFailed trace=\(traceID) provider=\(configuration.kind.rawValue) status=\(status) responseBytes=\(data.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
                 )
+                if configuration.kind == .deepseek {
+                    return .failure(Self.deepSeekFailure(status: status, data: data))
+                }
                 return .failure("\(configuration.kind.rawValue): HTTP \(status)")
             }
             let output = try Self.parseOutput(
@@ -419,6 +423,18 @@ public actor WebSearchService {
                 credential: credential,
                 query: query,
                 count: count,
+                now: now
+            )
+
+        case .deepseek:
+            guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
+            let options = try DeepSeekSearchOptions(options: configuration.options)
+            request = try deepSeekSearchRequest(
+                configuration,
+                apiKey: apiKey,
+                query: query,
+                count: count,
+                needContent: options.needContent,
                 now: now
             )
 
@@ -660,6 +676,128 @@ public actor WebSearchService {
         }
     }
 
+    /// Official DeepSeek Search request. The endpoint is pinned by
+    /// `canonicalEndpoints`; the body contains ONLY query, count and
+    /// `need_content` — never `ori_question`, `localization` or any chat
+    /// content. Domain exclusions and recency are translated into the
+    /// documented `site:` / `-site:` / `after:` search syntax, then the FINAL
+    /// query is validated as 1...128 Unicode scalars. A filter that would
+    /// exceed the vendor bound is an explicit error; the query is never
+    /// silently truncated, split or re-requested.
+    private static func deepSeekSearchRequest(
+        _ configuration: WebSearchProviderConfiguration,
+        apiKey: String,
+        query: WebSearchQuery,
+        count: Int,
+        needContent: Bool,
+        now: Date
+    ) throws -> URLRequest {
+        let endpoint = configuration.endpoint
+            ?? canonicalEndpoints[.deepseek]
+            ?? URL(string: "https://api.deepseek.com/v1/tools/search")!
+        let body: [String: Any] = [
+            "query": try deepSeekQueryText(query, now: now),
+            "count": min(max(1, count), 50),
+            "need_content": needContent
+        ]
+        var request = try post(endpoint, json: body)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    /// Applies the officially documented search syntax to the frozen query
+    /// arguments, then enforces the final scalar bound. Multiple preferred
+    /// domains use the documented OR form; excluded hosts are space-separated
+    /// `-site:` terms. Recency becomes an exact UTC `after:` date (inclusive
+    /// window semantics match the other adapters: N days means the last N
+    /// calendar days, so the start is N-1 days before `now`).
+    static func deepSeekQueryText(_ query: WebSearchQuery, now: Date) throws -> String {
+        let trimmed = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw WebRetrievalError.invalidResponse("DeepSeek search query is empty")
+        }
+        var parts = [trimmed]
+        let sites = try deepSeekDomains(query.domains, field: "domains")
+        if !sites.isEmpty {
+            parts.append(sites.map { "site:\($0)" }.joined(separator: " OR "))
+        }
+        let excluded = try deepSeekDomains(query.excludedDomains, field: "excluded domains")
+        if !excluded.isEmpty {
+            parts.append(excluded.map { "-site:\($0)" }.joined(separator: " "))
+        }
+        if let days = query.recencyDays, days > 0 {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "yyyy-MM-dd"
+            let start = now.addingTimeInterval(-Double(days - 1) * 86_400)
+            parts.append("after:\(formatter.string(from: start))")
+        }
+        let final = parts.joined(separator: " ")
+        let scalarCount = final.unicodeScalars.count
+        guard scalarCount > 0, scalarCount <= DeepSeekSearchOptions.maximumQueryScalars else {
+            throw WebRetrievalError.invalidResponse(
+                "DeepSeek Search accepts queries up to \(DeepSeekSearchOptions.maximumQueryScalars) Unicode characters including site and date filters; shorten the query or filters"
+            )
+        }
+        return final
+    }
+
+    /// Domain values become search operators, so they are validated rather
+    /// than passed through: whitespace/quotes/slashes could inject extra
+    /// operators, and a silent drop would change the user's filters.
+    private static func deepSeekDomains(_ values: [String], field: String) throws -> [String] {
+        var seen: Set<String> = []
+        var output: [String] = []
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  trimmed.unicodeScalars.allSatisfy({
+                      !CharacterSet.whitespacesAndNewlines.contains($0)
+                          && !CharacterSet.controlCharacters.contains($0)
+                          && !"\"'()/:".unicodeScalars.contains($0)
+                  }),
+                  seen.insert(trimmed.lowercased()).inserted else {
+                throw WebRetrievalError.invalidResponse(
+                    "DeepSeek \(field) contains an invalid domain"
+                )
+            }
+            output.append(trimmed.lowercased())
+        }
+        return output
+    }
+
+    /// Stable, secret-free classification of a DeepSeek non-2xx response.
+    /// The provider's OpenAI-compatible error text is optional, bounded and
+    /// never includes request headers.
+    static func deepSeekFailure(status: Int, data: Data) -> String {
+        let classification: String
+        switch status {
+        case 400: classification = "invalid request"
+        case 401: classification = "authentication failed"
+        case 402: classification = "insufficient balance"
+        case 403: classification = "access denied"
+        case 404: classification = "endpoint not found"
+        case 408: classification = "request timed out"
+        case 413: classification = "request too large"
+        case 429: classification = "rate limit exceeded"
+        case 500...599: classification = "service unavailable"
+        default: classification = "HTTP \(status)"
+        }
+        let head = classification == "HTTP \(status)"
+            ? "deepseek: HTTP \(status)"
+            : "deepseek: \(classification) (HTTP \(status))"
+        guard let detail = deepSeekErrorDetail(data) else { return head }
+        return "\(head): \(detail)"
+    }
+
+    private static func deepSeekErrorDetail(_ data: Data) -> String? {
+        guard !data.isEmpty,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = root["error"], !(error is NSNull) else { return nil }
+        return String(providerErrorMessage(error).prefix(512))
+    }
+
     private static func post(_ url: URL, json: [String: Any]) throws -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -771,12 +909,15 @@ public actor WebSearchService {
             throw WebRetrievalError.invalidResponse("response is not valid JSON")
         }
         guard let object = root as? [String: Any] else {
-            if provider == .volcengine {
+            if provider == .volcengine || provider == .deepseek {
                 throw WebRetrievalError.invalidResponse("response root is not a JSON object")
             }
             // Preserve the existing tolerant behavior for providers whose
             // parser historically treated a non-object root as no results.
             return WebSearchProviderOutput(results: [], generatedAnswer: nil)
+        }
+        if provider == .deepseek {
+            return try parseDeepSeekResponse(object, limit: limit)
         }
         if provider == .volcengine, isArkResponse(object) {
             return try parseArkResponse(object, limit: limit)
@@ -800,6 +941,64 @@ public actor WebSearchService {
             results: parseGenericResults(object, provider: provider, limit: limit),
             generatedAnswer: nil
         )
+    }
+
+    /// Official DeepSeek Search envelope `{ "results": [ … ] }`. The array is
+    /// required (an absent/wrong-typed field is a malformed response, not a
+    /// successful empty search), while an empty array is a real no-match
+    /// answer. Long `summary` and provider-supplied `content` are preserved
+    /// as typed optional fields; they stay `searchMetadataOnly` because Floe
+    /// did not fetch or verify the page itself.
+    private static func parseDeepSeekResponse(
+        _ object: [String: Any],
+        limit: Int
+    ) throws -> WebSearchProviderOutput {
+        if let error = object["error"], !(error is NSNull) {
+            throw WebRetrievalError.invalidResponse(providerErrorMessage(error))
+        }
+        guard let rawResults = object["results"] else {
+            throw WebRetrievalError.invalidResponse(
+                "DeepSeek response is missing the results array"
+            )
+        }
+        guard let items = rawResults as? [[String: Any]] else {
+            throw WebRetrievalError.invalidResponse(
+                "DeepSeek results is not an array"
+            )
+        }
+        var output: [WebSearchResult] = []
+        for item in items {
+            guard output.count < max(1, limit) else { break }
+            guard let title = optionalString(item, keys: ["title"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                !title.isEmpty,
+                let rawURL = optionalString(item, keys: ["url"]),
+                let url = URL(string: rawURL),
+                ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                continue
+            }
+            let snippet = optionalString(item, keys: ["snippet"]) ?? ""
+            let seed = "deepseek|\(url.absoluteString)"
+            output.append(WebSearchResult(
+                title: title,
+                url: url,
+                // The short snippet is the front-end excerpt. It keeps the
+                // existing parser ceiling; the long summary/content remain
+                // separate fields instead of being concatenated into it.
+                snippet: String(snippet.prefix(4_000)),
+                sourceName: optionalString(item, keys: ["site_name"]),
+                publishedAt: optionalString(item, keys: ["date"]),
+                score: number(item["rerank_score"]),
+                provider: .deepseek,
+                citationID: String(sha256Hex(Data(seed.utf8)).prefix(12)),
+                faviconURL: optionalString(item, keys: ["site_icon"]),
+                contentState: .searchMetadataOnly,
+                summary: optionalString(item, keys: ["summary"]),
+                content: optionalString(item, keys: ["content"]),
+                authority: integer(item["authority"])
+            ))
+        }
+        return WebSearchProviderOutput(results: output, generatedAnswer: nil)
     }
 
     /// Ark Responses objects are distinguishable from the direct search API
@@ -1045,6 +1244,20 @@ public actor WebSearchService {
             if let value = dictionary[key] as? String, !value.isEmpty { return value }
         }
         return nil
+    }
+
+    /// JSON numbers arrive as NSNumber; Bool is also an NSNumber and is
+    /// explicitly excluded so a malformed `true` never becomes score 1.
+    private static func number(_ value: Any?) -> Double? {
+        guard let value, !(value is Bool),
+              let number = value as? NSNumber else { return nil }
+        return number.doubleValue
+    }
+
+    private static func integer(_ value: Any?) -> Int? {
+        guard let value, !(value is Bool),
+              let number = value as? NSNumber else { return nil }
+        return number.intValue
     }
 
     /// Ephemeral single-instance test transport. The frozen draft

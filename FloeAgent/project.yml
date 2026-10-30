@@ -397,8 +397,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.64"
-        CURRENT_PROJECT_VERSION: "305"
+        MARKETING_VERSION: "1.7.65"
+        CURRENT_PROJECT_VERSION: "306"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -479,8 +479,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.64"
-        CURRENT_PROJECT_VERSION: "305"
+        MARKETING_VERSION: "1.7.65"
+        CURRENT_PROJECT_VERSION: "306"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -530,8 +530,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.64"
-        CURRENT_PROJECT_VERSION: "305"
+        MARKETING_VERSION: "1.7.65"
+        CURRENT_PROJECT_VERSION: "306"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -574,8 +574,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.64"
-        CURRENT_PROJECT_VERSION: "305"
+        MARKETING_VERSION: "1.7.65"
+        CURRENT_PROJECT_VERSION: "306"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -627,8 +627,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.64"
-        CURRENT_PROJECT_VERSION: "305"
+        MARKETING_VERSION: "1.7.65"
+        CURRENT_PROJECT_VERSION: "306"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1049,6 +1049,7 @@ targets:
       # G2 integration of the N custom-cover patch: cover store/tool
       # ownership and raster validation run in the App host.
       - path: Tests/FloeNotesTests/NoteCoverStoreTests.swift
+      - path: Tests/FloeNotesTests/NoteSuspensionTests.swift
       - path: Tests/FloeNotesTests/OfficeGeneratedPreviewTests.swift
       - path: Qualification/NativeNotes/Tests/NotesCustomCoverTests.swift
       - path: Tests/FloePersistenceTests/RunLifecycleRetentionTests.swift
@@ -1207,6 +1208,16 @@ targets:
       - path: Tests/FloeSkillsTests/MacOriginalSkillTests.swift
       - path: Tests/FloeMacBridgeTests/MacBridgeCommandTransferTests.swift
       - path: Tests/FloeAgentRuntimeTests/MacUnknownOutcomeTests.swift
+      - path: Tests/FloePersistenceTests/TaskScheduleStoreTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ConversationSearchTests.swift
+      - path: Tests/FloeAppTests/SchedulePresentationTests.swift
+      - path: Tests/FloeAppTests/ThreadSearchTests.swift
+      - path: Tests/FloeAppTests/UserQuestionCardTests.swift
+      - path: Tests/FloeAppTests/UserQuestionNotificationIntegrationTests.swift
+      - path: Tests/FloeAppTests/UserQuestionDeliveryProjectionTests.swift
+      - path: Tests/FloePersistenceTests/UserQuestionStoreTests.swift
+      - path: Tests/FloeAgentRuntimeTests/UserQuestionTests.swift
+      - path: Tests/FloeExecutionTests/DeepSeekSearchTests.swift
     dependencies:
       - target: FloeAgent
       - package: FloeMacBridge

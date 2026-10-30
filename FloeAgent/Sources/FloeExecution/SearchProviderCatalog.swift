@@ -472,6 +472,7 @@ public enum SearchProviderPresets {
     public static let bocha = "bocha"
     public static let tencentWSA = "tencent-wsa"
     public static let volcengine = "volcengine"
+    public static let deepseek = "deepseek"
     public static let brave = "brave"
     public static let tavily = "tavily"
     public static let exa = "exa"
@@ -484,6 +485,7 @@ public enum SearchProviderPresets {
         case .bochaWeb, .bochaAI: bocha
         case .tencentWSA: tencentWSA
         case .volcengine: volcengine
+        case .deepseek: deepseek
         case .brave: brave
         case .tavily: tavily
         case .exa: exa
@@ -500,6 +502,7 @@ public enum SearchProviderPresets {
         case .bochaWeb, .bochaAI: "Bocha Search"
         case .tencentWSA: "Tencent Cloud WSA"
         case .volcengine: "Volcengine Web Search"
+        case .deepseek: "DeepSeek Search"
         case .brave: "Brave Search"
         case .tavily: "Tavily"
         case .exa: "Exa"
@@ -514,6 +517,7 @@ public enum SearchProviderPresets {
         .bochaAI: "web-search.bochaAI",
         .tencentWSA: "web-search.tencentWSA",
         .volcengine: "web-search.volcengine",
+        .deepseek: "web-search.deepseek",
         .brave: "web-search.brave",
         .tavily: "web-search.tavily",
         .exa: "web-search.exa",

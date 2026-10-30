@@ -162,6 +162,7 @@ enum ContinuedProcessingExpirationSequence {
 @MainActor
 final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate {
     private unowned let environment: AppEnvironment
+    private nonisolated let userQuestionAnswers: AppUserQuestionIntegration
     struct ActiveRun {
         let conversationID: UUID?
         let title: String
@@ -199,6 +200,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         /// now and how the run's tool calls have fared so far.
         var currentToolName: String?
         var pendingApprovalToolName: String?
+        var pendingQuestionRequestID: String?
         var toolCallCount = 0
         var toolFailureCount = 0
 
@@ -312,6 +314,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let task: Task<FloeSelectedScheduleRunReceipt, Error>
     }
     private var selectedScheduleAttempts: [UUID: SelectedScheduleAttempt] = [:]
+    /// One in-flight explicit "Run now" attempt per SCHEDULE. A rapid double
+    /// tap (or a shortcut + UI tap landing together) awaits the same attempt
+    /// and receives the same real run instead of creating a second extra
+    /// occurrence. The entry is identity-checked and removed when the attempt
+    /// actually finishes; no finished receipt is cached, so a deliberate later
+    /// Run now still creates a new independent manual occurrence.
+    private struct ManualScheduleAttempt {
+        let id: UUID
+        let task: Task<FloeSelectedScheduleRunReceipt, Error>
+    }
+    private var manualScheduleAttempts: [UUID: ManualScheduleAttempt] = [:]
     /// Schedules with a registered insurance reminder right now (diagnostic
     /// only; the system's pending set remains the authority).
     private var scheduleReminderScheduleIDs: Set<UUID> = []
@@ -990,6 +1003,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     init(environment: AppEnvironment) {
         self.environment = environment
+        self.userQuestionAnswers = environment.userQuestions
         if let data = UserDefaults.standard.data(
             forKey: Self.visualSurfacePolicyDefaultsKey
         ), let restored = try? JSONDecoder().decode(
@@ -1250,6 +1264,24 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // behind the session's waitReason (.approvals): let a live work
         // session re-derive its state immediately instead of waiting for a
         // Home manual pull. A non-live record is never revived.
+        Task { [weak self] in await self?.workSession.refreshIfLive() }
+    }
+
+    func didUpdatePendingQuestion(runID: UUID, requestID: String?) {
+        guard var active = activeRuns[runID] else { return }
+        guard active.pendingQuestionRequestID != requestID
+            || (requestID != nil && !active.isAwaitingUserAttention) else { return }
+        let previouslyWaiting = active.pendingQuestionRequestID != nil
+        active.pendingQuestionRequestID = requestID
+        if requestID != nil { active.isAwaitingUserAttention = true }
+        else if previouslyWaiting { active.isAwaitingUserAttention = false }
+        activeRuns[runID] = active
+        if requestID != nil {
+            environment.pipAudioService.handleTaskEvent(.needsInput, runID: runID)
+        }
+        reconcileStandaloneAudioOwner()
+        reconcileLocationAssist()
+        reconcileTaskLiveActivity(reason: "userQuestion")
         Task { [weak self] in await self?.workSession.refreshIfLive() }
     }
 
@@ -3760,14 +3792,22 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// The single owner of the ordinary-task Live Activity. Created on first
     /// use, so a launch that never runs a task touches no ActivityKit state.
     private var taskLiveActivities: TaskLiveActivityCoordinator?
+    /// Last confirmed schedule projection for the ONE aggregate activity.
+    /// Refreshed by the same schedule pass that owns the durable ledger (never
+    /// by a UI timer or a second schedule poll), so the Lock Screen can show
+    /// the nearest planned wait without reading a stale or invented time.
+    private var liveActivityScheduledWaitSummary
+        = TaskLiveActivityProjection.ScheduledWaitSummary.empty
 
     private func taskLiveActivityCoordinator() -> TaskLiveActivityCoordinator {
         if let existing = taskLiveActivities { return existing }
         let coordinator = TaskLiveActivityCoordinator(
-            snapshotProvider: { [weak self] _ in
+            snapshotProvider: { [weak self] now in
                 guard let self else { return .empty }
                 return TaskLiveActivityProjection.snapshot(
-                    from: self.taskLiveActivityCandidates()
+                    from: self.taskLiveActivityCandidates(),
+                    scheduledWaits: self.liveActivityScheduledWaitSummary,
+                    now: now
                 )
             },
             isEnabledProvider: { [weak self] in
@@ -3793,11 +3833,23 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         taskLiveActivityCoordinator().reconcileForForeground()
     }
 
+    /// Recomputes the ONE scheduled-wait projection from already-read durable
+    /// schedules. The schedule pass calls this after its ledger work; the Live
+    /// Activity provider only reads the cached value. Event-driven plans are
+    /// counted but never given a countdown (their next time is unknown), and
+    /// plans without a future time are omitted.
+    private func refreshLiveActivityScheduledWaits(
+        schedules: [TaskScheduleRecord],
+        now: Date
+    ) {
+        liveActivityScheduledWaitSummary = TaskLiveActivityProjection.scheduledWaitSummary(
+            schedules: schedules, now: now)
+    }
+
     /// Only runs that own an ordinary conversation and may publish content
     /// qualify: temporary sessions and route-less media work never reach a
     /// Lock Screen.
-    private func taskLiveActivityCandidates() -> [TaskLiveActivityProjection.Candidate] {
-        activeRuns.map { runID, run in
+    private func taskLiveActivityCandidates() -> [TaskLiveActivityProjection.Candidate] {        activeRuns.map { runID, run in
             TaskLiveActivityProjection.Candidate(
                 runID: runID,
                 conversationID: run.conversationID,
@@ -3820,7 +3872,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private func reconcileStandaloneAudioOwner() {
         let honored = effectiveBackgroundExecutionOptions
         let hasOwnedTaskWork = activeRuns.values.contains { run in
-            run.publishesContent
+            run.publishesContent && run.pendingQuestionRequestID == nil
         }
         environment.pipAudioService.handleStandaloneAudioOwnerChanged(
             honored.audioEnabled && hasOwnedTaskWork
@@ -4562,12 +4614,170 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // per enabled schedule at its next expected fire, removed for
         // disabled/finished/event-armed schedules and bounded by capacity.
         await reconcileScheduleReminders(now: now)
+        // The ONE aggregate Live Activity follows the same durable snapshot:
+        // actual runs first, then the nearest planned wait. Nothing here starts
+        // a per-plan activity, a timer loop or a DB poll.
+        let allSchedules = (try? await store.schedules()) ?? []
+        let previousWaitSummary = liveActivityScheduledWaitSummary
+        refreshLiveActivityScheduledWaits(schedules: allSchedules, now: now)
+        // A skipped/cancelled/disabled wait must disappear from an existing
+        // activity too; an unchanged idle projection is not re-drained.
+        if !activeRuns.isEmpty || previousWaitSummary != liveActivityScheduledWaitSummary {
+            reconcileTaskLiveActivity(reason: "schedulePass")
+        }
         // Future schedules never pin the VM or PiP: the only effect of a
         // pending schedule is a best-effort BG refresh request.
-        let allSchedules = (try? await store.schedules()) ?? []
         if let next = allSchedules.filter(\.isEnabled).compactMap(\.nextExpectedAt).min() {
             let earliest = max(next, Date().addingTimeInterval(60))
             BackgroundPolicyRegistry.shared.scheduleRefresh(earliest: earliest)
+        }
+    }
+
+    /// Records a real occurrence launch. A calendar/upstream instance keeps
+    /// the historical transition (`markStarted`: advance the cadence, retire a
+    /// launched one-shot). An explicit Run-now instance is an EXTRA execution
+    /// and uses `markManualStarted`, which records the true start but leaves
+    /// `nextExpectedAt`, one-shot enablement and the cadence anchor untouched:
+    /// running now must never consume or advance the planned next run.
+    private func recordOccurrenceLaunch(
+        store: SQLiteTaskScheduleStore,
+        scheduleID: UUID,
+        occurrence: TaskScheduleOccurrence,
+        at date: Date
+    ) async {
+        if occurrence.isManualRun {
+            try? await store.markManualStarted(id: scheduleID, at: date)
+        } else {
+            try? await store.markStarted(id: scheduleID, at: date)
+        }
+    }
+
+    /// Runs one temporary manual occurrence immediately through the SAME
+    /// atomic claim → revalidate → launch → bind route as the background pass.
+    /// The manual occurrence is independent of the calendar: it never consumes
+    /// or advances the planned next run, and a manual run of a one-shot does
+    /// not retire it. Duplicate taps for one schedule coalesce onto a single
+    /// in-flight attempt (and the durable claim still fences anything else).
+    /// This is deliberately not a second executor: `executeScheduleOccurrence`
+    /// does every claim, revalidation, launch and receipt step.
+    func runScheduleNow(
+        scheduleID: UUID
+    ) async throws -> FloeSelectedScheduleRunReceipt {
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let now = Date()
+        do {
+            try await reconcileScheduleOccurrencesOnce(store: store, now: now)
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        let schedule: TaskScheduleRecord?
+        do {
+            schedule = try await store.schedule(id: scheduleID)
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        guard let schedule else { throw FloeSelectedScheduleFailure.scheduleDeleted }
+        // A paused plan cannot launch through the same fail-closed
+        // revalidation the calendar path uses; refusing before creating a
+        // phantom occurrence is the honest equivalent.
+        guard schedule.isEnabled else { throw FloeSelectedScheduleFailure.scheduleDisabled }
+        if let inFlight = manualScheduleAttempts[scheduleID] {
+            var receipt = try await inFlight.task.value
+            receipt.freshlyLaunched = false
+            return receipt
+        }
+        let attemptID = UUID()
+        let task = Task { @MainActor in
+            try await self.performManualScheduleRun(scheduleID: scheduleID, store: store)
+        }
+        manualScheduleAttempts[scheduleID] = ManualScheduleAttempt(id: attemptID, task: task)
+        do {
+            let receipt = try await task.value
+            clearManualScheduleAttempt(scheduleID: scheduleID, attemptID: attemptID)
+            return receipt
+        } catch {
+            clearManualScheduleAttempt(scheduleID: scheduleID, attemptID: attemptID)
+            throw error
+        }
+    }
+
+    private func clearManualScheduleAttempt(scheduleID: UUID, attemptID: UUID) {
+        guard manualScheduleAttempts[scheduleID]?.id == attemptID else { return }
+        manualScheduleAttempts[scheduleID] = nil
+    }
+
+    private func performManualScheduleRun(
+        scheduleID: UUID,
+        store: SQLiteTaskScheduleStore
+    ) async throws -> FloeSelectedScheduleRunReceipt {
+        let now = Date()
+        // The SAME store operation Run now has always used: a unique
+        // `manual:<uuid>` instance with its own stable identity. It is not
+        // coalesced with the calendar cadence.
+        let occurrence: TaskScheduleOccurrence
+        do {
+            guard let created = try await store.runNow(id: scheduleID, at: now) else {
+                throw FloeSelectedScheduleFailure.scheduleDeleted
+            }
+            occurrence = created
+        } catch let failure as FloeSelectedScheduleFailure {
+            throw failure
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        let schedule: TaskScheduleRecord?
+        do {
+            schedule = try await store.schedule(id: scheduleID)
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        guard let schedule else { throw FloeSelectedScheduleFailure.scheduleDeleted }
+        guard schedule.isEnabled else { throw FloeSelectedScheduleFailure.scheduleDisabled }
+        switch await executeScheduleOccurrence(
+            occurrence, schedule: schedule, store: store, now: Date()) {
+        case .launched(let runID, let conversationID),
+             .launchCommittedButUnbound(let runID, let conversationID):
+            return try await verifiedReceipt(
+                store: store, scheduleID: scheduleID, occurrenceID: occurrence.id,
+                runID: runID, conversationID: conversationID, freshlyLaunched: true)
+        case .boundToExisting(let runID, let conversationID):
+            return try await verifiedReceipt(
+                store: store, scheduleID: scheduleID, occurrenceID: occurrence.id,
+                runID: runID, conversationID: conversationID, freshlyLaunched: false)
+        case .claimMissed:
+            let winner: TaskScheduleOccurrence?
+            do {
+                winner = try await store.occurrence(id: occurrence.id)
+            } catch {
+                throw FloeSelectedScheduleFailure.storageUnavailable
+            }
+            if let settled = winner,
+               let runID = settled.runID, let conversationID = settled.conversationID {
+                return try await verifiedReceipt(
+                    store: store, scheduleID: scheduleID, occurrenceID: occurrence.id,
+                    runID: runID, conversationID: conversationID, freshlyLaunched: false)
+            }
+            throw FloeSelectedScheduleFailure.concurrentlyClaimed
+        case .scheduleDeleted:
+            throw FloeSelectedScheduleFailure.scheduleDeleted
+        case .scheduleDisabled:
+            throw FloeSelectedScheduleFailure.scheduleDisabled
+        case .environmentUnavailable:
+            throw FloeSelectedScheduleFailure.environmentUnavailable
+        case .modelUnavailable:
+            throw FloeSelectedScheduleFailure.modelUnavailable
+        case .launchFailed(let message):
+            throw FloeSelectedScheduleFailure.launchFailed(message)
+        case .storageFailed:
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        case .permissionUnavailable:
+            throw FloeSelectedScheduleFailure.permissionUnavailable
+        case .passCancelledBeforeClaim:
+            throw FloeSelectedScheduleFailure.launchFailed(
+                "The request was cancelled before this occurrence was claimed.")
+        case .cancelledBeforeLaunch:
+            throw FloeSelectedScheduleFailure.launchFailed(
+                "The request was cancelled before this occurrence launched.")
         }
     }
 
@@ -4823,7 +5033,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     runID: runID, conversationID: existing.conversationID)
             }
             if bindOutcome {
-                try? await store.markStarted(id: fresh.id, at: Date())
+                await recordOccurrenceLaunch(store: store, scheduleID: fresh.id, occurrence: occurrence, at: Date())
                 // The run may have finished between the pre-bind read and
                 // this bind: the completion callback then saw no `run_id`
                 // and could not settle the row. Refresh the durable state
@@ -4924,7 +5134,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 return .launchCommittedButUnbound(
                     runID: started.run.runID, conversationID: started.conversationID)
             }
-            try? await store.markStarted(id: fresh.id, at: Date())
+            await recordOccurrenceLaunch(store: store, scheduleID: fresh.id, occurrence: occurrence, at: Date())
             // Same post-bind convergence for a launch so fast that it
             // reached a terminal state before the binding write.
             await settleBoundRunIfTerminalAfterBind(
@@ -4961,7 +5171,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                         runID: runID, conversationID: existing.conversationID)
                 }
                 if bindOutcome {
-                    try? await store.markStarted(id: fresh.id, at: Date())
+                    await recordOccurrenceLaunch(store: store, scheduleID: fresh.id, occurrence: occurrence, at: Date())
                     await settleBoundRunIfTerminalAfterBind(
                         store: store, occurrenceID: occurrence.id, runID: runID,
                         conversationID: existing.conversationID)
@@ -5615,6 +5825,20 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        let completion = NotificationResponseCompletion(completionHandler)
+        if UserQuestionNotificationBridge.handle(
+            response: response,
+            answering: userQuestionAnswers,
+            onOpen: { [weak self] payload in
+                self?.routeNotificationResponse(
+                    key: payload.notificationIdentifier,
+                    link: BackgroundWorkDeepLink(kind: .modelRun,
+                        conversationID: payload.conversationID, runID: payload.runID),
+                    identifier: payload.notificationIdentifier
+                )
+            },
+            completion: { _ = completion.finish() }
+        ) { return }
         let request = response.notification.request
         NotificationResponseIntake.accept(
             identifier: request.identifier,

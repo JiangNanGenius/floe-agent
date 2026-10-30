@@ -25,6 +25,30 @@ public protocol TaskScheduleStore: Sendable {
     /// user/agent "run now" action. Every explicit invocation gets its own
     /// logical instance (never coalesced with the calendar cadence).
     func runNow(id: UUID, at date: Date) async throws -> TaskScheduleOccurrence?
+    /// Records the launch of an occurrence WITHOUT touching the planned
+    /// calendar time. Used only for explicit Run-now instances, which are an
+    /// extra execution: they must not advance, consume or re-arm
+    /// `nextExpectedAt`, and a manual run of a one-shot must not retire the
+    /// plan. `markStarted` remains the calendar-launch transition.
+    func markManualStarted(id: UUID, at date: Date) async throws
+    /// Skips exactly the next automatic occurrence of an enabled plan:
+    /// records the stable occurrence as `skipped`, launches no task and
+    /// advances the plan to the fire time after it. A one-shot retires
+    /// (disabled) with its record and history retained. Returns nil when the
+    /// plan does not exist; throws for a paused plan or an event-driven
+    /// cadence that has no clock occurrence to skip. A claimed/running
+    /// instance is never skipped.
+    func skipNext(id: UUID, at date: Date) async throws -> TaskScheduleSkipResult?
+    /// How many AUTOMATIC occurrences (calendar + upstream-armed) have
+    /// actually started for this plan. Explicit Run-now rows are excluded, so
+    /// the displayed automatic ordinal is truthful regardless of how much
+    /// history the UI previews.
+    func startedAutomaticOccurrenceCount(scheduleID: UUID) async throws -> Int
+    /// Plans linked to a conversation by their TRUSTED origin binding or by an
+    /// actual occurrence that owns this conversation. Never inferred from a
+    /// title. Used by the in-thread schedule pill; no deletion cascade exists
+    /// in either direction.
+    func schedulesLinked(to conversationID: UUID) async throws -> [TaskScheduleRecord]
 
     // MARK: Occurrence ledger
 
@@ -138,8 +162,9 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
                     weekday, is_enabled, last_started_at, next_expected_at,
                     policy_json, created_at, updated_at,
                     interval_seconds, anchor_timezone, upstream_run_id,
-                    model_id, environment_id, permission_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    model_id, environment_id, permission_json,
+                    origin_conversation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title, prompt = excluded.prompt,
                     workspace_id = excluded.workspace_id, cadence = excluded.cadence,
@@ -152,7 +177,8 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
                     upstream_run_id = excluded.upstream_run_id,
                     model_id = excluded.model_id,
                     environment_id = excluded.environment_id,
-                    permission_json = excluded.permission_json
+                    permission_json = excluded.permission_json,
+                    origin_conversation_id = excluded.origin_conversation_id
                 """, arguments: [
                     schedule.id.uuidString, schedule.title, schedule.prompt,
                     schedule.workspaceID?.uuidString, schedule.cadence.rawValue,
@@ -164,7 +190,8 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
                     schedule.intervalSeconds, schedule.anchorTimezone,
                     schedule.upstreamRunID?.uuidString,
                     schedule.modelID?.uuidString, schedule.environmentID,
-                    schedule.permissionJSON
+                    schedule.permissionJSON,
+                    schedule.originConversationID?.uuidString
                 ])
         }
     }
@@ -232,6 +259,164 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
         )
         _ = try await enqueueOccurrence(pending)
         return try await occurrence(id: pending.id)
+    }
+
+    public func markManualStarted(id: UUID, at date: Date) async throws {
+        // An explicit Run-now instance is an EXTRA execution. Record the real
+        // start for truthful history, but never move the calendar: the planned
+        // next time, one-shot enablement and the cadence anchor stay as they
+        // were. This is deliberately a different transition from
+        // `markStarted` (which advances a calendar launch).
+        try await database.writer { db in
+            try db.execute(sql: """
+                UPDATE task_schedules
+                SET last_started_at = ?, updated_at = ?
+                WHERE id = ?
+                """, arguments: [
+                    PersistenceCodec.encode(date),
+                    PersistenceCodec.encode(date),
+                    id.uuidString
+                ])
+        }
+    }
+
+    public func skipNext(id: UUID, at date: Date) async throws -> TaskScheduleSkipResult? {
+        try await database.writer { db in
+            guard let scheduleRow = try Row.fetchOne(
+                db, sql: "SELECT * FROM task_schedules WHERE id = ?",
+                arguments: [id.uuidString]
+            ) else { return nil }
+            var record = try Self.decode(scheduleRow)
+            guard record.isEnabled else {
+                throw FloeError.validationFailed(
+                    "This scheduled task is paused; there is no next run to skip.")
+            }
+            guard record.cadence != .afterSuccess else {
+                throw FloeError.validationFailed(
+                    "This plan runs after an upstream success and has no clock occurrence to skip.")
+            }
+
+            // The first candidate is the instance a pass would address now
+            // (the coalesced most-recent due fire), then each following fire
+            // date. Already started/settled or previously skipped instances
+            // are stepped over, so repeated Skip next keeps advancing instead
+            // of getting stuck on the same skipped row.
+            var candidateFire: Date?
+            if record.cadence == .once {
+                candidateFire = record.scheduledAt
+            } else if let lastDue = TaskSchedulePlanner.dueFireTimes(
+                record: record, now: date
+            ).last {
+                candidateFire = lastDue
+            } else {
+                candidateFire = TaskSchedulePlanner.nextFireTime(after: date, record: record)
+            }
+
+            var attempts = 0
+            while let fireTime = candidateFire, attempts < 16 {
+                attempts += 1
+                let key = TaskSchedulePlanner.dedupeKey(for: fireTime, record: record)
+                let occurrenceID = TaskScheduleOccurrence.stableID(
+                    scheduleID: record.id, dedupeKey: key)
+                let existingRow = try Row.fetchOne(
+                    db, sql: "SELECT state FROM task_schedule_occurrences WHERE id = ?",
+                    arguments: [occurrenceID.uuidString])
+                let existingState: TaskScheduleOccurrenceState? = existingRow
+                    .flatMap { row in
+                        (row["state"] as String?)
+                            .flatMap(TaskScheduleOccurrenceState.init(rawValue:))
+                    }
+                if let existingState, existingState != .pending {
+                    // Claimed/running or settled history: never overwrite the
+                    // real outcome. Move on to the later fire time.
+                    candidateFire = TaskSchedulePlanner.nextFireTime(
+                        after: max(fireTime, date), record: record)
+                    continue
+                }
+                // Materialize the logical instance at its stable identity so
+                // the SAME row is what history shows; the insert is idempotent
+                // with the background pass's materialization.
+                try db.execute(sql: """
+                    INSERT INTO task_schedule_occurrences (
+                        id, schedule_id, scheduled_for, state, dedupe_key,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, 'pending', ?, ?, ?)
+                    ON CONFLICT(schedule_id, dedupe_key) DO NOTHING
+                    """, arguments: [
+                        occurrenceID.uuidString,
+                        record.id.uuidString,
+                        PersistenceCodec.encode(fireTime),
+                        key,
+                        PersistenceCodec.encode(date),
+                        PersistenceCodec.encode(date)
+                    ])
+                try db.execute(sql: """
+                    UPDATE task_schedule_occurrences
+                    SET state = 'skipped', summary = ?, finished_at = ?, updated_at = ?
+                    WHERE id = ? AND state = 'pending'
+                    """, arguments: [
+                        "Skipped by the user; this occurrence did not run.",
+                        PersistenceCodec.encode(date),
+                        PersistenceCodec.encode(date),
+                        occurrenceID.uuidString
+                    ])
+                guard db.changesCount > 0 else {
+                    candidateFire = TaskSchedulePlanner.nextFireTime(
+                        after: max(fireTime, date), record: record)
+                    continue
+                }
+                // Advance the plan to the fire time AFTER the skipped one.
+                // A repeating plan stays enabled; a one-shot has no later
+                // occurrence and retires while its record/history remain.
+                let nextExpected: Date?
+                if record.cadence == .once {
+                    record.isEnabled = false
+                    nextExpected = nil
+                } else {
+                    nextExpected = TaskSchedulePlanner.nextFireTime(
+                        after: max(fireTime, date), record: record)
+                }
+                record.nextExpectedAt = nextExpected
+                record.updatedAt = date
+                try Self.writeRecord(db, record)
+                return TaskScheduleSkipResult(
+                    scheduleID: record.id,
+                    skippedOccurrenceID: occurrenceID,
+                    skippedFor: fireTime,
+                    nextExpectedAt: nextExpected,
+                    planDisabled: !record.isEnabled
+                )
+            }
+            throw FloeError.validationFailed(
+                "There is no future occurrence available to skip.")
+        }
+    }
+
+    public func startedAutomaticOccurrenceCount(scheduleID: UUID) async throws -> Int {
+        try await database.reader { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM task_schedule_occurrences
+                WHERE schedule_id = ? AND started_at IS NOT NULL
+                  AND dedupe_key NOT LIKE 'manual:%'
+                """, arguments: [scheduleID.uuidString]) ?? 0
+        }
+    }
+
+    public func schedulesLinked(to conversationID: UUID) async throws -> [TaskScheduleRecord] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT DISTINCT s.* FROM task_schedules s
+                WHERE s.origin_conversation_id = ?
+                   OR EXISTS (
+                       SELECT 1 FROM task_schedule_occurrences o
+                       WHERE o.schedule_id = s.id AND o.conversation_id = ?
+                   )
+                ORDER BY s.is_enabled DESC, s.next_expected_at, s.scheduled_at
+                """, arguments: [
+                    conversationID.uuidString,
+                    conversationID.uuidString
+                ]).map(Self.decode)
+        }
     }
 
     // MARK: - Occurrences
@@ -652,7 +837,7 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
                 last_started_at = ?, next_expected_at = ?, policy_json = ?,
                 updated_at = ?, interval_seconds = ?, anchor_timezone = ?,
                 upstream_run_id = ?, model_id = ?, environment_id = ?,
-                permission_json = ?
+                permission_json = ?, origin_conversation_id = ?
             WHERE id = ?
             """, arguments: [
                 record.title, record.prompt, record.workspaceID?.uuidString,
@@ -664,6 +849,7 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
                 record.intervalSeconds, record.anchorTimezone,
                 record.upstreamRunID?.uuidString, record.modelID?.uuidString,
                 record.environmentID, record.permissionJSON,
+                record.originConversationID?.uuidString,
                 record.id.uuidString
             ])
     }
@@ -693,6 +879,10 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
             environmentID: row["environment_id"],
             permissionJSON: row["permission_json"]
         )
+        // An unbound record (pre-v57 or Home-created) deliberately stores
+        // NULL. Never infer an origin from a title or a later run.
+        record.originConversationID = (row["origin_conversation_id"] as String?)
+            .flatMap(UUID.init(uuidString:))
         // A disabled one-time schedule deliberately stores NULL. The public
         // initializer defaults a newly-created schedule to scheduledAt, so
         // restore the database's explicit nil after construction.

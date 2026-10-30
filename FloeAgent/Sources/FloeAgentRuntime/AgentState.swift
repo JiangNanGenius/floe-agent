@@ -15,6 +15,10 @@ public enum AgentState: Sendable, Codable, Hashable {
     case preparing(PreparingInfo)
     case streamingModel(StreamingInfo)
     case waitingApproval(WaitingApproval)
+    /// The run is parked on a durable user question, not an approval. Only
+    /// identifiers and timing are stored here; question text and answers stay
+    /// in the UserQuestionStore (RAM-only for temporary conversations).
+    case waitingUserQuestion(WaitingUserQuestion)
     case executingTool(ExecutingInfo)
     case compacting
     case verifying
@@ -78,6 +82,57 @@ public enum AgentState: Sendable, Codable, Hashable {
         }
     }
 
+    public struct WaitingUserQuestion: Sendable, Codable, Hashable {
+        public var requestID: String
+        public var conversationID: UUID
+        public var runID: UUID
+        public var toolCallID: String
+        public var state: UserQuestionRequestState
+        public var pendingQuestionIDs: [String]
+        public var blockingQuestionIDs: [String]
+        public var deadlineAt: Date?
+        public var isEphemeral: Bool
+        public var requestedAt: Date
+
+        public init(
+            requestID: String,
+            conversationID: UUID,
+            runID: UUID,
+            toolCallID: String,
+            state: UserQuestionRequestState,
+            pendingQuestionIDs: [String],
+            blockingQuestionIDs: [String],
+            deadlineAt: Date?,
+            isEphemeral: Bool,
+            requestedAt: Date = Date()
+        ) {
+            self.requestID = requestID
+            self.conversationID = conversationID
+            self.runID = runID
+            self.toolCallID = toolCallID
+            self.state = state
+            self.pendingQuestionIDs = pendingQuestionIDs
+            self.blockingQuestionIDs = blockingQuestionIDs
+            self.deadlineAt = deadlineAt
+            self.isEphemeral = isEphemeral
+            self.requestedAt = requestedAt
+        }
+
+        public init(snapshot: UserQuestionWaitingSnapshot) {
+            self.init(
+                requestID: snapshot.requestID,
+                conversationID: snapshot.conversationID,
+                runID: snapshot.runID,
+                toolCallID: snapshot.toolCallID,
+                state: snapshot.state,
+                pendingQuestionIDs: snapshot.pendingQuestionIDs,
+                blockingQuestionIDs: snapshot.pendingBlockingQuestionIDs,
+                deadlineAt: snapshot.earliestPendingDeadline,
+                isEphemeral: snapshot.isEphemeral
+            )
+        }
+    }
+
     public struct ExecutingInfo: Sendable, Codable, Hashable {
         public var toolCall: ToolCall
         public var startedAt: Date
@@ -137,6 +192,7 @@ public enum AgentState: Sendable, Codable, Hashable {
         case .preparing: return "preparing"
         case .streamingModel: return "streamingModel"
         case .waitingApproval: return "waitingApproval"
+        case .waitingUserQuestion: return "waitingUserQuestion"
         case .executingTool: return "executingTool"
         case .compacting: return "compacting"
         case .verifying: return "verifying"

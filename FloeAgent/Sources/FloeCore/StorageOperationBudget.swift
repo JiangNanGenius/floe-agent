@@ -60,10 +60,11 @@ public enum StorageSuspensionAdmission {
     public static func permitsOperation(
         backgroundNow: Bool,
         needsForeground: Bool,
-        finalizingHandoff: Bool
+        finalizingHandoff: Bool,
+        authorizedSystemCallback: Bool = false
     ) -> Bool {
         guard backgroundNow else { return true }
-        return !needsForeground && !finalizingHandoff
+        return !finalizingHandoff && (!needsForeground || authorizedSystemCallback)
     }
 }
 

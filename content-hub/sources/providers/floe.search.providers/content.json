@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
   "id": "floe.search.providers",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "kind": "providers",
-  "minimumAppVersion": "1.7.47",
+  "minimumAppVersion": "1.7.65",
   "sourceRevision": "",
   "containsScripts": false,
   "requiredCapabilities": [],
   "dependencies": [],
   "releaseNotes": {
-    "zh-Hans": "搜索服务目录：可搜索的添加流程与独立账号配置；目录更新在应用内审核后生效。",
-    "en": "Search provider catalog: searchable add flow with independent accounts; catalog updates are reviewed in-app before applying."
+    "zh-Hans": "搜索服务目录：新增 DeepSeek 官方网页搜索（长摘要与可选网页正文），其余条目与已保存配置不变。",
+    "en": "Search provider catalog: adds DeepSeek's official web search with long summaries and optional page content; existing entries and saved configurations are unchanged."
   },
   "privacy": {
     "zh-Hans": "本包仅包含声明式目录数据，不含密钥、令牌或可执行代码。",

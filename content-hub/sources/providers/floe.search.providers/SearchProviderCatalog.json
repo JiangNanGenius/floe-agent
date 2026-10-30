@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "floe.search.providers",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "entries": [
     {
       "presetID": "bocha",
@@ -106,6 +106,45 @@
       "authNote": {
         "en": "Choose the account type and key in the provider editor.",
         "zh-Hans": "在编辑页选择账号类型与密钥。"
+      }
+    },
+    {
+      "presetID": "deepseek",
+      "adapterKind": "deepseek",
+      "name": {
+        "en": "DeepSeek Search",
+        "zh-Hans": "DeepSeek 搜索"
+      },
+      "blurb": {
+        "en": "Official web search with long summaries and optional page content.",
+        "zh-Hans": "官方网页搜索，提供长摘要和可选网页正文。"
+      },
+      "defaultEndpoint": "https://api.deepseek.com/v1/tools/search",
+      "endpointRequired": false,
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "required": true,
+          "label": {
+            "en": "API Key",
+            "zh-Hans": "API 密钥"
+          }
+        }
+      ],
+      "optionFields": [
+        {
+          "key": "needContent",
+          "kind": "bool",
+          "defaultValue": "false",
+          "label": {
+            "en": "Include page content",
+            "zh-Hans": "包含网页正文"
+          }
+        }
+      ],
+      "authNote": {
+        "en": "Bearer API key",
+        "zh-Hans": "Bearer 密钥"
       }
     },
     {

@@ -40,6 +40,7 @@ STAGED_IDS = set()
 # same-version rewrite is rejected.
 STAGED_VERSIONS = {
     "floe.providers.compatibility": ("1.1.0", "1.1.2"),
+    "floe.search.providers": ("1.0.0", "1.1.0"),
 }
 
 # The immutable provider archives that must survive this staging step
@@ -49,6 +50,12 @@ STAGED_VERSIONS = {
 IMMUTABLE_PROVIDER_PACKAGE_SHA256 = {
     "1.0.0": "e91cd711624abbd6cec518b0abe8abe2cad9198bc40e8ec8172fdb339aaffdc3",
     "1.1.0": "290e7962f9659eb8d22d08586176bb9559c4b98532a50a57abe72fe444a1f33d",
+}
+
+# The search catalog published in the signed feed stays 1.0.0; its archive is
+# immutable while the 1.1.0 candidate is staged.
+IMMUTABLE_SEARCH_PACKAGE_SHA256 = {
+    "1.0.0": "5d85ea6f3804c6108a273f229c613e947307c0cef1b0de6aaf18f3af53a6543c",
 }
 
 # The pinned content-hub trust root. A local fixture key must never be passed
@@ -69,10 +76,23 @@ PROVIDER_CANDIDATE = {
     "contentDigest": "72a182a32b61a4bdfa1ca66a2358e8b653afa031371ccd5a192d0ca2f8e60bc4",
 }
 
+# Exact reviewed search-catalog candidate. 1.1.0 adds the compiled DeepSeek
+# adapter kind, so it must target App 1.7.65; 1.7.64 would fail closed and drop
+# the new entry. The signed feed still serves 1.0.0 until the release owner
+# signs and publishes this candidate.
+SEARCH_CATALOG_CANDIDATE = {
+    "version": "1.1.0",
+    "minimumAppVersion": "1.7.65",
+    "size": 8881,
+    "sha256": "4cc46189a235f3e33408e8916edb98466822b6922d5ab82ca4d0e4f91aa9fab6",
+    "contentDigest": "ca7ac3cc9e168df2674caa34d66edff9dae415f64387806f130bceba7d5f8b21",
+}
+
 SEARCH_CATALOG_ADAPTERS = {
     "bocha": "bochaWeb",
     "tencent-wsa": "tencentWSA",
     "volcengine": "volcengine",
+    "deepseek": "deepseek",
     "brave": "brave",
     "tavily": "tavily",
     "exa": "exa",
@@ -164,6 +184,39 @@ class ContentHubBuildTests(unittest.TestCase):
             self.assertTrue(path.is_file())
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
 
+        # The reviewed search-catalog candidate is staged with its exact
+        # deterministic archive while the signed feed still serves 1.0.0.
+        identifier = "floe.search.providers"
+        search = next(entry for entry in entries if entry["id"] == identifier)
+        for field, value in SEARCH_CATALOG_CANDIDATE.items():
+            self.assertEqual(search[field], value)
+        relative = search["path"][len(build.PATH_PREFIX):]
+        candidate_path = build.ROOT / relative
+        self.assertEqual(candidate_path.read_bytes(), state["packages"][relative])
+        self.assertEqual(hashlib.sha256(candidate_path.read_bytes()).hexdigest(), search["sha256"])
+        search_files = build.unpack(candidate_path.read_bytes())
+        self.assertEqual(sorted(search_files), ["SearchProviderCatalog.json", "content.json"])
+        search_source = build.ROOT / "sources/providers" / identifier
+        self.assertEqual(
+            search_files["SearchProviderCatalog.json"],
+            (search_source / "SearchProviderCatalog.json").read_bytes(),
+        )
+        self.assertEqual(search_files["content.json"], (search_source / "content.json").read_bytes())
+
+        published_search = next(
+            entry for entry in state["index"]["entries"] if entry["id"] == identifier
+        )
+        self.assertEqual(published_search["version"], "1.0.0")
+        self.assertEqual(
+            published_search["sha256"],
+            IMMUTABLE_SEARCH_PACKAGE_SHA256["1.0.0"],
+        )
+        published_search_path = build.ROOT / published_search["path"][len(build.PATH_PREFIX):]
+        self.assertEqual(
+            hashlib.sha256(published_search_path.read_bytes()).hexdigest(),
+            IMMUTABLE_SEARCH_PACKAGE_SHA256["1.0.0"],
+        )
+
         for entry in entries:
             self.assertEqual(entry["path"], f"content-hub/packages/{entry['id']}/{entry['version']}/{entry['id']}.zip")
             self.assertFalse(entry["containsScripts"])
@@ -191,6 +244,16 @@ class ContentHubBuildTests(unittest.TestCase):
             build.validate_staged_sources(
                 entries, published, EXPECTED_IDS, STAGED_IDS,
                 {identifier: ("1.1.0", "1.1.3")},
+            )
+        with self.assertRaisesRegex(ValueError, "must be newer"):
+            build.validate_staged_sources(
+                entries, published, EXPECTED_IDS, STAGED_IDS,
+                {**STAGED_VERSIONS, "floe.search.providers": ("1.1.0", "1.0.0")},
+            )
+        with self.assertRaisesRegex(ValueError, "is not the approved staged candidate"):
+            build.validate_staged_sources(
+                entries, published, EXPECTED_IDS, STAGED_IDS,
+                {**STAGED_VERSIONS, "floe.search.providers": ("1.0.0", "1.1.1")},
             )
         source_downgrade = copy.deepcopy(entries)
         source_provider = next(entry for entry in source_downgrade if entry["id"] == identifier)
@@ -292,10 +355,12 @@ class ContentHubBuildTests(unittest.TestCase):
         envelope = json.loads((source / "content.json").read_bytes())
         self.assertEqual(envelope["id"], "floe.search.providers")
         self.assertEqual(envelope["kind"], "providers")
-        self.assertEqual(envelope["version"], "1.0.0")
-        # The catalog payload is only understood by app builds that ship the
-        # searchable-catalog flow; 1.7.0 would silently block activation.
-        self.assertEqual(envelope["minimumAppVersion"], "1.7.47")
+        self.assertEqual(envelope["version"], SEARCH_CATALOG_CANDIDATE["version"])
+        # 1.1.0 adds the DeepSeek adapter kind compiled in App 1.7.65; an
+        # older 1.7.64 app would fail closed and drop the new entry.
+        self.assertEqual(
+            envelope["minimumAppVersion"], SEARCH_CATALOG_CANDIDATE["minimumAppVersion"]
+        )
         self.assertFalse(envelope["containsScripts"])
         self.assertTrue(envelope["releaseNotes"]["en"])
         self.assertTrue(envelope["releaseNotes"]["zh-Hans"])
@@ -311,6 +376,19 @@ class ContentHubBuildTests(unittest.TestCase):
             {entry["presetID"]: entry["adapterKind"] for entry in entries},
             SEARCH_CATALOG_ADAPTERS,
         )
+        deepseek = next(entry for entry in entries if entry["presetID"] == "deepseek")
+        self.assertEqual(deepseek["adapterKind"], "deepseek")
+        self.assertEqual(
+            deepseek["defaultEndpoint"], "https://api.deepseek.com/v1/tools/search"
+        )
+        self.assertEqual(
+            [field["key"] for field in deepseek["credentialFields"]], ["apiKey"]
+        )
+        self.assertEqual(
+            [field["key"] for field in deepseek["optionFields"]], ["needContent"]
+        )
+        self.assertEqual(deepseek["optionFields"][0]["kind"], "bool")
+        self.assertEqual(deepseek["optionFields"][0]["defaultValue"], "false")
         for entry in entries:
             # Entries describe adapters and defaults only: no source switch,
             # no enablement and no secret may exist in catalog data.
@@ -323,13 +401,31 @@ class ContentHubBuildTests(unittest.TestCase):
             if entry.get("defaultEndpoint") is not None:
                 self.assertTrue(entry["defaultEndpoint"].startswith("https://"))
 
-        # The committed package zip contains the exact payload bytes.
+        # The committed package zip contains the exact payload bytes and pins
+        # the reviewed deterministic archive the release owner will sign.
         entries_plan, packages = build.plan(build.ROOT / "sources", build.PATH_PREFIX)
         staged = next(entry for entry in entries_plan if entry["id"] == "floe.search.providers")
+        for field, value in SEARCH_CATALOG_CANDIDATE.items():
+            self.assertEqual(staged[field], value)
         relative = staged["path"][len(build.PATH_PREFIX):]
-        files = build.unpack(packages[relative])
+        archive = packages[relative]
+        self.assertEqual(len(archive), SEARCH_CATALOG_CANDIDATE["size"])
+        self.assertEqual(
+            hashlib.sha256(archive).hexdigest(), SEARCH_CATALOG_CANDIDATE["sha256"]
+        )
+        files = build.unpack(archive)
         self.assertEqual(files["SearchProviderCatalog.json"], payload_path.read_bytes())
         self.assertEqual(files["content.json"], (source / "content.json").read_bytes())
+        self.assertEqual(build.canonical(files), SEARCH_CATALOG_CANDIDATE["contentDigest"])
+
+        # The signed feed and its published 1.0.0 archive remain untouched.
+        index = json.loads((build.ROOT / "index.json").read_bytes())
+        published = next(
+            entry for entry in index["entries"] if entry["id"] == "floe.search.providers"
+        )
+        self.assertEqual(published["version"], "1.0.0")
+        self.assertEqual(published["minimumAppVersion"], "1.7.47")
+        self.assertEqual(published["sha256"], IMMUTABLE_SEARCH_PACKAGE_SHA256["1.0.0"])
 
     def test_deterministic_rebuild(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -35,7 +35,10 @@ struct TaskScheduleSheet: View {
             Form {
                 Section("background.task.name_fallback") {
                     TextField("notes.notes_root_view.name", text: $title)
-                    TextEditor(text: $prompt).frame(minHeight: 120)
+                        .accessibilityIdentifier("home.schedule.title")
+                    TextEditor(text: $prompt)
+                        .frame(minHeight: 120)
+                        .accessibilityIdentifier("home.schedule.prompt")
                 }
                 Section("home.task_schedule_sheet.project_and_time") {
                     Picker("settings.all_workspaces_files_view.workspace", selection: $workspaceID) {
@@ -44,13 +47,17 @@ struct TaskScheduleSheet: View {
                             Text(workspace.name).tag(Optional(workspace.id))
                         }
                     }
-                    Picker("shortcuts.floe_shortcuts.duplicate", selection: $cadence) {
+                    Picker(
+                        sheetText(zh: "重复", en: "Repeat"),
+                        selection: $cadence
+                    ) {
                         Text("home.task_schedule_sheet.once").tag(TaskScheduleCadence.once)
                         Text("home.task_schedule_sheet.daily").tag(TaskScheduleCadence.daily)
                         Text("home.task_schedule_sheet.weekly").tag(TaskScheduleCadence.weekly)
                         Text(sheetText(zh: "固定间隔", en: "Interval")).tag(TaskScheduleCadence.interval)
                         Text(sheetText(zh: "任务成功后", en: "After a task succeeds")).tag(TaskScheduleCadence.afterSuccess)
                     }
+                    .accessibilityIdentifier("home.schedule.cadence")
                     if cadence == .interval {
                         Stepper(value: $intervalHours, in: 1...168) {
                             Text(sheetText(zh: "每 \(intervalHours) 小时", en: "Every \(intervalHours) hours"))
@@ -109,6 +116,7 @@ struct TaskScheduleSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("workspace.workspace_canvas_view.save") { Task { await save() } }
                         .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
+                        .accessibilityIdentifier("home.schedule.save")
                 }
             }
             .task { await loadState() }

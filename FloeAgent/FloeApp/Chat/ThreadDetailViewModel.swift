@@ -289,6 +289,10 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var isDraining = false
     @Published private(set) var hasEarlierMessages = false
 
+    /// Plans genuinely linked to THIS conversation (trusted origin or an
+    /// actual occurrence). Empty for temporary chats and unbound tasks.
+    @Published private(set) var linkedScheduleSummaries: [TaskScheduleLinkedSummary] = []
+
     private var liveEventTask: Task<Void, Never>?
     private var messageCoverage = TimelinePageCoverage<ConversationMessageCursor>()
     private var eventCoverage: [UUID: TimelinePageCoverage<Int>] = [:]
@@ -696,6 +700,8 @@ final class ThreadDetailViewModel: ObservableObject {
             stage = "latestRunDetails"
             try await loadSelectedRunDetails()
             await refreshChildRuns(force: true)
+            stage = "linkedSchedules"
+            await loadLinkedSchedules()
             startChildRunPollingIfNeeded()
             startSessionUpdates()
             // Publish the mode notice AFTER the run-detail load (which clears
@@ -855,6 +861,195 @@ final class ThreadDetailViewModel: ObservableObject {
         } catch {
             actionError = presentableError(error, stage: "olderMessages")
         }
+    }
+
+    // MARK: - In-chat find
+
+    /// Hits for the current query. Loaded, in-memory messages are searched
+    /// first (this is the whole search for a RAM-only temporary chat); durable
+    /// rows add older history through the SAME conversation filters the store
+    /// already owns. A durable hit never replaces a loaded document, so the
+    /// visible-text match stays authoritative.
+    func searchHits(for query: ConversationSearchQuery) async -> ThreadSearchResult {
+        guard !query.isEmpty else {
+            return ThreadSearchResult(hits: [], includesDurableHistory: false)
+        }
+        var byID: [UUID: ThreadSearchHit] = [:]
+        for hit in ThreadSearchText.hits(
+            in: messages.compactMap(ThreadSearchText.document(for:)),
+            query: query
+        ) {
+            byID[hit.messageID] = hit
+        }
+        var includesDurableHistory = false
+        if !isTemporary {
+            let durable = try? await center.environment.intelligenceStore
+                .conversationMessageMatches(
+                    conversationID: conversationID,
+                    rawQuery: query.raw,
+                    limit: 200)
+            guard !Task.isCancelled else {
+                return ThreadSearchResult(hits: [], includesDurableHistory: false)
+            }
+            if let durable {
+                includesDurableHistory = true
+                for match in durable where byID[match.messageID] == nil {
+                    byID[match.messageID] = ThreadSearchHit(
+                        messageID: match.messageID,
+                        role: match.role,
+                        createdAt: match.createdAt,
+                        snippet: match.snippet)
+                }
+            }
+        }
+        let hits = byID.values.sorted { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+            return lhs.messageID.uuidString < rhs.messageID.uuidString
+        }
+        return ThreadSearchResult(hits: hits, includesDurableHistory: includesDurableHistory)
+    }
+
+    /// Loads a BOUNDED window around one hit when it is not in the current
+    /// page window. No whole-conversation load: the store returns the target
+    /// plus a fixed number of neighbours. The merge deliberately does not
+    /// claim page coverage (there can be a gap between this window and the
+    /// recent page), so "Load earlier" keeps its real cursor.
+    func revealSearchHit(_ hit: ThreadSearchHit) async -> Bool {
+        // Durable SQL can see an internal notice template that the thread
+        // renders as a different concise sentence. Such a row is not a body
+        // hit and must never be revealed as one.
+        if let existing = messages.first(where: { $0.id == hit.messageID }),
+           ThreadSearchText.document(for: existing) == nil {
+            return false
+        }
+        if !messages.contains(where: { $0.id == hit.messageID }) {
+            guard !isTemporary else { return false }
+            guard let rows = try? await center.environment.intelligenceStore
+                .conversationMessageWindow(
+                    conversationID: conversationID,
+                    around: hit.messageID,
+                    before: 40,
+                    after: 4),
+                  !rows.isEmpty,
+                  rows.contains(where: { $0.id == hit.messageID }) else { return false }
+            mergeSearchWindow(rows)
+        }
+        guard let revealedMessage = messages.first(where: { $0.id == hit.messageID }),
+              ThreadSearchText.document(for: revealedMessage) != nil else { return false }
+        if timelineID(forMessageID: hit.messageID) != nil { return true }
+        // An assistant reply rendered from an assistantText event only gets
+        // its timeline row after that run's events are loaded. Select the
+        // message's real run and retry once; never fabricate a row.
+        if let runID = revealedMessage.runID,
+           runs.contains(where: { $0.id == runID }) {
+            await selectRun(runID)
+            return timelineID(forMessageID: hit.messageID) != nil
+        }
+        return false
+    }
+
+    private func mergeSearchWindow(_ rows: [PersistedMessage]) {
+        let existing = Set(messages.map(\.id))
+        let added = rows.filter { !existing.contains($0.id) }
+        guard !added.isEmpty else { return }
+        for message in added { messageIDs.insert(message.id) }
+        messages = (messages + added).sorted {
+            ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString)
+        }
+    }
+
+    /// Highlight offsets for one visible message. They are recomputed from the
+    /// CURRENT query and the SAME visible-text projection the thread renders,
+    /// so Markdown source offsets and display offsets can never be mixed.
+    func searchHighlightRanges(for messageID: UUID, query rawQuery: String) -> [Range<Int>] {
+        guard !rawQuery.isEmpty,
+              let message = messages.first(where: { $0.id == messageID }) else { return [] }
+        let query = ConversationSearchQuery(raw: rawQuery)
+        guard !query.isEmpty else { return [] }
+        return query.ranges(in: searchVisibleText(for: message))
+    }
+
+    func searchVisibleText(for message: PersistedMessage) -> String {
+        ConversationSearchText.visibleText(role: message.role, content: message.content)
+    }
+
+    /// Timeline row id for a persisted message, verified against the current
+    /// projection. Nil means the row is not rendered (e.g. a suppressed
+    /// internal notice), so the caller must not scroll to a fabricated id.
+    func timelineID(forMessageID messageID: UUID) -> String? {
+        let userID = "user.\(messageID.uuidString)"
+        let assistantID = "assistant.\(messageID.uuidString)"
+        if let direct = timeline.first(where: { $0.id == userID || $0.id == assistantID }) {
+            return direct.id
+        }
+        // Normal final assistant replies render from an assistantText EVENT
+        // and their timeline id is the event id. Map the persisted message to
+        // that exact row within the SAME run by identical visible content.
+        // A lone final answer is not a match for a different intermediate
+        // message just because both belong to the same run.
+        guard let message = messages.first(where: { $0.id == messageID }),
+              message.role == "assistant" else { return nil }
+        let items = timeline
+        let allEvents = eventsByRun.values.flatMap { $0 }
+        func eventRunID(_ suffix: String) -> UUID? {
+            guard let eventID = UUID(uuidString: suffix) else { return nil }
+            return allEvents.first(where: { $0.id == eventID })?.runID
+        }
+        for item in items {
+            guard case .assistantMessage(let text, let suffix) = item,
+                  ConversationSearchText.visibleText(markdown: text)
+                    == ConversationSearchText.visibleText(markdown: message.content),
+                  eventRunID(suffix) == message.runID else { continue }
+            return item.id
+        }
+        return nil
+    }
+
+    /// Global-search jump: reveal the exact message and return the id when it
+    /// is genuinely visible. A deleted/foreign id returns nil; nothing is
+    /// guessed.
+    func jumpToMessage(id: UUID) async -> UUID? {
+        let revealed = await revealSearchHit(ThreadSearchHit(
+            messageID: id,
+            role: "",
+            createdAt: Date(),
+            snippet: ""))
+        return revealed && messages.contains(where: { $0.id == id }) ? id : nil
+    }
+
+    func consumePendingSearchJump() async -> UUID? {
+        guard let id = ThreadSearchJumpCenter.consume(conversationID: conversationID) else {
+            return nil
+        }
+        return await jumpToMessage(id: id)
+    }
+
+    // MARK: - Linked schedules
+
+    var linkedScheduleCapsule: TaskScheduleCapsuleState? {
+        TaskSchedulePresentation.capsule(from: linkedScheduleSummaries, now: Date())
+    }
+
+    /// Reads the plans linked to this conversation and the ACTUAL started
+    /// automatic count per plan (never a count over the latest N UI rows).
+    func loadLinkedSchedules() async {
+        guard !isTemporary else {
+            linkedScheduleSummaries = []
+            return
+        }
+        let store = SQLiteTaskScheduleStore(database: center.environment.database)
+        guard let records = try? await store.schedulesLinked(to: conversationID) else {
+            linkedScheduleSummaries = []
+            return
+        }
+        var counts: [UUID: Int] = [:]
+        for record in records {
+            counts[record.id] = (try? await store.startedAutomaticOccurrenceCount(
+                scheduleID: record.id)) ?? 0
+        }
+        guard !Task.isCancelled else { return }
+        linkedScheduleSummaries = TaskSchedulePresentation.summaries(
+            records: records, automaticStartedCounts: counts)
     }
 
     /// Record page coverage separately from row identity. Merging only row IDs

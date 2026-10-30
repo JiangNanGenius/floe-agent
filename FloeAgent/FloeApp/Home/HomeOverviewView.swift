@@ -29,8 +29,7 @@ struct HomeOverviewView: View {
     @State private var showingSchedule = false
     @State private var editingSchedule: TaskScheduleRecord?
     @State private var automationSetupSchedule: TaskScheduleRecord?
-    @State private var historySchedule: TaskScheduleRecord?
-    @State private var historyOccurrences: [TaskScheduleOccurrence] = []
+    @State private var detailSchedule: ScheduleDetailRequest?
     @State private var cleanupReminders: [TaskScheduleCleanupReminder] = []
     @Environment(\.scenePhase) private var scenePhase
     @State private var pendingOccurrenceScheduleIDs: Set<UUID> = []
@@ -135,26 +134,34 @@ struct HomeOverviewView: View {
                 Section("home.home_overview_view.scheduled") {
                     ForEach(schedules) { schedule in
                         HStack(alignment: .top, spacing: 6) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Label(schedule.title, systemImage: "calendar.badge.clock")
-                                    .foregroundStyle(schedule.isEnabled ? .primary : .secondary)
-                                if !schedule.isEnabled {
-                                    Text(scheduleText(zh: "已停用", en: "Disabled"))
-                                        .font(.caption).foregroundStyle(.secondary)
+                            Button {
+                                detailSchedule = ScheduleDetailRequest(scheduleID: schedule.id)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Label(schedule.title, systemImage: "calendar.badge.clock")
+                                        .foregroundStyle(schedule.isEnabled ? .primary : .secondary)
+                                    if !schedule.isEnabled {
+                                        Text(ScheduleCopy.paused)
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    if let expected = schedule.nextExpectedAt {
+                                        Text(FloeL10n.l("home.home_overview_view.estimated", expected.formatted(date: .abbreviated, time: .shortened)))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    if let actual = schedule.lastStartedAt {
+                                        Text(FloeL10n.l("home.home_overview_view.last_actual", actual.formatted(date: .abbreviated, time: .shortened)))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    if pendingOccurrenceScheduleIDs.contains(schedule.id) {
+                                        Text(scheduleText(zh: "待执行（等待应用运行）", en: "Pending (waiting for the app to run)"))
+                                            .font(.caption).foregroundStyle(FloeTheme.pending)
+                                    }
                                 }
-                                if let expected = schedule.nextExpectedAt {
-                                    Text(FloeL10n.l("home.home_overview_view.estimated", expected.formatted(date: .abbreviated, time: .shortened)))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                if let actual = schedule.lastStartedAt {
-                                    Text(FloeL10n.l("home.home_overview_view.last_actual", actual.formatted(date: .abbreviated, time: .shortened)))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                if pendingOccurrenceScheduleIDs.contains(schedule.id) {
-                                    Text(scheduleText(zh: "待执行（等待应用运行）", en: "Pending (waiting for the app to run)"))
-                                        .font(.caption).foregroundStyle(FloeTheme.pending)
-                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("home.schedule.row.\(schedule.id.uuidString)")
                             Spacer(minLength: 4)
                             if schedule.cadence == .once || schedule.cadence == .daily || schedule.cadence == .weekly {
                                 Button {
@@ -171,27 +178,49 @@ struct HomeOverviewView: View {
                         .contextMenu {
                             Button {
                                 Task {
-                                    let store = SQLiteTaskScheduleStore(database: viewModel.environment.database)
-                                    _ = try? await store.runNow(id: schedule.id, at: Date())
-                                    await viewModel.environment.backgroundRunCoordinator.runDueSchedulesNow()
+                                    _ = try? await TaskScheduleCommands.runNow(
+                                        scheduleID: schedule.id,
+                                        environment: viewModel.environment)
                                     await load()
                                 }
-                            } label: { Label(scheduleText(zh: "立即运行", en: "Run now"), systemImage: "play.circle") }
-                            Button {
-                                Task {
-                                    let store = SQLiteTaskScheduleStore(database: viewModel.environment.database)
-                                    try? await store.setEnabled(id: schedule.id, enabled: !schedule.isEnabled, at: Date())
-                                    // The shared pass reconciles the insurance-reminder set: a
-                                    // disabled schedule must not keep a pre-registered reminder.
-                                    await viewModel.environment.backgroundRunCoordinator.runDueSchedulesNow()
-                                    await load()
+                            } label: { Label(ScheduleCopy.runNow, systemImage: "play.circle") }
+                            .disabled(!schedule.isEnabled)
+                            if schedule.isEnabled, schedule.cadence != .afterSuccess {
+                                Button {
+                                    Task {
+                                        _ = try? await TaskScheduleCommands.skipNext(
+                                            scheduleID: schedule.id,
+                                            environment: viewModel.environment)
+                                        await load()
+                                    }
+                                } label: { Label(ScheduleCopy.skipNext, systemImage: "forward.end") }
+                            }
+                            if schedule.isEnabled {
+                                Button(role: .destructive) {
+                                    Task {
+                                        try? await TaskScheduleCommands.cancelFuture(
+                                            scheduleID: schedule.id,
+                                            environment: viewModel.environment)
+                                        await load()
+                                    }
+                                } label: {
+                                    Label(ScheduleCopy.cancelFuture, systemImage: "pause.circle")
                                 }
-                            } label: {
-                                Label(
-                                    schedule.isEnabled
-                                        ? scheduleText(zh: "停用", en: "Disable")
-                                        : scheduleText(zh: "启用", en: "Enable"),
-                                    systemImage: schedule.isEnabled ? "pause.circle" : "play.circle")
+                            } else {
+                                Button {
+                                    Task {
+                                        let store = SQLiteTaskScheduleStore(
+                                            database: viewModel.environment.database)
+                                        try? await store.setEnabled(
+                                            id: schedule.id, enabled: true, at: Date())
+                                        await viewModel.environment.backgroundRunCoordinator
+                                            .runDueSchedulesNow()
+                                        await load()
+                                    }
+                                } label: {
+                                    Label(scheduleText(zh: "启用", en: "Enable"),
+                                          systemImage: "play.circle")
+                                }
                             }
                             if schedule.cadence == .once || schedule.cadence == .daily || schedule.cadence == .weekly {
                                 Button {
@@ -202,13 +231,8 @@ struct HomeOverviewView: View {
                                 editingSchedule = schedule
                             } label: { Label("workspace.workspace_canvas_view.edit", systemImage: "pencil") }
                             Button {
-                                Task {
-                                    historyOccurrences = (try? await SQLiteTaskScheduleStore(
-                                        database: viewModel.environment.database
-                                    ).occurrences(scheduleID: schedule.id, limit: 50)) ?? []
-                                    historySchedule = schedule
-                                }
-                            } label: { Label(scheduleText(zh: "历史", en: "History"), systemImage: "clock.arrow.circlepath") }
+                                detailSchedule = ScheduleDetailRequest(scheduleID: schedule.id)
+                            } label: { Label(ScheduleCopy.detail, systemImage: "info.circle") }
                             Button(role: .destructive) {
                                 Task {
                                     try? await SQLiteTaskScheduleStore(database: viewModel.environment.database)
@@ -286,6 +310,7 @@ struct HomeOverviewView: View {
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("home.home_overview_view.schedule_task")
+                .accessibilityIdentifier("home.schedule.add")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -366,32 +391,10 @@ struct HomeOverviewView: View {
                 cleanupStore: TaskScheduleCleanupReminderStore(
                     database: viewModel.environment.database))
         }
-        .sheet(item: $historySchedule) { schedule in
-            NavigationStack {
-                List {
-                    if historyOccurrences.isEmpty {
-                        Text(scheduleText(zh: "暂无执行历史", en: "No run history yet"))
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(historyOccurrences) { occurrence in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(occurrence.scheduledFor.formatted(date: .abbreviated, time: .shortened))
-                            Text(occurrenceStateLabel(occurrence.state))
-                                .font(.caption)
-                                .foregroundStyle(occurrence.state == .failed ? FloeTheme.destructive : .secondary)
-                            if let error = occurrence.errorText {
-                                Text(error).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                            }
-                        }
-                    }
-                }
-                .navigationTitle(schedule.title)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("workspace.workspace_canvas_view.cancel") { historySchedule = nil }
-                    }
-                }
-            }
+        .sheet(item: $detailSchedule, onDismiss: {
+            Task { await load() }
+        }) { request in
+            TaskScheduleDetailView(scheduleID: request.scheduleID)
         }
         .alert("chat.conversation_list_view.action_failed", isPresented: Binding(
             get: { restoreFailure != nil },
@@ -496,18 +499,6 @@ struct HomeOverviewView: View {
             TaskScheduleCleanupPopupLedger.shared.releaseRowSuppressions(rowID: id)
         }
         cleanupReminders = (try? await store.openReminders()) ?? []
-    }
-
-    private func occurrenceStateLabel(_ state: TaskScheduleOccurrenceState) -> String {
-        switch state {
-        case .pending: scheduleText(zh: "待执行", en: "Pending")
-        case .claimed, .running: String(localized: "home.home_overview_view.running")
-        case .completed: scheduleText(zh: "已完成", en: "Completed")
-        case .failed: scheduleText(zh: "失败", en: "Failed")
-        case .cancelled: scheduleText(zh: "已取消", en: "Cancelled")
-        case .skipped: scheduleText(zh: "已跳过（合并）", en: "Skipped (coalesced)")
-        case .interrupted: scheduleText(zh: "已中断", en: "Interrupted")
-        }
     }
 
     private func load() async {

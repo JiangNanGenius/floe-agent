@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-10-28 -->
+<!-- docs-updated: 2026-10-30 -->
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual
 
@@ -111,9 +111,11 @@ Choose subscription models from the public catalog or enter a model ID manually;
 
 ### Web search providers
 
+DeepSeek Search is available as a separate provider with its own key and an option to include page content. Long summaries and content are retained as returned by the service. The interface shows a concise projection; the assistant can use the full result within its context capacity or read further. Search summaries still need source verification.
+
 Settings → Web Search lists only providers you have added. Use **Add Provider** to choose a service or a compatible custom interface, configure an account and test a search. Each saved account has its own switch and priority. Refresh the provider directory from the add screen or **Settings → Updates**; downloaded directory updates preserve saved accounts and keys. Preset provider names follow directory updates automatically; names you edit yourself are preserved. Review other available changes before applying them to an existing account.
 
-Search returns five results when no count is specified and bounds long summaries. Enabled professional datasets use the same search tool and selected account when the current task permits them. Ordinary text and voice chat discover and call enabled, authorized tools; professional datasets still require their configured account and permissions. Temporary chat keeps its read boundary. Leaving continuous voice preserves the original conversation mode.
+Search returns five results when no count is specified and keeps the interface summary concise. Enabled professional datasets use the same search tool and selected account when the current task permits them. Ordinary text and voice chat discover and call enabled, authorized tools; professional datasets still require their configured account and permissions. Temporary chat keeps its read boundary. Leaving continuous voice preserves the original conversation mode.
 
 In the Volcengine editor, choose the account that matches your key:
 
@@ -158,7 +160,13 @@ Authorize external folders through the system file picker; writing a path in cha
 | Plan | Discuss a proposed approach | Review and accept it before treating any step as executed |
 | Goal | Work across stages | Define steps, budget and completion evidence |
 
-Return inserts a new line; Command+Return sends where supported. Expand the composer for a long prompt; it edits the same draft. Messages during a run can correct requirements without creating another task.
+Return inserts a new line; Command+Return sends where supported. Text wraps at the available width and Expand appears on the third line. Further input keeps your typing position visible. The full editor shares the same draft. Messages during a run can correct requirements without creating another task.
+
+**Answering questions.** The assistant can show a question card in the current task. Answer one question at a time by selecting, typing or dictating. Required questions wait for your reply. Optional questions can remain open during independent work, or wait for a specified interval before the assistant uses an explicitly identified assumption. Silence never means consent and an answer does not grant action permissions. With notifications allowed, supported questions accept a background inline reply. Temporary-chat questions stay in the current session only.
+
+**Finding messages.** Choose Find in Chat from the conversation menu or a message’s long-press menu, or press Command+F. Previous and Next jump between highlighted hits without changing your draft. The sidebar search also finds saved ordinary conversations. Multiple words must all match; quoted phrases stay together. Results show the actual matching line.
+
+**Scheduled tasks.** A linked plan appears below the conversation navigation bar. Open it for timing, parameters and run history. Each occurrence creates its own task. Run Now adds an extra run without changing the original time. Skip Next skips that occurrence; Cancel Future keeps existing history. A successful occurrence does not itself complete the overall goal: the assistant must explicitly finish a plan whose goal is achieved. Live Activities may show running work or the nearest wait; delivery and execution timing remain subject to system scheduling.
 
 After background interruption, return to the original task, inspect the last tool receipt and use Resume or send “Continue.” Verify uncertain uploads, submissions or other side effects before repeating them. Returning to the foreground does not mean an old process survived. A bounded pause or an unknown side-effect outcome needs deliberate recovery: inspect or reconcile the last receipt, then resume. A read-only check alone does not automatically re-arm paused work.
 

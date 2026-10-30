@@ -1112,6 +1112,43 @@ struct VoiceConversationTests {
         #expect(rig.driving.starts.count == 2)
     }
 
+    @Test("A spoken card answer settles inside the current run without cancelling or launching another turn")
+    func questionAnswerKeepsCurrentRun() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        #expect(await rig.coordinator.submitText("帮我查天气") == true)
+        let token = rig.driving.starts[0].request.token
+        var answers: [String] = []
+        rig.coordinator.setUserQuestionReply(questionID: "request:city", reply: { text in
+            answers.append(text)
+            rig.coordinator.setUserQuestionReply(questionID: nil, reply: nil)
+            return true
+        })
+        #expect(rig.coordinator.state == .listening)
+        #expect(await rig.coordinator.submitText("上海") == true)
+        #expect(await rig.waitUntil { answers == ["上海"] })
+        #expect(rig.driving.starts.count == 1)
+        #expect(rig.driving.cancelled.isEmpty)
+        #expect(rig.coordinator.currentRound == token)
+        #expect(rig.coordinator.state == .waitingModel)
+        rig.coordinator.end()
+        await rig.settle()
+    }
+
+    @Test("An unmatched spoken choice stays on the question and never becomes a new chat turn")
+    func questionAnswerRefusalIsRetryable() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        _ = await rig.coordinator.submitText("帮我安排")
+        rig.coordinator.setUserQuestionReply(questionID: "request:choice", reply: { _ in false })
+        _ = await rig.coordinator.submitText("没有这个选项")
+        #expect(await rig.waitUntil { rig.coordinator.state == .listening })
+        #expect(rig.driving.starts.count == 1)
+        #expect(rig.driving.cancelled.isEmpty)
+        rig.coordinator.end()
+        await rig.settle()
+    }
+
     @Test("New session generation fences all prior async callbacks")
     func generationFencing() async {
         let rig = VoiceRig()

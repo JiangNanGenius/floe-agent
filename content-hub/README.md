@@ -91,9 +91,12 @@ compiled into the App and cannot be replaced by a content package.
 ### Search provider catalog / 搜索服务目录
 
 `sources/providers/floe.search.providers/` is the search-provider catalog
-package: `content.json` is the signed envelope (kind `providers`, currently
-`minimumAppVersion` `1.7.47`) and `SearchProviderCatalog.json` is the payload
-the app validates. Entries describe **existing compiled adapters only** —
+package: `content.json` is the signed envelope and `SearchProviderCatalog.json`
+is the payload the app validates. The signed feed still publishes 1.0.0 with
+`minimumAppVersion` `1.7.47`; the staged 1.1.0 candidate adds DeepSeek's
+compiled adapter kind and therefore requires App `1.7.65` (`1.7.64` fails
+closed and drops that entry). The candidate is not signed or published yet.
+Entries describe **existing compiled adapters only** —
 preset id, adapter kind, bilingual name/blurb, documented default endpoint,
 required credential field keys and option defaults. The package carries no
 scripts, no credential values, no enablement flags and no new runtime
@@ -103,20 +106,28 @@ as every other content kind and keeps its previously active catalog on any
 signature/schema/minimum-version failure.
 
 `sources/providers/floe.search.providers/` 为搜索服务目录包：`content.json`
-是签名信封（kind 为 `providers`，当前 `minimumAppVersion` 为 `1.7.47`），
-`SearchProviderCatalog.json` 是 App 校验的目录正文。条目只描述**已编译的现有
+是签名信封，`SearchProviderCatalog.json` 是 App 校验的目录正文。当前签名目录仍发布
+1.0.0（`minimumAppVersion` 为 `1.7.47`）；暂存的 1.1.0 候选新增 DeepSeek 已编译
+适配器类型，因此要求 App `1.7.65`（`1.7.64` 会安全失败并丢弃该条目）。候选包尚未
+签名或发布。条目只描述**已编译的现有
 适配器**：预设 ID、适配器类型、中英文名称与简介、官方默认端点、必填凭据字段与
 选项默认值。包内无脚本、无凭据值、无启用开关、不引入新的运行时协议；App 未编译的
 适配器类型会被安全丢弃并需升级 App。安装与其它内容类型使用同一签名事务，任何签名、
 结构或最低版本失败都保留原有目录。
 
-The search catalog package 1.0.0 is signed by the official trust root. Tests
-verify its exact source bytes, pinned signature, package hashes and minimum
-App version. New candidates can be checked before signing without replacing
-the active signed feed.
+The search catalog package 1.0.0 remains signed by the official trust root in
+the active feed. The 1.1.0 candidate (DeepSeek search adapter, minimum App
+1.7.65) is staged only: its source and deterministic archive are checked, but
+`index.json`/`index.sig` are unchanged, so it is not live. Tests verify the
+published 1.0.0 bytes and pinned signature, both minimum App versions, package
+hashes and the staged candidate archive. New candidates can be checked before
+signing without replacing the active signed feed.
 
-搜索目录包 1.0.0 已使用官方密钥签名。测试核对源码字节、固定公钥签名、包摘要与
-最低 App 版本；新候选包可在签名前验证，现有有效签名目录保持可用。
+搜索目录包 1.0.0 仍由官方信任根签名并在当前目录中生效。1.1.0 候选（DeepSeek 搜索
+适配器，最低 App 1.7.65）仅处于暂存状态：测试校验其源码与确定性归档，但
+`index.json`/`index.sig` 未改动，因此尚未上线。测试同时核对已发布 1.0.0 的字节与
+固定签名、两个最低 App 版本、包摘要以及暂存候选归档。新候选可在签名前验证，
+不会替换当前有效的签名目录。
 
 ## Build / Check / Sign / 构建、校验、签名
 

@@ -165,10 +165,52 @@ final class WebSearchCatalogSettingsTests: XCTestCase {
         XCTAssertEqual(ContentUpdateCenter.searchProviderPackageID, "floe.search.providers")
         XCTAssertEqual(SearchProviderCatalog.packageID, "floe.search.providers")
         XCTAssertEqual(ContentUpdateCenter.searchProviderCatalogPath, "SearchProviderCatalog.json")
-        XCTAssertEqual(ContentUpdateCenter.builtInSearchProvidersVersion, "1.0.0")
+        XCTAssertEqual(ContentUpdateCenter.builtInSearchProvidersVersion, "1.1.0")
         let bundled = try XCTUnwrap(SearchProviderCatalogIndex.loadBundled(bundle: .main))
         XCTAssertEqual(bundled.version, ContentUpdateCenter.builtInSearchProvidersVersion)
-        XCTAssertEqual(bundled.entries.count, 9)
+        XCTAssertEqual(bundled.entries.count, 10)
+    }
+
+    func testDeepSeekCatalogEntryConfiguresAndSavesDisabledOwnedInstance() throws {
+        let bundled = try XCTUnwrap(SearchProviderCatalogIndex.loadBundled(bundle: .main))
+        let entry = try XCTUnwrap(bundled.entry(presetID: SearchProviderPresets.deepseek))
+        XCTAssertEqual(entry.adapterKind, WebSearchProviderKind.deepseek.rawValue)
+        XCTAssertEqual(entry.defaultEndpoint, "https://api.deepseek.com/v1/tools/search")
+        XCTAssertEqual(entry.credentialKeys, ["apiKey"])
+        XCTAssertEqual(entry.optionFields.map(\.key), [DeepSeekSearchOptions.Key.needContent])
+        XCTAssertEqual(entry.optionFields.first?.defaultValue, "false")
+        XCTAssertEqual(entry.name["zh-Hans"], "DeepSeek 搜索")
+
+        let draft = try XCTUnwrap(SearchProviderDraftFactory.draftInstance(
+            for: entry,
+            localePrimary: "en"
+        ))
+        XCTAssertEqual(draft.configuration.kind, .deepseek)
+        XCTAssertFalse(draft.configuration.enabled, "the catalog never auto-enables")
+        XCTAssertEqual(
+            draft.configuration.options[DeepSeekSearchOptions.Key.needContent],
+            "false"
+        )
+        XCTAssertTrue(
+            draft.configuration.credentialAccount.hasPrefix("web-search.instance.")
+        )
+
+        let center = makeCenter()
+        try center.saveInstance(
+            draft,
+            credential: WebSearchCredential(values: ["apiKey": "deepseek-key"])
+        )
+        let stored = try XCTUnwrap(center.instances.first)
+        XCTAssertFalse(stored.configuration.enabled)
+        XCTAssertEqual(stored.presetID, SearchProviderPresets.deepseek)
+        XCTAssertEqual(
+            center.credential(forAccount: stored.configuration.credentialAccount)?
+                .values["apiKey"],
+            "deepseek-key"
+        )
+        // Enabling stays the user's independent switch.
+        center.setEnabled(true, id: stored.configuration.id)
+        XCTAssertTrue(center.instances.first?.configuration.enabled == true)
     }
 
     // MARK: - Fresh state

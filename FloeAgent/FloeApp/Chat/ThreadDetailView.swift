@@ -11,6 +11,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import UIKit
+import Combine
 import FloeModels
 import FloePersistence
 import FloeSecurity
@@ -34,6 +35,13 @@ private struct AutomaticReadSignal: Equatable {
     let enabled: Bool
 }
 
+/// One requested scroll to a persisted message. The id makes two successive
+/// requests for the same message distinct (prev/next can land on one row).
+struct ThreadScrollRequest: Equatable {
+    let id = UUID()
+    let messageID: UUID
+}
+
 /// A user-selected context staged for review in the regular composer; never auto-sends.
 struct ThreadComposerInput: Identifiable {
     let id = UUID()
@@ -49,6 +57,13 @@ struct ThreadDetailView: View {
     }
 
     @StateObject private var viewModel: ThreadDetailViewModel
+    /// In-chat find is owned by the view (not the business view model); its
+    /// providers read/reveal through the view model only.
+    @StateObject private var search: ThreadSearchModel
+    /// A pending scroll to an exact message (in-chat find or a global-search
+    /// jump). A fresh token makes repeated requests to the same row real.
+    @State private var scrollRequest: ThreadScrollRequest?
+    @State private var scheduleDetail: ScheduleDetailRequest?
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var designEntryState: DesignEntryStateCenter
     @EnvironmentObject private var environment: AppEnvironment
@@ -104,9 +119,20 @@ struct ThreadDetailView: View {
         self.documentAssistant = documentAssistant
         self.onSaveToNotes = onSaveToNotes
         self.onInputConsumed = onInputConsumed
-        _viewModel = StateObject(
-            wrappedValue: ThreadDetailViewModel(conversationID: conversationID, center: center)
-        )
+        let model = ThreadDetailViewModel(conversationID: conversationID, center: center)
+        _viewModel = StateObject(wrappedValue: model)
+        _search = StateObject(wrappedValue: ThreadSearchModel(
+            provider: { [weak model] query in
+                guard let model else {
+                    return ThreadSearchResult(hits: [], includesDurableHistory: false)
+                }
+                return await model.searchHits(for: query)
+            },
+            reveal: { [weak model] hit in
+                guard let model else { return false }
+                return await model.revealSearchHit(hit)
+            }
+        ))
     }
 
     var body: some View {
@@ -126,7 +152,30 @@ struct ThreadDetailView: View {
                     importantFilesStrip
                     Divider()
                 }
+                // Exactly one top row: find replaces the linked-schedule pill
+                // while active instead of stacking chrome.
+                if search.isActive {
+                    ThreadSearchBar(model: search)
+                    Divider()
+                } else if !embedded, let capsule = viewModel.linkedScheduleCapsule {
+                    TaskScheduleCapsuleView(
+                        state: capsule,
+                        onOpenDetail: {
+                            scheduleDetail = ScheduleDetailRequest(scheduleID: capsule.scheduleID)
+                        },
+                        onChanged: {
+                            Task { await viewModel.loadLinkedSchedules() }
+                        }
+                    )
+                    Divider()
+                }
                 threadScroll
+                UserQuestionPanel(
+                    questions: environment.userQuestions,
+                    conversationID: viewModel.conversationID,
+                    maximumHeight: proxy.size.height * 0.45
+                )
+                .padding(.horizontal)
                 TaskMacBridgeAvailability(conversationID: viewModel.conversationID, runID: viewModel.selectedRunID)
                 TaskRuntimePreparationBanner(runID: viewModel.selectedRunID)
                 if let status = viewModel.compactionStatus {
@@ -149,6 +198,16 @@ struct ThreadDetailView: View {
                 composer
             }
             .background(FloeTheme.readingSurface)
+            // Hardware-keyboard find. The menu row carries the visible
+            // shortcut too; this zero-size button makes ⌘F work while the
+            // thread has focus without adding another permanent control.
+            .background {
+                Button("") { beginSearch() }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
+                    .accessibilityHidden(true)
+            }
             // The composer input caps at one third of the actually
             // available height — rotation, split and dynamic-type relayouts
             // all funnel through this proxy.
@@ -166,6 +225,41 @@ struct ThreadDetailView: View {
                 // initialization, and run-end updates land here too.
                 await environment.designEntryState.refresh(
                     conversationID: viewModel.conversationID, environment: environment)
+                // A global search result opened this thread: reveal its exact
+                // message after the bounded first page has loaded.
+                if let id = await viewModel.consumePendingSearchJump() {
+                    scrollRequest = ThreadScrollRequest(messageID: id)
+                }
+            }
+            .task(id: search.query) {
+                guard search.isActive else { return }
+                if search.hasQuery {
+                    try? await Task.sleep(for: .milliseconds(180))
+                }
+                guard !Task.isCancelled else { return }
+                await search.search()
+            }
+            .onChange(of: search.focusedMessageID) { _, id in
+                guard let id else { return }
+                scrollRequest = ThreadScrollRequest(messageID: id)
+            }
+            .onChange(of: viewModel.isRunning) { _, running in
+                // A schedule can be created by a tool during this run; once
+                // the run settles, re-read the trusted linkage so the pill
+                // appears without reopening the conversation.
+                if !running {
+                    Task { await viewModel.loadLinkedSchedules() }
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: ThreadSearchJumpCenter.notification)) { notice in
+                guard let conversationID = notice.userInfo?["conversationID"] as? UUID,
+                      conversationID == viewModel.conversationID else { return }
+                Task {
+                    if let id = await viewModel.consumePendingSearchJump() {
+                        scrollRequest = ThreadScrollRequest(messageID: id)
+                    }
+                }
             }
             .task(id: composerInput?.id) {
                 guard let input = composerInput, consumedInputID != input.id else { return }
@@ -199,6 +293,11 @@ struct ThreadDetailView: View {
 
             .sheet(item: $structuredExport) { file in
                 TaskExportShareSheet(url: file.url, lease: file.lease)
+            }
+            .sheet(item: $scheduleDetail, onDismiss: {
+                Task { await viewModel.loadLinkedSchedules() }
+            }) { request in
+                TaskScheduleDetailView(scheduleID: request.scheduleID)
             }
             .sheet(item: $presentedChild) { child in
                 NavigationStack {
@@ -482,7 +581,7 @@ struct ThreadDetailView: View {
                         earlierActivityScrollDemand &+= 1
                     }
                     isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
-                    if phase == .idle, latestFollow.followsLatest {
+                    if phase == .idle, latestFollow.followsLatest, !search.isActive {
                         proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
                     }
                 }
@@ -497,7 +596,8 @@ struct ThreadDetailView: View {
                     showsReturnToLatest = latestFollow.isAwayFromLatest && !latestFollow.followsLatest
                     // Observe layout too: an image or tool card can grow without
                     // adding an event or increasing the streamed text length.
-                    if old.height != new.height, latestFollow.followsLatest, !isUserScrolling {
+                    if old.height != new.height, latestFollow.followsLatest, !isUserScrolling,
+                       !search.isActive {
                         proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
                     }
                 }
@@ -533,15 +633,34 @@ struct ThreadDetailView: View {
             .onChange(of: viewModel.hasLoaded) { _, loaded in
                 guard loaded else { return }
                 latestFollow.returnToLatest()
-                proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
+                if !search.isActive {
+                    proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
+                }
                 showsReturnToLatest = false
+            }
+            .onChange(of: scrollRequest) { _, request in
+                guard let request,
+                      let rowID = viewModel.timelineID(forMessageID: request.messageID) else {
+                    return
+                }
+                // The row may be inserted by the bounded search window in the
+                // same turn; one yield lets LazyVStack see the new data before
+                // asking ScrollViewReader to move to it.
+                Task { @MainActor in
+                    await Task.yield()
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                        proxy.scrollTo(rowID, anchor: .center)
+                    }
+                    showsReturnToLatest = true
+                }
             }
             .onChange(of: [viewModel.liveStreamedText.utf8.count, viewModel.liveReasoningText.utf8.count,
                            viewModel.events.count, viewModel.messages.count,
                            viewModel.isRunning ? 1 : 0]) { _, _ in
                 // Follow only when the user has not intentionally scrolled
                 // away to inspect earlier reasoning or tool output.
-                guard viewModel.hasLoaded, latestFollow.followsLatest, !isUserScrolling else { return }
+                guard viewModel.hasLoaded, latestFollow.followsLatest, !isUserScrolling,
+                      !search.isActive else { return }
                 proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
             }
         }
@@ -558,10 +677,19 @@ struct ThreadDetailView: View {
                                      viewportFrame: threadViewportFrame,
                                      scrollDemand: earlierActivityScrollDemand)
         case .userMessage(let message):
-            MessageBubble(message: message, onOpenAttachment: { item in
-                selectedAttachment = ChatAttachmentOpenRequest(conversationID: message.conversationID,
-                    messageID: message.id, attachmentID: item.attachmentID)
-            })
+            if search.isActive,
+               !viewModel.searchHighlightRanges(
+                    for: message.id, query: search.query).isEmpty {
+                ThreadSearchHighlightedUserMessage(
+                    text: viewModel.searchVisibleText(for: message),
+                    ranges: viewModel.searchHighlightRanges(
+                        for: message.id, query: search.query))
+            } else {
+                MessageBubble(message: message, onOpenAttachment: { item in
+                    selectedAttachment = ChatAttachmentOpenRequest(conversationID: message.conversationID,
+                        messageID: message.id, attachmentID: item.attachmentID)
+                }, onFind: beginSearch)
+            }
 
         case .assistantMessage(let text, let idSuffix):
             // A task-level assistant message may carry REAL returned
@@ -572,12 +700,36 @@ struct ThreadDetailView: View {
             let persisted = UUID(uuidString: idSuffix).flatMap { messageID in
                 viewModel.messages.first { $0.id == messageID && $0.role == "assistant" }
             }
-            if let persisted {
+            // The visible assistant text can come from an assistantText
+            // EVENT (normal final replies) or from a persisted message
+            // (legacy/task-level rows). Highlight the rendered visible text
+            // in both cases; flatten Markdown first so search offsets belong
+            // to the displayed string, never to source syntax.
+            let searchQuery = search.isActive
+                ? ConversationSearchQuery(raw: search.query)
+                : ConversationSearchQuery(raw: "")
+            // A visible phrase may cross Markdown delimiters. Match the
+            // same projection used by retrieval, never raw source bytes.
+            let visibleSearchText: String
+            let searchRanges: [Range<Int>]
+            if !searchQuery.isEmpty {
+                visibleSearchText = ConversationSearchText.visibleText(
+                    role: "assistant", content: text)
+                searchRanges = searchQuery.ranges(in: visibleSearchText)
+            } else {
+                visibleSearchText = ""
+                searchRanges = []
+            }
+            if !searchRanges.isEmpty {
+                ThreadSearchHighlightedAssistantMessage(
+                    text: visibleSearchText,
+                    ranges: searchRanges)
+            } else if let persisted {
                 MessageBubble(message: persisted, displayedText: text, onSaveToNotes: onSaveToNotes,
                     onOpenAttachment: { item in
                         selectedAttachment = ChatAttachmentOpenRequest(conversationID: persisted.conversationID,
                             messageID: persisted.id, attachmentID: item.attachmentID)
-                    })
+                    }, onFind: beginSearch)
             } else {
                 AssistantMessageView(
                     text: text, isStreaming: false,
@@ -589,6 +741,14 @@ struct ThreadDetailView: View {
                     speechOwnerID: UUID(uuidString: idSuffix),
                     onSaveToNotes: onSaveToNotes
                 )
+                .contextMenu {
+                    Button {
+                        beginSearch()
+                    } label: {
+                        Label(ThreadSearchCopy.placeholder, systemImage: "magnifyingglass")
+                    }
+                    .accessibilityIdentifier("thread.find.fromMessage")
+                }
             }
 
         case .event(let event):
@@ -734,6 +894,13 @@ struct ThreadDetailView: View {
     }
 
     @ToolbarContentBuilder
+    /// Opens the find bar and focuses its field. The composer draft,
+    /// attachments and selection are untouched; closing find does not move
+    /// the reader away from the current hit.
+    private func beginSearch() {
+        search.begin()
+    }
+
     private var stateToolbar: some ToolbarContent {
         if !embedded {
             temporaryToolbarItems
@@ -762,6 +929,13 @@ struct ThreadDetailView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
+                Button {
+                    beginSearch()
+                } label: {
+                    Label(ThreadSearchCopy.placeholder, systemImage: "magnifyingglass")
+                }
+                .accessibilityIdentifier("thread.find.menu")
+                Divider()
                 if !viewModel.isTemporary {
                 Button(refreshingMediaJobs ? "chat.thread_detail_view.refreshing_media_tasks" : "chat.thread_detail_view.refresh_media_task_status", systemImage: "arrow.clockwise") {
                     refreshingMediaJobs = true
@@ -1613,6 +1787,7 @@ private struct MessageBubble: View {
     var displayedText: String? = nil
     var onSaveToNotes: ((String) -> Void)? = nil
     var onOpenAttachment: ((AttachmentChipItem) -> Void)? = nil
+    var onFind: (() -> Void)? = nil
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     /// Explicit design entrance: one chosen attachment of this message as a typed
@@ -1655,6 +1830,14 @@ private struct MessageBubble: View {
             }
         }
         .contextMenu {
+            if let onFind {
+                Button {
+                    onFind()
+                } label: {
+                    Label(ThreadSearchCopy.placeholder, systemImage: "magnifyingglass")
+                }
+                .accessibilityIdentifier("thread.find.fromMessage")
+            }
             // Per-attachment explicit entry/selection: with several
             // attachments each one gets its own design item bound to its
             // exact attachment identity.
@@ -1682,6 +1865,48 @@ private struct MessageBubble: View {
         }
     }
 }
+/// The user's own text with every find term highlighted. Mirrors the normal
+/// user bubble; only the rendering path changes while find is active.
+private struct ThreadSearchHighlightedUserMessage: View {
+    let text: String
+    let ranges: [Range<Int>]
+
+    var body: some View {
+        HStack(alignment: .top) {
+            Spacer(minLength: 40)
+            Text(ThreadSearchText.highlighted(text, ranges: ranges))
+                .font(FloeTheme.Typography.body)
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    FloeTheme.primary.opacity(0.14),
+                    in: RoundedRectangle(cornerRadius: 12))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(String(localized: "thread.role.user"))
+    }
+}
+
+/// The assistant's visible answer with every find term highlighted. Rich
+/// Markdown blocks are temporarily rendered as their flattened visible text so
+/// the highlight cannot drift between source and display offsets.
+private struct ThreadSearchHighlightedAssistantMessage: View {
+    let text: String
+    let ranges: [Range<Int>]
+
+    var body: some View {
+        Text(ThreadSearchText.highlighted(text, ranges: ranges))
+            .font(FloeTheme.Typography.body)
+            .foregroundStyle(.primary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(String(localized: "thread.role.assistant"))
+    }
+}
+
 private struct TaskExportFile: Identifiable {
     let id = UUID()
     let url: URL

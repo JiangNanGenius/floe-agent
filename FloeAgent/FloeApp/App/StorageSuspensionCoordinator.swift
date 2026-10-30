@@ -116,12 +116,20 @@ final class StorageSuspensionCoordinator {
         if isBackground { enterBackground() }
     }
 
-    private func beginOperation() throws -> StorageOperationLease {
+    /// Only the native notification-response ingress calls this. A new OS
+    /// callback can provide a fresh finite execution opportunity after an old
+    /// assertion expired; a saved setting or model argument cannot do so.
+    func beginNotificationResponseOperation() throws -> StorageOperationLease {
+        try beginOperation(authorizedSystemCallback: true)
+    }
+
+    private func beginOperation(authorizedSystemCallback: Bool = false) throws -> StorageOperationLease {
         let backgroundNow = isBackground || UIApplication.shared.applicationState == .background
         guard StorageSuspensionAdmission.permitsOperation(
             backgroundNow: backgroundNow,
             needsForeground: needsForeground,
-            finalizingHandoff: finalizingHandoff
+            finalizingHandoff: finalizingHandoff,
+            authorizedSystemCallback: authorizedSystemCallback
         ) else { throw CancellationError() }
         let id = UUID()
         let lease = StorageOperationLease { [weak self] in
@@ -138,6 +146,7 @@ final class StorageSuspensionCoordinator {
             throw CancellationError()
         }
         budgets[id] = Budget(assertion: assertion, lease: lease)
+        if authorizedSystemCallback { needsForeground = false }
         // A legitimate finite background write may reopen the SQLite writer;
         // its last lease suspends it again after quiescence. No VM/keepalive.
         if connectionsSuspended {

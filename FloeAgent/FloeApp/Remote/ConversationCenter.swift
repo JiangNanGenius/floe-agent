@@ -2049,11 +2049,13 @@ final class ConversationCenter: ObservableObject {
     private func discardTemporarySession() async {
         guard let session = temporarySession else { return }
         let id = session.conversation.id
+        let questionRunIDs = temporaryRunIDs
         temporarySession = nil
         lastPromotedConversationID = nil
         promotionContext = nil
         keepOperation = nil
         keepOperationID = nil
+        await environment.userQuestions.discardTemporary(conversationID: id, runIDs: questionRunIDs)
         await session.conversationStore.close()
         await session.runStore.close()
         await session.runningInputStore.close()
@@ -2138,6 +2140,7 @@ final class ConversationCenter: ObservableObject {
         let convertedID = session.convertedEmptyOrdinaryID
         let sourceID = session.sourceConversationID
         let settleKeep = keepOperation
+        let questionRunIDs = temporaryRunIDs
         // The global Keep operation reference is cleared NOW, not from the old
         // operation's `defer` later: a stale completion must neither keep the
         // keep-slot occupied nor clear a replacement operation's marker.
@@ -2179,6 +2182,7 @@ final class ConversationCenter: ObservableObject {
         await session.conversationStore.close()
         await session.runStore.close()
         await session.runningInputStore.close()
+        await environment.userQuestions.discardTemporary(conversationID: id, runIDs: questionRunIDs)
         // Personal-data pagination snapshots are RAM-only and owned per
         // temporary run (see `PersonalToolOwnerID.init(context:)`). Destroy
         // them with the session instead of leaving the rows to expire on the
@@ -3882,7 +3886,8 @@ final class ConversationCenter: ObservableObject {
                     runID: runID,
                     dependencies: runDependencyStore,
                     jobs: jobServiceForRun)
-            }
+            },
+            userQuestionRecovery: environment.userQuestions.coordinator
         )
         await environment.subagentRunnerRegistry.register(
             SubagentRunner(
@@ -5384,6 +5389,46 @@ final class ConversationCenter: ObservableObject {
     }
 
     // MARK: - Running input queue / steer
+
+    /// Optional answers use the existing durable input queue. A stable id
+    /// makes a crash between enqueue and acknowledgement safe to retry.
+    /// An ended run is never restarted merely because a late answer arrived.
+    func enqueueQuestionAnswer(_ delivery: UserQuestionAnswerDelivery) async throws {
+        let id = try AppUserQuestionIntegration.inputID(for: delivery)
+        let owner = delivery.conversationID
+        let temporaryIncarnation = isTemporaryConversation(owner) ? temporarySession?.incarnation : nil
+        guard let run = try await runStore(for: owner).run(id: delivery.runID),
+              run.conversationID == owner else { throw CancellationError() }
+        if let temporaryIncarnation {
+            guard temporarySession?.conversation.id == owner,
+                  temporarySession?.incarnation == temporaryIncarnation else { throw CancellationError() }
+        }
+        let store = runningInputStore(for: owner)
+        if try await store.input(id: id) == nil {
+            do {
+                _ = try await store.enqueue(PendingUserInput(
+                    id: id, conversationID: owner, targetRunID: delivery.runID,
+                    content: delivery.text, mode: .steer,
+                    createdAt: delivery.createdAt
+                ))
+            } catch {
+                // Another surface can win while this actor awaits SQLite.
+                guard try await store.input(id: id) != nil else { throw error }
+            }
+        }
+        if runServices[delivery.runID] != nil {
+            // The queue commit is the delivery receipt. Promotion may lose
+            // a race with run completion or have already been consumed after
+            // a prior crash; neither case may replay the answer or undo it.
+            if let input = try await store.input(id: id), input.status == .queued {
+                try? await promoteToSteer(inputID: id, expectedRunID: delivery.runID)
+            }
+        }
+        if let temporaryIncarnation {
+            guard temporarySession?.incarnation == temporaryIncarnation else { throw CancellationError() }
+        }
+        publishSession(owner)
+    }
 
     /// Persists input composed during a run. Queue is the safe default;
     /// steering additionally performs an expected-run conditional promotion.
@@ -8495,6 +8540,7 @@ final class ConversationCenter: ObservableObject {
         case "executingTool": (FloeL10n.l("state.executing_tool"), 50)
         case "committingResults": (FloeL10n.l("state.committing_results"), 66)
         case "waitingApproval": (FloeL10n.l("platform.background_run_coordinator.waiting_for_your_approval"), 60)
+        case "waitingUserQuestion": (String(localized: "user_question.state.waiting"), 60)
         case "compacting": (FloeL10n.l("remote.conversation_center.organizing_context"), 72)
         case "verifying": (FloeL10n.l("remote.conversation_center.reviewing_the_answer"), 88)
         case "completed": (FloeL10n.l("state.round_ended"), 100)
@@ -8511,6 +8557,12 @@ final class ConversationCenter: ObservableObject {
             stage: progress.stage,
             progress: progress.value,
             isGenerating: ["streamingModel", "preparingToolCall"].contains(snapshot.stateName)
+        )
+        let blockingQuestion = snapshot.pendingUserQuestion.flatMap {
+            $0.pendingBlockingQuestionIDs.isEmpty ? nil : $0.requestID
+        }
+        environment.backgroundRunCoordinator.didUpdatePendingQuestion(
+            runID: snapshot.runID, requestID: blockingQuestion
         )
         if let waiting = snapshot.pendingApproval {
             environment.backgroundRunCoordinator.didUpdatePendingApproval(

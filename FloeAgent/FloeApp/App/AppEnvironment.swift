@@ -209,6 +209,7 @@ final class AppEnvironment: ObservableObject {
     /// only to these centers, never to stores or runtimes directly.
     /// T01 vends minimal shells; T02/T04/T05 fill them in.
     private lazy var _conversationCenter = ConversationCenter(environment: self)
+    lazy var userQuestions = AppUserQuestionIntegration(environment: self)
     /// Owns the bounded App Group widget snapshot. It observes live
     /// conversation/run projections; it never owns a second task store.
     private lazy var _widgetSnapshotCenter = WidgetSnapshotCenter(
@@ -1908,6 +1909,7 @@ final class AppEnvironment: ObservableObject {
                 await self?.taskScheduleBinding(for: context)
             }
         )
+        registerUserQuestionTool(coordinator: userQuestions.coordinator)
         // Browser automation.
         registerBrowserTools(center: browserCenter)
         BrowserCookieProviderRegistry.shared.install(browserCenter)
@@ -2059,7 +2061,8 @@ final class AppEnvironment: ObservableObject {
             environmentID: context.environmentID,
             modelID: run.modelID,
             permissionJSON: permissionJSON,
-            anchorTimezone: TimeZone.current.identifier)
+            anchorTimezone: TimeZone.current.identifier,
+            originConversationID: conversationID)
     }
 
     /// Creation-time bindings for an APP-initiated schedule with no run
@@ -2431,6 +2434,9 @@ final class AppEnvironment: ObservableObject {
                     }
                 }
             }
+            #if DEBUG
+            try await LinkedScheduleUIFixture.prepareIfRequested(database: database)
+            #endif
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains(DesignWorkflowFixture.launchArgument) {
                 // Synthetic design-workflow fixtures through the REAL

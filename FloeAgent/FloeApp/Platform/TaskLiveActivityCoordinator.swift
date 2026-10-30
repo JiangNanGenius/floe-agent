@@ -25,9 +25,16 @@
 //   never adopt them as if work were still running.
 // - When the platform or the system-wide Live Activities setting is
 //   unavailable, nothing is requested and no success is reported.
+// - ONE activity aggregates every real run plus at most the nearest planned
+//   wait; there is never one activity per plan. A wait row only appears inside
+//   a bounded horizon and is never a permanent card: iOS keeps an activity
+//   active for up to 8 hours and may keep its final state on the Lock Screen
+//   for up to 4 more, with no precise-timer or keep-alive guarantee. Position
+//   updates, empty downloads and silent audio never re-arm activity content.
 
 import Foundation
 import FloeCore
+import FloeModels
 
 // MARK: - Activity ownership seams
 
@@ -101,15 +108,83 @@ enum TaskLiveActivityProjection {
         }
     }
 
-    static func snapshot(from candidates: [Candidate]) -> FloeTaskActivitySnapshot {
+    /// The nearest planned wait and the total number of enabled plans. A wait
+    /// without a clock time (after-success) is counted but never gets a
+    /// countdown.
+    struct ScheduledWaitSummary: Equatable, Sendable {
+        var nearest: ScheduledWaitCandidate?
+        var totalEnabledCount: Int
+
+        static let empty = Self(nearest: nil, totalEnabledCount: 0)
+    }
+
+    /// One enabled plan's next clock fire. `conversationID` is the plan's
+    /// trusted origin (nil stays nil); it is never guessed.
+    struct ScheduledWaitCandidate: Equatable, Sendable {
+        var scheduleID: UUID
+        var conversationID: UUID?
+        var title: String
+        var nextFireAt: Date
+    }
+
+    /// How early a planned wait may appear on the Lock Screen. A plan days
+    /// away never pins a permanent activity; the activity either already
+    /// exists for real work or starts shortly before the run.
+    static let scheduledWaitHorizon: TimeInterval = 30 * 60
+    /// A fire time this recently passed may still be shown while the real
+    /// launch settles; it is never rendered as a negative countdown.
+    static let scheduledWaitLateGrace: TimeInterval = 5 * 60
+
+    /// Derives the ONE wait projection from durable schedules. Pure, so the
+    /// exact selection is testable without a store or ActivityKit.
+    static func scheduledWaitSummary(
+        schedules: [TaskScheduleRecord],
+        now: Date
+    ) -> ScheduledWaitSummary {
+        let enabled = schedules.filter(\.isEnabled)
+        let clocked = enabled.compactMap { record -> ScheduledWaitCandidate? in
+            guard record.cadence != .afterSuccess,
+                  let next = record.nextExpectedAt else { return nil }
+            return ScheduledWaitCandidate(
+                scheduleID: record.id,
+                conversationID: record.originConversationID,
+                title: record.title,
+                nextFireAt: next)
+        }
+        let nearest = clocked.min {
+            if $0.nextFireAt != $1.nextFireAt { return $0.nextFireAt < $1.nextFireAt }
+            return $0.scheduleID.uuidString < $1.scheduleID.uuidString
+        }
+        return ScheduledWaitSummary(
+            nearest: nearest,
+            totalEnabledCount: enabled.count)
+    }
+
+    static func snapshot(
+        from candidates: [Candidate],
+        scheduledWaits: ScheduledWaitSummary = .empty,
+        now: Date = Date()
+    ) -> FloeTaskActivitySnapshot {
         let eligible = candidates
             .filter { $0.publishesContent && $0.conversationID != nil }
             .sorted {
                 if $0.startedAt != $1.startedAt { return $0.startedAt > $1.startedAt }
                 return $0.runID.uuidString > $1.runID.uuidString
             }
-        let rows = eligible
-            .prefix(FloeTaskActivitySnapshot.maximumRows)
+        // A planned wait is shown only when it is genuinely near and still
+        // relevant. The actual running rows always come first.
+        let wait: ScheduledWaitCandidate? = scheduledWaits.nearest.flatMap { candidate in
+            guard candidate.nextFireAt >= now.addingTimeInterval(-scheduledWaitLateGrace),
+                  candidate.nextFireAt <= now.addingTimeInterval(scheduledWaitHorizon) else {
+                return nil
+            }
+            return candidate
+        }
+        let runLimit = wait == nil
+            ? FloeTaskActivitySnapshot.maximumRows
+            : FloeTaskActivitySnapshot.maximumRows - 1
+        var rows = eligible
+            .prefix(runLimit)
             .map { candidate -> FloeTaskActivitySnapshot.Row in
                 let state: WidgetTaskState
                 let status: String
@@ -134,9 +209,19 @@ enum TaskLiveActivityProjection {
                     startedAt: candidate.startedAt
                 )
             }
+        if let wait {
+            rows.append(.scheduledWait(
+                scheduleID: wait.scheduleID,
+                conversationID: wait.conversationID,
+                title: wait.title,
+                nextFireAt: wait.nextFireAt))
+        }
         return FloeTaskActivitySnapshot(
             rows: Array(rows),
-            activeCount: min(eligible.count, FloeTaskActivitySnapshot.maximumActiveCount)
+            activeCount: min(eligible.count, FloeTaskActivitySnapshot.maximumActiveCount),
+            scheduledCount: scheduledWaits.totalEnabledCount > 0
+                ? min(scheduledWaits.totalEnabledCount, FloeTaskActivitySnapshot.maximumActiveCount)
+                : nil
         )
     }
 }

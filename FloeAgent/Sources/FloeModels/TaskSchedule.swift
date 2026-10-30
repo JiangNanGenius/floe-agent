@@ -68,6 +68,14 @@ public struct TaskScheduleRecord: Sendable, Codable, Hashable, Identifiable {
     /// Encoded `DraftTaskPolicy` permission binding frozen at schedule time.
     /// Nil keeps the settings default at execution.
     public var permissionJSON: String?
+    /// The ordinary conversation this plan was created from, captured from the
+    /// submitting run's trusted context (never from a model argument, a title
+    /// guess or a later occurrence). Nil means the plan is unbound: Home-created
+    /// plans and every pre-v57 record stay nil, and such a plan is never shown
+    /// as belonging to a chat it cannot prove it came from. Deleting the origin
+    /// conversation never deletes, disables or rewrites the plan: the column is
+    /// a plain reference with no foreign key or cascade.
+    public var originConversationID: UUID?
 
     public init(
         id: UUID = UUID(),
@@ -88,7 +96,8 @@ public struct TaskScheduleRecord: Sendable, Codable, Hashable, Identifiable {
         upstreamRunID: UUID? = nil,
         modelID: UUID? = nil,
         environmentID: String? = nil,
-        permissionJSON: String? = nil
+        permissionJSON: String? = nil,
+        originConversationID: UUID? = nil
     ) {
         self.id = id
         self.title = title
@@ -109,6 +118,7 @@ public struct TaskScheduleRecord: Sendable, Codable, Hashable, Identifiable {
         self.modelID = modelID
         self.environmentID = environmentID
         self.permissionJSON = permissionJSON
+        self.originConversationID = originConversationID
     }
 }
 
@@ -191,6 +201,53 @@ public struct TaskScheduleOccurrence: Sendable, Codable, Hashable, Identifiable 
         self.errorText = errorText
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+}
+
+public extension TaskScheduleOccurrence {
+    /// An explicit "Run now" instance. It is an EXTRA execution requested by
+    /// the user: it never consumes, advances or re-arms the calendar cadence,
+    /// so the planned next fire time stays exactly as it was. Manual rows are
+    /// kept distinct in presentation and never count toward the automatic
+    /// run ordinal.
+    var isManualRun: Bool { dedupeKey.hasPrefix("manual:") }
+
+    /// An instance armed by a recorded upstream SUCCESS. It is automatic (it
+    /// is not user-requested), but it has no clock fire time.
+    var isUpstreamArmed: Bool { dedupeKey.hasPrefix("upstream:") }
+
+    /// True for every instance the schedule derived itself: calendar due
+    /// times and after-success arming. Explicit Run-now instances are the only
+    /// non-automatic rows.
+    var isAutomatic: Bool { !isManualRun }
+}
+
+/// The durable outcome of an explicit "Skip next" action.
+///
+/// Exactly one logical occurrence is recorded `skipped` (never launched) and
+/// the plan advances to the fire time after it. A repeating plan stays
+/// enabled; a one-shot has no later fire time, so it retires while keeping its
+/// record and history. A currently running instance is never touched: it has
+/// its own Stop.
+public struct TaskScheduleSkipResult: Sendable, Codable, Hashable {
+    public var scheduleID: UUID
+    public var skippedOccurrenceID: UUID
+    public var skippedFor: Date
+    public var nextExpectedAt: Date?
+    public var planDisabled: Bool
+
+    public init(
+        scheduleID: UUID,
+        skippedOccurrenceID: UUID,
+        skippedFor: Date,
+        nextExpectedAt: Date?,
+        planDisabled: Bool
+    ) {
+        self.scheduleID = scheduleID
+        self.skippedOccurrenceID = skippedOccurrenceID
+        self.skippedFor = skippedFor
+        self.nextExpectedAt = nextExpectedAt
+        self.planDisabled = planDisabled
     }
 }
 

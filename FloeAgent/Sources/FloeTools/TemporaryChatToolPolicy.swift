@@ -2,8 +2,13 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// A temporary conversation is casual chat with a narrow, audited READ-ONLY
-// ceiling made of exactly two families:
+// A temporary conversation is casual chat with a narrow, audited ceiling
+// made of:
+//
+//   * one local interaction, `user.ask`, whose temporary backend is RAM-only,
+//     never sends a notification and never writes question text or answers to
+//     disk (see localInteractionToolNames below); and
+//   * two read-only families:
 //
 //   * the public web trio — public web search (`web.search`, and Bocha's
 //     AI-summary `web.searchAI` when its provider is configured) and
@@ -105,6 +110,20 @@ public enum TemporaryChatToolPolicy {
         "apple.location.current",
     ]
 
+    /// The one local interaction tool admitted by a temporary chat. It is
+    /// NOT a read and does not widen the file/exec/remote ceilings. It asks
+    /// the person a question entirely on-device; the coordinator's temporary
+    /// backend keeps question text and answers in RAM, never SQLite, and the
+    /// app never schedules a notification containing them.
+    public static let localInteractionToolNames: Set<String> = [
+        "user.ask",
+    ]
+
+    /// True when `name` is the local user-question interaction.
+    public static func isTemporaryLocalInteractionTool(_ name: String) -> Bool {
+        localInteractionToolNames.contains(name)
+    }
+
     /// The exact name ceiling: only names that exist in the run's offered
     /// descriptor set AND are in the public web pair. Intersecting with the
     /// offered set keeps the ceiling truthful when a tool is not installed.
@@ -185,6 +204,20 @@ public enum TemporaryChatToolPolicy {
         return descriptor.riskLabels.isSubset(of: allowedBasicDeviceRiskLabels)
     }
 
+    /// The local question tool is narrowly shaped: it owns Floe-internal
+    /// question state, is never side-effecting or host-scoped, has no risk
+    /// label and only the main run may ask the end user. A forged descriptor
+    /// reusing the name with a broader effect fails closed.
+    public static func isSafeTemporaryLocalInteractionDescriptor(
+        _ descriptor: ToolCatalog.Descriptor
+    ) -> Bool {
+        guard localInteractionToolNames.contains(descriptor.name) else { return false }
+        guard descriptor.effect == .internalState, !descriptor.isSideEffecting else { return false }
+        guard !descriptor.requiresHostScope else { return false }
+        guard descriptor.executionBoundary == .mainRunOnly else { return false }
+        return descriptor.riskLabels.isEmpty
+    }
+
     /// The model-facing projection of `descriptor` inside the temporary
     /// ceiling, or nil when it is not an admitted tool with genuine read
     /// metadata. Admitted descriptors are returned unchanged, preserving
@@ -192,14 +225,22 @@ public enum TemporaryChatToolPolicy {
     public static func readOnlyDescriptor(
         _ descriptor: ToolCatalog.Descriptor
     ) -> ToolCatalog.Descriptor? {
-        (isReadOnlySafe(descriptor) || isSafeBasicDeviceDescriptor(descriptor))
-            ? descriptor
-            : nil
+        if isReadOnlySafe(descriptor) || isSafeBasicDeviceDescriptor(descriptor) {
+            return descriptor
+        }
+        // The local question is not a read; it is an on-device interaction
+        // whose temporary backend is RAM-only. It is admitted here so the
+        // run's real descriptor identity (main-run-only) is preserved, never
+        // replaced by a projected copy.
+        if isSafeTemporaryLocalInteractionDescriptor(descriptor) {
+            return descriptor
+        }
+        return nil
     }
 
     /// The name ceiling derived from the run's actually offered descriptors.
-    /// Only the public web search/fetch tools and the basic device reads
-    /// survive.
+    /// Only the local question, public web search/fetch tools and the basic
+    /// device reads survive; every other name remains outside.
     public static func allowedToolNames(from descriptors: [ToolCatalog.Descriptor]) -> Set<String> {
         Set(descriptors.lazy.compactMap { descriptor in
             readOnlyDescriptor(descriptor) == nil ? nil : descriptor.name
@@ -221,7 +262,10 @@ public enum TemporaryChatToolPolicy {
         if basicDeviceReadToolNames.contains(descriptor.name) {
             return basicDeviceDenial(descriptor: descriptor, arguments: arguments)
         }
-        return "The '\(descriptor.name)' tool is outside the temporary chat's read ceiling (public web search/fetch and basic on-device reads: calendar events, reminders, maps place search, Home accessories, Watch status and the current location)."
+        if localInteractionToolNames.contains(descriptor.name) {
+            return localInteractionDenial(descriptor: descriptor, arguments: arguments)
+        }
+        return "The '\(descriptor.name)' tool is outside the temporary chat's ceiling (public web search/fetch, basic on-device reads: calendar events, reminders, maps place search, Home accessories, Watch status and the current location, plus the local user.ask question)."
     }
 
     private static func publicWebDenial(
@@ -240,6 +284,19 @@ public enum TemporaryChatToolPolicy {
         }
         if descriptor.name == "web.fetch", object["localNetwork"] as? Bool == true {
             return "Temporary chats can only fetch public web targets; the local-network option is unavailable."
+        }
+        return nil
+    }
+
+    private static func localInteractionDenial(
+        descriptor: ToolCatalog.Descriptor,
+        arguments: Data
+    ) -> String? {
+        guard isSafeTemporaryLocalInteractionDescriptor(descriptor) else {
+            return "The '\(descriptor.name)' descriptor is not the pure local question interaction; the temporary chat refuses it."
+        }
+        guard (try? JSONSerialization.jsonObject(with: arguments)) as? [String: Any] != nil else {
+            return "The '\(descriptor.name)' call requires a JSON object with questions."
         }
         return nil
     }

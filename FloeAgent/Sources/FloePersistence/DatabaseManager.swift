@@ -54,7 +54,9 @@ public actor DatabaseManager {
     /// `user_version == currentSchemaVersion` after `migrate()`.
     /// Note: the v54 lane shipped `PRAGMA user_version = 54` while this
     /// constant still read 53; v55 restores the alignment invariant.
-    public static let currentSchemaVersion = 55
+    /// v56 adds durable task-bound user questions; v57 adds the trusted
+    /// conversation origin used by scheduled-task presentation.
+    public static let currentSchemaVersion = 57
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
@@ -128,6 +130,8 @@ public actor DatabaseManager {
         V53ConversationVisibility.register(into: &migrator)
         V54JobAdvisoryGroups.register(into: &migrator)
         V55ConversationPinning.register(into: &migrator)
+        V56UserQuestions.register(into: &migrator)
+        V57SchedulePresentation.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

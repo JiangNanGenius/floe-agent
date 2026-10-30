@@ -570,6 +570,12 @@ public actor FloeAgentRuntime {
         /// A closure (rather than stored state) keeps this durable truth in
         /// the persistence layer instead of a live in-memory shadow store.
         public var outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])?
+        /// Optional durable user-question recovery seam. When present, an
+        /// interrupted `user.ask` call is repaired from the question store
+        /// instead of being synthesized as an unknown-outcome failure, and
+        /// checkpoint metadata can name still-waiting requests. Nil keeps
+        /// the historical recovery policy for runs without questions.
+        public var userQuestionRecovery: (any UserQuestionRuntimeRecovery)?
         public init(
             conversationID: UUID = UUID(),
             provider: ProviderProfile,
@@ -609,7 +615,8 @@ public actor FloeAgentRuntime {
             localLinuxGuestEnvironment: Bool = false,
             serviceStorePaths: [String: String] = [:],
             toolResultCaptureRoot: URL? = nil,
-            outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])? = nil
+            outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])? = nil,
+            userQuestionRecovery: (any UserQuestionRuntimeRecovery)? = nil
         ) {
             self.conversationID = conversationID
             self.provider = provider
@@ -653,6 +660,7 @@ public actor FloeAgentRuntime {
             self.serviceStorePaths = serviceStorePaths
             self.toolResultCaptureRoot = toolResultCaptureRoot
             self.outstandingDependencies = outstandingDependencies
+            self.userQuestionRecovery = userQuestionRecovery
         }
     }
 
@@ -848,7 +856,7 @@ public actor FloeAgentRuntime {
     private var childDispatchIsActive: Bool {
         guard !cancellationToken.isCancelled else { return false }
         switch state {
-        case .preparing, .streamingModel, .waitingApproval, .executingTool, .compacting, .verifying:
+        case .preparing, .streamingModel, .waitingApproval, .waitingUserQuestion, .executingTool, .compacting, .verifying:
             return true
         default: return false
         }
@@ -949,6 +957,11 @@ public actor FloeAgentRuntime {
     /// continuation nobody will resume. Resetting after consumption keeps a
     /// later resume-from-checkpoint escalation askable.
     private var approvalWaitInterrupted = false
+
+    /// The executing-tool payload restored when a blocked user question is
+    /// answered. Question text/answers never enter the runtime; only this
+    /// local execution boundary is retained.
+    private var userQuestionExecutionInfo: AgentState.ExecutingInfo?
 
     public init(
         configuration: Configuration,
@@ -1247,6 +1260,13 @@ public actor FloeAgentRuntime {
              ("streamingModel", "failed"),
              ("executingTool", "streamingModel"),
              ("executingTool", "waitingApproval"),
+             ("executingTool", "waitingUserQuestion"),
+             ("waitingUserQuestion", "executingTool"),
+             ("waitingUserQuestion", "streamingModel"),
+             ("waitingUserQuestion", "cancelling"),
+             ("waitingUserQuestion", "checkpointed"),
+             ("waitingUserQuestion", "completed"),
+             ("waitingUserQuestion", "failed"),
              ("executingTool", "cancelling"),
              ("executingTool", "completed"),
              ("executingTool", "failed"),
@@ -1417,8 +1437,12 @@ public actor FloeAgentRuntime {
         let activeRunTask = streamTask
         activeRunTask?.cancel()
         streamTask = nil
-        // 2. Stop the in-flight tool cooperatively.
+        // 2. Stop the in-flight tool cooperatively. A parked user question is
+        // not an approval and has no executor resource, but it must be
+        // fenced exactly like every other wait: its tool result then reports
+        // cancelled instead of leaving a late answer for a later run.
         cancellationToken.cancel()
+        await configuration.userQuestionRecovery?.cancelPendingQuestions(runID: runID)
         acceptingChildResumes = false
         for childTask in resumedChildTasks.values { childTask.cancel() }
         // 3. Expire any pending approval and audit it. The escalation wait may
@@ -1571,9 +1595,28 @@ public actor FloeAgentRuntime {
         }
     }
 
+    /// Enters or leaves the truthful waiting state for a durable user
+    /// question. The app calls this from the coordinator's presented/settled
+    /// events. Only the exact executing tool call may park; a stale handle
+    /// finds a different state and changes nothing.
+    public func setUserQuestionWait(_ waiting: AgentState.WaitingUserQuestion?) async {
+        if let waiting {
+            guard case .executingTool(let info) = state,
+                  info.toolCall.id == waiting.toolCallID else { return }
+            userQuestionExecutionInfo = info
+            await transition(to: .waitingUserQuestion(waiting))
+        } else if case .waitingUserQuestion = state {
+            let info = userQuestionExecutionInfo
+            userQuestionExecutionInfo = nil
+            if let info {
+                await transition(to: .executingTool(info))
+            }
+        }
+    }
+
     /// Persists the current run. Legal from streamingModel, executingTool,
-    /// waitingApproval, paused. streamingModel/executingTool downgrade to
-    /// preparing on disk (replay boundary).
+    /// waitingApproval, waitingUserQuestion, paused. streamingModel/
+    /// executingTool downgrade to preparing on disk (replay boundary).
     public func checkpoint() async throws {
         try await writeCheckpoint()
         await transition(to: .checkpointed(AgentState.CheckpointRef(
@@ -1691,7 +1734,7 @@ public actor FloeAgentRuntime {
         for call in pendingToolCalls where restoredResultIDs.contains(call.id) {
             setToolLifecycle(call: call, phase: .resultCommitted)
         }
-        repairInterruptedToolPairs()
+        await repairInterruptedToolPairs()
         for call in pendingToolCalls {
             if let result = pendingToolResults.first(where: { $0.callID == call.id }) {
                 activateReadTools(toolCall: call, result: result)
@@ -1725,7 +1768,7 @@ public actor FloeAgentRuntime {
     /// was dispatched but before its result was committed. Pair that orphaned
     /// call with an explicit unknown-outcome result so recovery is valid and
     /// the model verifies remote state instead of blindly repeating a write.
-    private func repairInterruptedToolPairs() {
+    private func repairInterruptedToolPairs() async {
         var pairedIDs = Set(pendingToolResults.map(\.callID))
         for call in pendingToolCalls where !pairedIDs.contains(call.id) {
             let lifecycle = toolLifecycleByCallID[call.id]
@@ -1780,6 +1823,30 @@ public actor FloeAgentRuntime {
                     outcomeUnknown: outcomeUnknown,
                     outcomeUnknownReason: outcomeUnknown
                         ? .unattributed : .interruptedDispatch
+                )
+                setToolLifecycle(call: call, phase: .resultCommitted)
+                continue
+            }
+            if call.toolName == UserAskTool.name,
+               let recovery = configuration.userQuestionRecovery,
+               let questionResult = await recovery.recoverInterruptedQuestion(
+                   runID: runID,
+                   conversationID: configuration.conversationID,
+                   call: call
+               ) {
+                // The durable question store is the authoritative boundary:
+                // an answer that arrived before restart (or during this
+                // repair wait) is the real provider result. The resolver only
+                // returns nil when no request was ever registered.
+                result = questionResult
+                pendingToolResults.append(result)
+                pairedIDs.insert(call.id)
+                executionLedger.record(
+                    call: call,
+                    result: result,
+                    isSideEffecting: false,
+                    outcomeUnknown: false,
+                    outcomeUnknownReason: .interruptedDispatch
                 )
                 setToolLifecycle(call: call, phase: .resultCommitted)
                 continue
@@ -1924,7 +1991,7 @@ public actor FloeAgentRuntime {
         guard !trimmed.isEmpty else { return .rejected(reason: "Guidance must not be empty") }
         if acceptedSteerIDs.contains(input.id) { return .alreadyAccepted }
         switch state {
-        case .preparing, .streamingModel, .executingTool, .waitingApproval, .compacting, .paused:
+        case .preparing, .streamingModel, .executingTool, .waitingApproval, .waitingUserQuestion, .compacting, .paused:
             var normalized = input
             normalized.content = trimmed
             pendingSteers.append(normalized)
@@ -6126,6 +6193,14 @@ public actor FloeAgentRuntime {
                 message: "Waiting for approval before dispatching the requested tool",
                 isRecoverable: true
             )
+        case .waitingUserQuestion(let waiting):
+            await publishLiveness(
+                phase: .executingTool,
+                message: waiting.blockingQuestionIDs.isEmpty
+                    ? "Waiting for your optional answer"
+                    : "Waiting for your answer to a task question",
+                isRecoverable: true
+            )
         case .executingTool:
             await publishLiveness(
                 phase: .executingTool,
@@ -6378,6 +6453,7 @@ public actor FloeAgentRuntime {
 
     private func completeRun(stopReason: AgentEvent.StopReason) async {
         clearToolArgumentPhase()
+        await configuration.userQuestionRecovery?.cancelPendingQuestions(runID: runID)
         // A verification pass that answers with a bare confirmation should
         // not append "CONFIRM" onto the already-sealed draft answer.
         let isConfirmation = didVerifyFinalAnswer
@@ -6395,6 +6471,7 @@ public actor FloeAgentRuntime {
 
     private func failRun(message: String, recoverable: Bool) async {
         clearToolArgumentPhase()
+        await configuration.userQuestionRecovery?.cancelPendingQuestions(runID: runID)
         // The activation is over: revoke this run's outstanding operation
         // authorities so no token outlives the run state that justified it.
         // A resume mints fresh tokens at dispatch.
@@ -6598,6 +6675,14 @@ public actor FloeAgentRuntime {
             Set(scrubbedCallIDs).union(sensitivePendingCallIDs)
                 .union(sensitiveOutputCallIDs)
         ).sorted()
+        // Identifiers only. Temporary questions are RAM-only and must never
+        // leak even their request ids into a checkpoint.
+        var pendingUserQuestionRequestIDs: [String]?
+        if !configuration.temporaryReadOnly,
+           let recovery = configuration.userQuestionRecovery {
+            let ids = await recovery.waitingQuestionRequestIDs(runID: runID)
+            pendingUserQuestionRequestIDs = ids.isEmpty ? nil : ids
+        }
         let checkpointPagingCallIDs = Self.pagingCallIDs(in: checkpointCalls)
         let checkpointPendingResults = (
             activeProviderPendingCalls.isEmpty ? pendingToolResults : activeProviderPendingResults
@@ -6637,7 +6722,8 @@ public actor FloeAgentRuntime {
                 return copy
             },
             ownedSystemContextID: ownedSystemContextID,
-            sensitiveToolCallIDs: sensitiveCallIDs.isEmpty ? nil : sensitiveCallIDs
+            sensitiveToolCallIDs: sensitiveCallIDs.isEmpty ? nil : sensitiveCallIDs,
+            pendingUserQuestionRequestIDs: pendingUserQuestionRequestIDs
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {

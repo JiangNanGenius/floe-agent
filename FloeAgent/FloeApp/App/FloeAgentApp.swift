@@ -349,6 +349,7 @@ struct RootView: View {
     /// navigation / temporary-session ownership is untouched.
     @StateObject private var inlineSelection = InlineConversationSelectionModel()
     @State private var renamingConversation: ConversationRecord?
+    @State private var showsConversationSearch = false
     @State private var deletingConversation: ConversationRecord?
     @State private var deletingWorkspace: WorkspaceRecord?
     @State private var presentedCanvasWorkspace: WorkspaceRecord?
@@ -784,6 +785,18 @@ struct RootView: View {
                 .environmentObject(router)
         }
         .modifier(CanvasDestinationCover(environment: environment))
+        .sheet(isPresented: $showsConversationSearch) {
+            NavigationStack {
+                ConversationSearchView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("common.done") { showsConversationSearch = false }
+                        }
+                    }
+            }
+            .environmentObject(environment)
+            .environmentObject(router)
+        }
         .sheet(item: $renamingConversation) { conversation in
             TaskRenameSheet(conversation: conversation) { title in
                 try await environment.conversationCenter.renameConversation(
@@ -1493,6 +1506,16 @@ struct RootView: View {
                         }
                     }
                 )
+            } else {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showsConversationSearch = true
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .accessibilityLabel("chat.search.prompt")
+                    .accessibilityIdentifier("globalSearch.open")
+                }
             }
         }
         .task {

@@ -23,14 +23,11 @@ public struct WebSearchTool: AgentTool {
 
     /// Sane bounded request default when the model omits `maxResults`. It
     /// matches the existing in-app search-test default (`WebSearchService
-    /// .searchTest` / `testSearch` use 5), and it is the practical ceiling
-    /// for the tool's single 4_096-character JSON payload: each normalized
-    /// row already carries an exact citation URL plus ~20 provenance/marker
-    /// keys, so ten long provider rows (Volcengine `Snippet`/`Summary` are
-    /// paragraphs) could never survive the budget intact and collapsed to
-    /// empty snippets with heavy truncation noise. Explicit valid limits
-    /// (1...50) keep their exact meaning; the serialization below still
-    /// bounds total payload text.
+    /// .searchTest` / `testSearch` use 5) and the catalog-backed provider
+    /// editors. The complete normalized response is always retained in the
+    /// tool capture; this default only limits the number of provider rows a
+    /// single call requests (and therefore the immediate UI page). Explicit
+    /// valid limits (1...50) keep their exact meaning.
     public static let defaultMaxResults = 5
 
     /// Minimum characters a kept row's snippet should retain to stay useful
@@ -40,7 +37,7 @@ public struct WebSearchTool: AgentTool {
     static let minimumUsefulSnippetCharacters = 64
 
     public static let toolDescription =
-        "Search the public web without opening the visual browser. Returns normalized titles, URLs, snippets, index metadata (page_age = published OR last modified date, relative age, crawl date, source profile/favicon), provider provenance, citation IDs and an explicit contentState=searchMetadataOnly. Index metadata is NOT page verification: excerpts and dates come from the search index; use web.fetch (or browser tools when interaction is required) before relying on actual page contents, publication dates or quotes. Some providers also return a bounded provider-generated answer, marked separately from URL citations and still not fetched-page evidence. Use fast for one search provider, balanced for ordinary research, or deep to query up to three configured providers concurrently. Set source=professional to search a configured Volcengine DataPro professional dataset account (academic literature, company registration/risk, securities/finance, vehicle specifications/sales, legislation and court cases) with the exact query; it accepts only query and provider, returns an untrusted professionalDatasetSummary envelope instead of page citations, and never falls back to or from public web providers. Professional dataset search is unavailable in temporary/public-web-only chats and fails clearly when no DataPro account is configured."
+        "Search the public web without opening the visual browser. Returns normalized titles, URLs, snippets, index metadata (page_age = published OR last modified date, relative age, crawl date, source profile/favicon), provider provenance, citation IDs and an explicit contentState=searchMetadataOnly. Index metadata is NOT page verification: excerpts and dates come from the search index; use web.fetch (or browser tools when interaction is required) before relying on actual page contents, publication dates or quotes. Some providers also return a bounded provider-generated answer, marked separately from URL citations and still not fetched-page evidence. Providers may also return long summaries or provider-supplied page content; both are unverified provider text, kept separate from the short snippet and the local web.fetch result. Use fast for one search provider, balanced for ordinary research, or deep to query up to three configured providers concurrently. Set source=professional to search a configured Volcengine DataPro professional dataset account (academic literature, company registration/risk, securities/finance, vehicle specifications/sales, legislation and court cases) with the exact query; it accepts only query and provider, returns an untrusted professionalDatasetSummary envelope instead of page citations, and never falls back to or from public web providers. Professional dataset search is unavailable in temporary/public-web-only chats and fails clearly when no DataPro account is configured."
     public static let parametersJSON = #"""
     {
       "type":"object",
@@ -172,28 +169,38 @@ public struct WebSearchTool: AgentTool {
         return output
     }
 
-    /// Shared, backward-compatible serialization for both search tools. The
-    /// original fields keep their names and emptiness semantics; the added
-    /// metadata/provenance keys make field availability explicit and state
-    /// that this evidence is search-index level, not fetched-page verified.
+    /// Shared, backward-compatible serialization for both search tools. Two
+    /// outputs are produced from the SAME normalized `WebSearchResponse`:
     ///
-    /// The payload is bounded to `maximumCharacters` BEFORE it leaves the
-    /// tool: the runtime prefixes tool summaries to 4096 characters without a
-    /// JSON-aware marker, so an oversized payload would silently cut the JSON
-    /// and lose citations. Bounding accounts for JSON escape inflation
-    /// (quotes/backslashes/control characters), not just source characters:
-    /// top-level query/failure text and every result field are bounded, then
-    /// snippets/extras and optionally trailing rows are reduced, always
-    /// emitting valid JSON with `returned`/`available`/`truncated` counts and
-    /// per-result `snippetTruncated`/`fieldsTruncated` markers. A citation
-    /// URL is NEVER shortened to fit: a row whose exact target cannot be
-    /// preserved is omitted explicitly (`omittedOversizeURLRows`) instead of
-    /// returning a changed citation. A citation/title is never invented from
-    /// another field.
+    /// 1. a complete, sanitized capture (`capturedOutput`) that preserves
+    ///    every normalized row, snippet, long summary/content and provider
+    ///    answer byte-for-byte after provider normalization; and
+    /// 2. a bounded UI projection (`summary`, <= `maximumCharacters`) that
+    ///    is always valid JSON and carries explicit truncation/omission
+    ///    markers.
+    ///
+    /// The digest is over the complete capture, not over the UI projection:
+    /// the previous implementation shrank rows/snippets into the 4_096-
+    /// character page BEFORE constructing `ToolExecutionOutput`, so the
+    /// runtime could not recover the provider's tail. The capture is
+    /// normalized data only — never a raw provider body, headers or secret.
+    /// The context planner decides whether to inline the capture or page it.
+    ///
+    /// The UI projection is bounded because the runtime prefixes ordinary
+    /// tool summaries with a hard 4096-character cut. Bounding accounts for
+    /// JSON escape inflation, not just source characters: top-level
+    /// query/failure text and every result field are bounded, then
+    /// long-summary/content, answers, snippets/extras and optionally trailing
+    /// rows are reduced. A citation URL is NEVER shortened to fit: a row
+    /// whose exact target cannot be preserved is omitted explicitly
+    /// (`omittedOversizeURLRows`) instead of returning a changed citation. A
+    /// citation/title is never invented from another field.
     static func output(
         _ response: WebSearchResponse,
         maximumCharacters: Int = 4_096
     ) throws -> ToolExecutionOutput {
+        let fullCapture = Self.fullOutput(response)
+        let captureDigest = FloeDigest.sha256Hex(Data(fullCapture.utf8))
         let available = response.results.count
         // Rows whose exact citation target cannot be preserved are excluded
         // up front: a changed/truncated URL would be a broken citation.
@@ -204,6 +211,7 @@ public struct WebSearchTool: AgentTool {
         var included = eligible.count
         var snippetLimit = 4_000
         var extraLimit = 2_000
+        var additionalLimit = 0
         var answerLimit = 1_500
         var queryCap = 2_000
         var failureCap = 1_500
@@ -216,11 +224,8 @@ public struct WebSearchTool: AgentTool {
         // hand their slack to longer rows. Trailing rows are dropped first
         // only when even a kept row cannot carry the useful snippet floor —
         // explicit `returned`/`omittedResults`/`truncated` markers stay
-        // honest. Previously every row started at the parser's 4_000-
-        // character ceiling; 5-10 long Volcengine rows could never fit the
-        // 4_096 boundary, and the halving ladder below collapsed them into
-        // empty snippets plus truncation noise. The ladder remains the
-        // safety net for JSON escape inflation and pathological budgets.
+        // honest. The ladder remains the safety net for JSON escape
+        // inflation and pathological budgets.
         if included > 0 {
             var sizing = Self.measureSnippetCap(
                 response,
@@ -247,6 +252,19 @@ public struct WebSearchTool: AgentTool {
             }
             snippetLimit = sizing.cap
             extraLimit = min(2_000, max(0, sizing.roomAfterSnippets / max(1, included)))
+            let longTextRows = eligible.prefix(max(0, included)).filter {
+                !($0.summary?.isEmpty ?? true) || !($0.content?.isEmpty ?? true)
+            }.count
+            if longTextRows > 0 {
+                // Long summary/content is useful but secondary to the exact
+                // citation and short snippet. Split the remaining room per
+                // row; the ladder below shrinks it further when JSON escaping
+                // or generated answers need the space.
+                additionalLimit = min(
+                    1_200,
+                    max(0, sizing.roomAfterSnippets / max(1, longTextRows))
+                )
+            }
         }
 
         while true {
@@ -256,6 +274,7 @@ public struct WebSearchTool: AgentTool {
                 included: included,
                 snippetLimit: snippetLimit,
                 extraLimit: extraLimit,
+                additionalLimit: additionalLimit,
                 answerLimit: answerLimit,
                 titleCap: 300,
                 queryCap: queryCap,
@@ -263,26 +282,36 @@ public struct WebSearchTool: AgentTool {
                 omittedOversizeURLRows: omittedOversizeURLRows
             )
             if summary.count <= maximumCharacters {
-                let digest = FloeDigest.sha256Hex(Data(summary.utf8))
                 return ToolExecutionOutput(
                     summary: summary,
-                    fullOutputSHA256: digest,
+                    fullOutputSHA256: captureDigest,
                     exitStatus: 0,
-                    maximumSummaryCharacters: maximumCharacters
+                    maximumSummaryCharacters: maximumCharacters,
+                    capturedOutput: fullCapture,
+                    capturedOutputTruncated: false
                 )
             }
             // 1. shrink a provider-generated answer first; it is auxiliary
             // text, while URL citations must stay whole and visible;
-            // 2. shrink snippets/extras (rows and citations survive);
-            // 3. shrink the top-level query/failure text (still visible);
-            // 4. drop trailing rows; 5. shrink metadata further.
+            // 2. shrink long summary/content (it is fully present in the
+            //    capture), then additional excerpts;
+            // 3. shrink snippets (rows and citations survive);
+            // 4. shrink the top-level query/failure text (still visible);
+            // 5. drop trailing rows; 6. shrink metadata further.
             if answerLimit > 0, !response.generatedAnswers.isEmpty {
                 answerLimit = answerLimit > 200 ? answerLimit / 2 : 0
                 continue
             }
+            if additionalLimit > 0 {
+                additionalLimit /= 2
+                continue
+            }
+            if extraLimit > 0 {
+                extraLimit /= 2
+                continue
+            }
             if snippetLimit > 0 {
                 snippetLimit /= 2
-                extraLimit /= 2
                 continue
             }
             if queryCap > 256 || failureCap > 256 {
@@ -301,13 +330,76 @@ public struct WebSearchTool: AgentTool {
             }
             // Even a single row with minimal metadata exceeds the budget (for
             // example an escape-heavy query): emit an explicit, valid,
-            // bounded error page instead of truncated JSON.
+            // bounded error page instead of truncated JSON. The complete
+            // capture remains attached.
             return try budgetFallback(
                 response,
                 maximumCharacters: maximumCharacters,
-                omittedOversizeURLRows: omittedOversizeURLRows
+                omittedOversizeURLRows: omittedOversizeURLRows,
+                capturedOutput: fullCapture,
+                capturedOutputDigest: captureDigest
             )
         }
+    }
+
+    /// Complete normalized capture. No result is dropped, no snippet,
+    /// long-summary, content or generated answer is shortened, and every
+    /// normalized metadata field is retained. This is not raw provider JSON:
+    /// it is the same sanitized model the UI projection uses.
+    static func fullOutput(_ response: WebSearchResponse) -> String {
+        let entries = response.results.map { result -> [String: Any] in
+            var row: [String: Any] = [
+                "citation": result.citationID,
+                "title": result.title,
+                "url": result.url.absoluteString,
+                "snippet": result.snippet,
+                "extraSnippets": result.extraSnippets ?? [],
+                "summary": result.summary ?? "",
+                "content": result.content ?? "",
+                "source": result.sourceName ?? "",
+                "publishedAt": result.publishedAt ?? "",
+                "provider": result.provider.rawValue,
+                "pageAge": result.pageAge ?? "",
+                "relativeAge": result.relativeAge ?? "",
+                "pageFetched": result.pageFetched ?? "",
+                "sourceProfile": result.sourceProfileName ?? "",
+                "sourceProfileURL": result.sourceProfileURL ?? "",
+                "favicon": result.faviconURL ?? "",
+                "displayPath": result.displayPath ?? "",
+                "contentState": result.effectiveContentState.rawValue
+            ]
+            if let score = result.score { row["score"] = score }
+            if let authority = result.authority { row["authority"] = authority }
+            return row
+        }
+        var payload: [String: Any] = [
+            "captureSchemaVersion": 1,
+            "captureState": "normalizedFullResponse",
+            "query": response.query,
+            "providers": response.providersUsed.map(\.rawValue),
+            "failures": response.failures,
+            "evidenceState": "searchMetadataOnly",
+            "pageVerification": "notFetched",
+            "pageFetchTool": "web.fetch",
+            "metadataNote": metadataNote,
+            "returned": entries.count,
+            "available": response.results.count,
+            "truncated": false,
+            "omittedResults": 0,
+            "results": entries
+        ]
+        if !response.generatedAnswers.isEmpty {
+            payload["generatedAnswers"] = response.generatedAnswers.map { answer in
+                [
+                    "provider": answer.provider.rawValue,
+                    "answer": answer.text,
+                    "answerTruncated": answer.truncated,
+                    "originalCharacters": answer.originalCharacters
+                ] as [String: Any]
+            }
+        }
+        let data = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data()
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// Hard cap for a citation target URL. A longer URL cannot be returned
@@ -315,13 +407,14 @@ public struct WebSearchTool: AgentTool {
     /// rather than returned with a changed target.
     static let maximumCitationURLLength = 1_024
 
-    /// Measures one serialization with zeroed snippet/excerpt text and
-    /// returns the largest equal snippet character cap whose ACTUAL emitted
-    /// snippet total (sum of min(length, cap) over kept rows) still fits the
-    /// remaining payload room, plus the room left for `extraSnippets`.
-    /// Water-filling over real lengths means short excerpts are never
-    /// shortened and their unused budget goes to longer excerpts. Pure
-    /// function of the response and budgets: the result is deterministic.
+    /// Measures one serialization with zeroed snippet/excerpt/long-summary
+    /// text and returns the largest equal snippet character cap whose ACTUAL
+    /// emitted snippet total (sum of min(length, cap) over kept rows) still
+    /// fits the remaining payload room, plus the room left for
+    /// `extraSnippets` and long summary/content. Water-filling over real
+    /// lengths means short excerpts are never shortened and their unused
+    /// budget goes to longer excerpts. Pure function of the response and
+    /// budgets: the result is deterministic.
     private static func measureSnippetCap(
         _ response: WebSearchResponse,
         eligibleResults: [WebSearchResult],
@@ -339,6 +432,7 @@ public struct WebSearchTool: AgentTool {
             included: rows.count,
             snippetLimit: 0,
             extraLimit: 0,
+            additionalLimit: 0,
             answerLimit: answerLimit,
             titleCap: 300,
             queryCap: queryCap,
@@ -368,7 +462,7 @@ public struct WebSearchTool: AgentTool {
         return (low, max(0, room - needed))
     }
 
-    private static let metadataNote = "Snippets, dates and profiles come from the search index, not from a fetched page. pageAge is the page's published OR last modified date; relativeAge is relative; never treat index metadata as verified page content. Snippets marked snippetTruncated were shortened to fit the response budget."
+    private static let metadataNote = "Snippets, dates and profiles come from the search index, not from a fetched page. Provider-returned summary/content text is provider-supplied and unverified. pageAge is the page's published OR last modified date; relativeAge is relative; never treat index metadata or provider text as verified page content. Snippets marked snippetTruncated were shortened only in this display projection; the complete normalized response remains in the runtime capture."
 
     /// Character-bounded copy: `truncated` is true only when characters were
     /// actually removed. `maximum <= 0` yields an empty string that is marked
@@ -405,15 +499,17 @@ public struct WebSearchTool: AgentTool {
         return (items, truncated)
     }
 
-    /// Builds one bounded payload. Returns the serialized JSON and whether
-    /// anything was shortened (query, failures, snippets, extras or fields)
-    /// or omitted (trailing rows, or rows whose URL cannot be preserved).
+    /// Builds one bounded UI payload. Returns the serialized JSON and whether
+    /// anything was shortened (query, failures, snippets, long summary/
+    /// content, extras or fields) or omitted (trailing rows, or rows whose
+    /// URL cannot be preserved).
     private static func serialize(
         _ response: WebSearchResponse,
         eligibleResults: [WebSearchResult],
         included: Int,
         snippetLimit: Int,
         extraLimit: Int,
+        additionalLimit: Int,
         answerLimit: Int,
         titleCap: Int,
         queryCap: Int,
@@ -439,6 +535,16 @@ public struct WebSearchTool: AgentTool {
             let url = result.url.absoluteString
             let snippet = String(result.snippet.prefix(snippetLimit))
             let snippetTruncated = snippet.count < result.snippet.count
+            var summary: String?
+            if let value = result.summary {
+                summary = bound(value, additionalLimit, "summary", &fields)
+            }
+            let summaryTruncated = (result.summary?.count ?? 0) > (summary?.count ?? 0)
+            var content: String?
+            if let value = result.content {
+                content = bound(value, additionalLimit, "content", &fields)
+            }
+            let contentTruncated = (result.content?.count ?? 0) > (content?.count ?? 0)
             var extras: [String] = []
             var extrasTruncated = false
             if let values = result.extraSnippets, extraLimit > 0 {
@@ -466,8 +572,11 @@ public struct WebSearchTool: AgentTool {
             // field, so source/date/profile shortening is reflected in the
             // top-level `truncated` flag too — not only fields visited before
             // the flag was last refreshed.
-            if snippetTruncated || extrasTruncated || !fields.isEmpty { truncated = true }
-            return [
+            if snippetTruncated || summaryTruncated || contentTruncated
+                || extrasTruncated || !fields.isEmpty {
+                truncated = true
+            }
+            var row: [String: Any] = [
                 "citation": result.citationID,
                 "title": title,
                 "url": url,
@@ -488,7 +597,24 @@ public struct WebSearchTool: AgentTool {
                 "displayPath": displayPath,
                 "fieldsTruncated": fields,
                 "contentState": result.effectiveContentState.rawValue
-            ] as [String: Any]
+            ]
+            // Long summary/content stay separate from the short snippet so the
+            // model never mistakes one for the other. They are optional in the
+            // model and only appear here when the provider supplied them; the
+            // complete original text is in `capturedOutput`.
+            if let summary, let original = result.summary {
+                row["summary"] = summary
+                row["summaryTruncated"] = summaryTruncated
+                row["originalSummaryChars"] = original.count
+            }
+            if let content, let original = result.content {
+                row["content"] = content
+                row["contentTruncated"] = contentTruncated
+                row["originalContentChars"] = original.count
+            }
+            if let score = result.score { row["score"] = score }
+            if let authority = result.authority { row["authority"] = authority }
+            return row
         }
         var generatedAnswers: [[String: Any]] = []
         if answerLimit > 0 {
@@ -545,7 +671,9 @@ public struct WebSearchTool: AgentTool {
     private static func budgetFallback(
         _ response: WebSearchResponse,
         maximumCharacters: Int,
-        omittedOversizeURLRows: Int
+        omittedOversizeURLRows: Int,
+        capturedOutput: String,
+        capturedOutputDigest: String
     ) throws -> ToolExecutionOutput {
         var queryCap = 256
         var failureCap = 256
@@ -582,9 +710,11 @@ public struct WebSearchTool: AgentTool {
             if summary.count <= maximumCharacters {
                 return ToolExecutionOutput(
                     summary: summary,
-                    fullOutputSHA256: FloeDigest.sha256Hex(data),
+                    fullOutputSHA256: capturedOutputDigest,
                     exitStatus: 0,
-                    maximumSummaryCharacters: maximumCharacters
+                    maximumSummaryCharacters: maximumCharacters,
+                    capturedOutput: capturedOutput,
+                    capturedOutputTruncated: false
                 )
             }
             if includeNote {
@@ -611,9 +741,11 @@ public struct WebSearchTool: AgentTool {
         let data = try JSONSerialization.data(withJSONObject: minimal, options: [.sortedKeys])
         return ToolExecutionOutput(
             summary: String(decoding: data, as: UTF8.self),
-            fullOutputSHA256: FloeDigest.sha256Hex(data),
+            fullOutputSHA256: capturedOutputDigest,
             exitStatus: 0,
-            maximumSummaryCharacters: maximumCharacters
+            maximumSummaryCharacters: maximumCharacters,
+            capturedOutput: capturedOutput,
+            capturedOutputTruncated: false
         )
     }
 }

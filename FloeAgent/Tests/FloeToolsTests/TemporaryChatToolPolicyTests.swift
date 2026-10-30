@@ -55,6 +55,19 @@ struct TemporaryChatToolPolicyTests {
         }
     }
 
+    /// The REAL local interaction tool metadata: internal question state,
+    /// never side-effecting, main-run only, no risk labels.
+    private func localInteraction() -> ToolCatalog.Descriptor {
+        descriptor(
+            "user.ask",
+            schema: #"{"type":"object","properties":{"questions":{"type":"array"}},"required":["questions"],"additionalProperties":false}"#,
+            risks: [],
+            sideEffecting: false,
+            effect: .internalState,
+            executionBoundary: .mainRunOnly
+        )
+    }
+
     /// A representative slice of the real catalog: the admitted families,
     /// plus private, discovery, remote-inspection and mixed read/write tools
     /// that are genuinely read-only in an ordinary run but outside temporary
@@ -64,6 +77,7 @@ struct TemporaryChatToolPolicyTests {
             descriptor("web.fetch"),
             descriptor("web.search"),
             descriptor("web.searchAI"),
+            localInteraction(),
 
             // Basic on-device reads (admitted by the temporary ceiling).
             deviceRead("apple.calendar.list"),
@@ -159,7 +173,7 @@ struct TemporaryChatToolPolicyTests {
         #expect(allowed == [
             "apple.calendar.list", "apple.home.list", "apple.location.current",
             "apple.maps.search", "apple.reminders.list", "apple.watch.status",
-            "web.fetch", "web.search", "web.searchAI",
+            "user.ask", "web.fetch", "web.search", "web.searchAI",
         ])
         // The ordinary-run read-only catalog is not a temporary capability.
         for name in [
@@ -172,6 +186,37 @@ struct TemporaryChatToolPolicyTests {
         ] {
             #expect(!allowed.contains(name), "\(name) is outside the temporary read ceiling")
         }
+    }
+
+    @Test("The local question is admitted on its narrow main-run-only contract")
+    func localQuestionIsAdmittedWithoutWideningReads() {
+        let ask = localInteraction()
+        #expect(TemporaryChatToolPolicy.isTemporaryLocalInteractionTool("user.ask"))
+        #expect(TemporaryChatToolPolicy.isSafeTemporaryLocalInteractionDescriptor(ask))
+        #expect(TemporaryChatToolPolicy.readOnlyDescriptor(ask) != nil)
+        #expect(TemporaryChatToolPolicy.denialReason(
+            descriptor: ask, arguments: Data(#"{"questions":[{"question":"Which one?"}]}"#.utf8)
+        ) == nil)
+        // It is not a general internal-state escape hatch.
+        for forged in [
+            descriptor("user.ask", risks: [.persistsPersonalData], sideEffecting: true, effect: .mutating,
+                       executionBoundary: .mainRunOnly),
+            descriptor("user.ask", risks: [], sideEffecting: true, effect: .internalState,
+                       executionBoundary: .any),
+            descriptor("user.ask", risks: [], sideEffecting: false, effect: .readOnly,
+                       executionBoundary: .mainRunOnly),
+            descriptor("user.ask", risks: [], sideEffecting: false, effect: .internalState,
+                       executionBoundary: .childOnly),
+        ] {
+            #expect(!TemporaryChatToolPolicy.isSafeTemporaryLocalInteractionDescriptor(forged))
+            #expect(TemporaryChatToolPolicy.readOnlyDescriptor(forged) == nil)
+            #expect(TemporaryChatToolPolicy.denialReason(
+                descriptor: forged, arguments: Data("{}".utf8)
+            ) != nil)
+        }
+        let deviceRead = descriptor("apple.calendar.list", risks: [.persistsPersonalData])
+        #expect(TemporaryChatToolPolicy.allowedToolNames(from: [deviceRead, ask])
+            == ["apple.calendar.list", "user.ask"])
     }
 
     @Test("Each basic device read passes with its real compiled metadata and JSON object arguments")
@@ -382,7 +427,7 @@ struct TemporaryChatToolPolicyTests {
         let reason = TemporaryChatToolPolicy.denialReason(
             descriptor: descriptor("credential.read", risks: [.accessesCredentials]),
             arguments: Data("{}".utf8)) ?? ""
-        #expect(reason.contains("outside the temporary chat's read ceiling"))
+        #expect(reason.contains("outside the temporary chat's ceiling"))
         #expect(reason.contains("public web search/fetch"))
         #expect(reason.contains("current location"))
     }

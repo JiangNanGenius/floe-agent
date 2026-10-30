@@ -545,6 +545,7 @@ struct ThreadComposerView: View {
             if running { attachmentError = nil }
         }
         .onChange(of: voiceInput.transcript) { _, transcript in
+            guard environment.userQuestions.dictationQuestionID == nil else { return }
             // Typed identity: only the draft that started this voice session
             // may absorb its (partial or final) transcript. A late callback
             // from a previous conversation, a replaced temporary session or
@@ -1022,6 +1023,7 @@ struct ThreadComposerView: View {
                 // THIS draft so a late callback cannot write another task.
                 dictationPrefix = draft
                 voiceSessionDraftKey = draftKey
+                environment.userQuestions.dictationQuestionID = nil
                 voiceInput.requestStart()
             } label: {
                 Image(systemName: "mic.fill")

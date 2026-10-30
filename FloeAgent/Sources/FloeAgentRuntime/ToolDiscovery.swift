@@ -5,7 +5,7 @@ import FloeCore
 /// Provider-independent deferred schemas. Search uses only executable tools
 /// already inside this run's permission/skill ceiling.
 enum ToolDiscovery {
-    static let coreNames: Set<String> = ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan", "exec.shell"]
+    static let coreNames: Set<String> = ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan", "exec.shell", "user.ask"]
     static let name = "tools.search"
     static let listName = "tools.list"
     static var listDescriptor: ToolCatalog.Descriptor {
