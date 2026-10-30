@@ -29,11 +29,24 @@ import java.nio.file.StandardOpenOption
  *  * `ready == true` and `clean == true` (the recorded preparation ended with
  *    a synced export; a conflict/aborted deferral invalidates).
  *
+ * BOUNDED NON-MAPPING USE ONLY: a receipt is not, and may never be treated
+ * as, a Core-owned EXPORT_FINISH receipt. Workspace mapping qualification
+ * (the host's `workspaceIndexDigest`) must always come from a fresh REAL
+ * import/export round trip through `RuntimeWorkspacePreflight`; a receipt
+ * cannot stand in for it. `reusable` is retained only for bounded
+ * preparation reuse outside that mapping proof.
+ *
  * Every write is a temp file in the SAME directory + atomic rename + fsync of
  * the directory, so a crash cannot publish a half record. Records are bounded
  * (<= 4 KiB) and the directory is pruned to the newest 64 entries.
  */
-internal class WorkspacePreparationReceipts(private val directory: File) {
+internal class WorkspacePreparationReceipts(
+    private val directory: File,
+    /** Measured process-generation identity (injectable for the JVM
+     *  regression; production uses the ONE real runtime identity). */
+    private val runtimePid: () -> Int = { RuntimeProcessIdentity.pid },
+    private val runtimeBootToken: () -> String = { RuntimeProcessIdentity.bootToken },
+) {
     private val lock = Any()
 
     private fun fileFor(projectID: String): File? {
@@ -68,8 +81,8 @@ internal class WorkspacePreparationReceipts(private val directory: File) {
                 .put("workspaceInode", identity.inode)
                 .put("entryCount", entryCount).put("totalBytes", totalBytes)
                 .put("clean", clean).put("ready", true)
-                .put("runtimePid", RuntimeProcessIdentity.pid)
-                .put("runtimeBootToken", RuntimeProcessIdentity.bootToken)
+                .put("runtimePid", runtimePid())
+                .put("runtimeBootToken", runtimeBootToken())
                 .put("recordedAtMillis", System.currentTimeMillis())
             val bytes = record.toString().toByteArray(Charsets.UTF_8)
             if (bytes.size > MAX_RECEIPT_BYTES) return false
@@ -107,8 +120,8 @@ internal class WorkspacePreparationReceipts(private val directory: File) {
                 record.optString("workspacePath") == identity.path &&
                 record.optLong("workspaceDevice") == identity.device &&
                 record.optLong("workspaceInode") == identity.inode &&
-                record.optInt("runtimePid") == RuntimeProcessIdentity.pid &&
-                record.optString("runtimeBootToken") == RuntimeProcessIdentity.bootToken
+                record.optInt("runtimePid") == runtimePid() &&
+                record.optString("runtimeBootToken") == runtimeBootToken()
         } catch (_: Exception) {
             false
         }

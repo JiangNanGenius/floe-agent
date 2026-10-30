@@ -345,10 +345,31 @@ internal class LinuxRuntimeOperations(
         preflightCancelled.set(false)
         try {
             return RuntimeWorkspacePreflight.execute(
-                PreflightHarness(context, authority, supervisor, census,
+                PreflightHarness(
+                    acquire = authority::acquire,
+                    abandon = authority::abandonUnstarted,
+                    snapshot = census::snapshot,
                     ensureConfigured = { recover(); configure() },
-                    ownedPath = ::ownedPath, heldLease = preflightLease, installID = installID),
-                request.payload, grant) { cancelled() || preflightCancelled.get() }
+                    ownedPath = ::ownedPath,
+                    heldLease = preflightLease,
+                    installID = installID,
+                    openWorkspace = { projectID, runID, workspace ->
+                        val session = RuntimeWorkspaceSession(context, grant, projectID, runID, workspace)
+                        PreflightWorkspace(
+                            importBeforeLaunch = { cancel -> session.importBeforeLaunch(cancel) },
+                            exportAfterQuiescence = { cancel ->
+                                session.exportAfterQuiescence(cancel, faithfulMirror = true)
+                            },
+                            close = { session.close() },
+                        )
+                    },
+                    // SAME authority instance/directory as the live start
+                    // lane; the previous default silently used a SECOND
+                    // File(context.filesDir, "Prepare") root, so invalidation
+                    // and preflight receipts could never agree.
+                    preparation = preparation,
+                ),
+                request.payload) { cancelled() || preflightCancelled.get() }
         } finally {
             activePreflightID.compareAndSet(request.id, null)
             // A failed ORIGINAL release keeps the never-started lease; the

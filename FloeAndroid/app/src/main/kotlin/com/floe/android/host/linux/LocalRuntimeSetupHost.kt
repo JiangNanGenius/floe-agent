@@ -10,7 +10,6 @@ import com.floe.android.runlifecycle.RunForegroundFailure
 import com.floe.android.runlifecycle.RunStopHandler
 import com.floe.android.runtimeipc.RuntimeConnection
 import com.floe.android.runtimeipc.RuntimePackages
-import com.floe.android.runtimeipc.RuntimePeerVerifier
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -211,21 +210,7 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
         catch (_: Exception) { /* Work remains owned until its actual terminal receipt. */ }
     }
 
-    private fun componentMatches(): Boolean {
-        try { RuntimePeerVerifier(context).verifyPeer(pair.runtime) }
-        catch (_: SecurityException) {
-            // A missing component is an install action; an installed foreign
-            // signer is a refusal, never a fallback or a different package.
-            try { context.packageManager.getPackageUid(pair.runtime, 0) }
-            catch (_: android.content.pm.PackageManager.NameNotFoundException) { return false }
-            throw SecurityException("Runtime identity mismatch")
-        }
-        @Suppress("DEPRECATION")
-        val own = context.packageManager.getPackageInfo(context.packageName, 0)
-        @Suppress("DEPRECATION")
-        val peer = context.packageManager.getPackageInfo(pair.runtime, 0)
-        return peer.longVersionCode == own.longVersionCode
-    }
+    private fun componentMatches(): Boolean = RuntimeComponentMatch.matches(context)
 
     private suspend fun ensureComponentIdle() {
         try { context.packageManager.getPackageUid(pair.runtime, 0) }

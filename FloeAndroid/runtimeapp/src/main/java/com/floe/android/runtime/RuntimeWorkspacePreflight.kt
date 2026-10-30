@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.runtime
 
-import android.content.Context
-import android.os.IBinder
-import com.floe.android.linuxruntime.supervision.ProcCensus
-import com.floe.android.linuxruntime.supervision.RuntimeWorkSupervisor
-import com.floe.android.workspacebridge.RuntimeWorkspaceSession
+import com.floe.android.linuxruntime.supervision.CensusSnapshot
 import com.floe.android.workspacebridge.WorkspaceCancelSignal
 import com.floe.android.workspacebridge.WorkspaceExportOutcome
+import com.floe.android.workspacebridge.WorkspaceImportReceipt
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
@@ -66,11 +63,30 @@ internal object RuntimeProcessIdentity {
  * SHA-256 over a CANONICAL encoding of the actual acquire/release/no-children
  * events (never a hash of "true").
  */
+/**
+ * ONE grant-bound workspace session for a single preflight round trip.
+ * Production wraps the ORIGINAL `RuntimeWorkspaceSession`; the executor only
+ * calls these three operations, so the full import/export path stays the one
+ * authority and the warm-receipt regression can exercise the REAL executor
+ * on a plain JVM.
+ */
+internal class PreflightWorkspace(
+    val importBeforeLaunch: (WorkspaceCancelSignal) -> WorkspaceImportReceipt,
+    /** Always the ORIGINAL faithful-mirror export (the caller binds
+     *  `faithfulMirror = true`); the executor cannot forget the guard. */
+    val exportAfterQuiescence: (WorkspaceCancelSignal) -> WorkspaceExportOutcome,
+    val close: () -> Unit,
+)
+
 internal class PreflightHarness(
-    val context: Context,
-    val authority: LinuxAuthorityClient,
-    val supervisor: RuntimeWorkSupervisor,
-    val census: ProcCensus,
+    /** ORIGINAL authority acquire over the closed project/run/conversation
+     *  identity payload (the engine resolves environment/workspace). */
+    val acquire: (JSONObject) -> LinuxAuthorityClient.Lease,
+    /** ORIGINAL never-started release (`abandonUnstarted`). */
+    val abandon: (LinuxAuthorityClient.Lease) -> Unit,
+    /** Fresh whole-runtime-UID census; a clean snapshot is required before
+     *  and after the round trip. */
+    val snapshot: () -> CensusSnapshot,
     /** recover() + configure(): reaps strays under a proven quiescence gate
      *  and re-verifies the PUBLISHED rootfs revision against the original
      *  installer manifest before the authority is configured. */
@@ -78,9 +94,20 @@ internal class PreflightHarness(
     val ownedPath: (String) -> File,
     val heldLease: AtomicReference<LinuxAuthorityClient.Lease?>,
     val installID: AtomicReference<String?>,
-    /** G07.3A validated preparation receipts (same process generation only). */
-    val preparation: WorkspacePreparationReceipts = WorkspacePreparationReceipts(
-        File(context.filesDir, "Prepare")),
+    /** Factory for the REAL `RuntimeWorkspaceSession` (or a test double).
+     *  It receives the executor's already-canonical project/run identities
+     *  and the resolved workspace directory. */
+    val openWorkspace: (projectID: String, runID: String, workspace: File) -> PreflightWorkspace,
+    /** G07.3A validated preparation receipts for BOUNDED, non-mapping uses
+     *  only. A receipt NEVER qualifies a workspace mapping: every preflight
+     *  performs the full Core-owned import/export/EXPORT_FINISH round trip.
+     *  The directory is the SAME authority instance the live start lane
+     *  uses (no second File(context.filesDir, "Prepare") root). */
+    val preparation: WorkspacePreparationReceipts,
+    /** Measured runtime process identity echoed in the ready reply. */
+    val processIdentity: () -> Pair<Int, String> = {
+        RuntimeProcessIdentity.pid to RuntimeProcessIdentity.bootToken
+    },
 )
 
 internal object RuntimeWorkspacePreflight {
@@ -94,7 +121,7 @@ internal object RuntimeWorkspacePreflight {
     internal val ALLOWED_FIELDS_FOR_TEST: Set<String> get() = ALLOWED_FIELDS
     internal fun exportCodeForTest(outcome: WorkspaceExportOutcome): String = exportCode(outcome)
 
-    fun execute(harness: PreflightHarness, payload: JSONObject, grant: IBinder,
+    fun execute(harness: PreflightHarness, payload: JSONObject,
                 cancelled: () -> Boolean): JSONObject {
         require(payload.keys().asSequence().all { it in ALLOWED_FIELDS }) { "preflightFieldsInvalid" }
         // Core identities travel as ORIGINAL bytes (Swift UUID.uuidString and
@@ -110,12 +137,12 @@ internal object RuntimeWorkspacePreflight {
         // published rootfs through the ORIGINAL paths.
         harness.ensureConfigured()
         if (!quiescent(harness)) return aborted("quiescence_unproven")
-        val lease = harness.authority.acquire(
+        val lease = harness.acquire(
             JSONObject().put("projectID", projectID).put("runID", runID)
                 .put("conversationID", conversationID)
                 .also { if (environmentID != null) it.put("environmentID", environmentID) })
         harness.heldLease.set(lease)
-        var session: RuntimeWorkspaceSession? = null
+        var session: PreflightWorkspace? = null
         var completed = false
         try {
             val descriptor = lease.descriptor
@@ -123,27 +150,19 @@ internal object RuntimeWorkspacePreflight {
             // its absolute authority path into this runtime's storage.
             val workspace = harness.ownedPath(descriptor.getString("workspaceRoot"))
             check(descriptor.optString("runID") == runID || !descriptor.has("runID")) { "leaseRunMismatch" }
-            // G07.3A: a previous successful preflight in THIS runtime process
-            // generation for the exact project/environment/base/workspace
-            // identity is a valid preparation proof. The lease was acquired
-            // (identity/liveness re-proven) and is abandoned below through the
-            // ORIGINAL never-started path with a post-release census; the
-            // expensive import/export is not repeated. A session start always
-            // invalidates the receipt, so this can never mask guest changes.
-            if (harness.preparation.reusable(projectID, lease.environmentID,
-                    descriptor.optString("baseRevision"), workspace)) {
-                harness.authority.abandonUnstarted(lease)
-                harness.heldLease.compareAndSet(lease, null)
-                val post = harness.census.snapshot()
-                if (!post.isCleanlyQuiescent) return aborted("quiescence_lost")
-                completed = true
-                return JSONObject().put("status", "ready").put("cached", true)
-                    .put("environmentID", lease.environmentID)
-                    .put("mirroredEntries", 0)
-                    .put("runtimePid", RuntimeProcessIdentity.pid)
-                    .put("runtimeBootToken", RuntimeProcessIdentity.bootToken)
-            }
-            session = RuntimeWorkspaceSession(harness.context, grant, projectID, runID, workspace)
+            // G03-R3/G07.3A mapping proof: there is NO warm-cache shortcut
+            // here. A preparation receipt (even one written by a previous
+            // successful preflight in this process generation) proves only
+            // that a preparation completed; it is NOT the Core-owned
+            // EXPORT_FINISH receipt the host must read back for the CURRENT
+            // mapping qualification. The previous `reusable(...)` branch
+            // returned ready/cached without a session, so the host's
+            // workspaceIndexDigest gate could never obtain a real terminal
+            // index and honestly refused mapping_unsynced forever. Every
+            // preflight now performs the full bounded import + faithful
+            // export below; the receipt is recorded for bounded non-mapping
+            // uses only and never consulted for readiness.
+            session = harness.openWorkspace(projectID, runID, workspace)
             val imported = session.importBeforeLaunch(WorkspaceCancelSignal { cancelled() })
             check(imported.skippedCount == 0) { "mirrorUnsupportedEntries" }
             val mirrored = (imported.createdCount + imported.replacedSyncedCount +
@@ -159,7 +178,7 @@ internal object RuntimeWorkspacePreflight {
             // EXPORT_FINISH never reach the engine), not merely after the
             // applied plan. The post-commit honesty check below stays as the
             // second layer for staged refusals / applied deletions.
-            val outcome = session.exportAfterQuiescence(WorkspaceCancelSignal { cancelled() }, faithfulMirror = true)
+            val outcome = session.exportAfterQuiescence(WorkspaceCancelSignal { cancelled() })
             if (cancelled()) return aborted("cancelled")
             val synced = outcome as? WorkspaceExportOutcome.Synced
                 ?: return aborted(exportCode(outcome))
@@ -173,9 +192,9 @@ internal object RuntimeWorkspacePreflight {
             // proof is reported: acquire -> mirror -> export -> abandon with
             // post-release census. An unprovable release KEEPS the lease
             // (authority-owned), never a fabricated clearance.
-            harness.authority.abandonUnstarted(lease)
+            harness.abandon(lease)
             val released = harness.heldLease.compareAndSet(lease, null)
-            val post = harness.census.snapshot()
+            val post = harness.snapshot()
             if (!released) return aborted("lease_retained")
             if (!post.isCleanlyQuiescent) return aborted("quiescence_lost")
             val evidence = canonicalEvidence(lease.id, lease.environmentID, projectID, runID,
@@ -185,6 +204,7 @@ internal object RuntimeWorkspacePreflight {
             session.close()
             harness.preparation.record(projectID, lease.environmentID,
                 descriptor.optString("baseRevision"), workspace, mirrored, 0L)
+            val (runtimePid, runtimeBootToken) = harness.processIdentity()
             completed = true
             return JSONObject().put("status", "ready")
                 .put("environmentID", lease.environmentID)
@@ -198,8 +218,8 @@ internal object RuntimeWorkspacePreflight {
                 // Process-generation identity echo, measured HERE, so the
                 // host can bind the mapping/lease facts to the SAME live
                 // peer that the preflight actually ran on.
-                .put("runtimePid", RuntimeProcessIdentity.pid)
-                .put("runtimeBootToken", RuntimeProcessIdentity.bootToken)
+                .put("runtimePid", runtimePid)
+                .put("runtimeBootToken", runtimeBootToken)
         } catch (failure: Exception) {
             val code = failure.message?.takeIf { it.length in 1..32 && it.all { c -> c.code in 0x21..0x7e } }
                 ?: if (cancelled()) "cancelled" else "preflight_failed"
@@ -216,7 +236,7 @@ internal object RuntimeWorkspacePreflight {
                 // the next attempt must re-prove the workspace, never reuse a
                 // success that this attempt could not reproduce.
                 harness.preparation.invalidate(projectID)
-                runCatching { harness.authority.abandonUnstarted(lease) }
+                runCatching { harness.abandon(lease) }
                     .onSuccess { harness.heldLease.compareAndSet(lease, null) }
                 runCatching { session?.close() }
             }
@@ -226,7 +246,7 @@ internal object RuntimeWorkspacePreflight {
     /** True only from a fresh live census: fully readable inventory, zero
      *  own-UID live processes, zero ambiguous candidates. */
     private fun quiescent(harness: PreflightHarness): Boolean {
-        val snapshot = harness.census.snapshot()
+        val snapshot = harness.snapshot()
         return snapshot.isCleanlyQuiescent
     }
 
