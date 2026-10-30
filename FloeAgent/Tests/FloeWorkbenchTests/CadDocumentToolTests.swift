@@ -2101,3 +2101,100 @@ struct CadNativeEditToolTests {
         #expect(schema.contains("verified MP4"))
     }
 }
+
+// MARK: Original-scene observation (read-only, source-bound, pageable)
+
+extension FakeCadHost {
+    func observeModel(documentID: String, request: CadModelObservationRequest,
+                      access: CadDocumentAccess) async throws -> CadModelObservationResult {
+        let png = Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
+        let source = request.expectedSourceSHA256 ?? String(repeating: "a", count: 64)
+        let frames = request.includeImages ? request.views.enumerated().map { index, _ in
+            CadModelObservationFrame(pngData: png,
+                metadataJSON: "{\"sourceSHA256\":\"\(source)\",\"viewIndex\":\(index),\"timeSeconds\":0}")
+        } : []
+        return CadModelObservationResult(
+            summaryJSON: "{\"sourceSHA256\":\"\(source)\",\"nodeOffset\":\(request.nodeOffset),\"sourceUnchanged\":true}",
+            frames: frames)
+    }
+}
+
+@Suite("original scene observation contract")
+struct CadOriginalSceneObservationTests {
+    private func arguments(path: String, payload: String = "{}") throws -> CadDocumentArguments {
+        let data = try JSONSerialization.data(withJSONObject: ["action": "observe", "path": path, "payload": payload])
+        return try JSONDecoder().decode(CadDocumentArguments.self, from: data)
+    }
+
+    @Test("the complete tool schema exposes original scene reads and real hierarchy paging")
+    func observationSchemaAndDefaults() throws {
+        let object = try JSONSerialization.jsonObject(with: Data(CadDocumentTool.parametersJSON.utf8)) as? [String: Any]
+        let properties = try #require(object?["properties"] as? [String: Any])
+        let action = try #require(properties["action"] as? [String: Any])
+        #expect((action["enum"] as? [String])?.contains("observe") == true)
+        let request = try JSONDecoder().decode(CadModelObservationRequest.self, from: Data("{}".utf8))
+        try request.validate()
+        #expect(request.views.count == 4)
+        #expect(request.includeImages)
+        #expect(request.nodeOffset == 0)
+        #expect(request.nodeLimit == 200)
+        #expect(CadDocumentTool.parametersJSON.contains("nextOffset"))
+    }
+
+    @Test("invalid projections, dimensions, pages and stale identity shapes are refused before rendering")
+    func invalidObservations() throws {
+        var invalid: [CadModelObservationRequest] = []
+        var request = CadModelObservationRequest()
+        request.views = []; invalid.append(request)
+        request = .init(); request.views[0].distanceScale = .infinity; invalid.append(request)
+        request = .init(); request.views[0].elevationDegrees = 100; invalid.append(request)
+        request = .init(); request.width = 100_000; invalid.append(request)
+        request = .init(); request.nodeOffset = -1; invalid.append(request)
+        request = .init(); request.nodeLimit = 1001; invalid.append(request)
+        request = .init(); request.expectedSourceSHA256 = "not-a-hash"; invalid.append(request)
+        request = .init(); request.maximumSourceBytes = 65 * 1024 * 1024; invalid.append(request)
+        for value in invalid { #expect(throws: (any Error).self) { try value.validate() } }
+        let tool = CadDocumentTool(host: FakeCadHost())
+        #expect(throws: (any Error).self) {
+            try tool.validate(arguments(path: "part.floecad"))
+        }
+    }
+
+    @Test("original-scene frames reach retained verified image storage with source receipts")
+    func sourceBoundImages() async throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        let context = ToolContext(runID: UUID(), toolCallID: "original-scene-1", scope: .local,
+            workspaceRootURL: URL(fileURLWithPath: "/tmp/workspace"), cancellation: CancellationToken(),
+            environmentID: "env-1", conversationID: UUID())
+        let arguments = try arguments(path: "model.glb")
+        try tool.validate(arguments)
+        let support = try FileManager.default.url(for: .applicationSupportDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: false).appendingPathComponent("FloeAgent")
+        defer { try? FileManager.default.removeItem(at: support.appendingPathComponent("EngineeringObservations/\(context.runID.uuidString)")) }
+        let output = try await tool.execute(arguments, context: context)
+        #expect(output.artifacts.count == 4)
+        #expect(output.summary.contains("sourceUnchanged"))
+        #expect(output.summary.contains("sourceSHA256"))
+        for artifact in output.artifacts {
+            let verified = try VerifiedToolImageArtifact.load(artifact, root: support)
+            #expect(verified.mimeType == "image/png")
+            #expect(artifact.relativePath.hasPrefix("EngineeringObservations/"))
+        }
+    }
+
+    @Test("later hierarchy pages do not invent images or discard the source identity")
+    func metadataOnlyPage() async throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        let source = String(repeating: "b", count: 64)
+        let payload = "{\"includeImages\":false,\"nodeOffset\":200,\"expectedSourceSHA256\":\"\(source)\"}"
+        let arguments = try arguments(path: "scene.gltf", payload: payload)
+        try tool.validate(arguments)
+        let context = ToolContext(runID: UUID(), scope: .local,
+            workspaceRootURL: URL(fileURLWithPath: "/tmp/workspace"), cancellation: CancellationToken())
+        let output = try await tool.execute(arguments, context: context)
+        #expect(output.artifacts.isEmpty)
+        #expect(output.summary.contains("\"nodeOffset\":200"))
+        #expect(output.summary.contains(source))
+    }
+}

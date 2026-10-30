@@ -171,6 +171,38 @@ async function load(pkg){
   $('hint').textContent=say('双指缩放 · 拖动平移 · 部分标注、线型和布局可能简化','Pinch to zoom · Drag to pan · Some dimensions, line styles and layouts may be simplified');
   ready(viewer.hasMissingChars?say('部分字符缺少字体','Some glyphs are unavailable'):say('二维图纸','2D drawing'));
   }else if(pkg.kind==='mesh'||pkg.kind==='cadSurface'){
+  const extension=(pkg.name.split('.').pop()||'').toLowerCase();
+  if(pkg.kind==='mesh'&&['glb','gltf'].includes(extension)&&config.thumbnail!==true){
+   // Full local scene path: three.js r176 GLTFLoader with bundled Draco,
+   // meshopt and KTX2/Basis decoders. The native shell owns product controls;
+   // these bridges expose the same typed state/command/capture contract.
+   let sceneController=null;
+   const publish=(operation,payload)=>window.webkit?.messageHandlers?.floeEngineering?.postMessage({operation,...payload}).catch(()=>{});
+   try{
+    const {createEngineeringScene}=await import('./scene.js');
+    sceneController=createEngineeringScene({
+     container:view,package:pkg,config,say,
+     onState:state=>publish('scene-state',{state}),
+     onProgress:fraction=>publish('scene-progress',{fraction}),
+     onReady:state=>{
+      const partial=(state.missingResources?.length??0)>0||(state.unsupportedExtensions?.length??0)>0;
+      ready(partial?say('部分资源缺失','Partial scene'):say('三维场景','3D scene'));
+     },
+     onError:error=>fail(error)
+    });
+   }catch(error){fail(error);return;}
+   destroy=()=>sceneController.dispose();
+   fit=()=>sceneController.fit();
+   reviewContext=()=>sceneController.reviewContext();
+   window.floeEngineeringSceneCommand=json=>sceneController.command(json);
+   window.floeEngineeringSceneCapture=json=>sceneController.capture(json);
+   window.floeEngineeringSceneState=()=>sceneController.state();
+   $('fit').hidden=false;
+   $('layersButton').hidden=true;
+   $('hint').textContent=say('拖动旋转 · 双指缩放和平移 · 只读场景','Drag to orbit · Pinch to zoom and pan · Read-only scene');
+   try{await sceneController.load();}catch(error){fail(error);}
+   return;
+  }
   let modelFiles=pkg.files.map(f=>new File([bytes(f)],f.name)),surfaceInfo;
   if(pkg.kind==='cadSurface'){
    const worker=new Worker(new URL('occt-worker.js',location.href));destroy=()=>worker.terminate();

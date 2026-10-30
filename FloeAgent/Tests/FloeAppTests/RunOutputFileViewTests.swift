@@ -105,6 +105,31 @@ final class RunOutputFileViewTests: XCTestCase {
         XCTAssertFalse(RunOutputReceiptGate.accepts(copied, in: own))
     }
 
+    // MARK: - Unified read-only preview route
+
+    func testRecognizedEngineeringReceiptsUseControlledPreviewNotQuickLook() throws {
+        let runID = UUID()
+        let conversationID = UUID()
+        let engineering = ["part.glb", "scene.gltf", "plan.dxf", "part.step", "board.gbr"]
+        for (index, name) in engineering.enumerated() {
+            let receipt = try makeReceipt(
+                runID: runID, conversationID: conversationID,
+                callID: "call-engineering-\(index)", tool: "cad.export",
+                slot: "engineering-\(index)",
+                displayName: name, bytes: Data("fixture".utf8), writeSnapshot: false)
+            XCTAssertEqual(RunOutputPreviewRouting.route(for: receipt), .engineering, name)
+        }
+        let quickLook = ["report.pdf", "photo.png", "clip.mp4", "notes.tiff"]
+        for (index, name) in quickLook.enumerated() {
+            let receipt = try makeReceipt(
+                runID: runID, conversationID: conversationID,
+                callID: "call-quicklook-\(index)", tool: "document.convert",
+                slot: "quicklook-\(index)",
+                displayName: name, bytes: Data("fixture".utf8), writeSnapshot: false)
+            XCTAssertEqual(RunOutputPreviewRouting.route(for: receipt), .quickLook, name)
+        }
+    }
+
     // MARK: - Real snapshot verification
 
     func testBinarySnapshotIsRetrievableThenTamperAndDeletionAreReported() throws {

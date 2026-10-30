@@ -1819,6 +1819,16 @@ actor CadDocumentCenter: CadDocumentHost {
         }
     }
 
+    func observeModel(documentID: String, request: CadModelObservationRequest,
+                      access: CadDocumentAccess) async throws -> CadModelObservationResult {
+        try await authorizeAccess(access: access)
+        try request.validate()
+        let resolved = try resolve(documentID: documentID, access: access,
+                                   readonlyModelByteLimit: request.maximumSourceBytes)
+        return try await EngineeringObservationService.shared.observe(
+            path: resolved.id, service: resolved.service, request: request)
+    }
+
     func capabilities(access: CadDocumentAccess) async throws -> String {
         try await authorizeAccess(access: access)
         let session = try await scratchSession()
@@ -2634,14 +2644,15 @@ actor CadDocumentCenter: CadDocumentHost {
     /// additionally admits `.floecad` packages for the native 3D actions only;
     /// the 2D engine methods keep their DWG/DXF-only contract.
     private func resolve(documentID: String, access: CadDocumentAccess,
-                         allowingNativePackages: Bool = false) throws -> Resolved {
+                         allowingNativePackages: Bool = false,
+                         readonlyModelByteLimit: Int? = nil) throws -> Resolved {
         guard let workspace = access.workspacePath, !workspace.isEmpty else {
             throw FloeError.notFound("CAD workspace")
         }
         let root = URL(fileURLWithPath: workspace, isDirectory: true)
         let guardResolver = WorkspacePathGuard(
             rootURL: root,
-            maxReadBytes: maximumDocumentBytes + 1024,
+            maxReadBytes: readonlyModelByteLimit ?? (maximumDocumentBytes + 1024),
             maxWriteBytes: maximumDocumentBytes + 1024,
             mounts: WorkspaceMountRegistry.shared.mounts(for: root)
         )
@@ -2657,7 +2668,8 @@ actor CadDocumentCenter: CadDocumentHost {
         let url = try guardResolver.resolve(relative)
         let ext = (relative as NSString).pathExtension.lowercased()
         let isNativePackage = ext == "floecad"
-        guard ext == "dwg" || ext == "dxf" || (allowingNativePackages && isNativePackage) else {
+        let isReadonlyModel = readonlyModelByteLimit != nil && ["glb", "gltf"].contains(ext)
+        guard ext == "dwg" || ext == "dxf" || (allowingNativePackages && isNativePackage) || isReadonlyModel else {
             throw FloeError.validationFailed(
                 allowingNativePackages
                     ? "cad.document supports DWG, DXF and .floecad files"

@@ -177,6 +177,7 @@ public enum OrdinaryDocumentActionProfile {
         "three_d_snapshot": .readOnly,
         "three_d_measure": .readOnly,
         "capture": .readOnly,
+        "observe": .readOnly,
         "preview": .readOnly,
         "propose": .draftOnly,
         "three_d_propose": .draftOnly

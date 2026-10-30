@@ -784,6 +784,8 @@ targets:
       - path: Tests/FloeAppTests/ConversationPinningTests.swift
       - path: Tests/FloeAppTests/ComposerOverflowRegressionTests.swift
       - path: Tests/FloeProvidersTests/KimiFunctionNameCompatibilityTests.swift
+      - path: Tests/FloeProvidersTests/AgentPlanImageContractTests.swift
+      - path: Tests/FloeProvidersTests/ArkToolNameRegressionTests.swift
       - path: Tests/FloeAppTests/SkillWorkspaceResourceStagerTests.swift
       - path: Tests/FloeSkillsTests/SkillManagementTests.swift
       - path: Tests/FloeSkillsTests/SkillPackageTests.swift
@@ -797,6 +799,8 @@ targets:
       - path: Tests/FloeAppTests/RoutingShellTimeoutTests.swift
       - path: Tests/FloeAppTests/SkillRuntimeComponentTests.swift
       - path: Tests/FloeAgentRuntimeTests/ToolResultCaptureTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ToolVisualEvidenceDispatchTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ToolResultPagingBoundaryTests.swift
       - path: Tests/FloeAgentRuntimeTests/SharedEnvironmentConcurrencyTests.swift
       - path: Tests/FloeAgentRuntimeTests/ChildToolDiscoveryTests.swift
       - path: Tests/FloeAgentRuntimeTests/AgentRuntimeChildDispatchTests.swift
@@ -950,6 +954,7 @@ targets:
       - path: Tests/FloeAppTests/NativeCADCanvasCreationTests.swift
       - path: Tests/FloeAppTests/NativeCADCanvasBackupTests.swift
       - path: Tests/FloeAppTests/EngineeringWebSessionReparentTests.swift
+      - path: Tests/FloeAppTests/EngineeringObservationServiceTests.swift
       # K3: App-level default-ask ordinary-document policy regression (real
       # runtime + production PDF/media tool hosts). Registering the file here
       # requires regenerating the Xcode project (scripts/gen_project.sh) in the
@@ -1201,6 +1206,7 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/SubagentExecutionTests.swift
       - path: Tests/FloeAgentRuntimeTests/SubagentSafetyTests.swift
       - path: Tests/FloeToolsTests/CADMaterialMutationTargetTests.swift
+      - path: Tests/FloeToolsTests/VerifiedToolImageArtifactTests.swift
       - path: Tests/FloeWorkbenchTests/CadDocumentToolTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialCoreTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHoleWorkflowTests.swift

@@ -1,0 +1,52 @@
+{
+  "generatedBy": "FloeAgent/ThirdParty/EngineeringViewers/build.mjs",
+  "networkPolicy": "local-only; no remote decoder URLs",
+  "three": {
+    "package": "three",
+    "version": "0.176.0",
+    "license": "MIT",
+    "source": "https://registry.npmjs.org/three/-/three-0.176.0.tgz"
+  },
+  "decoders": {
+    "draco": {
+      "license": "Apache-2.0",
+      "source": "three@0.176.0/examples/jsm/libs/draco/gltf",
+      "files": [
+        "draco_decoder.js",
+        "draco_decoder.wasm",
+        "draco_wasm_wrapper.js"
+      ]
+    },
+    "meshopt": {
+      "license": "MIT",
+      "source": "three@0.176.0/examples/jsm/libs/meshopt_decoder.module.js",
+      "bundledInto": "scene.js"
+    },
+    "ktx2Basis": {
+      "license": "Apache-2.0",
+      "source": "three@0.176.0/examples/jsm/libs/basis",
+      "files": [
+        "basis_transcoder.js",
+        "basis_transcoder.wasm"
+      ]
+    },
+    "ktxParse": {
+      "license": "MIT",
+      "source": "three@0.176.0/examples/jsm/libs/ktx-parse.module.js",
+      "bundledInto": "scene.js"
+    },
+    "zstddec": {
+      "license": "MIT AND BSD-3-Clause",
+      "source": "three@0.176.0/examples/jsm/libs/zstddec.module.js",
+      "bundledInto": "scene.js"
+    }
+  },
+  "sha256": {
+    "draco_decoder.js": "8625489da79a805f4f2a7d511c3e52d8b4085608a9d2a4d5f4f9de5db0aea04f",
+    "draco_decoder.wasm": "a680d927bed9cb864ddbd63521868891af2bfbe755092761b4837487618df8ac",
+    "draco_wasm_wrapper.js": "8bb2952d2ba7d67e1414f8df819410cb0434a666be53f671fff75f68843d76f6",
+    "basis_transcoder.js": "8478b5b6d6b74e7d3082b89f6417321d8d1dc0307f2b30d4484bb11b441696a1",
+    "basis_transcoder.wasm": "6cf17dc889352c42e9acf8897107978d127005fe3386c36a0e3845e27967630a"
+  },
+  "sceneBundleSHA256": "48d75bf1e5b226e5817b2692eeab71c157ec331ac9f2342216edde9bee7f41e8"
+}

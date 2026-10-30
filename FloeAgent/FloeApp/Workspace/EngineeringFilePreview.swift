@@ -597,6 +597,16 @@ final class CadLiveDraftRegistry {
     private(set) var server: LocalPreviewServer?
     private(set) var startup: Task<Void, Never>?
     private(set) var watchdog: Task<Void, Never>?
+    private var pageCalls: [UUID: CheckedContinuation<String?, Never>] = [:]
+    private var pageCallTimeouts: [UUID: Task<Void, Never>] = [:]
+    /// Live scene contract for GLB/glTF. The three.js viewer publishes this
+    /// after load and after every playback/camera command. It is a read-only
+    /// description; native controls use it and the primary agent can reuse it
+    /// for AI observation without duplicating an execution framework.
+    @Published private(set) var sceneState: EngineeringSceneState?
+    /// Fractional progress when the loader reports a total; nil means an
+    /// indeterminate load. It is cleared when the scene becomes ready.
+    @Published private(set) var sceneLoadProgress: Double?
     /// The one container currently allowed to host the shared web view. Weak,
     /// so a host that is deallocated without leaving its window cannot block a
     /// later host from claiming.
@@ -693,6 +703,14 @@ final class CadLiveDraftRegistry {
         if let web, coordinator != nil, generation != nil, !pendingRebuild,
            key == loadedDocumentKey {
             coordinator?.update(callbacks: error, onReview: onReview, onSave: onSave, onDirty: onDirty)
+            coordinator?.onSceneState = { [weak self] state in
+                guard let self else { return }
+                self.sceneState = state
+                if state.ready { self.sceneLoadProgress = nil }
+            }
+            coordinator?.onSceneProgress = { [weak self] progress in
+                self?.sceneLoadProgress = progress
+            }
             // Capability upgrade (embedded read-only → fullscreen editable)
             // must NOT reload the page: enable editing inside the live page.
             // The page may still be parsing when the upgrade arrives, so the
@@ -724,6 +742,14 @@ final class CadLiveDraftRegistry {
         let coordinator = EngineeringWebView.Coordinator(package: package, error: error,
                                                          onReview: onReview, onSave: onSave,
                                                          onDirty: onDirty)
+        coordinator.onSceneState = { [weak self] state in
+            guard let self else { return }
+            self.sceneState = state
+            if state.ready { self.sceneLoadProgress = nil }
+        }
+        coordinator.onSceneProgress = { [weak self] progress in
+            self?.sceneLoadProgress = progress
+        }
         self.coordinator = coordinator
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
@@ -812,6 +838,150 @@ final class CadLiveDraftRegistry {
         return false
     }
 
+    /// Whether the loaded document uses the bundled three.js scene viewer.
+    /// Only GLB/glTF take this path; other meshes stay on Online3DViewer and
+    /// STEP/IGES stay on the local OCCT display conversion.
+    var isSceneDocument: Bool {
+        guard let package = coordinator?.package, package.kind == .mesh else { return false }
+        return ["glb", "gltf"].contains(
+            (package.name as NSString).pathExtension.lowercased())
+    }
+
+    /// Sends one typed, read-only scene command to the live page and adopts
+    /// the returned state. Nil means the page has no scene controller (still
+    /// loading, failed, or a non-scene document); callers keep their previous
+    /// state rather than inventing success.
+    @MainActor
+    func sceneCommand(_ command: EngineeringSceneCommand) async -> EngineeringSceneState? {
+        guard let json = command.jsonString(),
+              let raw = await callPageString(
+                "return (typeof window.floeEngineeringSceneCommand === 'function') ? await window.floeEngineeringSceneCommand(\(json)) : null;"),
+              let data = raw.data(using: .utf8),
+              let state = try? JSONDecoder().decode(EngineeringSceneState.self, from: data) else {
+            return nil
+        }
+        sceneState = state
+        if state.ready { sceneLoadProgress = nil }
+        return state
+    }
+
+    func sceneHierarchy(offset: Int, limit: Int) async -> EngineeringSceneHierarchyPage? {
+        guard offset >= 0, (1...1000).contains(limit),
+              let raw = await callPageString("return (typeof window.floeEngineeringSceneCommand === 'function') ? await window.floeEngineeringSceneCommand({action:'hierarchy',offset:\(offset),limit:\(limit)}) : null;"),
+              let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(EngineeringSceneHierarchyPage.self, from: data)
+    }
+
+    /// Requests bounded, source-bound multi-angle frames from the live scene.
+    /// The JS renderer restores the user's camera and playback before it
+    /// resolves, so this never becomes a hidden edit or a camera mutation.
+    /// The caller must present the frames as read-only evidence: the returned
+    /// contract carries the source SHA and per-frame view/time.
+    @MainActor
+    func captureScene(_ request: EngineeringSceneCaptureRequest = .standard) async throws -> EngineeringSceneCaptureResult {
+        guard let json = request.jsonString() else {
+            throw EngineeringSceneCaptureError.invalidRequest
+        }
+        guard let raw = await callPageString(
+            "return (typeof window.floeEngineeringSceneCapture === 'function') ? await window.floeEngineeringSceneCapture(\(json)) : null;"),
+              let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw EngineeringSceneCaptureError.unavailable
+        }
+        let frames = object["frames"] as? [[String: Any]] ?? []
+        let failures = object["failures"] as? [[String: Any]] ?? []
+        var output: [EngineeringSceneCaptureFrame] = []
+        var failureOutput = failures.map {
+            EngineeringSceneCaptureFailure(
+                viewIndex: ($0["viewIndex"] as? NSNumber)?.intValue ?? 0,
+                reason: $0["reason"] as? String ?? "capture failed")
+        }
+        var total = 0
+        for frame in frames {
+            let viewIndex = (frame["viewIndex"] as? NSNumber)?.intValue ?? output.count
+            guard let dataURL = frame["dataURL"] as? String,
+                  dataURL.hasPrefix("data:image/png;base64,"),
+                  let encoded = dataURL.split(separator: ",", maxSplits: 1).last,
+                  let png = Data(base64Encoded: String(encoded)) else {
+                failureOutput.append(.init(viewIndex: viewIndex, reason: "invalid PNG frame"))
+                continue
+            }
+            guard png.count <= request.maximumPNGBytes else {
+                failureOutput.append(.init(viewIndex: viewIndex, reason: "frame exceeds size limit"))
+                continue
+            }
+            total += png.count
+            guard total <= request.maximumTotalBytes else {
+                failureOutput.append(.init(viewIndex: viewIndex, reason: "capture exceeds total size limit"))
+                break
+            }
+            let width = (frame["width"] as? NSNumber)?.intValue ?? request.width
+            let height = (frame["height"] as? NSNumber)?.intValue ?? request.height
+            let state = (frame["state"] as? [String: Any]).flatMap { object in
+                EngineeringSceneState.decode(fromJSONObject: object)
+            }
+            output.append(EngineeringSceneCaptureFrame(
+                pngData: png, width: width, height: height, viewIndex: viewIndex,
+                azimuthDegrees: (frame["azimuthDegrees"] as? NSNumber)?.doubleValue ?? 0,
+                elevationDegrees: (frame["elevationDegrees"] as? NSNumber)?.doubleValue ?? 0,
+                timeSeconds: (frame["timeSeconds"] as? NSNumber)?.doubleValue ?? 0,
+                clipIndex: (frame["clipIndex"] as? NSNumber)?.intValue,
+                sourceSHA256: frame["sourceSHA256"] as? String ?? "",
+                state: state))
+        }
+        return EngineeringSceneCaptureResult(frames: output, failures: failureOutput)
+    }
+
+    private enum EngineeringSceneCaptureError: LocalizedError {
+        case invalidRequest
+        case unavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidRequest: "The scene capture request is invalid."
+            case .unavailable: "The scene viewer is not ready to capture."
+            }
+        }
+    }
+
+    /// Bridges only typed JSON strings across WKWebView's async bridge; no
+    /// non-Sendable `Any` crosses the continuation boundary.
+    @MainActor
+    private func callPageString(_ script: String, timeout: Duration = .seconds(45)) async -> String? {
+        guard let web, let expectedGeneration = generation, !Task.isCancelled else { return nil }
+        let callID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled, generation == expectedGeneration else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                pageCalls[callID] = continuation
+                pageCallTimeouts[callID] = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(for: timeout) } catch { return }
+                    self?.finishPageCall(callID, value: nil)
+                }
+                web.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { [weak self] result in
+                    guard let self else { return }
+                    let value: String?
+                    if self.generation == expectedGeneration, case .success(let response) = result {
+                        value = response as? String
+                    } else {
+                        value = nil
+                    }
+                    self.finishPageCall(callID, value: value)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.finishPageCall(callID, value: nil) }
+        }
+    }
+
+    private func finishPageCall(_ id: UUID, value: String?) {
+        pageCallTimeouts.removeValue(forKey: id)?.cancel()
+        pageCalls.removeValue(forKey: id)?.resume(returning: value)
+    }
+
     /// Reconciles the visible CAD editor after a Drawing Assistant apply
     /// committed new bytes through the tool engine. Returns false when the
     /// reload did not run (no editor, decode failure, or page error).
@@ -885,12 +1055,15 @@ final class CadLiveDraftRegistry {
             self.registeredDraftKey = nil
         }
         startup?.cancel(); watchdog?.cancel()
+        for id in Array(pageCalls.keys) { finishPageCall(id, value: nil) }
         server?.stop(); server = nil
         web?.stopLoading(); web?.navigationDelegate = nil
         web?.configuration.userContentController.removeScriptMessageHandler(forName: "floeEngineering", contentWorld: .page)
         web = nil; coordinator = nil; generation = nil
         loadedDocumentKey = nil
         loadedCanEdit = false
+        sceneState = nil
+        sceneLoadProgress = nil
         startup = nil; watchdog = nil
         presentationHost = nil
         liveContainers.removeAll()
@@ -938,6 +1111,12 @@ struct EngineeringFilePreview: View {
 
     private var activeSession: EngineeringWebSession { session ?? ownedSession }
 
+    private var isSceneDocument: Bool {
+        package.kind == .mesh
+            && ["glb", "gltf"].contains(
+                (package.name as NSString).pathExtension.lowercased())
+    }
+
     var body: some View {
         Group {
             if package.kind == .unsupported {
@@ -946,6 +1125,8 @@ struct EngineeringFilePreview: View {
                 } description: {
                     Text("engineering.unsupported.description")
                 }
+            } else if isSceneDocument && !package.diagnostics.isScenePreviewAvailable {
+                EngineeringSceneBlockedView(package: package)
             } else if let error {
                 ContentUnavailableView {
                     Label("engineering.failed", systemImage: "exclamationmark.triangle")
@@ -960,8 +1141,13 @@ struct EngineeringFilePreview: View {
                     }
                 }
             } else {
-                EngineeringWebView(session: activeSession, package: package, identity: identity,
-                                   error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty)
+                ZStack(alignment: .bottom) {
+                    EngineeringWebView(session: activeSession, package: package, identity: identity,
+                                       error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty)
+                    if isSceneDocument {
+                        EngineeringSceneControlBar(session: activeSession, package: package)
+                    }
+                }
             }
         }
         .accessibilityIdentifier("file.preview.engineering")
@@ -1064,6 +1250,8 @@ struct EngineeringWebView: UIViewRepresentable {
         var onReview: ((EngineeringReviewCapture) -> Void)?
         var onSave: ((Data, String) async throws -> String)?
         var onDirty: ((Bool) -> Void)?
+        var onSceneState: ((EngineeringSceneState) -> Void)?
+        var onSceneProgress: ((Double?) -> Void)?
         var baselineSHA: String
         var saving = false
         var dirty = false
@@ -1099,6 +1287,29 @@ struct EngineeringWebView: UIViewRepresentable {
             guard message.frameInfo.isMainFrame, message.frameInfo.request.url == page,
                   let body = message.body as? [String: Any], let operation = body["operation"] as? String else {
                 replyHandler(nil, "Invalid preview origin"); return
+            }
+            if operation == "scene-state" {
+                if let object = body["state"] as? [String: Any],
+                   let state = EngineeringSceneState.decode(fromJSONObject: object) {
+                    onSceneState?(state)
+                }
+                replyHandler([:], nil)
+                return
+            }
+            if operation == "scene-progress" {
+                if let fraction = body["fraction"] as? NSNumber {
+                    onSceneProgress?(min(max(fraction.doubleValue, 0), 1))
+                } else {
+                    onSceneProgress?(nil)
+                }
+                replyHandler([:], nil)
+                return
+            }
+            if operation == "scene-error" {
+                error.wrappedValue = (body["message"] as? String)
+                    ?? String(localized: "engineering.failed")
+                replyHandler([:], nil)
+                return
             }
             if operation == "complete", delivered { completed = true; replyHandler([:], nil); return }
             if operation == "dirty", completed, onSave != nil, let dirty = body["dirty"] as? Bool {
@@ -1195,4 +1406,531 @@ struct EngineeringWebView: UIViewRepresentable {
         }
     }
 }
+
+// MARK: - Scene shell, controls and unified URL entry
+
+/// Small app-local bilingual helper. The primary agent owns the catalog; the
+/// keys used here are listed in the private HANDOFF for promotion.
+enum EngineeringSceneText {
+    static var isChinese: Bool { FloeL10n.isChinese }
+    static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
+}
+
+/// Bilingual product text for source preflight issues. Kept in one place so
+/// the blocked state and the diagnostics sheet use the same wording.
+private enum EngineeringSceneIssueText {
+    static func describe(_ issue: EngineeringPreviewIssue) -> String {
+    switch issue.code {
+            case .unsupportedRequiredExtension:
+                EngineeringSceneText.t("缺少必需扩展：\(issue.detail)",
+                                       "Required extension unavailable: \(issue.detail)")
+            case .missingBuffer:
+                EngineeringSceneText.t("缺少必需的缓冲区：\(issue.detail)",
+                                       "Required buffer missing: \(issue.detail)")
+            case .unsupportedVersion:
+                EngineeringSceneText.t("不支持的 glTF 版本：\(issue.detail)",
+                                       "Unsupported glTF version: \(issue.detail)")
+            case .unsupportedPrimitiveMode:
+                EngineeringSceneText.t("不支持的图元模式：\(issue.detail)",
+                                       "Unsupported primitive mode: \(issue.detail)")
+            case .invalidContainer:
+                EngineeringSceneText.t("文件容器或 JSON 已损坏。",
+                                       "The file container or JSON is damaged.")
+            case .externalResourceBlocked:
+                EngineeringSceneText.t("外部资源未被自动读取：\(issue.detail)",
+                                       "External resource was not fetched: \(issue.detail)")
+            case .missingResource:
+                EngineeringSceneText.t("缺少引用资源：\(issue.detail)",
+                                       "Referenced resource missing: \(issue.detail)")
+            case .unsupportedExtension:
+                EngineeringSceneText.t("未支持的扩展：\(issue.detail)",
+                                       "Unsupported extension: \(issue.detail)")
+            case .sparseAccessor:
+                EngineeringSceneText.t("包含稀疏访问器（由查看器解码）。",
+                                       "Contains sparse accessors (decoded by the viewer).")
+            case .compressedAsset:
+                EngineeringSceneText.t("使用本地打包的压缩解码器：\(issue.detail)",
+                                       "Uses a locally bundled compression decoder: \(issue.detail)")
+            case .packageTruncated:
+                EngineeringSceneText.t("预览包被资源上限截断。",
+                                       "The preview package was truncated by its resource limit.")
+            }
+    }
+
+    static func severity(_ issue: EngineeringPreviewIssue) -> String {
+        switch issue.severity {
+        case .info: EngineeringSceneText.t("提示", "Info")
+        case .warning: EngineeringSceneText.t("警告", "Warning")
+        case .blocking: EngineeringSceneText.t("阻止", "Blocking")
+        }
+    }
+}
+
+/// A scene whose container declares unsupported required extensions, a
+/// corrupt GLB, or missing required buffers is refused before a WebView is
+/// created. The original file is untouched and the reason is explicit.
+private struct EngineeringSceneBlockedView: View {
+    let package: EngineeringPreviewPackage
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(EngineeringSceneText.t("无法显示完整场景", "Scene unavailable"),
+                  systemImage: "cube.transparent")
+        } description: {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(EngineeringSceneText.t(
+                    "本地查看器无法可靠显示此文件。原文件未被修改。",
+                    "The local viewer cannot reliably display this file. The original file was not changed."))
+                ForEach(package.diagnostics.blockingIssues) { issue in
+                    Text("• \(Self.description(for: issue))")
+                }
+            }
+        }
+        .accessibilityIdentifier("engineering.scene.blocked")
+    }
+
+    private static func description(for issue: EngineeringPreviewIssue) -> String {
+        EngineeringSceneIssueText.describe(issue)
+    }
+}
+
+/// Native product controls over the WebGL scene. The web page owns rendering
+/// and the mixer; this bar owns the user-facing chrome so controls stay native
+/// and compact. Nothing here mutates the source document.
+private struct EngineeringSceneControlBar: View {
+    @ObservedObject var session: EngineeringWebSession
+    let package: EngineeringPreviewPackage
+    @State private var scrubTime = 0.0
+    @State private var isScrubbing = false
+    @State private var showingIssues = false
+
+    private var state: EngineeringSceneState? { session.sceneState }
+
+    private var issues: [EngineeringPreviewIssue] {
+        package.diagnostics.issues.filter { $0.severity != .info }
+    }
+
+    private var hasRuntimeWarnings: Bool {
+        guard let state else { return false }
+        return !state.warnings.isEmpty
+            || !state.missingResources.isEmpty
+            || !state.unsupportedExtensions.isEmpty
+    }
+
+    var body: some View {
+        Group {
+            if let state {
+                VStack(spacing: 6) {
+                    timelineRow(state)
+                    controlsRow(state)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial,
+                            in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(.separator.opacity(0.5), lineWidth: 0.5)
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 10)
+                .accessibilityIdentifier("engineering.scene.controls")
+            } else {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text(EngineeringSceneText.t("正在载入三维场景", "Loading 3D scene"))
+                        .font(.caption)
+                    if let progress = session.sceneLoadProgress {
+                        ProgressView(value: progress)
+                            .frame(width: 90)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(.ultraThinMaterial,
+                            in: Capsule(style: .continuous))
+                .padding(.bottom, 10)
+                .accessibilityIdentifier("engineering.scene.loading")
+            }
+        }
+        .sheet(isPresented: $showingIssues) {
+            EngineeringSceneIssuesSheet(package: package, state: state)
+        }
+        .onChange(of: state?.timeSeconds ?? 0) { _, value in
+            if !isScrubbing { scrubTime = value }
+        }
+        .onChange(of: state?.activeClipIndex) { _, _ in
+            isScrubbing = false
+            scrubTime = 0
+        }
+    }
+
+    private func timelineRow(_ state: EngineeringSceneState) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                send(state.playing ? .pause : .play)
+            } label: {
+                Image(systemName: state.playing ? "pause.fill" : "play.fill")
+                    .font(.body.weight(.semibold))
+                    .frame(minWidth: 24, minHeight: 24)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(EngineeringSceneText.t(
+                state.playing ? "暂停" : "播放", state.playing ? "Pause" : "Play"))
+            .accessibilityIdentifier("engineering.scene.playPause")
+
+            Text(Self.timeLabel(scrubTime))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 38, alignment: .trailing)
+
+            Slider(value: $scrubTime,
+                   in: 0...max(state.durationSeconds, 0.001)) { editing in
+                isScrubbing = editing
+                if !editing { send(.seek(seconds: scrubTime)) }
+            }
+            .disabled(state.durationSeconds <= 0)
+            .accessibilityLabel(EngineeringSceneText.t("动画时间", "Animation time"))
+            .accessibilityIdentifier("engineering.scene.timeline")
+
+            Text(Self.timeLabel(state.durationSeconds))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 38, alignment: .leading)
+        }
+    }
+
+    private func controlsRow(_ state: EngineeringSceneState) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+                if state.scenes.count > 1 {
+                    Menu {
+                        ForEach(state.scenes, id: \.index) { scene in
+                            Button { send(.selectScene(index: scene.index)) } label: {
+                                Label(scene.name, systemImage: scene.index == state.activeSceneIndex
+                                      ? "checkmark" : "cube")
+                            }
+                        }
+                    } label: {
+                        Label(state.scenes.first(where: { $0.index == state.activeSceneIndex })?.name
+                              ?? EngineeringSceneText.t("场景", "Scene"), systemImage: "cube")
+                    }
+                    .accessibilityLabel(EngineeringSceneText.t("场景", "Scene"))
+                    .accessibilityIdentifier("engineering.scene.selection")
+                }
+                if !state.clips.isEmpty {
+                    Menu {
+                        Button {
+                            send(.selectClip(index: nil))
+                        } label: {
+                            Label(EngineeringSceneText.t("无动画", "No animation"),
+                                  systemImage: "nosign")
+                        }
+                        Divider()
+                        ForEach(state.clips, id: \.index) { clip in
+                            Button {
+                                send(.selectClip(index: clip.index))
+                            } label: {
+                                Label(clip.name, systemImage: clip.index == state.activeClipIndex
+                                    ? "checkmark" : "film")
+                            }
+                        }
+                    } label: {
+                        Label(clipLabel(state), systemImage: "film")
+                    }
+                    .accessibilityLabel(EngineeringSceneText.t("动画片段", "Animation clip"))
+                    .accessibilityIdentifier("engineering.scene.clip")
+                }
+
+                Menu {
+                    ForEach([0.25, 0.5, 1.0, 1.5, 2.0], id: \.self) { value in
+                        Button {
+                            send(.speed(value))
+                        } label: {
+                            Label(String(format: "%.2g×", value),
+                                  systemImage: abs(state.speed - value) < 0.0001
+                                    ? "checkmark" : "speedometer")
+                        }
+                    }
+                } label: {
+                    Label(String(format: "%.2g×", state.speed),
+                          systemImage: "speedometer")
+                }
+                .accessibilityLabel(EngineeringSceneText.t("播放速度", "Playback speed"))
+                .accessibilityIdentifier("engineering.scene.speed")
+
+                Menu {
+                    ForEach(EngineeringSceneLoopMode.allCases, id: \.rawValue) { mode in
+                        Button {
+                            send(.loop(mode))
+                        } label: {
+                            Label(loopName(mode), systemImage: loopMode(state) == mode
+                                ? "checkmark" : "repeat")
+                        }
+                    }
+                } label: {
+                    Label(loopName(loopMode(state)), systemImage: "repeat")
+                }
+                .accessibilityLabel(EngineeringSceneText.t("循环方式", "Loop mode"))
+                .accessibilityIdentifier("engineering.scene.loop")
+
+                if !state.cameras.isEmpty {
+                    Menu {
+                        Button {
+                            send(.selectCamera(index: nil))
+                        } label: {
+                            Label(EngineeringSceneText.t("自由视角", "Free view"),
+                                  systemImage: "camera")
+                        }
+                        Divider()
+                        ForEach(state.cameras, id: \.index) { camera in
+                            Button {
+                                send(.selectCamera(index: camera.index))
+                            } label: {
+                                Label(camera.name, systemImage: camera.index == state.activeCameraIndex
+                                    ? "checkmark" : "camera")
+                            }
+                        }
+                    } label: {
+                        Label(cameraLabel(state), systemImage: "camera")
+                    }
+                    .accessibilityLabel(EngineeringSceneText.t("相机", "Camera"))
+                    .accessibilityIdentifier("engineering.scene.camera")
+                }
+
+                Button {
+                    send(.fit)
+                } label: {
+                    Label(EngineeringSceneText.t("适配视图", "Fit view"),
+                          systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("engineering.scene.fit")
+
+                if !issues.isEmpty || hasRuntimeWarnings {
+                    Button {
+                        showingIssues = true
+                    } label: {
+                        Label(EngineeringSceneText.t("资源提示", "Asset notes"),
+                              systemImage: "exclamationmark.triangle")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("engineering.scene.issues")
+                }
+            }
+            .font(.caption)
+            .labelStyle(.titleAndIcon)
+        }
+    }
+
+    private func send(_ command: EngineeringSceneCommand) {
+        Task { _ = await session.sceneCommand(command) }
+    }
+
+    private func clipLabel(_ state: EngineeringSceneState) -> String {
+        guard let index = state.activeClipIndex,
+              let clip = state.clips.first(where: { $0.index == index }) else {
+            return EngineeringSceneText.t("动画", "Animation")
+        }
+        return clip.name
+    }
+
+    private func cameraLabel(_ state: EngineeringSceneState) -> String {
+        guard let index = state.activeCameraIndex,
+              let camera = state.cameras.first(where: { $0.index == index }) else {
+            return EngineeringSceneText.t("视角", "View")
+        }
+        return camera.name
+    }
+
+    private func loopMode(_ state: EngineeringSceneState) -> EngineeringSceneLoopMode {
+        EngineeringSceneLoopMode(rawValue: state.loopMode) ?? .repeatPlayback
+    }
+
+    private func loopName(_ mode: EngineeringSceneLoopMode) -> String {
+        switch mode {
+        case .once: EngineeringSceneText.t("播放一次", "Play once")
+        case .repeatPlayback: EngineeringSceneText.t("循环播放", "Loop")
+        case .pingPong: EngineeringSceneText.t("往返循环", "Ping-pong")
+        }
+    }
+
+    private static func timeLabel(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "0:00" }
+        let total = Int(seconds.rounded(.down))
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// Explicit asset/extension notes for a rendered scene. The same source hash
+/// and resource list are available to the primary agent's observation path.
+private struct EngineeringSceneIssuesSheet: View {
+    let package: EngineeringPreviewPackage
+    let state: EngineeringSceneState?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section(EngineeringSceneText.t("来源", "Source")) {
+                    LabeledContent(EngineeringSceneText.t("文件", "File"),
+                                   value: package.name)
+                    LabeledContent(EngineeringSceneText.t("只读摘要", "Read-only digest"),
+                                   value: String(package.provenance.sourceSHA256.prefix(16)))
+                    LabeledContent(EngineeringSceneText.t("资源", "Resources"),
+                                   value: "\(package.provenance.resourceCount) · \(ByteCountFormatter.string(fromByteCount: Int64(package.provenance.resourceByteCount), countStyle: .file))")
+                }
+                if !package.diagnostics.issues.isEmpty {
+                    Section(EngineeringSceneText.t("源文件检查", "Source preflight")) {
+                        ForEach(package.diagnostics.issues) { issue in
+                            Text("\(EngineeringSceneIssueText.severity(issue)) · \(EngineeringSceneIssueText.describe(issue))")
+                                .font(.caption)
+                        }
+                    }
+                }
+                if let state, !state.missingResources.isEmpty {
+                    Section(EngineeringSceneText.t("缺失资源", "Missing resources")) {
+                        ForEach(state.missingResources.prefix(32), id: \.self) { Text($0).font(.caption) }
+                    }
+                }
+                if let state, !state.unsupportedExtensions.isEmpty {
+                    Section(EngineeringSceneText.t("未支持扩展", "Unsupported extensions")) {
+                        ForEach(state.unsupportedExtensions.prefix(32), id: \.self) { Text($0).font(.caption) }
+                    }
+                }
+                if let state, !state.warnings.isEmpty {
+                    Section(EngineeringSceneText.t("运行时提示", "Runtime notes")) {
+                        ForEach(state.warnings.prefix(32), id: \.self) { Text($0).font(.caption) }
+                    }
+                }
+                Section {
+                    Text(EngineeringSceneText.t(
+                        "只读预览不会修改原文件；缺失或未支持的资源不会被自动下载。",
+                        "The read-only preview never changes the original file; missing or unsupported resources are never fetched automatically."))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle(EngineeringSceneText.t("资源与诊断", "Assets and diagnostics"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("action.done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+/// One file entering the controlled read-only preview from an already
+/// authorization-checked caller (Files tab or a verified run receipt).
+struct EngineeringPreviewSource: Identifiable, Sendable {
+    let id = UUID()
+    let url: URL
+    let displayName: String
+    /// Optional receipt digest. When present the loaded bytes must match it.
+    let expectedSHA256: String?
+    /// False for single-file grants: external references are reported, never
+    /// resolved outside the verified file's directory.
+    let includeSiblingResources: Bool
+    let startsSecurityScope: Bool
+
+    init(url: URL, displayName: String, expectedSHA256: String? = nil,
+         includeSiblingResources: Bool = false, startsSecurityScope: Bool = false) {
+        self.url = url
+        self.displayName = displayName
+        self.expectedSHA256 = expectedSHA256
+        self.includeSiblingResources = includeSiblingResources
+        self.startsSecurityScope = startsSecurityScope
+    }
+}
+
+struct EngineeringPreviewURLView: View {
+    let source: EngineeringPreviewSource
+    @Environment(\.dismiss) private var dismiss
+    @State private var package: EngineeringPreviewPackage?
+    @State private var error: String?
+    @State private var isLoading = true
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let package {
+                    EngineeringFilePreview(package: package)
+                } else if let error {
+                    ContentUnavailableView {
+                        Label(EngineeringSceneText.t("无法预览此文件", "Unable to preview this file"),
+                              systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(error)
+                    } actions: {
+                        Button("engineering.retry") { Task { await load() } }
+                    }
+                } else if isLoading {
+                    ProgressView(EngineeringSceneText.t("正在载入", "Loading"))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .navigationTitle(source.displayName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("action.done") { dismiss() }
+                }
+            }
+        }
+        .task(id: source.id) { await load() }
+    }
+
+    private func load() async {
+        package = nil
+        error = nil
+        isLoading = true
+        let accessing = source.startsSecurityScope && source.url.startAccessingSecurityScopedResource()
+        defer { if accessing { source.url.stopAccessingSecurityScopedResource() } }
+        do {
+            let worker = Task.detached(priority: .userInitiated) {
+                try EngineeringPreviewPackage.load(
+                    fileURL: source.url,
+                    displayName: source.displayName,
+                    includeSiblingResources: source.includeSiblingResources)
+            }
+            let loaded = try await withTaskCancellationHandler {
+                try await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            if let expected = source.expectedSHA256,
+               expected.caseInsensitiveCompare(loaded.provenance.sourceSHA256) != .orderedSame {
+                throw EngineeringPreviewURLFailure.changed
+            }
+            guard !Task.isCancelled else { return }
+            package = loaded
+        } catch is CancellationError {
+        } catch {
+            self.error = Self.message(for: error)
+        }
+        isLoading = false
+    }
+
+    private static func message(for error: Error) -> String {
+        if (error as? EngineeringPreviewURLFailure) == .changed {
+            return EngineeringSceneText.t(
+                "文件在验证后已改变，已拒绝预览。请重新验证后再试。",
+                "The file changed after verification, so the preview was refused. Verify it again.")
+        }
+        if (error as NSError).code == NSFileReadTooLargeError {
+            return EngineeringSceneText.t(
+                "文件超过只读预览上限（20 MiB / 32 个资源）。原文件未被修改。",
+                "The file exceeds the read-only preview limit (20 MiB / 32 resources). The original file was not changed.")
+        }
+        return error.localizedDescription
+    }
+}
+
+private enum EngineeringPreviewURLFailure: Error, Equatable {
+    case changed
+}
+
 #endif

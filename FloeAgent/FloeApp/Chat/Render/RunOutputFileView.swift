@@ -21,6 +21,7 @@ import SwiftUI
 import FloeCore
 import FloeModels
 import FloeTools
+import FloeWorkspace
 
 /// The trusted identity of the tool-result row that carries the receipts.
 /// Values come from the persisted event envelope, never from model text.
@@ -34,6 +35,23 @@ struct RunOutputReceiptContext: Sendable, Hashable {
     var callID: String?
     /// Persisted tool name (`payload["tool"]`).
     var toolName: String?
+}
+
+/// Which read-only surface a verified run-output row opens. A recognized
+/// engineering format always uses the same controlled preview package as
+/// workspace/IDE/files entries; everything else keeps Quick Look. The receipt
+/// has already been identity- and digest-verified before this decision runs.
+enum RunOutputPreviewRoute: Equatable {
+    case engineering
+    case quickLook
+}
+
+enum RunOutputPreviewRouting {
+    static func route(for receipt: RunOutputFile) -> RunOutputPreviewRoute {
+        guard let kind = EngineeringPreviewKind.identify(receipt.displayName),
+              kind != .unsupported else { return .quickLook }
+        return .engineering
+    }
 }
 
 /// Pure ownership gate for receipts rendered inside one tool-result row.
@@ -125,7 +143,7 @@ struct RunOutputFileView: View {
     }
 
     private struct Presentation: Identifiable {
-        enum Kind { case preview, share }
+        enum Kind { case preview, share, engineering }
         let id = UUID()
         let url: URL
         let kind: Kind
@@ -188,6 +206,13 @@ struct RunOutputFileView: View {
                 }
             case .share:
                 RunOutputShareSheet(url: item.url)
+            case .engineering:
+                EngineeringPreviewURLView(source: EngineeringPreviewSource(
+                    url: item.url,
+                    displayName: receipt.displayName,
+                    expectedSHA256: receipt.sha256,
+                    includeSiblingResources: false,
+                    startsSecurityScope: false))
             }
         }
         .accessibilityElement(children: .contain)
@@ -307,7 +332,10 @@ struct RunOutputFileView: View {
     private func present(_ action: PendingAction, url: URL) {
         switch action {
         case .preview:
-            presentation = Presentation(url: url, kind: .preview)
+            presentation = Presentation(
+                url: url,
+                kind: RunOutputPreviewRouting.route(for: receipt) == .engineering
+                    ? .engineering : .preview)
         case .share:
             presentation = Presentation(url: url, kind: .share)
         }

@@ -9,6 +9,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeModels
+import FloeWorkspace
 
 /// The Files tab root.
 struct FilesView: View {
@@ -16,6 +17,7 @@ struct FilesView: View {
     @StateObject private var center: FilesCenter
     @State private var showingImageCreation = false
     @State private var videoEditingAttachment: AttachmentRef?
+    @State private var engineeringAttachment: AttachmentRef?
     @ObservedObject private var layoutPreferences = LayoutPreferences.shared
 
     init(center: FilesCenter) {
@@ -71,6 +73,13 @@ struct FilesView: View {
         }
         .sheet(item: $viewModel.quickLookAttachment) { attachment in
             quickLookSheet(for: attachment)
+        }
+        // Recognized engineering formats use the same controlled read-only
+        // package as workspace/IDE and chat attachments. Files only has a
+        // single-file grant for picked documents, so sibling references are
+        // reported rather than resolved outside that grant.
+        .sheet(item: $engineeringAttachment) { attachment in
+            engineeringSheet(for: attachment)
         }
         // The unified media workbench replaces the old single-file editor:
         // interactive crop/resize/color plus layers, undo/redo and export.
@@ -134,7 +143,11 @@ struct FilesView: View {
                     Spacer()
                     Menu {
                         Button {
-                            viewModel.openQuickLook(attachment)
+                            if Self.isEngineeringAttachment(attachment) {
+                                engineeringAttachment = attachment
+                            } else {
+                                viewModel.openQuickLook(attachment)
+                            }
                         } label: {
                             Label("files.preview", systemImage: "eye")
                         }
@@ -168,6 +181,31 @@ struct FilesView: View {
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    static func isEngineeringAttachment(_ attachment: AttachmentRef) -> Bool {
+        guard let kind = EngineeringPreviewKind.identify(attachment.displayName) else {
+            return false
+        }
+        return kind != .unsupported
+    }
+
+    private func engineeringSheet(for attachment: AttachmentRef) -> some View {
+        Group {
+            if let url = try? center.resolveURL(for: attachment) {
+                EngineeringPreviewURLView(source: EngineeringPreviewSource(
+                    url: url,
+                    displayName: attachment.displayName,
+                    includeSiblingResources: false,
+                    startsSecurityScope: attachment.storage != .applicationSupport))
+            } else {
+                ContentUnavailableView {
+                    Label("files.unavailable", systemImage: "doc.questionmark")
+                } description: {
+                    Text("files.unavailable.hint")
+                }
+            }
+        }
     }
 
     private func quickLookSheet(for attachment: AttachmentRef) -> some View {
