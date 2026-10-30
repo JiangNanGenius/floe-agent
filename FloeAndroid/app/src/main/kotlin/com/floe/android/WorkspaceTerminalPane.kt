@@ -73,6 +73,7 @@ internal fun WorkspaceTerminalPane(
     controller: G04TerminalHostController?,
     conversationID: String,
     onOpenEnvironment: (() -> Unit)? = null,
+    onSessionSettled: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = Floe.colors
@@ -81,6 +82,7 @@ internal fun WorkspaceTerminalPane(
 
     var snapshot by remember(conversationID) { mutableStateOf<TerminalSessionSnapshot?>(null) }
     var keyboardVisible by remember { mutableStateOf(true) }
+    var terminalCopyText by remember(controller, conversationID) { mutableStateOf<String?>(null) }
     var textSp by remember { mutableStateOf(13f) }
     var settingsVisible by remember { mutableStateOf(false) }
     // Language services: persisted choices + ACTUAL runtime state only.
@@ -108,6 +110,17 @@ internal fun WorkspaceTerminalPane(
     // status strip; the diagnostic code lives in the opened details).
     var inputIssue by remember(conversationID) { mutableStateOf<TerminalInputIssue?>(null) }
     var showInputIssueDetails by remember(controller, conversationID) { mutableStateOf(false) }
+    // Refresh the same owner's file tree only after the runtime settles and
+    // exports its workspace. Detaching a view never stops a live session.
+    var previousLivePhase by remember(conversationID) { mutableStateOf<TerminalSessionPhase?>(null) }
+    val settledCallback by rememberUpdatedState(onSessionSettled)
+    LaunchedEffect(snapshot?.phase) {
+        val phase = snapshot?.phase
+        if (previousLivePhase?.isLive() == true && phase != null && !phase.isLive()) {
+            settledCallback?.invoke()
+        }
+        previousLivePhase = phase
+    }
     val application = LocalContext.current.applicationContext as? FloeApplication
 
     // Pane-scoped observation ONLY (detaching never stops the session).
@@ -303,6 +316,14 @@ internal fun WorkspaceTerminalPane(
         FloeDivider()
 
         val qualified = terminalReady
+        if (snapshot?.phase?.isLive() == true) {
+            FloeText(
+                stringResource(R.string.workspace_terminal_sync_hint),
+                style = Floe.typography.metadata,
+                color = colors.secondaryLabel,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
         val hasSession = snapshot != null && snapshot!!.phase != TerminalSessionPhase.CLOSED
         if (engine == null || transport == null || (!hasSession && !startDispatched)) {
             // Honest unavailability: no engine, or the runtime is not
@@ -315,6 +336,8 @@ internal fun WorkspaceTerminalPane(
                     FloeText(
                         text = when {
                             controller == null -> stringResource(R.string.inspector_runtime_pending)
+                            snapshot?.phase == TerminalSessionPhase.CLOSED ->
+                                stringResource(R.string.workspace_terminal_closed_hint)
                             // The run-less first entry in flight: what is
                             // actually happening, in one short sentence.
                             preparingWorkspace -> stringResource(
@@ -426,6 +449,7 @@ internal fun WorkspaceTerminalPane(
                         keyboardVisible = keyboardVisible,
                     ),
                     statusLine = statusText,
+                    onCopyTextChanged = { terminalCopyText = it },
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -445,9 +469,9 @@ internal fun WorkspaceTerminalPane(
                     if (!text.isNullOrEmpty()) engine.pasteText(text)
                 }
                 TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_copy)) {
-                    // Copy the current screen tail when no drag selection is
-                    // active (the selection itself copies on long press).
-                    val text = engine.visibleText()
+                    // Copy the explicit selection, or the current scrolled
+                    // viewport when no selection is active.
+                    val text = terminalCopyText ?: engine.visibleText()
                     if (text.isNotEmpty()) clipboard.setText(AnnotatedString(text))
                 }
                 TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_settings)) {

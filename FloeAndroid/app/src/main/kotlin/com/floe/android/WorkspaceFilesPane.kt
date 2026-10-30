@@ -363,7 +363,15 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
     val terminalAccessory = IdeBottomAccessory(
         id = "terminal",
         label = stringResource(R.string.inspector_terminal),
-        content = { WorkspaceTerminalPane(host.workspaceTerminal, bound.client.taskID) },
+        content = {
+            WorkspaceTerminalPane(
+                host.workspaceTerminal,
+                bound.client.taskID,
+                onSessionSettled = {
+                    if (bound.isCurrent()) presenter.refreshTreeKeepingExpansion()
+                },
+            )
+        },
     )
     val expandableDocumentPath = activeDocumentPath?.takeIf { path ->
         WorkspaceDocumentPresentation.offersExplicitFullWindow(

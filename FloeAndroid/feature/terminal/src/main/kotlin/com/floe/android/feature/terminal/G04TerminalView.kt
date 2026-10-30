@@ -4,8 +4,8 @@ package com.floe.android.feature.terminal
 import android.graphics.Typeface
 import android.view.KeyEvent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,6 +30,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -73,7 +75,8 @@ data class TerminalSelection(
  * shapes, CJK double-width cells, combining characters and font-mismatch
  * scaling behave exactly like upstream. This wrapper adds ONLY the Compose
  * plumbing: grid measurement + true native resize, transcript scroll,
- * selection/copy/paste, real IME input through [TerminalImeProxy], physical
+ * long-press selection, double-tap word copy, program clipboard, real IME
+ * input through [TerminalImeProxy], physical
  * keys, cursor blink pacing and bounded accessibility text.
  *
  * There is NO fake text log here: the emulator is a real VT parser and
@@ -86,6 +89,7 @@ fun G04TerminalView(
     modifier: Modifier = Modifier,
     settings: TerminalViewSettings = TerminalViewSettings(),
     statusLine: String = "",
+    onCopyTextChanged: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
@@ -94,6 +98,15 @@ fun G04TerminalView(
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     var scrollRows by remember { mutableIntStateOf(0) }
     var selection by remember { mutableStateOf<TerminalSelection?>(null) }
+    val copyTextConsumer by rememberUpdatedState(onCopyTextChanged)
+    LaunchedEffect(engine, selection, scrollRows, revision) {
+        val selected = selection
+        copyTextConsumer(
+            if (selected != null) engine.selectedText(
+                selected.fromColumn, selected.fromRow, selected.toColumn, selected.toRow,
+            ) else engine.viewportText(scrollRows, maxCharacters = 65_536),
+        )
+    }
 
     val textSizePx = remember(density, settings.cellTextSizeSp) {
         with(density) { settings.cellTextSizeSp.sp.toPx() }.toInt().coerceAtLeast(8)
@@ -241,63 +254,113 @@ fun G04TerminalView(
                     }
                 }
             }
-            .pointerInput(engine, transport) {
-                detectTapGestures(
-                    onTap = { position ->
-                        if (engine.mouseTrackingActive()) {
-                            val (column, row) = cellAt(position)
-                            // Mouse reporting expects SCREEN rows (the app
-                            // is at the prompt bottom while tracking).
-                            engine.sendMouseEvent(TerminalEmulator.MOUSE_LEFT_BUTTON,
-                                column, row, true)
-                            engine.sendMouseEvent(TerminalEmulator.MOUSE_LEFT_BUTTON,
-                                column, row, false)
-                            revision += 1
-                        } else {
-                            selection = null
-                            imeProxy.showKeyboard()
-                            revision += 1
-                        }
-                    },
-                    onDoubleTap = { position ->
-                        val (column, row) = cellAt(position)
-                        val word = engine.wordAt(column, row - scrollRows)
-                        if (word.isNotEmpty()) clipboardManager.setText(AnnotatedString(word))
-                    },
-                    onLongPress = {
-                        val current = selection
-                        if (current != null) {
-                            val text = engine.selectedText(current.fromColumn, current.fromRow,
-                                current.toColumn, current.toRow)
-                            if (text.isNotEmpty()) clipboardManager.setText(AnnotatedString(text))
-                        } else {
-                            val text = clipboardManager.getText()?.text
-                            if (!text.isNullOrEmpty()) engine.pasteText(text)
-                        }
-                    },
+            // ONE pointer gesture state machine owns the terminal surface.
+            // It replaces the old sibling tap/drag recognizers, whose
+            // independent consumption could not prove that a long press
+            // followed by a drag actually reaches the drag path. A plain drag
+            // pans the transcript, a long press starts an explicit selection
+            // that dragging extends, a tap keeps the old focus/mouse-report
+            // behavior, and a double tap copies the word. Long press never
+            // pastes or copies: toolbar Paste/Copy and double-tap copy are the
+            // explicit clipboard paths.
+            .pointerInput(engine, transport, cellWidth, cellHeight) {
+                val arbiter = TerminalGestureArbiter(
+                    touchSlop = viewConfiguration.touchSlop,
+                    longPressTimeoutMillis = viewConfiguration.longPressTimeoutMillis,
+                    doubleTapTimeoutMillis = viewConfiguration.doubleTapTimeoutMillis,
+                    doubleTapMinTimeMillis = viewConfiguration.doubleTapMinTimeMillis,
                 )
-            }
-            .pointerInput(engine, cellWidth, cellHeight) {
-                var anchor: Pair<Int, Int>? = null
-                detectDragGestures(
-                    onDragStart = { position ->
-                        anchor = cellAt(position)
-                        anchor?.let { commitSelection(it, it) }
-                    },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        val start = anchor ?: return@detectDragGestures
-                        // Drag inside the scroll margin pans the transcript
-                        // only when the user is already scrolled or pulls
-                        // past the top edge; selection stays the default.
-                        if (scrollRows > 0 && dragAmount.y < -cellHeight / 2f) {
-                            scrollRows = (scrollRows - 1).coerceAtLeast(0)
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    val pointerId = down.id
+                    val anchorCell = cellAt(down.position)
+                    var lastY = down.position.y
+                    var panCarry = 0f
+                    arbiter.down(down.position.x, down.position.y, down.uptimeMillis)
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        val change = event.changes.firstOrNull { it.id == pointerId }
+                        if (change == null) {
+                            arbiter.cancel()
+                            break
                         }
-                        commitSelection(start, cellAt(change.position))
-                    },
-                    onDragEnd = { anchor = null },
-                    onDragCancel = { anchor = null },
-                )
+                        if (change.changedToUpIgnoreConsumed()) {
+                            when (arbiter.up(change.uptimeMillis)) {
+                                TerminalGestureArbiter.Release.Tap -> {
+                                    if (engine.mouseTrackingActive()) {
+                                        val (column, row) = cellAt(down.position)
+                                        // Mouse reporting expects SCREEN rows
+                                        // (the app sits at the prompt bottom
+                                        // while tracking).
+                                        engine.sendMouseEvent(
+                                            TerminalEmulator.MOUSE_LEFT_BUTTON,
+                                            column, row, true)
+                                        engine.sendMouseEvent(
+                                            TerminalEmulator.MOUSE_LEFT_BUTTON,
+                                            column, row, false)
+                                        revision += 1
+                                    } else {
+                                        selection = null
+                                        imeProxy.showKeyboard()
+                                        revision += 1
+                                    }
+                                }
+                                TerminalGestureArbiter.Release.DoubleTap -> {
+                                    val (column, row) = cellAt(down.position)
+                                    val word = engine.wordAt(column, row - scrollRows)
+                                    if (word.isNotEmpty()) {
+                                        clipboardManager.setText(AnnotatedString(word))
+                                    }
+                                }
+                                TerminalGestureArbiter.Release.LongPress -> {
+                                    commitSelection(anchorCell, anchorCell)
+                                }
+                                TerminalGestureArbiter.Release.None -> Unit
+                            }
+                            break
+                        }
+                        if (change.isConsumed) {
+                            arbiter.cancel()
+                            break
+                        }
+                        when (arbiter.move(
+                            change.position.x,
+                            change.position.y,
+                            change.uptimeMillis,
+                        )) {
+                            TerminalGestureArbiter.Mode.Pan -> {
+                                // Finger DOWN drags the transcript with it:
+                                // earlier rows come into view; UP returns
+                                // toward the prompt. Fractional rows carry
+                                // across events and both ends clamp to the
+                                // real transcript.
+                                val delta = change.position.y - lastY
+                                lastY = change.position.y
+                                if (delta != 0f) {
+                                    val step = TerminalScrollPan.step(
+                                        scrollRows = scrollRows,
+                                        carry = panCarry,
+                                        dragY = delta,
+                                        cellHeightPx = cellHeight,
+                                        transcriptRows = engine.activeTranscriptRows(),
+                                    )
+                                    panCarry = step.carry
+                                    if (step.scrollRows != scrollRows) {
+                                        scrollRows = step.scrollRows
+                                        revision += 1
+                                    }
+                                }
+                                change.consume()
+                            }
+                            TerminalGestureArbiter.Mode.Selection -> {
+                                commitSelection(anchorCell, cellAt(change.position))
+                                change.consume()
+                            }
+                            TerminalGestureArbiter.Mode.Undecided -> Unit
+                        }
+                    }
+                }
             }
             .drawWithContent {
                 revision // read token: re-draw on every engine change
