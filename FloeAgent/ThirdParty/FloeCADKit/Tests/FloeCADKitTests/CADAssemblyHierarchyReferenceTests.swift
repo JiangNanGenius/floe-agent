@@ -181,11 +181,13 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
                           CADDocumentFormat.nestedAssemblyVersion,
                           "a flat shared-instance document must keep its older floor")
         XCTAssertLessThan(try CADDocumentFormat.assess(
-            planes: document.session.document.planes.map {
-                CADBlobRecord(blobID: $0.planeID, data: $0.planeData, sha256: "")
+            planes: try document.session.document.planes.map {
+                CADBlobRecord(blobID: $0.id.raw,
+                              data: try JSONEncoder().encode($0), sha256: "")
             },
-            sketches: document.session.document.sketches.map {
-                CADBlobRecord(blobID: $0.sketchID, data: $0.sketchData, sha256: "")
+            sketches: try document.session.document.sketches.map {
+                CADBlobRecord(blobID: $0.id.raw,
+                              data: try JSONEncoder().encode($0), sha256: "")
             },
             features: [],
             assembly: document.session.document.assemblyData).requiredVersion,
@@ -266,7 +268,7 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         document = try await FloeCADDocument.open(
             at: workDir.appendingPathComponent("target.floecad"))
 
-        let reopened = service()
+        let reopened = self.service()
         let reopenedReport = reopened.handle(action: "report", args: [:])
         XCTAssertEqual(reopenedReport["totalInstanceCount"] as? Int, 5)
         XCTAssertEqual(try assembly().instance(id(partA))?.name, "Part A")
@@ -342,7 +344,8 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
                           "shared instances must see the updated staged geometry")
 
         let current = try assembly()
-        XCTAssertEqual(current.instance(UUID(uuidString: moved["id"] as? String ?? ""))?.sourceReferenceID,
+        let movedInstanceID = try XCTUnwrap(UUID(uuidString: moved["id"] as? String ?? ""))
+        XCTAssertEqual(current.instance(movedInstanceID)?.sourceReferenceID,
                        referenceBefore.id)
         XCTAssertEqual(current.instance(UUID(uuidString: second)!)?.sourceReferenceID,
                        referenceBefore.id)
@@ -379,7 +382,7 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         XCTAssertEqual(undone.partReference(referenceBefore.id)?.sourceContentHash,
                        referenceBefore.sourceContentHash)
         XCTAssertEqual(CADAssemblyGeometryDigest.digest(
-            try XCTUnwrap(body(referenceBefore.stagedBodyID))), stagedHashBefore)
+            of: try XCTUnwrap(body(referenceBefore.stagedBodyID))), stagedHashBefore)
         document.session.redo()
         let redone = try assembly()
         XCTAssertEqual(redone.partReference(referenceBefore.id)?.stagedGeometryHash,
@@ -596,7 +599,7 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         let reopened = try assembly()
         XCTAssertEqual(reopened.instance(UUID(uuidString: parent)!)?
             .constraints.first?.id.uuidString, constraintID)
-        let report = service().handle(action: "report", args: [:])
+        let report = self.service().handle(action: "report", args: [:])
         let constraints = try XCTUnwrap(report["constraints"] as? [[String: Any]])
         let nested = try XCTUnwrap(constraints.first { $0["id"] as? String == constraintID })
         XCTAssertEqual(nested["scope"] as? String, "subassembly")
@@ -624,9 +627,9 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         document.session.undo()
         XCTAssertEqual(document.session.document.assemblyData, before)
         XCTAssertNil(try assembly().instance(UUID(uuidString: second)!)?.copiedBodyID)
-        XCTAssertNil(body(copiedID), "undo must remove the copy body")
+        XCTAssertNil(self.body(copiedID), "undo must remove the copy body")
         document.session.redo()
-        XCTAssertNotNil(body(copiedID))
+        XCTAssertNotNil(self.body(copiedID))
 
         // Drawing BOM: nested/shared external rows keep their entry identity
         // and instance ids across an explicit source update.
@@ -732,7 +735,7 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         document.session.saveFailureForTesting = "simulated explicit-save failure"
         document.session.savePrewarmSuspensionForTesting = {
             guard let current = self.body(targetBodyID) else { return }
-            document.session.perform(RenameItemCommand(
+            self.document.session.perform(RenameItemCommand(
                 item: .body(current.id), before: current.name, after: "Later Rename"))
         }
         let failed = await document.save()
@@ -766,8 +769,8 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
 
         document.session.saveFailureForTesting = "simulated explicit-save failure"
         document.session.savePrewarmSuspensionForTesting = {
-            document.session.savePrewarmSuspensionForTesting = nil
-            document.session.save()
+            self.document.session.savePrewarmSuspensionForTesting = nil
+            self.document.session.save()
         }
         let failed = await document.save()
         document.session.savePrewarmSuspensionForTesting = nil
@@ -822,13 +825,17 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         let liveRevision = document.revision
         CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = { observedURL in
             guard observedURL.standardizedFileURL == targetURL.standardizedFileURL else { return }
-            let foreign = try await FloeCADDocument.open(at: targetURL)
-            defer { foreign.close() }
-            foreign.session.perform(SetAssemblyDataCommand(
-                before: foreign.session.document.assemblyData,
-                after: foreign.session.document.assemblyData))
-            let saved = await foreign.save()
-            XCTAssertTrue(saved.succeeded, saved.error ?? "")
+            do {
+                let foreign = try await FloeCADDocument.open(at: targetURL)
+                defer { foreign.close() }
+                foreign.session.perform(SetAssemblyDataCommand(
+                    before: foreign.session.document.assemblyData,
+                    after: foreign.session.document.assemblyData))
+                let saved = await foreign.save()
+                XCTAssertTrue(saved.succeeded, saved.error ?? "")
+            } catch {
+                XCTFail("the foreign reopen must succeed: \(error)")
+            }
             CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = nil
         }
         defer { CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = nil }
