@@ -1165,7 +1165,9 @@ private final class NativeCADLiveSession {
         let attachment = XCTAttachment(data: png)
         attachment.name = "native-cad-live-viewport.png"
         attachment.lifetime = .keepAlways
-        add(attachment)
+        XCTContext.runActivity(named: "Native CAD live viewport") { activity in
+            activity.add(attachment)
+        }
     }
 
     // MARK: Small query helpers
