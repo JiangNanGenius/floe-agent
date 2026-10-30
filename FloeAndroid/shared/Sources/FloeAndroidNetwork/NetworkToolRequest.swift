@@ -558,7 +558,9 @@ public enum NetworkToolValidation {
     public static func speedDirection(_ raw: String?) throws -> NetworkSpeedDirection {
         guard let raw, !raw.isEmpty else { return .download }
         let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard let direction = NetworkSpeedDirection(rawValue: normalized) else {
+        guard let direction = NetworkSpeedDirection.allCases.first(where: {
+            $0.rawValue.lowercased() == normalized
+        }) else {
             throw FloeError.validationFailed(
                 "direction must be download, upload or downloadAndUpload")
         }
