@@ -657,7 +657,13 @@ final class CADSketchEntityEditingTests: XCTestCase {
         XCTAssertEqual(edit["ok"] as? Bool, true, "\(edit)")
         let row = try entityRow(document, sketchID: created.sketchID, entityID: lineID)
         XCTAssertEqual(row["a"] as? [Double], [0, 5])
-        XCTAssertEqual(row["b"] as? [Double], [10, 5],
+        let followingEndpoint = try XCTUnwrap(row["b"] as? [Double])
+        XCTAssertEqual(followingEndpoint.count, 2)
+        // The caller's endpoint above is exact. The related endpoint comes
+        // from the numeric solver: independently check the horizontal line
+        // at 5 mm, well below its 1e-3 structural-residual acceptance limit.
+        XCTAssertEqual(followingEndpoint[0], 10, accuracy: 1e-8)
+        XCTAssertEqual(followingEndpoint[1], 5, accuracy: 1e-8,
                        "the other endpoint follows the saved horizontal constraint")
         let sketch = try XCTUnwrap(document.session.document.sketches.first {
             $0.id.raw.uuidString == created.sketchID

@@ -725,6 +725,7 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
     /// subsequent ordinary undo removes only the later edit.
     func testFailedReferenceSaveWithLaterEditPreservesBoth() async throws {
         let targetBodyID = try XCTUnwrap(UUID(uuidString: try makeBox(document, name: "Target")))
+        let originalBodyName = try XCTUnwrap(body(targetBodyID)).name
         let (sourceURL, _) = try await makeSourceDocument(name: "Gear")
         let bridge = CADAssemblyReferenceBridge()
         let attach = await bridge.attach(sourceURL: sourceURL, to: document, name: "Gear")
@@ -751,7 +752,7 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         XCTAssertTrue(document.hasUnsavedChanges)
 
         document.session.undo()
-        XCTAssertEqual(body(targetBodyID)?.name, "Target")
+        XCTAssertEqual(body(targetBodyID)?.name, originalBodyName)
         XCTAssertTrue(document.containsPartReference(referenceID),
                       "undo must remove only the later edit, not the reference command beneath it")
     }
@@ -775,10 +776,11 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         let failed = await document.save()
         document.session.savePrewarmSuspensionForTesting = nil
         XCTAssertFalse(failed.succeeded, "the explicit save still reports its own failure")
-        XCTAssertFalse(document.hasUnsavedChanges,
-                       "the concurrent save committed the reference")
-
+        XCTAssertEqual(document.session.lastSaveError, "simulated explicit-save failure",
+                       "the outer attempt's error remains until the owner reconciles its receipt")
         XCTAssertEqual(document.rollbackOwnedCommand(receipt), .alreadyCommitted)
+        XCTAssertFalse(document.hasUnsavedChanges,
+                       "receipt reconciliation must recognize the real concurrent commit")
         XCTAssertTrue(document.containsPartReference(referenceID))
 
         let committedRevision = document.revision
