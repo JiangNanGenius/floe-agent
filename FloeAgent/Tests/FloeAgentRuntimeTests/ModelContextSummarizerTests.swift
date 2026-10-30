@@ -12,13 +12,27 @@ struct ModelContextSummarizerTests {
     }
 
     @Test func modelSummaryIsUsedWhenTheCompletionSucceeds() async throws {
+        let record = """
+        ## Goal
+        ship 1.6.3.
+        ## Instructions
+        Keep the existing release gate.
+        ## Progress
+        Verified: engine green.
+        ## Remaining work
+        Tag the release.
+        ## Exact references
+        r3.txt
+        """
         let summarizer = ModelContextSummarizer { prompt in
             // The prompt must carry the preservation contract and transcript.
             #expect(prompt.contains("Preserve exactly"))
+            #expect(prompt.contains("## Exact references"))
             #expect(prompt.contains("Turn 3"))
-            return "Objective: ship 1.6.3. Verified: engine green. Next: tag the release."
+            return record
         }
         let summary = try await summarizer.summarize(messages: messages(8), maximumCharacters: 4_000)
+        #expect(summary == record)
         #expect(summary.contains("ship 1.6.3"))
     }
 
@@ -37,11 +51,24 @@ struct ModelContextSummarizerTests {
     }
 
     @Test func outputAndInputAreBounded() async throws {
+        let oversized = """
+        ## Goal
+        Ship the release.
+        ## Instructions
+        Keep the existing gate.
+        ## Progress
+        \(String(repeating: "x", count: 10_000))
+        ## Remaining work
+        Tag the release.
+        ## Exact references
+        r3.txt
+        """
         let summarizer = ModelContextSummarizer(complete: { prompt in
             #expect(prompt.utf8.count < 8_000)
-            return String(repeating: "x", count: 10_000)
+            return oversized
         }, maximumInputCharacters: 2_000)
         let summary = try await summarizer.summarize(messages: messages(400), maximumCharacters: 500)
-        #expect(summary.utf8.count == 500)
+        #expect(summary.count <= 500)
+        #expect(summary.contains("Structured continuation state"))
     }
 }

@@ -2602,12 +2602,9 @@ private final class NativeCADContextCompactionSession {
                 row.sourceMessageIDs.contains(userMessageIDs[1]),
                 "The latest actual user message must stay protected, not be compacted."
             )
-            XCTAssertTrue(
-                row.summary.contains(alphaFact),
-                "The App semantic continuation record did not retain the exact early alpha fact."
-            )
             XCTAssertGreaterThan(row.beforeTokens, row.afterTokens)
         }
+        assertIntermediateRetention(secondCompactions, label: "turn2")
         try await assertAcknowledged(
             runID: second.runID,
             events: second.events,
@@ -2619,6 +2616,12 @@ private final class NativeCADContextCompactionSession {
         // of the exact early facts. The next compaction must therefore carry
         // them in the durable continuation record, not in a retained reply.
         let bridge = try await turn(goal: bridgeGoal(), allowedTools: [], label: "bridge")
+        let bridgeCompactions = try await compactionRows(runID: bridge.runID)
+        XCTAssertFalse(
+            bridgeCompactions.isEmpty,
+            "The bridge turn did not perform App-orchestrated compaction before its real provider request."
+        )
+        assertIntermediateRetention(bridgeCompactions, label: "bridge")
         try await assertAcknowledged(
             runID: bridge.runID,
             events: bridge.events,
@@ -2649,12 +2652,6 @@ private final class NativeCADContextCompactionSession {
             XCTAssertTrue(row.sourceMessageIDs.contains(userMessageIDs[0]))
             XCTAssertTrue(row.sourceMessageIDs.contains(userMessageIDs[1]))
             XCTAssertFalse(row.sourceMessageIDs.contains(userMessageIDs[3]))
-            XCTAssertTrue(row.summary.contains(alphaFact), "The continuation record lost the early alpha fact.")
-            XCTAssertTrue(row.summary.contains(betaFact), "The continuation record lost the early beta fact.")
-            XCTAssertTrue(
-                row.summary.contains(alphaInstruction),
-                "The continuation record lost the exact early instruction token."
-            )
             if let bridgeFinalMessageID = bridgeFinalMessageID {
                 XCTAssertFalse(
                     row.sourceMessageIDs.contains(bridgeFinalMessageID),
@@ -2663,6 +2660,7 @@ private final class NativeCADContextCompactionSession {
             }
             XCTAssertGreaterThan(row.beforeTokens, row.afterTokens)
         }
+        assertIntermediateRetention(thirdCompactions, label: "turn3")
 
         try await assertToolPaging(runID: third.runID, events: third.events)
         try await assertHistoryRowsPreserved()
@@ -2878,6 +2876,34 @@ private final class NativeCADContextCompactionSession {
                 text.contains(value),
                 "\(label) final answer did not retain \(value). Prefix: \(String(text.prefix(500)))"
             )
+        }
+    }
+
+    /// Every compaction that consumed an early source message must carry the
+    /// exact values from that source, not just the final compaction. This is
+    /// applied to all rows, including intermediate/degraded records, on turn
+    /// 2, the bridge turn and the follow-up turn.
+    private func assertIntermediateRetention(
+        _ rows: [NativeCADLiveCompactionRow],
+        label: String
+    ) {
+        for (index, row) in rows.enumerated() {
+            if row.sourceMessageIDs.contains(userMessageIDs[0]) {
+                XCTAssertTrue(
+                    row.summary.contains(alphaFact),
+                    "\(label) compaction \(index) lost the early alpha fact."
+                )
+                XCTAssertTrue(
+                    row.summary.contains(alphaInstruction),
+                    "\(label) compaction \(index) lost the early instruction token."
+                )
+            }
+            if row.sourceMessageIDs.contains(userMessageIDs[1]) {
+                XCTAssertTrue(
+                    row.summary.contains(betaFact),
+                    "\(label) compaction \(index) lost the early beta fact."
+                )
+            }
         }
     }
 

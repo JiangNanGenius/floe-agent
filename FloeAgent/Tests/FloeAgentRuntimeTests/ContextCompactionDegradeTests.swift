@@ -399,4 +399,252 @@ struct ContextCompactionDegradeTests {
         #expect(summary.contains("Structured continuation state"))
         #expect(summary.contains(fact))
     }
+
+    // MARK: Observed prompt-cache context size
+
+    @Test("Observed context includes both prompt-cache dimensions and saturates")
+    func observedContextIncludesPromptCacheTokens() {
+        let readOnly = UsageSnapshot(
+            inputTokens: 0,
+            outputTokens: 900,
+            cacheReadTokens: 7_000,
+            reasoningTokens: 500
+        )
+        #expect(HybridContextEngine.observedInputTokenCount(readOnly) == 7_000)
+        let writeOnly = UsageSnapshot(inputTokens: 0, cacheWriteTokens: 6_000)
+        #expect(HybridContextEngine.observedInputTokenCount(writeOnly) == 6_000)
+        let combined = UsageSnapshot(
+            inputTokens: 1_000,
+            outputTokens: 900,
+            cacheReadTokens: 7_000,
+            cacheWriteTokens: 2_000,
+            reasoningTokens: 500
+        )
+        #expect(HybridContextEngine.observedInputTokenCount(combined) == 10_000)
+        let negative = UsageSnapshot(
+            inputTokens: -100,
+            cacheReadTokens: -50,
+            cacheWriteTokens: 300
+        )
+        #expect(HybridContextEngine.observedInputTokenCount(negative) == 300)
+        let overflow = UsageSnapshot(inputTokens: Int.max, cacheReadTokens: 1)
+        #expect(HybridContextEngine.observedInputTokenCount(overflow) == Int.max)
+    }
+
+    @Test("Cache-read-only usage still triggers high-pressure compaction")
+    func cacheReadOnlyUsageTriggersCompaction() async throws {
+        let budget = ContextBudget(
+            contextWindowTokens: 10_000,
+            reservedOutputTokens: 1_000,
+            triggerRatio: 0.5,
+            targetRatio: 0.3,
+            protectedTailTokens: 0
+        )
+        let history = transcript(24, characters: 300)
+        let baseline = HybridContextEngine(summarizer: DeterministicContextSummarizer())
+        let unprepared = try await baseline.prepareContext(for: ContextRequest(
+            messages: history,
+            budget: budget
+        ))
+        #expect(unprepared.compaction == nil)
+        #expect(unprepared.estimatedInputTokens < budget.availableInputTokens / 2)
+
+        let engine = HybridContextEngine(summarizer: DeterministicContextSummarizer())
+        // The provider billed the whole prompt as a cache read and reported
+        // no uncached input. This is still a full context, not an empty one.
+        await engine.observeUsage(UsageSnapshot(inputTokens: 0, cacheReadTokens: 8_000))
+        let prepared = try await engine.prepareContext(for: ContextRequest(
+            messages: history,
+            budget: budget
+        ))
+        #expect(prepared.compaction != nil)
+        #expect(prepared.estimatedInputTokens <= budget.availableInputTokens)
+    }
+
+    @Test("Observed usage does not double-charge reserved schema and image tokens")
+    func observedUsageAvoidsDoubleChargingFixedBudget() async throws {
+        let budget = ContextBudget(
+            contextWindowTokens: 12_000,
+            reservedOutputTokens: 1_000,
+            toolSchemaTokens: 6_000,
+            imageTokens: 1_000,
+            triggerRatio: 0.5,
+            targetRatio: 0.3,
+            protectedTailTokens: 0
+        )
+        let history = transcript(20, characters: 240)
+        let estimate = ContextTokenEstimator().estimate(history)
+        #expect(estimate < budget.availableInputTokens / 2)
+        let engine = HybridContextEngine(summarizer: DeterministicContextSummarizer())
+        // 8,600 prompt tokens include the 7,000 already reserved for schemas
+        // and images; the message side is only ~1,600 and must not compact.
+        await engine.observeUsage(UsageSnapshot(inputTokens: 8_600))
+        let prepared = try await engine.prepareContext(for: ContextRequest(
+            messages: history,
+            budget: budget
+        ))
+        #expect(prepared.compaction == nil)
+        #expect(prepared.estimatedInputTokens == estimate)
+    }
+
+    // MARK: Structured continuation contract
+
+    private func structuredRecord(
+        goal: String = "Finish the current task.",
+        instructions: String = "Keep the existing budget and approval boundary.",
+        progress: String = "Verified the current behavior.",
+        remaining: String = "Apply the validated patch.",
+        references: String = "Local/Private/example/file.swift"
+    ) -> String {
+        """
+        ## Goal
+        \(goal)
+        ## Instructions
+        \(instructions)
+        ## Progress
+        \(progress)
+        ## Remaining work
+        \(remaining)
+        ## Exact references
+        \(references)
+        """
+    }
+
+    @Test("A complete structured continuation record is accepted")
+    func structuredContinuationAccepted() async throws {
+        let sourceID = UUID()
+        let fact = "STRUCTURED-FACT=accepted-42"
+        let source = [ConversationMessage(
+            role: "user",
+            content: "Remember \(fact) and the exact reference \(sourceID.uuidString)."
+        )]
+        let record = structuredRecord(
+            goal: "Retain \(fact).",
+            references: sourceID.uuidString
+        )
+        let summarizer = ModelContextSummarizer { _ in record }
+        let summary = try await summarizer.summarize(messages: source, maximumCharacters: 4_000)
+        #expect(summary == record)
+    }
+
+    @Test("A long answer-shaped reply is rejected even when it exceeds 32 characters")
+    func longReplyFallsBackDespiteLength() async throws {
+        let fact = "LONG-REPLY-FACT=delta-42"
+        let source = [ConversationMessage(
+            role: "user",
+            content: "Remember \(fact) for the rest of this task."
+        )]
+        let reply = "I understand the task. " + String(
+            repeating: "I will remember the conversation and continue without restarting. ",
+            count: 8
+        )
+        #expect(reply.count > 32)
+        #expect(!reply.contains("## "))
+        let summarizer = ModelContextSummarizer { _ in reply }
+        let summary = try await summarizer.summarize(messages: source, maximumCharacters: 4_000)
+        #expect(summary.contains("Structured continuation state"))
+        #expect(summary.contains(fact))
+    }
+
+    @Test("Incomplete or malformed structured records fall back")
+    func malformedStructuredRecordsFallBack() async throws {
+        let fact = "MALFORMED-FACT=theta-42"
+        let source = [ConversationMessage(
+            role: "user",
+            content: "Remember \(fact) for the rest of this task."
+        )]
+        let outOfOrder = """
+        ## Goal
+        Finish the task.
+        ## Progress
+        Verified the behavior.
+        ## Instructions
+        Keep the gate.
+        ## Remaining work
+        Apply the patch.
+        ## Exact references
+        Local/Private/example/file.swift
+        """
+        let missingSection = """
+        ## Goal
+        Finish the task.
+        ## Instructions
+        Keep the gate.
+        ## Progress
+        Verified the behavior.
+        ## Remaining work
+        Apply the patch.
+        """
+        let cases: [(String, String)] = [
+            ("empty section", structuredRecord(progress: "")),
+            ("missing section", missingSection),
+            ("out-of-order sections", outOfOrder),
+            ("unknown heading", structuredRecord() + "\n## Notes\nnot part of the contract"),
+            ("duplicate heading", structuredRecord() + "\n## Goal\nduplicate"),
+            ("preamble", "Here is the continuation record:\n" + structuredRecord())
+        ]
+        for (label, record) in cases {
+            let summarizer = ModelContextSummarizer { _ in record }
+            let summary = try await summarizer.summarize(
+                messages: source,
+                maximumCharacters: 4_000
+            )
+            #expect(summary.contains("Structured continuation state"), "\(label)")
+            #expect(summary.contains(fact), "\(label)")
+        }
+    }
+
+    @Test("An oversized structured record falls back instead of being prefix-truncated")
+    func oversizedStructuredRecordFallsBack() async throws {
+        let fact = "OVERSIZE-FACT=iota-42"
+        let source = [ConversationMessage(
+            role: "user",
+            content: "Remember \(fact) for the rest of this task."
+        )]
+        let record = structuredRecord(
+            progress: String(repeating: "progress line ", count: 200),
+            remaining: "Apply the patch after review."
+        )
+        #expect(record.count > 600)
+        let summarizer = ModelContextSummarizer { _ in record }
+        let summary = try await summarizer.summarize(messages: source, maximumCharacters: 600)
+        #expect(summary.count <= 600)
+        #expect(summary.contains("Structured continuation state"))
+        #expect(!summary.hasPrefix("## Goal"))
+        #expect(summary.contains(fact))
+    }
+
+    @Test("An invented UUID-like exact reference falls back")
+    func inventedUUIDReferenceFallsBack() async throws {
+        let sourceID = UUID()
+        let inventedID = UUID()
+        let fact = "REFERENCE-FACT=eta-42"
+        let source = [ConversationMessage(
+            role: "user",
+            content: "Keep \(sourceID.uuidString) and remember \(fact)."
+        )]
+        let malformedID = "123456789-abc-42dd-9686-4e5735dc9fa7"
+        let records = [
+            structuredRecord(
+                goal: "Keep the exact source reference.",
+                references: inventedID.uuidString
+            ),
+            structuredRecord(
+                goal: "Keep the exact source reference.",
+                references: malformedID
+            )
+        ]
+        #expect(!source[0].content.contains(inventedID.uuidString))
+        #expect(!source[0].content.contains(malformedID))
+        for (index, record) in records.enumerated() {
+            let summarizer = ModelContextSummarizer { _ in record }
+            let summary = try await summarizer.summarize(
+                messages: source,
+                maximumCharacters: 4_000
+            )
+            #expect(summary.contains("Structured continuation state"), "reference \(index)")
+            #expect(summary.contains(sourceID.uuidString), "reference \(index)")
+            #expect(summary.contains(fact), "reference \(index)")
+        }
+    }
 }
