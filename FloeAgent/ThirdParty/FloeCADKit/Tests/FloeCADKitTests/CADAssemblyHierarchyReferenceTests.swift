@@ -24,6 +24,7 @@ import XCTest
 import simd
 @testable import FloeCAD
 
+@MainActor
 final class CADAssemblyHierarchyReferenceTests: XCTestCase {
 
     private var workDir: URL!
@@ -894,6 +895,24 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         XCTAssertEqual(after.sourceSchemaVersion, sourceSchema)
         let staged = try XCTUnwrap(body(after.stagedBodyID))
         XCTAssertEqual(CADAssemblyGeometryDigest.digest(of: staged), after.stagedGeometryHash)
+    }
+
+    func testClosingTargetDuringSourceLoadRefusesWithoutMutation() async throws {
+        let (sourceURL, _) = try await makeSourceDocument(name: "Gear")
+        let beforeChanges = document.session.changeCount
+        let beforeUndo = document.session.undoStack.undoCommands.count
+        let target = try XCTUnwrap(document)
+        CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = { url in
+            if url == target.url { target.close() }
+        }
+        defer { CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = nil }
+        let reply = await CADAssemblyReferenceBridge().attach(sourceURL: sourceURL, to: target)
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["error"] as? String, "target_changed")
+        XCTAssertEqual(reply["mutated"] as? Bool, false)
+        XCTAssertEqual(target.session.changeCount, beforeChanges)
+        XCTAssertEqual(target.session.undoStack.undoCommands.count, beforeUndo)
+        XCTAssertTrue(target.session.document.assembly.partReferences.isEmpty)
     }
 
     func testLegacyReferenceDecodesAndReencodesWithReaderProvenance() throws {

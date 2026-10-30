@@ -491,6 +491,12 @@ public final class CADAssemblyReferenceBridge {
                                "The target CAD document changed on disk while the source was being read; nothing was changed. Reopen it and try again.")
             }
         }
+        // Verification itself suspends too. Closing the document during that
+        // read or the adoption yield must not authorize a late direct write.
+        guard !document.isClosed, !document.isReadOnly else {
+            return failure("target_changed",
+                           "The target CAD document is no longer writable; nothing was changed.")
+        }
         return nil
     }
 
