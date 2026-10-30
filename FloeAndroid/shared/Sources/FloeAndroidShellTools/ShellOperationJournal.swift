@@ -1,3 +1,16 @@
+// FloeAndroidShellTools — Android platform mirror of the ORIGINAL
+// FloeAgent/Sources/FloeExecution/Shell/ShellOperationJournal.swift.
+// Every statement is byte-equal to the original except ONE additive delta:
+//   G1 (G07.1 terminal04, job-c5eec0e0881346ff): `Entry` gains the OPTIONAL
+//      `phaseTimings: String?` field (trailing `init` parameter defaulting to
+//      nil) carrying the backend-measured, bounded `latency v1 …` composition
+//      of the dispatch this entry describes. It is diagnostic only: the JSONL
+//      key is omitted when nil (optional Codable ⇒ old lines still decode) and
+//      the ORIGINAL `durationMs`/`outcome` columns and their meaning are
+//      unchanged. No logging, rotation, path or content behaviour moves.
+// This file is a COPIED overlay (the shared link stays unmodified); Main
+// records it in PROVENANCE.md during assembly.
+//
 // FloeExecution — Shell operation journal.
 // Mirrors PDFOperationJournal: append-only JSONL with bounded rotation, so a
 // reviewer can reconstruct exactly which commands ran, where, and with what
@@ -22,6 +35,14 @@ public actor ShellOperationJournal {
         public var durationMs: Int
         public var outcome: String
         public var approvalGrantID: String?
+        /// G07.1 terminal04 (ADDITIVE, optional, diagnostic only): the bounded
+        /// client-visible phase composition of this dispatch (`latency v1
+        /// terminal=… gate=…ms start=…ms stdin=…ms run=…ms settle=…ms
+        /// total=…ms unobserved=…`), authored by the backend that measured it.
+        /// It never carries command text, paths, identifiers or output, and a
+        /// nil value keeps the pre-feature journal line byte-compatible
+        /// (optional Codable ⇒ absent key, old journals still decode).
+        public var phaseTimings: String?
 
         public init(
             timestamp: Date = Date(),
@@ -36,7 +57,8 @@ public actor ShellOperationJournal {
             truncated: Bool,
             durationMs: Int,
             outcome: String,
-            approvalGrantID: String?
+            approvalGrantID: String?,
+            phaseTimings: String? = nil
         ) {
             self.timestamp = timestamp
             self.runID = runID
@@ -51,6 +73,7 @@ public actor ShellOperationJournal {
             self.durationMs = durationMs
             self.outcome = outcome
             self.approvalGrantID = approvalGrantID
+            self.phaseTimings = phaseTimings
         }
     }
 

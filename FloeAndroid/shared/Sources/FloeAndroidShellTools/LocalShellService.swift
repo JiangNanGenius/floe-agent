@@ -139,7 +139,9 @@ public actor LocalShellService {
                 truncated: false,
                 durationMs: 0,
                 outcome: "blocked:\(verdict.matchedPatternID ?? "policy")",
-                approvalGrantID: context.approvalGrantID?.uuidString
+                approvalGrantID: context.approvalGrantID?.uuidString,
+                // No backend dispatch happened: no phase composition exists.
+                phaseTimings: nil
             ))
             return .blocked(verdict)
         }
@@ -165,7 +167,9 @@ public actor LocalShellService {
                 truncated: false,
                 durationMs: 0,
                 outcome: "denied:designFreezePreDispatch",
-                approvalGrantID: context.approvalGrantID?.uuidString
+                approvalGrantID: context.approvalGrantID?.uuidString,
+                // Refused before dispatch: no phase composition exists.
+                phaseTimings: nil
             ))
             return .outcome(.exited(
                 code: 126, stdout: "", stderr: denial.message,
@@ -221,9 +225,18 @@ public actor LocalShellService {
             settle = owned
         }
         let started = Date()
-        let outcome = await backend.run(request, cancellation: context.cancellation)
+        // G07.1 terminal04: ONE backend call returns the outcome AND the phase
+        // composition measured for EXACTLY this dispatch. Reading a "last"
+        // global after a separate await would be a data race under actor
+        // reentrancy (a concurrent denied/notStarted call could replace it and
+        // this journal line would then describe another call's timing).
+        let report = await backend.runReportingPhases(request, cancellation: context.cancellation)
+        let outcome = report.outcome
         let durationMs = Int(Date().timeIntervalSince(started) * 1000)
-        await record(outcome: outcome, command: command, cwd: cwd, context: context, durationMs: durationMs)
+        // Diagnostic only: the journal keeps the ORIGINAL durationMs column and
+        // the outcome/DTO path is unchanged.
+        await record(outcome: outcome, command: command, cwd: cwd, context: context,
+                     durationMs: durationMs, phaseTimings: report.phaseTimings)
         settle?()
         return .outcome(outcome)
     }
@@ -233,7 +246,8 @@ public actor LocalShellService {
         command: String,
         cwd: String,
         context: ToolContext,
-        durationMs: Int
+        durationMs: Int,
+        phaseTimings: String? = nil
     ) async {
         let entry: ShellOperationJournal.Entry
         switch outcome {
@@ -250,7 +264,8 @@ public actor LocalShellService {
                 truncated: truncated || stderrTruncated,
                 durationMs: durationMs,
                 outcome: "exited:\(code)",
-                approvalGrantID: context.approvalGrantID?.uuidString
+                approvalGrantID: context.approvalGrantID?.uuidString,
+                phaseTimings: phaseTimings
             )
         case .timedOut(let stdout, let stderr, _):
             entry = ShellOperationJournal.Entry(
@@ -265,7 +280,8 @@ public actor LocalShellService {
                 truncated: false,
                 durationMs: durationMs,
                 outcome: "timedOut",
-                approvalGrantID: context.approvalGrantID?.uuidString
+                approvalGrantID: context.approvalGrantID?.uuidString,
+                phaseTimings: phaseTimings
             )
         case .cancelled:
             entry = ShellOperationJournal.Entry(
@@ -280,7 +296,8 @@ public actor LocalShellService {
                 truncated: false,
                 durationMs: durationMs,
                 outcome: "cancelled",
-                approvalGrantID: context.approvalGrantID?.uuidString
+                approvalGrantID: context.approvalGrantID?.uuidString,
+                phaseTimings: phaseTimings
             )
         case .notStarted(let reason):
             entry = ShellOperationJournal.Entry(
@@ -295,7 +312,8 @@ public actor LocalShellService {
                 truncated: false,
                 durationMs: durationMs,
                 outcome: "notStarted:\(reason.prefix(120))",
-                approvalGrantID: context.approvalGrantID?.uuidString
+                approvalGrantID: context.approvalGrantID?.uuidString,
+                phaseTimings: phaseTimings
             )
         case .failed(let message):
             entry = ShellOperationJournal.Entry(
@@ -310,7 +328,8 @@ public actor LocalShellService {
                 truncated: false,
                 durationMs: durationMs,
                 outcome: "failed:\(message.prefix(120))",
-                approvalGrantID: context.approvalGrantID?.uuidString
+                approvalGrantID: context.approvalGrantID?.uuidString,
+                phaseTimings: phaseTimings
             )
         }
         await journal.record(entry)

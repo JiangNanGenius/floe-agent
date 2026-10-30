@@ -145,6 +145,22 @@ public struct ShellRunRequest: Sendable {
     }
 }
 
+/// One dispatch's terminal outcome TOGETHER with the bounded phase
+/// composition the backend measured for EXACTLY that dispatch (G07.1
+/// terminal04). The pair is produced inside one backend call, so a concurrent
+/// or reentrant dispatch can never substitute its own timing: journal
+/// attribution is atomic with the outcome it describes. `phaseTimings` is nil
+/// when the backend does not measure timing (or measured nothing for this
+/// call).
+public struct ShellRunReport: Sendable, Equatable {
+    public var outcome: ShellRunOutcome
+    public var phaseTimings: String?
+    public init(outcome: ShellRunOutcome, phaseTimings: String?) {
+        self.outcome = outcome
+        self.phaseTimings = phaseTimings
+    }
+}
+
 /// Terminal outcome of one shell run. Never throws: the tool wrapper maps
 /// every case into `ToolExecutionOutput`.
 public enum ShellRunOutcome: Sendable, Equatable {
@@ -325,6 +341,11 @@ public protocol LocalShellBackend: Sendable {
     /// reconciliation, so the caller's own exchange receives the released
     /// terminal together with the runtime workspace export receipt.
     func requestStopForSettlement(sessionID: String) async
+    /// G07.1 terminal04: the SAME one-shot run, returned atomically with the
+    /// bounded phase composition measured FOR THAT CALL. Journal attribution
+    /// must use this (never a "last" global: backends are reentrant).
+    func runReportingPhases(_ request: ShellRunRequest,
+                            cancellation: CancellationToken?) async -> ShellRunReport
 }
 
 public extension LocalShellBackend {
@@ -334,6 +355,13 @@ public extension LocalShellBackend {
     /// the production backend overrides it to preserve the caller's poll.
     func requestStopForSettlement(sessionID: String) async {
         await signalSession(sessionID: sessionID, signal: .terminate)
+    }
+    /// Default: run once and report no phase composition. The outcome is the
+    /// backend's real answer; only the optional timing is absent.
+    func runReportingPhases(_ request: ShellRunRequest,
+                            cancellation: CancellationToken?) async -> ShellRunReport {
+        ShellRunReport(outcome: await run(request, cancellation: cancellation),
+                       phaseTimings: nil)
     }
 }
 
