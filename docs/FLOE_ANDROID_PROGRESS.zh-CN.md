@@ -1474,3 +1474,11 @@ Alpha14／code16 已作为 Android 预发布公开：[GitHub Release](https://gi
 - **用户最新优先级**：手机和平板均对照实际iOS核对新建→Office二级菜单→命名、文件/工作区导入、编辑/助手、返回、设置详情及系统栏/键盘避让。已通过的存储和返回路径保留，新增差异合为下一批修复，不预排依赖任务。
 
 下一份APK消费这批代码后统一验证受影响路径。可用候选通过对应设备检查后，才生成最终对应源码附件并发布Android预发布；公开附件仅APK、SHA256SUMS及所需对应源码归档。现有Alpha14标签与附件保持不变。
+
+## 2026-10-31 Alpha20 delivery checkpoint
+
+Alpha20 (22), source `21b900e397c65c626aaf496e36b8cbf564341df6`: actual Samsung public Alpha19-to-20 delta download, system-confirmed installation, exact hash, retained data, corrected post-install state, runtime component upgrade, manual terminal and one agent exec.shell all passed. API37/16KiB tablet IME and separate terminal sessions passed. Literal underscore-bearing search remains a known gap.
+
+iOS baseline remains `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322` (1.7.65/306), with zero subsequent FloeAgent changes through this APK source. Preserve D01-D36. Next G07.3B covers offline PCAP/PCAPNG, Wi-Fi coverage sampling and scheduled tasks; no dependent worker queue is pre-submitted.
+
+[Chinese closure, remaining gaps, next-stage scope and cleanup](android/FLOE_ANDROID_ALPHA20_CLOSURE_20261031.zh-CN.md).

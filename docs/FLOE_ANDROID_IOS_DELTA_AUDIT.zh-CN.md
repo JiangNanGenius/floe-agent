@@ -257,3 +257,11 @@ G06以Android Alpha15/code17交付，源码标签`86b20a34a14ebda636213fa480cdf1
 ### G07.2 实际交付收尾（2026-10-30）
 
 冻结源码`6d1e4b09`、候选02与Alpha17公开下载已核验。上述Android三提交未改变iOS产品源；D01..D34保留。原生提问与通知回应归D33／G11，对话可见搜索归D27／G14，关联计划任务归D11／G11。Skill依赖V2的macOS目标声明仅为候选合同；当前Hub生产源仍为V1，不能从iOS候选版本推断Android已支持或升级现有包。下一次大目标关闭从本次公开冻结点增量比较，并在相关目标接入时复核最新实际能力。
+
+## 2026-10-31 Alpha20 delivery checkpoint
+
+Alpha20 (22), source `21b900e397c65c626aaf496e36b8cbf564341df6`: actual Samsung public Alpha19-to-20 delta download, system-confirmed installation, exact hash, retained data, corrected post-install state, runtime component upgrade, manual terminal and one agent exec.shell all passed. API37/16KiB tablet IME and separate terminal sessions passed. Literal underscore-bearing search remains a known gap.
+
+iOS baseline remains `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322` (1.7.65/306), with zero subsequent FloeAgent changes through this APK source. Preserve D01-D36. Next G07.3B covers offline PCAP/PCAPNG, Wi-Fi coverage sampling and scheduled tasks; no dependent worker queue is pre-submitted.
+
+[Chinese closure, remaining gaps, next-stage scope and cleanup](android/FLOE_ANDROID_ALPHA20_CLOSURE_20261031.zh-CN.md).

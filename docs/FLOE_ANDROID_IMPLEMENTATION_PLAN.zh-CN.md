@@ -1694,3 +1694,11 @@ G06继续承担独立手记／PDF／笔迹与触摸防误触；G05只定义其�
 **iOS 增量计划对齐（2026-10-28，83d46e→98fea137）：** 已在差距审计新增 IOS-D30（适用于安卓的完整设置向导与后台资源准备），补强 D19（Skill Hub）、D06（语音）及 D10（浏览器导出）的来源。该开发分支的编译、上传和分发状态未在本审计核对；所查远端 main 仍为 83d46e。G05 Office 范围没有新增阻断。当前 Android 固定输入仍为旧 Hub 谱系，目录缺可信 appVersion 绑定；后续需分别处理安卓商店频道、安装平台、执行环境和安卓版本域，不能冒用 iOS 版本号或假定脚本兼容。详见 IOS 差距审计的同日增量节；不在 G05 中整体刷新共享快照。
 
 **R3 C19 源码冻结与本地三附件检查点（2026-10-29）：** C19 固定源码 `5ed31c1…`（tree `b4f7b81…`）已推送 `origin/main` 并 API 读回，尚无 tag／release；相对上次 iOS 内容基线 `e528e444…` 只有 3 个提交（Feather 标签守护工作流＋两个 `FloeAndroid/` 提交），`FloeAgent/` 的 iOS 源码零差异。实际 Full APK 435,071,701 字节／SHA-256 `b24db2eb…`，内嵌运行组件 33,886,260 字节；对应源码归档 2,610,605 字节／SHA-256 `2f2aafa8…`，`SHA256SUMS` 两行且独立校验通过；本地集只含这三个公开安全附件。C19 实际新跑 12 项定向 JVM（5 冷开策略＋7 权限围栏）并复用 291 项，合计 303 项唯一；18 项原生主机组合复用，Core09 已完成实际 Swift 6 Android ARM64 对象／链接。设备证据限于：G01 冷开策略保留；DOCX 约160秒后台等待后审批、保存副本／独立导出同一 5,135 字节摘要且 ZIP 一致、重开可见；PPTX 第2页写入、发布 ZIP 仅第2页含标记、C19 同包原生 Impress 重开可见（保留 `savedNotOneEditFromBaseline` 限制）；C17 Calc 311.3秒审批与 `00123`、三星单次真实云终端结果沿用；同一 C19 APK 覆盖安装保留 G02 5个会话／16份夹具哈希，终端仍显示 Starting 并转只读诊断，三星启动后保留4条旧会话标题与既有供应商配置、UID／CE 数据标识不变且无新增云调用。更新器 Full 自动／手动检查、下载进度／取消、摘要与包身份校验及系统确认安装（非静默）已接通，Play 合并产物排除；C18 手动检查实际显示“已是最新”（本地 alpha14、远端 alpha13），首次正向升级待发布后用旧 code15 基线验证。Alpha14 尚未发布、G05 未关闭；标签、上传、独立下载读回与最终验收仍归主协调者，183项操作／85个工作包／24项G04操作／IOS-D01..D30 编号不重置。
+
+## 2026-10-31 Alpha20 delivery checkpoint
+
+Alpha20 (22), source `21b900e397c65c626aaf496e36b8cbf564341df6`: actual Samsung public Alpha19-to-20 delta download, system-confirmed installation, exact hash, retained data, corrected post-install state, runtime component upgrade, manual terminal and one agent exec.shell all passed. API37/16KiB tablet IME and separate terminal sessions passed. Literal underscore-bearing search remains a known gap.
+
+iOS baseline remains `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322` (1.7.65/306), with zero subsequent FloeAgent changes through this APK source. Preserve D01-D36. Next G07.3B covers offline PCAP/PCAPNG, Wi-Fi coverage sampling and scheduled tasks; no dependent worker queue is pre-submitted.
+
+[Chinese closure, remaining gaps, next-stage scope and cleanup](android/FLOE_ANDROID_ALPHA20_CLOSURE_20261031.zh-CN.md).
