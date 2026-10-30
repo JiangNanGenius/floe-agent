@@ -13,6 +13,7 @@ import Foundation
 import simd
 @testable import FloeCAD
 
+@MainActor
 final class CADAssemblyDrawingExtensionTests: XCTestCase {
 
     private var workDir: URL!
