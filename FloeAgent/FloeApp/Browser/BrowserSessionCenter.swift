@@ -6,10 +6,12 @@
 // task keeps operating its own tabs while another task's panel is on screen.
 
 #if canImport(SwiftUI) && canImport(WebKit) && canImport(UIKit)
+import Combine
 import Foundation
 import SwiftUI
 import WebKit
 import FloeCore
+import FloeExecution
 
 @MainActor
 final class BrowserSessionCenter: NSObject, ObservableObject {
@@ -58,8 +60,11 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     private let durableHandoffs: Bool
     private let artifactDirectory: URL
     private let sessionConfiguration: BrowserTaskSessionConfiguration
+    private let settings: BrowserSettingsService
     private let store = BrowserTaskSessionStore(maximumSessions: 128)
     private var unboundSessionID = UUID()
+    private var settingsCancellable: AnyCancellable?
+    private var lastAdvancedBrowserFeaturesEnabled: Bool
 
     private var handoffs: [UUID: Handoff] = [:]
     private var deliveringHandoffs = Set<UUID>()
@@ -93,8 +98,14 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     }
     private var protocolVersion: String { sessionConfiguration.protocolVersion }
 
-    init(durableHandoffs: Bool = true) {
+    init(
+        durableHandoffs: Bool = true,
+        settings: BrowserSettingsService? = nil
+    ) {
+        let settings = settings ?? BrowserSettingsService.shared
         self.durableHandoffs = durableHandoffs
+        self.settings = settings
+        self.lastAdvancedBrowserFeaturesEnabled = settings.advancedBrowserFeaturesEnabled
         let support = (try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -110,9 +121,20 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             contentWorld: WKContentWorld.world(name: "org.floeagent.browser.agent"),
             artifactDirectory: artifacts,
             maximumTabs: 6,
-            maximumEventsPerTab: 256
+            maximumEventsPerTab: 256,
+            websiteDataStoreProvider: { @MainActor in settings.websiteDataStore },
+            userAgentProvider: { @MainActor in settings.userAgent.effectiveValue },
+            linkOpenBehaviorProvider: { @MainActor in settings.linkOpenBehavior }
         )
         super.init()
+        settingsCancellable = settings.$revision
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.applyBrowserSettings() }
+            }
+        if durableHandoffs {
+            BrowserCookieProviderRegistry.shared.install(self)
+        }
         // Durable handoff persistence and shared-artifact retention are owned
         // by exactly one service instance per process. Task sessions never
         // write handoff receipts or prune screenshots, and ephemeral preview
@@ -126,6 +148,29 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
            let saved = try? JSONDecoder().decode([Handoff].self, from: data) {
             handoffs = Dictionary(saved.map { ($0.conversationID, $0) }, uniquingKeysWith: { _, latest in latest })
         }
+    }
+
+    var settingsService: BrowserSettingsService { settings }
+
+    /// Applies a settings revision to every live task session. Advanced OFF
+    /// only fences AI-owned downloads; ordinary website data keeps the shared
+    /// persistent store and the user stays logged in.
+    private func applyBrowserSettings() {
+        let advancedWasEnabled = lastAdvancedBrowserFeaturesEnabled
+        lastAdvancedBrowserFeaturesEnabled = settings.advancedBrowserFeaturesEnabled
+        if advancedWasEnabled && !settings.advancedBrowserFeaturesEnabled {
+            // Turning advanced AI access OFF must not clear cookies, log the
+            // user out or replace the ordinary persistent website-data store.
+            for session in liveSessions() { session.cancelAdvancedBrowserWork() }
+        }
+        let userAgent = settings.userAgent.effectiveValue
+        for session in liveSessions() {
+            session.applyBrowserSettings(userAgent: userAgent)
+        }
+    }
+
+    private func liveSessions() -> [BrowserTaskSession] {
+        store.sessionsByLeastRecentActivity()
     }
 
     // MARK: - Visible projection
@@ -714,6 +759,68 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
 extension BrowserSessionCenter: BrowserTaskSessionHost {
     func browserSessionRequestedUserControl(_ session: BrowserTaskSession, reason: String) {
         beginUserControl(for: session, runID: nil, reason: reason)
+    }
+}
+
+extension BrowserSessionCenter: BrowserCookieProviding {
+    /// Supplies browser cookies only for the exact active page origin and only
+    /// after the active provider recipient has a one-time grant. Values cross
+    /// into the URLSession Cookie header; they are never logged or returned as
+    /// ordinary tool output by this method.
+    func browserWebContext(
+        for url: URL,
+        conversationID: UUID?,
+        runID: UUID?
+    ) async throws -> BrowserWebContext {
+        guard let conversationID else { throw BrowserCookieProviderError.noTask }
+        guard let runID else { throw BrowserCookieProviderError.notAuthorized }
+        guard let session = store.session(for: conversationID), !session.isReleased else {
+            throw BrowserCookieProviderError.noTask
+        }
+        guard let tab = session.activeTab else {
+            throw BrowserCookieProviderError.noActivePage
+        }
+        guard let pageURL = tab.webView.url,
+              let pageOrigin = HTTPCookiePolicy.origin(pageURL),
+              let requestOrigin = HTTPCookiePolicy.origin(url),
+              pageOrigin == requestOrigin else {
+            throw BrowserCookieProviderError.originMismatch
+        }
+        let authorization = try await BrowserProviderTrustCoordinator.shared.requireBrowserDataAuthorization(
+            runID: runID,
+            conversationID: conversationID
+        )
+        let allCookies = await session.websiteDataStore.httpCookieStore.allCookies()
+        try BrowserProviderTrustCoordinator.shared.revalidateBrowserDataAuthorization(
+            runID: runID,
+            expectedProviderID: authorization.provider.id,
+            advancedGeneration: authorization.advancedGeneration
+        )
+        let cookies = allCookies.map(HTTPCookiePolicy.snapshot(from:))
+        let matched = HTTPCookiePolicy.matchingCookies(for: url, cookies: cookies)
+        return BrowserWebContext(
+            cookies: matched,
+            userAgent: tab.webView.customUserAgent ?? settings.userAgent.effectiveValue,
+            origin: pageOrigin,
+            authorizationProviderID: authorization.provider.id,
+            authorizationGeneration: authorization.advancedGeneration
+        )
+    }
+
+    func revalidateBrowserWebContext(
+        _ context: BrowserWebContext,
+        conversationID: UUID?,
+        runID: UUID?
+    ) async throws {
+        guard let runID else { throw BrowserCookieProviderError.notAuthorized }
+        guard let providerID = context.authorizationProviderID else {
+            throw BrowserCookieProviderError.notAuthorized
+        }
+        try BrowserProviderTrustCoordinator.shared.revalidateBrowserDataAuthorization(
+            runID: runID,
+            expectedProviderID: providerID,
+            advancedGeneration: context.authorizationGeneration
+        )
     }
 }
 #endif

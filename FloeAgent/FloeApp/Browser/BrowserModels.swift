@@ -29,6 +29,9 @@ enum BrowserAction: Sendable, Codable, Hashable {
     case listTabs
     case activateTab(UUID)
     case closeTab(UUID)
+    case listLinks(cursor: Int?, limit: Int)
+    case readTable(index: Int, cursor: Int?, limit: Int)
+    case readText(start: Int, maxCharacters: Int)
     case takeover
 }
 
@@ -112,6 +115,9 @@ enum FloeBrowserProtocolMethod: String, Sendable, Codable, Hashable, CaseIterabl
     case dispatchMouseEvent = "Input.dispatchMouseEvent"
     case insertText = "Input.insertText"
     case getEvents = "Runtime.getEvents"
+    case getLinks = "DOM.getLinks"
+    case getTable = "DOM.getTable"
+    case getTextRange = "DOM.getTextRange"
 }
 
 /// JSON-friendly CDP-shaped request. Only the allowlisted methods above are
@@ -133,6 +139,10 @@ struct FloeBrowserProtocolCommand: Sendable, Codable, Hashable {
     var timeoutMilliseconds: Int?
     var afterSequence: Int?
     var limit: Int?
+    var cursor: Int?
+    var tableIndex: Int?
+    var startCharacter: Int?
+    var maxCharacters: Int?
 
     init(
         id: Int,
@@ -150,7 +160,11 @@ struct FloeBrowserProtocolCommand: Sendable, Codable, Hashable {
         submit: Bool? = nil,
         timeoutMilliseconds: Int? = nil,
         afterSequence: Int? = nil,
-        limit: Int? = nil
+        limit: Int? = nil,
+        cursor: Int? = nil,
+        tableIndex: Int? = nil,
+        startCharacter: Int? = nil,
+        maxCharacters: Int? = nil
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -168,6 +182,10 @@ struct FloeBrowserProtocolCommand: Sendable, Codable, Hashable {
         self.timeoutMilliseconds = timeoutMilliseconds
         self.afterSequence = afterSequence
         self.limit = limit
+        self.cursor = cursor
+        self.tableIndex = tableIndex
+        self.startCharacter = startCharacter
+        self.maxCharacters = maxCharacters
     }
 }
 
@@ -231,5 +249,36 @@ struct BrowserResult: Sendable, Codable, Hashable {
     var events: [BrowserProtocolEvent] = []
     var nextEventSequence: Int?
     var protocolVersion: String?
+    var links: [BrowserLink]? = nil
+    var table: BrowserTablePage? = nil
+    var textPage: BrowserTextPage? = nil
+}
+
+struct BrowserLink: Sendable, Codable, Hashable, Identifiable {
+    var id: String { ref }
+    var ref: String
+    var href: String
+    var text: String
+    var title: String
+    var target: String?
+    var download: Bool
+    var bounds: BrowserBounds
+}
+
+struct BrowserTablePage: Sendable, Codable, Hashable {
+    var tableIndex: Int
+    var tableCount: Int
+    var caption: String
+    var headers: [String]
+    var rows: [[String]]
+    var totalRows: Int
+    var nextCursor: Int?
+}
+
+struct BrowserTextPage: Sendable, Codable, Hashable {
+    var start: Int
+    var text: String
+    var totalCharacters: Int
+    var nextStart: Int?
 }
 #endif

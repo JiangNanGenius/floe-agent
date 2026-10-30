@@ -12,6 +12,7 @@ import Combine
 import Foundation
 import WebKit
 import FloeCore
+import FloeTools
 
 /// Immutable engine settings shared by every task session. Values are copied
 /// at session creation so a session never reaches back into the visible
@@ -22,6 +23,32 @@ struct BrowserTaskSessionConfiguration {
     let artifactDirectory: URL
     let maximumTabs: Int
     let maximumEventsPerTab: Int
+    /// Resolved on the MainActor when a tab is created. The default preserves
+    /// the historical persistent store for fixtures/tests that construct this
+    /// value directly; the app center injects the shared store provider.
+    let websiteDataStoreProvider: @MainActor () -> WKWebsiteDataStore
+    let userAgentProvider: @MainActor () -> String?
+    let linkOpenBehaviorProvider: @MainActor () -> BrowserLinkOpenBehavior
+
+    init(
+        protocolVersion: String,
+        contentWorld: WKContentWorld,
+        artifactDirectory: URL,
+        maximumTabs: Int,
+        maximumEventsPerTab: Int,
+        websiteDataStoreProvider: @escaping @MainActor () -> WKWebsiteDataStore = { .default() },
+        userAgentProvider: @escaping @MainActor () -> String? = { nil },
+        linkOpenBehaviorProvider: @escaping @MainActor () -> BrowserLinkOpenBehavior = { .inApp }
+    ) {
+        self.protocolVersion = protocolVersion
+        self.contentWorld = contentWorld
+        self.artifactDirectory = artifactDirectory
+        self.maximumTabs = maximumTabs
+        self.maximumEventsPerTab = maximumEventsPerTab
+        self.websiteDataStoreProvider = websiteDataStoreProvider
+        self.userAgentProvider = userAgentProvider
+        self.linkOpenBehaviorProvider = linkOpenBehaviorProvider
+    }
 }
 
 /// Narrow callback surface from an execution context back to the service that
@@ -155,6 +182,16 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     @Published private(set) var isUserControlling = false
     @Published var addressText = ""
     @Published var surfaceState: SurfaceState = .unbound
+    /// Native chrome state, republished from the active tab's WebKit getters.
+    @Published private(set) var estimatedProgress: Double = 0
+    @Published private(set) var isLoading = false
+    @Published private(set) var canGoBack = false
+    @Published private(set) var canGoForward = false
+    @Published private(set) var activeTabTitle = ""
+    /// Bumped when a tab's title/URL/progress changes; the tab strip reads
+    /// WebKit getters and needs one observable signal.
+    @Published private(set) var tabStateRevision = 0
+    @Published private(set) var tabLimitNotice: String?
     var isEditingAddress = false
     private(set) var isReleased = false
     private(set) var activeExecutionCount = 0
@@ -171,6 +208,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     /// synchronously from the lifecycle points below, and a page can never
     /// start an export — only an authorized native tool call can.
     private(set) lazy var stagedExports = BrowserStagedExportService(session: self)
+    private(set) lazy var downloads = BrowserDownloadService()
 
     private weak var host: BrowserTaskSessionHost?
     private let protocolVersion: String
@@ -179,6 +217,15 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     let artifactDirectory: URL
     private let maximumTabs: Int
     private let maximumEventsPerTab: Int
+    private let websiteDataStoreProvider: @MainActor () -> WKWebsiteDataStore
+    private let userAgentProvider: @MainActor () -> String?
+    private let linkOpenBehaviorProvider: @MainActor () -> BrowserLinkOpenBehavior
+    private var tabObservations: [UUID: [NSKeyValueObservation]] = [:]
+
+    var tabLimit: Int { maximumTabs }
+    var websiteDataStore: WKWebsiteDataStore {
+        activeWebView?.configuration.websiteDataStore ?? websiteDataStoreProvider()
+    }
 
     init(
         conversationID: UUID,
@@ -194,22 +241,40 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         self.artifactDirectory = configuration.artifactDirectory
         self.maximumTabs = configuration.maximumTabs
         self.maximumEventsPerTab = configuration.maximumEventsPerTab
+        self.websiteDataStoreProvider = configuration.websiteDataStoreProvider
+        self.userAgentProvider = configuration.userAgentProvider
+        self.linkOpenBehaviorProvider = configuration.linkOpenBehaviorProvider
         super.init()
     }
 
     // MARK: - Tabs
 
-    var activeWebView: WKWebView? {
+    var activeTab: Tab? {
         guard let activeTabID else { return nil }
-        return tabs.first(where: { $0.id == activeTabID })?.webView
+        return tabs.first(where: { $0.id == activeTabID })
     }
+
+    var activeWebView: WKWebView? { activeTab?.webView }
 
     @discardableResult
     func createTab() -> UUID? {
+        guard !isReleased else { return nil }
+        guard tabs.count < maximumTabs else {
+            tabLimitNotice = IDELanguageRunText.t(
+                "此浏览器最多支持 6 个标签页。关闭一个标签页后再打开新的标签页。",
+                "This browser supports up to 6 tabs. Close a tab before opening another."
+            )
+            return nil
+        }
+        tabLimitNotice = nil
+        return makeTab()
+    }
+
+    private func makeTab() -> UUID? {
         guard !isReleased, tabs.count < maximumTabs else { return nil }
         lastActivityAt = Date()
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+        configuration.websiteDataStore = websiteDataStoreProvider()
         configuration.preferences.isElementFullscreenEnabled = true
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.protocolProbeSource,
@@ -224,6 +289,8 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             frame: CGRect(x: 0, y: 0, width: 1_024, height: 768),
             configuration: configuration
         )
+        webView.customUserAgent = userAgentProvider()
+        webView.allowsBackForwardNavigationGestures = true
         webView.navigationDelegate = self
         webView.uiDelegate = self
         let id = UUID()
@@ -238,24 +305,59 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             visualFallbackEvidence: nil
         ))
         activeTabID = id
+        installObservers(for: id, webView: webView)
         appendEvent(tabID: id, method: "Target.targetCreated")
+        syncChromeState()
         return id
     }
 
     func activate(_ id: UUID) {
         guard !isReleased, tabs.contains(where: { $0.id == id }) else { return }
+        // A user tab switch is presentation only. Any in-flight tool command
+        // captured its own tabID/webView before awaiting, so switching here
+        // never retargets a pending AI action.
         activeTabID = id
+        isEditingAddress = false
         refreshVisibleAddress()
+        syncChromeState()
         appendEvent(tabID: id, method: "Target.targetActivated")
     }
 
     func close(_ id: UUID) {
-        guard !isReleased, tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        guard !isReleased, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         impeccableCaptures.fence(tabID: id, reason: .tabClosed)
         stagedExports.fenceTab(id, reason: .tabClosed)
+        tabObservations.removeValue(forKey: id)?.forEach { $0.invalidate() }
         tabs[index].webView.stopLoading()
+        if tabs.count == 1 {
+            // Closing the last tab leaves an honest blank tab; the task's
+            // browser session and its ownership remain intact.
+            blank(tabID: id)
+            return
+        }
         tabs.remove(at: index)
-        if activeTabID == id { activeTabID = tabs[min(index, tabs.count - 1)].id }
+        if activeTabID == id {
+            activeTabID = tabs[min(index, tabs.count - 1)].id
+            refreshVisibleAddress()
+        }
+        syncChromeState()
+    }
+
+    private func blank(tabID: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        tabs[index].webView.stopLoading()
+        tabs[index].documentID = UUID().uuidString
+        tabs[index].documentGeneration += 1
+        tabs[index].revision = 0
+        tabs[index].visualFallbackEvidence = nil
+        tabs[index].webView.load(URLRequest(url: URL(string: "about:blank")!))
+        addressText = ""
+        appendEvent(tabID: tabID, method: "Page.frameNavigated")
+        syncChromeState()
+    }
+
+    func clearTabLimitNotice() {
+        tabLimitNotice = nil
     }
 
     func navigateFromAddressBar() {
@@ -301,6 +403,89 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         return url.host == "127.0.0.1" || url.host?.lowercased() == "localhost"
     }
 
+    /// Chrome state is derived from the active tab's public WebKit getters.
+    /// KVO only schedules this; no model command path depends on it.
+    private func syncChromeState() {
+        guard let tab = tabs.first(where: { $0.id == activeTabID }) else {
+            estimatedProgress = 0
+            isLoading = false
+            canGoBack = false
+            canGoForward = false
+            activeTabTitle = ""
+            tabStateRevision &+= 1
+            return
+        }
+        estimatedProgress = max(0, min(1, tab.webView.estimatedProgress))
+        isLoading = tab.webView.isLoading
+        canGoBack = tab.webView.canGoBack
+        canGoForward = tab.webView.canGoForward
+        activeTabTitle = tab.webView.title ?? ""
+        if !isEditingAddress { addressText = tab.webView.url?.absoluteString ?? "" }
+        tabStateRevision &+= 1
+    }
+
+    private func installObservers(for id: UUID, webView: WKWebView) {
+        var observations: [NSKeyValueObservation] = []
+        let schedule: @Sendable () -> Void = { [weak self] in
+            Task { @MainActor [weak self] in _ = self?.syncChromeState() }
+        }
+        observations.append(webView.observe(\.estimatedProgress, options: [.initial, .new]) { _, _ in schedule() })
+        observations.append(webView.observe(\.isLoading, options: [.initial, .new]) { _, _ in schedule() })
+        observations.append(webView.observe(\.canGoBack, options: [.initial, .new]) { _, _ in schedule() })
+        observations.append(webView.observe(\.canGoForward, options: [.initial, .new]) { _, _ in schedule() })
+        observations.append(webView.observe(\.title, options: [.initial, .new]) { _, _ in schedule() })
+        observations.append(webView.observe(\.url, options: [.initial, .new]) { _, _ in schedule() })
+        tabObservations[id] = observations
+    }
+
+    /// Applies the settings-managed User-Agent to existing tabs. Ordinary
+    /// website data keeps the shared persistent store; advanced-AI OFF never
+    /// replaces it or logs the user out.
+    func applyBrowserSettings(userAgent: String?) {
+        guard !isReleased else { return }
+        for tab in tabs { tab.webView.customUserAgent = userAgent }
+        syncChromeState()
+    }
+
+    /// Native authenticated download for this task's browser. The chosen tab's
+    /// WKWebView supplies its website data store, so existing session cookies
+    /// are used without putting them in model context.
+    /// Advanced-browser OFF fences in-flight downloads owned by this surface.
+    /// Cookie/storage reads revalidate their captured generation in the tool.
+    func cancelAdvancedBrowserWork() {
+        downloads.cancelAll()
+    }
+
+    func startDownload(
+        tabID: UUID?,
+        url: URL,
+        destinationURL: URL,
+        relativePath: String,
+        maxBytes: Int,
+        overwrite: Bool,
+        cancellation: CancellationToken
+    ) async throws -> BrowserDownloadReceipt {
+        guard !isReleased else { throw FloeError.validationFailed("This task's browser was released") }
+        guard !isUserControlling else {
+            throw FloeError.validationFailed("Wait for the user to return browser control before downloading")
+        }
+        guard let selected = tabID ?? activeTabID,
+              let tab = tabs.first(where: { $0.id == selected }) else {
+            throw FloeError.validationFailed("The source browser tab is no longer available")
+        }
+        let suggested = url.lastPathComponent.isEmpty ? "download" : url.lastPathComponent
+        return try await downloads.start(
+            webView: tab.webView,
+            request: URLRequest(url: url),
+            destinationURL: destinationURL,
+            relativePath: relativePath,
+            suggestedFilename: suggested,
+            maxBytes: maxBytes,
+            overwrite: overwrite,
+            cancellation: cancellation
+        )
+    }
+
     // MARK: - Ownership lifecycle
 
     func setUserControlling(_ value: Bool) {
@@ -336,6 +521,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         isReleased = true
         impeccableCaptures.fenceAll(reason: .released)
         stagedExports.fenceAll(reason: .released)
+        downloads.cancelAll()
+        tabObservations.values.forEach { $0.forEach { $0.invalidate() } }
+        tabObservations.removeAll()
         let probes = Array(pendingProbes.values)
         pendingProbes.removeAll()
         probes.forEach { $0.invalidate() }
@@ -370,7 +558,8 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         }
         if isUserControlling {
             switch command.action {
-            case .protocolInfo, .observe, .listTabs, .events:
+            case .protocolInfo, .observe, .listTabs, .events,
+                 .listLinks, .readTable, .readText:
                 break
             default:
                 return failure(command, status: .needsUser, code: "takeover", "The user currently controls the browser")
@@ -567,6 +756,12 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                     afterSequence: afterSequence,
                     limit: limit
                 )
+            case .listLinks(let cursor, let limit):
+                return await linksResult(command, tabID: tabID, cursor: cursor, limit: limit)
+            case .readTable(let index, let cursor, let limit):
+                return await tableResult(command, tabID: tabID, index: index, cursor: cursor, limit: limit)
+            case .readText(let start, let maxCharacters):
+                return await textResult(command, tabID: tabID, start: start, maxCharacters: maxCharacters)
             case .protocolInfo, .create, .listTabs, .activateTab, .closeTab, .takeover:
                 break
             }
@@ -646,6 +841,22 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             action = .events(
                 afterSequence: request.afterSequence,
                 limit: min(100, max(1, request.limit ?? 50))
+            )
+        case .getLinks:
+            action = .listLinks(
+                cursor: request.cursor,
+                limit: min(100, max(1, request.limit ?? 50))
+            )
+        case .getTable:
+            action = .readTable(
+                index: max(0, min(49, request.tableIndex ?? 0)),
+                cursor: request.cursor,
+                limit: min(100, max(1, request.limit ?? 50))
+            )
+        case .getTextRange:
+            action = .readText(
+                start: max(0, request.startCharacter ?? 0),
+                maxCharacters: min(65_536, max(1_000, request.maxCharacters ?? 16_384))
             )
         }
         let command = BrowserCommand(
@@ -876,6 +1087,173 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         }
         let data = try JSONSerialization.data(withJSONObject: value as Any)
         return try JSONDecoder().decode(ProbeSnapshot.self, from: data)
+    }
+
+    private func readerDeadline(_ command: BrowserCommand) -> ContinuousClock.Instant {
+        ContinuousClock.now.advanced(
+            by: .milliseconds(min(30_000, max(250, command.timeoutMilliseconds)))
+        )
+    }
+
+    private func linksResult(
+        _ command: BrowserCommand,
+        tabID: UUID,
+        cursor: Int?,
+        limit: Int
+    ) async -> BrowserResult {
+        guard let tab = tabs.first(where: { $0.id == tabID }) else {
+            return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
+        }
+        do {
+            let value = try await probeValue(
+                """
+                if (!globalThis.__floeProtocol) return {revision:0, links:[], nextCursor:null};
+                return globalThis.__floeProtocol.links(documentID, cursor, limit);
+                """,
+                arguments: [
+                    "documentID": tab.documentID,
+                    "cursor": max(0, cursor ?? 0),
+                    "limit": min(100, max(1, limit))
+                ],
+                in: tab.webView,
+                deadline: readerDeadline(command)
+            )
+            guard let dictionary = value as? [String: Any],
+                  JSONSerialization.isValidJSONObject(dictionary) else {
+                throw BrowserPolicyError.blocked("The page returned an invalid link list")
+            }
+            let data = try JSONSerialization.data(withJSONObject: dictionary)
+            let decoded = try JSONDecoder().decode(LinkProbeResponse.self, from: data)
+            var result = BrowserResult(
+                requestID: command.requestID,
+                status: .ok,
+                protocolVersion: protocolVersion
+            )
+            result.links = decoded.links
+            result.message = "links=\(decoded.links.count) nextCursor=\(decoded.nextCursor.map(String.init) ?? "none")"
+            return result
+        } catch BrowserProbeError.timedOut {
+            return failure(command, status: .timeout, code: "timeout", "Link observation timed out")
+        } catch BrowserProbeError.released {
+            return failure(command, status: .stale, code: "released", "This task's browser session was released")
+        } catch is CancellationError {
+            return failure(command, status: .failed, code: "cancelled", "Link observation was cancelled")
+        } catch {
+            return failure(command, status: .failed, code: "observe", error.localizedDescription)
+        }
+    }
+
+    private func tableResult(
+        _ command: BrowserCommand,
+        tabID: UUID,
+        index: Int,
+        cursor: Int?,
+        limit: Int
+    ) async -> BrowserResult {
+        guard let tab = tabs.first(where: { $0.id == tabID }) else {
+            return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
+        }
+        do {
+            let value = try await probeValue(
+                """
+                if (!globalThis.__floeProtocol) return {
+                  revision:0, tableIndex:0, tableCount:0, caption:'', headers:[], rows:[], totalRows:0, nextCursor:null
+                };
+                return globalThis.__floeProtocol.table(documentID, tableIndex, cursor, limit);
+                """,
+                arguments: [
+                    "documentID": tab.documentID,
+                    "tableIndex": max(0, min(49, index)),
+                    "cursor": max(0, cursor ?? 0),
+                    "limit": min(100, max(1, limit))
+                ],
+                in: tab.webView,
+                deadline: readerDeadline(command)
+            )
+            guard let dictionary = value as? [String: Any],
+                  JSONSerialization.isValidJSONObject(dictionary) else {
+                throw BrowserPolicyError.blocked("The page returned an invalid table")
+            }
+            let data = try JSONSerialization.data(withJSONObject: dictionary)
+            let decoded = try JSONDecoder().decode(TableProbeResponse.self, from: data)
+            var result = BrowserResult(
+                requestID: command.requestID,
+                status: .ok,
+                protocolVersion: protocolVersion
+            )
+            result.table = BrowserTablePage(
+                tableIndex: decoded.tableIndex,
+                tableCount: decoded.tableCount,
+                caption: decoded.caption,
+                headers: decoded.headers,
+                rows: decoded.rows,
+                totalRows: decoded.totalRows,
+                nextCursor: decoded.nextCursor
+            )
+            result.message = "table=\(decoded.tableIndex + 1)/\(decoded.tableCount) rows=\(decoded.rows.count) nextCursor=\(decoded.nextCursor.map(String.init) ?? "none")"
+            return result
+        } catch BrowserProbeError.timedOut {
+            return failure(command, status: .timeout, code: "timeout", "Table observation timed out")
+        } catch BrowserProbeError.released {
+            return failure(command, status: .stale, code: "released", "This task's browser session was released")
+        } catch is CancellationError {
+            return failure(command, status: .failed, code: "cancelled", "Table observation was cancelled")
+        } catch {
+            return failure(command, status: .failed, code: "observe", error.localizedDescription)
+        }
+    }
+
+    private func textResult(
+        _ command: BrowserCommand,
+        tabID: UUID,
+        start: Int,
+        maxCharacters: Int
+    ) async -> BrowserResult {
+        guard let tab = tabs.first(where: { $0.id == tabID }) else {
+            return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
+        }
+        do {
+            let value = try await probeValue(
+                """
+                if (!globalThis.__floeProtocol) return {revision:0, start:0, text:'', totalCharacters:0, nextStart:null};
+                return globalThis.__floeProtocol.textRange(documentID, start, maxCharacters);
+                """,
+                arguments: [
+                    "documentID": tab.documentID,
+                    "start": max(0, start),
+                    "maxCharacters": min(65_536, max(1_000, maxCharacters))
+                ],
+                in: tab.webView,
+                deadline: readerDeadline(command)
+            )
+            guard let dictionary = value as? [String: Any],
+                  JSONSerialization.isValidJSONObject(dictionary) else {
+                throw BrowserPolicyError.blocked("The page returned an invalid text range")
+            }
+            let data = try JSONSerialization.data(withJSONObject: dictionary)
+            let decoded = try JSONDecoder().decode(TextProbeResponse.self, from: data)
+            var result = BrowserResult(
+                requestID: command.requestID,
+                status: .ok,
+                protocolVersion: protocolVersion
+            )
+            result.textPage = BrowserTextPage(
+                start: decoded.start,
+                text: decoded.text,
+                totalCharacters: decoded.totalCharacters,
+                nextStart: decoded.nextStart
+            )
+            result.message = "characters=\(decoded.text.count) total=\(decoded.totalCharacters) nextStart=\(decoded.nextStart.map(String.init) ?? "none")"
+            return result
+        } catch BrowserProbeError.timedOut {
+            return failure(command, status: .timeout, code: "timeout", "Text range observation timed out")
+        } catch BrowserProbeError.released {
+            return failure(command, status: .stale, code: "released", "This task's browser session was released")
+        } catch is CancellationError {
+            return failure(command, status: .failed, code: "cancelled", "Text range observation was cancelled")
+        } catch {
+            return failure(command, status: .failed, code: "observe", error.localizedDescription)
+        }
     }
 
     private func eventsResult(
@@ -1238,6 +1616,102 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         };
       };
       const drainEvents = id => { setDocument(id); return events.splice(0, events.length); };
+      const links = (id, cursor, limit) => {
+        setDocument(id);
+        const start = Math.max(0, Number(cursor) || 0);
+        const count = Math.min(100, Math.max(1, Number(limit) || 50));
+        const output = [];
+        const seen = new Set();
+        for (const root of roots()) {
+          let candidates = [];
+          try { candidates = Array.from(root.querySelectorAll('a[href]')); } catch (_) {}
+          for (const el of candidates) {
+            if (seen.has(el) || !visible(el)) continue;
+            seen.add(el);
+            let href = '';
+            try { href = String(el.href || '').slice(0, 4096); } catch (_) {}
+            if (!href) continue;
+            const rect = el.getBoundingClientRect();
+            output.push({
+              ref: ensureRef(el),
+              href,
+              text: String(el.innerText || el.textContent || '').trim().slice(0, 500),
+              title: String(el.getAttribute('title') || '').slice(0, 300),
+              target: el.getAttribute('target') ? String(el.getAttribute('target')).slice(0, 64) : null,
+              download: !!el.download,
+              bounds: {x:rect.x, y:rect.y, width:rect.width, height:rect.height}
+            });
+            if (output.length >= 500) break;
+          }
+          if (output.length >= 500) break;
+        }
+        return {
+          revision,
+          links: output.slice(start, start + count),
+          nextCursor: start + count < output.length ? start + count : null
+        };
+      };
+      const table = (id, tableIndex, cursor, limit) => {
+        setDocument(id);
+        const tables = [];
+        for (const root of roots()) {
+          let candidates = [];
+          try { candidates = Array.from(root.querySelectorAll('table')); } catch (_) {}
+          for (const el of candidates) {
+            if (!visible(el)) continue;
+            tables.push(el);
+            if (tables.length >= 50) break;
+          }
+          if (tables.length >= 50) break;
+        }
+        if (!tables.length) {
+          return {revision, tableIndex:0, tableCount:0, caption:'', headers:[], rows:[], totalRows:0, nextCursor:null};
+        }
+        const index = Math.max(0, Math.min(tables.length - 1, Number(tableIndex) || 0));
+        const element = tables[index];
+        const rows = Array.from(element.rows || []);
+        let headers = [];
+        if (element.tHead) {
+          for (const row of Array.from(element.tHead.rows)) {
+            for (const cell of Array.from(row.cells)) {
+              headers.push(String(cell.innerText || cell.textContent || '').trim().slice(0, 2000));
+            }
+          }
+        } else if (rows.length) {
+          headers = Array.from(rows[0].cells || []).map(cell => String(cell.innerText || cell.textContent || '').trim().slice(0, 2000));
+        }
+        const start = Math.max(0, Number(cursor) || 0);
+        const count = Math.min(100, Math.max(1, Number(limit) || 50));
+        const selected = rows.slice(start, start + count).map(row => {
+          return Array.from(row.cells || []).slice(0, 50).map(cell => {
+            return String(cell.innerText || cell.textContent || '').trim().slice(0, 2000);
+          });
+        });
+        return {
+          revision,
+          tableIndex: index,
+          tableCount: tables.length,
+          caption: String(element.caption ? (element.caption.innerText || element.caption.textContent || '') : '').trim().slice(0, 500),
+          headers: headers.slice(0, 50),
+          rows: selected,
+          totalRows: rows.length,
+          nextCursor: start + count < rows.length ? start + count : null
+        };
+      };
+      const textRange = (id, start, maxCharacters) => {
+        setDocument(id);
+        const source = String((document.body && (document.body.innerText || document.body.textContent)) || '');
+        const offset = Math.max(0, Math.min(source.length, Number(start) || 0));
+        const limit = Math.min(65536, Math.max(1000, Number(maxCharacters) || 16384));
+        const slice = source.slice(offset, offset + limit);
+        return {
+          revision,
+          start: offset,
+          text: slice,
+          totalCharacters: source.length,
+          nextStart: offset + slice.length < source.length ? offset + slice.length : null
+        };
+      };
 
       new MutationObserver(records => {
         if (!records.length) return;
@@ -1249,7 +1723,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
       addEventListener('load', () => push('Page.loadEventFired'), {once:true});
       addEventListener('hashchange', () => push('Page.navigatedWithinDocument'));
       addEventListener('popstate', () => push('Page.navigatedWithinDocument'));
-      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents};
+      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents, links, table, textRange};
       push('Runtime.executionContextCreated');
     })();
     """#
@@ -1330,6 +1804,14 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         guard (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID)) != nil else {
             return .cancel
         }
+        // "Open in system browser" applies only while a human controls the
+        // page, so an AI-driven click never gets rerouted into Safari.
+        if isUserControlling,
+           navigationAction.navigationType == .linkActivated,
+           linkOpenBehaviorProvider() == .systemBrowser {
+            await UIApplication.shared.open(url)
+            return .cancel
+        }
         return .allow
     }
 
@@ -1353,12 +1835,16 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
             tabID: tabs[index].id,
             method: "Page.frameNavigated"
         )
+        if tabs[index].id == activeTabID { syncChromeState() }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard !isReleased, let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
         appendEvent(tabID: tabs[index].id, method: "Page.loadEventFired")
-        if tabs[index].id == activeTabID { refreshVisibleAddress() }
+        if tabs[index].id == activeTabID {
+            refreshVisibleAddress()
+            syncChromeState()
+        }
         surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready
         // Title/back-forward availability are WebKit getters, not @Published
         // fields; notify the visible projection explicitly.
@@ -1393,9 +1879,24 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        guard !isReleased,
-              let id = createTab(),
-              let created = tabs.first(where: { $0.id == id })?.webView else { return nil }
+        guard !isReleased else { return nil }
+        if isUserControlling,
+           linkOpenBehaviorProvider() == .systemBrowser,
+           let url = navigationAction.request.url,
+           (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID)) != nil {
+            Task { @MainActor in await UIApplication.shared.open(url) }
+            return nil
+        }
+        // A target=_blank / window.open request opens a real task tab. The
+        // six-tab limit is honest: at capacity the popup is refused and the
+        // user/model sees the limit notice instead of a fake success.
+        guard let id = createTab(),
+              let created = tabs.first(where: { $0.id == id })?.webView else {
+            if let activeTabID {
+                appendEvent(tabID: activeTabID, method: "Target.targetLimitReached", detail: "maximumTabs")
+            }
+            return nil
+        }
         if let url = navigationAction.request.url,
            (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID)) != nil {
             created.load(URLRequest(url: url))
@@ -1469,6 +1970,31 @@ private struct ProbeEvent: Decodable {
     var method: String
     var detail: String?
     var revision: Int?
+}
+
+private struct LinkProbeResponse: Decodable {
+    var revision: Int
+    var links: [BrowserLink]
+    var nextCursor: Int?
+}
+
+private struct TableProbeResponse: Decodable {
+    var revision: Int
+    var tableIndex: Int
+    var tableCount: Int
+    var caption: String
+    var headers: [String]
+    var rows: [[String]]
+    var totalRows: Int
+    var nextCursor: Int?
+}
+
+private struct TextProbeResponse: Decodable {
+    var revision: Int
+    var start: Int
+    var text: String
+    var totalCharacters: Int
+    var nextStart: Int?
 }
 
 private enum BrowserInteractionError: Error {

@@ -3,10 +3,12 @@
 #if canImport(SwiftUI) && canImport(WebKit)
 import Foundation
 import CryptoKit
+import WebKit
 import FloeCore
 import FloeModels
 import FloeTools
 import FloeWorkspace
+import FloeExecution
 
 private final class BrowserToolEnvironment: @unchecked Sendable {
     weak var center: BrowserSessionCenter?
@@ -209,6 +211,145 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             summary: String(decoding: bytes, as: UTF8.self),
             fullOutputSHA256: FloeDigest.sha256Hex(bytes)
         )
+    }
+
+    @MainActor
+    func requireBrowserDataAccess(
+        _ session: BrowserTaskSession,
+        context: ToolContext
+    ) async throws -> BrowserDataAuthorization {
+        guard !session.isUserControlling else {
+            throw FloeError.validationFailed("Wait for the user to return browser control before reading browser session data")
+        }
+        return try await BrowserProviderTrustCoordinator.shared.requireBrowserDataAuthorization(
+            runID: context.runID,
+            conversationID: context.conversationID
+        )
+    }
+
+    @MainActor
+    func revalidateBrowserDataAccess(
+        _ authorization: BrowserDataAuthorization,
+        context: ToolContext
+    ) throws {
+        try BrowserProviderTrustCoordinator.shared.revalidateBrowserDataAuthorization(
+            runID: context.runID,
+            expectedProviderID: authorization.provider.id,
+            advancedGeneration: authorization.advancedGeneration
+        )
+    }
+
+    @MainActor
+    func download(
+        context: ToolContext,
+        tabID: UUID?,
+        urlString: String,
+        path: String,
+        maxBytes: Int?,
+        overwrite: Bool?
+    ) async throws -> ToolExecutionOutput {
+        let resolved = try session(for: context)
+        let owner = resolved.owner
+        let session = resolved.session
+        let url = try BrowserURLPolicy.validate(urlString, conversationID: owner)
+        guard !session.isUserControlling else {
+            throw FloeError.validationFailed("Wait for the user to return browser control before downloading")
+        }
+        guard let root = context.workspaceRootURL, root.isFileURL else {
+            throw FloeError.validationFailed("Browser download requires this task's workspace")
+        }
+        let physicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        try context.authorizeWorkspacePath(path)
+        let cap = max(1, min(maxBytes ?? 32 * 1_024 * 1_024, 64 * 1_024 * 1_024))
+        let pathGuard = WorkspacePathGuard(
+            rootURL: physicalRoot,
+            maxReadBytes: cap,
+            maxWriteBytes: cap
+        )
+        let destination = try pathGuard.resolve(
+            path,
+            for: overwrite == true ? .replace(consent: true) : .createNew
+        )
+        guard destination.path.hasPrefix(physicalRoot.path + "/") else {
+            throw FloeError.validationFailed("The download destination belongs to a different workspace")
+        }
+        let authorization = try await BrowserProviderTrustCoordinator.shared.requireBrowserDataAuthorization(
+            runID: context.runID,
+            conversationID: context.conversationID
+        )
+        let receipt = try await session.startDownload(
+            tabID: tabID,
+            url: url,
+            destinationURL: destination,
+            relativePath: path,
+            maxBytes: cap,
+            overwrite: overwrite == true,
+            cancellation: context.cancellation
+        )
+        try BrowserProviderTrustCoordinator.shared.revalidateBrowserDataAuthorization(
+            runID: context.runID,
+            expectedProviderID: authorization.provider.id,
+            advancedGeneration: authorization.advancedGeneration
+        )
+        try context.cancellation.throwIfCancelled()
+        let outputFiles = try Self.publishDownload(receipt, using: context)
+        let payload: [String: Any] = [
+            "status": "ok",
+            "path": receipt.relativePath,
+            "mimeType": receipt.mimeType,
+            "byteCount": receipt.byteCount,
+            "sha256": receipt.sha256,
+            "filename": receipt.suggestedFilename,
+            "sourceHost": receipt.finalHost ?? ""
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        return ToolExecutionOutput(
+            summary: String(decoding: data, as: UTF8.self),
+            fullOutputSHA256: FloeDigest.sha256Hex(data),
+            artifacts: [],
+            outputFiles: outputFiles,
+            maximumSummaryCharacters: 16_384
+        )
+    }
+
+    private static func publishDownload(
+        _ receipt: BrowserDownloadReceipt,
+        using context: ToolContext
+    ) throws -> [RunOutputFile] {
+        guard !context.temporaryReadOnly,
+              let callID = context.toolCallID, !callID.isEmpty,
+              context.conversationID != nil else {
+            return []
+        }
+        do {
+            let output = try RunOutputSnapshotStore.publish(
+                RunOutputSnapshotRequest(
+                    producerTool: "browser.download",
+                    slot: "download",
+                    commit: RunOutputCommit(
+                        sourceURL: receipt.destinationURL,
+                        sha256: receipt.sha256,
+                        byteCount: receipt.byteCount,
+                        displayName: receipt.destinationURL.lastPathComponent,
+                        mimeType: normalizedContentType(receipt.mimeType)
+                    )
+                ),
+                using: context
+            )
+            return [output]
+        } catch let error as RunOutputSnapshotError {
+            throw FloeError.validationFailed("browser download output publication failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func normalizedContentType(_ raw: String) -> String {
+        let base = raw.split(separator: ";", maxSplits: 1).first
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+        guard !base.isEmpty, base.utf8.count <= 128, base.contains("/"),
+              !base.contains(where: { $0.isWhitespace || $0.isNewline }) else {
+            return "application/octet-stream"
+        }
+        return base
     }
 
     /// Resolves the exact run that owns a durable browser handoff for this
@@ -734,6 +875,508 @@ private struct BrowserScrollTool: AgentTool {
     }
 }
 
+private struct BrowserLinksTool: AgentTool {
+    struct Arguments: Decodable, Sendable { let tabID: UUID?; let cursor: Int?; let limit: Int? }
+    static let name = "browser.links"
+    static let toolDescription = "Read links from the current rendered DOM of this task's browser, including links created after page load. Returns absolute hrefs, text, title, target, download attribute and stable element refs. Use browser.navigate or browser.download with a chosen href; this tool does not follow links."
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string","format":"uuid"},"cursor":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = []
+    static let isSideEffecting = false
+    static let toolEffect: ToolEffect = .readOnly
+    let environment: BrowserToolEnvironment
+
+    func validate(_ args: Arguments) throws {
+        if let cursor = args.cursor, cursor < 0 { throw FloeError.validationFailed("cursor must be non-negative") }
+        if let limit = args.limit, !(1...100).contains(limit) { throw FloeError.validationFailed("limit must be between 1 and 100") }
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        return try await environment.run(
+            context: context,
+            action: .listLinks(cursor: args.cursor, limit: args.limit ?? 50),
+            tabID: args.tabID
+        )
+    }
+}
+
+private struct BrowserTableTool: AgentTool {
+    struct Arguments: Decodable, Sendable { let tabID: UUID?; let index: Int?; let cursor: Int?; let limit: Int? }
+    static let name = "browser.table"
+    static let toolDescription = "Read a table from the current rendered DOM of this task's browser. Returns caption, headers, bounded rows and the next row cursor. Use browser.text for prose outside tables."
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string","format":"uuid"},"index":{"type":"integer","minimum":0,"maximum":49},"cursor":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = []
+    static let isSideEffecting = false
+    static let toolEffect: ToolEffect = .readOnly
+    let environment: BrowserToolEnvironment
+
+    func validate(_ args: Arguments) throws {
+        if let index = args.index, !(0...49).contains(index) { throw FloeError.validationFailed("index must be between 0 and 49") }
+        if let cursor = args.cursor, cursor < 0 { throw FloeError.validationFailed("cursor must be non-negative") }
+        if let limit = args.limit, !(1...100).contains(limit) { throw FloeError.validationFailed("limit must be between 1 and 100") }
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        return try await environment.run(
+            context: context,
+            action: .readTable(index: args.index ?? 0, cursor: args.cursor, limit: args.limit ?? 50),
+            tabID: args.tabID
+        )
+    }
+}
+
+private struct BrowserTextTool: AgentTool {
+    struct Arguments: Decodable, Sendable { let tabID: UUID?; let start: Int?; let maxCharacters: Int? }
+    static let name = "browser.text"
+    static let toolDescription = "Read a bounded character range of the rendered body text from this task's browser. Use start/nextStart for long pages. This reads the current DOM text, not the raw HTML source."
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string","format":"uuid"},"start":{"type":"integer","minimum":0,"maximum":10000000},"maxCharacters":{"type":"integer","minimum":1000,"maximum":65536}},"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = []
+    static let isSideEffecting = false
+    static let toolEffect: ToolEffect = .readOnly
+    let environment: BrowserToolEnvironment
+
+    func validate(_ args: Arguments) throws {
+        if let start = args.start, !(0...10_000_000).contains(start) { throw FloeError.validationFailed("start is out of bounds") }
+        if let maxCharacters = args.maxCharacters, !(1_000...65_536).contains(maxCharacters) {
+            throw FloeError.validationFailed("maxCharacters must be between 1000 and 65536")
+        }
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        return try await environment.run(
+            context: context,
+            action: .readText(start: args.start ?? 0, maxCharacters: args.maxCharacters ?? 16_384),
+            tabID: args.tabID
+        )
+    }
+}
+
+private struct BrowserCookiesTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let action: String
+        let tabID: UUID?
+        let includeValues: Bool?
+        let cookie: HTTPCookieInput?
+        let name: String?
+        let domain: String?
+        let path: String?
+    }
+    static let name = "browser.cookies"
+    static let toolDescription = "Read or manage cookies for the active task-browser origin through public WebKit APIs. list returns attributes; includeValues=true explicitly returns raw values and requires one-time provider authorization. set accepts a full cookie object (including httpOnly); delete removes matching cookies; clear removes all cookies for the origin. Raw values never enter ordinary logs or durable captures; explicit raw-value results carry a sensitivity hook for redacted persistence."
+    static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["list","set","delete","clear"]},"tabID":{"type":"string","format":"uuid"},"includeValues":{"type":"boolean","description":"Explicitly return raw cookie values; default false returns attributes and lengths only"},"cookie":{"type":"object","properties":{"name":{"type":"string"},"value":{"type":"string"},"domain":{"type":"string"},"path":{"type":"string"},"secure":{"type":"boolean"},"httpOnly":{"type":"boolean"},"expiresAt":{"type":"string"},"sameSite":{"type":"string"}},"required":["name","value"],"additionalProperties":false},"name":{"type":"string"},"domain":{"type":"string"},"path":{"type":"string"}},"required":["action"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.accessesCredentials, .controlsGUI]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+    let environment: BrowserToolEnvironment
+
+    func validate(_ args: Arguments) throws {
+        guard ["list", "set", "delete", "clear"].contains(args.action) else {
+            throw FloeError.validationFailed("Unknown cookie action")
+        }
+        if args.action == "set" {
+            guard let cookie = args.cookie, !cookie.name.isEmpty, cookie.value.utf8.count <= 4_096 else {
+                throw FloeError.validationFailed("set requires a bounded cookie object with name and value")
+            }
+        }
+        if args.action == "delete" {
+            guard args.name != nil || args.domain != nil || args.path != nil || args.cookie != nil else {
+                throw FloeError.validationFailed("delete requires at least one matching attribute or a cookie object")
+            }
+        }
+    }
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        try context.cancellation.throwIfCancelled()
+        let resolved = try environment.session(for: context)
+        let session = resolved.session
+        let recipient = try await environment.requireBrowserDataAccess(session, context: context)
+        let bridge = BrowserWebDataBridge(session: session)
+        let selectedTab = args.tabID ?? session.activeTabID
+        let pageOrigin = session.tabs.first(where: { $0.id == selectedTab })
+            .flatMap { HTTPCookiePolicy.origin($0.webView.url ?? URL(string: "about:blank")!) }
+
+        switch args.action {
+        case "list":
+            let includeValues = args.includeValues == true
+            let records = try await bridge.cookies(tabID: args.tabID, includeValues: includeValues)
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            let sanitized = records.map { record -> BrowserCookieRecord in
+                var copy = record
+                copy.value = nil
+                return copy
+            }
+            let object: [String: Any] = [
+                "status": "ok",
+                "action": "list",
+                "origin": pageOrigin ?? "",
+                "cookies": try Self.jsonObject(sanitized),
+                "includeValues": includeValues,
+                "valuesRedacted": includeValues
+            ]
+            var ephemeral: String?
+            if includeValues {
+                ephemeral = try BrowserSensitiveOutput.encodedSummary([
+                    "status": "ok",
+                    "action": "list",
+                    "origin": pageOrigin ?? "",
+                    "cookies": try Self.jsonObject(records),
+                    "includeValues": true
+                ])
+            }
+            return try Self.output(object, maximum: 262_144, ephemeralSensitiveOutput: ephemeral)
+        case "set":
+            guard let input = args.cookie else {
+                throw FloeError.validationFailed("set requires a cookie object")
+            }
+            let record = try await bridge.setCookie(tabID: args.tabID, input: input)
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            let object: [String: Any] = [
+                "status": "ok", "action": "set", "origin": pageOrigin ?? "",
+                "cookie": try Self.jsonObject([record])
+            ]
+            return try Self.output(object, maximum: 16_384)
+        case "delete":
+            let name = args.name ?? args.cookie?.name
+            let domain = args.domain ?? args.cookie?.domain
+            let path = args.path ?? args.cookie?.path
+            let count = try await bridge.deleteCookies(tabID: args.tabID, name: name, domain: domain, path: path)
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            return try Self.output([
+                "status": "ok", "action": "delete", "origin": pageOrigin ?? "", "deleted": count
+            ], maximum: 8_192)
+        default:
+            let count = try await bridge.clearCookies(tabID: args.tabID)
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            return try Self.output([
+                "status": "ok", "action": "clear", "origin": pageOrigin ?? "", "deleted": count
+            ], maximum: 8_192)
+        }
+    }
+
+    private static func jsonObject<T: Encodable>(_ value: T) throws -> Any {
+        let data = try JSONEncoder().encode(value)
+        return try JSONSerialization.jsonObject(with: data)
+    }
+
+    private static func output(
+        _ object: [String: Any],
+        maximum: Int,
+        ephemeralSensitiveOutput: String? = nil
+    ) throws -> ToolExecutionOutput {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let summary = String(decoding: data, as: UTF8.self)
+        return ToolExecutionOutput(
+            summary: summary,
+            fullOutputSHA256: FloeDigest.sha256Hex(data),
+            maximumSummaryCharacters: maximum,
+            ephemeralSensitiveOutput: ephemeralSensitiveOutput
+        )
+    }
+}
+
+private struct BrowserStorageTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let action: String
+        let kind: String?
+        let tabID: UUID?
+        let origin: String?
+        let key: String?
+        let value: String?
+        let includeValues: Bool?
+    }
+    static let name = "browser.storage"
+    static let toolDescription = "Read or manage localStorage/sessionStorage for the exact origin and tab of this task's browser. list returns bounded keys; get returns metadata and, only with includeValues=true, the raw value; set/delete/clear mutate that tab's storage. This does not read Safari or Keychain data. Explicit raw values carry a sensitivity hook for redacted persistence."
+    static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["list","get","set","delete","clear"]},"kind":{"type":"string","enum":["local","session"]},"tabID":{"type":"string","format":"uuid"},"origin":{"type":"string","maxLength":2048,"description":"Must match the active tab's exact origin"},"key":{"type":"string","maxLength":512},"value":{"type":"string","maxLength":16384},"includeValues":{"type":"boolean","description":"Explicitly return raw storage values; default false"}},"required":["action"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.accessesCredentials, .controlsGUI]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+    let environment: BrowserToolEnvironment
+
+    func validate(_ args: Arguments) throws {
+        guard ["list", "get", "set", "delete", "clear"].contains(args.action) else {
+            throw FloeError.validationFailed("Unknown storage action")
+        }
+        if let kind = args.kind, BrowserStorageKind(rawValue: kind) == nil {
+            throw FloeError.validationFailed("kind must be local or session")
+        }
+        if ["get", "set", "delete"].contains(args.action) {
+            guard let key = args.key, !key.isEmpty, key.utf8.count <= 512 else {
+                throw FloeError.validationFailed("This storage action requires a bounded key")
+            }
+        }
+        if args.action == "set" {
+            guard let value = args.value, value.utf8.count <= 16 * 1_024 else {
+                throw FloeError.validationFailed("set requires a value no larger than 16 KiB")
+            }
+        }
+    }
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        try context.cancellation.throwIfCancelled()
+        let resolved = try environment.session(for: context)
+        let session = resolved.session
+        let recipient = try await environment.requireBrowserDataAccess(session, context: context)
+        let bridge = BrowserWebDataBridge(session: session)
+        let kind = BrowserStorageKind(rawValue: args.kind ?? "local") ?? .local
+        let includeValues = args.includeValues == true
+        let origin = args.origin ?? session.tabs.first(where: { $0.id == (args.tabID ?? session.activeTabID) })
+            .flatMap { $0.webView.url }
+            .flatMap(HTTPCookiePolicy.origin)
+
+        switch args.action {
+        case "list":
+            let page = try await bridge.storage(
+                tabID: args.tabID,
+                kind: kind,
+                requestedOrigin: args.origin,
+                includeValues: includeValues
+            )
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            let sanitized = page.entries.map { entry -> BrowserStorageEntry in
+                BrowserStorageEntry(key: entry.key, value: nil, valueLength: entry.valueLength)
+            }
+            let object: [String: Any] = [
+                "status": "ok", "action": "list", "kind": kind.rawValue,
+                "origin": page.origin, "entries": try Self.jsonObject(sanitized),
+                "totalKeys": page.totalKeys, "truncated": page.truncated,
+                "includeValues": includeValues, "valuesRedacted": includeValues
+            ]
+            var ephemeral: String?
+            if includeValues {
+                ephemeral = try BrowserSensitiveOutput.encodedSummary([
+                    "status": "ok", "action": "list", "kind": kind.rawValue,
+                    "origin": page.origin, "entries": try Self.jsonObject(page.entries),
+                    "totalKeys": page.totalKeys, "truncated": page.truncated,
+                    "includeValues": true
+                ])
+            }
+            return try Self.output(object, maximum: 262_144, ephemeralSensitiveOutput: ephemeral)
+        case "get":
+            guard let key = args.key else { throw FloeError.validationFailed("get requires key") }
+            let value = try await bridge.storageValue(
+                tabID: args.tabID,
+                kind: kind,
+                requestedOrigin: args.origin,
+                key: key
+            )
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            let object: [String: Any] = [
+                "status": "ok", "action": "get", "kind": kind.rawValue,
+                "origin": origin ?? "", "key": key,
+                "hasValue": value != nil,
+                "valueLength": value?.utf8.count ?? 0,
+                "includeValues": includeValues,
+                "valuesRedacted": includeValues
+            ]
+            var ephemeral: String?
+            if includeValues, let value {
+                ephemeral = try BrowserSensitiveOutput.encodedSummary([
+                    "status": "ok", "action": "get", "kind": kind.rawValue,
+                    "origin": origin ?? "", "key": key, "value": value
+                ])
+            }
+            return try Self.output(object, maximum: 32_768, ephemeralSensitiveOutput: ephemeral)
+        case "set":
+            guard let key = args.key, let value = args.value else {
+                throw FloeError.validationFailed("set requires key and value")
+            }
+            try await bridge.setStorage(
+                tabID: args.tabID, kind: kind,
+                requestedOrigin: args.origin, key: key, value: value
+            )
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            return try Self.output([
+                "status": "ok", "action": "set", "kind": kind.rawValue,
+                "origin": origin ?? "", "key": key, "valueLength": value.utf8.count
+            ], maximum: 8_192)
+        case "delete":
+            try await bridge.deleteStorage(
+                tabID: args.tabID, kind: kind,
+                requestedOrigin: args.origin, key: args.key ?? ""
+            )
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            return try Self.output([
+                "status": "ok", "action": "delete", "kind": kind.rawValue,
+                "origin": origin ?? "", "key": args.key ?? ""
+            ], maximum: 8_192)
+        default:
+            try await bridge.clearStorage(
+                tabID: args.tabID, kind: kind, requestedOrigin: args.origin
+            )
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            return try Self.output([
+                "status": "ok", "action": "clear", "kind": kind.rawValue,
+                "origin": origin ?? ""
+            ], maximum: 8_192)
+        }
+    }
+
+    private static func jsonObject<T: Encodable>(_ value: T) throws -> Any {
+        let data = try JSONEncoder().encode(value)
+        return try JSONSerialization.jsonObject(with: data)
+    }
+
+    private static func output(
+        _ object: [String: Any],
+        maximum: Int,
+        ephemeralSensitiveOutput: String? = nil
+    ) throws -> ToolExecutionOutput {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let summary = String(decoding: data, as: UTF8.self)
+        return ToolExecutionOutput(
+            summary: summary,
+            fullOutputSHA256: FloeDigest.sha256Hex(data),
+            maximumSummaryCharacters: maximum,
+            ephemeralSensitiveOutput: ephemeralSensitiveOutput
+        )
+    }
+}
+
+private struct BrowserSiteDataTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let action: String
+        let scope: String?
+        let displayName: String?
+        let types: [String]?
+    }
+    static let name = "browser.siteData"
+    static let toolDescription = "List or delete this task-browser website-data records through WKWebsiteDataStore. list shows only site names and data-type metadata, never cache bodies or cookie values. scope persistent targets retained data; session targets the current in-memory store. Deleting a site or clearing all uses the public WebKit record API and does not touch Safari, Keychain or user files."
+    static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["list","delete","clear"]},"scope":{"type":"string","enum":["persistent","session","all"]},"displayName":{"type":"string","maxLength":512},"types":{"type":"array","items":{"type":"string"},"maxItems":32}},"required":["action"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.accessesCredentials, .persistsPersonalData]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+    let environment: BrowserToolEnvironment
+
+    func validate(_ args: Arguments) throws {
+        guard ["list", "delete", "clear"].contains(args.action) else {
+            throw FloeError.validationFailed("Unknown site-data action")
+        }
+        if args.action == "delete" {
+            guard let name = args.displayName, !name.isEmpty, name.utf8.count <= 512 else {
+                throw FloeError.validationFailed("delete requires a bounded displayName")
+            }
+        }
+    }
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        try context.cancellation.throwIfCancelled()
+        let resolved = try environment.session(for: context)
+        let session = resolved.session
+        let recipient = try await environment.requireBrowserDataAccess(session, context: context)
+        let scope = args.scope ?? "persistent"
+        guard ["persistent", "session", "all"].contains(scope) else {
+            throw FloeError.validationFailed("Unknown site-data scope")
+        }
+        let types = args.types.map { Set($0.filter { BrowserWebDataBridge.allWebsiteDataTypes.contains($0) }) }
+        if let types, types.isEmpty { throw FloeError.validationFailed("No recognized website data types") }
+        let settings = session.websiteDataStore
+        var stores: [(String, WKWebsiteDataStore)] = []
+        if scope != "session" { stores.append(("persistent", .default())) }
+        if scope != "persistent" {
+            if scope == "session" || settings !== WKWebsiteDataStore.default() {
+                stores.append(("session", settings))
+            }
+        }
+        if stores.isEmpty { stores.append(("persistent", .default())) }
+
+        switch args.action {
+        case "list":
+            var sites: [[String: Any]] = []
+            for (name, store) in stores {
+                let groups = await BrowserWebDataBridge.records(store: store, types: types)
+                for group in groups {
+                    sites.append([
+                        "scope": name,
+                        "displayName": group.displayName,
+                        "dataTypes": group.dataTypes
+                    ])
+                }
+            }
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            return try Self.output(["status": "ok", "action": "list", "sites": sites], maximum: 131_072)
+        case "delete":
+            let name = args.displayName ?? ""
+            var deleted = 0
+            for (_, store) in stores {
+                deleted += await BrowserWebDataBridge.deleteRecords(
+                    store: store,
+                    displayNames: [name],
+                    types: types
+                )
+            }
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            return try Self.output([
+                "status": "ok", "action": "delete", "displayName": name, "deleted": deleted
+            ], maximum: 8_192)
+        default:
+            var cleared = 0
+            for (_, store) in stores {
+                cleared += await BrowserWebDataBridge.clearAll(store: store)
+            }
+            try environment.revalidateBrowserDataAccess(recipient, context: context)
+            return try Self.output([
+                "status": "ok", "action": "clear", "cleared": cleared
+            ], maximum: 8_192)
+        }
+    }
+
+    private static func output(_ object: [String: Any], maximum: Int) throws -> ToolExecutionOutput {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return ToolExecutionOutput(
+            summary: String(decoding: data, as: UTF8.self),
+            fullOutputSHA256: FloeDigest.sha256Hex(data),
+            maximumSummaryCharacters: maximum
+        )
+    }
+}
+
+private struct BrowserDownloadTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let url: String
+        let path: String
+        let tabID: UUID?
+        let maxBytes: Int?
+        let overwrite: Bool?
+    }
+    static let name = "browser.download"
+    static let toolDescription = "Download a PDF or image through this task's own browser session into a new workspace file. The source tab's WebKit website data store supplies existing login cookies, so authenticated resources can be saved without exposing cookie values to the model. The file is staged, checked for a real PDF/image signature and the byte cap, then committed atomically; progress is visible and cancellable in the browser chrome. Existing destinations are refused unless overwrite=true was explicitly confirmed. Returns a workspace path and run-output attachment."
+    static let parametersJSON = #"{"type":"object","properties":{"url":{"type":"string","description":"HTTP(S) PDF or image URL, usually from browser.links"},"path":{"type":"string","maxLength":1024,"description":"Workspace-relative destination; must not exist unless overwrite is confirmed"},"tabID":{"type":"string","format":"uuid"},"maxBytes":{"type":"integer","minimum":1,"maximum":67108864},"overwrite":{"type":"boolean","description":"Set true only after explicit user confirmation to replace the destination"}},"required":["url","path"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.networkAccess, .writesFiles, .accessesCredentials]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+    let environment: BrowserToolEnvironment
+
+    func validate(_ args: Arguments) throws {
+        _ = try BrowserURLPolicy.parseNavigationURL(args.url)
+        let path = args.path.trimmingCharacters(in: .whitespaces)
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.hasPrefix("~"),
+              !path.split(separator: "/").contains("..") else {
+            throw FloeError.validationFailed("path must be a workspace-relative file path")
+        }
+        if let maxBytes = args.maxBytes, !(1...64 * 1_024 * 1_024).contains(maxBytes) {
+            throw FloeError.validationFailed("maxBytes is out of bounds")
+        }
+    }
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        try context.cancellation.throwIfCancelled()
+        return try await environment.download(
+            context: context,
+            tabID: args.tabID,
+            urlString: args.url,
+            path: args.path.trimmingCharacters(in: .whitespaces),
+            maxBytes: args.maxBytes,
+            overwrite: args.overwrite
+        )
+    }
+}
+
 @MainActor
 func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegistry = .shared) {
     ToolCatalog.register(BrowserPanelTool.self)
@@ -754,6 +1397,13 @@ func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegi
     ToolCatalog.register(BrowserTypeTool.self)
     ToolCatalog.register(BrowserScrollTool.self)
     ToolCatalog.register(BrowserExportStagedFileTool.self)
+    ToolCatalog.register(BrowserLinksTool.self)
+    ToolCatalog.register(BrowserTableTool.self)
+    ToolCatalog.register(BrowserTextTool.self)
+    ToolCatalog.register(BrowserCookiesTool.self)
+    ToolCatalog.register(BrowserStorageTool.self)
+    ToolCatalog.register(BrowserSiteDataTool.self)
+    ToolCatalog.register(BrowserDownloadTool.self)
     registry.register(BrowserNavigateTool(environment: environment))
     registry.register(BrowserObserveTool(environment: environment))
     registry.register(BrowserEventsTool(environment: environment))
@@ -765,5 +1415,12 @@ func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegi
     registry.register(BrowserTypeTool(environment: environment))
     registry.register(BrowserScrollTool(environment: environment))
     registry.register(BrowserExportStagedFileTool(environment: environment))
+    registry.register(BrowserLinksTool(environment: environment))
+    registry.register(BrowserTableTool(environment: environment))
+    registry.register(BrowserTextTool(environment: environment))
+    registry.register(BrowserCookiesTool(environment: environment))
+    registry.register(BrowserStorageTool(environment: environment))
+    registry.register(BrowserSiteDataTool(environment: environment))
+    registry.register(BrowserDownloadTool(environment: environment))
 }
 #endif

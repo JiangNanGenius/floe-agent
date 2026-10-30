@@ -17,14 +17,56 @@ public struct HTTPResponse: Sendable, Equatable {
     public var truncated: Bool
     public var finalURL: String?
     public var headers: [String: String]
+    /// Processed Set-Cookie directives from this exchange. Values are secrets;
+    /// ordinary logs and durable captures must use names/counts only.
+    public var setCookies: [HTTPCookieSnapshot]
+    /// Bytes actually received before the response cap was applied.
+    public var receivedBytes: Int
 
-    public init(statusCode: Int, contentType: String, body: String, truncated: Bool, finalURL: String? = nil, headers: [String: String] = [:]) {
+    public init(
+        statusCode: Int,
+        contentType: String,
+        body: String,
+        truncated: Bool,
+        finalURL: String? = nil,
+        headers: [String: String] = [:],
+        setCookies: [HTTPCookieSnapshot] = [],
+        receivedBytes: Int = 0
+    ) {
         self.statusCode = statusCode
         self.contentType = contentType
         self.body = body
         self.truncated = truncated
         self.finalURL = finalURL
         self.headers = headers
+        self.setCookies = setCookies
+        self.receivedBytes = receivedBytes
+    }
+}
+
+/// Opt-in URLRequest cache behaviour shared by fetch/http.
+public enum HTTPCachePolicy: String, Sendable, Codable, CaseIterable {
+    case useProtocolCachePolicy
+    case reloadIgnoringLocalCache
+    case reloadRevalidatingCache
+
+    public var urlRequestCachePolicy: URLRequest.CachePolicy {
+        switch self {
+        case .useProtocolCachePolicy: .useProtocolCachePolicy
+        case .reloadIgnoringLocalCache: .reloadIgnoringLocalCacheData
+        case .reloadRevalidatingCache: .reloadRevalidatingCacheData
+        }
+    }
+
+    public static func parse(_ raw: String?) -> HTTPCachePolicy {
+        switch raw?.lowercased() {
+        case "reload", "reloadignoringcache", "reloadignoringlocalcache":
+            .reloadIgnoringLocalCache
+        case "revalidate", "revalidatecache", "reloadrevalidatingcache":
+            .reloadRevalidatingCache
+        default:
+            .useProtocolCachePolicy
+        }
     }
 }
 
@@ -80,13 +122,27 @@ public struct HTTPRequestService: Sendable {
         self.allowsPrivateNetwork = allowsPrivateNetwork
     }
 
+    /// Hard ceiling for one in-memory response body. Callers may ask for less
+    /// (network.http historically used 64 KiB); fetch uses the larger ceiling
+    /// only when it explicitly supports a long-output capture.
+    public static let maximumResponseBytes = 1_048_576
+
+    /// Performs one bounded request. The default path sends no cookies. When
+    /// `cookies` is non-empty, a per-call redirect delegate recomputes the
+    /// Cookie header from that snapshot for every URL, strips cross-origin
+    /// Authorization/Cookie headers, and validates each cookie against the
+    /// current URL. `setCookies` is parsed from the final response so an
+    /// explicitly stateful caller can merge it into its own jar.
     public func send(
         method: String,
         url: URL,
         headers: [String: String],
         body: Data?,
         timeout: TimeInterval,
-        maxResponseBytes: Int
+        maxResponseBytes: Int,
+        cachePolicy: HTTPCachePolicy = .useProtocolCachePolicy,
+        cookies: [HTTPCookieSnapshot] = [],
+        userAgent: String? = nil
     ) async throws -> HTTPResponse {
         guard ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].contains(method.uppercased()) else {
             throw HTTPRequestError.invalidMethod(method)
@@ -96,28 +152,55 @@ public struct HTTPRequestService: Sendable {
         } else {
             try PublicNetworkTargetPolicy.validate(url)
         }
+        if let userAgent {
+            guard userAgent.utf8.count <= 1_024,
+                  !userAgent.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }) else {
+                throw HTTPRequestError.invalidHeaders("User-Agent is empty or contains controls")
+            }
+        }
 
         var request = URLRequest(url: url)
         request.httpMethod = method.uppercased()
         request.timeoutInterval = max(1, min(timeout, 120))
+        request.cachePolicy = cachePolicy.urlRequestCachePolicy
         for (key, value) in headers {
             guard PublicNetworkTargetPolicy.isAllowedHeader(key) else {
                 throw HTTPRequestError.invalidHeaders("header is not allowed: \(key)")
             }
             request.setValue(value, forHTTPHeaderField: key)
         }
+        if let userAgent {
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        }
+        if !cookies.isEmpty {
+            Self.removeHeader(named: "Cookie", from: &request)
+            if let header = HTTPCookiePolicy.cookieHeader(for: url, cookies: cookies) {
+                request.setValue(header, forHTTPHeaderField: "Cookie")
+            }
+        }
         if method.uppercased() != "GET", method.uppercased() != "HEAD" {
             request.httpBody = body
         }
 
+        let callSession: URLSession
+        if cookies.isEmpty {
+            callSession = session
+        } else {
+            let configuration = session.configuration.copy() as! URLSessionConfiguration
+            let delegate = CookieRedirectDelegate(
+                allowsPrivateNetwork: allowsPrivateNetwork,
+                cookies: cookies
+            )
+            callSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        }
         let (data, response): (Data, URLResponse)
         do {
-            let (bytes, receivedResponse) = try await session.bytes(for: request)
+            let (bytes, receivedResponse) = try await callSession.bytes(for: request)
             var bounded = Data()
-            let cap = max(1, min(maxResponseBytes, 256 * 1024))
+            let cap = max(1, min(maxResponseBytes, Self.maximumResponseBytes))
             for try await byte in bytes {
                 bounded.append(byte)
-                if bounded.count > cap { break }
+                if bounded.count >= cap { break }
             }
             data = bounded
             response = receivedResponse
@@ -127,17 +210,30 @@ public struct HTTPRequestService: Sendable {
         let http = response as? HTTPURLResponse
         let statusCode = http?.statusCode ?? 0
         let contentType = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
-        let cap = max(1, min(maxResponseBytes, 256 * 1024))
+        let cap = max(1, min(maxResponseBytes, Self.maximumResponseBytes))
         let accepted = data.prefix(cap)
         let body = String(decoding: accepted, as: UTF8.self)
+        let setCookies = http.map {
+            HTTPCookiePolicy.parsedSetCookies(from: $0, requestURL: response.url ?? url)
+        } ?? []
         return HTTPResponse(
             statusCode: statusCode,
             contentType: contentType,
             body: body,
-            truncated: accepted.count < data.count,
+            truncated: data.count >= cap,
             finalURL: response.url?.absoluteString,
-            headers: Self.resultHeaders(http)
+            headers: Self.resultHeaders(http),
+            setCookies: setCookies,
+            receivedBytes: data.count
         )
+    }
+
+    /// Case-insensitive header removal on URLRequest.
+    static func removeHeader(named name: String, from request: inout URLRequest) {
+        guard let fields = request.allHTTPHeaderFields else { return }
+        for key in fields.keys where key.caseInsensitiveCompare(name) == .orderedSame {
+            request.setValue(nil, forHTTPHeaderField: key)
+        }
     }
 
     /// Only navigation/cache/rate-limit metadata is returned automatically.
@@ -302,6 +398,57 @@ public enum PublicNetworkTargetPolicy {
             "proxy-authorization", "proxy-connection", "upgrade", "te", "trailer"
         ]
         return !blocked.contains(name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+}
+
+/// Redirect delegate for an explicit cookie snapshot. It never forwards a
+/// user-supplied Cookie header across origins and recomputes the header from
+/// the snapshot for every new URL, so domain/path/Secure/expiry validation is
+/// applied at each hop.
+private final class CookieRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    let allowsPrivateNetwork: Bool
+    let cookies: [HTTPCookieSnapshot]
+
+    init(allowsPrivateNetwork: Bool, cookies: [HTTPCookieSnapshot]) {
+        self.allowsPrivateNetwork = allowsPrivateNetwork
+        self.cookies = cookies
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let url = request.url, Self.validate(url, allowsPrivateNetwork: allowsPrivateNetwork) else {
+            completionHandler(nil)
+            return
+        }
+        var next = request
+        if Self.origin(task.currentRequest?.url) != Self.origin(url) {
+            HTTPRequestService.removeHeader(named: "Authorization", from: &next)
+            HTTPRequestService.removeHeader(named: "Proxy-Authorization", from: &next)
+            HTTPRequestService.removeHeader(named: "Cookie", from: &next)
+        }
+        // Always recompute from the validated snapshot, even on a same-origin
+        // redirect: expiry or a path/domain change must take effect at once.
+        HTTPRequestService.removeHeader(named: "Cookie", from: &next)
+        if let header = HTTPCookiePolicy.cookieHeader(for: url, cookies: cookies) {
+            next.setValue(header, forHTTPHeaderField: "Cookie")
+        }
+        completionHandler(next)
+    }
+
+    private static func validate(_ url: URL, allowsPrivateNetwork: Bool) -> Bool {
+        if allowsPrivateNetwork {
+            return (try? DiagnosticNetworkTargetPolicy.validate(url)) != nil
+        }
+        return (try? PublicNetworkTargetPolicy.validate(url)) != nil
+    }
+
+    private static func origin(_ url: URL?) -> String? {
+        url.flatMap(HTTPCookiePolicy.origin)
     }
 }
 

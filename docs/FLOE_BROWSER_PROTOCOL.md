@@ -26,6 +26,7 @@ The method envelope supports:
 - `Page.navigate`, `Page.reload`, `Page.captureScreenshot`, `Page.waitForLoad`,
   `Page.waitForDOM`, `Page.waitForIdle`
 - `DOM.getDocument`
+- `DOM.getLinks`, `DOM.getTable`, `DOM.getTextRange`
 - `Input.dispatchMouseEvent`, `Input.insertText`
 - `Runtime.getEvents`
 
@@ -33,6 +34,27 @@ There is intentionally no arbitrary `Runtime.evaluate`. Model-facing tools use
 the same engine through narrower `browser.observe`, `browser.events`,
 `browser.wait`, `browser.click`, `browser.clickPoint`, `browser.type`,
 `browser.scroll`, `browser.navigate`, and `browser.screenshot` contracts.
+
+## Advanced browser data (source update, 2026-10-30)
+
+The current source adds task-scoped `browser.links`, `browser.table`,
+`browser.text`, `browser.cookies`, `browser.storage`, `browser.siteData`, and
+`browser.download`. Advanced data access is default-off and requires explicit
+risk consent plus a grant to the provider identity frozen for the actual run.
+Changing a settings selection cannot change a running request's recipient.
+Origin, document generation and authorization are revalidated after asynchronous
+operations. Disabling advanced access invalidates pending sensitive results;
+ordinary browsing retains the existing WebKit data store.
+
+Raw cookie and storage values travel only through the immediate authorized
+provider result channel. Durable records and diagnostic summaries exclude those
+values. Website cache access reports public WebKit data types and supports
+deletion, without claiming access to arbitrary cache bodies, Safari data or
+Keychain. `web.fetch` and `http.request` reuse the existing HTTP service for
+explicit user-agent, cache and cookie options; cross-origin redirects recompute
+cookies and remove credentials. Temporary/public-web access retains its existing
+ceiling. Registered behavior tests and full-App acceptance remain pending for
+this source update; it is not a release qualification record.
 
 ## Events and waiting
 

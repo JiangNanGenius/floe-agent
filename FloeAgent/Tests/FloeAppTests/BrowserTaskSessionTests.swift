@@ -18,6 +18,7 @@ import FloeCore
 import FloeModels
 import FloeTools
 import FloeEnvironments
+import FloeExecution
 @testable import FloeApp
 
 @Suite("FloeApp.BrowserTaskIsolation", .serialized)
@@ -144,6 +145,71 @@ struct BrowserTaskSessionTests {
           <p id="status">ready-\(marker)</p>
         </body></html>
         """
+    }
+
+    private func storageFixturePage() -> String {
+        """
+        <!doctype html><html><body>
+          <h1>Storage fixture</h1>
+          <a id="next" href="/next?from=fixture">Next page</a>
+          <a id="external" href="https://example.org/other">External</a>
+          <table><caption>Synthetic prices</caption>
+            <tr><th>Item</th><th>Cost</th></tr>
+            <tr><td>Pen</td><td>2</td></tr>
+          </table>
+          <p>Alpha beta gamma.</p>
+        </body></html>
+        """
+    }
+
+    /// A task session that never touches the user's shared WebKit store.
+    /// The session is constructed directly so the test owns its lifetime and
+    /// can inject `WKWebsiteDataStore.nonPersistent()`.
+    private func isolatedSession(
+        owner: UUID,
+        center: BrowserSessionCenter
+    ) throws -> (session: BrowserTaskSession, tab: UUID, store: WKWebsiteDataStore) {
+        let store = WKWebsiteDataStore.nonPersistent()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("browser-storage-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let session = BrowserTaskSession(
+            conversationID: owner,
+            generation: 0,
+            configuration: BrowserTaskSessionConfiguration(
+                protocolVersion: "FloeBrowser/1.0",
+                contentWorld: WKContentWorld.world(
+                    name: "org.floeagent.browser.storage." + UUID().uuidString
+                ),
+                artifactDirectory: root,
+                maximumTabs: 6,
+                maximumEventsPerTab: 64,
+                websiteDataStoreProvider: { store }
+            ),
+            host: center
+        )
+        _ = session.createTab()
+        let tab = try #require(session.activeTabID)
+        return (session, tab, store)
+    }
+
+    private func loadIsolated(
+        _ html: String,
+        baseURL: URL = URL(string: "https://storage.example.test/fixture/page")!,
+        tab: UUID,
+        session: BrowserTaskSession
+    ) async throws {
+        let webView = try #require(session.tabs.first(where: { $0.id == tab })?.webView)
+        webView.loadHTMLString(html, baseURL: baseURL)
+        let result = await session.execute(BrowserCommand(
+            sessionID: session.sessionID,
+            tabID: tab,
+            action: .wait(.load)
+        ))
+        try #require(
+            result.status == .ok,
+            Comment(rawValue: result.message ?? result.error?.message ?? "synthetic page did not load")
+        )
     }
 
     @discardableResult
@@ -1139,6 +1205,250 @@ struct BrowserTaskSessionTests {
             await #expect(throws: BrowserProbeError.released) { _ = try await task.value }
         }
         callback?(.success(["late": true]))
+    }
+
+    // MARK: - Real WebKit session-data bridge (isolated non-persistent store)
+
+    @Test("Real WKWebView storage executes list/get/set/delete/clear and refuses a foreign origin")
+    func storageBridgeRunsRealWebKitAndHonorsOrigin() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let (session, tab, store) = try isolatedSession(owner: owner, center: center)
+        defer {
+            session.release()
+            try? FileManager.default.removeItem(at: session.artifactDirectory)
+        }
+        try await loadIsolated(storageFixturePage(), tab: tab, session: session)
+        // The user's shared WebKit store and visible projection are never used.
+        #expect(store !== WKWebsiteDataStore.default())
+        #expect(session.websiteDataStore === store)
+        #expect(session.tabLimit == 6)
+        #expect(session.tabs.count == 1)
+        #expect(center.session(for: owner) == nil)
+        #expect(center.conversationID == nil)
+
+        let bridge = BrowserWebDataBridge(session: session)
+        let origin = "https://storage.example.test:443"
+        // `location.origin` omits a default port; the native expected origin
+        // must serialize the same way without weakening canonical matching.
+        #expect(BrowserWebDataBridge.scriptOrigin(
+            of: URL(string: "https://storage.example.test:443/fixture")!
+        ) == "https://storage.example.test")
+        #expect(BrowserWebDataBridge.scriptOrigin(
+            of: URL(string: "https://storage.example.test:8443/fixture")!
+        ) == "https://storage.example.test:8443")
+
+        try await bridge.setStorage(
+            tabID: tab, kind: .local, requestedOrigin: origin,
+            key: "alpha", value: "hello"
+        )
+        try await bridge.setStorage(
+            tabID: tab, kind: .local, requestedOrigin: origin,
+            key: "beta", value: "wörld"
+        )
+
+        let metadata = try await bridge.storage(
+            tabID: tab, kind: .local, requestedOrigin: origin, includeValues: false
+        )
+        #expect(metadata.origin == origin)
+        #expect(metadata.totalKeys == 2)
+        #expect(metadata.entries.allSatisfy { $0.value == nil })
+        let betaMetadata = try #require(metadata.entries.first(where: { $0.key == "beta" }))
+        #expect(betaMetadata.valueLength == "wörld".utf8.count)
+        #expect(betaMetadata.valueLength == 6)
+
+        let raw = try await bridge.storage(
+            tabID: tab, kind: .local, requestedOrigin: origin, includeValues: true
+        )
+        #expect(raw.entries.first(where: { $0.key == "alpha" })?.value == "hello")
+        #expect(raw.entries.first(where: { $0.key == "beta" })?.value == "wörld")
+
+        // With no model-supplied origin, the trusted active-tab origin is
+        // still passed to the script and reported.
+        let defaultOriginPage = try await bridge.storage(
+            tabID: tab, kind: .local, requestedOrigin: nil, includeValues: false
+        )
+        #expect(defaultOriginPage.origin == origin)
+        #expect(defaultOriginPage.totalKeys == 2)
+
+        #expect(try await bridge.storageValue(
+            tabID: tab, kind: .local, requestedOrigin: origin, key: "alpha"
+        ) == "hello")
+        #expect(try await bridge.storageValue(
+            tabID: tab, kind: .local, requestedOrigin: origin, key: "missing"
+        ) == nil)
+
+        // A model-supplied origin that does not match the tab is refused
+        // before the fixed script can read or mutate anything.
+        await #expect(throws: BrowserWebDataError.self) {
+            _ = try await bridge.storage(
+                tabID: tab, kind: .local,
+                requestedOrigin: "https://other.example.test", includeValues: true
+            )
+        }
+        await #expect(throws: BrowserWebDataError.self) {
+            try await bridge.setStorage(
+                tabID: tab, kind: .local,
+                requestedOrigin: "https://other.example.test", key: "alpha", value: "overwritten"
+            )
+        }
+        #expect(try await bridge.storageValue(
+            tabID: tab, kind: .local, requestedOrigin: origin, key: "alpha"
+        ) == "hello")
+
+        try await bridge.deleteStorage(
+            tabID: tab, kind: .local, requestedOrigin: origin, key: "alpha"
+        )
+        #expect(try await bridge.storageValue(
+            tabID: tab, kind: .local, requestedOrigin: origin, key: "alpha"
+        ) == nil)
+        #expect(try await bridge.storage(
+            tabID: tab, kind: .local, requestedOrigin: origin, includeValues: false
+        ).totalKeys == 1)
+
+        try await bridge.setStorage(
+            tabID: tab, kind: .session, requestedOrigin: origin,
+            key: "draft", value: "session-value"
+        )
+        let sessionRaw = try await bridge.storage(
+            tabID: tab, kind: .session, requestedOrigin: origin, includeValues: true
+        )
+        #expect(sessionRaw.entries.first(where: { $0.key == "draft" })?.value == "session-value")
+        try await bridge.clearStorage(tabID: tab, kind: .session, requestedOrigin: origin)
+        #expect(try await bridge.storage(
+            tabID: tab, kind: .session, requestedOrigin: origin, includeValues: false
+        ).totalKeys == 0)
+
+        // The raw-value boundary is a bridge invariant and does not require
+        // the global advanced-provider preference.
+        let snapshot = HTTPCookieSnapshot(
+            name: "sid",
+            value: "synthetic-secret",
+            domain: "storage.example.test",
+            path: "/",
+            isSecure: true,
+            isHTTPOnly: true,
+            isSessionOnly: true,
+            sameSite: "lax"
+        )
+        #expect(BrowserCookieRecord(snapshot: snapshot, includeValue: false).value == nil)
+        #expect(BrowserCookieRecord(snapshot: snapshot, includeValue: false).valueLength
+            == "synthetic-secret".utf8.count)
+        #expect(BrowserCookieRecord(snapshot: snapshot, includeValue: true).value == "synthetic-secret")
+    }
+
+    @Test("Real WKWebView cookies keep HttpOnly attributes and expose raw values only on request")
+    func cookieBridgeUsesRealWebKitHttpOnlyCookies() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let (session, tab, _) = try isolatedSession(owner: owner, center: center)
+        defer {
+            session.release()
+            try? FileManager.default.removeItem(at: session.artifactDirectory)
+        }
+        try await loadIsolated(storageFixturePage(), tab: tab, session: session)
+        let bridge = BrowserWebDataBridge(session: session)
+        let input = HTTPCookieInput(
+            name: "floe_fixture",
+            value: "synthetic-cookie-value",
+            domain: "storage.example.test",
+            path: "/",
+            secure: true,
+            httpOnly: true,
+            sameSite: "lax"
+        )
+        let written = try await bridge.setCookie(tabID: tab, input: input)
+        #expect(written.value == nil)
+        #expect(written.isHTTPOnly)
+        #expect(written.isSecure)
+        #expect(written.valueLength == input.value.utf8.count)
+
+        let metadata = try await bridge.cookies(tabID: tab, includeValues: false)
+        let metadataCookie = try #require(metadata.first(where: { $0.name == "floe_fixture" }))
+        #expect(metadataCookie.value == nil)
+        #expect(metadataCookie.isHTTPOnly)
+        #expect(metadataCookie.valueLength == input.value.utf8.count)
+
+        let raw = try await bridge.cookies(tabID: tab, includeValues: true)
+        let rawCookie = try #require(raw.first(where: { $0.name == "floe_fixture" }))
+        #expect(rawCookie.value == input.value)
+        #expect(rawCookie.sameSite?.lowercased() == "lax")
+
+        let deleted = try await bridge.deleteCookies(
+            tabID: tab, name: "floe_fixture", domain: nil, path: nil
+        )
+        #expect(deleted == 1)
+        let afterDelete = try await bridge.cookies(tabID: tab, includeValues: true)
+        #expect(!afterDelete.contains(where: { $0.name == "floe_fixture" }))
+    }
+
+    @Test("A released task session refuses late storage and cookie work")
+    func releasedSessionRefusesWebDataBridge() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let (session, tab, _) = try isolatedSession(owner: owner, center: center)
+        defer {
+            session.release()
+            try? FileManager.default.removeItem(at: session.artifactDirectory)
+        }
+        try await loadIsolated(storageFixturePage(), tab: tab, session: session)
+        let bridge = BrowserWebDataBridge(session: session)
+        session.release()
+        await #expect(throws: BrowserWebDataError.self) {
+            _ = try await bridge.cookies(tabID: tab, includeValues: true)
+        }
+        await #expect(throws: BrowserWebDataError.self) {
+            _ = try await bridge.storage(
+                tabID: tab, kind: .local, requestedOrigin: nil, includeValues: true
+            )
+        }
+        await #expect(throws: BrowserWebDataError.self) {
+            try await bridge.setStorage(
+                tabID: tab, kind: .local, requestedOrigin: nil, key: "late", value: "late"
+            )
+        }
+    }
+
+    @Test("Link, table and text readers run through the real protocol probe")
+    func domReadersUseRealProtocolProbe() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let (session, tab, _) = try isolatedSession(owner: owner, center: center)
+        defer {
+            session.release()
+            try? FileManager.default.removeItem(at: session.artifactDirectory)
+        }
+        try await loadIsolated(storageFixturePage(), tab: tab, session: session)
+
+        let links = await session.execute(BrowserCommand(
+            sessionID: session.sessionID,
+            tabID: tab,
+            action: .listLinks(cursor: nil, limit: 50)
+        ))
+        #expect(links.status == .ok, Comment(rawValue: links.message ?? "links failed"))
+        let hrefs = (links.links ?? []).map(\.href)
+        #expect(hrefs.contains("https://storage.example.test/next?from=fixture"))
+        #expect(hrefs.contains("https://example.org/other"))
+
+        let table = await session.execute(BrowserCommand(
+            sessionID: session.sessionID,
+            tabID: tab,
+            action: .readTable(index: 0, cursor: nil, limit: 50)
+        ))
+        #expect(table.status == .ok, Comment(rawValue: table.message ?? "table failed"))
+        let tablePage = try #require(table.table)
+        #expect(tablePage.caption == "Synthetic prices")
+        #expect(tablePage.headers == ["Item", "Cost"])
+        #expect(tablePage.rows.contains(["Pen", "2"]))
+        #expect(tablePage.totalRows == 2)
+
+        let text = await session.execute(BrowserCommand(
+            sessionID: session.sessionID,
+            tabID: tab,
+            action: .readText(start: 0, maxCharacters: 4_000)
+        ))
+        #expect(text.status == .ok, Comment(rawValue: text.message ?? "text failed"))
+        #expect(try #require(text.textPage).text.contains("Alpha beta gamma."))
     }
 
 }
