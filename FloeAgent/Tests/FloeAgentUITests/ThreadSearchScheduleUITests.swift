@@ -153,7 +153,9 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         // A real draft that find must not disturb.
         let composer = app.textViews["composer.input"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
-        composer.tap()
+        // Use the visible field centre. Its AX activation point is on the
+        // leading edge, where a restored draft can place the caret at zero.
+        composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         // The reused simulator persists this fixed synthetic chat's unsent
         // draft across app launches (ComposerDraftStore). An earlier
         // interrupted invocation can therefore leave the same test-owned
@@ -161,12 +163,22 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         // before typing this run's draft.
         let existingDraft = composer.value as? String ?? ""
         if !existingDraft.isEmpty {
-            // This field can be activated at its leading edge (UI3 and UI4
-            // both synthesized the tap at (325, 981) pt, ~5 pt inside the
-            // visible text view), so a restored draft starts with the caret
-            // at offset 0 and repeated Delete is a no-op. Select the whole
-            // existing draft through the real editor, then delete it.
-            app.typeKey("a", modifierFlags: .command)
+            // The iPad software-keyboard route did not perform Cmd+A in
+            // ui-repair-1 (the video retained a collapsed leading caret).
+            // Use UIKit's visible edit menu to select the owned draft; the
+            // empty assertion below still requires an actual successful edit.
+            composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 1.2)
+            let labels = NSPredicate(format: "label IN %@", ["全选", "Select All"])
+            let selectAllItem = app.menuItems.matching(labels).firstMatch
+            let selectAllButton = app.buttons.matching(labels).firstMatch
+            if selectAllItem.waitForExistence(timeout: 2) {
+                selectAllItem.tap()
+            } else {
+                XCTAssertTrue(selectAllButton.waitForExistence(timeout: 5),
+                              "UIKit must offer Select All for the nonempty synthetic draft")
+                selectAllButton.tap()
+            }
             composer.typeText(XCUIKeyboardKey.delete.rawValue)
         }
         XCTAssertEqual(composer.value as? String ?? "", "",
