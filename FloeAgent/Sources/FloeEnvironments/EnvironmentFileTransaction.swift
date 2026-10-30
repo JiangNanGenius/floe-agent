@@ -92,6 +92,7 @@ public final class EnvironmentFileTransaction {
     private let root: URL
     private let directory: URL
     private let rootKey: String
+    private let receiptsEnabled: Bool
     private var journal: Journal
     private var registered = false
 
@@ -126,6 +127,7 @@ public final class EnvironmentFileTransaction {
         // generic callers keep their historical blind-rollback journal schema
         // and do not pay to re-hash every preimage at transaction start.
         let receipts = owner != nil
+        self.receiptsEnabled = receipts
         self.journal = Journal(entries: [], committed: false,
             version: receipts ? Self.journalVersion : 1,
             owner: owner, id: UUID().uuidString)
@@ -218,13 +220,21 @@ public final class EnvironmentFileTransaction {
     public func write(_ data: Data, to path: String, mode: Int? = nil) throws {
         guard let index = journal.entries.firstIndex(where: { $0.path == path }) else { throw FloeError.validationFailed("Unjournaled package write") }
         let url = try Self.location(path, root: root)
-        let effectiveMode = (mode ?? journal.entries[index].preimageMode ?? 0o644) & 0o777
+        // Preserve an existing file's mode when the caller does not assert one.
+        // Mirror journals already carry preimageMode; legacy generic journals
+        // perform one cheap stat instead of re-hashing the preimage.
+        let modeSource: Int?
+        if let mode { modeSource = mode }
+        else if let preimageMode = journal.entries[index].preimageMode { modeSource = preimageMode }
+        else { modeSource = try Self.existingRegularMode(at: url, path: path) }
+        let effectiveMode = (modeSource ?? 0o644) & 0o777
         let staged = directory.appendingPathComponent("write-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: staged) }
         try data.write(to: staged, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: effectiveMode], ofItemAtPath: staged.path)
-        try Self.synchronizeFile(at: staged)
-        try updateReceipt(index: index, digest: FloeDigest.sha256Hex(data), mode: effectiveMode, removal: false)
+        if receiptsEnabled {
+            try updateReceipt(index: index, digest: FloeDigest.sha256Hex(data), mode: effectiveMode, removal: false)
+        }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if FileManager.default.fileExists(atPath: url.path) {
             _ = try FileManager.default.replaceItemAt(url, withItemAt: staged)
@@ -244,8 +254,9 @@ public final class EnvironmentFileTransaction {
             throw FloeError.validationFailed("Package changed during promotion")
         }
         try FileManager.default.setAttributes([.posixPermissions: mode & 0o777], ofItemAtPath: staged.path)
-        try Self.synchronizeFile(at: staged)
-        try updateReceipt(index: index, digest: digest, mode: mode & 0o777, removal: false)
+        if receiptsEnabled {
+            try updateReceipt(index: index, digest: digest, mode: mode & 0o777, removal: false)
+        }
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         if FileManager.default.fileExists(atPath: destination.path) {
             _ = try FileManager.default.replaceItemAt(destination, withItemAt: staged)
@@ -255,7 +266,9 @@ public final class EnvironmentFileTransaction {
     public func remove(_ path: String) throws {
         guard let index = journal.entries.firstIndex(where: { $0.path == path }) else { throw FloeError.validationFailed("Unjournaled package removal") }
         let url = try Self.location(path, root: root)
-        try updateReceipt(index: index, digest: nil, mode: nil, removal: true)
+        if receiptsEnabled {
+            try updateReceipt(index: index, digest: nil, mode: nil, removal: true)
+        }
         if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
     }
 
@@ -302,7 +315,8 @@ public final class EnvironmentFileTransaction {
         guard let pending = try Self.pendingTransaction(root: root),
               pending.hasJournal, pending.isActive,
               let journalID = journal.id, pending.id == journalID,
-              pending.owner == journal.owner else {
+              pending.owner == journal.owner,
+              !receiptsEnabled || (pending.version ?? 1) >= Self.journalVersion else {
             throw FloeError.validationFailed("The package transaction is no longer owned by this operation")
         }
         // Ownership is proven. End it before replay so a static recovery call
@@ -419,9 +433,15 @@ public final class EnvironmentFileTransaction {
                 }
                 try restoreFile(backup: backup, to: destination, expectedDigest: expectedDigest, mode: mode)
             case .remove(let path, let destination, let expectedCurrent):
-                guard let current = try fileState(at: destination, path: path) else { continue }
-                if let expectedCurrent, current != expectedCurrent {
-                    throw FloeError.validationFailed("A file changed while recovering an interrupted package write. Both copies were preserved: \(path)")
+                if let expectedCurrent {
+                    guard let current = try fileState(at: destination, path: path) else { continue }
+                    guard current == expectedCurrent else {
+                        throw FloeError.validationFailed("A file changed while recovering an interrupted package write. Both copies were preserved: \(path)")
+                    }
+                } else if try existingRegularMode(at: destination, path: path) == nil {
+                    // Legacy journal: only presence/type matters for a
+                    // rollback removal; avoid hashing a large new file.
+                    continue
                 }
                 try FileManager.default.removeItem(at: destination)
             }

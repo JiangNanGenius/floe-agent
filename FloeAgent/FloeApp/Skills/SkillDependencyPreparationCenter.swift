@@ -1737,9 +1737,11 @@ actor SkillDependencyPreparationCenter {
         guard liveTarget.isConnected else {
             return .refused(reason: SkillDependencyReason.targetDisconnected)
         }
-        let generationToken = liveTarget.generationToken
-            ?? (await launchGenerationProvider(environmentID)).map { String($0) }
-        let liveOperations = targetOperations ?? await operationsForTarget(liveTarget)
+        let generationToken: String?
+        if let token = liveTarget.generationToken { generationToken = token }
+        else { generationToken = (await launchGenerationProvider(environmentID)).map { String($0) } }
+        var liveOperations = targetOperations
+        if liveOperations == nil { liveOperations = await operationsForTarget(liveTarget) }
 
         let prepared = await prepareMatchingRequirements(
             skillID: skillID,
@@ -1889,8 +1891,9 @@ actor SkillDependencyPreparationCenter {
         guard operations != nil || !needsPackageOperations else {
             return .unavailable(reason: SkillDependencyReason.provisioningUnavailable)
         }
-        let generationToken = liveTarget.generationToken
-            ?? (await launchGenerationProvider(trimmed)).map { String($0) }
+        let generationToken: String?
+        if let token = liveTarget.generationToken { generationToken = token }
+        else { generationToken = (await launchGenerationProvider(trimmed)).map { String($0) } }
         let prepared = await prepareMatchingRequirements(
             skillID: skillID,
             plan: plan,
@@ -1955,7 +1958,7 @@ actor SkillDependencyPreparationCenter {
                 ) {
                     if requirement.required {
                         appendState(.refused, reason: refusal)
-                        setState(environmentID: plan.environmentID, skillID: skillID) {
+                        setState(plan.environmentID, skillID) {
                             $0.deferredReason = refusal
                             $0.readbackVerified = false
                         }
@@ -2008,11 +2011,11 @@ actor SkillDependencyPreparationCenter {
                         verifiedAt: Date()
                     )
                     appendState(.verified, reason: nil)
-                    setState(environmentID: plan.environmentID, skillID: skillID) { $0.deferredReason = nil }
+                    setState(plan.environmentID, skillID) { $0.deferredReason = nil }
                 case .deferred(let reason):
                     if requirement.required {
                         appendState(.refused, reason: reason)
-                        setState(environmentID: plan.environmentID, skillID: skillID) {
+                        setState(plan.environmentID, skillID) {
                             $0.deferredReason = reason
                             $0.readbackVerified = false
                         }
@@ -2030,7 +2033,7 @@ actor SkillDependencyPreparationCenter {
             run.refusal = SkillDependencyReason.cancelled
             return run
         }
-        setState(environmentID: plan.environmentID, skillID: skillID) {
+        setState(plan.environmentID, skillID) {
             $0.prepared = true
             $0.readbackVerified = true
             $0.deferredReason = run.optionalNotes.isEmpty ? nil : run.optionalNotes.joined(separator: "; ")

@@ -845,10 +845,7 @@ final class SkillsCenter: ObservableObject {
         let staged = try await stageCuratedPackage(publication, id: entryID, at: scratch.url)
         try checkCancelled()
         context.report(.checking, nil)
-        try await requireCompatibility(
-            staged.content.package, runID: context.runID,
-            resourceContext: Self.resourceContext(for: context)
-        )
+        try await requireCompatibility(staged.content.package)
         try Self.validateDependencyDeclaration(in: staged.content)
         let candidate: SkillUpgradeCandidate?
         if let current {

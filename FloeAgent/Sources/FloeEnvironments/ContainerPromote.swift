@@ -132,7 +132,7 @@ public actor ContainerPromote {
             metadataPaths += ["var/lib/dpkg/info/" + name + ".list", "var/lib/dpkg/info/" + name + ".md5sums"]
         }
         let transaction = try EnvironmentFileTransaction(root: targetURL,
-            paths: copies.map(\.path) + metadataPaths)
+            paths: copies.map(\.path) + metadataPaths, owner: "floe.container-promote.v1")
         do {
             let metadataRoot = targetURL.appendingPathComponent(EnvironmentFileTransaction.directoryName, isDirectory: true)
                 .appendingPathComponent("promotion-metadata", isDirectory: true)
