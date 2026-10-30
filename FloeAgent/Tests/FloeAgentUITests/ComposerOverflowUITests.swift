@@ -142,6 +142,10 @@ final class ComposerOverflowUITests: XCTestCase {
                              "Two explicit lines must grow the field past its resting row")
         XCTAssertFalse(app.buttons["composer.expand"].exists,
                        "Two short visual lines do not need an expand control")
+        let twoLineShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        twoLineShot.name = "Home two-line viewport: both rows visible, no expand control"
+        twoLineShot.lifetime = .keepAlways
+        add(twoLineShot)
         input.typeText("\nthree")
         XCTAssertTrue(app.buttons["composer.expand"].waitForExistence(timeout: 10),
                       "The third visual line must expose the editor before scrolling")

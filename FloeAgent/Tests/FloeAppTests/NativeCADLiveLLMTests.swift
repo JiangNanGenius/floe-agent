@@ -38,18 +38,28 @@
 //
 // See the private handoff for the exact schema. The file contains policy
 // metadata only (optional provider/model UUID pins, an explicit acceptance of
-// the ordinary App run context, and token/cost/time ceilings). It NEVER
-// contains an API key. An optional owned-route.json contains only test
-// provider metadata. If the coordinator explicitly forwards a test-runner
-// credential, the owned-route helper puts it in a random non-syncing App
-// Keychain account, removes its own provider/account after the run and never
-// changes an existing provider or default. Otherwise it asks the App's own
+// the ordinary App run context, token/cost/time ceilings, and an optional
+// prepaid budget basis). It NEVER contains an API key. An optional
+// owned-route.json contains only test provider metadata. If the coordinator
+// explicitly forwards a test-runner credential, the owned-route helper puts it
+// in a random non-syncing App Keychain account, removes its own
+// provider/account after the run and never changes an existing provider or
+// default. Otherwise it asks the App's own
 // `ConversationCenter.resolveCredentials`
 // whether the selected provider has a usable key and then hands the run to the
 // same production `ConversationCenter.runService` the UI uses. A missing file,
 // missing cheap/tool-capable cloud model, missing App credential or missing
 // pricing metadata is an explicit `XCTSkip` and a handoff blocker — never a
 // live pass.
+//
+// The opt-in may instead declare `prepaidBudgetBasis: true` for the one
+// reviewed owned Agent Plan route. That mode is accepted only with the exact
+// reserved provider/model UUIDs, the exact Agent Plan base URL, the exact
+// remote model ID, no usable model pricing metadata, no unpinned/fallback
+// selection and explicit zero input/output increments. Usage is then reported
+// as prepaid-plan consumption with the ordinary token and wall-clock ceilings;
+// it is never described as free market pricing and never becomes a generic
+// zero-price model path.
 //
 // Cost/data bounding and approval policy
 // --------------------------------------
@@ -160,6 +170,48 @@ final class NativeCADLiveLLMTests: XCTestCase {
     }
 }
 
+/// The one reviewed prepaid route this test may account as zero incremental
+/// USD. These are test-only constants: they do not change production provider
+/// configuration or enable any generic free-model path.
+private enum NativeCADLivePrepaidRoute {
+    static let providerID = UUID(uuidString: "A3060000-0000-4000-8000-000000000001")!
+    static let modelID = UUID(uuidString: "A3060000-0000-4000-8000-000000000002")!
+    static let baseURL = URL(string: "https://ark.cn-beijing.volces.com/api/plan/v3")!
+    static let remoteModelID = "deepseek-v4-flash"
+    static let maxInputTokens = 160_000
+    static let maxOutputTokens = 8_000
+    static let maxPerRunSeconds: Double = 180
+    static let maxTotalSeconds: Double = 600
+
+    /// Exact profile shape created by `NativeCADLiveOwnedRoute` for the
+    /// reserved IDs above. No opt-in pin alone can authorize another base or
+    /// model as a zero-increment route.
+    static func matches(provider: ProviderProfile, model: ModelProfile) -> Bool {
+        provider.id == providerID
+            && model.id == modelID
+            && model.providerID == provider.id
+            && provider.isEnabled
+            && provider.kind == .openAI
+            && provider.wireProtocol == .openAIChatCompletions
+            && provider.baseURL == baseURL
+            && provider.baseURL.user == nil
+            && provider.baseURL.password == nil
+            && provider.baseURL.query == nil
+            && provider.baseURL.fragment == nil
+            && provider.displayName == "Native CAD qualification"
+            && provider.toolNameCompatibility
+            && provider.secretRef?.synchronizable == false
+            && provider.secretRef?.keychainAccount.hasPrefix("native-cad-qualification.") == true
+            && model.remoteModelID == remoteModelID
+            && model.displayName == "Native CAD qualification"
+            && model.isHiddenFromPrimaryPicker == true
+            && model.pricing == nil
+            && model.capabilities.contains(.text)
+            && model.capabilities.contains(.tools)
+            && !model.capabilities.contains(.vision)
+    }
+}
+
 /// A qualification-only configuration, isolated from existing providers and
 /// defaults. No API key is accepted in the metadata file or attachment output.
 @MainActor
@@ -173,8 +225,8 @@ private struct NativeCADLiveOwnedRoute {
         var maxOutputTokens: Int
         var supportsVision: Bool?
     }
-    static let providerID = UUID(uuidString: "A3060000-0000-4000-8000-000000000001")!
-    static let modelID = UUID(uuidString: "A3060000-0000-4000-8000-000000000002")!
+    static let providerID = NativeCADLivePrepaidRoute.providerID
+    static let modelID = NativeCADLivePrepaidRoute.modelID
     let provider: ProviderProfile
     let account: String
 
@@ -252,6 +304,7 @@ private struct NativeCADLiveOptIn: Sendable {
     var modelID: UUID?
     var remoteModelID: String?
     var allowAnyCheapCloudChatModel: Bool
+    var prepaidBudgetBasis: Bool
     var inputPerMillionUSD: Decimal?
     var outputPerMillionUSD: Decimal?
     var maxCost: Decimal
@@ -270,6 +323,7 @@ private struct NativeCADLiveOptIn: Sendable {
         var modelID: UUID?
         var remoteModelID: String?
         var allowAnyCheapCloudChatModel: Bool?
+        var prepaidBudgetBasis: Bool?
         var inputPerMillionUSD: Double?
         var outputPerMillionUSD: Double?
         var maxEstimatedCostUSD: Double?
@@ -330,6 +384,7 @@ private struct NativeCADLiveOptIn: Sendable {
             )
         }
 
+        let prepaid = raw.prepaidBudgetBasis == true
         let overrideInput = raw.inputPerMillionUSD
         let overrideOutput = raw.outputPerMillionUSD
         guard (overrideInput == nil) == (overrideOutput == nil) else {
@@ -338,13 +393,29 @@ private struct NativeCADLiveOptIn: Sendable {
                     + "must be supplied together (both or neither). A skip is not live evidence."
             )
         }
-        if let overrideInput, let overrideOutput {
+        if prepaid {
+            let trimmedRemote = raw.remoteModelID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard raw.providerID == NativeCADLivePrepaidRoute.providerID,
+                  raw.modelID == NativeCADLivePrepaidRoute.modelID,
+                  trimmedRemote == NativeCADLivePrepaidRoute.remoteModelID,
+                  raw.allowAnyCheapCloudChatModel != true,
+                  let overrideInput, let overrideOutput,
+                  overrideInput == 0, overrideOutput == 0 else {
+                throw XCTSkip(
+                    "Live native CAD acceptance skipped: prepaidBudgetBasis is accepted only "
+                        + "for the exact reserved owned Agent Plan provider/model IDs, remote "
+                        + "model and both explicit zero per-million increments; unpinned "
+                        + "free-model and PAYG fallbacks are not permitted. A skip is not live evidence."
+                )
+            }
+        } else if let overrideInput, let overrideOutput {
             guard overrideInput.isFinite, overrideOutput.isFinite,
                   overrideInput > 0, overrideOutput > 0,
                   overrideInput <= 1.5, overrideOutput <= 6.0 else {
                 throw XCTSkip(
                     "Live native CAD acceptance skipped: the explicit USD pricing override is "
-                        + "outside the cheap-model band (input ≤ 1.5, output ≤ 6.0 per million). "
+                        + "outside the cheap-model band (input ≤ 1.5, output ≤ 6.0 per million) "
+                        + "and zero rates require prepaidBudgetBasis for the reviewed owned route. "
                         + "A skip is not live evidence."
                 )
             }
@@ -374,12 +445,26 @@ private struct NativeCADLiveOptIn: Sendable {
             throw XCTSkip("Live native CAD acceptance skipped: maxTotalSeconds must be 60...2,700 and at least perRunTimeoutSeconds. A skip is not live evidence.")
         }
 
+        if prepaid {
+            guard maxInput <= NativeCADLivePrepaidRoute.maxInputTokens,
+                  maxOutput <= NativeCADLivePrepaidRoute.maxOutputTokens,
+                  perRun <= NativeCADLivePrepaidRoute.maxPerRunSeconds,
+                  total <= NativeCADLivePrepaidRoute.maxTotalSeconds else {
+                throw XCTSkip(
+                    "Live native CAD acceptance skipped: prepaidBudgetBasis may not exceed the "
+                        + "approved 160,000 input / 8,000 output / 180 s per turn / 600 s total "
+                        + "budget. A skip is not live evidence."
+                )
+            }
+        }
+
         let trimmedRemote = raw.remoteModelID?.trimmingCharacters(in: .whitespacesAndNewlines)
         return NativeCADLiveOptIn(
             providerID: raw.providerID,
             modelID: raw.modelID,
             remoteModelID: (trimmedRemote?.isEmpty ?? true) ? nil : trimmedRemote,
             allowAnyCheapCloudChatModel: raw.allowAnyCheapCloudChatModel == true,
+            prepaidBudgetBasis: prepaid,
             inputPerMillionUSD: overrideInput.map { Decimal($0) },
             outputPerMillionUSD: overrideOutput.map { Decimal($0) },
             maxCost: Decimal(maxCostDouble),
@@ -393,9 +478,15 @@ private struct NativeCADLiveOptIn: Sendable {
 
 // MARK: - Route selection (actual App configuration only)
 
+private enum NativeCADLiveBudgetBasis: String, Sendable, Equatable {
+    case meteredUSD
+    case prepaidAgentPlan
+}
+
 private struct NativeCADLivePricing: Sendable {
     var inputPerMillion: Decimal
     var outputPerMillion: Decimal
+    var basis: NativeCADLiveBudgetBasis
 
     func cost(inputTokens: Int, outputTokens: Int) -> Decimal {
         Decimal(inputTokens) * inputPerMillion / 1_000_000
@@ -421,6 +512,18 @@ private struct NativeCADLiveRoute: Sendable {
             throw XCTSkip("Live native CAD acceptance skipped: the App has no enabled provider after launch. A skip is not live evidence.")
         }
         let providersByID = Dictionary(uniqueKeysWithValues: providers.map { ($0.id, $0) })
+        if optIn.prepaidBudgetBasis {
+            guard optIn.providerID == NativeCADLivePrepaidRoute.providerID,
+                  optIn.modelID == NativeCADLivePrepaidRoute.modelID,
+                  optIn.remoteModelID == NativeCADLivePrepaidRoute.remoteModelID,
+                  !optIn.allowAnyCheapCloudChatModel else {
+                throw XCTSkip(
+                    "Live native CAD acceptance skipped: the prepaid budget basis requires the "
+                        + "exact reserved owned Agent Plan route pins and does not permit a "
+                        + "fallback model. A skip is not live evidence."
+                )
+            }
+        }
 
         var candidates: [(provider: ProviderProfile, model: ModelProfile)] = []
         if let modelID = optIn.modelID {
@@ -457,8 +560,8 @@ private struct NativeCADLiveRoute: Sendable {
         guard !eligible.isEmpty else {
             throw XCTSkip(
                 "Live native CAD acceptance skipped: no configured, enabled, cheap, tool-capable "
-                    + "cloud chat model with complete USD pricing is visible to the App. "
-                    + "A skip is not live evidence."
+                    + "cloud chat model with a bounded metered price or the exact prepaid route "
+                    + "is visible to the App. A skip is not live evidence."
             )
         }
 
@@ -485,7 +588,23 @@ private struct NativeCADLiveRoute: Sendable {
         guard let chosen = selectable.min(by: { lhs, rhs in
             priceRank(lhs.model, optIn: optIn) < priceRank(rhs.model, optIn: optIn)
         }), let pricing = pricing(for: chosen.model, optIn: optIn) else {
-            throw XCTSkip("Live native CAD acceptance skipped: the selected model has no usable USD pricing metadata, so cost cannot be bounded. A skip is not live evidence.")
+            throw XCTSkip(
+                "Live native CAD acceptance skipped: the selected model has no usable metered "
+                    + "USD pricing or exact prepaid basis, so cost cannot be bounded. "
+                    + "A skip is not live evidence."
+            )
+        }
+        if optIn.prepaidBudgetBasis {
+            guard NativeCADLivePrepaidRoute.matches(
+                provider: chosen.provider, model: chosen.model
+            ), pricing.basis == .prepaidAgentPlan else {
+                throw XCTSkip(
+                    "Live native CAD acceptance skipped: prepaidBudgetBasis requires the exact "
+                        + "reserved imported Agent Plan provider/model route and both explicit "
+                        + "zero increments; no PAYG or alternate-channel fallback is allowed. "
+                        + "A skip is not live evidence."
+                )
+            }
         }
 
         // App-owned credential resolution only. The value is checked for
@@ -528,9 +647,18 @@ private struct NativeCADLiveRoute: Sendable {
 
         let input = NSDecimalNumber(decimal: pricing.inputPerMillion).doubleValue
         let output = NSDecimalNumber(decimal: pricing.outputPerMillion).doubleValue
-        // An explicit, conservative "cheap" ceiling. A model outside this
-        // band needs a deliberate product decision, not a silent fallback.
-        guard input >= 0, output >= 0, input <= 1.5, output <= 6.0 else { return false }
+        switch pricing.basis {
+        case .prepaidAgentPlan:
+            // Zero incremental USD is valid only for the exact reserved,
+            // imported prepaid route. It is not a generic free-model path.
+            guard optIn.prepaidBudgetBasis,
+                  NativeCADLivePrepaidRoute.matches(provider: provider, model: model),
+                  input == 0, output == 0 else { return false }
+        case .meteredUSD:
+            // An explicit, conservative "cheap" ceiling. A model outside this
+            // band needs a deliberate product decision, not a silent fallback.
+            guard input > 0, output > 0, input <= 1.5, output <= 6.0 else { return false }
+        }
         return true
     }
 
@@ -544,18 +672,35 @@ private struct NativeCADLiveRoute: Sendable {
            let output = metadata.outputPerMillion {
             let inputNumber = NSDecimalNumber(decimal: input).doubleValue
             let outputNumber = NSDecimalNumber(decimal: output).doubleValue
+            // A zero or incomplete saved price is not a metered rate. It must
+            // never become an arbitrary free-model candidate.
             guard inputNumber.isFinite, outputNumber.isFinite,
-                  inputNumber >= 0, outputNumber >= 0 else { return nil }
-            return NativeCADLivePricing(inputPerMillion: input, outputPerMillion: output)
+                  inputNumber > 0, outputNumber > 0 else { return nil }
+            return NativeCADLivePricing(
+                inputPerMillion: input,
+                outputPerMillion: output,
+                basis: .meteredUSD
+            )
         }
         // Explicit, non-secret USD price supplied by the primary when the App
         // has no usable USD pricing metadata. The price is only a test bound;
         // it never edits the saved provider/model configuration.
-        if let input = optIn.inputPerMillionUSD,
-           let output = optIn.outputPerMillionUSD {
-            return NativeCADLivePricing(inputPerMillion: input, outputPerMillion: output)
+        guard let input = optIn.inputPerMillionUSD,
+              let output = optIn.outputPerMillionUSD else { return nil }
+        if optIn.prepaidBudgetBasis {
+            guard input == Decimal.zero, output == Decimal.zero else { return nil }
+            return NativeCADLivePricing(
+                inputPerMillion: input,
+                outputPerMillion: output,
+                basis: .prepaidAgentPlan
+            )
         }
-        return nil
+        guard input > Decimal.zero, output > Decimal.zero else { return nil }
+        return NativeCADLivePricing(
+            inputPerMillion: input,
+            outputPerMillion: output,
+            basis: .meteredUSD
+        )
     }
 
     private static func priceRank(_ model: ModelProfile, optIn: NativeCADLiveOptIn) -> Decimal {
@@ -651,6 +796,7 @@ private struct NativeCADLiveTotals: Sendable {
     var maxCost: Decimal
     var maxInputTokens: Int
     var maxOutputTokens: Int
+    var basis: NativeCADLiveBudgetBasis
 
     var hasUsage: Bool { inputTokens + outputTokens > 0 }
     var exceeds: Bool {
@@ -660,8 +806,16 @@ private struct NativeCADLiveTotals: Sendable {
     }
 
     var description: String {
-        "input \(inputTokens)/\(maxInputTokens) tokens, output \(outputTokens)/\(maxOutputTokens) tokens, "
-            + "estimated cost \(cost) (cap \(maxCost))"
+        let tokens = "input \(inputTokens)/\(maxInputTokens) tokens, "
+            + "output \(outputTokens)/\(maxOutputTokens) tokens"
+        switch basis {
+        case .meteredUSD:
+            return "\(tokens), estimated metered cost \(cost) USD (cap \(maxCost) USD)"
+        case .prepaidAgentPlan:
+            return "\(tokens), 0 incremental USD from prepaid Agent Plan consumption "
+                + "(prepaid allowance, not a metered market price or free-model claim; "
+                + "cost guard \(maxCost) USD remains in force)"
+        }
     }
 }
 
@@ -710,7 +864,8 @@ private actor NativeCADLiveLedger {
             cost: cost,
             maxCost: maxCost,
             maxInputTokens: maxInputTokens,
-            maxOutputTokens: maxOutputTokens
+            maxOutputTokens: maxOutputTokens,
+            basis: pricing.basis
         )
     }
 }
@@ -808,9 +963,25 @@ private final class NativeCADLiveSession {
         attach(png)
 
         let totals = await ledger.totals()
+        let expectedBasis: NativeCADLiveBudgetBasis = optIn.prepaidBudgetBasis
+            ? .prepaidAgentPlan
+            : .meteredUSD
+        XCTAssertEqual(
+            totals.basis,
+            expectedBasis,
+            "The usage ledger must account the configured prepaid or metered basis exactly."
+        )
+        if optIn.prepaidBudgetBasis {
+            XCTAssertEqual(
+                totals.cost,
+                Decimal.zero,
+                "Prepaid Agent Plan usage must not invent a metered per-token charge."
+            )
+        }
         XCTAssertTrue(totals.hasUsage, "The real model run must produce durable token usage.")
         XCTAssertFalse(totals.exceeds, "Hard cost/data ceiling exceeded: \(totals.description)")
         XCTAssertLessThanOrEqual(totals.cost, optIn.maxCost)
+        attachUsage(totals)
     }
 
     // MARK: Prepare (durable, task-owned)
@@ -1254,6 +1425,15 @@ private final class NativeCADLiveSession {
         attachment.name = "native-cad-live-viewport.png"
         attachment.lifetime = .keepAlways
         XCTContext.runActivity(named: "Native CAD live viewport") { activity in
+            activity.add(attachment)
+        }
+    }
+
+    private func attachUsage(_ totals: NativeCADLiveTotals) {
+        let attachment = XCTAttachment(string: totals.description)
+        attachment.name = "native-cad-live-usage.txt"
+        attachment.lifetime = .keepAlways
+        XCTContext.runActivity(named: "Native CAD live model usage") { activity in
             activity.add(attachment)
         }
     }

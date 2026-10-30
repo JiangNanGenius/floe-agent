@@ -154,6 +154,18 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         let composer = app.textViews["composer.input"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
         composer.tap()
+        // The reused simulator persists this fixed synthetic chat's unsent
+        // draft across app launches (ComposerDraftStore). An earlier
+        // interrupted invocation can therefore leave the same test-owned
+        // text in the slot; clear only that slot through the real editor
+        // before typing this run's draft.
+        let existingDraft = composer.value as? String ?? ""
+        if !existingDraft.isEmpty {
+            composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue,
+                                     count: existingDraft.count))
+        }
+        XCTAssertEqual(composer.value as? String ?? "", "",
+                       "the synthetic chat draft must be empty before typing")
         composer.typeText("draft-keep")
 
         let menu = app.buttons["thread.inspector.menu"]
@@ -222,6 +234,13 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         let save = app.buttons["home.schedule.save"]
         XCTAssertTrue(save.waitForExistence(timeout: 5))
         save.tap()
+        // Save must actually commit and dismiss its sheet before inspecting
+        // the underlying list. Keep a missed native tap visible at its real
+        // boundary instead of swiping a still-present form and failing later.
+        let saved = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: save)
+        XCTAssertEqual(XCTWaiter.wait(for: [saved], timeout: 10), .completed,
+                       "Save must finish and dismiss the schedule sheet")
         createdPlan = true
 
         let row = app.staticTexts["UI 合成计划"].firstMatch
