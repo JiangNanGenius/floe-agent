@@ -112,6 +112,8 @@ private struct StagedSkillFixture {
 private func makeStagedSkillFixture(
     descriptorBytes: Data,
     capabilities: [String] = [],
+    dependencyJSON: String? = nil,
+    version: String = "1.0.0",
     environmentID: String = "env-fixture-" + UUID().uuidString
 ) async throws -> StagedSkillFixture {
     let workspace = makeComponentTemporaryDirectory("workspace")
@@ -127,7 +129,7 @@ private func makeStagedSkillFixture(
         """
     try Data(markdown.utf8).write(to: packageRoot.appendingPathComponent("SKILL.md"), options: .atomic)
     let manifest = SkillManifest(
-        id: "impeccable-fixture", version: "1.0.0",
+        id: "impeccable-fixture", version: version,
         capabilities: capabilities, tools: [], scriptRuntime: .none
     )
     // Equal installed packages in different environments have equal bytes;
@@ -138,6 +140,12 @@ private func makeStagedSkillFixture(
     let reference = packageRoot.appendingPathComponent("references/engine-dependency.json", isDirectory: false)
     try FileManager.default.createDirectory(at: reference.deletingLastPathComponent(), withIntermediateDirectories: true)
     try descriptorBytes.write(to: reference, options: .atomic)
+    if let dependencyJSON {
+        try Data(dependencyJSON.utf8).write(
+            to: packageRoot.appendingPathComponent("references/dependencies.json", isDirectory: false),
+            options: .atomic
+        )
+    }
     let validated = try SkillPackageValidator().validate(packageAt: packageRoot)
     let snapshot = try SkillContentSnapshot(root: packageRoot, expectedDigest: validated.canonicalSHA256)
 
@@ -1425,6 +1433,120 @@ private func makePreparedChain(
             row: capableRow, snapshot: capable.snapshot,
             grantedCapabilities: [SkillCapability.remoteExecution.rawValue]
         ) != nil)
+    }
+
+    @Test func taskPinnedSnapshotIsNotSilentlyReplacedByCurrentInstalledRevision() async throws {
+        let component = try makeComponentFixture()
+        let declaration = """
+        {"schemaVersion":1,"profiles":[{"id":"engine","target":{"os":"linux","architectures":["riscv64"]},"requirements":[{"kind":"runtimeComponent","componentDescriptorPath":"references/engine-dependency.json","purpose":"Engine.","required":true}]}]}
+        """
+        let pinned = try await makeStagedSkillFixture(
+            descriptorBytes: component.descriptorBytes,
+            dependencyJSON: declaration,
+            version: "1.0.0"
+        )
+        let current = try await makeStagedSkillFixture(
+            descriptorBytes: component.descriptorBytes,
+            dependencyJSON: declaration,
+            version: "1.0.1"
+        )
+        #expect(pinned.snapshot.package.canonicalSHA256 != current.snapshot.package.canonicalSHA256)
+        let currentRow = try fixtureRow(staged: current)
+        // The task pin is no longer covered by the current signed receipt: a
+        // lost plan must refuse rather than silently adopt the newer install.
+        #expect(SkillsCenter.dependencyAuthority(
+            row: currentRow, snapshot: pinned.snapshot, grantedCapabilities: []
+        ) == nil)
+        #expect(SkillsCenter.runtimeComponentAuthority(
+            row: currentRow, snapshot: pinned.snapshot, grantedCapabilities: []
+        ) == nil)
+        // The current installed revision stays authorizable for a new task.
+        #expect(SkillsCenter.dependencyAuthority(
+            row: currentRow, snapshot: current.snapshot, grantedCapabilities: []
+        ) != nil)
+        #expect(SkillsCenter.runtimeComponentAuthority(
+            row: currentRow, snapshot: current.snapshot, grantedCapabilities: []
+        ) != nil)
+    }
+
+    @Test func prefetchArtifactVerifiesAndCachesWithoutAnEnvironment() async throws {
+        let component = try makeComponentFixture()
+        let staged = try await makeStagedSkillFixture(descriptorBytes: component.descriptorBytes)
+        let authority = makeAuthority(fixture: staged, descriptorBytes: component.descriptorBytes)
+        let harness = makeHarness(layers: [:], pathMaps: [:])
+        harness.transport.handler = { _ in component.engineBytes }
+        let status = await harness.center.prefetchArtifact(authority: authority)
+        #expect(status == "verified: \(component.descriptor.componentID)@\(component.descriptor.componentVersion)")
+        #expect(harness.transport.callHistory().count == 1)
+        let cacheFile = harness.cacheRoot
+            .appendingPathComponent(component.descriptor.componentID, isDirectory: true)
+            .appendingPathComponent(component.descriptor.componentVersion, isDirectory: true)
+            .appendingPathComponent(component.descriptor.target.triple, isDirectory: true)
+            .appendingPathComponent(SkillRuntimeDependency.frozenEngineFileName, isDirectory: false)
+        #expect(try Data(contentsOf: cacheFile) == component.engineBytes)
+    }
+
+    @Test func diagnosticsReportStaleGenerationDamagedCacheAndPreservedOldVersions() async throws {
+        let component = try makeComponentFixture()
+        let staged = try await makeStagedSkillFixture(descriptorBytes: component.descriptorBytes)
+        let authority = makeAuthority(fixture: staged, descriptorBytes: component.descriptorBytes)
+        let harness = makeHarness(
+            layers: [staged.environmentID: staged.layer],
+            pathMaps: [staged.environmentID: staged.pathMap],
+            generation: 7
+        )
+        harness.transport.handler = { _ in component.engineBytes }
+        harness.setProvider { skillID in skillID == staged.skillID ? authority : nil }
+        harness.runner.probeStdout = SkillRuntimeDependency.expectedProbeStdout(
+            componentVersion: component.descriptor.componentVersion
+        )
+        harness.runner.contractStdout = String(decoding: component.contractBytes, as: UTF8.self)
+        let runID = UUID()
+        let outcome = await harness.center.recordPlan(
+            skillID: staged.skillID,
+            environmentID: staged.environmentID,
+            workspaceRootURL: staged.workspace,
+            runID: runID,
+            stagedGuestRoot: staged.stagedGuestRoot,
+            authority: authority
+        )
+        guard case .recorded = outcome else { Issue.record("fixture plan rejected"); return }
+        #expect(await harness.center.prepareBindings(
+            environmentID: staged.environmentID, runID: runID, cancellation: nil
+        ) != nil)
+        // A guest relaunch changes the generation: the old receipt stays
+        // observable but must be reported stale, never as current readiness.
+        harness.generation.set(8)
+        var diagnostics = await harness.center.diagnostics(
+            descriptor: component.descriptor, environmentID: staged.environmentID
+        )
+        #expect(diagnostics.readinessVersion == component.descriptor.componentVersion)
+        #expect(diagnostics.readinessLaunchGeneration == 7)
+        #expect(diagnostics.currentLaunchGeneration == 8)
+        #expect(diagnostics.staged == "verified")
+
+        // A damaged app-owned cache is reported honestly; valid older versions
+        // in the same namespace stay listed (never deleted by this status).
+        let cacheFile = harness.cacheRoot
+            .appendingPathComponent(component.descriptor.componentID, isDirectory: true)
+            .appendingPathComponent(component.descriptor.componentVersion, isDirectory: true)
+            .appendingPathComponent(component.descriptor.target.triple, isDirectory: true)
+            .appendingPathComponent(SkillRuntimeDependency.frozenEngineFileName, isDirectory: false)
+        try Data("damaged".utf8).write(to: cacheFile, options: .atomic)
+        let olderVersion = "0.1.16+floe.1.0.9"
+        let olderRoot = harness.cacheRoot
+            .appendingPathComponent(component.descriptor.componentID, isDirectory: true)
+            .appendingPathComponent(olderVersion, isDirectory: true)
+            .appendingPathComponent(component.descriptor.target.triple, isDirectory: true)
+        try FileManager.default.createDirectory(at: olderRoot, withIntermediateDirectories: true)
+        try Data([0x01]).write(
+            to: olderRoot.appendingPathComponent(SkillRuntimeDependency.frozenEngineFileName)
+        )
+        diagnostics = await harness.center.diagnostics(
+            descriptor: component.descriptor, environmentID: staged.environmentID
+        )
+        #expect(diagnostics.cache == "damaged")
+        #expect(diagnostics.cacheOtherVersions.contains(olderVersion))
     }
 
     // MARK: Routing integration

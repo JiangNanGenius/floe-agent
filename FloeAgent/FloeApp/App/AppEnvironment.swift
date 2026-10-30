@@ -294,6 +294,15 @@ final class AppEnvironment: ObservableObject {
                 return await components.state(environmentID: id, componentID: SkillRuntimeDependency.knownComponentID)
                     .deferredReason ?? "Runtime component is not ready"
             },
+            planRecovery: { [weak self] skillID, environmentID, runID, cancellation in
+                guard let self else { return false }
+                return await self.skillsCenter.reestablishDependencyPlan(
+                    skillID: skillID,
+                    environmentID: environmentID,
+                    runID: runID,
+                    cancellation: cancellation
+                )
+            },
             targetProvider: { [weak self] id, runID in
                 await self?.resolveSkillRuntimeTarget(environmentID: id, runID: runID)
             },

@@ -592,6 +592,16 @@ actor SkillDependencyPreparationCenter {
     /// without broadening it: nil when the component is probed-ready for this
     /// environment/run, otherwise a model-safe deferral reason.
     typealias RuntimeComponentProbe = @Sendable (_ environmentID: String, _ runID: UUID, _ cancellation: CancellationToken?) async -> String?
+    /// Re-establishes an absent (environment, run) plan at the approved
+    /// `exec.shell` boundary from LIVE installed+verified authority. The
+    /// closure must never replace an existing plan: a stale plan stays a
+    /// fail-closed `planStale` refusal, because a byte swap under a live
+    /// binding is exactly what the immutable plan prevents. Returning false
+    /// leaves the honest `noRun` refusal unchanged.
+    typealias PlanRecovery = @Sendable (
+        _ skillID: String, _ environmentID: String, _ runID: UUID,
+        _ cancellation: CancellationToken?
+    ) async -> Bool
 
     private struct PlanKey: Hashable { let environmentID: String; let runID: UUID; let skillID: String }
     private struct ReceiptKey: Hashable {
@@ -655,6 +665,10 @@ actor SkillDependencyPreparationCenter {
     let operationsResolver: OperationsResolver?
     let targetPreparation: TargetPreparation?
     let runtimeComponentProbe: RuntimeComponentProbe?
+    /// App-owned, live-authority-only repair for a lost in-memory plan. Nil in
+    /// hosts/tests that do not wire it; `invoke` then keeps the exact
+    /// `noRun` refusal.
+    let planRecovery: PlanRecovery?
     let lateBindings: SkillDependencyLateBindings
     private let appVersion: @Sendable () -> String
     private let persistenceRoot: URL?
@@ -686,6 +700,7 @@ actor SkillDependencyPreparationCenter {
         operations: (any SkillDependencyPackageOperating)?,
         prepareEnvironment: EnvironmentPreparation? = nil,
         runtimeComponentProbe: RuntimeComponentProbe? = nil,
+        planRecovery: PlanRecovery? = nil,
         targetProvider: TargetProvider? = nil,
         operationsResolver: OperationsResolver? = nil,
         targetPreparation: TargetPreparation? = nil,
@@ -706,6 +721,7 @@ actor SkillDependencyPreparationCenter {
         self.targetPreparation = targetPreparation
         self.prepareEnvironment = prepareEnvironment
         self.runtimeComponentProbe = runtimeComponentProbe
+        self.planRecovery = planRecovery
         self.appVersion = appVersion
         self.lateBindings = bindings
         self.persistenceRoot = persistenceRoot
@@ -1655,7 +1671,20 @@ actor SkillDependencyPreparationCenter {
         guard let environmentID = trimmedEnvironmentID, !environmentID.isEmpty else {
             return .refused(reason: SkillDependencyReason.noEnvironment)
         }
-        guard let plan = plans[PlanKey(environmentID: environmentID, runID: runID, skillID: skillID)] else {
+        let planKey = PlanKey(environmentID: environmentID, runID: runID, skillID: skillID)
+        if plans[planKey] == nil, let planRecovery {
+            // The exact read normally binds this plan. An app/guest lifecycle
+            // release or a later run loses that IN-MEMORY binding; the
+            // approved skill-scoped invocation then re-establishes it from the
+            // live installed+enabled curated authority for THIS actual run.
+            // An existing plan is never replaced here (the live digest checks
+            // below still refuse a stale binding closed).
+            _ = await planRecovery(skillID, environmentID, runID, cancellation)
+            if cancellation?.isCancelled == true || Task.isCancelled {
+                return .refused(reason: SkillDependencyReason.cancelled)
+            }
+        }
+        guard let plan = plans[planKey] else {
             return .refused(reason: SkillDependencyReason.noRun)
         }
         // Live reauthorization first. An update/rollback/disable/edit/uninstall
@@ -2461,6 +2490,38 @@ actor SkillDependencyPreparationCenter {
         plans.values.first { $0.environmentID == environmentID && $0.skillID == skillID }?.runID
     }
 
+    /// True only while THIS live center holds an immutable plan for the exact
+    /// (environment, run, skill) binding. Used by the app-side recovery seam
+    /// to avoid replacing an existing plan; never a readiness claim.
+    func hasPlan(skillID: String, environmentID: String, runID: UUID) -> Bool {
+        plans[PlanKey(environmentID: environmentID, runID: runID, skillID: skillID)] != nil
+    }
+
+    /// Model-safe plan state for the read-only dependency status. It never
+    /// exposes a run identity or a host path. `currentDigest` is the device's
+    /// current installed revision: a plan recorded for a different digest is
+    /// stale against the live signed receipt and the existing `invoke` check
+    /// refuses it closed, so the status must say so instead of claiming ready.
+    func planSummary(
+        skillID: String,
+        environmentID: String,
+        runID: UUID?,
+        currentDigest: String? = nil
+    ) -> String {
+        if let runID, let plan = plans[PlanKey(environmentID: environmentID, runID: runID, skillID: skillID)] {
+            if let currentDigest, plan.authority.contentDigest != currentDigest {
+                return "stale-against-current-install"
+            }
+            return "bound-to-this-run"
+        }
+        if plans.keys.contains(where: {
+            $0.environmentID == environmentID && $0.skillID == skillID
+        }) {
+            return "bound-to-another-run"
+        }
+        return "absent"
+    }
+
     // MARK: - skill.read invocation info
 
     /// The model-safe invocation block appended to an exact `skill.read`
@@ -2482,7 +2543,7 @@ actor SkillDependencyPreparationCenter {
                 lines.append("- \(requirement.kind.rawValue): \(identity)\(pin) (\(flag)) — \(requirement.purpose)")
             }
         }
-        lines.append("Invoke with exec.shell \"skillID\": \"\(skillID)\" in this task run: Floe verifies the installed record, the current run binding and the grant, then automatically installs and reads back the declared resources in THIS task's resolved external target (shared download cache; target-scoped install state and receipts). A required resource that is not ready refuses this skill's invocation with the honest reason; optional gaps appear as an annotation. Commands without skillID are unchanged, so ordinary repair work stays available. Exact pins are installed and read back as declared — never ranges, never a silent downgrade.")
+        lines.append("Invoke with exec.shell \"skillID\": \"\(skillID)\" in this task run: Floe verifies the installed record, the current run binding and the grant, then automatically installs and reads back the declared resources in THIS task's resolved external target (shared download cache; target-scoped install state and receipts). A missing in-memory plan (a later run, a guest release or an app upgrade) is re-established from THIS task's pinned signed revision; if that pin is no longer covered by the current receipt, start a new task instead of running unpinned bytes. The exact read's dependencyStatus reports the identity/state and the next action. A required resource that is not ready refuses this skill's invocation with the honest reason; optional gaps appear as an annotation. Commands without skillID are unchanged, so ordinary repair work stays available. Exact pins are installed and read back as declared — never ranges, never a silent downgrade.")
         return lines.joined(separator: "\n")
     }
 

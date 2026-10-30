@@ -213,6 +213,46 @@ struct SkillWorkspaceResourceStagerTests {
         #expect(footer.contains("fileCount=\(staged.fileCount)"))
     }
 
+    @Test func stagedScriptsKeepExecutableIntentAndReuseRepairsOldModes() async throws {
+        let fixture = try makeBundleFixture(extras: [
+            "scripts/floe-impeccable.sh": "#!/bin/sh\necho ok\n",
+            "references/guide.md": "# Guide\n"
+        ])
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
+        let stager = SkillWorkspaceResourceStager { _ in makeWorkspaceShareMap(exporting: workspace) }
+
+        let outcome = await stage(stager, fixture, environmentID: "env-local", workspace: workspace)
+        let staged = try #require(stagedBundle(outcome))
+        let stagedRoot = workspace.appendingPathComponent(".floe/skills/\(fixture.leaf)", isDirectory: true)
+        let script = stagedRoot.appendingPathComponent("scripts/floe-impeccable.sh")
+        let guide = stagedRoot.appendingPathComponent("references/guide.md")
+        func mode(_ url: URL) throws -> Int {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
+        }
+        #expect(try mode(script) & 0o777 == 0o755)
+        #expect(try mode(guide) & 0o777 != 0o755)
+        #expect(try Data(contentsOf: script) == fixture.snapshot.files["scripts/floe-impeccable.sh"])
+        #expect(staged.pinnedSHA256 == fixture.digest)
+        #expect(SkillWorkspaceResourceStager.nonExecutableShebangScripts(
+            root: stagedRoot, declaredFiles: fixture.snapshot.package.files
+        ) == 0)
+
+        // An older staged tree can carry the historical 0644 launcher. Reuse
+        // must verify the SAME bytes and repair only the mode, never re-pin or
+        // rewrite content.
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: script.path)
+        #expect(SkillWorkspaceResourceStager.nonExecutableShebangScripts(
+            root: stagedRoot, declaredFiles: fixture.snapshot.package.files
+        ) == 1)
+        let reused = await stage(stager, fixture, environmentID: "env-local", workspace: workspace)
+        #expect(stagedBundle(reused)?.guestRoot == staged.guestRoot)
+        #expect(try mode(script) & 0o777 == 0o755)
+        #expect(try Data(contentsOf: script) == fixture.snapshot.files["scripts/floe-impeccable.sh"])
+    }
+
     @Test func coldReadBeforeAnyGuestBootStagesThroughTheDescriptorShareMap() async throws {
         // The physical failure sequence reads a skill BEFORE the task's first
         // exec.shell. The descriptor-time share map is enough: no running

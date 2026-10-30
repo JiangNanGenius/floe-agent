@@ -670,6 +670,12 @@ final class SkillsCenter: ObservableObject {
                 runID: context.runID,
                 cancellation: context.cancellation
             )
+        } else if staged.content.files[SkillRuntimeDependency.engineDependencyPackagePath] != nil {
+            // Descriptor-only official package: verify the exact signed
+            // component into app-owned storage. Task staging/probing stays
+            // deferred to that task's resolved environment; the next exact
+            // read's dependencyStatus reports the cache identity.
+            _ = await prefetchInstallComponent(skillID: request.id)
         }
         return receipt
     }
@@ -906,6 +912,12 @@ final class SkillsCenter: ObservableObject {
         // task environment. The job claims installed only — never "ready".
         if staged.content.files[SkillDependency.packagePath] != nil {
             _ = await dependencyPreparation?.prepareAtInstall(skillID: entryID, environmentID: nil, runID: nil, cancellation: nil)
+        } else if staged.content.files[SkillRuntimeDependency.engineDependencyPackagePath] != nil {
+            // Descriptor-only official package: fetch and verify the exact
+            // signed component into app-owned storage. No environment is
+            // selected, nothing is staged or executed; the first task use
+            // still stages/probes it in that task's resolved environment.
+            _ = await prefetchInstallComponent(skillID: entryID)
         }
         return .installed
     }
@@ -1651,6 +1663,493 @@ final class SkillsCenter: ObservableObject {
         )
     }
 
+    /// Approved `exec.shell` boundary repair for a lost reviewed dependency
+    /// plan. The immutable plan is recorded by an exact `skill.read`; the
+    /// in-memory binding is deliberately not a serialized ready token, so a
+    /// later run or a guest lifecycle release legitimately has none. The
+    /// approved skill-scoped invocation re-establishes it from the LIVE
+    /// installed+enabled curated authority for the ACTUAL run, stages the
+    /// exact pinned bundle through the same verified stager the read uses,
+    /// and records the runtime-component plan when the package carries the
+    /// frozen descriptor. It never replaces an existing plan, mints a run
+    /// identity, selects another environment, downloads from a non-Hub source
+    /// or widens a grant.
+    func reestablishDependencyPlan(
+        skillID: String,
+        environmentID: String,
+        runID: UUID,
+        cancellation: CancellationToken?
+    ) async -> Bool {
+        guard let dependencyPreparation else { return false }
+        if await dependencyPreparation.hasPlan(
+            skillID: skillID, environmentID: environmentID, runID: runID
+        ) { return true }
+        guard cancellation?.isCancelled != true, !Task.isCancelled else { return false }
+        guard let row = try? await environment.skillStore.all().first(where: { $0.id == skillID }),
+              row.status == "enabled",
+              // A missing in-memory plan does NOT prove the task has no pinned
+              // snapshot. Resolve the ACTUAL run's pinned snapshot and require
+              // the LIVE signed receipt to authorize exactly that revision. If
+              // an update/reinstall made the pin unauthorized, refuse safely
+              // with actionable guidance instead of silently adopting the
+              // current package (which would rewrite this task's revision and
+              // target under an absent plan).
+              let snapshot = try? snapshot(for: row, runID: runID),
+              let grants = try? await environment.skillStore.allowedCapabilities(skillID: skillID),
+              let authority = Self.dependencyAuthority(
+                  row: row, snapshot: snapshot, grantedCapabilities: grants
+              ) else { return false }
+        let staged = await stagedPinnedBundle(
+            snapshot: snapshot, environmentID: environmentID, cancellation: cancellation
+        )
+        guard cancellation?.isCancelled != true, !Task.isCancelled else { return false }
+        let planOutcome = await dependencyPreparation.recordPlan(
+            skillID: skillID, environmentID: environmentID, runID: runID, authority: authority
+        )
+        guard case .recorded = planOutcome else { return false }
+        // The component half still needs a verified guest tree; only the
+        // exact stager result proves the pinned bytes are present for this
+        // run. A missing tree keeps the existing honest component deferral.
+        if let runtimeComponents, let staged,
+           let componentAuthority = Self.runtimeComponentAuthority(
+               row: row, snapshot: snapshot, grantedCapabilities: grants
+           ) {
+            _ = await runtimeComponents.recordPlan(
+                skillID: skillID,
+                environmentID: environmentID,
+                workspaceRootURL: staged.workspaceRoot,
+                runID: runID,
+                stagedGuestRoot: staged.guestRoot,
+                authority: componentAuthority
+            )
+        }
+        return true
+    }
+
+    /// Install-boundary component prefetch for a descriptor-only official
+    /// package (no `references/dependencies.json`). The reviewed descriptor is
+    /// the whole external dependency channel; it is downloaded and verified
+    /// into app-owned storage only, never staged or executed. Nil for packages
+    /// without the descriptor or without a live official authority.
+    @discardableResult
+    private func prefetchInstallComponent(skillID: String) async -> String? {
+        guard let runtimeComponents,
+              let row = try? await environment.skillStore.all().first(where: { $0.id == skillID }),
+              let snapshot = try? snapshot(for: row, runID: nil),
+              snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath] != nil,
+              let grants = try? await environment.skillStore.allowedCapabilities(skillID: skillID),
+              let authority = Self.runtimeComponentAuthority(
+                  row: row, snapshot: snapshot, grantedCapabilities: grants
+              ) else { return nil }
+        return await runtimeComponents.prefetchArtifact(authority: authority)
+    }
+
+    /// Stage or reuse the EXACT task-pinned bundle through the verified
+    /// stager. It never substitutes another revision and never selects an
+    /// environment. Nil means no verified guest tree.
+    private func stagedPinnedBundle(
+        snapshot: SkillContentSnapshot,
+        environmentID: String,
+        cancellation: CancellationToken?
+    ) async -> (guestRoot: String, workspaceRoot: URL)? {
+        guard let resourceStager,
+              let workspaceRoot = try? environment.environmentRegistry.workspaceRoot(for: environmentID) else {
+            return nil
+        }
+        let outcome = await resourceStager.stage(
+            snapshot: snapshot,
+            in: SkillResourceContext(
+                environmentID: environmentID,
+                workspaceRootURL: workspaceRoot,
+                cancellation: cancellation ?? CancellationToken()
+            )
+        )
+        guard case .staged(let staged) = outcome else { return nil }
+        return (staged.guestRoot, workspaceRoot)
+    }
+
+    /// Ensure the task's resolved Linux environment is genuinely RUNNING
+    /// before an app-native component probe. `prepareExecutionTarget` only
+    /// prepares the pinned image; the shell backend normally activates the
+    /// guest later. The gate runs first, so it must mirror that activation
+    /// with the ACTUAL run identity: same environment, same run ownership,
+    /// no fallback machine. The later backend activation is then a no-op.
+    private func prepareResolvedTarget(
+        environmentID: String,
+        runID: UUID,
+        cancellation: CancellationToken?
+    ) async -> Bool {
+        guard let record = await environment.environmentRegistry.record(id: environmentID),
+              record.state == .active,
+              !record.requiresRebuild,
+              record.effectiveExecutionBackend == .linuxVM else {
+            return false
+        }
+        let token = cancellation ?? CancellationToken()
+        do {
+            try await environment.prepareExecutionTarget(
+                environment.taskExecutionEnvironments.target(record), cancellation: token
+            )
+            do {
+                try await FloePlatformServices.shared.activateLinuxGuest(
+                    id: environmentID, taskID: runID.uuidString, runID: runID
+                )
+            } catch let error as LinuxGuestError {
+                guard case .imageNotQualified = error else { throw error }
+                try await environment.prepareExecutionTarget(
+                    environment.taskExecutionEnvironments.target(record), cancellation: token
+                )
+                try await FloePlatformServices.shared.activateLinuxGuest(
+                    id: environmentID, taskID: runID.uuidString, runID: runID
+                )
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// A descriptor-only official package (no `references/dependencies.json`)
+    /// uses the frozen runtime-component descriptor as its whole external
+    /// dependency channel. The declaration-based dependency center can never
+    /// record a plan for it, so the `exec.shell` skillID gate must not answer
+    /// `noRun`. This verifies the LIVE task-pinned component authority,
+    /// re-stages the exact pinned bundle, records the run-bound component plan
+    /// and runs the existing fixed probe/readiness path. Nil means "not a
+    /// descriptor-only package"; declaration-bearing and ordinary skills keep
+    /// their existing paths.
+    private func componentOnlyInvocationDecision(
+        skillID: String,
+        environmentID: String?,
+        runID: UUID,
+        cancellation: CancellationToken?
+    ) async -> SkillDependencyInvocationDecision? {
+        let trimmed = environmentID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let environmentID = trimmed, !environmentID.isEmpty else { return nil }
+        guard let row = try? await environment.skillStore.all().first(where: { $0.id == skillID }),
+              let snapshot = try? snapshot(for: row, runID: runID),
+              snapshot.files[SkillDependency.packagePath] == nil,
+              snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath] != nil else {
+            return nil
+        }
+        guard row.status == "enabled" else {
+            return .refused(reason: "this skill is disabled")
+        }
+        guard let grants = try? await environment.skillStore.allowedCapabilities(skillID: skillID) else {
+            return .refused(reason: "the installed capability grants are unavailable")
+        }
+        guard let descriptorBytes = snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath],
+              let descriptor = try? SkillRuntimeDependency.decode(descriptorBytes) else {
+            return .refused(reason: SkillRuntimeComponentReason.descriptorRejected)
+        }
+        guard let authority = Self.runtimeComponentAuthority(
+            row: row, snapshot: snapshot, grantedCapabilities: grants
+        ) else {
+            return .refused(reason: SkillRuntimeComponentReason.pinnedRevisionUnauthorized)
+        }
+        guard let runtimeComponents else {
+            return .unavailable(reason: SkillDependencyReason.provisioningUnavailable)
+        }
+        guard SkillRuntimeDependency.isCompatible(
+            minimumAppVersion: descriptor.minimumAppVersion, appVersion: appVersion
+        ) else {
+            return .refused(reason: SkillRuntimeComponentReason.incompatibleAppVersion)
+        }
+        guard SkillRuntimeDependency.isCaptureContractVersionSupported(
+            descriptor.captureContract.version
+        ) else {
+            return .refused(reason: SkillRuntimeComponentReason.unsupportedContract)
+        }
+        // The gate runs before the shell backend's normal guest activation.
+        // Boot/resume the resolved target first so the fixed probes have a
+        // real guest to run in; this is the same environment and run, never a
+        // fallback machine.
+        guard await prepareResolvedTarget(
+            environmentID: environmentID, runID: runID, cancellation: cancellation
+        ) else {
+            if cancellation?.isCancelled == true || Task.isCancelled {
+                return .refused(reason: SkillDependencyReason.cancelled)
+            }
+            return .refused(reason: SkillRuntimeComponentReason.environmentUnavailable)
+        }
+        guard let staged = await stagedPinnedBundle(
+            snapshot: snapshot, environmentID: environmentID, cancellation: cancellation
+        ) else {
+            return .refused(reason: SkillRuntimeComponentReason.notStaged)
+        }
+        let planOutcome = await runtimeComponents.recordPlan(
+            skillID: skillID,
+            environmentID: environmentID,
+            workspaceRootURL: staged.workspaceRoot,
+            runID: runID,
+            stagedGuestRoot: staged.guestRoot,
+            authority: authority
+        )
+        guard case .recorded = planOutcome else {
+            return .refused(reason: SkillRuntimeComponentReason.authorityRevoked)
+        }
+        guard await runtimeComponents.prepareBindings(
+            environmentID: environmentID, runID: runID, cancellation: cancellation
+        ) != nil else {
+            let state = await runtimeComponents.state(
+                environmentID: environmentID, componentID: descriptor.componentID
+            )
+            return .refused(
+                reason: state.deferredReason ?? SkillDependencyReason.provisioningUnavailable
+            )
+        }
+        return .proceed(
+            annotation: "runtimeComponent \(descriptor.componentID)@\(descriptor.componentVersion) verified and probed in this task's resolved environment"
+        )
+    }
+
+    /// Read-only dependency/runtime-component diagnosis for an exact read.
+    /// This is DATA: it never approves, stages, downloads or executes. The
+    /// status distinguishes the task-pinned signed revision from the device's
+    /// current installed revision, reports a lost/stale plan and gives the
+    /// exact next action. Ordinary skills without either reviewed channel
+    /// return nil and keep the previous response shape.
+    private func dependencyStatusText(
+        row: PersistedSkill,
+        snapshot: SkillContentSnapshot,
+        runID: UUID?,
+        environmentID: String?,
+        workspaceRootURL: URL?,
+        target: SkillRuntimeTarget?,
+        resources: SkillResourceAvailability?
+    ) async -> String? {
+        let declarationBytes = snapshot.files[SkillDependency.packagePath]
+        let descriptorBytes = snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath]
+        guard declarationBytes != nil || descriptorBytes != nil else { return nil }
+        let grants = try? await environment.skillStore.allowedCapabilities(skillID: row.id)
+        let dependencyAuthority = grants.flatMap {
+            Self.dependencyAuthority(row: row, snapshot: snapshot, grantedCapabilities: $0)
+        }
+        let componentAuthority = grants.flatMap {
+            Self.runtimeComponentAuthority(row: row, snapshot: snapshot, grantedCapabilities: $0)
+        }
+
+        var lines: [String] = []
+        lines.append("installed=\(row.id)@\(row.version)")
+        lines.append("taskPinnedDigest=\(snapshot.package.canonicalSHA256)")
+        if row.rewrittenDigest != snapshot.package.canonicalSHA256 {
+            lines.append("currentInstalledDigest=\(row.rewrittenDigest)")
+        }
+        lines.append("enabled=\(row.status == "enabled")")
+        if declarationBytes != nil {
+            lines.append("dependencyAuthority=\(Self.dependencyAuthorityDiagnostic(row: row, snapshot: snapshot, grantedCapabilities: grants))")
+        }
+        if descriptorBytes != nil {
+            lines.append("componentAuthority=\(Self.runtimeComponentAuthorityDiagnostic(row: row, snapshot: snapshot, grantedCapabilities: grants))")
+        }
+
+        var planState = "no-task-binding"
+        if let dependencyPreparation, let environmentID, let runID {
+            planState = await dependencyPreparation.planSummary(
+                skillID: row.id,
+                environmentID: environmentID,
+                runID: runID,
+                currentDigest: row.rewrittenDigest
+            )
+            // Deliberately do NOT echo the raw dependency deferral text: a
+            // failed package operation can carry a host path in its
+            // error.localizedDescription. The model-safe authority/plan/state
+            // facts above and the shell result already carry the actionable
+            // reason.
+        }
+        let componentPlanForThisRun: Bool
+        if let runtimeComponents, let environmentID, let runID {
+            componentPlanForThisRun = await runtimeComponents.hasPlan(
+                environmentID: environmentID, runID: runID, skillID: row.id
+            )
+        } else {
+            componentPlanForThisRun = false
+        }
+        let planBound: Bool
+        if declarationBytes != nil && descriptorBytes != nil {
+            planBound = planState == "bound-to-this-run" && componentPlanForThisRun
+        } else if declarationBytes != nil {
+            planBound = planState == "bound-to-this-run"
+        } else {
+            planBound = componentPlanForThisRun
+        }
+        if declarationBytes != nil && descriptorBytes != nil {
+            lines.append("plan=dependency:\(planState),component:\(componentPlanForThisRun ? "bound-to-this-run" : "absent")")
+        } else if declarationBytes != nil {
+            lines.append("plan=\(planState)")
+        } else {
+            lines.append("plan=\(componentPlanForThisRun ? "bound-to-this-run" : "absent")")
+        }
+
+        var descriptorValue: SkillRuntimeDependencyDescriptor?
+        var appCompatible = true
+        var stagedEngineState = "unavailable"
+        var componentReady = false
+        if let descriptorBytes,
+           let descriptor = try? SkillRuntimeDependency.decode(descriptorBytes) {
+            descriptorValue = descriptor
+            appCompatible = SkillRuntimeDependency.isCompatible(
+                minimumAppVersion: descriptor.minimumAppVersion, appVersion: appVersion
+            )
+            lines.append("pinnedEngine=\(descriptor.componentID)@\(descriptor.componentVersion) size=\(descriptor.artifact.size) sha256=\(descriptor.artifact.sha256) target=\(descriptor.target.os)/\(descriptor.target.arch) minimumAppVersion=\(descriptor.minimumAppVersion)")
+            lines.append("appVersion=\(appVersion) compatible=\(appCompatible)")
+            if let runtimeComponents {
+                let diagnostics = await runtimeComponents.diagnostics(
+                    descriptor: descriptor, environmentID: environmentID
+                )
+                stagedEngineState = diagnostics.staged
+                lines.append("engineCache=\(diagnostics.cache)")
+                if !diagnostics.cacheOtherVersions.isEmpty {
+                    lines.append("engineCacheOtherVersions=\(diagnostics.cacheOtherVersions.joined(separator: ","))")
+                }
+                lines.append("engineStaged=\(diagnostics.staged)")
+                if let version = diagnostics.readinessVersion {
+                    lines.append("probedEngine=\(version)")
+                    if let current = diagnostics.currentLaunchGeneration,
+                       let observed = diagnostics.readinessLaunchGeneration {
+                        lines.append("probeGeneration=\(observed == current ? "current" : "stale")")
+                    } else {
+                        lines.append("probeGeneration=unknown")
+                    }
+                    if let path = diagnostics.readinessEngineGuestPath {
+                        lines.append("engineGuestPath=\(path)")
+                    }
+                } else {
+                    lines.append("probedEngine=none")
+                }
+                if let reason = diagnostics.state.deferredReason {
+                    lines.append("lastComponentDeferral=\(reason)")
+                }
+                componentReady = diagnostics.staged == "verified"
+                    && diagnostics.readinessVersion == descriptor.componentVersion
+                    && diagnostics.currentLaunchGeneration != nil
+                    && diagnostics.readinessLaunchGeneration == diagnostics.currentLaunchGeneration
+            }
+        }
+
+        if let target {
+            lines.append("target=\(target.runtimeDescription) resolved=\(target.isResolved) connected=\(target.isConnected)")
+        } else {
+            lines.append("target=unresolved")
+        }
+
+        var launcherProblems = 0
+        if let resources {
+            lines.append("taskBundleStaged=\(resources.staged)")
+            if let root = resources.guestRoot {
+                lines.append("taskBundleRoot=\(root)")
+            }
+            if let reason = resources.reason {
+                lines.append("taskBundleReason=\(reason)")
+            }
+            if resources.staged, let workspaceRootURL, let root = resources.guestRoot,
+               let leaf = root.split(separator: "/").last.map(String.init) {
+                let hostRoot = workspaceRootURL.appendingPathComponent(
+                    ".floe/skills/\(leaf)", isDirectory: true
+                )
+                launcherProblems = SkillWorkspaceResourceStager.nonExecutableShebangScripts(
+                    root: hostRoot, declaredFiles: snapshot.package.files
+                )
+                lines.append(launcherProblems > 0
+                    ? "stagedScripts=\(launcherProblems)-non-executable"
+                    : "stagedScripts=executable")
+            }
+        }
+
+        let taskPinAuthorized = (declarationBytes == nil || dependencyAuthority != nil)
+            && (descriptorBytes == nil || componentAuthority != nil)
+        let componentDeclared = descriptorValue != nil
+        let next: String
+        if row.status != "enabled" {
+            next = "Enable this skill, then run its command through exec.shell with skillID."
+        } else if !taskPinAuthorized {
+            next = "This task's pinned revision is not covered by the current signed receipt or its declared capabilities. No safe plan can be reconstructed from it; start a new task so the current signed revision is pinned, then run the skill command with skillID. Do not run unpinned bytes."
+        } else if componentDeclared && !appCompatible {
+            next = "Update Floe to \(descriptorValue?.minimumAppVersion ?? "a newer version") or newer before provisioning this engine."
+        } else if planState == "stale-against-current-install" {
+            next = "Retry the same skillID invocation once; the stale plan is invalidated. If it still refuses, start a new task so the current signed revision is pinned."
+        } else if environmentID == nil || runID == nil {
+            next = "Run this skill's command through exec.shell with \"skillID\":\"\(row.id)\" in a task bound to a Linux environment."
+        } else if !planBound {
+            next = "Run the skill's command through exec.shell with \"skillID\":\"\(row.id)\" in this task; Floe re-establishes the plan from THIS task's pinned signed revision and prepares the pinned engine. No reinstall or prior skill.read is required."
+        } else if componentDeclared && !componentReady {
+            if stagedEngineState == "damaged" {
+                next = "A damaged or foreign file occupies the pinned engine path and is preserved. Move it aside with an approved shell command, then retry the skillID invocation; valid older versions stay untouched."
+            } else {
+                next = "Run the skill's command through exec.shell with \"skillID\":\"\(row.id)\" in this task; the pinned engine is re-verified, re-staged and probed before the command."
+            }
+        } else if launcherProblems > 0 {
+            next = "Run the skillID invocation once; the pinned bundle is re-staged with executable script modes and unchanged bytes. `sh <script>` also works meanwhile."
+        } else {
+            next = "Ready for this task; run the skill's command with skillID."
+        }
+        lines.append("nextAction=\(next)")
+        return lines.joined(separator: "\n")
+    }
+
+    /// Model-safe reason why the dependency declaration is or is not
+    /// authorizable for this exact task-pinned snapshot. Mirrors the strict
+    /// checks in `dependencyAuthority` without granting anything.
+    private static func dependencyAuthorityDiagnostic(
+        row: PersistedSkill,
+        snapshot: SkillContentSnapshot,
+        grantedCapabilities: Set<String>?
+    ) -> String {
+        guard row.status == "enabled" else { return "disabled" }
+        guard let receipt = curatedReceipt(for: row) else { return "not-an-official-curated-install" }
+        guard receipt.entryID == row.id else { return "receipt-entry-mismatch" }
+        guard receipt.entryVersion == row.version else { return "receipt-version-mismatch" }
+        guard receipt.contentDigest == row.rewrittenDigest else { return "receipt-row-digest-mismatch" }
+        guard receipt.contentDigest == snapshot.package.canonicalSHA256 else {
+            return "task-pinned-revision-not-covered-by-current-receipt"
+        }
+        guard snapshot.package.manifest.id == row.id,
+              snapshot.package.manifest.version == row.version else {
+            return "task-pinned-manifest-mismatch"
+        }
+        guard let grantedCapabilities else { return "grants-unavailable" }
+        guard Set(snapshot.package.manifest.capabilities).isSubset(of: grantedCapabilities) else {
+            return "declared-capabilities-not-granted"
+        }
+        guard let bytes = snapshot.files[SkillDependency.packagePath],
+              let declaration = try? SkillDependency.decode(bytes) else {
+            return "declaration-missing-or-rejected"
+        }
+        do {
+            try SkillDependency.validate(declaration, packageFiles: snapshot.files)
+        } catch {
+            return "declaration-rejected"
+        }
+        return "verified"
+    }
+
+    /// Model-safe reason why the runtime-component descriptor is or is not
+    /// authorizable for this exact task-pinned snapshot.
+    private static func runtimeComponentAuthorityDiagnostic(
+        row: PersistedSkill,
+        snapshot: SkillContentSnapshot,
+        grantedCapabilities: Set<String>?
+    ) -> String {
+        guard row.status == "enabled" else { return "disabled" }
+        guard let receipt = curatedReceipt(for: row) else { return "not-an-official-curated-install" }
+        guard receipt.entryID == row.id else { return "receipt-entry-mismatch" }
+        guard receipt.contentDigest == row.rewrittenDigest else { return "receipt-row-digest-mismatch" }
+        guard receipt.contentDigest == snapshot.package.canonicalSHA256 else {
+            return "task-pinned-revision-not-covered-by-current-receipt"
+        }
+        guard let grantedCapabilities else { return "grants-unavailable" }
+        guard Set(snapshot.package.manifest.capabilities).isSubset(of: grantedCapabilities) else {
+            return "declared-capabilities-not-granted"
+        }
+        guard let bytes = snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath] else {
+            return "descriptor-missing"
+        }
+        guard (try? SkillRuntimeDependency.decode(bytes)) != nil else {
+            return "descriptor-rejected"
+        }
+        return "verified"
+    }
+
     var rewriteModels: [ModelProfile] { environment.conversationCenter.availableAgentModels }
     var defaultRewriteModelID: UUID? {
         environment.conversationCenter.modelPreferences.defaultAgentModelID
@@ -2227,6 +2726,13 @@ final class SkillsCenter: ObservableObject {
                 _ = await self.dependencyPreparation?.prepareAtInstall(
                     skillID: skillID, environmentID: nil, runID: nil, cancellation: nil
                 )
+            } else if pending.curatedReceipt != nil,
+                      pending.snapshot?.files[SkillRuntimeDependency.engineDependencyPackagePath] != nil,
+                      let skillID = pending.snapshot?.package.manifest.id {
+                // Descriptor-only official package: verify the exact signed
+                // component into app-owned storage; task staging/probing stays
+                // deferred to that task's resolved environment.
+                _ = await self.prefetchInstallComponent(skillID: skillID)
             }
         }
     }
@@ -2786,6 +3292,18 @@ final class SkillsCenter: ObservableObject {
                     )
                 }
             }
+            // Read-only diagnosis appended to the exact read. It runs after
+            // the task-pinned plans and bundle staging above, so it reports
+            // the state this read actually produced; it never mutates.
+            let dependencyStatus = await dependencyStatusText(
+                row: row,
+                snapshot: snapshot,
+                runID: runID,
+                environmentID: resourceContext?.environmentID,
+                workspaceRootURL: resourceContext?.workspaceRootURL,
+                target: target,
+                resources: resources
+            )
             for path in snapshot.files.keys.sorted() where path.hasPrefix("scripts/") && path.hasSuffix(".py") {
                 let scriptTarget = target?.runtimeDescription ?? "resolved external target"
                 markdown += "\n### Audited source: \(path)\nRun this source with python3 through exec.shell in the task's \(scriptTarget) when that target provides python3. Preserve the source and follow its argument or JSON-stdin interface; no inputJSON variable is injected automatically.\n```python\n\(String(decoding: snapshot.files[path]!, as: UTF8.self))\n```\n"
@@ -2797,7 +3315,7 @@ final class SkillsCenter: ObservableObject {
                 enabled: row.status == "enabled", digest: snapshot.package.canonicalSHA256, markdown: markdown,
                 requiredToolNames: Array(Set(manifest.tools + (builtin?.automaticallyLoadedToolNames ?? []))).sorted(),
                 currentDigest: row.rewrittenDigest, description: snapshot.package.metadata.description,
-                resources: resources))
+                resources: resources, dependencyStatus: dependencyStatus))
         }
         return results
     }
@@ -3587,6 +4105,18 @@ extension SkillsCenter: SkillDependencyInvocationGating {
     ) async -> SkillDependencyInvocationDecision {
         guard approvalGrantID != nil else {
             return .unavailable(reason: "dependency-aware invocation requires the run's approval grant")
+        }
+        // A descriptor-only official package has no declaration-based plan by
+        // design. Its reviewed runtime-component descriptor is the entire
+        // external dependency channel, so prepare it through the component
+        // center instead of returning `noRun` from the declaration path.
+        if let componentDecision = await componentOnlyInvocationDecision(
+            skillID: skillID,
+            environmentID: environmentID,
+            runID: runID,
+            cancellation: cancellation
+        ) {
+            return componentDecision
         }
         guard let dependencyPreparation else {
             return .unavailable(reason: SkillDependencyReason.provisioningUnavailable)

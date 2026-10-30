@@ -137,6 +137,25 @@ struct SkillRuntimeComponentState: Sendable, Equatable {
     var deferredReason: String?
 }
 
+/// Read-only, model-safe runtime-component facts for the exact-read dependency
+/// status. It exposes identities and bounded states only: no host path, no
+/// marker and no serialized readiness token.
+struct SkillRuntimeComponentDiagnostics: Sendable, Equatable {
+    var componentID: String
+    var componentVersion: String
+    /// verified | damaged | missing | unavailable
+    var cache: String
+    /// Other app-cached component versions (older installs are preserved).
+    var cacheOtherVersions: [String]
+    /// verified | damaged | missing | unavailable
+    var staged: String
+    var readinessVersion: String?
+    var readinessEngineGuestPath: String?
+    var readinessLaunchGeneration: UInt64?
+    var currentLaunchGeneration: UInt64?
+    var state: SkillRuntimeComponentState
+}
+
 enum SkillRuntimeComponentPlanOutcome: Sendable, Equatable {
     case recorded(environmentID: String, runID: UUID)
     case rejected(reason: String)
@@ -151,6 +170,7 @@ enum SkillRuntimeComponentReason {
     static let transportUnavailable = "the trusted runtime-component transport is not configured"
     static let authorizationUnavailable = "the installed runtime-component authorization could not be revalidated"
     static let authorityRevoked = "the installed skill authorization no longer verifies for this component"
+    static let pinnedRevisionUnauthorized = "this task's pinned revision is not covered by the current signed receipt; start a new task to pin the current signed revision"
     static let descriptorRejected = "the packaged runtime-component descriptor failed strict validation"
     static let incompatibleAppVersion = "this app version is below the component's minimum app version"
     static let unsupportedContract = "the component's capture-contract version is not supported by this build"
@@ -658,6 +678,127 @@ actor SkillRuntimeComponentCenter {
             ?? SkillRuntimeComponentState(componentID: componentID)
     }
 
+    /// True only while THIS live center holds an immutable component plan for
+    /// the exact (environment, run) binding (optionally for one skill). Never a
+    /// readiness claim; used by the read-only status and the component-only
+    /// invocation gate to avoid replacing a live plan.
+    func hasPlan(environmentID: String, runID: UUID, skillID: String? = nil) -> Bool {
+        guard let plan = plans[PlanKey(environmentID: environmentID, runID: runID)] else {
+            return false
+        }
+        guard let skillID else { return true }
+        return plan.skillID == skillID
+    }
+
+    /// Model-safe facts for the read-only dependency status. Hashing runs on
+    /// this actor (never the view/main actor); nothing is staged, downloaded,
+    /// probed or deleted. An existing readiness receipt is reported with the
+    /// CURRENT launch generation so the caller can distinguish a fresh probe
+    /// from one invalidated by a guest relaunch.
+    func diagnostics(
+        descriptor: SkillRuntimeDependencyDescriptor,
+        environmentID: String?
+    ) async -> SkillRuntimeComponentDiagnostics {
+        let cacheState: String
+        var otherVersions: [String] = []
+        if let cacheFile = cacheFileURL(for: descriptor) {
+            // file -> triple -> version -> componentID (list sibling versions)
+            let componentRoot = cacheFile
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            otherVersions = Self.componentVersions(
+                in: componentRoot, excluding: descriptor.componentVersion
+            )
+            if FileManager.default.fileExists(atPath: cacheFile.path) {
+                let verifiedBytes = (try? verified(
+                    file: cacheFile, size: descriptor.artifact.size,
+                    sha256: descriptor.artifact.sha256, token: CancellationToken()
+                )) ?? false
+                cacheState = verifiedBytes ? "verified" : "damaged"
+            } else {
+                cacheState = "missing"
+            }
+        } else {
+            cacheState = "unavailable"
+        }
+
+        var stagedState = "unavailable"
+        if let environmentID,
+           let environment = await environmentResolver(environmentID),
+           let layerURL = environment.layerURL {
+            let stagedURL = Self.stagedComponentURL(layerURL: layerURL, descriptor: descriptor)
+            if FileManager.default.fileExists(atPath: stagedURL.path) {
+                let verifiedBytes = (try? verified(
+                    file: stagedURL, size: descriptor.artifact.size,
+                    sha256: descriptor.artifact.sha256, token: CancellationToken()
+                )) ?? false
+                stagedState = verifiedBytes ? "verified" : "damaged"
+            } else {
+                stagedState = "missing"
+            }
+        }
+
+        let receipt: SkillRuntimeComponentReadiness? = environmentID.flatMap { id in
+            readiness[ReadinessKey(environmentID: id, componentID: descriptor.componentID)]
+        }
+        let currentGeneration: UInt64?
+        if let environmentID {
+            currentGeneration = await launchGenerationProvider(environmentID)
+        } else {
+            currentGeneration = nil
+        }
+        let state = environmentID.map { id in
+            states[StateKey(environmentID: id, componentID: descriptor.componentID)]
+                ?? SkillRuntimeComponentState()
+        } ?? SkillRuntimeComponentState()
+        return SkillRuntimeComponentDiagnostics(
+            componentID: descriptor.componentID,
+            componentVersion: descriptor.componentVersion,
+            cache: cacheState,
+            cacheOtherVersions: otherVersions,
+            staged: stagedState,
+            readinessVersion: receipt?.componentVersion,
+            readinessEngineGuestPath: receipt?.engineGuestPath,
+            readinessLaunchGeneration: receipt?.launchGeneration,
+            currentLaunchGeneration: currentGeneration,
+            state: state
+        )
+    }
+
+    /// Pure path construction for the reserved staged component location. It
+    /// never creates a directory and never follows a caller-supplied path.
+    private static func stagedComponentURL(
+        layerURL: URL,
+        descriptor: SkillRuntimeDependencyDescriptor
+    ) -> URL {
+        var url = layerURL
+        for component in reservedLayerComponents {
+            url.appendPathComponent(component, isDirectory: true)
+        }
+        url.appendPathComponent(descriptor.componentID, isDirectory: true)
+        url.appendPathComponent(descriptor.componentVersion, isDirectory: true)
+        url.appendPathComponent(descriptor.target.triple, isDirectory: true)
+        url.appendPathComponent(SkillRuntimeDependency.frozenEngineFileName, isDirectory: false)
+        return url
+    }
+
+    /// App-owned component versions present beside the pinned one. Older
+    /// installed artifacts are retained until an explicit cleanup; this is a
+    /// bounded read-only listing for diagnostics.
+    private static func componentVersions(in componentRoot: URL, excluding current: String) -> [String] {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: componentRoot.path) else {
+            return []
+        }
+        return names.filter { name in
+            name != current && name.utf8.count <= 64 && name.utf8.allSatisfy { byte in
+                (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90)
+                    || (byte >= 97 && byte <= 122)
+                    || byte == 46 || byte == 43 || byte == 45
+            }
+        }.sorted().prefix(8).map { $0 }
+    }
+
     // MARK: - Readiness pipeline
 
     /// Synchronous live-demand read for preparation phase boundaries. True
@@ -972,7 +1113,25 @@ actor SkillRuntimeComponentCenter {
         plan: SkillRuntimeComponentPlan,
         token: CancellationToken
     ) async throws -> URL {
-        let descriptor = plan.descriptor
+        try await ensureCachedArtifact(
+            descriptor: plan.descriptor,
+            publicationCommit: plan.authority.publicationCommit,
+            auditedSourceCommit: plan.authority.auditedSourceCommit,
+            catalogSHA256: plan.authority.catalogSHA256,
+            token: token
+        )
+    }
+
+    /// Same cache contract for the install-boundary prefetch: it needs only
+    /// the authorized descriptor and its immutable publication commit, never
+    /// a task environment, plan or staged bundle.
+    private func ensureCachedArtifact(
+        descriptor: SkillRuntimeDependencyDescriptor,
+        publicationCommit: String,
+        auditedSourceCommit: String?,
+        catalogSHA256: String,
+        token: CancellationToken
+    ) async throws -> URL {
         guard let cacheFile = cacheFileURL(for: descriptor) else {
             throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.cacheUnavailable)
         }
@@ -1010,7 +1169,13 @@ actor SkillRuntimeComponentCenter {
                     }
                 }
                 return try await self.downloadAndCommitToCache(
-                    plan: plan, cacheDirectory: cacheDirectory, cacheFile: cacheFile, token: serviceToken
+                    descriptor: descriptor,
+                    publicationCommit: publicationCommit,
+                    auditedSourceCommit: auditedSourceCommit,
+                    catalogSHA256: catalogSHA256,
+                    cacheDirectory: cacheDirectory,
+                    cacheFile: cacheFile,
+                    token: serviceToken
                 )
             }
             entry = DownloadEntry(generation: generation, task: task, token: serviceToken)
@@ -1030,16 +1195,60 @@ actor SkillRuntimeComponentCenter {
         }
     }
 
+    /// Install-boundary, download-only prefetch of an authorized runtime
+    /// component. It selects no environment, stages nothing and executes
+    /// nothing; exact signed bytes are verified (integer size + sha256 +
+    /// static-ELF) and committed atomically to the app-owned cache for the
+    /// first task use. Returns model-safe status text.
+    func prefetchArtifact(
+        authority: SkillRuntimeComponentAuthority,
+        cancellation: CancellationToken? = nil
+    ) async -> String {
+        guard Self.isFormallyValid(authority),
+              authority.descriptorSHA256 == FloeDigest.sha256Hex(authority.descriptorBytes),
+              let descriptor = try? SkillRuntimeDependency.decode(authority.descriptorBytes) else {
+            return "rejected: authorization"
+        }
+        guard SkillRuntimeDependency.isCompatible(
+            minimumAppVersion: descriptor.minimumAppVersion, appVersion: appVersion()
+        ) else {
+            return "deferred: app version"
+        }
+        guard SkillRuntimeDependency.isCaptureContractVersionSupported(
+            descriptor.captureContract.version
+        ) else {
+            return "deferred: capture contract"
+        }
+        do {
+            _ = try await ensureCachedArtifact(
+                descriptor: descriptor,
+                publicationCommit: authority.publicationCommit,
+                auditedSourceCommit: authority.auditedSourceCommit,
+                catalogSHA256: authority.catalogSHA256,
+                token: cancellation ?? CancellationToken()
+            )
+            return "verified: \(descriptor.componentID)@\(descriptor.componentVersion)"
+        } catch let failure as SkillRuntimeComponentFailure {
+            return "unavailable: \(failure.reason)"
+        } catch is CancellationError {
+            return "cancelled"
+        } catch {
+            return "unavailable: app-owned component cache write failed"
+        }
+    }
+
     private func downloadAndCommitToCache(
-        plan: SkillRuntimeComponentPlan,
+        descriptor: SkillRuntimeDependencyDescriptor,
+        publicationCommit: String,
+        auditedSourceCommit: String?,
+        catalogSHA256: String,
         cacheDirectory: URL,
         cacheFile: URL,
         token: CancellationToken
     ) async throws -> URL {
-        let descriptor = plan.descriptor
         guard !Self.isFenced(token) else { throw CancellationError() }
         // Y must be an immutable 40-hex commit BEFORE any network use.
-        guard Self.isCanonicalHexSHA1(plan.authority.publicationCommit) else {
+        guard Self.isCanonicalHexSHA1(publicationCommit) else {
             throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.authorityRevoked)
         }
         guard let transport = lateBindings.transport else {
@@ -1049,7 +1258,7 @@ actor SkillRuntimeComponentCenter {
         do {
             bytes = try await transport(
                 CuratedSkillHub.owner, CuratedSkillHub.repository,
-                plan.authority.publicationCommit, descriptor.artifact.path
+                publicationCommit, descriptor.artifact.path
             )
         } catch is CancellationError {
             throw CancellationError()
@@ -1110,9 +1319,9 @@ actor SkillRuntimeComponentCenter {
             "componentVersion": descriptor.componentVersion,
             "artifactSHA256": descriptor.artifact.sha256,
             "artifactSize": descriptor.artifact.size,
-            "publicationCommit": plan.authority.publicationCommit,
-            "auditedSourceCommit": plan.authority.auditedSourceCommit ?? NSNull(),
-            "catalogSHA256": plan.authority.catalogSHA256,
+            "publicationCommit": publicationCommit,
+            "auditedSourceCommit": auditedSourceCommit ?? NSNull(),
+            "catalogSHA256": catalogSHA256,
             "fetchedAt": String(Int(Date().timeIntervalSince1970))
         ]
         if let data = try? JSONSerialization.data(withJSONObject: provenance, options: [.sortedKeys]) {

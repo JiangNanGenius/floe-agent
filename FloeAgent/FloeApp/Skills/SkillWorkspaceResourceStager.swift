@@ -198,6 +198,11 @@ actor SkillWorkspaceResourceStager {
             guard Self.verify(stagedRoot: stagedRoot, bundle: bundle) else {
                 return .unavailable(reason: SkillStageReason.pathBlocked)
             }
+            // A tree staged by an older build may carry 0644 entry scripts.
+            // Re-apply the executable intent on reuse too: bytes and the
+            // verification result are unchanged, and this is how an already
+            // installed launcher is repaired without re-pinning its contents.
+            Self.applyStagedPermissions(in: stagedRoot, bundle: bundle)
             // Fenced after verification and again immediately before the
             // staged return: a cancelled read never yields a path just
             // because a verified tree already exists.
@@ -241,12 +246,18 @@ actor SkillWorkspaceResourceStager {
                 try file.data.write(to: destination, options: .atomic)
                 let readBack = try Data(contentsOf: destination)
                 guard readBack == file.data else { throw CocoaError(.fileWriteUnknown) }
+                if let mode = Self.stagedPermissions(relativePath: file.relativePath, data: file.data) {
+                    try? FileManager.default.setAttributes(
+                        [.posixPermissions: mode], ofItemAtPath: destination.path
+                    )
+                }
             }
             // Verify the complete temporary tree (exact file/dir shape, no
             // symlinks, every byte equal) before any publication.
             guard Self.verify(stagedRoot: stagingRoot, bundle: bundle) else {
                 throw CocoaError(.fileWriteUnknown)
             }
+            Self.applyStagedPermissions(in: stagingRoot, bundle: bundle)
             guard !cancellation.isCancelled, !Task.isCancelled else { throw CancellationError() }
             // Single same-volume commit: a rename, never a partial publish.
             try FileManager.default.moveItem(at: stagingRoot, to: stagedRoot)
@@ -327,6 +338,55 @@ actor SkillWorkspaceResourceStager {
         return segments.allSatisfy { segment in
             !segment.isEmpty && segment != "." && segment != ".."
         }
+    }
+
+    /// POSIX mode for a staged package file. The package model carries bytes
+    /// and relative paths only (no SCM mode), so an executable shell/Python
+    /// entry point under `scripts/` would otherwise lose its executable bit
+    /// on every copy. A shebang-led file under `scripts/` is staged 0755;
+    /// every other file keeps the platform default. This changes no byte, no
+    /// digest and no verification result, and running the file still needs
+    /// the normal approved exec.shell call.
+    static func stagedPermissions(relativePath: String, data: Data) -> Int? {
+        guard relativePath.hasPrefix("scripts/"), data.count >= 2,
+              data[data.startIndex] == 0x23,
+              data[data.startIndex + 1] == 0x21 else { return nil }
+        return 0o755
+    }
+
+    /// Best effort: a failed chmod never invalidates verified bytes. It only
+    /// means direct execution still needs an explicit `sh <script>` until a
+    /// later staging retry succeeds.
+    private static func applyStagedPermissions(in root: URL, bundle: SkillStagingBundle) {
+        for file in bundle.files {
+            guard let mode = stagedPermissions(relativePath: file.relativePath, data: file.data) else {
+                continue
+            }
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: mode],
+                ofItemAtPath: root.appendingPathComponent(file.relativePath).path
+            )
+        }
+    }
+
+    /// Bounded read-only diagnostic: count shebang-led files under `scripts/`
+    /// in an existing staged tree that lack any executable bit. It reads two
+    /// bytes per script and changes nothing.
+    static func nonExecutableShebangScripts(root: URL, declaredFiles: [SkillFile]) -> Int {
+        var count = 0
+        for file in declaredFiles where file.relativePath.hasPrefix("scripts/") {
+            let url = root.appendingPathComponent(file.relativePath)
+            guard let handle = try? FileHandle(forReadingFrom: url) else { continue }
+            let head = (try? handle.read(upToCount: 2)) ?? Data()
+            try? handle.close()
+            guard head.count == 2,
+                  head[head.startIndex] == 0x23,
+                  head[head.startIndex + 1] == 0x21 else { continue }
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let mode = (attributes?[.posixPermissions] as? NSNumber)?.intValue ?? 0
+            if mode & 0o111 == 0 { count += 1 }
+        }
+        return count
     }
 
     // MARK: - Reserved root

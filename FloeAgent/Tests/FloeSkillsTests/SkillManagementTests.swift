@@ -244,6 +244,26 @@ struct SkillManagementTests {
         }
         #expect(await manager.mutations == 0)
     }
+    @Test func dependencyStatusIsEncodedButDiscoveryStripsIt() async throws {
+        let status = """
+        installed=example@1.0.0
+        taskPinnedDigest=\(String(repeating: "a", count: 64))
+        plan=absent
+        nextAction=Run the skill through exec.shell with skillID.
+        """
+        let row = ManagedSkill(
+            id: "example", name: "Example", version: "1.0.0",
+            enabled: true, digest: String(repeating: "a", count: 64),
+            dependencyStatus: status
+        )
+        let decoded = try JSONDecoder().decode(
+            ManagedSkill.self, from: JSONEncoder().encode(row)
+        )
+        #expect(decoded.dependencyStatus == status)
+        #expect(decoded.discoveryMetadata.dependencyStatus == nil)
+        #expect(decoded.discoveryMetadata.resources == nil)
+    }
+
     @Test func listAndDetailAreStructuredAndReadOnly() async throws {
         let tool = SkillReadTool(manager: ManagedSkillFixture())
         let context = ToolContext(runID: UUID(), cancellation: CancellationToken())

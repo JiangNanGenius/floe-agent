@@ -289,6 +289,33 @@ private final class ProbeBox: @unchecked Sendable {
     func setDeferred(_ reason: String) { lock.withLock { self.reason = reason } }
 }
 
+/// App-side plan recovery seam: tests set the provider after the center exists,
+/// exactly like the AppEnvironment closure. Records calls so "never replaces an
+/// existing plan" is observable.
+private final class PlanRecoveryBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [String] = []
+    private var provider: @Sendable (String, String, UUID, CancellationToken?) async -> Bool = {
+        _, _, _, _ in false
+    }
+    func set(
+        _ provider: @escaping @Sendable (String, String, UUID, CancellationToken?) async -> Bool
+    ) {
+        lock.withLock { self.provider = provider }
+    }
+    func callCount() -> Int { lock.withLock { calls.count } }
+    func recover(
+        skillID: String, environmentID: String, runID: UUID,
+        cancellation: CancellationToken?
+    ) async -> Bool {
+        let handler: @Sendable (String, String, UUID, CancellationToken?) async -> Bool = lock.withLock {
+            calls.append(skillID)
+            return provider
+        }
+        return await handler(skillID, environmentID, runID, cancellation)
+    }
+}
+
 /// Mutable actual-target fact for migration/target-change tests.
 private final class TargetBox: @unchecked Sendable {
     private let lock = NSLock()
@@ -333,6 +360,7 @@ private struct Harness {
     let authorityBox: AuthorityBox
     let generationBox: GenerationBox
     let probeBox: ProbeBox
+    let planRecovery: PlanRecoveryBox
     let environment: ToolEnvironment
     let wheelStore: URL
 }
@@ -396,12 +424,19 @@ private func makeHarness(
     let authorityBox = AuthorityBox(authority)
     let generationBox = GenerationBox(7)
     let probeBox = ProbeBox(nil)
+    let planRecovery = PlanRecoveryBox()
     let center = SkillDependencyPreparationCenter(
         authorityProvider: { id in authorityBox.value(for: id) },
         environmentResolver: { id in id == environmentID ? environment : nil },
         launchGeneration: { _ in generationBox.get() },
         operations: operations,
         runtimeComponentProbe: { _, _, _ in probeBox.get() },
+        planRecovery: { skillID, environmentID, runID, cancellation in
+            await planRecovery.recover(
+                skillID: skillID, environmentID: environmentID, runID: runID,
+                cancellation: cancellation
+            )
+        },
         targetProvider: targetProvider,
         operationsResolver: operationsResolver,
         targetPreparation: targetPreparation,
@@ -413,7 +448,7 @@ private func makeHarness(
         persistenceRoot: persistenceRoot, engine: engine,
         engineDescriptorBytes: engineDescriptorBytes, declarationBytes: declarationBytes,
         authorityBox: authorityBox, generationBox: generationBox,
-        probeBox: probeBox, environment: environment,
+        probeBox: probeBox, planRecovery: planRecovery, environment: environment,
         wheelStore: makeTempDirectory("wheel-store")
     )
 }
@@ -498,6 +533,113 @@ struct SkillDependencyPreparationTests {
         guard case .refused(let reason) = outcome, reason == SkillDependencyReason.noRun else {
             Issue.record("expected noRun"); return
         }
+    }
+
+    @Test func invokeRecoversAnAbsentPlanFromLiveAuthorityAtTheBoundary() async throws {
+        let harness = makeHarness(requirementsJSON: pipOnly())
+        let runID = UUID()
+        let center = harness.center
+        let authority = try #require(harness.authorityBox.value)
+        harness.planRecovery.set { skillID, environmentID, runID, _ in
+            let outcome = await center.recordPlan(
+                skillID: skillID, environmentID: environmentID, runID: runID,
+                authority: authority
+            )
+            if case .recorded = outcome { return true }
+            return false
+        }
+        let outcome = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
+        )
+        guard case .ready(let annotation) = outcome else {
+            Issue.record("expected ready after live-authority recovery, got \(outcome)"); return
+        }
+        #expect(annotation.contains("pip:pypdf@5.4.0"))
+        #expect(harness.planRecovery.callCount() == 1)
+        #expect(harness.operations.pythonEnsureCalls == ["pypdf==5.4.0"])
+    }
+
+    @Test func existingStalePlanIsNeverSilentlyReplacedAndRetryRecovers() async throws {
+        let harness = makeHarness(requirementsJSON: pipOnly())
+        let runID = UUID()
+        let original = try #require(harness.authorityBox.value)
+        _ = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID,
+            authority: original
+        )
+        // A live update replaced the signed package. The old in-memory plan
+        // must fail closed, and recovery must NOT be consulted while it exists.
+        let replacement = SkillDependencyAuthority(
+            skillID: original.skillID, packageVersion: "2.2.0",
+            contentDigest: String(repeating: "a", count: 64),
+            packageSHA256: original.packageSHA256, catalogSHA256: original.catalogSHA256,
+            reviewSHA256: original.reviewSHA256, publicationCommit: original.publicationCommit,
+            feedStatus: original.feedStatus, reviewDecision: original.reviewDecision,
+            feedSignatureKeyID: original.feedSignatureKeyID, reviewKeyID: original.reviewKeyID,
+            hubRepository: original.hubRepository, declarationBytes: original.declarationBytes,
+            declarationSHA256: FloeDigest.sha256Hex(original.declarationBytes),
+            packageFiles: original.packageFiles
+        )
+        harness.authorityBox.set(replacement)
+        let center = harness.center
+        harness.planRecovery.set { skillID, environmentID, runID, _ in
+            let outcome = await center.recordPlan(
+                skillID: skillID, environmentID: environmentID, runID: runID,
+                authority: replacement
+            )
+            if case .recorded = outcome { return true }
+            return false
+        }
+        let stale = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
+        )
+        guard case .refused(let reason) = stale, reason == SkillDependencyReason.planStale else {
+            Issue.record("expected planStale, got \(stale)"); return
+        }
+        #expect(harness.planRecovery.callCount() == 0)
+        #expect(harness.operations.counts.python == 0)
+        // The refusal removed the stale plan. The explicit retry is the
+        // documented preparation path and may now re-establish the live plan.
+        let retried = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
+        )
+        guard case .ready(let annotation) = retried else {
+            Issue.record("expected ready on retry, got \(retried)"); return
+        }
+        #expect(annotation.contains("pip:pypdf@5.4.0"))
+        #expect(harness.planRecovery.callCount() == 1)
+        #expect(harness.operations.pythonEnsureCalls == ["pypdf==5.4.0"])
+    }
+
+    @Test func planSummaryDistinguishesThisRunStaleAndOtherRunPlans() async throws {
+        let harness = makeHarness(requirementsJSON: pipOnly())
+        let thisRun = UUID()
+        let otherRun = UUID()
+        let authority = try #require(harness.authorityBox.value)
+        let absent = await harness.center.planSummary(
+            skillID: "dep-skill", environmentID: harness.environmentID,
+            runID: thisRun, currentDigest: authority.contentDigest
+        )
+        #expect(absent == "absent")
+        _ = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID,
+            runID: thisRun, authority: authority
+        )
+        let bound = await harness.center.planSummary(
+            skillID: "dep-skill", environmentID: harness.environmentID,
+            runID: thisRun, currentDigest: authority.contentDigest
+        )
+        #expect(bound == "bound-to-this-run")
+        let other = await harness.center.planSummary(
+            skillID: "dep-skill", environmentID: harness.environmentID,
+            runID: otherRun, currentDigest: authority.contentDigest
+        )
+        #expect(other == "bound-to-another-run")
+        let stale = await harness.center.planSummary(
+            skillID: "dep-skill", environmentID: harness.environmentID,
+            runID: thisRun, currentDigest: String(repeating: "a", count: 64)
+        )
+        #expect(stale == "stale-against-current-install")
     }
 
     @Test func pipExactPinInstallsAndReadsBack() async throws {

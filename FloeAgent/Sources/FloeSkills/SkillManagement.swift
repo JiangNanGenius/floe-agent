@@ -44,13 +44,21 @@ public struct ManagedSkill: Codable, Sendable, Equatable {
     /// list and every manager that does not implement staging keep the exact
     /// previous response shape; populated only by the read context overload.
     public var resources: SkillResourceAvailability?
-    public init(id: String, name: String, version: String, enabled: Bool, digest: String, markdown: String? = nil, requiredToolNames: [String]? = nil, currentDigest: String? = nil, description: String? = nil, resources: SkillResourceAvailability? = nil) {
+    /// READ-ONLY dependency/runtime-component diagnosis for an exact read.
+    /// Multi-line, model-safe text (no host path, no secret, no raw command):
+    /// installed vs task-pinned identity, declared engine pins, app-owned
+    /// cache/staged/probe state, a lost/stale run plan and the exact next
+    /// action. Nil for ordinary skills with no reviewed declaration and no
+    /// runtime-component descriptor; discovery/list never carries it.
+    public var dependencyStatus: String?
+    public init(id: String, name: String, version: String, enabled: Bool, digest: String, markdown: String? = nil, requiredToolNames: [String]? = nil, currentDigest: String? = nil, description: String? = nil, resources: SkillResourceAvailability? = nil, dependencyStatus: String? = nil) {
         self.id = id; self.name = name; self.version = version
         self.description = description
         self.enabled = enabled; self.digest = digest; self.markdown = markdown
         self.requiredToolNames = requiredToolNames
         self.currentDigest = currentDigest
         self.resources = resources
+        self.dependencyStatus = dependencyStatus
     }
 
     /// Discovery must not expose instruction bodies or staged resource state
@@ -58,7 +66,7 @@ public struct ManagedSkill: Codable, Sendable, Equatable {
     var discoveryMetadata: ManagedSkill {
         var row = self
         row.markdown = nil; row.nextOffset = nil; row.totalCharacters = nil
-        row.resources = nil
+        row.resources = nil; row.dependencyStatus = nil
         row.description = description.map { String($0.prefix(1_024)) }
         return row
     }
@@ -250,7 +258,7 @@ public struct SkillReadTool: AgentTool {
         }
     }
     public static let name = "skill.read"
-    public static let toolDescription = "List installed skill metadata, or read one exact skill ID with pinned Markdown, audited scripts and digest. If nextOffset is present, keep reading that id and offset until complete before applying the instructions or running a script. An exact read inside a task bound to a local Linux environment also stages the pinned bundle (scripts plus sibling assets/references/agents) into the task workspace and reports the portable guest root in resources; upstream `$CODEX_HOME/skills/<id>/` paths resolve under that root, and the guest can list the real files it contains. Staging runs nothing and grants no execution, network or tool permission; scripts still run only through the normal exec.shell approval flow. Reading loads available tool schemas; it never executes scripts. Task snapshots keep the reviewed version across upgrades and recovery. For skill.manage use currentDigest (or the metadata list digest), not an older pinned execution digest. With source=\"hub\" and an exact id, read one signed curated-catalog entry instead: verified metadata, bundled reviewed instructions and the package file inventory, with catalog provenance kept separate (publicationCommit pin, audited sourceCommit, catalog/content/review digests). A hub read is review-only: it never registers tools, enables, activates or installs anything, it is unavailable in temporary chats, and its digests are catalog provenance, never an installed workflow pin. An exact read of an installed official skill that declares dependencies reports a Dependency invocation section with the reviewed pins and the invocation contract: run that workflow through exec.shell with skillID set to this exact id; required resources verify (or install and read back) in the task's resolved Linux environment before the command runs, optional gaps appear as annotations, and commands without skillID keep ordinary behavior."
+    public static let toolDescription = "List installed skill metadata, or read one exact skill ID with pinned Markdown, audited scripts and digest. If nextOffset is present, keep reading that id and offset until complete before applying the instructions or running a script. An exact read inside a task bound to a local Linux environment also stages the pinned bundle (scripts plus sibling assets/references/agents) into the task workspace and reports the portable guest root in resources; upstream `$CODEX_HOME/skills/<id>/` paths resolve under that root, and the guest can list the real files it contains. Staging runs nothing and grants no execution, network or tool permission; scripts still run only through the normal exec.shell approval flow. Reading loads available tool schemas; it never executes scripts. Task snapshots keep the reviewed version across upgrades and recovery. For skill.manage use currentDigest (or the metadata list digest), not an older pinned execution digest. With source=\"hub\" and an exact id, read one signed curated-catalog entry instead: verified metadata, bundled reviewed instructions and the package file inventory, with catalog provenance kept separate (publicationCommit pin, audited sourceCommit, catalog/content/review digests). A hub read is review-only: it never registers tools, enables, activates or installs anything, it is unavailable in temporary chats, and its digests are catalog provenance, never an installed workflow pin. An exact read of an installed official skill that declares dependencies reports a Dependency invocation section with the reviewed pins and the invocation contract: run that workflow through exec.shell with skillID set to this exact id; required resources verify (or install and read back) in the task's resolved Linux environment before the command runs, optional gaps appear as annotations, and commands without skillID keep ordinary behavior. The same exact read returns dependencyStatus: installed vs task-pinned version/digest, the declared engine identity, app-owned cache/staged/probe state, any lost or stale run plan and the exact next action. A missing run plan is re-established from THIS task's pinned signed revision by that skill-scoped exec.shell invocation (no reinstall or prior read required); if that pin is no longer covered by the current receipt, start a new task. A damaged or foreign pinned component file is preserved and reported with the manual recovery step."
     public static let parametersJSON = #"{"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":32768},"source":{"type":"string","enum":["installed","hub"],"description":"installed (default): this device's skills; hub: one verified curated catalog entry, exact id required"}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false
