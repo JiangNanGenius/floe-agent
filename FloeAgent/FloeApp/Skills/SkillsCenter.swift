@@ -675,7 +675,7 @@ final class SkillsCenter: ObservableObject {
             // component into app-owned storage. Task staging/probing stays
             // deferred to that task's resolved environment; the next exact
             // read's dependencyStatus reports the cache identity.
-            _ = await prefetchInstallComponent(skillID: request.id)
+            _ = await prefetchInstallComponent(skillID: request.id, cancellation: context.cancellation)
         }
         return receipt
     }
@@ -1732,7 +1732,10 @@ final class SkillsCenter: ObservableObject {
     /// into app-owned storage only, never staged or executed. Nil for packages
     /// without the descriptor or without a live official authority.
     @discardableResult
-    private func prefetchInstallComponent(skillID: String) async -> String? {
+    private func prefetchInstallComponent(
+        skillID: String,
+        cancellation: CancellationToken? = nil
+    ) async -> String? {
         guard let runtimeComponents,
               let row = try? await environment.skillStore.all().first(where: { $0.id == skillID }),
               let snapshot = try? snapshot(for: row, runID: nil),
@@ -1741,7 +1744,7 @@ final class SkillsCenter: ObservableObject {
               let authority = Self.runtimeComponentAuthority(
                   row: row, snapshot: snapshot, grantedCapabilities: grants
               ) else { return nil }
-        return await runtimeComponents.prefetchArtifact(authority: authority)
+        return await runtimeComponents.prefetchArtifact(authority: authority, cancellation: cancellation)
     }
 
     /// Stage or reuse the EXACT task-pinned bundle through the verified
@@ -1753,7 +1756,7 @@ final class SkillsCenter: ObservableObject {
         cancellation: CancellationToken?
     ) async -> (guestRoot: String, workspaceRoot: URL)? {
         guard let resourceStager,
-              let workspaceRoot = try? environment.environmentRegistry.workspaceRoot(for: environmentID) else {
+              let workspaceRoot = try? await environment.environmentRegistry.workspaceRoot(for: environmentID) else {
             return nil
         }
         let outcome = await resourceStager.stage(
@@ -2020,7 +2023,13 @@ final class SkillsCenter: ObservableObject {
                 if let reason = diagnostics.state.deferredReason {
                     lines.append("lastComponentDeferral=\(reason)")
                 }
+                // A probed engine alone cannot run the launcher: the
+                // invocation gate re-verifies (and refuses) the task bundle,
+                // so "ready" also requires THIS read's staged bundle to be
+                // verified. `taskBundleReason` already carries the honest
+                // reason when it is not.
                 componentReady = diagnostics.staged == "verified"
+                    && resources?.staged == true
                     && diagnostics.readinessVersion == descriptor.componentVersion
                     && diagnostics.currentLaunchGeneration != nil
                     && diagnostics.readinessLaunchGeneration == diagnostics.currentLaunchGeneration
@@ -2063,7 +2072,15 @@ final class SkillsCenter: ObservableObject {
         if row.status != "enabled" {
             next = "Enable this skill, then run its command through exec.shell with skillID."
         } else if !taskPinAuthorized {
-            next = "This task's pinned revision is not covered by the current signed receipt or its declared capabilities. No safe plan can be reconstructed from it; start a new task so the current signed revision is pinned, then run the skill command with skillID. Do not run unpinned bytes."
+            // Only a signed official install can ever become authorized for
+            // this channel. Telling the user of a local/imported package to
+            // "start a new task" would loop forever: there is no receipt to
+            // pin. Keep the honest manual path instead.
+            if Self.curatedReceipt(for: row) == nil {
+                next = "This skill is not a signed official package, so automatic dependency provisioning is unavailable in this build. Keep using its pinned package and ordinary approved shell commands to manage the external dependency; no signed receipt exists for automatic provisioning."
+            } else {
+                next = "This task's pinned revision is not authorized by the current signed install. Read dependencyAuthority/componentAuthority above: when it reports task-pinned-revision-not-covered-by-current-receipt, start a new task so the current signed revision is pinned; when it reports a revoked grant or a rejected manifest, restore that capability or reinstall the signed package. Do not run unpinned bytes."
+            }
         } else if componentDeclared && !appCompatible {
             next = "Update Floe to \(descriptorValue?.minimumAppVersion ?? "a newer version") or newer before provisioning this engine."
         } else if planState == "stale-against-current-install" {
@@ -2080,8 +2097,12 @@ final class SkillsCenter: ObservableObject {
             }
         } else if launcherProblems > 0 {
             next = "Run the skillID invocation once; the pinned bundle is re-staged with executable script modes and unchanged bytes. `sh <script>` also works meanwhile."
+        } else if componentDeclared {
+            next = "The pinned engine is staged and its probe receipt matches the current guest launch generation; this task's bundle is verified. Run the skill's command with skillID; Floe re-verifies the engine and prepares any declared resources before the command starts."
         } else {
-            next = "Ready for this task; run the skill's command with skillID."
+            // A bound declaration plan is NOT readiness: pip/apt/npm/font
+            // install and readback still run at the invocation boundary.
+            next = "The verified dependency plan is bound to this task. Run the skill's command with skillID; Floe installs and reads back the declared resources in this task's resolved environment before the command starts."
         }
         lines.append("nextAction=\(next)")
         return lines.joined(separator: "\n")
