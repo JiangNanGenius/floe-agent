@@ -875,6 +875,33 @@ final class DocumentSession {
             return [FeatureExpressionSlot(name: "radius", unit: "mm", expr: radius)]
         case let .shell(_, _, thickness):
             return [FeatureExpressionSlot(name: "thickness", unit: "mm", expr: thickness)]
+        case let .hole(_, _, _, spec):
+            // Every STORED scalar participates in formula resolution, rename
+            // rewrites and guarded fan-out — including recess values hidden by
+            // the current type. A nil scalar has no author-owned expression to
+            // report, so it is absent rather than invented.
+            var slots: [FeatureExpressionSlot] = []
+            if let depth = spec.depth {
+                slots.append(FeatureExpressionSlot(name: "depth", unit: "mm", expr: depth))
+            }
+            if let diameter = spec.counterboreDiameter {
+                slots.append(FeatureExpressionSlot(
+                    name: "counterbore_diameter", unit: "mm", expr: diameter))
+            }
+            if let depth = spec.counterboreDepth {
+                slots.append(FeatureExpressionSlot(
+                    name: "counterbore_depth", unit: "mm", expr: depth))
+            }
+            if let diameter = spec.countersinkDiameter {
+                slots.append(FeatureExpressionSlot(
+                    name: "countersink_diameter", unit: "mm", expr: diameter))
+            }
+            if let angle = spec.countersinkAngle {
+                slots.append(FeatureExpressionSlot(
+                    name: "countersink_angle", unit: "deg",
+                    storedUnit: "deg", expr: angle))
+            }
+            return slots
         case .primitive, .sweep, .loft, .boolean, .transform, .mirror, .pattern,
              .moveFace, .deleteFace, .replaceFace:
             return []
@@ -935,6 +962,28 @@ final class DocumentSession {
         case let .shell(body, openFaces, thickness):
             guard name == "thickness" else { return nil }
             return .shell(body: body, openFaces: openFaces, thickness: expr)
+        case let .hole(target, profile, plane, spec):
+            var updated = spec
+            switch name {
+            case "depth":
+                guard spec.depth != nil else { return nil }
+                updated.depth = expr
+            case "counterbore_diameter":
+                guard spec.counterboreDiameter != nil else { return nil }
+                updated.counterboreDiameter = expr
+            case "counterbore_depth":
+                guard spec.counterboreDepth != nil else { return nil }
+                updated.counterboreDepth = expr
+            case "countersink_diameter":
+                guard spec.countersinkDiameter != nil else { return nil }
+                updated.countersinkDiameter = expr
+            case "countersink_angle":
+                guard spec.countersinkAngle != nil else { return nil }
+                updated.countersinkAngle = expr
+            default:
+                return nil
+            }
+            return .hole(target: target, profile: profile, plane: plane, spec: updated)
         case .primitive, .sweep, .loft, .boolean, .transform, .mirror, .pattern,
              .moveFace, .deleteFace, .replaceFace:
             return nil
@@ -1232,7 +1281,12 @@ final class DocumentSession {
     private func load() {
         let associationAssessment = try? CADDocumentFormat.assess(
             planes: project.planes.map { CADBlobRecord(blobID: $0.planeID, data: $0.planeData, sha256: "") },
-            sketches: project.sketches.map { CADBlobRecord(blobID: $0.sketchID, data: $0.sketchData, sha256: "") })
+            sketches: project.sketches.map { CADBlobRecord(blobID: $0.sketchID, data: $0.sketchData, sha256: "") },
+            features: project.features.map {
+                CADFeatureRecord(featureID: $0.featureID, orderIndex: $0.orderIndex,
+                                 name: $0.name, suppressed: $0.suppressed,
+                                 kind: $0.kindData, outputBodyIDs: $0.outputBodyIDData)
+            })
         project.hasOpaqueAssociations = project.hasOpaqueAssociations || associationAssessment?.isOpaqueReadOnly == true
         storeIsNewerThanApp = project.formatVersion > Project.currentFormatVersion || project.hasOpaqueAssociations
         #if DEBUG

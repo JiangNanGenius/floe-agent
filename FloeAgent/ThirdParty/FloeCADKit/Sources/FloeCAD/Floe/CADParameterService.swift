@@ -2557,6 +2557,8 @@ public final class CADParameterService {
             return [target.bodyID]
         case let .boolean(_, target, _):
             return [target.bodyID]
+        case let .hole(target, _, _, _):
+            return [target.bodyID]
         case let .transform(body, _), let .chamfer(body, _, _),
              let .fillet(body, _, _), let .shell(body, _, _), let .deleteFace(body, _):
             return [body.bodyID]
@@ -2739,6 +2741,50 @@ public final class CADParameterService {
             kindName = "revolve"
             add("angle", "deg", angle.value, minimum: 0.0001, maximum: 360)
             unit = "deg"
+        case let .hole(_, profileRef, _, spec):
+            kindName = "hole"
+            add("hole_type", "unitless", spec.kind.rawValue,
+                note: "throughAll | blind | counterbore | countersink")
+            if let depth = spec.depth {
+                add("depth", "mm", depth.value, minimum: 1e-6,
+                    editable: spec.kind == .blind,
+                    note: spec.kind == .blind ? nil : "Stored; applies to blind holes.")
+            } else if spec.kind == .blind {
+                add("depth", "mm", NSNull(), minimum: 1e-6,
+                    note: "Required for a blind hole.")
+            }
+            if let diameter = spec.counterboreDiameter {
+                add("counterbore_diameter", "mm", diameter.value, minimum: 1e-6,
+                    editable: spec.kind == .counterbore,
+                    note: spec.kind == .counterbore ? "Must exceed the pilot diameter." : "Stored; applies to counterbores.")
+            }
+            if let depth = spec.counterboreDepth {
+                add("counterbore_depth", "mm", depth.value, minimum: 1e-6,
+                    editable: spec.kind == .counterbore,
+                    note: spec.kind == .counterbore ? nil : "Stored; applies to counterbores.")
+            }
+            if let diameter = spec.countersinkDiameter {
+                add("countersink_diameter", "mm", diameter.value, minimum: 1e-6,
+                    editable: spec.kind == .countersink,
+                    note: spec.kind == .countersink ? "Must exceed the pilot diameter." : "Stored; applies to countersinks.")
+            }
+            if let angle = spec.countersinkAngle {
+                add("countersink_angle", "deg", angle.value, minimum: 30, maximum: 170,
+                    editable: spec.kind == .countersink,
+                    note: "Included angle.")
+            }
+            add("reversed", "unitless", spec.reversed,
+                note: spec.reversed ? "Drills along -plane.normal." : "Drills along +plane.normal.")
+            if let sketch = document.sketches.first(where: { $0.id == profileRef.sketchID }),
+               let circle = HoleKit.circle(in: sketch, matching: profileRef) {
+                add("pilot_diameter", "mm", circle.radius * 2, editable: false,
+                    note: "Derived from the placement circle; edit that circle to resize the hole.")
+                add("position_u", "mm", circle.center.x, editable: false,
+                    note: "Derived from the placement circle.")
+                add("position_v", "mm", circle.center.y, editable: false,
+                    note: "Derived from the placement circle.")
+            }
+            unit = "mm"
         case let .sweep(_, _, spine, _, helix):
             kindName = "sweep"
             add("spine_points", "mm", spine.map { [$0.point.x, $0.point.y, $0.point.z] }, editable: false)
@@ -2897,7 +2943,7 @@ public final class CADParameterService {
         switch kind {
         case .primitive, .extrude, .draftExtrude, .revolve, .pattern,
              .pushPull, .scaleFace, .rotateFace, .draftFace, .chamfer,
-             .fillet, .shell:
+             .fillet, .shell, .hole:
             return true
         default:
             return false
@@ -2925,6 +2971,7 @@ public final class CADParameterService {
              let .sweep(_, _, _, boolean, _),
              let .loft(_, boolean):
             return boolean.resolvedTargets
+        case let .hole(target, _, _, _): return [target]
         case let .transform(body, _), let .mirror(body, _, _),
              let .pattern(body, _), let .chamfer(body, _, _),
              let .fillet(body, _, _), let .shell(body, _, _),
@@ -3120,6 +3167,84 @@ public final class CADParameterService {
             }
             return .success(.shell(body: body, openFaces: openFaces,
                                    thickness: Expr(value: t, formula: nil)))
+        case let .hole(target, profile, plane, spec):
+            let allowed = ["hole_type", "depth", "counterbore_diameter",
+                           "counterbore_depth", "countersink_diameter",
+                           "countersink_angle", "reversed"]
+            guard changes.keys.allSatisfy({ allowed.contains($0) }) else {
+                return unknown(allowed)
+            }
+            var newSpec = spec
+            var changed = false
+            if let raw = changes["hole_type"] {
+                guard let name = raw as? String,
+                      let kind = HoleSpec.Kind(rawValue: name) else {
+                    return fail("hole_type",
+                                "hole_type must be throughAll, blind, counterbore or countersink.")
+                }
+                if kind == .blind, newSpec.depth == nil {
+                    return fail("depth", "A blind hole needs a depth; provide depth in this update.")
+                }
+                if kind != newSpec.kind { newSpec.kind = kind; changed = true }
+            }
+            if let depth = value("depth") {
+                guard depth > 0, depth.isFinite else {
+                    return fail("depth", "depth must be a positive finite mm value.")
+                }
+                if newSpec.depth?.value != depth || newSpec.depth?.formula != nil {
+                    newSpec.depth = Expr(value: depth, formula: nil)
+                    changed = true
+                }
+            }
+            if let diameter = value("counterbore_diameter") {
+                guard diameter > 0, diameter.isFinite else {
+                    return fail("counterbore_diameter", "counterbore_diameter must be positive mm.")
+                }
+                if newSpec.counterboreDiameter?.value != diameter {
+                    newSpec.counterboreDiameter = Expr(value: diameter, formula: nil)
+                    changed = true
+                }
+            }
+            if let depth = value("counterbore_depth") {
+                guard depth > 0, depth.isFinite else {
+                    return fail("counterbore_depth", "counterbore_depth must be positive mm.")
+                }
+                if newSpec.counterboreDepth?.value != depth {
+                    newSpec.counterboreDepth = Expr(value: depth, formula: nil)
+                    changed = true
+                }
+            }
+            if let diameter = value("countersink_diameter") {
+                guard diameter > 0, diameter.isFinite else {
+                    return fail("countersink_diameter", "countersink_diameter must be positive mm.")
+                }
+                if newSpec.countersinkDiameter?.value != diameter {
+                    newSpec.countersinkDiameter = Expr(value: diameter, formula: nil)
+                    changed = true
+                }
+            }
+            if let angle = value("countersink_angle") {
+                guard angle.isFinite, (30.0...170.0).contains(angle) else {
+                    return fail("countersink_angle",
+                                "countersink_angle must be an included angle of 30…170 degrees.")
+                }
+                if newSpec.countersinkAngle?.value != angle {
+                    newSpec.countersinkAngle = Expr(value: angle, formula: nil)
+                    changed = true
+                }
+            }
+            if let reversed = boolValue("reversed") {
+                if newSpec.reversed != reversed {
+                    newSpec.reversed = reversed
+                    changed = true
+                }
+            }
+            guard changed else { return unknown(allowed) }
+            if let issue = HoleKit.validationIssue(newSpec, pilotDiameter: nil) {
+                return fail("hole", issue)
+            }
+            return .success(.hole(target: target, profile: profile, plane: plane,
+                                  spec: newSpec))
         default:
             return .failure(CADParameterEditError(
                 "This feature kind has no editable numeric parameter; "

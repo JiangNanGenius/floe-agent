@@ -900,6 +900,17 @@ ground plane. Exact argument names (unknown fields are refused by the kernel):
   taperDegrees? (|t|<89, 0 = straight), end?:"throughAll"|"upToNext"|"blind",
   boolean?:"newBody"|"union"|"subtract"|"intersect", booleanTargets?:[bodyID]}`.
   Example: `{"sketchID":"<uuid>","seedPoint":[40,20],"distance":10}`.
+- `feature.hole` `{sketchID, seedPoint:[x,y] (inside the single locating
+  circle), targetBodyID, type:"throughAll"|"blind"|"counterbore"|"countersink",
+  depth? (blind only, mm, flat bottom), counterboreDiameter?/counterboreDepth?
+  (counterbore only, diameter > pilot), countersinkDiameter?/countersinkAngle?
+  (countersink only, included angle 30…170 degrees, diameter > pilot),
+  reversed? (drill along -plane.normal; a face-sketch plane normal is the source
+  face's outward normal)}`. The placement circle alone owns centre and pilot diameter — edit
+  it through `updateSketchEntity`, never a second hole diameter. Through,
+  counterbore and countersink pilots are through-all in v1; the target must be
+  an analytic B-rep body (there is no mesh fallback). The reply carries
+  `featureID`, `targetBodyID`, `pilotDiameter`, `type` and `parameters`.
 - Full runnable example (each statement is one `cad.document` call:
   `propose` with `op` + `args`, then `apply`):
   `create` → `propose sketch.create` → `apply` → `propose sketch.addEntities
@@ -916,7 +927,8 @@ ground plane. Exact argument names (unknown fields are refused by the kernel):
   measures one or more bodies (`bodyIDs`). The alias form is
   `three_d_measure op=body args={"bodyID":"<UUID>"}`.
 - Operation vocabulary (`capabilities.operation_names`): `sketch.create`,
-  `sketch.addEntities`, `feature.extrude`, `feature.revolve`, `feature.pattern`,
+  `sketch.addEntities`, `feature.extrude`, `feature.revolve`, `feature.hole`,
+  `feature.pattern`,
   `feature.mirror`, `feature.transform`, `feature.boolean`, `feature.fillet`,
   `feature.chamfer`, `feature.shell`, `feature.sweep`, `feature.loft`,
   `feature.pushPull`, `feature.moveFace`, `feature.scaleFace`,
@@ -930,7 +942,14 @@ ground plane. Exact argument names (unknown fields are refused by the kernel):
   → propose feature.extrude → apply → measure（`op=body` 且
   `handles=["body:<UUID>"]`，也可直接给裸 UUID；工具会转换为内核实参 `bodyID`）
   → export STEP/STL/GLB。`query {kind:"bodies"}` 的每行给出 `id`、`analyticBRep`、
-  `volumeMM3`、`triangles` 与 `bounds`。
+  `volumeMM3`、`triangles` 与 `bounds`。`feature.hole` 需要 `sketchID`、定位圆内的
+  `seedPoint`、`targetBodyID` 与 `type`（`throughAll` / `blind` / `counterbore` /
+  `countersink`）；盲孔给 `depth`（平底），沉头孔给 `counterboreDiameter` 与
+  `counterboreDepth`，锥沉孔给 `countersinkDiameter` 与包含角
+  `countersinkAngle`（30…170 度），可选 `reversed` 反向法向。位置与孔径只由定位圆
+  决定（用 `updateSketchEntity` 编辑该圆），通孔/沉头/锥沉的导孔均为通孔；目标必须是
+  解析 B-rep 实体，不做网格降级；回复包含 `featureID`、`targetBodyID`、
+  `pilotDiameter`、`type` 与 `parameters`。
 
 ### Document names / 文档名称
 

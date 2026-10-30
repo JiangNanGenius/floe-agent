@@ -1205,6 +1205,31 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialCoreTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHoleWorkflowTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchEditTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADParameterCorrectnessTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADStoredIntegrityTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADExactnessPreservationTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADUSDZMaterialExportTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADVariableEditingTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADVariablePanelTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationSelectionTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationSelectionObserverTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMechanicalHoleKernelProbeTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADVolumeIntegrationTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSavedIdentityObservationTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADUSDZWriterCapabilityTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeGeometryValueTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADReadOnlyServiceTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeFormatTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeDatumReplayTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeSketchDragTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchPreviewTransactionTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDatumServiceTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPrimitiveDatumSourceTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDatumEditorTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeMergeTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeSessionTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHoleFeatureTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADThreadEngineProbeTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationUITests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyDrawingExtensionTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAnimationTests.swift

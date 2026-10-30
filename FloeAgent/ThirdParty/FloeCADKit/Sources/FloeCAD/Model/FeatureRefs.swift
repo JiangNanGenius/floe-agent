@@ -154,6 +154,109 @@ nonisolated struct EdgeRef: Codable, Hashable, Sendable {
     var faceNames: EdgeName? = nil
 }
 
+// MARK: - Mechanical holes (M12)
+
+/// The semantic face roles a hole operation mints. They come from the tool's
+/// OWN revolve ancestry (which profile edge generated the face), never from a
+/// result-face ordinal or geometric resemblance.
+nonisolated enum HoleFaceRole: String, Codable, Hashable, Sendable {
+    case pilotWall
+    case recessWall
+    case shoulder
+    case cone
+    case bottom
+}
+
+nonisolated enum HoleSpecError: Error, Equatable, Sendable {
+    /// A hole definition written by a newer semantic contract. The document
+    /// must open opaque/read-only with the original bytes and cached geometry
+    /// intact — never be silently dropped or reinterpreted.
+    case unsupportedVersion(Int)
+    case malformed(String)
+}
+
+/// One typed mechanical hole. The positioning circle in the referenced sketch
+/// owns the centre AND the pilot diameter (one source of truth, editable with
+/// the ordinary sketch services). The hole owns its type, depth, recess/cone
+/// and explicit direction.
+///
+/// Dimensions are world millimetres and angles are public degrees; a uniformly
+/// scaled target changes the placement coordinates, never these drill values.
+/// Positive axial t is INTO the chosen direction; `reversed` selects
+/// `-plane.normal` as that direction.
+nonisolated struct HoleSpec: Codable, Hashable, Sendable {
+    nonisolated enum Kind: String, Codable, Hashable, Sendable, CaseIterable {
+        case throughAll
+        case blind
+        case counterbore
+        case countersink
+    }
+
+    static var supportedVersion: Int { 1 }
+
+    var version: Int
+    var kind: Kind
+    /// Blind only; flat bottom (no unqualified drill tip in v1).
+    var depth: Expr?
+    /// Counterbore only; must exceed the pilot diameter.
+    var counterboreDiameter: Expr?
+    /// Counterbore only, measured from the placement plane along the direction.
+    var counterboreDepth: Expr?
+    /// Countersink only; must exceed the pilot diameter.
+    var countersinkDiameter: Expr?
+    /// Countersink only: INCLUDED angle in degrees (30…170).
+    var countersinkAngle: Expr?
+    var reversed: Bool
+
+    init(
+        version: Int = HoleSpec.supportedVersion,
+        kind: Kind = .throughAll,
+        depth: Expr? = nil,
+        counterboreDiameter: Expr? = nil,
+        counterboreDepth: Expr? = nil,
+        countersinkDiameter: Expr? = nil,
+        countersinkAngle: Expr? = nil,
+        reversed: Bool = false
+    ) {
+        self.version = version
+        self.kind = kind
+        self.depth = depth
+        self.counterboreDiameter = counterboreDiameter
+        self.counterboreDepth = counterboreDepth
+        self.countersinkDiameter = countersinkDiameter
+        self.countersinkAngle = countersinkAngle
+        self.reversed = reversed
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, kind, depth
+        case counterboreDiameter, counterboreDepth
+        case countersinkDiameter, countersinkAngle
+        case reversed
+    }
+
+    /// Hand-written for the same reason as `PatternSpec`: synthesized decoding
+    /// ignores property defaults, so an older/minimal payload missing
+    /// `reversed` must still decode. The semantic version is read FIRST so a
+    /// future definition is reported as unsupported even when its remaining
+    /// shape no longer matches this build.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try c.decode(Int.self, forKey: .version)
+        guard version == Self.supportedVersion else {
+            throw HoleSpecError.unsupportedVersion(version)
+        }
+        self.version = version
+        kind = try c.decode(Kind.self, forKey: .kind)
+        depth = try c.decodeIfPresent(Expr.self, forKey: .depth)
+        counterboreDiameter = try c.decodeIfPresent(Expr.self, forKey: .counterboreDiameter)
+        counterboreDepth = try c.decodeIfPresent(Expr.self, forKey: .counterboreDepth)
+        countersinkDiameter = try c.decodeIfPresent(Expr.self, forKey: .countersinkDiameter)
+        countersinkAngle = try c.decodeIfPresent(Expr.self, forKey: .countersinkAngle)
+        reversed = try c.decodeIfPresent(Bool.self, forKey: .reversed) ?? false
+    }
+}
+
 // MARK: - Expressions & intents
 
 /// A scalar feature parameter. Tranche 1 uses `.value` only; `formula` is

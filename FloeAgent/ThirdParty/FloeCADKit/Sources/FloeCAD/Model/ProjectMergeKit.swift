@@ -368,7 +368,7 @@ nonisolated enum ProjectMergeKit {
                 source = .profileWall(entity: newEntity(entity), occurrence: occurrence)
             case let .opFace(operation, parents, index):
                 source = .opFace(operation: newFeature(operation), parents: parents.map(remap), index: index)
-            case .primitiveFace, .profileCap, .kernelFace:
+            case .primitiveFace, .profileCap, .kernelFace, .holeFace(_):
                 source = name.source
             }
             return ElementName(creator: newFeature(name.creator), source: source)
@@ -428,6 +428,11 @@ nonisolated enum ProjectMergeKit {
                     helix: movedHelix)
             case let .loft(sections, boolean):
                 return .loft(sections: sections.map(remap), boolean: remap(boolean))
+            case let .hole(target, profile, plane, spec):
+                // Placement lives in the sketch/plane (both remapped); the
+                // hole owns only type/depth/recess/direction.
+                return .hole(target: remap(target), profile: remap(profile),
+                             plane: remap(plane, translation: t), spec: spec)
             case let .boolean(op, target, tools):
                 return .boolean(kind: op, target: remap(target), tools: tools.map(remap))
             case let .transform(body, delta):

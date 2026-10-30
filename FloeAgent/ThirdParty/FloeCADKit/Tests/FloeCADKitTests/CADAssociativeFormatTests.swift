@@ -139,8 +139,8 @@ final class CADAssociativeFormatTests: XCTestCase {
         let url = url()
         let document = try await FloeCADDocument.create(at: url, name: "Plain")
         documents.append(document)
-        XCTAssertEqual(Project.currentFormatVersion, 2)
-        XCTAssertEqual(FileCADDocumentStore.currentSchemaVersion, 2)
+        XCTAssertEqual(Project.currentFormatVersion, 3)
+        XCTAssertEqual(FileCADDocumentStore.currentSchemaVersion, 3)
         XCTAssertEqual(try CADAssociativeFormatFixture.manifest(url).schemaVersion, 1)
         document.project.name = "Metadata only"
         let metadata = await document.save()
@@ -213,7 +213,7 @@ final class CADAssociativeFormatTests: XCTestCase {
         let upgradedBytes = try CADAssociativeFormatFixture.bytes(url)
         XCTAssertThrowsError(try store.performWrite(stale))
         XCTAssertEqual(try CADAssociativeFormatFixture.bytes(url), upgradedBytes)
-        stale.schemaVersion = 3
+        stale.schemaVersion = Project.currentFormatVersion + 1
         XCTAssertThrowsError(try store.performWrite(stale))
         XCTAssertEqual(try CADAssociativeFormatFixture.bytes(url), upgradedBytes)
     }

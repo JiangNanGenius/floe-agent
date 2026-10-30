@@ -146,6 +146,7 @@ struct HistoryPanelView: View {
         case .rotateFace: return "rotate.3d"
         case .draftFace: return "triangle.righthalf.filled"
         case .revolve: return "arrow.triangle.2.circlepath"
+        case .hole: return "circle.dashed"
         case .sweep: return "scribble.variable"
         case .loft: return "square.on.square.dashed"
         case .transform: return "move.3d"

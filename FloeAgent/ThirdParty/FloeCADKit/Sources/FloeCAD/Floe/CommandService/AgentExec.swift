@@ -79,6 +79,11 @@ nonisolated enum AgentExecOp: Sendable, Equatable {
     /// looked like a plausible solid — a wrong model, not an error.
     case revolve(sketch: SketchID, seed: SIMD2<Double>, axis: RevolveAxis,
                  angleDegrees: Double, boolean: BooleanIntent.Op, targets: [BodyID])
+    /// M12 mechanical hole: one locating circle (`sketch` + `seed`) owns centre
+    /// and pilot diameter; `spec` owns typed depth/recess/cone and direction.
+    /// Dimensions are world mm, `countersinkAngle` is the INCLUDED angle in
+    /// degrees. The target must carry a B-rep; there is no mesh fallback.
+    case hole(sketch: SketchID, seed: SIMD2<Double>, target: BodyID, spec: HoleSpec)
     case pattern(body: BodyID, spec: PatternSpec)
     case mirror(body: BodyID, plane: SketchPlane, keepOriginal: Bool)
     /// Move a body in place (same id): a rigid delta, rotation already folded
@@ -155,7 +160,7 @@ nonisolated enum AgentExec {
     /// naming the alternatives in an `unknown_op` message.
     static let opNames = [
         "sketch.create", "sketch.addEntities",
-        "feature.extrude", "feature.revolve",
+        "feature.extrude", "feature.revolve", "feature.hole",
         "feature.pattern", "feature.mirror", "feature.transform", "feature.boolean",
         "feature.fillet", "feature.chamfer", "feature.shell",
         "feature.sweep", "feature.loft", "feature.pushPull",
@@ -184,6 +189,7 @@ nonisolated enum AgentExec {
         case "sketch.addEntities": return parseAddEntities(args)
         case "feature.extrude":    return parseExtrude(args)
         case "feature.revolve":    return parseRevolve(args)
+        case "feature.hole":       return parseHole(args)
         case "feature.pattern":    return parsePattern(args)
         case "feature.mirror":     return parseMirror(args)
         case "feature.transform":  return parseTransform(args)
@@ -328,6 +334,59 @@ nonisolated enum AgentExec {
                 axis: RevolveAxis(point: point, direction: simd_normalize(direction)),
                 angleDegrees: degrees,
                 boolean: op, targets: targets))
+        } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
+    }
+
+    /// `feature.hole` — typed mechanical hole. The placement sketch's single
+    /// circle owns centre + pilot diameter; the spec owns everything else.
+    /// Type/dimension validity is checked here (structural) and again by the
+    /// executor/evaluator against the ACTUAL pilot diameter.
+    private static func parseHole(_ a: [String: Any]) -> Result<AgentExecOp, AgentExecError> {
+        do {
+            guard let rawSketch = a["sketchID"] as? String,
+                  let sketchUUID = UUID(uuidString: rawSketch) else {
+                return .failure(.init(code: "missing_sketch",
+                                      message: "feature.hole needs \"sketchID\" (the sketch holding the locating circle)."))
+            }
+            guard let rawTarget = a["targetBodyID"] as? String,
+                  let targetUUID = UUID(uuidString: rawTarget) else {
+                return .failure(.init(code: "missing_target",
+                                      message: "feature.hole needs \"targetBodyID\" (the B-rep body to drill)."))
+            }
+            let seed = try vector2(a, "seedPoint")
+            guard let rawType = a["type"] as? String,
+                  let kind = HoleSpec.Kind(rawValue: rawType) else {
+                return .failure(.init(code: "invalid_hole",
+                                      message: "\"type\" must be throughAll, blind, counterbore or countersink."))
+            }
+            var spec = HoleSpec(kind: kind)
+            if let depth = try optionalDouble(a, "depth") {
+                spec.depth = Expr(value: depth)
+            }
+            if let diameter = try optionalDouble(a, "counterboreDiameter") {
+                spec.counterboreDiameter = Expr(value: diameter)
+            }
+            if let depth = try optionalDouble(a, "counterboreDepth") {
+                spec.counterboreDepth = Expr(value: depth)
+            }
+            if let diameter = try optionalDouble(a, "countersinkDiameter") {
+                spec.countersinkDiameter = Expr(value: diameter)
+            }
+            if let angle = try optionalDouble(a, "countersinkAngle") {
+                spec.countersinkAngle = Expr(value: angle)
+            }
+            if let raw = a["reversed"] {
+                guard let reversed = raw as? Bool else {
+                    return .failure(.init(code: "invalid_hole",
+                                          message: "\"reversed\" must be true or false."))
+                }
+                spec.reversed = reversed
+            }
+            if let issue = HoleKit.validationIssue(spec, pilotDiameter: nil) {
+                return .failure(.init(code: "invalid_hole", message: issue))
+            }
+            return .success(.hole(sketch: SketchID(raw: sketchUUID), seed: seed,
+                                  target: BodyID(raw: targetUUID), spec: spec))
         } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
     }
 

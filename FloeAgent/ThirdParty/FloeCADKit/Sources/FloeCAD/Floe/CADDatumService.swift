@@ -144,7 +144,7 @@ public final class CADDatumService {
         switch name.source {
         case let .primitiveFace(role): return role
         case let .profileCap(end): return end ? .extrudeEndCap : .extrudeStartCap
-        case .profileWall, .opFace, .kernelFace: return .derived(index: index)
+        case .profileWall, .opFace, .kernelFace, .holeFace: return .derived(index: index)
         }
     }
     private func error(_ error: Error) -> [String: Any] {

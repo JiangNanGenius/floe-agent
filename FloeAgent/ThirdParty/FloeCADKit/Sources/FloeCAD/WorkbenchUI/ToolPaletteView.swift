@@ -147,6 +147,21 @@ struct ToolPaletteView: View {
             modifyItem("cad.ui.tool.sweep", "Sweep", "scribble.variable", .sweep, "SweepButton"),
             modifyItem("cad.ui.tool.loft", "Loft", "square.stack.3d.up", .loft, "LoftButton"),
             modifyItem("cad.ui.tool.helix", "Helix", "tornado", .helix, "HelixButton"),
+            ToolItem(id: "Hole",
+                     label: FloeCADStrings.text("cad.ui.tool.hole", "Hole"),
+                     icon: "circle.dashed",
+                     enabled: viewModel.hasExtrudableProfile
+                        && !viewModel.session.document.bodies.isEmpty,
+                     active: viewModel.pendingCreateTool == .hole,
+                     activeTint: .blue,
+                     accessibilityID: "HoleButton",
+                     run: {
+                         if viewModel.pendingCreateTool == .hole {
+                             viewModel.cancelCreate()
+                         } else {
+                             viewModel.beginCreate(.hole)
+                         }
+                     }),
             toggleItem("cad.ui.tool.chamfer", "Chamfer", "square.on.circle", "ChamferButton",
                        active: isMode { if case .pickingBlendEdges(.chamfer) = $0 { return true }; return false },
                        enabled: !viewModel.session.document.bodies.isEmpty, tint: .blue,

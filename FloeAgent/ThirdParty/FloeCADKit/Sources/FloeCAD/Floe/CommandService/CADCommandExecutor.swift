@@ -243,6 +243,10 @@ final class CADCommandExecutor {
                     boolean: intent),
                 outputBodyIDs: [BodyID()]), on: viewModel)
 
+        case let .hole(sketchID, seed, targetID, spec):
+            return execHole(sketch: sketchID, seed: seed, targetID: targetID,
+                            spec: spec, on: viewModel)
+
         case let .pattern(bodyID, spec):
             if let bad = missingBody([bodyID], session) { return bad }
             // count includes the original, so a pattern emits count-1 NEW bodies.
@@ -386,7 +390,8 @@ final class CADCommandExecutor {
     /// Append a node and evaluate it. Reports the eval errors rather than a bare
     /// success: a feature that lands in History but produces no body is exactly
     /// the "silent no-op" failure this bridge exists to make visible.
-    private func record(_ node: FeatureNode, on viewModel: EditorViewModel) -> AgentResponse {
+    private func record(_ node: FeatureNode, on viewModel: EditorViewModel,
+                        details: [String: Any] = [:]) -> AgentResponse {
         let session = viewModel.session
         // Revisions, not just ids. A boolean REPLACES its target in place, so it
         // adds no new body — reporting "produced nothing" on a subtract that had
@@ -423,6 +428,7 @@ final class CADCommandExecutor {
             "removedBodyIDs": removed.map(\.raw.uuidString),
             "undoSteps": 1,
         ]
+        for (key, value) in details { payload[key] = value }
         // Keyed by feature id, so an agent can tell ITS node failing from an
         // unrelated upstream node that was already broken.
         let errors = session.lastEvalErrors
@@ -440,6 +446,16 @@ final class CADCommandExecutor {
             payload["failed"] = true
             payload["message"] = "\(node.name) could not be completed: \(mine). The document was preserved."
             payload["error"] = "feature_failed"
+            payload["ok"] = false
+            payload["undoSteps"] = 0
+            return .json(422, "Unprocessable Entity", payload)
+        } else if !session.lastRebuildRejection.isEmpty {
+            // An associative rejection never applies the appended node. Do not
+            // report a success that the document does not contain.
+            session.restoreEditCheckpoint(checkpoint)
+            payload["failed"] = true
+            payload["message"] = "\(node.name) would break an associative dependency. The document was preserved."
+            payload["error"] = "rebuild_failed"
             payload["ok"] = false
             payload["undoSteps"] = 0
             return .json(422, "Unprocessable Entity", payload)
@@ -883,6 +899,71 @@ final class CADCommandExecutor {
                 : .chamfer(body: ref, edges: refs, setback: Expr(value: amount)),
             outputBodyIDs: [bodyID])
         return record(node, on: viewModel)
+    }
+
+    /// feature.hole: one locating circle + typed hole semantics. Validates the
+    /// actual pilot diameter before recording, so a counterbore/sink smaller
+    /// than the pilot is refused without touching the document. The recorded
+    /// node uses the target's existing BodyID (an in-place exact subtract).
+    private func execHole(sketch sketchID: SketchID, seed: SIMD2<Double>,
+                          targetID: BodyID, spec: HoleSpec,
+                          on viewModel: EditorViewModel) -> AgentResponse {
+        let session = viewModel.session
+        guard let sketch = session.document.sketches.first(where: { $0.id == sketchID }) else {
+            return execMissing("sketch", sketchID.raw.uuidString)
+        }
+        guard let target = session.document.body(with: targetID) else {
+            return .failure(404, "Not Found", error: "unknown_target",
+                            message: "No target body with id \(targetID.raw.uuidString) in this document.")
+        }
+        guard target.brep != nil else {
+            return .failure(409, "Conflict", error: "hole_requires_brep",
+                            message: "Holes need an analytic B-rep target; '\(target.name)' is mesh-only.")
+        }
+        let detected = ProfileDetector.detectProfiles(in: sketch)
+        guard let region = ProfileDetector.profiles(at: seed, in: sketch).first,
+              case let .circle(center, radius) = region.kind,
+              ProfileDetector.holes(of: region, among: detected).isEmpty else {
+            return .failure(422, "Unprocessable Entity", error: "not_circle",
+                            message: "The hole placement must resolve to exactly one circular region "
+                                   + "with no inner loops at seedPoint.")
+        }
+        if let issue = HoleKit.validationIssue(spec, pilotDiameter: radius * 2) {
+            return .failure(422, "Unprocessable Entity", error: "invalid_hole", message: issue)
+        }
+        let profile = ProfileRef(sketchID: sketchID,
+                                 entityIDs: Array(region.sourceEntityIDs),
+                                 holeEntityIDs: [],
+                                 seedPoint: center)
+        let node = FeatureNode(
+            name: "Hole",
+            kind: .hole(target: bodyRef(targetID, session), profile: profile,
+                        plane: PlaneRef(source: .sketch(sketchID)), spec: spec),
+            outputBodyIDs: [targetID])
+        var parameters: [String: Any] = [
+            "type": spec.kind.rawValue,
+            "reversed": spec.reversed,
+            "pilotDiameter": radius * 2,
+        ]
+        if let depth = spec.depth { parameters["depth"] = depth.value }
+        if let diameter = spec.counterboreDiameter {
+            parameters["counterboreDiameter"] = diameter.value
+        }
+        if let depth = spec.counterboreDepth {
+            parameters["counterboreDepth"] = depth.value
+        }
+        if let diameter = spec.countersinkDiameter {
+            parameters["countersinkDiameter"] = diameter.value
+        }
+        if let angle = spec.countersinkAngle {
+            parameters["countersinkAngle"] = angle.value
+        }
+        return record(node, on: viewModel, details: [
+            "targetBodyID": targetID.raw.uuidString,
+            "pilotDiameter": radius * 2,
+            "type": spec.kind.rawValue,
+            "parameters": parameters,
+        ])
     }
 
     /// feature.shell: open faces by kernel index, minted into FaceRefs with

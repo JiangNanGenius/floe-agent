@@ -2183,6 +2183,12 @@ struct FloeCADEditorView: View {
                 EditorMaterialInspectorSheet(document: document,
                                              viewModel: viewModel) { }
             }
+            .sheet(item: Binding(
+                get: { viewModel.holeDraft },
+                set: { if $0 == nil { viewModel.cancelHole() } }
+            )) { draft in
+                HoleOptionsSheet(viewModel: viewModel, draft: draft)
+            }
             .sheet(isPresented: Binding(
                 get: { viewModel.showConstraintSettings },
                 set: { viewModel.showConstraintSettings = $0 }

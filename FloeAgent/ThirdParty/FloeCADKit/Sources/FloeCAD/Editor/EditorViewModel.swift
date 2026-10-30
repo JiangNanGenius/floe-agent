@@ -3613,6 +3613,8 @@ final class EditorViewModel {
         resetSketchOffsetState()
         resetAxisState()
         pendingCreateTool = nil
+        holeDraft = nil
+        editingHoleFeatureID = nil
         // Numeric-entry armed state must die with the mode that armed it: a
         // stale `scaleEntryActive` would make the next empty-space tap commit
         // a stray scale from inside an unrelated pick (2026-08-25 review, S3).
@@ -3958,6 +3960,7 @@ final class EditorViewModel {
         case .mirror, .pattern, .transform: return "Edit Body"
         case .pushPull, .moveFace, .scaleFace, .rotateFace: return "Edit Face"
         case .extrude, .draftExtrude, .revolve, .sweep: return "Edit Profile"
+        case .hole: return FloeCADStrings.text("cad.hole.edit", "Edit Hole")
         default: return nil
         }
     }
@@ -3974,6 +3977,7 @@ final class EditorViewModel {
         case .mirror, .pattern, .transform: return beginFeatureBodyEdit(id)
         case .pushPull, .moveFace, .scaleFace, .rotateFace: return beginFeatureFaceEdit(id)
         case .extrude, .draftExtrude, .revolve, .sweep: return beginFeatureProfileEdit(id)
+        case .hole: return beginHoleEdit(id)
         default: return false
         }
     }
@@ -7546,6 +7550,27 @@ final class EditorViewModel {
     /// waiting for the user to tap a sketch region to apply it (Shapr3D: pick
     /// the tool, then the profile). Consumed by the next viewport tap.
     var pendingCreateTool: CreateTool?
+    /// M12 native hole options. Non-nil presents the bounded sheet; the
+    /// placement circle itself remains the one centre/diameter authority.
+    struct HoleDraft: Identifiable {
+        let id = UUID()
+        var sketchID: SketchID
+        var plane: SketchPlane
+        var profileRef: ProfileRef
+        var pilotRadius: Double
+        var targetBodyID: BodyID?
+        var type: HoleSpec.Kind
+        var depth: Double
+        var counterboreDiameter: Double
+        var counterboreDepth: Double
+        var countersinkDiameter: Double
+        var countersinkAngle: Double
+        var reversed: Bool
+    }
+    var holeDraft: HoleDraft?
+    /// Non-nil when the open hole sheet edits this existing feature instead of
+    /// creating a new one. One `editFeature` transaction, same as AI updates.
+    var editingHoleFeatureID: FeatureID?
     /// Present the Helix options sheet — hoisted from `NumericInputBar` so the
     /// Modify group can trigger it after arming a profile.
     var showHelixOptions = false
@@ -7625,6 +7650,240 @@ final class EditorViewModel {
 
     func cancelCreate() { pendingCreateTool = nil }
 
+    /// Arm the native Hole options for one locating circle. No live cut
+    /// preview is built here: the sheet commits one exact feature through the
+    /// same graph/transaction path as the AI command.
+    private func beginHole(
+        with hit: (profile: Profile, holes: [Profile], plane: SketchPlane, sketchID: SketchID, distance: Float),
+        ray: Ray
+    ) {
+        guard hit.holes.isEmpty, case let .circle(center, radius) = hit.profile.kind,
+              radius.isFinite, radius > 0 else {
+            errorMessage = FloeCADStrings.text(
+                "cad.hole.noCircle",
+                "Hole needs exactly one circular sketch profile with no inner loops.")
+            return
+        }
+        let brepBodies = session.document.bodies.filter { $0.brep != nil }
+        guard !brepBodies.isEmpty else {
+            errorMessage = FloeCADStrings.text(
+                "cad.hole.noTarget", "Add a body to drill into first.")
+            return
+        }
+        // A known selection wins; otherwise the body under the tap; otherwise
+        // the only analytic body. Never infer the material side here — the
+        // sheet shows the chosen target and the explicit drill direction.
+        var target = brepBodies.count == 1 ? brepBodies[0].id : nil
+        if selection.count == 1, let only = selection.first,
+           brepBodies.contains(where: { $0.id == only }) {
+            target = only
+        } else if let picked = HitTester.pickBody(ray: ray, in: scene)?.bodyID,
+                  brepBodies.contains(where: { $0.id == picked }) {
+            target = picked
+        }
+        if target == nil {
+            // A visible default, never a hidden direction guess: the sheet
+            // shows this target and lets the person change it.
+            let entry = hit.plane.toWorld(center)
+            target = brepBodies.first { body in
+                guard let box = MeasureKit.boundingBox(bodies: [body]) else { return false }
+                let eps = 1e-6
+                return entry.x >= box.min.x - eps && entry.x <= box.max.x + eps
+                    && entry.y >= box.min.y - eps && entry.y <= box.max.y + eps
+                    && entry.z >= box.min.z - eps && entry.z <= box.max.z + eps
+            }?.id ?? brepBodies.first?.id
+        }
+        let profileRef = ProfileRef(
+            sketchID: hit.sketchID,
+            entityIDs: Array(hit.profile.sourceEntityIDs),
+            holeEntityIDs: [],
+            seedPoint: center)
+        // Only a KNOWN outward source face may default the direction to
+        // inward: a sketch associatively supported by a face-derived
+        // construction plane whose normal matches the plane's outward normal.
+        // An absolute/ground sketch, or an unknown support, keeps +normal.
+        var defaultReversed = false
+        if let sketch = session.document.sketches.first(where: { $0.id == hit.sketchID }),
+           case let .construction(planeID)? = sketch.support,
+           let construction = session.document.planes.first(where: { $0.id == planeID }),
+           case let .offset(definition)? = construction.definition,
+           simd_dot(definition.source.signature.normal, hit.plane.normal) > 0.999 {
+            defaultReversed = true
+        }
+        let minimumRecess = radius * 2 + 2
+        editingHoleFeatureID = nil
+        errorMessage = nil
+        holeDraft = HoleDraft(
+            sketchID: hit.sketchID,
+            plane: hit.plane,
+            profileRef: profileRef,
+            pilotRadius: radius,
+            targetBodyID: target,
+            type: .throughAll,
+            depth: 6,
+            counterboreDiameter: minimumRecess,
+            counterboreDepth: 3,
+            countersinkDiameter: minimumRecess + 2,
+            countersinkAngle: 90,
+            reversed: defaultReversed)
+    }
+
+    func cancelHole() {
+        holeDraft = nil
+        editingHoleFeatureID = nil
+    }
+
+    /// Reopen the bounded sheet for an existing hole from its History row.
+    /// Position/pilot still resolve from the live placement circle; the sheet
+    /// only edits type/depth/recess/cone/direction through the same graph path.
+    private func beginHoleEdit(_ id: FeatureID) -> Bool {
+        guard let node = session.document.features.node(id),
+              case let .hole(target, profile, plane, spec) = node.kind,
+              case let .sketch(sketchID) = plane.source,
+              let sketch = session.document.sketches.first(where: { $0.id == sketchID }),
+              let circle = HoleKit.circle(in: sketch, matching: profile),
+              let body = session.document.body(with: target.bodyID),
+              body.brep != nil
+        else {
+            errorMessage = FloeCADStrings.text(
+                "cad.hole.noCircle",
+                "Hole needs exactly one circular sketch profile with no inner loops.")
+            return false
+        }
+        cancelTransientPicks()
+        editingHoleFeatureID = id
+        errorMessage = nil
+        let minimumRecess = circle.radius * 2 + 2
+        holeDraft = HoleDraft(
+            sketchID: sketchID,
+            plane: sketch.plane,
+            profileRef: profile,
+            pilotRadius: circle.radius,
+            targetBodyID: target.bodyID,
+            type: spec.kind,
+            depth: spec.depth?.value ?? 6,
+            counterboreDiameter: spec.counterboreDiameter?.value ?? minimumRecess,
+            counterboreDepth: spec.counterboreDepth?.value ?? 3,
+            countersinkDiameter: spec.countersinkDiameter?.value ?? minimumRecess + 2,
+            countersinkAngle: spec.countersinkAngle?.value ?? 90,
+            reversed: spec.reversed)
+        selection = [target.bodyID]
+        mode = .selected(target.bodyID)
+        return true
+    }
+
+    /// Commit the native sheet's hole through the ordinary graph transaction.
+    /// Invalid specifications and kernel refusals leave the document, the
+    /// original B-rep and both undo/redo histories untouched. Returns false so
+    /// the sheet can stay open for correction.
+    @discardableResult
+    func commitHole(
+        targetBodyID: BodyID,
+        type: HoleSpec.Kind,
+        depth: Double,
+        counterboreDiameter: Double,
+        counterboreDepth: Double,
+        countersinkDiameter: Double,
+        countersinkAngle: Double,
+        reversed: Bool
+    ) -> Bool {
+        guard let draft = holeDraft else { return false }
+        guard let target = session.document.body(with: targetBodyID), target.brep != nil else {
+            errorMessage = FloeCADStrings.text(
+                "cad.hole.noTarget", "Add a body to drill into first.")
+            return false
+        }
+        let spec = HoleSpec(
+            kind: type,
+            depth: Expr(value: depth),
+            counterboreDiameter: Expr(value: counterboreDiameter),
+            counterboreDepth: Expr(value: counterboreDepth),
+            countersinkDiameter: Expr(value: countersinkDiameter),
+            countersinkAngle: Expr(value: countersinkAngle),
+            reversed: reversed)
+        if let issue = HoleKit.validationIssue(spec, pilotDiameter: draft.pilotRadius * 2) {
+            errorMessage = issue
+            return false
+        }
+        let producer = session.document.features.nodes.last {
+            $0.outputBodyIDs.contains(targetBodyID)
+        }?.id ?? FeatureID()
+        func keepHoleExpr(_ old: Expr?, _ value: Double) -> Expr {
+            guard let old, old.value == value else { return Expr(value: value) }
+            return old
+        }
+        if let editID = editingHoleFeatureID {
+            guard let existing = session.document.features.node(editID),
+                  case let .hole(_, existingProfile, existingPlane, existingSpec) = existing.kind
+            else {
+                errorMessage = FloeCADStrings.text(
+                    "cad.hole.editMissing",
+                    "This hole is no longer in the document. Reopen History and try again.")
+                return false
+            }
+            // Unchanged numeric fields keep their stored formula so an edit of
+            // one value cannot silently strip variable intent from the rest.
+            var editSpec = spec
+            editSpec.depth = keepHoleExpr(existingSpec.depth, depth)
+            editSpec.counterboreDiameter = keepHoleExpr(
+                existingSpec.counterboreDiameter, counterboreDiameter)
+            editSpec.counterboreDepth = keepHoleExpr(
+                existingSpec.counterboreDepth, counterboreDepth)
+            editSpec.countersinkDiameter = keepHoleExpr(
+                existingSpec.countersinkDiameter, countersinkDiameter)
+            editSpec.countersinkAngle = keepHoleExpr(
+                existingSpec.countersinkAngle, countersinkAngle)
+            let after: FeatureKind = .hole(
+                target: BodyRef(producer: producer, bodyID: targetBodyID),
+                profile: existingProfile,
+                plane: existingPlane,
+                spec: editSpec)
+            let checkpoint = session.captureEditCheckpoint()
+            session.editFeature(editID, to: after)
+            if let error = session.lastEvalErrors[editID]
+                ?? session.lastRebuildRejection.values.first.map({ FeatureError.brokenRef($0.message) }) {
+                session.restoreEditCheckpoint(checkpoint)
+                errorMessage = FloeCADStrings.format(
+                    "cad.hole.failed", "Hole could not be completed: %@", "\(error)")
+                return false
+            }
+            holeDraft = nil
+            editingHoleFeatureID = nil
+            selection = [targetBodyID]
+            mode = .selected(targetBodyID)
+            errorMessage = nil
+            session.save()
+            return true
+        }
+        let node = FeatureNode(
+            name: "Hole",
+            kind: .hole(
+                target: BodyRef(producer: producer, bodyID: targetBodyID),
+                profile: draft.profileRef,
+                plane: PlaneRef(source: .sketch(draft.sketchID)),
+                spec: spec),
+            outputBodyIDs: [targetBodyID])
+        let checkpoint = session.captureEditCheckpoint()
+        // Keep the placement sketch visible: it is the editable source of the
+        // hole's position and pilot diameter, so hiding it would hide the only
+        // supported way to move or resize this hole.
+        session.recordAndRebuild([node], title: "Hole")
+        if let error = session.lastEvalErrors[node.id]
+            ?? session.lastRebuildRejection.values.first.map({ FeatureError.brokenRef($0.message) }) {
+            session.restoreEditCheckpoint(checkpoint)
+            errorMessage = FloeCADStrings.format(
+                "cad.hole.failed", "Hole could not be completed: %@", "\(error)")
+            return false
+        }
+        holeDraft = nil
+        editingHoleFeatureID = nil
+        selection = [targetBodyID]
+        mode = .selected(targetBodyID)
+        errorMessage = nil
+        session.save()
+        return true
+    }
+
     /// Consume a pending Modify-group operation on a region tap: build the
     /// extrude context (same as a plain fill tap), then route into the specific
     /// operation's existing pick flow. An empty tap just cancels.
@@ -7632,6 +7891,10 @@ final class EditorViewModel {
         pendingCreateTool = nil
         guard let fill = profileHit(ray: ray) else { return }
         selectedImageID = nil
+        if tool == .hole {
+            beginHole(with: fill, ray: ray)
+            return
+        }
         startExtrude(with: fill)
         switch tool {
         case .extrude: break                 // extrude bar is already up
@@ -7639,6 +7902,7 @@ final class EditorViewModel {
         case .sweep:   beginSweepPathPick()
         case .loft:    beginLoftProfilePick()
         case .helix:   showHelixOptions = true
+        case .hole:    break                 // handled above without an extrude bar
         }
     }
 
@@ -17418,6 +17682,21 @@ final class EditorViewModel {
             return f("cad.feature.draftFace", "Draft Face %@°", fmt(angle.value))
         case let .revolve(_, _, _, angle, _):
             return f("cad.feature.revolve", "Revolve %@°", fmt(angle.value))
+        case let .hole(_, _, _, spec):
+            let type: String
+            switch spec.kind {
+            case .throughAll:
+                type = FloeCADStrings.text("cad.hole.throughAll", "Through all")
+            case .blind:
+                type = spec.depth.map {
+                    FloeCADStrings.format("cad.hole.blindDepth", "Blind %@ mm", fmt($0.value))
+                } ?? FloeCADStrings.text("cad.hole.blind", "Blind")
+            case .counterbore:
+                type = FloeCADStrings.text("cad.hole.counterbore", "Counterbore")
+            case .countersink:
+                type = FloeCADStrings.text("cad.hole.countersink", "Countersink")
+            }
+            return f("cad.feature.hole", "Hole · %@", type)
         case .sweep: return FloeCADStrings.text("cad.cmd.model.sweep", "Sweep")
         case .loft: return FloeCADStrings.text("cad.cmd.model.loft", "Loft")
         case .transform: return FloeCADStrings.text("cad.cmd.model.move", "Move / Rotate")

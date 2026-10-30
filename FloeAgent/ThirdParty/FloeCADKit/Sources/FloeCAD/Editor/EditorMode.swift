@@ -32,7 +32,7 @@ enum SketchTool: String, CaseIterable {
 /// it doesn't ripple through every mode switch). Extrude is the default a plain
 /// region tap already gives; the others route into their existing pick flows.
 enum CreateTool: String, CaseIterable {
-    case extrude, revolve, sweep, loft, helix
+    case extrude, revolve, sweep, loft, helix, hole
 }
 
 /// An edge blend (Phase E, spec §4.3): chamfer flattens the corner, fillet

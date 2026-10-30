@@ -33,6 +33,12 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
         /// Fallback identity: the k-th face (1-based indexed-map order) of
         /// the creating op's result, when nothing finer exists.
         case kernelFace(index: Int)
+        /// A mechanical hole's semantic wall/shoulder/cone/bottom. The role
+        /// comes from the TOOL revolve's own history (the profile segment that
+        /// generated the face) and is carried through the exact boolean; a
+        /// creator + role is an author-owned feature identity, not a claim
+        /// that the synthetic axial profile is a locating sketch entity.
+        case holeFace(HoleFaceRole)
         /// A face an OPERATION minted: a section face cut into being, a
         /// face merged from several parents, or one of several fragments a
         /// split parent left behind (plain inheritance would collide there —
@@ -180,6 +186,67 @@ nonisolated enum ElementNaming {
             }
         }
         for face in ambiguous { names.removeValue(forKey: face) }
+        return names
+    }
+
+    /// Tool-side identities for a mechanical hole. The revolved axial profile
+    /// is synthetic, so it has no sketch entity ids; its authority instead
+    /// comes from OCCT's OWN generated-edge history — profile segment `i`
+    /// generated the face, and `roles[i-1]` names that segment's semantic
+    /// role. A face claimed by two different roles is dropped, never guessed.
+    static func holeToolNames(creator: FeatureID, ancestry: ShapeAncestry,
+                              roles: [HoleFaceRole?]) -> [Int: ElementName] {
+        var names: [Int: ElementName] = [:]
+        var ambiguous: Set<Int> = []
+        for row in ancestry.rows
+        where row.inputKind == .edge && row.inputOrdinal == 0 && row.relation == .generated {
+            guard row.inputSubshape >= 1, row.inputSubshape <= roles.count,
+                  let role = roles[row.inputSubshape - 1] else { continue }
+            let name = ElementName(creator: creator, source: .holeFace(role))
+            if let existing = names[row.resultFace], existing != name {
+                ambiguous.insert(row.resultFace)
+                continue
+            }
+            names[row.resultFace] = name
+        }
+        for face in ambiguous { names.removeValue(forKey: face) }
+        return names
+    }
+
+    /// Result-side names for a hole boolean. Target survivors/splits keep the
+    /// composed target identity; a cavity face becomes
+    /// `creator=hole, source=holeFace(role)` ONLY when the boolean's actual
+    /// history attributes it to exactly one named tool face and no named
+    /// target parent. Seam-split duplicates of one role are left unnamed —
+    /// a name resolving to two faces would be worse than none.
+    static func holeNames(operation: FeatureID, ancestry: ShapeAncestry,
+                          targetNames: [Int: ElementName],
+                          toolNames: [Int: ElementName]) -> [Int: ElementName] {
+        var names = composeNames(operation: operation, ancestry: ancestry,
+                                  inputNames: [targetNames])
+        var byRole: [HoleFaceRole: [Int]] = [:]
+        for face in Set(ancestry.rows.map(\.resultFace)) {
+            var roles: [HoleFaceRole] = []
+            var hasNamedTargetParent = false
+            for row in ancestry.ancestors(ofResultFace: face) {
+                if row.inputOrdinal == 1, row.inputKind == .face,
+                   let name = toolNames[row.inputSubshape],
+                   case let .holeFace(role) = name.source,
+                   !roles.contains(role) {
+                    roles.append(role)
+                }
+                if row.inputOrdinal == 0, row.inputKind == .face,
+                   targetNames[row.inputSubshape] != nil {
+                    hasNamedTargetParent = true
+                }
+            }
+            if roles.count == 1, !hasNamedTargetParent {
+                byRole[roles[0], default: []].append(face)
+            }
+        }
+        for (role, faces) in byRole where faces.count == 1 {
+            names[faces[0]] = ElementName(creator: operation, source: .holeFace(role))
+        }
         return names
     }
 

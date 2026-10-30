@@ -1,6 +1,1016 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "cad.datum.editOffset": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Offset"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑偏移"
+          }
+        }
+      }
+    },
+    "cad.datum.editRejected": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't change the reference plane. Check its source, offset and dependent sketches."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法更改基准面，请检查来源、偏移值及依赖它的草图。"
+          }
+        }
+      }
+    },
+    "cad.datum.finishCurrentEdit": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish the current edit and reopen the document if needed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先结束当前编辑，必要时重新打开文档。"
+          }
+        }
+      }
+    },
+    "cad.datum.formulaHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a distance or a formula using document variables."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入距离，或使用文档变量编写公式。"
+          }
+        }
+      }
+    },
+    "cad.datum.offsetMillimetres": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offset (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "偏移（毫米）"
+          }
+        }
+      }
+    },
+    "cad.datum.reselectSource": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a supported planar face again to create a reference plane."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请重新选择支持关联的平面，再创建基准面。"
+          }
+        }
+      }
+    },
+    "cad.document.readOnlyAssociation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This document uses newer features. Update the app to edit it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文档使用了新版功能，请更新 App 后再编辑。"
+          }
+        }
+      }
+    },
+    "cad.error.associativeEditRejected": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This change would break model references. Adjust the dependent features first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此更改会破坏模型引用，请先调整依赖它的特征。"
+          }
+        }
+      }
+    },
+    "cad.error.brokenSketchSupport": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repair this plane's references before starting a sketch."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先修复此基准面的引用，再开始绘制草图。"
+          }
+        }
+      }
+    },
+    "cad.error.exactEditRefused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This edit could not be completed. The original model was preserved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能完成这项编辑，已保留原模型。"
+          }
+        }
+      }
+    },
+    "cad.error.exactEditUnsupported": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This model does not support this edit yet. The original model was preserved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此模型暂不支持这项编辑，已保留原模型。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzEmission": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This emissive material can't be exported to USDZ yet. Try GLB instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此发光材质暂不能导出为 USDZ，可尝试 GLB。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzFaceMaterials": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "USDZ can't keep face materials yet. Try GLB instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "USDZ 暂不能保留各面的材质，可尝试导出 GLB。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't write USDZ. Try exporting again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法保存 USDZ，请重新导出。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzGeometry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A body couldn't be exported. Check it in Edit and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有实体无法导出，请在编辑模式中检查后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzMapping": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material's texture mapping couldn't be exported. Choose a projection in Material and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "纹理映射无法导出，请在材质中选择投影方式后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzMaterial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material couldn't be exported. Check its settings and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有材质无法导出，请检查材质设置后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzTexture": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image couldn't be exported. Replace that image and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质图片无法导出，请更换图片后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzTextureSettings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This material's image settings aren't supported by USDZ yet. Try GLB instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "USDZ 暂不支持此材质的图片设置，可尝试 GLB。"
+          }
+        }
+      }
+    },
+    "cad.present.selection.sharedMaterial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shared material — changes apply to all instances of this part."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共享材质：修改会应用于此零件的所有实例。"
+          }
+        }
+      }
+    },
+    "cad.sketch.editInterrupted": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The sketch edit was interrupted. Start the edit again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草图编辑已中断，请重新开始。"
+          }
+        }
+      }
+    },
+    "cad.sketch.finishCurrentEdit": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish or cancel the sketch edit first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先完成或取消当前草图编辑。"
+          }
+        }
+      }
+    },
+    "cad.variable.changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The variable changed. Reopen the panel and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "变量已发生变化，请重新打开面板后重试。"
+          }
+        }
+      }
+    },
+    "cad.variable.duplicateName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That variable name is already in use."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此变量名已被使用。"
+          }
+        }
+      }
+    },
+    "cad.variable.finishCurrentEdit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish or cancel the current edit before changing variables."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先完成或取消当前编辑，再修改变量。"
+          }
+        }
+      }
+    },
+    "cad.variable.inUse": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This variable is still used. Update its formulas before deleting it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此变量仍被引用，请先修改相关公式再删除。"
+          }
+        }
+      }
+    },
+    "cad.variable.invalidExpression": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the formula and its variable references."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请检查公式及其引用的变量。"
+          }
+        }
+      }
+    },
+    "cad.variable.invalidName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use a valid variable name."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请输入有效的变量名。"
+          }
+        }
+      }
+    },
+    "cad.variable.notEditable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This document can't be edited."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文档无法编辑。"
+          }
+        }
+      }
+    },
+    "cad.variable.rebuildFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This change couldn't rebuild the model. The previous values were kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此修改无法重建模型，已保留原值。"
+          }
+        }
+      }
+    },
+    "cad.variable.reopenDocument": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reopen the document to edit variables."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请重新打开文档后编辑变量。"
+          }
+        }
+      }
+    },
+    "cad.variable.updateFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't update this variable. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法修改此变量，请重试。"
+          }
+        }
+      }
+    },
+    "cad.feature.hole": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔 · %@"
+          }
+        }
+      }
+    },
+    "cad.hole.blind": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blind"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "盲孔"
+          }
+        }
+      }
+    },
+    "cad.hole.blindDepth": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blind %@ mm"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "盲孔 %@ 毫米"
+          }
+        }
+      }
+    },
+    "cad.hole.circleHint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Position and diameter come from the placement circle. Edit that circle to move or resize the hole."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "位置与孔径由定位圆决定。编辑该圆即可移动或调整孔。"
+          }
+        }
+      }
+    },
+    "cad.hole.counterbore": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Counterbore"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沉头孔"
+          }
+        }
+      }
+    },
+    "cad.hole.counterboreDepth": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Counterbore depth"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沉孔深度"
+          }
+        }
+      }
+    },
+    "cad.hole.counterboreDiameter": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Counterbore diameter"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沉孔直径"
+          }
+        }
+      }
+    },
+    "cad.hole.countersink": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Countersink"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "锥沉孔"
+          }
+        }
+      }
+    },
+    "cad.hole.countersinkAngle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Included angle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "锥角"
+          }
+        }
+      }
+    },
+    "cad.hole.countersinkDiameter": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Countersink diameter"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "锥沉孔直径"
+          }
+        }
+      }
+    },
+    "cad.hole.create": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建"
+          }
+        }
+      }
+    },
+    "cad.hole.depth": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Depth"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "深度"
+          }
+        }
+      }
+    },
+    "cad.hole.direction": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drill direction"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "钻孔方向"
+          }
+        }
+      }
+    },
+    "cad.hole.directionHint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If the plane normal points out of the part, choose Opposite normal."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "若平面法向指向实体外侧，请选择反向法向。"
+          }
+        }
+      }
+    },
+    "cad.hole.directionNormal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Along plane normal"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沿平面法向"
+          }
+        }
+      }
+    },
+    "cad.hole.directionReversed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opposite normal"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "反向法向"
+          }
+        }
+      }
+    },
+    "cad.hole.edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Hole"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑孔"
+          }
+        }
+      }
+    },
+    "cad.hole.editMissing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This hole is no longer in the document. Reopen History and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此孔已不在文档中。请重新打开历史记录后重试。"
+          }
+        }
+      }
+    },
+    "cad.hole.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole could not be completed: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔未能完成：%@"
+          }
+        }
+      }
+    },
+    "cad.hole.noCircle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole needs exactly one circular sketch profile with no inner loops."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔需要且仅需要一个无内环的圆形草图轮廓。"
+          }
+        }
+      }
+    },
+    "cad.hole.noTarget": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a body to drill into first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先创建要钻孔的实体。"
+          }
+        }
+      }
+    },
+    "cad.hole.parameters": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole parameters"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔参数"
+          }
+        }
+      }
+    },
+    "cad.hole.save": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存"
+          }
+        }
+      }
+    },
+    "cad.hole.target": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Target body"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标实体"
+          }
+        }
+      }
+    },
+    "cad.hole.throughAll": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Through all"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通孔"
+          }
+        }
+      }
+    },
+    "cad.hole.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔"
+          }
+        }
+      }
+    },
+    "cad.hole.type": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "类型"
+          }
+        }
+      }
+    },
+    "cad.ui.tool.hole": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔"
+          }
+        }
+      }
+    },
     "cad.workbench.assembly.addExplodedView": {
       "localizations": {
         "en": {

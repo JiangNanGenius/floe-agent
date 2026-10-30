@@ -161,6 +161,11 @@ nonisolated enum FeatureKind: Codable, Sendable {
     case draftExtrude(profile: ProfileRef, plane: PlaneRef, distance: Expr,
                       taperAngle: Expr, symmetric: Bool, boolean: BooleanIntent)
     case revolve(profile: ProfileRef, plane: PlaneRef, axis: AxisRef, angle: Expr, boolean: BooleanIntent)
+    /// M12 mechanical hole: one locating circle in `profile` owns centre and
+    /// pilot diameter; `spec` owns the typed depth/recess/cone and direction.
+    /// The tool solid is the existing exact OCCT revolve of a small axial
+    /// section, subtracted with the existing exact boolean. Never mesh.
+    case hole(target: BodyRef, profile: ProfileRef, plane: PlaneRef, spec: HoleSpec)
     /// `helix`, when present, is the EXACT spine the B-rep follows; `spine`
     /// stays the sampled polyline the render mesh sweeps along (and is what
     /// documents written before helices carried — they decode with `helix`
@@ -268,6 +273,9 @@ nonisolated extension FeatureNode {
             ids.insert(profile.sketchID)
             addPlane(plane)
             addAxis(axis)
+        case let .hole(_, profile, plane, _):
+            ids.insert(profile.sketchID)
+            addPlane(plane)
         case let .sweep(profile, plane, _, _, _):
             ids.insert(profile.sketchID)
             addPlane(plane)
@@ -293,7 +301,7 @@ nonisolated extension FeatureNode {
         switch kind {
         case let .extrude(_, plane, _, _, _, _), let .draftExtrude(_, plane, _, _, _, _),
              let .revolve(_, plane, _, _, _), let .sweep(_, plane, _, _, _),
-             let .mirror(_, plane, _):
+             let .hole(_, _, plane, _), let .mirror(_, plane, _):
             add(plane)
         case .primitive, .loft, .boolean, .transform, .pattern, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .shell,
@@ -317,6 +325,8 @@ nonisolated extension FeatureNode {
             return boolean.resolvedTargets.map(\.bodyID)
         case let .boolean(_, target, tools):
             return [target.bodyID] + tools.map(\.bodyID)
+        case let .hole(target, _, _, _):
+            return [target.bodyID]
         case let .transform(body, _), let .mirror(body, _, _), let .pattern(body, _),
              let .chamfer(body, _, _), let .fillet(body, _, _), let .shell(body, _, _),
              let .deleteFace(body, _):
@@ -607,6 +617,10 @@ nonisolated extension FeatureGraph {
             evalRevolve(
                 node, profileRef: profile, planeRef: plane, axisRef: axis,
                 angle: angle, boolean: boolean, into: &state, next: nextRevision)
+        case let .hole(target, profile, plane, spec):
+            evalHole(
+                node, targetRef: target, profileRef: profile, planeRef: plane,
+                spec: spec, into: &state, next: nextRevision)
         case let .sweep(profile, plane, spine, boolean, helix):
             evalSweep(
                 node, profileRef: profile, planeRef: plane, spine: spine,
@@ -2300,6 +2314,158 @@ nonisolated extension FeatureGraph {
         emitFullSolid(node, mesh: mesh, brep: brep, kernelNames: names,
                       boolean: boolean, scheme: .revolve,
                       into: &state, next: nextRevision)
+    }
+
+    // MARK: - Mechanical hole (M12)
+
+    /// Cut one typed hole with the existing exact revolve + boolean.
+    ///
+    /// The locating circle owns centre and pilot diameter. The tool is the
+    /// axial (r, t) section revolved 360°; `t = 0` is the placement plane,
+    /// positive t points along `+plane.normal` unless `reversed`. Through reach
+    /// projects the target's world AABB onto that axis — never a fixed depth.
+    /// Any refusal (non-circle profile, mesh target, invalid spec, invalid
+    /// tool, no material removed, non-single/ill solid) emits no body and
+    /// leaves the input untouched. There is deliberately NO mesh fallback.
+    private func evalHole(
+        _ node: FeatureNode,
+        targetRef: BodyRef,
+        profileRef: ProfileRef,
+        planeRef: PlaneRef,
+        spec: HoleSpec,
+        into state: inout EvalState,
+        next nextRevision: () -> UInt64
+    ) {
+        guard let plane = state.resolvePlane(planeRef) else {
+            state.errors[node.id] = .brokenRef("hole plane unresolved")
+            return
+        }
+        guard let (outer, holes) = state.resolveProfile(profileRef) else {
+            state.errors[node.id] = .brokenRef("hole profile unresolved")
+            return
+        }
+        guard holes.isEmpty, case let .circle(center, radius) = outer.kind else {
+            state.errors[node.id] = .kernelFailure(
+                "hole placement needs exactly one circular profile with no inner loops")
+            return
+        }
+        let pilotDiameter = radius * 2
+        if let issue = HoleKit.validationIssue(spec, pilotDiameter: pilotDiameter) {
+            state.errors[node.id] = .kernelFailure("hole: \(issue)")
+            return
+        }
+        guard let target = state.bodies[targetRef.bodyID] else {
+            state.errors[node.id] = .brokenRef("hole target unresolved")
+            return
+        }
+        guard let targetBrep = target.brep else {
+            state.errors[node.id] = .kernelFailure(
+                "hole requires a B-rep target; a mesh body cannot host an exact hole")
+            return
+        }
+        guard let worldTarget = OCCTKernel.transformed(targetBrep, by: target.transform) else {
+            state.errors[node.id] = .kernelFailure("hole target could not be placed in world space")
+            return
+        }
+        let normal = plane.normal
+        guard normal.x.isFinite, normal.y.isFinite, normal.z.isFinite,
+              simd_length(normal) > 1e-9 else {
+            state.errors[node.id] = .kernelFailure("hole placement plane has no usable normal")
+            return
+        }
+        let unitNormal = simd_normalize(normal)
+        let inward = spec.reversed ? -unitNormal : unitNormal
+        var radial = plane.xAxis - simd_dot(plane.xAxis, inward) * inward
+        guard radial.x.isFinite, radial.y.isFinite, radial.z.isFinite,
+              simd_length(radial) > 1e-9 else {
+            state.errors[node.id] = .kernelFailure("hole placement plane has no stable radial axis")
+            return
+        }
+        radial = simd_normalize(radial)
+        let entry = plane.toWorld(center)
+        guard let box = MeasureKit.boundingBox(bodies: [target]),
+              let range = HoleKit.projectedRange(
+                minimum: box.min, maximum: box.max, entry: entry, inward: inward) else {
+            state.errors[node.id] = .kernelFailure("hole target has no measurable extent along the drill axis")
+            return
+        }
+        // The chosen drill direction must actually point into the material:
+        // a plane on the far side whose normal points AWAY would otherwise
+        // only shave the 1 mm lead-in disc. This is direction validation, not
+        // a material-side guess — the caller chose the direction explicitly.
+        guard range.upperBound > 1e-7 else {
+            state.errors[node.id] = .kernelFailure(
+                "hole direction points away from the target material")
+            return
+        }
+        guard let cutter = HoleKit.cutterProfile(
+            pilotRadius: radius, spec: spec, worldRange: range) else {
+            state.errors[node.id] = .kernelFailure("hole produced no valid cutter profile")
+            return
+        }
+        let axialPlane = SketchPlane(origin: entry, xAxis: radial, yAxis: inward)
+        let toolProfile = Profile(loop: cutter.points, kind: .polygonal, sourceEntityIDs: [])
+        let toolHistory = OCCTShapeHistory()
+        guard let tool = OCCTKernel.revolveSolid(
+            outer: toolProfile, holes: [], plane: axialPlane,
+            axisOrigin: entry, axisDirection: inward,
+            angleRadians: 2 * .pi, history: toolHistory) else {
+            state.errors[node.id] = .kernelFailure("hole cutter revolve was refused")
+            return
+        }
+        let toolHealth = OCCTKernel.healthReport(for: tool)
+        guard toolHealth.error == nil, toolHealth.isValid,
+              toolHealth.counts["solids"] == 1, toolHealth.openFreeWires == 0 else {
+            state.errors[node.id] = .kernelFailure("hole cutter is not a valid solid: \(toolHealth.findingsSummary)")
+            return
+        }
+        let toolNames = ElementNaming.holeToolNames(
+            creator: node.id, ancestry: ShapeAncestry(toolHistory), roles: cutter.roles)
+        switch OCCTKernel.booleanResultWithAncestry(
+            worldTarget, tool, op: OCCTKernel.booleanOp(.subtract)) {
+        case let .success((outcome, ancestry)):
+            guard outcome.solidCount == 1 else {
+                state.errors[node.id] = .kernelFailure(
+                    "hole subtraction produced \(outcome.solidCount) solids")
+                return
+            }
+            let before = OCCTKernel.volume(worldTarget)
+            let after = OCCTKernel.volume(outcome.handle)
+            let tolerance = max(1e-7, max(abs(before), 1) * 1e-9)
+            guard before > 0, after > 0, after < before - tolerance else {
+                state.errors[node.id] = .kernelFailure(
+                    "hole removes no material from the target (check the target and drill direction)")
+                return
+            }
+            let health = OCCTKernel.healthReport(for: outcome.handle)
+            guard health.error == nil, health.isValid,
+                  health.counts["solids"] == 1, health.openFreeWires == 0 else {
+                state.errors[node.id] = .kernelFailure(
+                    "hole result is not a valid single solid: \(health.findingsSummary)")
+                return
+            }
+            var result = Body(
+                id: target.id, name: target.name, transform: .identity, primitive: nil,
+                euclidMesh: Euclid.Mesh([]), revision: nextRevision())
+            guard result.adoptBRep(outcome.handle) else {
+                state.errors[node.id] = .emptyGeometry
+                return
+            }
+            let names = ElementNaming.holeNames(
+                operation: node.id, ancestry: ancestry,
+                targetNames: state.kernelNames[target.id] ?? [:], toolNames: toolNames)
+            var table = state.naming.faceTable(
+                for: result, createdBy: node.id, scheme: .generic)
+            if !names.isEmpty {
+                table = ElementNaming.attach(
+                    names, to: table,
+                    channel: OCCTKernel.renderMeshFaceChannel(from: outcome.handle))
+            }
+            state.put(result, table: table)
+            if !names.isEmpty { state.kernelNames[result.id] = names }
+        case let .failure(error):
+            state.errors[node.id] = .kernelFailure("hole: \(error.message)")
+        }
     }
 
     private func evalSweep(
