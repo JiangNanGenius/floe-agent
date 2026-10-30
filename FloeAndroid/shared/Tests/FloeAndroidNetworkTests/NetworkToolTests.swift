@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Authored-only regressions for the G07.1 network diagnostics module.
+// Authored-only regressions for the G07.1/G07.2 network diagnostics module.
 // NOT executed by this lane (Main runs the combined batch). No sockets, no
 // Android runtime, no device and no credentials: every fixture is synthetic
 // JSON shaped exactly like the frozen `NetworkObservationV1` envelope.
@@ -304,6 +304,365 @@ final class NetworkToolTests: XCTestCase {
         XCTAssertFalse(summary.contains("aa:bb:cc:dd:ee:00"), summary)
     }
 
+    // MARK: - G07.2 network.lanDiscover
+
+    func testLANDiscoverNormalizesAndClampsBoundedArguments() throws {
+        let request = try NetworkToolRequest.lanDiscover(
+            serviceTypes: ["_HTTP._TCP", "_ipp._tcp"],
+            subnetCidr: "192.168.1.0/24",
+            ports: [443, 80],
+            discoveryDurationMs: 99_999,
+            includeAttributes: nil,
+            tcpConnectTimeoutMs: 99_999,
+            tcpConcurrency: 0,
+            timeoutMs: 500,
+            operationID: operationID)
+        XCTAssertEqual(request.method, .lanDiscover)
+        let arguments = try argumentsObject(request)
+        XCTAssertEqual(arguments["serviceTypes"] as? [String],
+                       ["_http._tcp", "_ipp._tcp"])
+        XCTAssertEqual(arguments["subnetCidr"] as? String, "192.168.1.0/24")
+        XCTAssertEqual(arguments["ports"] as? [Int], [443, 80])
+        XCTAssertEqual(arguments["discoveryDurationMs"] as? Int, 15_000)
+        XCTAssertEqual(arguments["includeAttributes"] as? Bool, false)
+        XCTAssertEqual(arguments["tcpConnectTimeoutMs"] as? Int, 2_000)
+        XCTAssertEqual(arguments["tcpConcurrency"] as? Int, 1)
+        // mDNS + TCP needs 15000 + 2000; the requested 500 ms is raised.
+        XCTAssertEqual(arguments["timeoutMs"] as? Int, 17_000)
+        XCTAssertLessThanOrEqual(request.requestJSON.count,
+                                 NetworkToolLimits.maximumRequestBytes)
+    }
+
+    func testLANDiscoverMDNSOnlyRaisesTimeoutToCoverDiscoveryWindow() throws {
+        let request = try NetworkToolRequest.lanDiscover(
+            serviceTypes: ["_http._tcp"], subnetCidr: nil, ports: nil,
+            discoveryDurationMs: 4_000, includeAttributes: true,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: 500,
+            operationID: operationID)
+        let arguments = try argumentsObject(request)
+        XCTAssertEqual(arguments["timeoutMs"] as? Int, 5_000)
+        XCTAssertEqual(arguments["includeAttributes"] as? Bool, true)
+        XCTAssertNil(arguments["subnetCidr"])
+        XCTAssertNil(arguments["ports"])
+    }
+
+    func testLANDiscoverRejectsInvalidServiceTypesSubnetsAndAttemptBudgets() {
+        XCTAssertThrowsError(try NetworkToolRequest.lanDiscover(
+            serviceTypes: ["_http.tcp"], subnetCidr: nil, ports: nil,
+            discoveryDurationMs: nil, includeAttributes: nil,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: nil))
+        XCTAssertThrowsError(try NetworkToolRequest.lanDiscover(
+            serviceTypes: ["_http._tcp", "_HTTP._TCP"], subnetCidr: nil,
+            ports: nil, discoveryDurationMs: nil, includeAttributes: nil,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: nil))
+        XCTAssertThrowsError(try NetworkToolRequest.lanDiscover(
+            serviceTypes: nil, subnetCidr: "10.0.0.1/24", ports: [80],
+            discoveryDurationMs: nil, includeAttributes: nil,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: nil))
+        XCTAssertThrowsError(try NetworkToolRequest.lanDiscover(
+            serviceTypes: nil, subnetCidr: "8.8.8.0/24", ports: [80],
+            discoveryDurationMs: nil, includeAttributes: nil,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: nil))
+        XCTAssertThrowsError(try NetworkToolRequest.lanDiscover(
+            serviceTypes: nil, subnetCidr: "192.168.1.0/23", ports: [80],
+            discoveryDurationMs: nil, includeAttributes: nil,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: nil))
+        XCTAssertThrowsError(try NetworkToolRequest.lanDiscover(
+            serviceTypes: ["_http._tcp"], subnetCidr: nil, ports: [80],
+            discoveryDurationMs: nil, includeAttributes: nil,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: nil))
+        XCTAssertThrowsError(try NetworkToolRequest.lanDiscover(
+            serviceTypes: nil, subnetCidr: "192.168.1.0/24", ports: [],
+            discoveryDurationMs: nil, includeAttributes: nil,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: nil))
+        XCTAssertThrowsError(try NetworkToolRequest.lanDiscover(
+            serviceTypes: nil, subnetCidr: "192.168.1.0/24",
+            ports: [80, 81, 82, 83, 84, 85, 86, 87],
+            discoveryDurationMs: nil, includeAttributes: nil,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: nil),
+            "/24 x 8 ports exceeds the 1024 attempt budget")
+        XCTAssertThrowsError(try NetworkToolRequest.lanDiscover(
+            serviceTypes: nil, subnetCidr: nil, ports: nil,
+            discoveryDurationMs: nil, includeAttributes: nil,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: nil),
+            "at least one discovery mode is required")
+        XCTAssertNoThrow(try NetworkToolRequest.lanDiscover(
+            serviceTypes: nil, subnetCidr: "192.168.1.0/25",
+            ports: [80, 443, 631, 8080], discoveryDurationMs: nil,
+            includeAttributes: nil, tcpConnectTimeoutMs: nil,
+            tcpConcurrency: nil, timeoutMs: nil),
+            "126 hosts x 4 ports stays inside the attempt budget")
+    }
+
+    // MARK: - G07.2 network.speedTest
+
+    func testSpeedTestBuildsExplicitStrictBudgetRequest() throws {
+        let request = try NetworkToolRequest.speedTest(
+            direction: .downloadAndUpload,
+            downloadURL: "https://speed.example.net/payload",
+            uploadURL: "https://speed.example.net/upload",
+            maxBytesPerDirection: nil,
+            durationBudgetMs: nil,
+            warmupBytes: nil,
+            allowMetered: true,
+            timeoutMs: nil,
+            operationID: operationID)
+        XCTAssertEqual(request.method, .speedTest)
+        let arguments = try argumentsObject(request)
+        XCTAssertEqual(arguments["direction"] as? String, "downloadAndUpload")
+        XCTAssertEqual(arguments["maxBytesPerDirection"] as? Int, 8_388_608)
+        XCTAssertEqual(arguments["durationBudgetMs"] as? Int, 10_000)
+        XCTAssertEqual(arguments["warmupBytes"] as? Int, 0)
+        XCTAssertEqual(arguments["allowMetered"] as? Bool, true)
+        XCTAssertEqual(arguments["timeoutMs"] as? Int, 30_000)
+        XCTAssertEqual(arguments["downloadUrl"] as? String,
+                       "https://speed.example.net/payload")
+        XCTAssertEqual(arguments["uploadUrl"] as? String,
+                       "https://speed.example.net/upload")
+    }
+
+    func testSpeedTestDropsEndpointThatTheDirectionDoesNotUse() throws {
+        let request = try NetworkToolRequest.speedTest(
+            direction: .download,
+            downloadURL: "https://speed.example.net/payload",
+            uploadURL: "https://speed.example.net/upload",
+            maxBytesPerDirection: nil, durationBudgetMs: nil, warmupBytes: nil,
+            allowMetered: nil, timeoutMs: nil, operationID: operationID)
+        let arguments = try argumentsObject(request)
+        XCTAssertNotNil(arguments["downloadUrl"])
+        XCTAssertNil(arguments["uploadUrl"],
+                     "an unused upload endpoint must not be staged or hinted")
+    }
+
+    func testSpeedTestUploadOnlyStagesOnlyTheExplicitUploadEndpoint() throws {
+        let request = try NetworkToolRequest.speedTest(
+            direction: .upload, downloadURL: nil,
+            uploadURL: "https://nas.local/upload",
+            maxBytesPerDirection: 131_072, durationBudgetMs: 2_000,
+            warmupBytes: 4_096, allowMetered: false, timeoutMs: nil,
+            operationID: operationID)
+        let arguments = try argumentsObject(request)
+        XCTAssertEqual(arguments["direction"] as? String, "upload")
+        XCTAssertNil(arguments["downloadUrl"])
+        XCTAssertEqual(arguments["uploadUrl"] as? String,
+                       "https://nas.local/upload")
+        XCTAssertEqual(arguments["maxBytesPerDirection"] as? Int, 131_072)
+        XCTAssertEqual(arguments["durationBudgetMs"] as? Int, 2_000)
+        XCTAssertEqual(arguments["warmupBytes"] as? Int, 4_096)
+        // 2 s + 1.5 s margin; the default 30 s remains the wider bound.
+        XCTAssertEqual(arguments["timeoutMs"] as? Int, 30_000)
+    }
+
+    func testSpeedTestRaisesTimeoutButRefusesStrictBudgetViolations() {
+        XCTAssertThrowsError(try NetworkToolRequest.speedTest(
+            direction: .download, downloadURL: "https://example.com/p",
+            uploadURL: nil, maxBytesPerDirection: 1_024, durationBudgetMs: nil,
+            warmupBytes: nil, allowMetered: nil, timeoutMs: nil),
+            "maxBytesPerDirection is strict")
+        XCTAssertThrowsError(try NetworkToolRequest.speedTest(
+            direction: .download, downloadURL: "https://example.com/p",
+            uploadURL: nil, maxBytesPerDirection: nil, durationBudgetMs: 999,
+            warmupBytes: nil, allowMetered: nil, timeoutMs: nil),
+            "durationBudgetMs is strict")
+        XCTAssertThrowsError(try NetworkToolRequest.speedTest(
+            direction: .download, downloadURL: "https://example.com/p",
+            uploadURL: nil, maxBytesPerDirection: 65_536, durationBudgetMs: nil,
+            warmupBytes: 65_536, allowMetered: nil, timeoutMs: nil),
+            "warmup must be below the byte cap")
+        XCTAssertThrowsError(try NetworkToolRequest.speedTest(
+            direction: .download, downloadURL: nil, uploadURL: nil,
+            maxBytesPerDirection: nil, durationBudgetMs: nil, warmupBytes: nil,
+            allowMetered: nil, timeoutMs: nil),
+            "download requires an explicit endpoint")
+        XCTAssertThrowsError(try NetworkToolRequest.speedTest(
+            direction: .upload, downloadURL: nil, uploadURL: nil,
+            maxBytesPerDirection: nil, durationBudgetMs: nil, warmupBytes: nil,
+            allowMetered: nil, timeoutMs: nil),
+            "upload requires an explicit endpoint")
+        XCTAssertThrowsError(try NetworkToolRequest.speedTest(
+            direction: .download, downloadURL: "http://example.com/p",
+            uploadURL: nil, maxBytesPerDirection: nil, durationBudgetMs: nil,
+            warmupBytes: nil, allowMetered: nil, timeoutMs: nil),
+            "https only")
+        XCTAssertThrowsError(try NetworkToolRequest.speedTest(
+            direction: .download,
+            downloadURL: "https://user:secret@example.com/p",
+            uploadURL: nil, maxBytesPerDirection: nil, durationBudgetMs: nil,
+            warmupBytes: nil, allowMetered: nil, timeoutMs: nil),
+            "userinfo is never accepted")
+        XCTAssertThrowsError(try NetworkToolRequest.speedTest(
+            direction: .downloadAndUpload,
+            downloadURL: "https://example.com/d",
+            uploadURL: "https://example.com/u",
+            maxBytesPerDirection: nil, durationBudgetMs: 15_000,
+            warmupBytes: nil, allowMetered: nil, timeoutMs: nil),
+            "2 x 15000 ms budgets cannot fit in the 30 s deadline")
+
+        let raised = try? NetworkToolRequest.speedTest(
+            direction: .download, downloadURL: "https://example.com/p",
+            uploadURL: nil, maxBytesPerDirection: nil,
+            durationBudgetMs: 10_000, warmupBytes: nil, allowMetered: nil,
+            timeoutMs: 1_000, operationID: operationID)
+        let arguments = try? argumentsObject(XCTUnwrap(raised))
+        XCTAssertEqual(arguments?["timeoutMs"] as? Int, 11_500)
+    }
+
+    // MARK: - G07.2 observation decode / summary
+
+    func testLANObservationDecodesMDNSAndTCPInventory() throws {
+        let request = try NetworkToolRequest.lanDiscover(
+            serviceTypes: ["_http._tcp"], subnetCidr: "192.168.1.0/24",
+            ports: [80, 443], discoveryDurationMs: nil, includeAttributes: nil,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: nil,
+            operationID: operationID)
+        let observation = try NetworkObservationV1.decode(
+            lanFixture(), expecting: request)
+        XCTAssertEqual(observation.method, .lanDiscover)
+        let lan = try XCTUnwrap(observation.observations.lanDiscover)
+        let mdns = try XCTUnwrap(lan.mdns)
+        XCTAssertEqual(mdns.scope, "capturedNetwork")
+        XCTAssertEqual(mdns.services.count, 1)
+        XCTAssertEqual(mdns.services[0].serviceName, "Service 0")
+        XCTAssertEqual(mdns.services[0].hostname, "host-0")
+        XCTAssertEqual(mdns.services[0].addresses, ["192.168.1.2"])
+        XCTAssertEqual(mdns.services[0].port, 80)
+        XCTAssertEqual(mdns.services[0].attributes["path"], "/printer")
+        XCTAssertEqual(mdns.perType.first?.state, "stopped")
+        let tcp = try XCTUnwrap(lan.tcp)
+        XCTAssertEqual(tcp.subnetCidr, "192.168.1.0/24")
+        XCTAssertEqual(tcp.attemptedHosts, 253)
+        XCTAssertEqual(tcp.openPorts.first?.port, 80)
+        XCTAssertEqual(tcp.openPorts.first?.connectTimeMs, 12)
+        XCTAssertEqual(lan.networkChanged, false)
+    }
+
+    func testLANSummaryBoundsServicesAndOmitsAttributeValues() throws {
+        let request = try NetworkToolRequest.lanDiscover(
+            serviceTypes: ["_http._tcp"], subnetCidr: nil, ports: nil,
+            discoveryDurationMs: nil, includeAttributes: true,
+            tcpConnectTimeoutMs: nil, tcpConcurrency: nil, timeoutMs: nil,
+            operationID: operationID)
+        let observation = try NetworkObservationV1.decode(
+            lanFixture(serviceCount: 80), expecting: request)
+        let summary = NetworkObservationSummary.render(observation)
+        XCTAssertLessThanOrEqual(summary.count,
+                                 NetworkObservationSummary.maximumCharacters)
+        let object = try jsonObject(summary)
+        XCTAssertEqual(object["method"] as? String, "network.lanDiscover")
+        let observations = try XCTUnwrap(object["observations"] as? [String: Any])
+        let mdns = try XCTUnwrap(observations["mdns"] as? [String: Any])
+        XCTAssertEqual(mdns["serviceCount"] as? Int, 80)
+        XCTAssertEqual(mdns["servicesTruncated"] as? Bool, true)
+        XCTAssertGreaterThan(try XCTUnwrap(mdns["servicesOmitted"] as? Int), 0)
+        let rows = try XCTUnwrap(mdns["services"] as? [[String: Any]])
+        XCTAssertGreaterThan(rows.count, 0)
+        XCTAssertLessThan(rows.count, 80)
+        XCTAssertNotNil(rows[0]["serviceName"])
+        XCTAssertNotNil(rows[0]["attributeCount"])
+        XCTAssertNil(rows[0]["attributes"], "TXT values stay out of the bounded summary")
+        XCTAssertFalse(summary.contains("/printer"), summary)
+        let limitations = try XCTUnwrap(object["limitations"] as? [String])
+        XCTAssertTrue(limitations.contains { $0.contains("services") }, summary)
+    }
+
+    func testSpeedObservationDecodesActualBytesAndRates() throws {
+        let request = try NetworkToolRequest.speedTest(
+            direction: .downloadAndUpload,
+            downloadURL: "https://speed.example.net/payload",
+            uploadURL: "https://speed.example.net/upload",
+            maxBytesPerDirection: nil, durationBudgetMs: nil, warmupBytes: nil,
+            allowMetered: nil, timeoutMs: nil, operationID: operationID)
+        let observation = try NetworkObservationV1.decode(
+            speedFixture(), expecting: request)
+        let speed = try XCTUnwrap(observation.observations.speedTest)
+        XCTAssertEqual(speed.direction, "downloadAndUpload")
+        XCTAssertEqual(speed.budget?.maxBytesPerDirection, 8_388_608)
+        XCTAssertEqual(speed.budget?.durationBudgetMs, 10_000)
+        XCTAssertEqual(speed.download?.payloadBytes, 8_388_608)
+        XCTAssertEqual(speed.download?.measuredBytes, 8_388_608)
+        XCTAssertEqual(speed.download?.completionReason, "byteBudget")
+        XCTAssertEqual(speed.download?.bytesPerSecond, 4_194_304)
+        XCTAssertEqual(speed.download?.rateAvailable, true)
+        XCTAssertEqual(speed.upload?.requestContentLength, 8_388_608)
+        XCTAssertEqual(speed.upload?.responseBytesRead, 0)
+        XCTAssertEqual(speed.upload?.payloadBytesMeaning,
+                       "clientStreamAcceptedBytes")
+        XCTAssertEqual(speed.proxy?.configured, true)
+        XCTAssertEqual(speed.proxy?.used, false)
+        XCTAssertEqual(speed.proxy?.host, "proxy.example")
+        XCTAssertEqual(speed.proxy?.port, 8080)
+        XCTAssertEqual(speed.sampleAdequate, true)
+    }
+
+    func testSpeedSummaryProjectsBudgetDirectionAndActualRates() throws {
+        let request = try NetworkToolRequest.speedTest(
+            direction: .downloadAndUpload,
+            downloadURL: "https://speed.example.net/payload",
+            uploadURL: "https://speed.example.net/upload",
+            maxBytesPerDirection: nil, durationBudgetMs: nil, warmupBytes: nil,
+            allowMetered: nil, timeoutMs: nil, operationID: operationID)
+        let observation = try NetworkObservationV1.decode(
+            speedFixture(), expecting: request)
+        let summary = NetworkObservationSummary.render(observation)
+        XCTAssertLessThanOrEqual(summary.count,
+                                 NetworkObservationSummary.maximumCharacters)
+        let object = try jsonObject(summary)
+        XCTAssertEqual(object["method"] as? String, "network.speedTest")
+        let observations = try XCTUnwrap(object["observations"] as? [String: Any])
+        XCTAssertEqual(observations["direction"] as? String, "downloadAndUpload")
+        XCTAssertEqual(observations["sampleAdequate"] as? Bool, true)
+        let budget = try XCTUnwrap(observations["budget"] as? [String: Any])
+        XCTAssertEqual(budget["maxBytesPerDirection"] as? Int, 8_388_608)
+        XCTAssertEqual(budget["durationBudgetMs"] as? Int, 10_000)
+        let download = try XCTUnwrap(observations["download"] as? [String: Any])
+        XCTAssertEqual(download["payloadBytes"] as? Int, 8_388_608)
+        XCTAssertEqual(download["measuredBytes"] as? Int, 8_388_608)
+        XCTAssertEqual(try XCTUnwrap(download["bytesPerSecond"] as? Double),
+                       4_194_304, accuracy: 0.01)
+        XCTAssertEqual(download["rateAvailable"] as? Bool, true)
+        XCTAssertEqual(download["payloadBytesMeaning"] as? String,
+                       "responseBodyBytesRead")
+        let upload = try XCTUnwrap(observations["upload"] as? [String: Any])
+        XCTAssertEqual(upload["requestContentLength"] as? Int, 8_388_608)
+        XCTAssertEqual(upload["responseBytesRead"] as? Int, 0)
+        XCTAssertEqual(upload["payloadBytesMeaning"] as? String,
+                       "clientStreamAcceptedBytes")
+        let proxy = try XCTUnwrap(observations["proxy"] as? [String: Any])
+        XCTAssertEqual(proxy["configured"] as? Bool, true)
+        XCTAssertEqual(proxy["used"] as? Bool, false)
+        XCTAssertEqual(proxy["host"] as? String, "proxy.example")
+    }
+
+    func testSpeedToolIsConservativelyMutatingWhileLANStaysReadOnly() {
+        // Upload is a POST to an explicit endpoint: a fixed synthetic payload
+        // can still change server state, so the combined tool must not be
+        // advertised as a non-mutating Plan-mode read.
+        XCTAssertTrue(NetworkSpeedTestTool.isSideEffecting)
+        XCTAssertEqual(NetworkSpeedTestTool.toolEffect, .mutating)
+        XCTAssertEqual(NetworkSpeedTestTool.riskLabels,
+                       [.networkAccess, .modifiesRemoteSystem])
+        XCTAssertFalse(NetworkSpeedTestTool.requiresHostScope)
+
+        XCTAssertFalse(NetworkLANDiscoverTool.isSideEffecting)
+        XCTAssertEqual(NetworkLANDiscoverTool.toolEffect, .readOnly)
+        XCTAssertEqual(NetworkLANDiscoverTool.riskLabels, [.networkAccess])
+        XCTAssertFalse(NetworkLANDiscoverTool.requiresHostScope)
+    }
+
+    func testNewNetworkMethodsArePartOfTheClosedNameSet() {
+        XCTAssertEqual(NetworkToolNames.all.count, 8)
+        XCTAssertTrue(NetworkToolNames.all.contains("network.lanDiscover"))
+        XCTAssertTrue(NetworkToolNames.all.contains("network.speedTest"))
+        XCTAssertTrue(NetworkLANDiscoverTool.parametersJSON
+            .contains("serviceTypes"))
+        XCTAssertTrue(NetworkLANDiscoverTool.parametersJSON
+            .contains("subnetCidr"))
+        XCTAssertTrue(NetworkSpeedTestTool.parametersJSON
+            .contains("maxBytesPerDirection"))
+        XCTAssertTrue(NetworkSpeedTestTool.parametersJSON
+            .contains("downloadAndUpload"))
+    }
+
     // MARK: - Fixtures
 
     private func jsonObject(_ text: String) throws -> [String: Any] {
@@ -318,6 +677,74 @@ final class NetworkToolTests: XCTestCase {
 
     private func wifiFixture() throws -> Data {
         try observationFixture(operationID: operationID, method: "network.wifiScan")
+    }
+
+    private func lanFixture(serviceCount: Int = 1) throws -> Data {
+        var services: [String] = []
+        for index in 0..<serviceCount {
+            services.append("""
+            {"serviceName":"Service \(index)","serviceType":"_http._tcp.",
+            "subtypes":[],"hostname":"host-\(index)","addresses":["192.168.1.\(index % 250 + 2)"],
+            "port":80,"networkHandle":"0x123","networkMatchesCaptured":true,
+            "state":"active","resolution":"resolved","attributes":{"path":"/printer"}}
+            """)
+        }
+        let observations = """
+        {"mdns":{"requestedServiceTypes":["_http._tcp"],"scope":"capturedNetwork",
+        "networkScoped":true,"discoveryDurationMs":4000,"elapsedMs":4012,
+        "services":[\(services.joined(separator: ","))],
+        "serviceCount":\(serviceCount),"activeServiceCount":\(serviceCount),
+        "unresolvedCount":0,"lostCount":0,"filteredForeignNetwork":0,
+        "truncated":false,"noReplies":false,
+        "perType":[{"serviceType":"_http._tcp","state":"stopped"}],
+        "stoppedReason":"duration"},
+        "tcp":{"subnetCidr":"192.168.1.0/24","ports":[80,443],"hostCount":254,
+        "excludedSelfAddresses":["192.168.1.5"],"attemptedHosts":253,
+        "plannedAttempts":506,"completedAttempts":506,
+        "openPorts":[{"address":"192.168.1.20","port":80,"connectTimeMs":12}],
+        "openPortCount":1,"refusedAttempts":400,"timedOutAttempts":90,
+        "errorAttempts":16,"unreachableAttempts":0,"hostsWithResponse":120,
+        "hostsWithOpenPort":1,"truncated":false,"stoppedReason":"completed",
+        "cancelled":false,"elapsedMs":5000},
+        "networkChanged":false,"noReplies":false}
+        """
+        return try observationFixture(
+            operationID: operationID, method: "network.lanDiscover",
+            observations: observations)
+    }
+
+    private func speedFixture() throws -> Data {
+        let observations = #"""
+        {"budget":{"maxBytesPerDirection":8388608,"durationBudgetMs":10000,
+        "warmupBytes":0,"timeoutMs":30000},
+        "metered":false,"allowMetered":false,"direction":"downloadAndUpload",
+        "singleTransfer":true,
+        "download":{"endpoint":"https://speed.example.net/payload","status":"ok",
+        "httpStatus":200,"payloadBytes":8388608,"measuredBytes":8388608,
+        "warmupBytes":0,"payloadBytesMeaning":"responseBodyBytesRead",
+        "measurementElapsedMs":2000,"totalElapsedMs":2400,
+        "completionReason":"byteBudget","contentComplete":false,
+        "clientStopped":true,"networkChanged":false,"contentLength":104857600,
+        "contentEncoding":"identity","tlsProtocol":"TLSv1.3",
+        "cipherSuite":"TLS_AES_128_GCM_SHA256",
+        "phases":{"dnsMs":1,"tcpConnectMs":10,"tlsHandshakeMs":20,"responseHeadersMs":30},
+        "rateAvailable":true,"bytesPerSecond":4194304.0,"bitsPerSecond":33554432.0},
+        "upload":{"endpoint":"https://speed.example.net/upload","status":"ok",
+        "httpStatus":201,"payloadBytes":8388608,"measuredBytes":8388608,
+        "warmupBytes":0,"payloadBytesMeaning":"clientStreamAcceptedBytes",
+        "measurementElapsedMs":3000,"totalElapsedMs":3400,
+        "completionReason":"contentComplete","contentComplete":true,
+        "clientStopped":false,"requestContentLength":8388608,"responseBytesRead":0,
+        "networkChanged":false,"tlsProtocol":"TLSv1.3",
+        "cipherSuite":"TLS_AES_128_GCM_SHA256",
+        "phases":{"dnsMs":1,"tcpConnectMs":10,"tlsHandshakeMs":20,"requestHeadersMs":5},
+        "rateAvailable":true,"bytesPerSecond":2796202.67,"bitsPerSecond":22369621.33},
+        "proxy":{"configured":true,"used":false,"host":"proxy.example","port":8080},
+        "sampleAdequate":true,"networkChanged":false}
+        """#
+        return try observationFixture(
+            operationID: operationID, method: "network.speedTest",
+            observations: observations)
     }
 
     private func httpFixture() throws -> Data {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// G07.1 network diagnostics — the trusted tool executor + live-generation
+// G07.1/G07.2 network diagnostics — the trusted tool executor + live-generation
 // registration.
 //
 // The executor is the ONE place a model-visible `network.*` call becomes a

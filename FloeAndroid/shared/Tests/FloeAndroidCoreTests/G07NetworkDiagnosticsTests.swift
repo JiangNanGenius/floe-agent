@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Authored-only regressions for the G07.1 network diagnostics lane.
+// Authored-only regressions for the G07.1/G07.2 network diagnostics lane.
 // NOT executed by this lane (Main runs the combined batch). The mailbox and
 // executor run against synthetic observation JSON; no sockets, no Android
 // runtime, no device, no real network target and no credentials.
@@ -311,20 +311,32 @@ final class G07NetworkDiagnosticsTests: XCTestCase {
 
     // MARK: - Registration / metadata
 
-    func testRegistrationPublishesSixHonestReadOnlyDescriptors() async throws {
+    func testRegistrationPublishesEightHonestDescriptors() async throws {
         let registry = ToolRunnerRegistry()
         let executor = ScriptedNetworkExecutor()
         executor.reply = { request in statusObservation(for: request) }
         let names = registerNetworkTools(executor: executor, registry: registry)
         XCTAssertEqual(Set(names), Set(NetworkToolNames.all))
+        XCTAssertEqual(names.count, 8)
         for name in NetworkToolNames.all {
             let descriptor = try XCTUnwrap(registry.descriptor(named: name), name)
-            XCTAssertEqual(descriptor.riskLabels, [.networkAccess])
-            XCTAssertFalse(descriptor.isSideEffecting)
-            XCTAssertEqual(descriptor.effect, .readOnly)
             XCTAssertFalse(descriptor.requiresHostScope)
             XCTAssertEqual(descriptor.executionBoundary, .any)
             XCTAssertTrue(descriptor.parametersJSON.contains("additionalProperties"))
+            if name == "network.speedTest" {
+                // Upload can change server state: conservative mutating
+                // metadata, while the endpoint itself never grants a host
+                // scope and ordinary deterministic tool policy still applies.
+                XCTAssertEqual(descriptor.riskLabels,
+                               [.networkAccess, .modifiesRemoteSystem])
+                XCTAssertTrue(descriptor.isSideEffecting)
+                XCTAssertEqual(descriptor.effect, .mutating)
+            } else {
+                // The six G07.1 methods and LAN discovery stay read-only.
+                XCTAssertEqual(descriptor.riskLabels, [.networkAccess])
+                XCTAssertFalse(descriptor.isSideEffecting)
+                XCTAssertEqual(descriptor.effect, .readOnly)
+            }
         }
         let runner = try XCTUnwrap(registry.runner(named: "network.status"))
         let output = try await runner.execute(
@@ -365,10 +377,74 @@ final class G07NetworkDiagnosticsTests: XCTestCase {
         XCTAssertEqual(object["bound"] as? Bool, false)
         XCTAssertEqual(object["available"] as? Bool, false)
         XCTAssertEqual(object["reason"] as? String, "mailboxClosed")
-        XCTAssertEqual((object["expected"] as? [String])?.count, 6)
+        XCTAssertEqual((object["expected"] as? [String])?.count, 8)
         XCTAssertEqual((object["registered"] as? [String])?.isEmpty, true)
         XCTAssertEqual(floeNetworkDiagBind(9_999_999), -102,
                        "a bind without the LIVE native root epoch must fail closed")
+    }
+
+    // MARK: - G07.2 methods through the unchanged mailbox
+
+    func testMailboxRoundTripsLANAndSpeedTickets() async throws {
+        let mailbox = G07NetworkHostMailbox()
+        XCTAssertTrue(mailbox.bind(epoch: 19))
+        let requests = [
+            try NetworkToolRequest.lanDiscover(
+                serviceTypes: ["_http._tcp"], subnetCidr: "192.168.1.0/24",
+                ports: [80], discoveryDurationMs: 4_000, includeAttributes: false,
+                tcpConnectTimeoutMs: 500, tcpConcurrency: 16, timeoutMs: 20_000,
+                operationID: operationID),
+            try NetworkToolRequest.speedTest(
+                direction: .upload, downloadURL: nil,
+                uploadURL: "https://speed.example.net/upload",
+                maxBytesPerDirection: 8_388_608, durationBudgetMs: 10_000,
+                warmupBytes: 0, allowMetered: false, timeoutMs: 30_000,
+                operationID: operationID),
+        ]
+        for request in requests {
+            let owner = G07NetworkOwner(taskID: taskID, runID: runID, epoch: 19)
+            async let reply = mailbox.submit(
+                request: request, owner: owner,
+                cancellation: CancellationToken())
+            try await Task.sleep(nanoseconds: 20_000_000)
+            let claim = mailbox.nextClaim(timeoutMillis: 100)
+            XCTAssertGreaterThan(claim, 0)
+            var buffer = [CChar](repeating: 0, count: 2_049)
+            let length = mailbox.describe(
+                claim: claim, buffer: &buffer, capacity: 2_048)
+            XCTAssertGreaterThan(length, 0)
+            let descriptor = try XCTUnwrap(JSONSerialization.jsonObject(
+                with: Data(bytes: buffer, count: Int(length)))
+                as? [String: Any])
+            XCTAssertEqual(descriptor["method"] as? String,
+                           request.method.rawValue)
+            XCTAssertEqual(descriptor["payloadBytes"] as? Int,
+                           request.requestJSON.count)
+            XCTAssertEqual(descriptor["taskID"] as? String, taskID.uuidString)
+            XCTAssertEqual(descriptor["runID"] as? String, runID.uuidString)
+
+            var payload = [UInt8](repeating: 0, count: request.requestJSON.count)
+            XCTAssertEqual(mailbox.takePayload(
+                claim: claim, buffer: &payload,
+                capacity: Int32(payload.count)),
+                Int32(request.requestJSON.count))
+            XCTAssertEqual(Data(payload), request.requestJSON)
+
+            let observation = statusObservation(for: request)
+            XCTAssertEqual(mailbox.complete(
+                claim: claim, status: 0, value: observation), 0)
+            let data = try await reply
+            XCTAssertEqual(data, observation)
+        }
+    }
+
+    func testNewNetworkToolsStayOutsideTemporaryChatCeiling() {
+        XCTAssertEqual(NetworkToolNames.all.count, 8)
+        for name in ["network.lanDiscover", "network.speedTest"] {
+            XCTAssertTrue(NetworkToolNames.all.contains(name), name)
+            XCTAssertFalse(TemporaryChatToolPolicy.isTemporaryChatTool(name), name)
+            XCTAssertFalse(TemporaryChatToolPolicy.isPublicWebTool(name), name)
+        }
     }
 
     // MARK: - Fake host / executor

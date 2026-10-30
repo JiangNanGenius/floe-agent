@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// G07.1 network diagnostics — typed NetworkObservationV1.
+// G07.1/G07.2 network diagnostics — typed NetworkObservationV1.
 //
 // Wire authority (frozen, platform01 `PhoneNetworkService`):
 //   {version:1, operationID, method, source:"phone",
@@ -594,6 +594,331 @@ public struct NetworkHTTPObservation: Sendable, Equatable {
     public var httpProtocol: String? { nil }
 }
 
+// MARK: - G07.2 LAN discovery
+
+public struct NetworkLANService: Sendable, Equatable {
+    public let serviceName: String?
+    public let serviceType: String?
+    public let subtypes: [String]
+    public let hostname: String?
+    public let addresses: [String]
+    public let port: Int?
+    public let networkHandle: String?
+    public let networkMatchesCaptured: Bool?
+    public let state: String?
+    public let resolution: String?
+    public let resolveErrorCode: Int?
+    public let resolveError: String?
+    public let attributes: [String: String]
+
+    init(object: [String: NetworkJSONValue]) {
+        serviceName = NetworkJSONValue.firstString(object, ["serviceName", "name"])
+        serviceType = NetworkJSONValue.firstString(object, ["serviceType", "type"])
+        subtypes = (NetworkJSONValue.firstArray(object, ["subtypes"]) ?? [])
+            .compactMap(\.stringValue)
+        hostname = NetworkJSONValue.firstString(object, ["hostname", "host"])
+        addresses = (NetworkJSONValue.firstArray(object, ["addresses"]) ?? [])
+            .compactMap(\.stringValue)
+        port = NetworkJSONValue.firstInt(object, ["port"])
+        networkHandle = NetworkJSONValue.firstString(object, ["networkHandle"])
+        networkMatchesCaptured = NetworkJSONValue.firstBool(
+            object, ["networkMatchesCaptured"])
+        state = NetworkJSONValue.firstString(object, ["state"])
+        resolution = NetworkJSONValue.firstString(object, ["resolution"])
+        resolveErrorCode = NetworkJSONValue.firstInt(object, ["resolveErrorCode"])
+        resolveError = NetworkJSONValue.firstString(object, ["resolveError"])
+        attributes = (NetworkJSONValue.first(object, ["attributes"])?.objectValue ?? [:])
+            .compactMapValues(\.stringValue)
+    }
+}
+
+public struct NetworkLANServiceTypeState: Sendable, Equatable {
+    public let serviceType: String?
+    public let state: String?
+    public let errorCode: Int?
+    public let error: String?
+
+    init(object: [String: NetworkJSONValue]) {
+        serviceType = NetworkJSONValue.firstString(object, ["serviceType", "type"])
+        state = NetworkJSONValue.firstString(object, ["state"])
+        errorCode = NetworkJSONValue.firstInt(object, ["errorCode"])
+        error = NetworkJSONValue.firstString(object, ["error"])
+    }
+}
+
+public struct NetworkLANMDNSObservation: Sendable, Equatable {
+    public let requestedServiceTypes: [String]
+    public let scope: String?
+    public let networkScoped: Bool?
+    public let discoveryDurationMs: Int?
+    public let elapsedMs: Int?
+    public let services: [NetworkLANService]
+    public let serviceCount: Int?
+    public let activeServiceCount: Int?
+    public let unresolvedCount: Int?
+    public let lostCount: Int?
+    public let filteredForeignNetwork: Int?
+    public let truncated: Bool?
+    public let noReplies: Bool?
+    public let multicastLockHeld: Bool?
+    public let perType: [NetworkLANServiceTypeState]
+    public let stoppedReason: String?
+
+    init(object: [String: NetworkJSONValue]) {
+        requestedServiceTypes = (NetworkJSONValue.firstArray(
+            object, ["requestedServiceTypes"]) ?? []).compactMap(\.stringValue)
+        scope = NetworkJSONValue.firstString(object, ["scope"])
+        networkScoped = NetworkJSONValue.firstBool(object, ["networkScoped"])
+        discoveryDurationMs = NetworkJSONValue.firstInt(
+            object, ["discoveryDurationMs"])
+        elapsedMs = NetworkJSONValue.firstInt(object, ["elapsedMs"])
+        services = (NetworkJSONValue.firstArray(object, ["services"]) ?? [])
+            .compactMap { value in
+                guard let object = value.objectValue else { return nil }
+                return NetworkLANService(object: object)
+            }
+        serviceCount = NetworkJSONValue.firstInt(object, ["serviceCount"])
+        activeServiceCount = NetworkJSONValue.firstInt(
+            object, ["activeServiceCount"])
+        unresolvedCount = NetworkJSONValue.firstInt(object, ["unresolvedCount"])
+        lostCount = NetworkJSONValue.firstInt(object, ["lostCount"])
+        filteredForeignNetwork = NetworkJSONValue.firstInt(
+            object, ["filteredForeignNetwork"])
+        truncated = NetworkJSONValue.firstBool(object, ["truncated"])
+        noReplies = NetworkJSONValue.firstBool(object, ["noReplies"])
+        multicastLockHeld = NetworkJSONValue.firstBool(
+            object, ["multicastLockHeld"])
+        perType = (NetworkJSONValue.firstArray(object, ["perType"]) ?? [])
+            .compactMap { value in
+                guard let object = value.objectValue else { return nil }
+                return NetworkLANServiceTypeState(object: object)
+            }
+        stoppedReason = NetworkJSONValue.firstString(object, ["stoppedReason"])
+    }
+
+    public var totalServiceCount: Int? { serviceCount ?? (services.isEmpty ? nil : services.count) }
+}
+
+public struct NetworkLANOpenPort: Sendable, Equatable {
+    public let address: String?
+    public let port: Int?
+    public let connectTimeMs: Int?
+
+    init(object: [String: NetworkJSONValue]) {
+        address = NetworkJSONValue.firstString(object, ["address", "ip"])
+        port = NetworkJSONValue.firstInt(object, ["port"])
+        connectTimeMs = NetworkJSONValue.firstInt(object, ["connectTimeMs"])
+    }
+}
+
+public struct NetworkLANTCPObservation: Sendable, Equatable {
+    public let subnetCidr: String?
+    public let ports: [Int]
+    public let hostCount: Int?
+    public let excludedSelfAddresses: [String]
+    public let attemptedHosts: Int?
+    public let plannedAttempts: Int?
+    public let completedAttempts: Int?
+    public let openPorts: [NetworkLANOpenPort]
+    public let openPortCount: Int?
+    public let refusedAttempts: Int?
+    public let timedOutAttempts: Int?
+    public let errorAttempts: Int?
+    public let unreachableAttempts: Int?
+    public let hostsWithResponse: Int?
+    public let hostsWithOpenPort: Int?
+    public let truncated: Bool?
+    public let stoppedReason: String?
+    public let cancelled: Bool?
+    public let elapsedMs: Int?
+
+    init(object: [String: NetworkJSONValue]) {
+        subnetCidr = NetworkJSONValue.firstString(object, ["subnetCidr"])
+        ports = (NetworkJSONValue.firstArray(object, ["ports"]) ?? [])
+            .compactMap(\.intValue)
+        hostCount = NetworkJSONValue.firstInt(object, ["hostCount"])
+        excludedSelfAddresses = (NetworkJSONValue.firstArray(
+            object, ["excludedSelfAddresses"]) ?? []).compactMap(\.stringValue)
+        attemptedHosts = NetworkJSONValue.firstInt(object, ["attemptedHosts"])
+        plannedAttempts = NetworkJSONValue.firstInt(object, ["plannedAttempts"])
+        completedAttempts = NetworkJSONValue.firstInt(object, ["completedAttempts"])
+        openPorts = (NetworkJSONValue.firstArray(object, ["openPorts"]) ?? [])
+            .compactMap { value in
+                guard let object = value.objectValue else { return nil }
+                return NetworkLANOpenPort(object: object)
+            }
+        openPortCount = NetworkJSONValue.firstInt(object, ["openPortCount"])
+        refusedAttempts = NetworkJSONValue.firstInt(object, ["refusedAttempts"])
+        timedOutAttempts = NetworkJSONValue.firstInt(object, ["timedOutAttempts"])
+        errorAttempts = NetworkJSONValue.firstInt(object, ["errorAttempts"])
+        unreachableAttempts = NetworkJSONValue.firstInt(
+            object, ["unreachableAttempts"])
+        hostsWithResponse = NetworkJSONValue.firstInt(
+            object, ["hostsWithResponse"])
+        hostsWithOpenPort = NetworkJSONValue.firstInt(
+            object, ["hostsWithOpenPort"])
+        truncated = NetworkJSONValue.firstBool(object, ["truncated"])
+        stoppedReason = NetworkJSONValue.firstString(object, ["stoppedReason"])
+        cancelled = NetworkJSONValue.firstBool(object, ["cancelled"])
+        elapsedMs = NetworkJSONValue.firstInt(object, ["elapsedMs"])
+    }
+}
+
+public struct NetworkLANDiscoveryObservation: Sendable, Equatable {
+    public let mdns: NetworkLANMDNSObservation?
+    public let tcp: NetworkLANTCPObservation?
+    public let networkChanged: Bool?
+    public let noReplies: Bool?
+    public let errorCode: String?
+    public let mdnsErrorCode: String?
+    public let message: String?
+
+    init(object: [String: NetworkJSONValue]) {
+        mdns = NetworkJSONValue.first(object, ["mdns"])?.objectValue.map {
+            NetworkLANMDNSObservation(object: $0)
+        }
+        tcp = NetworkJSONValue.first(object, ["tcp"])?.objectValue.map {
+            NetworkLANTCPObservation(object: $0)
+        }
+        networkChanged = NetworkJSONValue.firstBool(object, ["networkChanged"])
+        noReplies = NetworkJSONValue.firstBool(object, ["noReplies"])
+        errorCode = NetworkJSONValue.firstString(object, ["errorCode"])
+        mdnsErrorCode = NetworkJSONValue.firstString(object, ["mdnsErrorCode"])
+        message = NetworkJSONValue.firstString(object, ["message"])
+    }
+}
+
+// MARK: - G07.2 explicitly budgeted speed test
+
+public struct NetworkSpeedBudget: Sendable, Equatable {
+    public let maxBytesPerDirection: Int?
+    public let durationBudgetMs: Int?
+    public let warmupBytes: Int?
+    public let timeoutMs: Int?
+
+    init(object: [String: NetworkJSONValue]) {
+        maxBytesPerDirection = NetworkJSONValue.firstInt(
+            object, ["maxBytesPerDirection"])
+        durationBudgetMs = NetworkJSONValue.firstInt(
+            object, ["durationBudgetMs"])
+        warmupBytes = NetworkJSONValue.firstInt(object, ["warmupBytes"])
+        timeoutMs = NetworkJSONValue.firstInt(object, ["timeoutMs"])
+    }
+}
+
+public struct NetworkSpeedTransfer: Sendable, Equatable {
+    public let endpoint: String?
+    public let status: String?
+    public let httpStatus: Int?
+    public let payloadBytes: Int?
+    public let measuredBytes: Int?
+    public let warmupBytes: Int?
+    public let measurementElapsedMs: Int?
+    public let totalElapsedMs: Int?
+    public let bytesPerSecond: Double?
+    public let bitsPerSecond: Double?
+    public let completionReason: String?
+    public let contentComplete: Bool?
+    public let clientStopped: Bool?
+    public let contentLength: Int?
+    public let contentEncoding: String?
+    public let requestContentLength: Int?
+    public let responseBytesRead: Int?
+    public let networkChanged: Bool?
+    public let tlsProtocol: String?
+    public let cipherSuite: String?
+    public let phases: [String: Int]
+    public let payloadBytesMeaning: String?
+    public let rateAvailable: Bool?
+    public let rateOmittedReason: String?
+
+    init(object: [String: NetworkJSONValue]) {
+        endpoint = NetworkJSONValue.firstString(object, ["endpoint"])
+        status = NetworkJSONValue.firstString(object, ["status"])
+        httpStatus = NetworkJSONValue.firstInt(object, ["httpStatus"])
+        payloadBytes = NetworkJSONValue.firstInt(object, ["payloadBytes"])
+        measuredBytes = NetworkJSONValue.firstInt(object, ["measuredBytes"])
+        warmupBytes = NetworkJSONValue.firstInt(object, ["warmupBytes"])
+        measurementElapsedMs = NetworkJSONValue.firstInt(
+            object, ["measurementElapsedMs"])
+        totalElapsedMs = NetworkJSONValue.firstInt(object, ["totalElapsedMs"])
+        bytesPerSecond = NetworkJSONValue.firstDouble(
+            object, ["bytesPerSecond"])
+        bitsPerSecond = NetworkJSONValue.firstDouble(object, ["bitsPerSecond"])
+        completionReason = NetworkJSONValue.firstString(
+            object, ["completionReason"])
+        contentComplete = NetworkJSONValue.firstBool(object, ["contentComplete"])
+        clientStopped = NetworkJSONValue.firstBool(object, ["clientStopped"])
+        contentLength = NetworkJSONValue.firstInt(object, ["contentLength"])
+        contentEncoding = NetworkJSONValue.firstString(
+            object, ["contentEncoding"])
+        requestContentLength = NetworkJSONValue.firstInt(
+            object, ["requestContentLength"])
+        responseBytesRead = NetworkJSONValue.firstInt(
+            object, ["responseBytesRead"])
+        networkChanged = NetworkJSONValue.firstBool(object, ["networkChanged"])
+        tlsProtocol = NetworkJSONValue.firstString(object, ["tlsProtocol"])
+        cipherSuite = NetworkJSONValue.firstString(object, ["cipherSuite"])
+        phases = (NetworkJSONValue.first(object, ["phases"])?.objectValue ?? [:])
+            .compactMapValues(\.intValue)
+        payloadBytesMeaning = NetworkJSONValue.firstString(
+            object, ["payloadBytesMeaning"])
+        rateAvailable = NetworkJSONValue.firstBool(object, ["rateAvailable"])
+        rateOmittedReason = NetworkJSONValue.firstString(
+            object, ["rateOmittedReason"])
+    }
+}
+
+public struct NetworkSpeedProxy: Sendable, Equatable {
+    public let configured: Bool?
+    public let used: Bool?
+    public let host: String?
+    public let port: Int?
+
+    init(object: [String: NetworkJSONValue]) {
+        configured = NetworkJSONValue.firstBool(object, ["configured"])
+        used = NetworkJSONValue.firstBool(object, ["used"])
+        host = NetworkJSONValue.firstString(object, ["host"])
+        port = NetworkJSONValue.firstInt(object, ["port"])
+    }
+}
+
+public struct NetworkSpeedTestObservation: Sendable, Equatable {
+    public let budget: NetworkSpeedBudget?
+    public let metered: Bool?
+    public let allowMetered: Bool?
+    public let direction: String?
+    public let singleTransfer: Bool?
+    public let sampleAdequate: Bool?
+    public let download: NetworkSpeedTransfer?
+    public let upload: NetworkSpeedTransfer?
+    public let proxy: NetworkSpeedProxy?
+    public let networkChanged: Bool?
+    public let errorCode: String?
+
+    init(object: [String: NetworkJSONValue]) {
+        budget = NetworkJSONValue.first(object, ["budget"])?.objectValue.map {
+            NetworkSpeedBudget(object: $0)
+        }
+        metered = NetworkJSONValue.firstBool(object, ["metered"])
+        allowMetered = NetworkJSONValue.firstBool(object, ["allowMetered"])
+        direction = NetworkJSONValue.firstString(object, ["direction"])
+        singleTransfer = NetworkJSONValue.firstBool(object, ["singleTransfer"])
+        sampleAdequate = NetworkJSONValue.firstBool(object, ["sampleAdequate"])
+        download = NetworkJSONValue.first(object, ["download"])?.objectValue.map {
+            NetworkSpeedTransfer(object: $0)
+        }
+        upload = NetworkJSONValue.first(object, ["upload"])?.objectValue.map {
+            NetworkSpeedTransfer(object: $0)
+        }
+        proxy = NetworkJSONValue.first(object, ["proxy"])?.objectValue.map {
+            NetworkSpeedProxy(object: $0)
+        }
+        networkChanged = NetworkJSONValue.firstBool(object, ["networkChanged"])
+        errorCode = NetworkJSONValue.firstString(object, ["errorCode"])
+    }
+}
+
 public struct NetworkObservationPayload: Sendable, Equatable {
     public let raw: [String: NetworkJSONValue]
     public let status: NetworkStatusDetail?
@@ -602,6 +927,8 @@ public struct NetworkObservationPayload: Sendable, Equatable {
     public let ping: NetworkPingObservation?
     public let tcpProbe: NetworkTCPProbeObservation?
     public let http: NetworkHTTPObservation?
+    public let lanDiscover: NetworkLANDiscoveryObservation?
+    public let speedTest: NetworkSpeedTestObservation?
 
     /// The delivered PhoneNetworkService emits method observations FLAT
     /// (`observations.accessPoints`, `.answers`, `.sent`, ...). Accept the
@@ -614,6 +941,8 @@ public struct NetworkObservationPayload: Sendable, Equatable {
         var pingValue: NetworkPingObservation?
         var tcpValue: NetworkTCPProbeObservation?
         var httpValue: NetworkHTTPObservation?
+        var lanValue: NetworkLANDiscoveryObservation?
+        var speedValue: NetworkSpeedTestObservation?
         switch method {
         case .status:
             statusValue = NetworkStatusDetail(object: raw["status"]?.objectValue ?? raw)
@@ -630,6 +959,12 @@ public struct NetworkObservationPayload: Sendable, Equatable {
                 object: raw["tcpProbe"]?.objectValue ?? raw)
         case .http:
             httpValue = NetworkHTTPObservation(object: raw["http"]?.objectValue ?? raw)
+        case .lanDiscover:
+            lanValue = NetworkLANDiscoveryObservation(
+                object: raw["lanDiscover"]?.objectValue ?? raw)
+        case .speedTest:
+            speedValue = NetworkSpeedTestObservation(
+                object: raw["speedTest"]?.objectValue ?? raw)
         }
         self.status = statusValue
         self.wifiScan = wifiValue
@@ -637,6 +972,8 @@ public struct NetworkObservationPayload: Sendable, Equatable {
         self.ping = pingValue
         self.tcpProbe = tcpValue
         self.http = httpValue
+        self.lanDiscover = lanValue
+        self.speedTest = speedValue
     }
 
     public var errorCode: String? {

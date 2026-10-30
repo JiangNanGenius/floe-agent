@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// G07.1 network diagnostics — a small, exact JSON value model.
+// G07.1/G07.2 network diagnostics — a small, exact JSON value model.
 //
 // The Android platform service owns the NetworkObservationV1 envelope and
 // every measured number. This module NEVER synthesizes a measurement: it

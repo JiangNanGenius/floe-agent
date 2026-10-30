@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// G07.1 network diagnostics — bounded MACHINE-STRUCTURED tool summary.
+// G07.1/G07.2 network diagnostics — bounded MACHINE-STRUCTURED tool summary.
 //
 // The runtime keeps 4 KiB of an ordinary tool summary, so this projection is
 // valid JSON (never a truncated raw payload) that preserves the required
@@ -27,17 +27,23 @@ public enum NetworkObservationSummary {
         let headers: Int
         let addresses: Int
         let capabilities: Int
+        let lanServices: Int
+        let lanTypes: Int
+        let lanOpenPorts: Int
     }
 
     private static let full = Limits(accessPoints: 8, dnsAnswers: 8, pingProbes: 10,
                                      tcpAttempts: 6, httpRedirects: 4, headers: 8,
-                                     addresses: 4, capabilities: 8)
+                                     addresses: 4, capabilities: 8,
+                                     lanServices: 6, lanTypes: 4, lanOpenPorts: 8)
     private static let tight = Limits(accessPoints: 4, dnsAnswers: 4, pingProbes: 4,
                                       tcpAttempts: 3, httpRedirects: 2, headers: 4,
-                                      addresses: 2, capabilities: 0)
+                                      addresses: 2, capabilities: 0,
+                                      lanServices: 3, lanTypes: 2, lanOpenPorts: 4)
     private static let minimal = Limits(accessPoints: 0, dnsAnswers: 0, pingProbes: 0,
                                         tcpAttempts: 0, httpRedirects: 0, headers: 0,
-                                        addresses: 0, capabilities: 0)
+                                        addresses: 0, capabilities: 0,
+                                        lanServices: 0, lanTypes: 0, lanOpenPorts: 0)
 
     public static func render(_ observation: NetworkObservationV1) -> String {
         for limits in [full, tight, minimal] {
@@ -103,6 +109,13 @@ public enum NetworkObservationSummary {
             observations = compactHTTP(observation.observations.http,
                                        raw: observation.observations.raw,
                                        limits: limits, notes: &notes)
+        case .lanDiscover:
+            observations = compactLAN(observation.observations.lanDiscover,
+                                      raw: observation.observations.raw,
+                                      limits: limits, notes: &notes)
+        case .speedTest:
+            observations = compactSpeed(observation.observations.speedTest,
+                                        raw: observation.observations.raw)
         }
         copyRawDiagnostics(from: observation.observations.raw, into: &observations)
         root["observations"] = observations
@@ -488,14 +501,213 @@ public enum NetworkObservationSummary {
         return object
     }
 
+    private static func compactLAN(_ lan: NetworkLANDiscoveryObservation?,
+                                   raw: [String: NetworkJSONValue],
+                                   limits: Limits,
+                                   notes: inout [String]) -> [String: Any] {
+        guard let lan else { return [:] }
+        var object: [String: Any] = [:]
+        set(&object, "networkChanged", lan.networkChanged)
+        set(&object, "noReplies", lan.noReplies)
+        set(&object, "errorCode", lan.errorCode)
+        set(&object, "mdnsErrorCode", lan.mdnsErrorCode)
+        if let mdns = lan.mdns {
+            var summary: [String: Any] = [:]
+            set(&summary, "scope", mdns.scope.map { bounded($0, 64) })
+            set(&summary, "networkScoped", mdns.networkScoped)
+            if !mdns.requestedServiceTypes.isEmpty {
+                summary["requestedServiceTypes"] = boundedStrings(
+                    mdns.requestedServiceTypes, limit: 8, maxCharacters: 48)
+            }
+            set(&summary, "discoveryDurationMs", mdns.discoveryDurationMs)
+            set(&summary, "elapsedMs", mdns.elapsedMs)
+            let total = mdns.totalServiceCount ?? 0
+            summary["serviceCount"] = total
+            set(&summary, "activeServiceCount", mdns.activeServiceCount)
+            set(&summary, "unresolvedCount", mdns.unresolvedCount)
+            set(&summary, "lostCount", mdns.lostCount)
+            set(&summary, "filteredForeignNetwork", mdns.filteredForeignNetwork)
+            set(&summary, "truncated", mdns.truncated)
+            set(&summary, "noReplies", mdns.noReplies)
+            set(&summary, "multicastLockHeld", mdns.multicastLockHeld)
+            set(&summary, "stoppedReason", mdns.stoppedReason.map { bounded($0, 64) })
+            // TXT attribute values are intentionally absent from the bounded
+            // machine summary; the full observation/export keeps them.
+            let services = mdns.services.prefix(limits.lanServices).map {
+                service -> [String: Any] in
+                var row: [String: Any] = [:]
+                set(&row, "serviceName", service.serviceName.map { bounded($0, 128) })
+                set(&row, "serviceType", service.serviceType.map { bounded($0, 64) })
+                if !service.subtypes.isEmpty {
+                    row["subtypes"] = boundedStrings(
+                        service.subtypes, limit: 4, maxCharacters: 32)
+                }
+                set(&row, "hostname", service.hostname.map { bounded($0, 253) })
+                if !service.addresses.isEmpty {
+                    row["addresses"] = boundedStrings(
+                        service.addresses, limit: 2, maxCharacters: 64)
+                    if service.addresses.count > 2 {
+                        row["addressesTruncated"] = true
+                    }
+                }
+                set(&row, "port", service.port)
+                set(&row, "state", service.state.map { bounded($0, 32) })
+                set(&row, "resolution", service.resolution.map { bounded($0, 32) })
+                set(&row, "networkMatchesCaptured", service.networkMatchesCaptured)
+                set(&row, "resolveErrorCode", service.resolveErrorCode)
+                if !service.attributes.isEmpty {
+                    row["attributeCount"] = service.attributes.count
+                }
+                return row
+            }
+            summary["services"] = services
+            if total > services.count {
+                summary["servicesTruncated"] = true
+                summary["servicesOmitted"] = total - services.count
+                notes.append("LAN summary includes \(services.count) of \(total) services.")
+            }
+            let types = mdns.perType.prefix(limits.lanTypes).map {
+                type -> [String: Any] in
+                var row: [String: Any] = [:]
+                set(&row, "serviceType", type.serviceType.map { bounded($0, 64) })
+                set(&row, "state", type.state.map { bounded($0, 32) })
+                set(&row, "errorCode", type.errorCode)
+                set(&row, "error", type.error.map { bounded($0, 64) })
+                return row
+            }
+            summary["perType"] = types
+            if mdns.perType.count > types.count {
+                summary["perTypeTruncated"] = true
+                summary["perTypeOmitted"] = mdns.perType.count - types.count
+            }
+            object["mdns"] = summary
+        }
+        if let tcp = lan.tcp {
+            var summary: [String: Any] = [:]
+            set(&summary, "subnetCidr", tcp.subnetCidr.map { bounded($0, 64) })
+            if !tcp.ports.isEmpty {
+                summary["ports"] = Array(tcp.ports.prefix(8))
+            }
+            set(&summary, "hostCount", tcp.hostCount)
+            if !tcp.excludedSelfAddresses.isEmpty {
+                summary["excludedSelfAddresses"] = boundedStrings(
+                    tcp.excludedSelfAddresses, limit: 4, maxCharacters: 64)
+                summary["excludedSelfAddressCount"] = tcp.excludedSelfAddresses.count
+            }
+            set(&summary, "attemptedHosts", tcp.attemptedHosts)
+            set(&summary, "plannedAttempts", tcp.plannedAttempts)
+            set(&summary, "completedAttempts", tcp.completedAttempts)
+            let openCount = tcp.openPortCount ?? tcp.openPorts.count
+            summary["openPortCount"] = openCount
+            set(&summary, "refusedAttempts", tcp.refusedAttempts)
+            set(&summary, "timedOutAttempts", tcp.timedOutAttempts)
+            set(&summary, "errorAttempts", tcp.errorAttempts)
+            set(&summary, "unreachableAttempts", tcp.unreachableAttempts)
+            set(&summary, "hostsWithResponse", tcp.hostsWithResponse)
+            set(&summary, "hostsWithOpenPort", tcp.hostsWithOpenPort)
+            set(&summary, "truncated", tcp.truncated)
+            set(&summary, "stoppedReason", tcp.stoppedReason.map { bounded($0, 64) })
+            set(&summary, "cancelled", tcp.cancelled)
+            set(&summary, "elapsedMs", tcp.elapsedMs)
+            let openPorts = tcp.openPorts.prefix(limits.lanOpenPorts).map {
+                port -> [String: Any] in
+                var row: [String: Any] = [:]
+                set(&row, "address", port.address)
+                set(&row, "port", port.port)
+                set(&row, "connectTimeMs", port.connectTimeMs)
+                return row
+            }
+            summary["openPorts"] = openPorts
+            if openCount > openPorts.count {
+                summary["openPortsTruncated"] = true
+                summary["openPortsOmitted"] = openCount - openPorts.count
+                notes.append("LAN summary includes \(openPorts.count) of \(openCount) open ports.")
+            }
+            object["tcp"] = summary
+        }
+        copyRawDiagnostics(from: raw, into: &object)
+        return object
+    }
+
+    private static func compactSpeed(_ speed: NetworkSpeedTestObservation?,
+                                     raw: [String: NetworkJSONValue]) -> [String: Any] {
+        guard let speed else { return [:] }
+        var object: [String: Any] = [:]
+        if let budget = speed.budget {
+            var budgetObject: [String: Any] = [:]
+            set(&budgetObject, "maxBytesPerDirection", budget.maxBytesPerDirection)
+            set(&budgetObject, "durationBudgetMs", budget.durationBudgetMs)
+            set(&budgetObject, "warmupBytes", budget.warmupBytes)
+            set(&budgetObject, "timeoutMs", budget.timeoutMs)
+            object["budget"] = budgetObject
+        }
+        set(&object, "metered", speed.metered)
+        set(&object, "allowMetered", speed.allowMetered)
+        set(&object, "direction", speed.direction)
+        set(&object, "singleTransfer", speed.singleTransfer)
+        set(&object, "sampleAdequate", speed.sampleAdequate)
+        set(&object, "networkChanged", speed.networkChanged)
+        set(&object, "errorCode", speed.errorCode)
+        if let download = speed.download {
+            object["download"] = compactSpeedTransfer(download)
+        }
+        if let upload = speed.upload {
+            object["upload"] = compactSpeedTransfer(upload)
+        }
+        if let proxy = speed.proxy {
+            var proxyObject: [String: Any] = [:]
+            set(&proxyObject, "configured", proxy.configured)
+            set(&proxyObject, "used", proxy.used)
+            set(&proxyObject, "host", proxy.host.map { bounded($0, 253) })
+            set(&proxyObject, "port", proxy.port)
+            if !proxyObject.isEmpty { object["proxy"] = proxyObject }
+        }
+        copyRawDiagnostics(from: raw, into: &object)
+        return object
+    }
+
+    private static func compactSpeedTransfer(_ transfer: NetworkSpeedTransfer) -> [String: Any] {
+        var object: [String: Any] = [:]
+        set(&object, "endpoint", transfer.endpoint.map { bounded($0, 512) })
+        set(&object, "status", transfer.status.map { bounded($0, 32) })
+        set(&object, "httpStatus", transfer.httpStatus)
+        set(&object, "payloadBytes", transfer.payloadBytes)
+        set(&object, "measuredBytes", transfer.measuredBytes)
+        set(&object, "warmupBytes", transfer.warmupBytes)
+        set(&object, "measurementElapsedMs", transfer.measurementElapsedMs)
+        set(&object, "totalElapsedMs", transfer.totalElapsedMs)
+        // Only actual reported rates are projected; nothing is recomputed.
+        set(&object, "bytesPerSecond", transfer.bytesPerSecond)
+        set(&object, "bitsPerSecond", transfer.bitsPerSecond)
+        set(&object, "rateAvailable", transfer.rateAvailable)
+        set(&object, "rateOmittedReason", transfer.rateOmittedReason.map { bounded($0, 64) })
+        set(&object, "completionReason", transfer.completionReason.map { bounded($0, 64) })
+        set(&object, "contentComplete", transfer.contentComplete)
+        set(&object, "clientStopped", transfer.clientStopped)
+        set(&object, "contentLength", transfer.contentLength)
+        set(&object, "contentEncoding", transfer.contentEncoding.map { bounded($0, 64) })
+        set(&object, "requestContentLength", transfer.requestContentLength)
+        set(&object, "responseBytesRead", transfer.responseBytesRead)
+        set(&object, "networkChanged", transfer.networkChanged)
+        set(&object, "tlsProtocol", transfer.tlsProtocol.map { bounded($0, 32) })
+        set(&object, "cipherSuite", transfer.cipherSuite.map { bounded($0, 128) })
+        if !transfer.phases.isEmpty {
+            object["phases"] = transfer.phases
+        }
+        set(&object, "payloadBytesMeaning",
+            transfer.payloadBytesMeaning.map { bounded($0, 64) })
+        return object
+    }
+
     // MARK: - Shared helpers
 
     private static func copyRawDiagnostics(from raw: [String: NetworkJSONValue],
                                            into object: inout [String: Any]) {
         let copied: [String: Int] = [
-            "requiredFor": 128, "errorCode": 128, "unsupportedReason": 128,
-            "reason": 128, "message": 200, "phase": 64, "cancelled": 8,
-            "truncated": 8, "limitBytes": 16, "timeoutMs": 16, "cacheAgeMs": 16,
+            "requiredFor": 128, "errorCode": 128, "mdnsErrorCode": 128,
+            "unsupportedReason": 128, "reason": 128, "message": 200,
+            "phase": 64, "cancelled": 8, "truncated": 8, "limitBytes": 16,
+            "timeoutMs": 16, "cacheAgeMs": 16,
         ]
         for (key, limit) in copied {
             guard let value = raw[key] else { continue }

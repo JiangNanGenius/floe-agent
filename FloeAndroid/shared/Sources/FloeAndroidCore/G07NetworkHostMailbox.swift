@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// G07.1 network diagnostics — epoch-fenced trusted-host mailbox.
+// G07.1/G07.2 network diagnostics — epoch-fenced trusted-host mailbox.
 //
 // The SAME reviewed mailbox shape as `OfficeAIHostMailbox` /
 // `G04WorkspaceSourceMailbox`: Swift owns ONE bounded ticket table per bound
