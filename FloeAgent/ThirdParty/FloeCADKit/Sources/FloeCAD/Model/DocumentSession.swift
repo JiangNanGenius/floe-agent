@@ -79,7 +79,130 @@ final class DocumentSession {
         lastSavedPersistenceChangeCount = persistenceCount
         savedIdentity = receipt
         recordSaveResult(nil)
+        // The command (and anything after it) is now durable. Drop the large
+        // pre-command checkpoint but keep a token-only marker so a late host
+        // callback still gets the honest `.alreadyCommitted` answer without
+        // retaining an old document snapshot for the session lifetime.
+        if let owned = lastOwnedCommandReceipt {
+            lastCommittedOwnedToken = owned.token
+            lastOwnedCommandReceipt = nil
+        }
         return true
+    }
+
+    /// One host-owned command that may need an exact rollback after an
+    /// asynchronous commit attempt. The checkpoint captures the document plus
+    /// both undo/redo histories and derived caches BEFORE the command; the
+    /// counters bind the receipt to that one still-uncommitted generation.
+    /// Only `performOwned` mints these, and only `rollbackOwnedCommand` can
+    /// consume one. This is NOT a second transaction system: it is the
+    /// existing checkpoint/undo/storage-marking machinery applied to a
+    /// command whose commit happens after a suspension point.
+    nonisolated struct OwnedCommandReceipt {
+        let token: UUID
+        let tag: String
+        let commandTitle: String
+        let checkpoint: CADEditCheckpoint
+        let changeCount: Int
+        let persistenceChangeCount: Int
+        let savedRevision: Int
+        let undoDepth: Int
+
+        var reference: CADOwnedCommandRef {
+            CADOwnedCommandRef(token: token, tag: tag)
+        }
+    }
+
+    nonisolated enum OwnedCommandRollback: Sendable, Equatable {
+        case reverted
+        case superseded
+        case alreadyCommitted
+        case unavailable
+    }
+
+    /// The most recent owned command that has not been rolled back or
+    /// superseded. One host operation per document is expected; a newer owned
+    /// command replaces the previous receipt, so an older callback can never
+    /// undo the newer one.
+    private(set) var lastOwnedCommandReceipt: OwnedCommandReceipt?
+    /// Token of the most recent owned command already made durable by a save.
+    /// No document snapshot is retained for it.
+    private var lastCommittedOwnedToken: UUID?
+
+    /// Release any owned-command checkpoint when the document closes. A late
+    /// callback after release is `unavailable`, never a rollback.
+    func discardOwnedCommandReceipts() {
+        lastOwnedCommandReceipt = nil
+        lastCommittedOwnedToken = nil
+    }
+
+    /// Perform one host-owned command and mint its rollback receipt. Returns
+    /// nil when the session refuses the write; the command is then not applied.
+    @discardableResult
+    func performOwned(_ command: DocumentCommand, tag: String) -> OwnedCommandReceipt? {
+        guard requireWritable() else { return nil }
+        let checkpoint = captureEditCheckpoint()
+        undoStack.perform(command, on: &document)
+        didChange()
+        lastCommittedOwnedToken = nil
+        let receipt = OwnedCommandReceipt(
+            token: UUID(),
+            tag: tag,
+            commandTitle: command.title,
+            checkpoint: checkpoint,
+            changeCount: changeCount,
+            persistenceChangeCount: persistenceChangeCount,
+            savedRevision: savedIdentity.revision,
+            undoDepth: undoStack.undoCommands.count)
+        lastOwnedCommandReceipt = receipt
+        return receipt
+    }
+
+    /// Roll back the EXACT owned command only when it is still the newest
+    /// uncommitted change. Any later edit, undo/redo, checkpoint restore or
+    /// successful save invalidates the receipt and is preserved untouched.
+    /// A refused rollback never guesses or restores an older document over
+    /// newer work.
+    @discardableResult
+    func rollbackOwnedCommand(token: UUID) -> OwnedCommandRollback {
+        guard let receipt = lastOwnedCommandReceipt, receipt.token == token else {
+            guard lastCommittedOwnedToken == token else { return .unavailable }
+            if lastSavedPersistenceChangeCount == persistenceChangeCount {
+                recordSaveResult(nil)
+            }
+            return .alreadyCommitted
+        }
+        lastOwnedCommandReceipt = nil
+        if savedIdentity.revision != receipt.savedRevision {
+            // Another save committed this command (and possibly later edits).
+            // When the committed persistence marker also covers the current
+            // state, a stale failed-save error must not keep the document
+            // falsely "dirty"; if later edits are pending, keep the error.
+            if lastSavedPersistenceChangeCount == persistenceChangeCount {
+                recordSaveResult(nil)
+            }
+            return .alreadyCommitted
+        }
+        guard !isReadOnly,
+              changeCount == receipt.changeCount,
+              persistenceChangeCount == receipt.persistenceChangeCount,
+              undoStack.undoCommands.count == receipt.undoDepth,
+              undoStack.undoCommands.last?.title == receipt.commandTitle else {
+            return .superseded
+        }
+        // The checkpoint is the document + undo/redo + cache state from just
+        // before this command. No later change exists (the counters matched),
+        // so restoring it removes only this command and keeps a pre-existing
+        // redo history; the command itself never becomes redoable.
+        restoreCheckpointState(receipt.checkpoint, autosave: false)
+        if lastSavedPersistenceChangeCount == persistenceChangeCount {
+            recordSaveResult(nil)
+        } else {
+            // The pre-command document already had unsaved edits; keep them
+            // pending instead of silently dropping their persistence need.
+            scheduleAutosave()
+        }
+        return .reverted
     }
 
     /// IDs of persisted rows this build could not decode at `load()` — an
@@ -169,6 +292,10 @@ final class DocumentSession {
     /// Deterministic, session-local suspension inside prewarm for race tests.
     /// Absent in release; no store/network/global synchronization is replaced.
     var savePrewarmSuspensionForTesting: (@MainActor () async -> Void)?
+    /// One-shot failure injected AFTER prewarm (where real IO/CAS failures
+    /// surface) for the exact async host commit path. Absent in release; it
+    /// never replaces the store, CAS fence or lock.
+    var saveFailureForTesting: String?
     var committedIdentityDeliveryForTesting: (@MainActor (CADSaveOutcome) async -> Void)?
     var hasPendingAutosaveForTesting: Bool { saveTask != nil }
     #endif
@@ -1643,6 +1770,13 @@ final class DocumentSession {
             recordWriteBlock(block.message)
             return failedSaveOutcome(block.message)
         }
+        #if DEBUG
+        if let failure = saveFailureForTesting {
+            saveFailureForTesting = nil
+            recordSaveResult(failure)
+            return failedSaveOutcome(failure)
+        }
+        #endif
         do {
             let savedPersistenceCount = persistenceChangeCount
             guard let payload = try buildSavePayload() else { return savedIdentity }

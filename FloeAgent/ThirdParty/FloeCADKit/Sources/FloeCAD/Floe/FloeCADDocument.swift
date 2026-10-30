@@ -27,6 +27,27 @@ public nonisolated struct CADSaveOutcome: Sendable, Equatable {
     public var succeeded: Bool { error == nil }
 }
 
+/// Opaque handle to one host-owned command whose asynchronous commit may still
+/// fail. Minted only inside the document/session; hosts can read the current
+/// handle and ask for an exact guarded rollback, but cannot select or restore
+/// an arbitrary undo entry.
+public nonisolated struct CADOwnedCommandRef: Sendable, Equatable {
+    public let token: UUID
+    public let tag: String
+}
+
+/// Result of an exact guarded rollback. `reverted` means the command was the
+/// newest uncommitted change and its pre-command checkpoint was restored.
+/// `superseded` means a later edit/undo/redo/checkpoint changed the document,
+/// so nothing was rolled back. `alreadyCommitted` means a save advanced the
+/// committed revision after the command; it stays on disk and is never undone.
+public nonisolated enum CADOwnedCommandRollback: Sendable, Equatable {
+    case reverted
+    case superseded
+    case alreadyCommitted
+    case unavailable
+}
+
 public nonisolated struct CADDocumentSummary: Sendable, Equatable {
     public var name: String
     public var revision: Int
@@ -192,6 +213,7 @@ public final class FloeCADDocument {
         #endif
         session.cancelSketchPreviewForClose()
         session.flushPendingAutosave()
+        session.discardOwnedCommandReceipts()
         closed = true
         // Fence the store: waits out any in-flight commit and forbids later
         // ones, so the release/delete sequence cannot be resurrected by a
@@ -203,15 +225,52 @@ public final class FloeCADDocument {
         markClosed()
     }
 
-    /// Revert the most recent in-memory document command after a failed host
-    /// commit. This is the narrow recovery seam for mutations (for example an
-    /// App-owned part-reference attach/update) that were authored as ONE
-    /// undoable command and then could not be saved by CAS/IO. Normal
-    /// UI/AI undo/redo continues to use the existing view-model/service stack;
-    /// this method does not touch the saved package.
-    public func revertLastUncommittedCommand() {
-        session.undo()
+    /// The newest still-uncommitted host-owned command, or nil. A host that
+    /// authored one command and then awaited its commit keeps this handle so a
+    /// failed commit can roll back exactly that command.
+    public var pendingOwnedCommand: CADOwnedCommandRef? {
+        session.lastOwnedCommandReceipt?.reference
     }
+
+    /// Roll back exactly the command named by `reference` and only while it is
+    /// still the newest uncommitted change with the same generation. Later
+    /// edits/undo/redo and successful commits are preserved; this method never
+    /// calls a blind `undo()`. It does not touch the saved package.
+    @discardableResult
+    public func rollbackOwnedCommand(_ reference: CADOwnedCommandRef) -> CADOwnedCommandRollback {
+        switch session.rollbackOwnedCommand(token: reference.token) {
+        case .reverted: return .reverted
+        case .superseded: return .superseded
+        case .alreadyCommitted: return .alreadyCommitted
+        case .unavailable: return .unavailable
+        }
+    }
+
+    /// True when the persisted assembly currently contains this part
+    /// reference. Used to report the ACTUAL post-failure state (a reference
+    /// that remains must never be described as "nothing applied").
+    public func containsPartReference(_ id: UUID) -> Bool {
+        guard let assembly = try? CADAssembly.decode(from: session.document.assemblyData) else {
+            return false
+        }
+        return assembly.partReference(id) != nil
+    }
+
+    #if DEBUG
+    /// Test-only seam for the host commit path. Fails the next asynchronous
+    /// save after prewarm (where real IO/CAS failures surface). Never present
+    /// in release and never replaces the store, CAS fence or lock.
+    public var saveFailureForTesting: String? {
+        get { session.saveFailureForTesting }
+        set { session.saveFailureForTesting = newValue }
+    }
+
+    /// Test-only suspension inside the next asynchronous save's prewarm.
+    public var saveSuspensionForTesting: (@MainActor () async -> Void)? {
+        get { session.savePrewarmSuspensionForTesting }
+        set { session.savePrewarmSuspensionForTesting = newValue }
+    }
+    #endif
 
     /// True once this document was released (`close()`/`markClosed()`).
     /// A released document must never be written again: the editor's

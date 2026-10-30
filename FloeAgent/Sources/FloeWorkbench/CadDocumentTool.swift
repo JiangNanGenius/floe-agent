@@ -432,6 +432,14 @@ public protocol CadDocumentHost: Sendable {
     /// command plus the normal CAS save. No per-edit UI grant is created.
     func reference(documentID: String, requestJSON: String,
                    access: CadDocumentAccess) async throws -> String
+    /// The same reference loop carrying the REAL runtime cancellation token.
+    /// The host rechecks it after every asynchronous source read and before
+    /// the attach/update command mutates or starts its commit. A host that
+    /// does not implement this overload keeps the legacy behavior through the
+    /// default forwarding implementation below.
+    func reference(documentID: String, requestJSON: String,
+                   access: CadDocumentAccess,
+                   cancellation: CancellationToken) async throws -> String
     /// Applies an already-authorized NATIVE `.floecad` proposal through the
     /// RUNTIME-APPROVED CALL path (no interactive UI grant). The caller
     /// consumed the single-use runtime authority for this exact `cad.document`
@@ -493,6 +501,14 @@ public extension CadDocumentHost {
     func reference(documentID: String, requestJSON: String,
                    access: CadDocumentAccess) async throws -> String {
         throw FloeError.notFound("native_cad_reference")
+    }
+    /// Honest default for the new requirement: conformers that predate the
+    /// runtime token keep compiling and simply perform the same request. The
+    /// app host overrides this with the token-aware implementation.
+    func reference(documentID: String, requestJSON: String,
+                   access: CadDocumentAccess,
+                   cancellation: CancellationToken) async throws -> String {
+        try await reference(documentID: documentID, requestJSON: requestJSON, access: access)
     }
     func createNativePackage(relativePath: String, name: String,
                              access: CadDocumentAccess) async throws -> CadNativePackageReceipt {
@@ -2089,7 +2105,10 @@ public struct CadDocumentTool: AgentTool {
             // The SOURCE path is resolved by the host through the same task
             // workspace guard as import; the model supplies a path request,
             // not a grant. attach/update are ordinary authorized CAD edits
-            // committed with CAS; check/inspect are read-only.
+            // committed with CAS; check/inspect are read-only. The REAL
+            // runtime token travels with the request so a late source load
+            // cannot mutate after cancellation.
+            try context.cancellation.throwIfCancelled()
             let source = args.sourcePath!.trimmingCharacters(in: .whitespacesAndNewlines)
             let action = args.referenceAction!
                 .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -2110,7 +2129,8 @@ public struct CadDocumentTool: AgentTool {
             }
             let request = try jsonString(["kind": "reference", "payload": payload])
             let reply = try await host.reference(documentID: args.path!, requestJSON: request,
-                                                 access: access)
+                                                 access: access,
+                                                 cancellation: context.cancellation)
             return completeOutput("cad.document reference: \(reply)", 24_000)
 
         case .read:

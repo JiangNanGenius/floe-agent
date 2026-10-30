@@ -254,8 +254,12 @@ public nonisolated struct CADPartReference: Codable, Sendable, Equatable, Identi
     public var sourceBodyID: UUID
     public var sourceDocumentName: String
     public var sourceBodyName: String
-    /// Writer/schema versions observed when this pin was taken.
-    public var sourceWriterVersion: Int
+    /// Schema capability of the App-owned READER that verified and staged
+    /// this source. It is deliberately NOT called a writer version: the
+    /// package manifest records no historical writer identity, so presenting
+    /// this reader's capability as the source writer's fact would be false.
+    /// The actual source package format is `sourceSchemaVersion`.
+    public var verifierSchemaVersion: Int
     public var sourceSchemaVersion: Int
     public var sourceRevision: Int
     /// Verified content identity (SHA-256) of the source package at pin time.
@@ -273,7 +277,6 @@ public nonisolated struct CADPartReference: Codable, Sendable, Equatable, Identi
     /// the user checks/updates; never inferred by the kernel.
     public var availableSourceRevision: Int?
     public var availableSourceContentHash: String?
-    public var availableWriterVersion: Int?
     public var availableSchemaVersion: Int?
     public var lastCheckedAt: Date?
     /// Non-nil after an explicit check found the source unavailable. The
@@ -287,7 +290,7 @@ public nonisolated struct CADPartReference: Codable, Sendable, Equatable, Identi
                 sourceBodyID: UUID,
                 sourceDocumentName: String,
                 sourceBodyName: String,
-                sourceWriterVersion: Int,
+                verifierSchemaVersion: Int,
                 sourceSchemaVersion: Int,
                 sourceRevision: Int,
                 sourceContentHash: String,
@@ -297,7 +300,6 @@ public nonisolated struct CADPartReference: Codable, Sendable, Equatable, Identi
                 pinnedAt: Date = Date(),
                 availableSourceRevision: Int? = nil,
                 availableSourceContentHash: String? = nil,
-                availableWriterVersion: Int? = nil,
                 availableSchemaVersion: Int? = nil,
                 lastCheckedAt: Date? = nil,
                 missingReason: String? = nil) {
@@ -308,7 +310,7 @@ public nonisolated struct CADPartReference: Codable, Sendable, Equatable, Identi
         self.sourceBodyID = sourceBodyID
         self.sourceDocumentName = sourceDocumentName
         self.sourceBodyName = sourceBodyName
-        self.sourceWriterVersion = sourceWriterVersion
+        self.verifierSchemaVersion = verifierSchemaVersion
         self.sourceSchemaVersion = sourceSchemaVersion
         self.sourceRevision = sourceRevision
         self.sourceContentHash = sourceContentHash
@@ -318,7 +320,6 @@ public nonisolated struct CADPartReference: Codable, Sendable, Equatable, Identi
         self.pinnedAt = pinnedAt
         self.availableSourceRevision = availableSourceRevision
         self.availableSourceContentHash = availableSourceContentHash
-        self.availableWriterVersion = availableWriterVersion
         self.availableSchemaVersion = availableSchemaVersion
         self.lastCheckedAt = lastCheckedAt
         self.missingReason = missingReason
@@ -336,10 +337,13 @@ public nonisolated struct CADPartReference: Codable, Sendable, Equatable, Identi
     enum CodingKeys: String, CodingKey {
         case id, name, kind, sourceDocumentID, sourceBodyID
         case sourceDocumentName, sourceBodyName
-        case sourceWriterVersion, sourceSchemaVersion, sourceRevision
+        case verifierSchemaVersion, sourceSchemaVersion, sourceRevision
         case sourceContentHash, stagedBodyID, stagedGeometryHash, stagedRevision
         case pinnedAt, availableSourceRevision, availableSourceContentHash
-        case availableWriterVersion, availableSchemaVersion, lastCheckedAt, missingReason
+        case availableSchemaVersion, lastCheckedAt, missingReason
+        /// Only read, for documents written by the unreleased E01 build that
+        /// still used the misnamed field. Encoding never emits it.
+        case legacySourceWriterVersion = "sourceWriterVersion"
     }
 
     public init(from decoder: Decoder) throws {
@@ -351,7 +355,12 @@ public nonisolated struct CADPartReference: Codable, Sendable, Equatable, Identi
         sourceBodyID = try container.decodeIfPresent(UUID.self, forKey: .sourceBodyID) ?? UUID()
         sourceDocumentName = try container.decodeIfPresent(String.self, forKey: .sourceDocumentName) ?? ""
         sourceBodyName = try container.decodeIfPresent(String.self, forKey: .sourceBodyName) ?? ""
-        sourceWriterVersion = try container.decodeIfPresent(Int.self, forKey: .sourceWriterVersion) ?? 0
+        if let value = try container.decodeIfPresent(Int.self, forKey: .verifierSchemaVersion) {
+            verifierSchemaVersion = value
+        } else {
+            verifierSchemaVersion = try container.decodeIfPresent(
+                Int.self, forKey: .legacySourceWriterVersion) ?? 0
+        }
         sourceSchemaVersion = try container.decodeIfPresent(Int.self, forKey: .sourceSchemaVersion) ?? 0
         sourceRevision = try container.decodeIfPresent(Int.self, forKey: .sourceRevision) ?? 0
         sourceContentHash = try container.decodeIfPresent(String.self, forKey: .sourceContentHash) ?? ""
@@ -362,7 +371,6 @@ public nonisolated struct CADPartReference: Codable, Sendable, Equatable, Identi
         availableSourceRevision = try container.decodeIfPresent(Int.self, forKey: .availableSourceRevision)
         availableSourceContentHash = try container.decodeIfPresent(String.self,
                                                                    forKey: .availableSourceContentHash)
-        availableWriterVersion = try container.decodeIfPresent(Int.self, forKey: .availableWriterVersion)
         availableSchemaVersion = try container.decodeIfPresent(Int.self, forKey: .availableSchemaVersion)
         lastCheckedAt = try container.decodeIfPresent(Date.self, forKey: .lastCheckedAt)
         missingReason = try container.decodeIfPresent(String.self, forKey: .missingReason)

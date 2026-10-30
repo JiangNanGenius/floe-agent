@@ -670,4 +670,275 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         XCTAssertEqual(wheel2["quantity"] as? Int, 2)
         XCTAssertEqual(Set(try XCTUnwrap(wheel2["instanceIDs"] as? [String])), Set(instanceIDs))
     }
+
+    // MARK: - Guarded host reference commit (review repairs)
+
+    /// A failed host commit reverts the EXACT reference command and nothing
+    /// else: a pre-existing redo entry survives, the failed command never
+    /// becomes redoable, and the document returns to its last committed state.
+    func testFailedReferenceSaveRollsBackExactlyAndKeepsRedoHistory() async throws {
+        let targetBodyID = try XCTUnwrap(UUID(uuidString: try makeBox(document, name: "Target")))
+        let targetBody = try XCTUnwrap(body(targetBodyID))
+        document.session.perform(RenameItemCommand(
+            item: .body(targetBody.id), before: targetBody.name, after: "Renamed"))
+        document.session.undo()
+        let redoBefore = document.session.undoStack.redoCommands.map(\.title)
+        XCTAssertEqual(redoBefore, ["Rename"])
+        let cleanSave = await document.save()
+        XCTAssertTrue(cleanSave.succeeded, cleanSave.error ?? "")
+        XCTAssertFalse(document.hasUnsavedChanges)
+
+        let undoDepthBefore = document.session.undoStack.undoCommands.count
+        let (sourceURL, _) = try await makeSourceDocument(name: "Gear")
+        let bridge = CADAssemblyReferenceBridge()
+        let attach = await bridge.attach(sourceURL: sourceURL, to: document, name: "Gear")
+        XCTAssertEqual(attach["ok"] as? Bool, true, "\(attach)")
+        let referenceID = try XCTUnwrap(UUID(uuidString: attach["referenceID"] as? String ?? ""))
+        let receipt = try XCTUnwrap(document.pendingOwnedCommand)
+        XCTAssertEqual(receipt.tag, "cad.reference.attach:\(referenceID.uuidString)")
+        XCTAssertTrue(document.containsPartReference(referenceID))
+
+        document.session.saveFailureForTesting = "simulated explicit-save failure"
+        let failed = await document.save()
+        XCTAssertFalse(failed.succeeded, "the injected host commit failure must be reported")
+        XCTAssertEqual(document.rollbackOwnedCommand(receipt), .reverted)
+        XCTAssertFalse(document.containsPartReference(referenceID),
+                       "the failed reference must not linger in memory")
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoDepthBefore)
+        XCTAssertEqual(document.session.undoStack.redoCommands.map(\.title), redoBefore,
+                       "a failed reference command must not become redoable or destroy prior redo")
+        XCTAssertFalse(document.hasUnsavedChanges)
+
+        // The preserved redo still replays the ordinary edit, never the
+        // rejected reference.
+        document.session.redo()
+        XCTAssertEqual(body(targetBodyID)?.name, "Renamed")
+        XCTAssertFalse(document.containsPartReference(referenceID))
+    }
+
+    /// A later real edit during the commit suspension invalidates the exact
+    /// rollback. Both the reference and the later edit are preserved, and a
+    /// subsequent ordinary undo removes only the later edit.
+    func testFailedReferenceSaveWithLaterEditPreservesBoth() async throws {
+        let targetBodyID = try XCTUnwrap(UUID(uuidString: try makeBox(document, name: "Target")))
+        let (sourceURL, _) = try await makeSourceDocument(name: "Gear")
+        let bridge = CADAssemblyReferenceBridge()
+        let attach = await bridge.attach(sourceURL: sourceURL, to: document, name: "Gear")
+        XCTAssertEqual(attach["ok"] as? Bool, true, "\(attach)")
+        let referenceID = try XCTUnwrap(UUID(uuidString: attach["referenceID"] as? String ?? ""))
+        let receipt = try XCTUnwrap(document.pendingOwnedCommand)
+
+        document.session.saveFailureForTesting = "simulated explicit-save failure"
+        document.session.savePrewarmSuspensionForTesting = {
+            guard let current = self.body(targetBodyID) else { return }
+            document.session.perform(RenameItemCommand(
+                item: .body(current.id), before: current.name, after: "Later Rename"))
+        }
+        let failed = await document.save()
+        document.session.savePrewarmSuspensionForTesting = nil
+        XCTAssertFalse(failed.succeeded)
+
+        XCTAssertEqual(document.rollbackOwnedCommand(receipt), .superseded,
+                       "a later edit must block the exact rollback")
+        XCTAssertTrue(document.containsPartReference(referenceID),
+                      "a reference that remains must never be reported as nothing applied")
+        XCTAssertEqual(body(targetBodyID)?.name, "Later Rename",
+                       "the later edit must survive the refused rollback")
+        XCTAssertTrue(document.hasUnsavedChanges)
+
+        document.session.undo()
+        XCTAssertEqual(body(targetBodyID)?.name, "Target")
+        XCTAssertTrue(document.containsPartReference(referenceID),
+                      "undo must remove only the later edit, not the reference command beneath it")
+    }
+
+    /// Another save can commit the same reference command while the explicit
+    /// commit is waiting to finish. A later failure must NOT undo that
+    /// successful commit.
+    func testReferenceCommittedByConcurrentSaveIsNeverRolledBack() async throws {
+        let (sourceURL, _) = try await makeSourceDocument(name: "Gear")
+        let bridge = CADAssemblyReferenceBridge()
+        let attach = await bridge.attach(sourceURL: sourceURL, to: document, name: "Gear")
+        XCTAssertEqual(attach["ok"] as? Bool, true, "\(attach)")
+        let referenceID = try XCTUnwrap(UUID(uuidString: attach["referenceID"] as? String ?? ""))
+        let receipt = try XCTUnwrap(document.pendingOwnedCommand)
+
+        document.session.saveFailureForTesting = "simulated explicit-save failure"
+        document.session.savePrewarmSuspensionForTesting = {
+            document.session.savePrewarmSuspensionForTesting = nil
+            document.session.save()
+        }
+        let failed = await document.save()
+        document.session.savePrewarmSuspensionForTesting = nil
+        XCTAssertFalse(failed.succeeded, "the explicit save still reports its own failure")
+        XCTAssertFalse(document.hasUnsavedChanges,
+                       "the concurrent save committed the reference")
+
+        XCTAssertEqual(document.rollbackOwnedCommand(receipt), .alreadyCommitted)
+        XCTAssertTrue(document.containsPartReference(referenceID))
+
+        let committedRevision = document.revision
+        document.close()
+        document = try await FloeCADDocument.open(
+            at: workDir.appendingPathComponent("target.floecad"))
+        XCTAssertTrue(document.containsPartReference(referenceID),
+                      "the concurrent commit must remain on disk")
+        XCTAssertEqual(document.revision, committedRevision)
+    }
+
+    /// The real cancellation signal is checked after the asynchronous source
+    /// load and before any mutation.
+    func testAttachRefusesLateCancellationWithoutMutation() async throws {
+        let (sourceURL, _) = try await makeSourceDocument(name: "Gear")
+        let flag = ReferenceCancellationFlag()
+        let liveURL = document.url
+        let beforeAssembly = document.session.document.assemblyData
+        let undoBefore = document.session.undoStack.undoCommands.count
+        CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = { url in
+            guard url.standardizedFileURL == liveURL.standardizedFileURL else { return }
+            flag.isCancelled = true
+            CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = nil
+        }
+        defer { CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = nil }
+
+        let attach = await CADAssemblyReferenceBridge().attach(
+            sourceURL: sourceURL, to: document, name: "Gear",
+            isCancelled: { flag.isCancelled })
+        XCTAssertEqual(attach["ok"] as? Bool, false)
+        XCTAssertEqual(attach["error"] as? String, "cancelled")
+        XCTAssertEqual(document.session.document.assemblyData, beforeAssembly)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore,
+                       "cancellation after the source load must not start a mutation")
+    }
+
+    /// A foreign commit while the source is being read means the open target
+    /// no longer represents the package; attach must refuse before mutating.
+    func testAttachRefusesChangedTargetAfterSourceLoad() async throws {
+        let (sourceURL, _) = try await makeSourceDocument(name: "Gear")
+        let targetURL = workDir.appendingPathComponent("target.floecad")
+        let beforeAssembly = document.session.document.assemblyData
+        let undoBefore = document.session.undoStack.undoCommands.count
+        let liveRevision = document.revision
+        CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = { observedURL in
+            guard observedURL.standardizedFileURL == targetURL.standardizedFileURL else { return }
+            let foreign = try await FloeCADDocument.open(at: targetURL)
+            defer { foreign.close() }
+            foreign.session.perform(SetAssemblyDataCommand(
+                before: foreign.session.document.assemblyData,
+                after: foreign.session.document.assemblyData))
+            let saved = await foreign.save()
+            XCTAssertTrue(saved.succeeded, saved.error ?? "")
+            CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = nil
+        }
+        defer { CADAssemblyReferenceBridge.referenceMutationSuspensionForTesting = nil }
+
+        let attach = await CADAssemblyReferenceBridge().attach(
+            sourceURL: sourceURL, to: document, name: "Gear")
+        XCTAssertEqual(attach["ok"] as? Bool, false)
+        XCTAssertEqual(attach["error"] as? String, "target_changed")
+        XCTAssertEqual(document.session.document.assemblyData, beforeAssembly)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore)
+        XCTAssertEqual(document.revision, liveRevision,
+                       "the stale live document must not be advanced by a refused attach")
+        let diskIdentity = await FloeCADDocument.storedIdentity(at: targetURL)
+        let disk = try XCTUnwrap(diskIdentity)
+        XCTAssertGreaterThan(disk.revision, liveRevision,
+                             "the test must use a real foreign revision advance")
+    }
+
+    /// No raw metadata-only re-pin exists; only the verified bridge update can
+    /// change the pin, and it follows the actual source bytes.
+    func testForgedMetadataRePinIsRefusedAndBridgeFollowsActualBytes() async throws {
+        let (sourceURL, _) = try await makeSourceDocument(name: "Gear")
+        let bridge = CADAssemblyReferenceBridge()
+        let attach = await bridge.attach(sourceURL: sourceURL, to: document, name: "Gear")
+        XCTAssertEqual(attach["ok"] as? Bool, true, "\(attach)")
+        let referenceID = try XCTUnwrap(UUID(uuidString: attach["referenceID"] as? String ?? ""))
+        let pinned = try XCTUnwrap(try assembly().partReference(referenceID))
+        let assemblyBefore = try XCTUnwrap(document.session.document.assemblyData)
+        let changesBefore = document.session.changeCount
+
+        let forged = service().handle(action: "updatePartReference", args: [
+            "referenceID": referenceID.uuidString,
+            "sourceContentHash": String(repeating: "f", count: 64),
+            "sourceRevision": 99,
+            "sourceDocumentName": "forged",
+            "sourceBodyName": "forged",
+            "sourceWriterVersion": 99,
+            "clearMissing": true,
+        ])
+        XCTAssertEqual(forged["ok"] as? Bool, false)
+        XCTAssertEqual(forged["error"] as? String, "unknown_action",
+                       "a caller-supplied digest must never be accepted as verification")
+        XCTAssertEqual(document.session.document.assemblyData, assemblyBefore)
+        XCTAssertEqual(document.session.changeCount, changesBefore)
+        XCTAssertEqual(try assembly().partReference(referenceID), pinned)
+
+        try await editSource(at: sourceURL, bodyID: pinned.sourceBodyID,
+                             scale: 1.3, color: SIMD4<Double>(0.2, 0.6, 0.3, 1))
+        let actualIdentity = await FloeCADDocument.storedIdentity(at: sourceURL)
+        let actual = try XCTUnwrap(actualIdentity)
+        let source = try await FloeCADDocument.open(at: sourceURL)
+        let sourceSchema = source.summary().schemaVersion
+        source.close()
+        let updated = await bridge.update(
+            referenceID: referenceID, sourceURL: sourceURL, in: document,
+            expectedSourceContentHash: pinned.sourceContentHash,
+            expectedStagedGeometryHash: pinned.stagedGeometryHash)
+        XCTAssertEqual(updated["ok"] as? Bool, true, "\(updated)")
+        let after = try XCTUnwrap(try assembly().partReference(referenceID))
+        XCTAssertEqual(after.sourceContentHash, actual.contentSHA256)
+        XCTAssertEqual(after.sourceRevision, actual.revision)
+        XCTAssertEqual(after.verifierSchemaVersion,
+                       FloeCADDocument.supportedPackageSchemaVersion)
+        XCTAssertEqual(after.sourceSchemaVersion, sourceSchema)
+        let staged = try XCTUnwrap(body(after.stagedBodyID))
+        XCTAssertEqual(CADAssemblyGeometryDigest.digest(of: staged), after.stagedGeometryHash)
+    }
+
+    /// Provenance reports the ACTUAL source schema plus this reader's verified
+    /// capability — never a fabricated historical writer fact.
+    func testReferenceProvenanceReportsReaderCapabilityAndSourceSchema() async throws {
+        let (sourceURL, _) = try await makeSourceDocument(name: "Gear")
+        let storedIdentity = await FloeCADDocument.storedIdentity(at: sourceURL)
+        let identity = try XCTUnwrap(storedIdentity)
+        let source = try await FloeCADDocument.open(at: sourceURL)
+        let schema = source.summary().schemaVersion
+        source.close()
+
+        let inspect = await CADAssemblyReferenceBridge().inspectSource(at: sourceURL)
+        XCTAssertEqual(inspect["ok"] as? Bool, true)
+        XCTAssertEqual(inspect["sourceRevision"] as? Int, identity.revision)
+        XCTAssertEqual(inspect["sourceContentHash"] as? String, identity.contentSHA256)
+        XCTAssertEqual(inspect["sourceSchemaVersion"] as? Int, schema)
+        XCTAssertEqual(inspect["verifierSchemaVersion"] as? Int,
+                       FloeCADDocument.supportedPackageSchemaVersion)
+        XCTAssertNil(inspect["sourceWriterVersion"],
+                     "the reader capability must not be labelled a writer fact")
+
+        let attach = await CADAssemblyReferenceBridge().attach(
+            sourceURL: sourceURL, to: document, name: "Gear")
+        XCTAssertEqual(attach["ok"] as? Bool, true, "\(attach)")
+        let reference = try XCTUnwrap(attach["reference"] as? [String: Any])
+        XCTAssertEqual(reference["sourceSchemaVersion"] as? Int, schema)
+        XCTAssertEqual(reference["verifierSchemaVersion"] as? Int,
+                       FloeCADDocument.supportedPackageSchemaVersion)
+        XCTAssertNil(reference["sourceWriterVersion"])
+        let references = service().handle(action: "references", args: [:])
+        let rows = try XCTUnwrap(references["references"] as? [[String: Any]])
+        let row = try XCTUnwrap(rows.first { $0["id"] as? String == reference["id"] as? String })
+        XCTAssertEqual(row["sourceSchemaVersion"] as? Int, schema)
+        XCTAssertEqual(row["verifierSchemaVersion"] as? Int,
+                       FloeCADDocument.supportedPackageSchemaVersion)
+        let referenceID = try XCTUnwrap(UUID(uuidString: reference["id"] as? String ?? ""))
+        let check = await CADAssemblyReferenceBridge().check(
+            referenceID: referenceID, sourceURL: sourceURL, in: document)
+        XCTAssertEqual(check["pinnedVerifierSchemaVersion"] as? Int,
+                       FloeCADDocument.supportedPackageSchemaVersion)
+        XCTAssertNil(check["pinnedSourceWriterVersion"])
+    }
+}
+
+private final class ReferenceCancellationFlag: @unchecked Sendable {
+    var isCancelled = false
 }

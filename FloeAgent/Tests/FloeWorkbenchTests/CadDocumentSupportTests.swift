@@ -207,13 +207,13 @@ struct CadServiceOperationCatalogTests {
                                           "report", "instances", "dof", "interference",
                                           "hierarchy", "references", "referenceDiagnostics",
                                           "addSubassembly", "placePartReference", "moveInstance",
-                                          "removePartReference", "updatePartReference", "makeIndependent"]
+                                          "removePartReference", "makeIndependent"]
     private static let assemblyMutating: Set<String> = ["addInstance", "addConstraint", "removeInstance",
                                                         "setTransform", "setVisible", "removeConstraint",
                                                         "suppressConstraint", "solve", "sourceUpdate", "clear",
                                                         "addExplodedView", "updateExplodedView", "removeExplodedView",
                                                         "addSubassembly", "placePartReference", "moveInstance",
-                                                        "removePartReference", "updatePartReference", "makeIndependent"]
+                                                        "removePartReference", "makeIndependent"]
 
     @Test("table mirrors the engine routers and separates mutating from read-only")
     func tableIntegrity() throws {
@@ -245,6 +245,23 @@ struct CadServiceOperationCatalogTests {
         // The two reported model guesses are NOT aliases; they are refused.
         #expect(CadServiceOperationCatalog.normalizedAction(kind: "drawing", raw: "createPage") == nil)
         #expect(CadServiceOperationCatalog.suggestion(for: "drawing.createPage") == "addPage")
+    }
+
+    @Test("no metadata-only external re-pin action is advertised")
+    func metadataOnlyRePinIsNotAdvertised() {
+        // A caller-supplied hash/revision/name must never become verification
+        // authority. The verified update lives behind
+        // `cad.document action=reference reference_action=update`, which reads
+        // the actual source bytes through the App-owned bridge.
+        #expect(CadServiceOperationCatalog.operation(kind: "assembly",
+                                                     action: "updatePartReference") == nil)
+        #expect(!CadServiceOperationCatalog.actionNames(forKind: "assembly")
+            .contains("updatePartReference"))
+        // Place/rename-independent/reference reads remain advertised.
+        for action in ["placePartReference", "makeIndependent", "references"] {
+            #expect(CadServiceOperationCatalog.operation(kind: "assembly", action: action) != nil,
+                    "assembly.\(action) must stay available")
+        }
     }
 
     @Test("assembly and drawing extensions expose the exact engine argument contract")

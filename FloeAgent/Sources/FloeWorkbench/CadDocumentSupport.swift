@@ -1059,22 +1059,6 @@ public enum CadServiceOperationCatalog: Sendable {
                   summary: "Remove a part reference only when no instance uses it; the cached staged body is retained.",
                   arguments: [arg("id", "uuid", required: true, note: "alias referenceID")],
                   examples: [#"{"id":"<reference uuid>"}"#]),
-        Operation(kind: "assembly", action: "updatePartReference", mutating: true,
-                  summary: "Explicit metadata-only re-pin of an existing staged reference with source/staged hash "
-                    + "compare-and-swap. Geometry replacement is restricted to the native reference bridge.",
-                  arguments: [
-                      arg("referenceID", "uuid", required: true),
-                      arg("expectedSourceContentHash", "string", note: "CAS against the currently pinned source hash"),
-                      arg("expectedStagedGeometryHash", "string", note: "CAS against the currently pinned staged geometry hash"),
-                      arg("stagedBodyID", "uuid", note: "must equal the current staged body; cannot swap bodies"),
-                      arg("sourceContentHash", "string", required: true, note: "verified source content SHA-256"),
-                      arg("sourceRevision", "integer"),
-                      arg("sourceWriterVersion", "integer"),
-                      arg("sourceSchemaVersion", "integer"),
-                      arg("sourceDocumentName", "string"), arg("sourceBodyName", "string"),
-                      arg("clearMissing", "boolean", note: "true only after an explicit source check"),
-                  ],
-                  examples: [#"{"referenceID":"<reference uuid>","expectedSourceContentHash":"<old sha256>","sourceContentHash":"<verified sha256>","sourceRevision":3}"#]),
         Operation(kind: "assembly", action: "makeIndependent", mutating: true,
                   summary: "Convert one shared part instance into an independent copy in ONE undo step; "
                     + "the instance ID and every constraint/BOM reference stay unchanged, while geometry/material become owned.",

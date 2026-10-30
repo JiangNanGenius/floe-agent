@@ -40,7 +40,10 @@ public nonisolated enum CADServiceOperations {
 
     /// Mutating assembly actions (every one that writes `assemblyData` or
     /// bodies). `report`/`instances`/`dof`/`interference`/`reference`/
-    /// `referenceCandidates` are read-only. `previewExplodedView` and
+    /// `referenceCandidates` are read-only. `updatePartReference` is
+    /// DELIBERATELY absent: external source identity changes only through the
+    /// App-owned bridge that re-reads the verified source bytes, so no raw
+    /// metadata-only re-pin action exists to classify. `previewExplodedView` and
     /// `resetExplodedView` change only the transient viewport preview and are
     /// deliberately NOT mutations: they write no assembly JSON, undo step or
     /// dirty state, so they stay directly callable like the other reads.
@@ -52,7 +55,7 @@ public nonisolated enum CADServiceOperations {
         // E01/E02 additive hierarchy/reference actions. Each persists
         // assemblyData or a staged body through ONE undoable command.
         "addSubassembly", "placePartReference", "moveInstance",
-        "removePartReference", "updatePartReference", "makeIndependent",
+        "removePartReference", "makeIndependent",
     ]
 
     /// Mutating drawing actions. `pages`/`project`/`dimensions`/`export` are

@@ -79,12 +79,23 @@ actor FakeCadHost: CadDocumentHost {
 
     var referenceRequests: [String] = []
     var referenceReply: String = #"{"ok":true,"mutated":false,"referenceID":"11111111-1111-1111-1111-111111111111"}"#
+    var lastReferenceCancellation: CancellationToken?
 
     func setReferenceReply(_ reply: String) { referenceReply = reply }
 
     func reference(documentID: String, requestJSON: String,
                    access: CadDocumentAccess) async throws -> String {
         referenceRequests.append(requestJSON)
+        return referenceReply
+    }
+
+    /// The real runtime-token overload used by the tool. Recording the token
+    /// lets the test prove the token is the exact per-call one, not a copy.
+    func reference(documentID: String, requestJSON: String,
+                   access: CadDocumentAccess,
+                   cancellation: CancellationToken) async throws -> String {
+        referenceRequests.append(requestJSON)
+        lastReferenceCancellation = cancellation
         return referenceReply
     }
 
@@ -2217,10 +2228,10 @@ struct CadOriginalSceneObservationTests {
 
 @Suite("cad.document native reference action")
 struct CadDocumentReferenceActionTests {
-    func makeContext() -> ToolContext {
+    func makeContext(cancellation: CancellationToken = CancellationToken()) -> ToolContext {
         ToolContext(runID: UUID(), toolCallID: "call-reference-1", scope: .local,
                     workspaceRootURL: URL(fileURLWithPath: "/tmp/workspace"),
-                    cancellation: CancellationToken(), environmentID: "env-1",
+                    cancellation: cancellation, environmentID: "env-1",
                     conversationID: UUID())
     }
 
@@ -2228,10 +2239,11 @@ struct CadDocumentReferenceActionTests {
         try JSONDecoder().decode(CadDocumentArguments.self, from: Data(json.utf8))
     }
 
-    func execute(_ tool: CadDocumentTool, _ json: String) async throws -> ToolExecutionOutput {
+    func execute(_ tool: CadDocumentTool, _ json: String,
+                 cancellation: CancellationToken = CancellationToken()) async throws -> ToolExecutionOutput {
         let args = try decode(json)
         try tool.validate(args)
-        return try await tool.execute(args, context: makeContext())
+        return try await tool.execute(args, context: makeContext(cancellation: cancellation))
     }
 
     @Test("native reference requires a .floecad workspace source and routes the four actions to the host")
@@ -2268,5 +2280,36 @@ struct CadDocumentReferenceActionTests {
             try tool.validate(try decode(#"{"action":"reference","path":"target.floecad","reference_action":"update","source_path":"parts/gear.floecad","reference_id":"22222222-2222-2222-2222-222222222222","expected_source_sha256":"deadbeef"}"#))
             Issue.record("update requires reference_id and a 64-hex CAS hash")
         } catch is FloeError {}
+    }
+
+    @Test("the REAL runtime cancellation token reaches the host and stops a cancelled call")
+    func runtimeTokenReachesHostAndCancellationStopsWork() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        let token = CancellationToken()
+
+        _ = try await execute(
+            tool,
+            #"{"action":"reference","path":"target.floecad","reference_action":"check","source_path":"parts/gear.floecad","reference_id":"22222222-2222-2222-2222-222222222222"}"#,
+            cancellation: token)
+        let observedToken = await host.lastReferenceCancellation
+        #expect(observedToken === token,
+                "the tool must forward the exact per-call runtime token")
+
+        token.cancel()
+        let before = await host.referenceRequests.count
+        do {
+            _ = try await execute(
+                tool,
+                #"{"action":"reference","path":"target.floecad","reference_action":"attach","source_path":"parts/gear.floecad"}"#,
+                cancellation: token)
+            Issue.record("a cancelled runtime token must stop before the host is called")
+        } catch FloeError.cancelled {
+            // expected
+        } catch {
+            Issue.record("unexpected cancellation error: \(error)")
+        }
+        let after = await host.referenceRequests.count
+        #expect(after == before, "a cancelled call must not reach the host")
     }
 }

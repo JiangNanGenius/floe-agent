@@ -770,22 +770,29 @@ actor CadDocumentCenter: CadDocumentHost {
         ])
     }
 
-    /// Native import as a PROPOSAL: the guarded workspace source is read,
-    /// size-checked and hashed, the bridge drafts an import on a throwaway
-    /// package copy, and the proposal is persisted exactly like a geometry
-    /// proposal. Nothing changes until the user confirms in the CAD UI and a
-    /// later apply carries that single-use grant. The source file itself is
-    /// never modified.
     /// App-owned external native part reference loop for `cad.document
     /// action=reference`. The source is resolved through the SAME guarded task
     /// workspace as import; a model-supplied path is a path request, never a
     /// grant. Only a native `.floecad` package is accepted. Read-only
-    /// check/inspect never saves; attach/update commit one undoable bridge
-    /// command and the normal CAS save. A failed save is rolled back with the
-    /// same single undo, so memory and disk never disagree.
+    /// check/inspect never save; attach/update author ONE tagged undoable
+    /// command and commit it with the normal CAS save. The real runtime
+    /// cancellation token travels with the request and is rechecked after
+    /// every asynchronous source read, before the mutation and before the
+    /// commit starts. A failed commit rolls back only the EXACT still-newest
+    /// uncommitted command; later edits and successful commits are preserved.
     func reference(documentID: String, requestJSON: String,
                    access: CadDocumentAccess) async throws -> String {
+        // Legacy entry point for callers without a runtime token.
+        try await reference(documentID: documentID, requestJSON: requestJSON,
+                            access: access, cancellation: CancellationToken())
+    }
+
+    func reference(documentID: String, requestJSON: String,
+                   access: CadDocumentAccess,
+                   cancellation: CancellationToken) async throws -> String {
+        try cancellation.throwIfCancelled()
         let resolved = try await resolveNativeAware(documentID: documentID, access: access)
+        try cancellation.throwIfCancelled()
         let targetURL = try resolved.service.guardResolver.resolve(resolved.id)
         guard targetURL.pathExtension.lowercased() == "floecad" else {
             throw FloeError.validationFailed("reference targets a native .floecad package")
@@ -854,14 +861,14 @@ actor CadDocumentCenter: CadDocumentHost {
             sourceBodyID = nil
         }
         let name = (payload["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let result = await Self.performReferenceAction(
+        return try await Self.performReferenceAction(
             targetURL: targetURL, sourceURL: sourceURL, sourceRelative: sourceRelative,
             action: action, referenceID: referenceID,
             expectedSourceSHA256: payload["expected_source_sha256"] as? String,
             expectedStagedSHA256: payload["expected_staged_sha256"] as? String,
             sourceBodyID: sourceBodyID,
-            name: (name?.isEmpty == false) ? name : nil)
-        return Self.encodeNativeJSON(result)
+            name: (name?.isEmpty == false) ? name : nil,
+            cancellation: cancellation)
     }
 
     @MainActor
@@ -869,66 +876,274 @@ actor CadDocumentCenter: CadDocumentHost {
         targetURL: URL, sourceURL: URL, sourceRelative: String,
         action: String, referenceID: UUID?,
         expectedSourceSHA256: String?, expectedStagedSHA256: String?,
-        sourceBodyID: UUID?, name: String?) async -> [String: Any] {
+        sourceBodyID: UUID?, name: String?,
+        cancellation: CancellationToken) async throws -> String {
+        // Return an encoded Sendable value: this static helper is MainActor
+        // isolated while `CadDocumentCenter` is an actor, so a non-Sendable
+        // JSON dictionary must not cross that boundary.
+        func encoded(_ object: [String: Any]) -> String { Self.encodeNativeJSON(object) }
+        try cancellation.throwIfCancelled()
         let document: FloeCADDocument
         do {
             document = try await FloeCAD3DBridge.shared.openDocument(at: targetURL)
         } catch {
-            return ["ok": false, "mutated": false, "error": "document_unavailable",
-                    "message": "The target CAD document could not be opened: \(error.localizedDescription)"]
+            return encoded(["ok": false, "mutated": false, "error": "document_unavailable",
+                            "message": "The target CAD document could not be opened: \(error.localizedDescription)"])
         }
+        try cancellation.throwIfCancelled()
+        let receiptBeforeBridge = document.pendingOwnedCommand
         let bridge = CADAssemblyReferenceBridge()
+        let isCancelled: @Sendable () -> Bool = { cancellation.isCancelled }
         let reply: [String: Any]
         switch action {
         case "inspect":
-            reply = await bridge.inspectSource(at: sourceURL)
+            reply = await bridge.inspectSource(at: sourceURL, isCancelled: isCancelled)
         case "check":
             guard let referenceID else {
-                return ["ok": false, "mutated": false, "error": "missing_reference_id",
-                        "message": "check requires reference_id"]
+                return encoded(["ok": false, "mutated": false, "error": "missing_reference_id",
+                                "message": "check requires reference_id"])
             }
             reply = await bridge.check(referenceID: referenceID, sourceURL: sourceURL,
-                                       in: document)
+                                       in: document, isCancelled: isCancelled)
         case "attach":
             reply = await bridge.attach(sourceURL: sourceURL, to: document,
                                         name: name, sourceBodyID: sourceBodyID,
-                                        expectedSourceContentHash: expectedSourceSHA256)
+                                        expectedSourceContentHash: expectedSourceSHA256,
+                                        isCancelled: isCancelled)
         case "update":
             guard let referenceID else {
-                return ["ok": false, "mutated": false, "error": "missing_reference_id",
-                        "message": "update requires reference_id"]
+                return encoded(["ok": false, "mutated": false, "error": "missing_reference_id",
+                                "message": "update requires reference_id"])
             }
             reply = await bridge.update(
                 referenceID: referenceID, sourceURL: sourceURL, in: document,
                 expectedSourceContentHash: expectedSourceSHA256,
-                expectedStagedGeometryHash: expectedStagedSHA256)
+                expectedStagedGeometryHash: expectedStagedSHA256,
+                isCancelled: isCancelled)
         default:
-            return ["ok": false, "mutated": false, "error": "unknown_reference_action",
-                    "message": "reference action must be attach|check|update|inspect"]
+            return encoded(["ok": false, "mutated": false, "error": "unknown_reference_action",
+                            "message": "reference action must be attach|check|update|inspect"])
         }
         var enriched = reply
         enriched["source_path"] = sourceRelative
+        if (reply["error"] as? String) == "cancelled",
+           (reply["mutated"] as? Bool) != true {
+            // The bridge observed the token during source loading and made no
+            // change; surface real runtime cancellation rather than a generic
+            // tool refusal.
+            throw FloeError.cancelled
+        }
+        if action == "attach" || action == "update" {
+            // A refusal must still describe the ACTUAL state: if this call
+            // left a NEW owned command applied, never imply nothing changed.
+            // A pre-existing reference alone is not evidence that an update
+            // applied, so compare the owned-command receipt identity instead
+            // of the reference's mere presence.
+            let replyReferenceID = (reply["referenceID"] as? String).flatMap(UUID.init)
+            let boundReferenceID = replyReferenceID ?? referenceID
+            if let presentID = boundReferenceID {
+                enriched["reference_present"] = document.containsPartReference(presentID)
+            }
+            if (reply["ok"] as? Bool) != true,
+               (enriched["mutated"] as? Bool) == nil {
+                let expectedTag = boundReferenceID.map { "cad.reference.\(action):\($0.uuidString)" }
+                let currentReceipt = document.pendingOwnedCommand
+                let newCommandApplied = currentReceipt != nil
+                    && currentReceipt?.token != receiptBeforeBridge?.token
+                    && currentReceipt?.tag == expectedTag
+                enriched["mutated"] = newCommandApplied
+            }
+            if (enriched["mutated"] as? Bool) == true,
+               enriched["committed"] == nil {
+                enriched["committed"] = false
+            }
+        }
         guard action == "attach" || action == "update",
               (reply["ok"] as? Bool) == true else {
-            return enriched
+            return encoded(enriched)
+        }
+        guard (reply["mutated"] as? Bool) == true else {
+            // `update` on an already pinned source is a read-only no-op; it
+            // must not trigger a save or a rollback handle.
+            enriched["committed"] = false
+            return encoded(enriched)
+        }
+        let parsedReferenceID = (reply["referenceID"] as? String).flatMap(UUID.init)
+        if let parsedReferenceID {
+            enriched["reference_present"] = document.containsPartReference(parsedReferenceID)
+        }
+        let expectedTag = parsedReferenceID.map { "cad.reference.\(action):\($0.uuidString)" }
+        let receipt = document.pendingOwnedCommand
+        let receiptMatches = receipt != nil && expectedTag != nil && receipt?.tag == expectedTag
+        if cancellation.isCancelled {
+            guard receiptMatches, let receipt else {
+                var payload = referenceFailurePayload(
+                    enriched, document: document, referenceID: parsedReferenceID,
+                    rollback: .unavailable,
+                    saveError: "cancellation was observed after the reference command was applied",
+                    action: action)
+                payload["cancelled"] = true
+                payload["error"] = "cancelled"
+                return encoded(payload)
+            }
+            let outcome = document.rollbackOwnedCommand(receipt)
+            switch outcome {
+            case .reverted:
+                throw FloeError.cancelled
+            case .alreadyCommitted:
+                let present = parsedReferenceID.map(document.containsPartReference) ?? false
+                enriched["reference_present"] = present
+                enriched["mutated"] = present
+                enriched["committed"] = present
+                enriched["cancelled_after_commit"] = true
+                enriched["revision"] = document.revision
+                enriched["content_sha256"] = document.contentSHA256
+                return encoded(enriched)
+            case .superseded, .unavailable:
+                var payload = referenceFailurePayload(
+                    enriched, document: document, referenceID: parsedReferenceID,
+                    rollback: outcome,
+                    saveError: "cancellation was observed after the reference command was applied",
+                    action: action)
+                payload["cancelled"] = true
+                payload["error"] = "cancelled"
+                return encoded(payload)
+            }
         }
         let save = await document.save()
-        if !save.succeeded {
-            // The bridge mutation is one undo step. A refused CAS/IO commit
-            // must not leave an in-memory reference that never reached disk.
-            document.revertLastUncommittedCommand()
-            enriched["ok"] = false
-            enriched["mutated"] = false
-            enriched["error"] = "reference_commit_failed"
-            enriched["message"] = "The reference was not committed: \(save.error ?? "save failed")"
-            return enriched
+        if save.succeeded {
+            enriched["revision"] = save.revision
+            enriched["content_sha256"] = save.contentSHA256
+            enriched["committed"] = true
+            if cancellation.isCancelled {
+                // An atomic commit already underway finished. Its result is
+                // durable and is never rolled back; report it honestly.
+                enriched["cancelled_after_commit"] = true
+                enriched["message"] = "The reference was committed before cancellation was observed; "
+                    + "the committed reference was not rolled back."
+            }
+            return encoded(enriched)
         }
-        enriched["revision"] = save.revision
-        enriched["content_sha256"] = save.contentSHA256
-        enriched["committed"] = true
-        return enriched
+        let rollback: CADOwnedCommandRollback
+        if receiptMatches, let receipt {
+            rollback = document.rollbackOwnedCommand(receipt)
+        } else {
+            rollback = .unavailable
+        }
+        return encoded(referenceFailurePayload(
+            enriched, document: document, referenceID: parsedReferenceID,
+            rollback: rollback,
+            saveError: save.error ?? "the save failed",
+            action: action))
     }
 
+    /// State-truthful failure envelope for an attach/update whose commit did
+    /// not succeed. `reference_present` reports any reference that remains
+    /// (including a pre-existing pin after a reverted update), while `mutated`
+    /// reports whether THIS call left an applied change; `committed` is true
+    /// only when the save identity proves a concurrent commit landed.
+    @MainActor
+    private static func referenceFailurePayload(
+        _ reply: [String: Any], document: FloeCADDocument, referenceID: UUID?,
+        rollback: CADOwnedCommandRollback, saveError: String,
+        action: String) -> [String: Any] {
+        var payload = reply
+        let stillPresent: Bool
+        if let referenceID {
+            stillPresent = document.containsPartReference(referenceID)
+        } else {
+            stillPresent = false
+        }
+        payload["reference_present"] = stillPresent
+        payload["document_dirty"] = document.hasUnsavedChanges
+        payload["revision"] = document.revision
+        payload["content_sha256"] = document.contentSHA256
+        payload["save_error"] = saveError
+        if !stillPresent {
+            // Never leave a "new reference/new pin" description behind when
+            // the actual document does not contain it.
+            payload.removeValue(forKey: "reference")
+            payload.removeValue(forKey: "id")
+        }
+        switch rollback {
+        case .reverted:
+            payload["ok"] = false
+            payload["error"] = "reference_commit_failed"
+            payload["mutated"] = false
+            payload["committed"] = false
+            payload["rolledBack"] = true
+            // The bridge reply described the command that has just been
+            // reverted; do not leave a new-pin/instance description behind.
+            payload.removeValue(forKey: "reference")
+            payload.removeValue(forKey: "id")
+            payload.removeValue(forKey: "affectedSharedInstanceIDs")
+            payload.removeValue(forKey: "untouchedIndependentCopyIDs")
+            payload["state"] = stillPresent
+                ? "rolled_back_preexisting_reference" : "rolled_back"
+            let remaining = stillPresent
+                ? (action == "update"
+                    ? "The existing reference was left at its previous verified pin; the update was not applied."
+                    : "An existing reference remains at its previous verified pin.")
+                : "The in-memory reference command was removed."
+            payload["message"] = "The reference commit failed: \(saveError) \(remaining)"
+                + (document.hasUnsavedChanges
+                    ? " Other unsaved document edits were preserved."
+                    : " The document now matches its last committed state.")
+            payload["recovery"] = document.hasUnsavedChanges
+                ? "Retry saving the preserved edits, or reopen the document if another writer changed the package."
+                : "Retry the reference operation after checking the package still matches this document."
+        case .superseded:
+            payload["ok"] = false
+            payload["error"] = "reference_commit_failed"
+            payload["mutated"] = stillPresent
+            payload["committed"] = false
+            payload["rolledBack"] = false
+            payload["state"] = stillPresent ? "unsaved_later_edits" : "superseded_reference_absent"
+            payload["recovery"] = stillPresent
+                ? "A later edit, undo/redo or save changed the document after this reference command, so it was NOT rolled back. The reference and every later edit remain in memory and are not committed. Retry the save, or undo/remove the reference explicitly."
+                : "The document changed after this reference command and no longer contains the reference; nothing was rolled back."
+            payload["message"] = "The reference commit failed: \(saveError) "
+                + (payload["recovery"] as? String ?? "")
+        case .alreadyCommitted:
+            payload["ok"] = stillPresent
+            payload["mutated"] = stillPresent
+            payload["committed"] = stillPresent
+            payload["rolledBack"] = false
+            payload["state"] = stillPresent
+                ? "committed_by_concurrent_save" : "committed_then_removed_by_later_work"
+            payload["message"] = stillPresent
+                ? "A concurrent save committed this reference before the explicit save returned "
+                    + "(\(saveError)). The reference is persisted; do not apply it again."
+                : "The reference command was committed by a concurrent save, but later committed "
+                    + "work no longer contains the reference; nothing from this call is pending."
+            if document.hasUnsavedChanges {
+                payload["recovery"] = "Newer edits remain unsaved; save them normally."
+            } else if !stillPresent {
+                payload["recovery"] = "No action is needed for this call; the current document has no such reference."
+            }
+        case .unavailable:
+            payload["ok"] = false
+            payload["error"] = "reference_commit_failed"
+            payload["mutated"] = stillPresent
+            payload["committed"] = stillPresent && !document.hasUnsavedChanges
+            payload["rolledBack"] = false
+            payload["state"] = stillPresent
+                ? "unverified_reference_present" : "no_reference_present"
+            payload["recovery"] = stillPresent
+                ? "The exact rollback handle was no longer valid, so no command was reverted. Inspect the reference and save state before retrying; do not assume the document is unchanged."
+                : "No reference remains in the document; the failed command is not present."
+            payload["message"] = "The reference commit failed: \(saveError) "
+                + (payload["recovery"] as? String ?? "")
+        }
+        return payload
+    }
+
+    /// Native import as a PROPOSAL: the guarded workspace source is read,
+    /// size-checked and hashed, the bridge drafts an import on a throwaway
+    /// package copy, and the proposal is persisted exactly like a geometry
+    /// proposal. Nothing changes until the user confirms in the CAD UI and a
+    /// later apply carries that single-use grant. The source file itself is
+    /// never modified.
     private func nativeImportProposal(resolved: Resolved, documentURL: URL,
                                       request: [String: Any], access: CadDocumentAccess,
                                       canonicalTarget: String) async throws -> String {

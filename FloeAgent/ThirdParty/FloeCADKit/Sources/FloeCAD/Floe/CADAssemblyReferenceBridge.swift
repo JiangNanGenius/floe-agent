@@ -39,7 +39,12 @@ public final class CADAssemblyReferenceBridge {
 
     /// Read-only source inspection used by the native picker before a body is
     /// chosen. The URL must already have been authorized by the App host.
-    public func inspectSource(at sourceURL: URL) async -> [String: Any] {
+    public func inspectSource(at sourceURL: URL,
+                              isCancelled: @Sendable () -> Bool = { false })
+    async -> [String: Any] {
+        if isCancelled() {
+            return failure("cancelled", Self.cancelledMessage)
+        }
         let prepared = prepareSourceURL(sourceURL, target: nil)
         guard case .success(let url) = prepared else {
             return failure("invalid_source", prepared.failureMessage)
@@ -51,9 +56,19 @@ public final class CADAssemblyReferenceBridge {
             return failure("source_unreadable",
                            "The native CAD package could not be verified; nothing was read.")
         }
+        if isCancelled() {
+            return failure("cancelled", Self.cancelledMessage)
+        }
         do {
             let source = try await FloeCADDocument.open(at: url)
             defer { source.close() }
+            if isCancelled() {
+                return failure("cancelled", Self.cancelledMessage)
+            }
+            guard source.contentSHA256 == identity.contentSHA256 else {
+                return failure("source_changed",
+                               "The source package changed while it was being inspected; nothing was changed.")
+            }
             let summary = source.summary()
             guard summary.schemaVersion <= FloeCADDocument.supportedPackageSchemaVersion else {
                 return failure("source_newer_schema",
@@ -76,7 +91,7 @@ public final class CADAssemblyReferenceBridge {
                 "sourceRevision": identity.revision,
                 "sourceContentHash": identity.contentSHA256,
                 "sourceSchemaVersion": summary.schemaVersion,
-                "sourceWriterVersion": FloeCADDocument.supportedPackageSchemaVersion,
+                "verifierSchemaVersion": FloeCADDocument.supportedPackageSchemaVersion,
                 "bodyCount": bodies.count,
                 "bodies": bodies,
             ]
@@ -97,10 +112,14 @@ public final class CADAssemblyReferenceBridge {
                        sourceBodyID: UUID? = nil,
                        sourceDocumentID: UUID = UUID(),
                        expectedSourceContentHash: String? = nil,
-                       transform: CADTransform = .identity) async -> [String: Any] {
+                       transform: CADTransform = .identity,
+                       isCancelled: @Sendable () -> Bool = { false }) async -> [String: Any] {
         if document.isReadOnly {
             return failure("document_read_only",
                            "This document is read-only; the part reference was not added.")
+        }
+        if isCancelled() {
+            return failure("cancelled", Self.cancelledMessage)
         }
         let prepared = prepareSourceURL(sourceURL, target: document)
         guard case .success(let url) = prepared else {
@@ -113,6 +132,9 @@ public final class CADAssemblyReferenceBridge {
             return failure("source_unreadable",
                            "The native CAD package could not be verified; nothing was read.")
         }
+        if isCancelled() {
+            return failure("cancelled", Self.cancelledMessage)
+        }
         if let expectedSourceContentHash, expectedSourceContentHash != identity.contentSHA256 {
             return failure("source_changed",
                            "The source package changed after it was selected; re-select it and try again.")
@@ -121,6 +143,9 @@ public final class CADAssemblyReferenceBridge {
         do {
             let source = try await FloeCADDocument.open(at: url)
             defer { source.close() }
+            if isCancelled() {
+                return failure("cancelled", Self.cancelledMessage)
+            }
             guard source.contentSHA256 == identity.contentSHA256 else {
                 return failure("source_changed",
                                "The source package changed while it was being staged; nothing was read.")
@@ -154,6 +179,18 @@ public final class CADAssemblyReferenceBridge {
                                "The selected source body has no renderable geometry.")
             }
 
+            #if DEBUG
+            await Self.referenceMutationSuspensionForTesting?(document.url)
+            #endif
+            if isCancelled() {
+                return failure("cancelled", Self.cancelledMessage)
+            }
+            if let refusal = await targetIdentityFailure(for: document) {
+                return refusal
+            }
+            if isCancelled() {
+                return failure("cancelled", Self.cancelledMessage)
+            }
             let staged = stagedBody(from: body, in: document)
             let stagedBodyID = staged.id.raw
             let reference = CADPartReference(
@@ -162,7 +199,7 @@ public final class CADAssemblyReferenceBridge {
                 sourceBodyID: body.id.raw,
                 sourceDocumentName: summary.name,
                 sourceBodyName: body.name,
-                sourceWriterVersion: FloeCADDocument.supportedPackageSchemaVersion,
+                verifierSchemaVersion: FloeCADDocument.supportedPackageSchemaVersion,
                 sourceSchemaVersion: summary.schemaVersion,
                 sourceRevision: identity.revision,
                 sourceContentHash: identity.contentSHA256,
@@ -188,7 +225,11 @@ public final class CADAssemblyReferenceBridge {
     /// geometry. A missing source is a successful check with `available:false`.
     public func check(referenceID: UUID,
                       sourceURL: URL,
-                      in document: FloeCADDocument) async -> [String: Any] {
+                      in document: FloeCADDocument,
+                      isCancelled: @Sendable () -> Bool = { false }) async -> [String: Any] {
+        if isCancelled() {
+            return failure("cancelled", Self.cancelledMessage)
+        }
         let assembly: CADAssembly
         do {
             assembly = try CADAssembly.decode(from: document.session.document.assemblyData)
@@ -214,9 +255,19 @@ public final class CADAssemblyReferenceBridge {
             return diagnosis(reference: reference, cachedGeometry: cachedGeometry,
                              available: false, reason: "The native CAD package is missing or unreadable.")
         }
+        if isCancelled() {
+            return failure("cancelled", Self.cancelledMessage)
+        }
         do {
             let source = try await FloeCADDocument.open(at: url)
             defer { source.close() }
+            if isCancelled() {
+                return failure("cancelled", Self.cancelledMessage)
+            }
+            guard source.contentSHA256 == identity.contentSHA256 else {
+                return failure("source_changed",
+                               "The source package changed while it was being checked; nothing was changed.")
+            }
             let summary = source.summary()
             guard summary.schemaVersion <= FloeCADDocument.supportedPackageSchemaVersion else {
                 return diagnosis(reference: reference, cachedGeometry: cachedGeometry,
@@ -243,8 +294,9 @@ public final class CADAssemblyReferenceBridge {
                 "pinnedSourceContentHash": reference.sourceContentHash,
                 "sourceContentHash": identity.contentSHA256,
                 "pinnedSourceSchemaVersion": reference.sourceSchemaVersion,
+                "pinnedVerifierSchemaVersion": reference.verifierSchemaVersion,
                 "sourceSchemaVersion": summary.schemaVersion,
-                "sourceWriterVersion": FloeCADDocument.supportedPackageSchemaVersion,
+                "verifierSchemaVersion": FloeCADDocument.supportedPackageSchemaVersion,
                 "pinnedStagedGeometryHash": reference.stagedGeometryHash,
                 "sourceGeometryHash": geometryHash,
                 "updateAvailable": updateAvailable,
@@ -265,10 +317,14 @@ public final class CADAssemblyReferenceBridge {
                        sourceURL: URL,
                        in document: FloeCADDocument,
                        expectedSourceContentHash: String? = nil,
-                       expectedStagedGeometryHash: String? = nil) async -> [String: Any] {
+                       expectedStagedGeometryHash: String? = nil,
+                       isCancelled: @Sendable () -> Bool = { false }) async -> [String: Any] {
         if document.isReadOnly {
             return failure("document_read_only",
                            "This document is read-only; the reference was not updated.")
+        }
+        if isCancelled() {
+            return failure("cancelled", Self.cancelledMessage)
         }
         let assembly: CADAssembly
         do {
@@ -306,9 +362,15 @@ public final class CADAssemblyReferenceBridge {
             return failure("source_missing",
                            "The source package is missing or unreadable; cached geometry was retained.")
         }
+        if isCancelled() {
+            return failure("cancelled", Self.cancelledMessage)
+        }
         do {
             let source = try await FloeCADDocument.open(at: url)
             defer { source.close() }
+            if isCancelled() {
+                return failure("cancelled", Self.cancelledMessage)
+            }
             guard source.contentSHA256 == identity.contentSHA256 else {
                 return failure("source_changed",
                                "The source package changed while it was being updated; cached geometry was retained.")
@@ -335,6 +397,18 @@ public final class CADAssemblyReferenceBridge {
                 ]
             }
 
+            #if DEBUG
+            await Self.referenceMutationSuspensionForTesting?(document.url)
+            #endif
+            if isCancelled() {
+                return failure("cancelled", Self.cancelledMessage)
+            }
+            if let refusal = await targetIdentityFailure(for: document) {
+                return refusal
+            }
+            if isCancelled() {
+                return failure("cancelled", Self.cancelledMessage)
+            }
             let replacement = stagedBody(from: body,
                                          in: document,
                                          bodyID: reference.stagedBodyID,
@@ -342,7 +416,7 @@ public final class CADAssemblyReferenceBridge {
             var updated = reference
             updated.sourceDocumentName = summary.name
             updated.sourceBodyName = body.name
-            updated.sourceWriterVersion = FloeCADDocument.supportedPackageSchemaVersion
+            updated.verifierSchemaVersion = FloeCADDocument.supportedPackageSchemaVersion
             updated.sourceSchemaVersion = summary.schemaVersion
             updated.sourceRevision = identity.revision
             updated.sourceContentHash = identity.contentSHA256
@@ -351,7 +425,6 @@ public final class CADAssemblyReferenceBridge {
             updated.lastCheckedAt = Date()
             updated.availableSourceRevision = nil
             updated.availableSourceContentHash = nil
-            updated.availableWriterVersion = nil
             updated.availableSchemaVersion = nil
             updated.missingReason = nil
 
@@ -369,6 +442,51 @@ public final class CADAssemblyReferenceBridge {
     }
 
     // MARK: - Helpers
+
+    static let cancelledMessage =
+        "The reference operation was cancelled before any document change."
+
+    #if DEBUG
+    /// Deterministic suspension AFTER all asynchronous source reads and
+    /// BEFORE the final cancellation/target fence plus mutation. Public only
+    /// in DEBUG so the App host test can cancel the REAL runtime token at the
+    /// exact late-source-load point; absent in release. The production path
+    /// performs the same fences without a probe.
+    public static var referenceMutationSuspensionForTesting: (@MainActor (URL) async -> Void)?
+    #endif
+
+    /// The target must still be the SAME committed package the live document
+    /// represents when the source read finishes. A foreign commit, a closed
+    /// document or a now read-only package refuses before any mutation; an
+    /// already-running atomic commit is handled by the caller, never undone.
+    private func targetIdentityFailure(for document: FloeCADDocument) async -> [String: Any]? {
+        if document.isClosed {
+            return failure("target_changed",
+                           "The target CAD document was closed while the source was being read; nothing was changed.")
+        }
+        if document.isReadOnly {
+            return failure("target_changed",
+                           "The target CAD document became read-only while the source was being read; nothing was changed.")
+        }
+        guard let identity = await FloeCADDocument.storedIdentity(at: document.url) else {
+            return failure("target_changed",
+                           "The target CAD package could not be verified after the source was read; nothing was changed.")
+        }
+        if identity.revision != document.revision
+            || identity.contentSHA256 != document.contentSHA256 {
+            // This document's own commit may have landed while the verified
+            // read was in flight and its main-actor adoption is queued. Give
+            // that adoption one cooperative turn, then require an exact
+            // match. A FOREIGN commit stays mismatched and is refused.
+            await Task.yield()
+            guard identity.revision == document.revision,
+                  identity.contentSHA256 == document.contentSHA256 else {
+                return failure("target_changed",
+                               "The target CAD document changed on disk while the source was being read; nothing was changed. Reopen it and try again.")
+            }
+        }
+        return nil
+    }
 
     private enum PreparedURL {
         case success(URL)

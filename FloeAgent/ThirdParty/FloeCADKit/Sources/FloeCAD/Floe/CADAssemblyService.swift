@@ -69,7 +69,10 @@ public final class CADAssemblyService {
         case "placePartReference": return placePartReferenceAction(args)
         case "moveInstance": return moveInstanceAction(args)
         case "removePartReference": return removePartReferenceAction(args)
-        case "updatePartReference": return updatePartReferenceAction(args)
+        // `updatePartReference` (a metadata-only re-pin that accepted caller
+        // hashes without reading the source) is deliberately NOT dispatched.
+        // External source identity changes only through the App-owned
+        // `CADAssemblyReferenceBridge`, which re-reads verified source bytes.
         case "makeIndependent": return makeIndependentAction(args)
         case "reference": return referenceAction(args)
         case "referenceCandidates": return referenceCandidatesAction(args)
@@ -2763,99 +2766,6 @@ public final class CADAssemblyService {
         ]
     }
 
-    /// Metadata-only explicit re-pin. Geometry replacement is deliberately
-    /// restricted to the App-owned bridge; this action can re-pin version/hash
-    /// facts for an already staged body but cannot swap in an unrelated body.
-    private func updatePartReferenceAction(_ args: [String: Any]) -> [String: Any] {
-        let assembly: CADAssembly
-        switch loadAssembly() {
-        case .failure(let error): return fail(error.code, error.message)
-        case .success(let loaded): assembly = loaded
-        }
-        var updated = assembly
-        guard let referenceID = uuidValue(args["referenceID"]) ?? uuidValue(args["id"]) else {
-            return fail("bad_reference_id", "referenceID must be a part-reference UUID string.")
-        }
-        guard let reference = updated.partReference(referenceID) else {
-            return fail("unknown_reference", "No part reference with that id.")
-        }
-        if let expected = args["expectedSourceContentHash"] as? String,
-           expected != reference.sourceContentHash {
-            return fail("stale_reference",
-                        "The reference is pinned to a different source revision.")
-        }
-        if let expected = args["expectedStagedGeometryHash"] as? String,
-           expected != reference.stagedGeometryHash {
-            return fail("stale_reference",
-                        "The staged geometry no longer matches the expected revision.")
-        }
-        if let raw = args["stagedBodyID"], !(raw is NSNull) {
-            guard let stagedID = uuidValue(raw), stagedID == reference.stagedBodyID else {
-                return fail("staged_body_mismatch",
-                            "A metadata update cannot replace the staged body; use the native reference bridge.")
-            }
-        }
-        guard let staged = body(for: reference.stagedBodyID) else {
-            return fail("missing_staged_body",
-                        "The cached staged body is missing; the reference was left unchanged.")
-        }
-        guard let sourceHash = args["sourceContentHash"] as? String,
-              !sourceHash.isEmpty else {
-            return fail("missing_source_hash",
-                        "sourceContentHash is required for an explicit reference update.")
-        }
-        let geometryHash = CADAssemblyGeometryDigest.digest(of: staged)
-        if let supplied = args["stagedGeometryHash"] as? String, supplied != geometryHash {
-            return fail("staged_body_mismatch",
-                        "The supplied staged geometry hash does not match the cached body.")
-        }
-        guard geometryHash == reference.stagedGeometryHash else {
-            return fail("staged_body_mismatch",
-                        "The cached staged geometry changed; reload the reference before re-pinning it.")
-        }
-        var candidate = reference
-        candidate.sourceContentHash = sourceHash
-        if let value = intValue(args["sourceRevision"]) { candidate.sourceRevision = value }
-        if let value = intValue(args["sourceWriterVersion"]) {
-            candidate.sourceWriterVersion = value
-        }
-        if let value = intValue(args["sourceSchemaVersion"]) {
-            candidate.sourceSchemaVersion = value
-        }
-        if let value = args["sourceDocumentName"] as? String, !value.isEmpty {
-            candidate.sourceDocumentName = value
-        }
-        if let value = args["sourceBodyName"] as? String, !value.isEmpty {
-            candidate.sourceBodyName = value
-        }
-        if boolValue(args["clearMissing"]) ?? false {
-            candidate.missingReason = nil
-        }
-        candidate.stagedGeometryHash = geometryHash
-        candidate.pinnedAt = Date()
-        candidate.availableSourceRevision = nil
-        candidate.availableSourceContentHash = nil
-        candidate.availableWriterVersion = nil
-        candidate.availableSchemaVersion = nil
-        guard candidate != reference else {
-            return ["ok": true, "mutated": false, "upToDate": true,
-                    "reference": referencePayload(reference)]
-        }
-        guard let index = updated.partReferences.firstIndex(where: { $0.id == referenceID }) else {
-            return fail("unknown_reference", "No part reference with that id.")
-        }
-        updated.partReferences[index] = candidate
-        if let failure = persist(updated) { return failure }
-        return [
-            "ok": true,
-            "mutated": true,
-            "reference": referencePayload(candidate),
-            "affectedSharedInstanceIDs": updated.occurrences(includeHidden: true)
-                .filter { $0.instance.sourceReferenceID == referenceID && !$0.instance.isIndependentCopy }
-                .map { $0.instance.id.uuidString },
-        ]
-    }
-
     private func makeIndependentAction(_ args: [String: Any]) -> [String: Any] {
         let assembly: CADAssembly
         switch loadAssembly() {
@@ -2956,13 +2866,16 @@ public final class CADAssemblyService {
                 placed.sourceRevision = revision
                 _ = assembly.appendInstance(placed, parentID: nil)
             })
-        document.session.perform(command)
-        guard let current = currentAssemblyValue() else {
-            return fail("encode_failed", "The assembly could not be read back after adding the reference.")
+        let tag = "cad.reference.attach:\(reference.id.uuidString)"
+        guard let receipt = document.session.performOwned(command, tag: tag) else {
+            return fail("document_read_only", "This document is read-only; the reference was not added.")
         }
-        guard let stored = current.instance(instance.id),
+        guard let current = currentAssemblyValue(),
+              let stored = current.instance(instance.id),
               let pinned = current.partReference(reference.id) else {
-            return fail("reference_commit_failed", "The reference was not persisted.")
+            document.session.rollbackOwnedCommand(token: receipt.token)
+            return fail("reference_commit_failed",
+                        "The reference was not persisted and its in-memory command was rolled back.")
         }
         var payload = instancePayload(stored)
         payload["ok"] = true
@@ -3036,10 +2949,15 @@ public final class CADAssemblyService {
                     }
                 }
             })
-        document.session.perform(command)
+        let tag = "cad.reference.update:\(current.id.uuidString)"
+        guard let receipt = document.session.performOwned(command, tag: tag) else {
+            return fail("document_read_only", "This document is read-only; the reference was not updated.")
+        }
         guard let latest = currentAssemblyValue(),
               let pinned = latest.partReference(current.id) else {
-            return fail("encode_failed", "The reference could not be read back after the update.")
+            document.session.rollbackOwnedCommand(token: receipt.token)
+            return fail("reference_commit_failed",
+                        "The reference update was not persisted and its in-memory command was rolled back.")
         }
         let sharedIDs = latest.occurrences(includeHidden: true)
             .filter { $0.instance.sourceReferenceID == current.id && !$0.instance.isIndependentCopy }
@@ -3123,7 +3041,7 @@ public final class CADAssemblyService {
             "sourceBodyID": reference.sourceBodyID.uuidString,
             "sourceDocumentName": reference.sourceDocumentName,
             "sourceBodyName": reference.sourceBodyName,
-            "sourceWriterVersion": reference.sourceWriterVersion,
+            "verifierSchemaVersion": reference.verifierSchemaVersion,
             "sourceSchemaVersion": reference.sourceSchemaVersion,
             "sourceRevision": reference.sourceRevision,
             "sourceContentHash": reference.sourceContentHash,
@@ -3135,7 +3053,6 @@ public final class CADAssemblyService {
         ]
         if let value = reference.availableSourceRevision { payload["availableSourceRevision"] = value }
         if let value = reference.availableSourceContentHash { payload["availableSourceContentHash"] = value }
-        if let value = reference.availableWriterVersion { payload["availableWriterVersion"] = value }
         if let value = reference.availableSchemaVersion { payload["availableSchemaVersion"] = value }
         if let value = reference.lastCheckedAt { payload["lastCheckedAt"] = value.timeIntervalSince1970 }
         if let value = reference.missingReason { payload["missingReason"] = value }
