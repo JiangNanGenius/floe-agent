@@ -162,15 +162,33 @@ class PhoneNetworkService internal constructor(
                         timeoutMs = request.timeoutMs,
                         maxRedirects = request.maxRedirects,
                     )
+                    NetworkMethod.LAN_DISCOVER -> opened.lanDiscover(
+                        request.lan ?: throw RequestParseException(
+                            "invalidArguments",
+                            "LAN discovery arguments are required",
+                        ),
+                    )
+                    NetworkMethod.SPEED_TEST -> opened.speedTest(
+                        request.speed ?: throw RequestParseException(
+                            "invalidArguments",
+                            "speed test arguments are required",
+                        ),
+                    )
                 }
             }
             return envelopeFor(request, result, opened.snapshot, measuredAt)
         } catch (deadline: NetworkDeadlineExceededException) {
-            return timeoutEnvelope(request, measuredAt, session?.snapshot)
+            return timeoutEnvelope(request, measuredAt, session?.snapshot, session?.partialResult())
         } catch (timeout: TimeoutCancellationException) {
-            return timeoutEnvelope(request, measuredAt, session?.snapshot)
+            return timeoutEnvelope(request, measuredAt, session?.snapshot, session?.partialResult())
         } catch (cancelled: CancellationException) {
-            val result = cancelledEnvelope(request, measuredAt, session?.snapshot, "operationCancelled")
+            val result = cancelledEnvelope(
+                request,
+                measuredAt,
+                session?.snapshot,
+                "operationCancelled",
+                session?.partialResult(),
+            )
             cancellation.result.compareAndSet(null, result)
             throw cancelled
         } catch (policy: TargetPolicyException) {
@@ -295,40 +313,51 @@ class PhoneNetworkService internal constructor(
         request: ParsedRequest,
         measuredAt: String,
         snapshot: NetworkSnapshot?,
-    ): String = NetworkObservationJson.envelope(
-        operationID = request.operationID,
-        methodWire = request.method.wire,
-        status = ObservationStatus.TIMEOUT,
-        measuredAt = measuredAt,
-        snapshot = snapshot,
-        target = request.target,
-        observations = JSONObject()
-            .put("timeoutMs", request.timeoutMs)
-            .put("phase", "operation"),
-        limitations = snapshot?.limitations.orEmpty() + "The operation exceeded its bounded timeout.",
-        cacheAgeMs = null,
-        missingPermissions = emptyList(),
-    )
+        partial: ProbeResult? = null,
+    ): String {
+        val observations = partial?.observations?.let { JSONObject(it.toString()) } ?: JSONObject()
+        observations.put("timeoutMs", request.timeoutMs)
+        observations.put("phase", "operation")
+        if (partial != null) observations.put("partial", true)
+        return NetworkObservationJson.envelope(
+            operationID = request.operationID,
+            methodWire = request.method.wire,
+            status = ObservationStatus.TIMEOUT,
+            measuredAt = measuredAt,
+            snapshot = snapshot,
+            target = partial?.target ?: request.target,
+            observations = observations,
+            limitations = (partial?.limitations.orEmpty()) +
+                "The operation exceeded its bounded timeout.",
+            cacheAgeMs = partial?.cacheAgeMs,
+            missingPermissions = partial?.missingPermissions.orEmpty(),
+        )
+    }
 
     private fun cancelledEnvelope(
         request: ParsedRequest,
         measuredAt: String,
         snapshot: NetworkSnapshot?,
         reason: String,
-    ): String = NetworkObservationJson.envelope(
-        operationID = request.operationID,
-        methodWire = request.method.wire,
-        status = ObservationStatus.CANCELLED,
-        measuredAt = measuredAt,
-        snapshot = snapshot,
-        target = request.target,
-        observations = JSONObject()
-            .put("cancelled", true)
-            .put("reason", reason),
-        limitations = snapshot?.limitations.orEmpty(),
-        cacheAgeMs = null,
-        missingPermissions = emptyList(),
-    )
+        partial: ProbeResult? = null,
+    ): String {
+        val observations = partial?.observations?.let { JSONObject(it.toString()) } ?: JSONObject()
+        observations.put("cancelled", true)
+        observations.put("reason", reason)
+        if (partial != null) observations.put("partial", true)
+        return NetworkObservationJson.envelope(
+            operationID = request.operationID,
+            methodWire = request.method.wire,
+            status = ObservationStatus.CANCELLED,
+            measuredAt = measuredAt,
+            snapshot = snapshot,
+            target = partial?.target ?: request.target,
+            observations = observations,
+            limitations = partial?.limitations.orEmpty(),
+            cacheAgeMs = partial?.cacheAgeMs,
+            missingPermissions = partial?.missingPermissions.orEmpty(),
+        )
+    }
 
     private fun failureEnvelope(
         request: ParsedRequest,

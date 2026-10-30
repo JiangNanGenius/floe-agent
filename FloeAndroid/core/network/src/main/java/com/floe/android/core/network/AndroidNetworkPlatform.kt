@@ -17,6 +17,7 @@ import android.provider.Settings
 import java.io.Closeable
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONObject
 
 /** Android platform binding for the frozen PhoneNetworkService API. */
@@ -70,6 +71,7 @@ internal class AndroidNetworkSession(
 
     override val snapshot: NetworkSnapshot = captureSnapshot()
     private val resources = SessionResources()
+    private val partial = AtomicReference<ProbeResult?>(null)
 
     /** API 28 has no cancellable resolver; bound its worker and close it with the session. */
     internal val api28Resolver: ExecutorService by lazy {
@@ -139,12 +141,48 @@ internal class AndroidNetworkSession(
         maxRedirects: Int,
     ): ProbeResult = AndroidHttpsProbe.probe(this, target, timeoutMs, maxRedirects)
 
+    override suspend fun lanDiscover(request: LanDiscoveryRequest): ProbeResult =
+        AndroidLanDiscovery.discover(this, request)
+
+    override suspend fun speedTest(request: SpeedTestRequest): ProbeResult =
+        AndroidSpeedTest.run(this, request)
+
+    override fun partialResult(): ProbeResult? = partial.get()
+
     override fun close() {
         resources.closeAll()
     }
 
     internal fun trackCloseable(closeable: Closeable) {
         resources.track { runCatching { closeable.close() } }
+    }
+
+    internal fun publishPartial(result: ProbeResult) {
+        partial.set(result)
+    }
+
+    internal fun hasPermission(permission: String): Boolean = context.hasPermission(permission)
+
+    internal fun capturedNetworkHandle(): Long? = activeNetwork?.networkHandle
+
+    internal fun currentNetworkHandle(): Long? = if (networkPermissionGranted) {
+        runCatching { connectivity?.activeNetwork?.networkHandle }.getOrNull()
+    } else {
+        null
+    }
+
+    internal fun hasCapturedNetworkChanged(): Boolean {
+        val captured = activeNetwork?.networkHandle ?: return true
+        return currentNetworkHandle() != captured
+    }
+
+    internal fun verifySameCapturedNetwork() {
+        val captured = activeNetwork
+            ?: throw NetworkChangedException(null, "no captured network is available")
+        val current = currentNetworkHandle()
+        if (current != captured.networkHandle) {
+            throw NetworkChangedException(current)
+        }
     }
 
     internal fun trackAction(action: () -> Unit) {
@@ -402,7 +440,25 @@ internal class AndroidNetworkSession(
                 add(Manifest.permission.ACCESS_FINE_LOCATION)
                 if (request.refresh) add(Manifest.permission.CHANGE_WIFI_STATE)
             }
+            NetworkMethod.LAN_DISCOVER -> {
+                add(Manifest.permission.INTERNET)
+                if (Build.VERSION.SDK_INT >= 37) add(LOCAL_NETWORK_PERMISSION)
+            }
+            NetworkMethod.SPEED_TEST -> {
+                add(Manifest.permission.INTERNET)
+                if (Build.VERSION.SDK_INT >= 37 && speedTargetsLocal(request.speed)) {
+                    add(LOCAL_NETWORK_PERMISSION)
+                }
+            }
             else -> add(Manifest.permission.INTERNET)
+        }
+    }
+
+    private fun speedTargetsLocal(speed: SpeedTestRequest?): Boolean {
+        if (speed == null) return false
+        return listOfNotNull(speed.downloadTarget, speed.uploadTarget).any { target ->
+            target.host.endsWith(".local", ignoreCase = true) ||
+                NetworkTargetPolicy.isLocalLiteral(target.host)
         }
     }
 

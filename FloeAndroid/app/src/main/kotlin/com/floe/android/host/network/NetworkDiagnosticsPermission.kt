@@ -13,15 +13,23 @@ import com.floe.android.host.LocalNetworkAccessBroker
  * The pump already returned the typed `permissionRequired` observation to the
  * Agent; this only surfaces guidance so the user can grant and retry the SAME
  * tool call with a fresh request. No ticket is replayed, no target path or
- * query is carried, and `targetHost == null` (status/wifiScan) leaves the
- * prompt to Main's existing host permission surface.
+ * query is carried, and `targetHost == null` (status/wifiScan, mDNS-only
+ * lanDiscover) leaves the prompt to Main's existing host permission surface.
+ * A subnet `lanDiscover` hint is the network address, and a speedTest hint is
+ * the explicit endpoint host; both are display/guidance only and never grant
+ * permission or substitute for the service's own target policy.
  */
 internal fun NetworkPermissionRequest.surfaceWithExistingBroker(
     broker: LocalNetworkAccessBroker?,
 ) {
-    val host = targetHost ?: return
+    // A LAN browse/scan has a human label but not necessarily a connectable
+    // endpoint; speedTest supplies an explicit HTTPS host. Neither value is
+    // dispatched: the broker's serverId is only the guidance identity.
+    val endpoint = targetLabel
+        ?: targetHost?.let { "https://$it" }
+        ?: return
     broker?.noteBlockedConnect(
         serverId = "network-tool:$operationID",
-        endpoint = "https://$host",
+        endpoint = endpoint,
     )
 }

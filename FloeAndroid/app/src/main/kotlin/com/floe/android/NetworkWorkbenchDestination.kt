@@ -22,7 +22,7 @@ import com.floe.android.host.RuntimeHost
 /** Permission callbacks grant access only; they never replay a diagnostic. */
 @Composable
 internal fun NetworkWorkbenchDestination(
-    host: RuntimeHost?, compact: Boolean, onNavigate: () -> Unit,
+    host: RuntimeHost?, compact: Boolean, showSidebarToggle: Boolean, onNavigate: () -> Unit,
 ) {
     if (host == null) {
         FloeUnavailableView(FloeIcons.Antenna, stringResource(R.string.network_workbench), stringResource(R.string.projects_runtime_pending))
@@ -39,7 +39,7 @@ internal fun NetworkWorkbenchDestination(
     LaunchedEffect(controller) { controller.enter() }
     NetworkWorkbench(
         state = state, compact = compact,
-        onExecute = controller::execute, onCancel = controller::cancel,
+        onExecute = controller::execute, onStop = controller::stop,
         onPermission = { missing ->
             val lan = "android.permission.ACCESS_LOCAL_NETWORK"
             if (Build.VERSION.SDK_INT >= 37 && lan in missing) {
@@ -63,6 +63,9 @@ internal fun NetworkWorkbenchDestination(
             }
         },
         onOpenLocationSettings = { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) },
-        onNavigate = onNavigate, modifier = Modifier.fillMaxSize(),
+        onNavigate = onNavigate, showSidebarToggle = showSidebarToggle,
+        monitoringLabel = stringResource(com.floe.android.feature.network.R.string.network_monitor),
+        monitoringContent = { panelModifier -> NetworkMonitoringDestination(host, panelModifier) },
+        modifier = Modifier.fillMaxSize(),
     )
 }

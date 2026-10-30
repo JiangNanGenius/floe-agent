@@ -52,6 +52,7 @@ import com.floe.android.design.*
 import com.floe.android.feature.ide.FloeIdeExpandGlyph
 import com.floe.android.feature.ide.FloeIdeWorkspace
 import com.floe.android.feature.ide.IdeBottomAccessory
+import com.floe.android.feature.ide.IdeCompactLevel
 import com.floe.android.feature.ide.IdeWorkspacePresentation
 import com.floe.android.host.G04WorkspaceEditorController
 import com.floe.android.host.G04WorkspaceBridgeClient
@@ -121,6 +122,11 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
             "languageServerUnavailable" -> R.string.workspace_language_unavailable
             "runtimeBusy" -> R.string.workspace_runtime_slot_busy
             "operationPending" -> R.string.workspace_run_pending
+            // createFile/createDirectory refuse an existing target with this
+            // native code. "Operation could not be completed" hid the only
+            // actionable fact: the name is already taken.
+            "alreadyExists", "alreadyExistsOverwritable" ->
+                com.floe.android.feature.ide.R.string.ide_workspace_name_exists
             "ownerChanged", "ownerUnavailable", "retired", "epochMismatch" -> R.string.workspace_owner_error
             else -> R.string.workspace_operation_error
         })
@@ -162,6 +168,42 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
     val activeDocumentPath by remember(presenter) {
         presenter.state.map { it.snapshot?.relativePath }.distinctUntilChanged()
     }.collectAsState(initial = presenter.state.value.snapshot?.relativePath)
+    // Files re-entry: a retained presenter can keep showing a listing that an
+    // external writer (the owned terminal, a provider sync, a returning
+    // editor/task) changed outside this pane. Re-read only the visible tree,
+    // once per real entry, without reloading open documents, selections,
+    // drafts, undo history or recovery rows. refreshTreeForReentry itself
+    // coalesces while a root read is in flight and is fenced by the owner.
+    LaunchedEffect(owner, presenter) {
+        if (bound.isCurrent()) presenter.refreshTreeForReentry()
+    }
+    // A separate Activity editor (the owned Office viewer) pauses this
+    // Activity; returning to it is a real Files re-entry even though this
+    // composition never left. Only ON_RESUME is observed: no timer, no
+    // composition-loop refresh, and the same coalesced/owner-fenced tree read.
+    val lifecycleOwner = uiContext as? androidx.activity.ComponentActivity
+    DisposableEffect(lifecycleOwner, presenter, owner) {
+        if (lifecycleOwner == null) return@DisposableEffect onDispose { }
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && bound.isCurrent()) {
+                presenter.refreshTreeForReentry()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val compactLevel by remember(presenter) {
+        presenter.state.map { it.compactLevel }.distinctUntilChanged()
+    }.collectAsState(initial = presenter.state.value.compactLevel)
+    var previousCompactLevel by remember(owner, presenter) { mutableStateOf(compactLevel) }
+    LaunchedEffect(compactLevel) {
+        val previous = previousCompactLevel
+        previousCompactLevel = compactLevel
+        if (previous == IdeCompactLevel.EDITOR && compactLevel == IdeCompactLevel.FILE_LIST &&
+            bound.isCurrent()) {
+            presenter.refreshTreeForReentry()
+        }
+    }
     // The explicit full-window document presentation (G07.1). This is
     // NAVIGATION state only: the owning task/workspace/path plus a token. The
     // editor, drafts, undo lineage and Office/workspace authority stay in the
@@ -194,6 +236,11 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
         // Leaving the document level closes its attached bottom slot; the
         // service-owned terminal session itself is untouched.
         presenter.toggleBottomPane(false)
+        // The document/editor may have been one of the external writers (or a
+        // task may have produced files while it was open). Re-read the visible
+        // listing on the return to Files; drafts/tabs/undo stay in the
+        // presenter and are not reloaded here.
+        if (bound.isCurrent()) presenter.refreshTreeForReentry()
     }
     fun raiseDocument(path: String, surface: WorkspaceDocumentSurface) {
         documentToken += 1
@@ -316,7 +363,15 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
     val terminalAccessory = IdeBottomAccessory(
         id = "terminal",
         label = stringResource(R.string.inspector_terminal),
-        content = { WorkspaceTerminalPane(host.workspaceTerminal, bound.client.taskID) },
+        content = {
+            WorkspaceTerminalPane(
+                host.workspaceTerminal,
+                bound.client.taskID,
+                onSessionSettled = {
+                    if (bound.isCurrent()) presenter.refreshTreeKeepingExpansion()
+                },
+            )
+        },
     )
     val expandableDocumentPath = activeDocumentPath?.takeIf { path ->
         WorkspaceDocumentPresentation.offersExplicitFullWindow(

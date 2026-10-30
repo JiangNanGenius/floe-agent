@@ -11,13 +11,17 @@ import kotlinx.coroutines.CoroutineScope
  * this to the EXISTING `IntegrationsHostController.LocalNetworkAccessBroker`
  * and host guidance surface (no duplicate permission DB, launcher or Manifest
  * entry). `targetHost` is host-only (no scheme, path, query, userinfo or
- * port); it is `null` for methods without a host (status/wifiScan).
+ * port); it is `null` for methods without a concrete endpoint
+ * (status/wifiScan, mDNS-only lanDiscover). `targetLabel` is a bounded,
+ * host-free human hint for the broker surface (for example an mDNS browse or
+ * a subnet scan base) and is never used for dispatch.
  */
 internal data class NetworkPermissionRequest(
     val operationID: String,
     val method: String,
     val missingPermissions: List<String>,
     val targetHost: String?,
+    val targetLabel: String? = null,
 )
 
 /**

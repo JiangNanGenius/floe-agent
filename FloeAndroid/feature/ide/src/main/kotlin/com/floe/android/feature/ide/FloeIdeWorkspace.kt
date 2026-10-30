@@ -261,6 +261,7 @@ public fun FloeIdeDocumentWindow(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
     bottomAccessory: IdeBottomAccessory? = null,
+    backContentDescription: Int = R.string.ide_close_full_window_cd,
 ) {
     val state by presenter.state.collectAsState()
     Box(modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
@@ -271,7 +272,7 @@ public fun FloeIdeDocumentWindow(
             onOpenTree = {},
             onBack = onClose,
             showTreeButton = false,
-            backContentDescription = R.string.ide_back_to_files_cd,
+            backContentDescription = backContentDescription,
         )
         if (bottomAccessory != null && state.bottomPaneOpen) {
             BottomAccessoryOverlay(presenter, bottomAccessory)

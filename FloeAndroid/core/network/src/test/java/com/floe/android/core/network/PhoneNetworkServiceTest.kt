@@ -288,6 +288,10 @@ class PhoneNetworkServiceTest {
         override suspend fun tcpProbe(host: String, port: Int, timeoutMs: Int): ProbeResult = dispatch("tcpProbe")
         override suspend fun http(target: HttpTarget, timeoutMs: Int, maxRedirects: Int): ProbeResult =
             dispatch("http")
+        override suspend fun lanDiscover(request: LanDiscoveryRequest): ProbeResult =
+            dispatch("lanDiscover")
+        override suspend fun speedTest(request: SpeedTestRequest): ProbeResult =
+            dispatch("speedTest")
 
         override fun close() {
             closed.set(true)

@@ -119,6 +119,11 @@ public class IdePresenter(
     private val loadingPaths = LinkedHashSet<String>()
     private var rootLoading = false
     private var treeError: String? = null
+    // Automatic Files re-entry refreshes are coalesced: one root re-read at a
+    // time, only after the previous root has actually settled. Explicit CRUD
+    // refresh keeps its unconditional semantics.
+    private var reentryRefreshInFlight = false
+    private var reentryRefreshGeneration = -1L
 
     private var searchQuery = ""
     private var searchGenRequested = 0L
@@ -467,22 +472,24 @@ public class IdePresenter(
 
     // -------------------------------------------------------- tree + search
 
-    private fun sendTree(parent: String?) {
+    private fun sendTree(parent: String?, reentryRefresh: Boolean = false): Long {
         val request = newRequest("tree")
         val gen = nextGeneration()
         synchronized(lock) {
-            if (released) return
+            if (released) return -1L
             commandKinds[request] = CmdKind.TREE
             commandDocs[request] = parent ?: "" 
             if (parent == null) {
                 rootLoading = true
                 treeError = null
+                if (reentryRefresh) reentryRefreshGeneration = gen
             } else {
                 loadingPaths.add(parent)
             }
             _state.value = buildState()
         }
         dispatchCommand(IdeCommandRequest.ExpandTree(request, hostOwner(), parent, gen))
+        return gen
     }
 
     public fun loadTreeRoot() {
@@ -508,6 +515,38 @@ public class IdePresenter(
         }
         sendTree(null)
         expanded.forEach { parent -> sendTree(parent) }
+    }
+
+    /**
+     * Read-only re-entry refresh for a Files pane that just became visible
+     * again (inspector tab re-selected, full-window editor/document cover
+     * closed, phone editor returned to its list, task re-entered). External
+     * writers such as the owned terminal can create files without going
+     * through the pane's CRUD path; the retained presenter must not keep
+     * showing its previous tree until the user presses Refresh.
+     *
+     * It never reloads an open document, so tabs, drafts, undo lineage,
+     * selection and recovery rows are untouched. It also never starts a
+     * second root read: the first open (or any read already in flight) is
+     * already fresh, and repeated re-entry signals coalesce until the root
+     * answer has been applied. The presenter's existing owner + request
+     * generation fences discard a late answer from a retired task/root/epoch.
+     *
+     * @return true when this call actually dispatched the read-only refresh.
+     */
+    public fun refreshTreeForReentry(): Boolean {
+        val expanded = synchronized(lock) {
+            if (released || rootLoading || reentryRefreshInFlight) return false
+            reentryRefreshInFlight = true
+            expandedPaths.toList()
+        }
+        val generation = sendTree(null, reentryRefresh = true)
+        if (generation < 0L) {
+            synchronized(lock) { reentryRefreshInFlight = false }
+            return false
+        }
+        expanded.forEach { parent -> sendTree(parent) }
+        return true
     }
 
     public fun toggleTreeExpansion(relativePath: String) {
@@ -1619,6 +1658,11 @@ public class IdePresenter(
         if (!accept(event.owner)) return
         val parent = event.parentRelativePath
         if (parent == null) {
+            // The automatic re-entry path coalesces on its own root answer
+            // (success or error), even when a newer explicit root read has
+            // already superseded it. A late root from a retired owner never
+            // reaches here: [accept] fenced it above.
+            if (event.requestGeneration >= reentryRefreshGeneration) reentryRefreshInFlight = false
             if (event.requestGeneration < rootGenApplied) return
             rootGenApplied = event.requestGeneration
             rootLoading = false

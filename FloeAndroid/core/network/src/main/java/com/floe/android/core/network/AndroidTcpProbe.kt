@@ -155,22 +155,18 @@ internal object AndroidTcpProbe {
             localPort?.let { put("localPort", it) }
             remoteAddress?.let { put("remoteAddress", it) }
         }
-        val limitations = ArrayList<String>()
-        limitations += "A TCP connect result proves only that the handshake completed or failed; it is not an application-protocol or TLS health check."
-        limitations += "No payload is sent and no response is read."
-        if (attempts.length() < addresses.size) {
-            limitations += "The timeout budget ended before every resolved address was attempted."
-        }
-        if (connected && attempts.length() > 1) {
-            limitations += "Earlier address attempts are retained; a later address succeeded."
-        }
-        val status = when {
-            connected -> ObservationStatus.OK
-            attempts.length() == 0 -> ObservationStatus.TIMEOUT
-            sawTimeout -> ObservationStatus.TIMEOUT
-            sawRefused && !sawError -> ObservationStatus.OK
-            else -> ObservationStatus.ERROR
-        }
+        val limitations = TcpProbeSummary.limitations(
+            connected = connected,
+            attempted = attempts.length(),
+            resolvedCount = addresses.size,
+        )
+        val status = TcpProbeSummary.status(
+            connected = connected,
+            attempted = attempts.length(),
+            sawTimeout = sawTimeout,
+            sawRefused = sawRefused,
+            sawError = sawError,
+        )
         return ProbeResult(
             status = status,
             observations = observations,

@@ -16,44 +16,107 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.*
+import kotlinx.coroutines.delay
 
 /** Stable native shell: categories on tablets, list → detail → list on phones. */
 @Composable
 fun NetworkWorkbench(
     state: NetworkWorkbenchState,
     compact: Boolean,
-    onExecute: (NetworkPage, Map<String, String>) -> Unit,
-    onCancel: () -> Unit,
+    onExecute: (NetworkExecuteCommand) -> Unit,
+    onStop: () -> Unit,
     onPermission: (List<String>) -> Unit,
     onOpenLocationSettings: () -> Unit,
     onNavigate: () -> Unit,
+    showSidebarToggle: Boolean = false,
+    /**
+     * Optional dedicated monitoring panel. The workbench only owns its
+     * selection/back behavior; the service-owned state and report controls
+     * stay in the App host/UI. When absent, the eight measurement pages are
+     * byte-for-byte the previous surface.
+     */
+    monitoringLabel: String? = null,
+    monitoringContent: (@Composable (Modifier) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var selection by rememberSaveable { mutableStateOf<String?>(null) }
-    var details by rememberSaveable { mutableStateOf<String?>(null) }
-    val page = selection?.let { saved -> NetworkPage.entries.firstOrNull { it.name == saved } }
-        ?: if (compact) null else NetworkPage.OVERVIEW
-    val back: () -> Unit = { if (compact && page != null) selection = null else onNavigate() }
-    BackHandler(enabled = compact && page != null, onBack = back)
+    var detailsPage by rememberSaveable { mutableStateOf<String?>(null) }
+    var monitoringSelected by rememberSaveable { mutableStateOf(false) }
+    val monitoring = monitoringContent?.takeIf { monitoringLabel != null }
+    val monitoringVisible = monitoringSelected && monitoring != null
+    val page = if (monitoringVisible) {
+        null
+    } else {
+        selection?.let { saved -> NetworkPage.entries.firstOrNull { it.name == saved } }
+            ?: if (compact) null else NetworkPage.OVERVIEW
+    }
+    val detailVisible = page != null || monitoringVisible
+    val back: () -> Unit = {
+        if (compact && detailVisible) {
+            selection = null
+            monitoringSelected = false
+        } else {
+            onNavigate()
+        }
+    }
+    BackHandler(enabled = compact && detailVisible, onBack = back)
     Column(modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
         FloeToolbar(
-            title = if (compact && page != null) pageTitle(page) else stringResource(R.string.network_title),
-            navigation = {
-                FloeCircleButton(
-                    icon = if (compact && page != null) FloeIcons.ChevronBack else FloeIcons.SidebarToggle,
-                    contentDescription = stringResource(R.string.network_back), onClick = back,
-                )
+            title = when {
+                compact && monitoringVisible -> monitoringLabel ?: stringResource(R.string.network_title)
+                compact && page != null -> pageTitle(page)
+                else -> stringResource(R.string.network_title)
+            },
+            // Wide layouts already have the shell/sidebar navigation; a second
+            // sidebar-toggle glyph here duplicated it while expanded. The
+            // actual collapsed state comes from the shell, so only that state
+            // gets a real expand action (never a "Back" label on a sidebar
+            // glyph). Phones keep Back on a detail and a drawer action on the
+            // category list.
+            navigation = when {
+                compact && detailVisible -> {
+                    {
+                        FloeCircleButton(
+                            icon = FloeIcons.ChevronBack,
+                            contentDescription = stringResource(
+                                if (monitoringVisible) R.string.network_monitor_back
+                                else R.string.network_back,
+                            ),
+                            onClick = back,
+                        )
+                    }
+                }
+                compact -> {
+                    {
+                        FloeCircleButton(
+                            icon = FloeIcons.SidebarToggle,
+                            contentDescription = stringResource(R.string.network_open_navigation),
+                            onClick = back,
+                        )
+                    }
+                }
+                showSidebarToggle -> {
+                    {
+                        FloeCircleButton(
+                            icon = FloeIcons.SidebarToggle,
+                            contentDescription = stringResource(R.string.network_expand_navigation),
+                            onClick = onNavigate,
+                        )
+                    }
+                }
+                else -> null
             },
             showHairline = true,
         )
         Row(Modifier.weight(1f)) {
-            if (!compact || page == null) {
+            if (!compact || !detailVisible) {
                 Column(
                     Modifier.then(if (compact) Modifier.fillMaxWidth() else Modifier.width(220.dp))
                         .fillMaxHeight().background(Floe.colors.groupedSurface).verticalScroll(rememberScrollState())
@@ -63,40 +126,112 @@ fun NetworkWorkbench(
                         FloeSidebarRow(
                             icon = when (item) {
                                 NetworkPage.OVERVIEW, NetworkPage.WIFI -> FloeIcons.Antenna
+                                NetworkPage.LAN -> FloeIcons.Antenna
+                                NetworkPage.SPEED -> FloeIcons.Gauge
                                 NetworkPage.DNS -> FloeIcons.Magnifier
                                 NetworkPage.PING -> FloeIcons.Gauge
                                 NetworkPage.TCP -> FloeIcons.Terminal
                                 NetworkPage.HTTPS -> FloeIcons.ShieldCheck
                             },
                             label = pageTitle(item), selected = item == page,
-                            onClick = { selection = item.name }, modifier = Modifier.padding(horizontal = 10.dp),
+                            onClick = {
+                                selection = item.name
+                                monitoringSelected = false
+                            },
+                            modifier = Modifier.padding(horizontal = 10.dp),
+                        )
+                    }
+                    val panel = monitoring
+                    if (panel != null && monitoringLabel != null) {
+                        FloeDivider(Modifier.padding(horizontal = 10.dp, vertical = 8.dp))
+                        FloeSidebarRow(
+                            icon = FloeIcons.Clock,
+                            label = monitoringLabel,
+                            selected = monitoringVisible,
+                            onClick = {
+                                selection = null
+                                monitoringSelected = true
+                            },
+                            modifier = Modifier.padding(horizontal = 10.dp),
                         )
                     }
                 }
             }
             if (!compact) FloeVerticalDivider()
-            if (page != null) {
+            val panel = monitoring
+            if (monitoringVisible && panel != null) {
+                panel(Modifier.weight(1f))
+            } else if (page != null) {
                 NetworkDetail(
                     page = page, result = state.results[page], busy = state.running != null,
-                    isRunning = state.running == page, onExecute = { onExecute(page, it) },
-                    onCancel = onCancel, onPermission = onPermission,
-                    onOpenLocationSettings = onOpenLocationSettings, onDetails = { details = it },
+                    isRunning = state.running == page, stopping = state.stopping,
+                    onExecute = onExecute, onStop = onStop,
+                    onPermission = onPermission,
+                    onOpenLocationSettings = onOpenLocationSettings, onDetails = { detailsPage = it.name },
                     modifier = Modifier.weight(1f),
                 )
             }
         }
     }
+    val detailsResult = detailsPage?.let { name ->
+        NetworkPage.entries.firstOrNull { it.name == name }?.let { state.results[it] }
+    }
     FloePageSheet(
-        visible = details != null, onDismiss = { details = null },
+        visible = detailsResult != null, onDismiss = { detailsPage = null },
         widthFraction = if (compact) 1f else 0.78f, heightFraction = 0.85f,
         placement = if (compact) FloeSheetPlacement.BOTTOM else FloeSheetPlacement.CENTER,
     ) {
-        Column(Modifier.fillMaxSize()) {
-            FloeToolbar(title = stringResource(R.string.network_details), actions = {
-                FloeCircleButton(FloeIcons.Xmark, stringResource(R.string.network_close), { details = null })
-            }, showHairline = true)
-            SelectionContainer(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(20.dp)) {
-                FloeText(details.orEmpty(), style = Floe.typography.evidence)
+        detailsResult?.let { result ->
+            NetworkDetailsSheet(result = result, onClose = { detailsPage = null })
+        }
+    }
+}
+
+/**
+ * Explicit Details sheet. The captured-network snapshot (addresses, routes,
+ * DNS servers, interface, Wi-Fi link metadata, …) lives here instead of
+ * pushing the measured answer down the page. Raw NetworkObservationV1 stays
+ * available for diagnostics. It contains actual fields only; no synthetic
+ * rows are added for missing values.
+ */
+@Composable
+private fun NetworkDetailsSheet(result: NetworkObservationUi, onClose: () -> Unit) {
+    Column(Modifier.fillMaxSize()) {
+        FloeToolbar(title = stringResource(R.string.network_details), actions = {
+            FloeCircleButton(FloeIcons.Xmark, stringResource(R.string.network_close), onClose)
+        }, showHairline = true)
+        SelectionContainer(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(20.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                if (result.connectionFacts.isNotEmpty()) {
+                    DetailsGroup(stringResource(R.string.network_details_connection), result.connectionFacts)
+                }
+                if (result.detailFacts.isNotEmpty()) {
+                    DetailsGroup(stringResource(R.string.network_details_other), result.detailFacts)
+                }
+                if (result.connectionFacts.isEmpty() && result.detailFacts.isEmpty() && result.details.isBlank()) {
+                    FloeText(stringResource(R.string.network_empty_result), style = Floe.typography.body,
+                        color = Floe.colors.secondaryLabel)
+                }
+                if (result.details.isNotBlank()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FloeDivider()
+                        FloeText(stringResource(R.string.network_details_raw), style = Floe.typography.section)
+                        FloeText(result.details, style = Floe.typography.evidence)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailsGroup(title: String, facts: List<NetworkFactUi>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        FloeText(title, style = Floe.typography.section)
+        facts.forEach { fact ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                FloeText(fact.label, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                FloeText(fact.value, style = Floe.typography.body)
             }
         }
     }
@@ -105,9 +240,36 @@ fun NetworkWorkbench(
 @Composable
 private fun NetworkDetail(
     page: NetworkPage, result: NetworkObservationUi?, busy: Boolean, isRunning: Boolean,
-    onExecute: (Map<String, String>) -> Unit, onCancel: () -> Unit,
+    stopping: Boolean, onExecute: (NetworkExecuteCommand) -> Unit, onStop: () -> Unit,
     onPermission: (List<String>) -> Unit, onOpenLocationSettings: () -> Unit,
-    onDetails: (String) -> Unit, modifier: Modifier,
+    onDetails: (NetworkPage) -> Unit, modifier: Modifier,
+) {
+    when (page) {
+        NetworkPage.LAN -> LanDiscoveryDetail(
+            result = result, busy = busy, isRunning = isRunning, stopping = stopping,
+            onExecute = onExecute, onStop = onStop, onPermission = onPermission,
+            onDetails = { onDetails(NetworkPage.LAN) }, modifier = modifier,
+        )
+        NetworkPage.SPEED -> SpeedTestDetail(
+            result = result, busy = busy, isRunning = isRunning, stopping = stopping,
+            onExecute = onExecute, onStop = onStop, onPermission = onPermission,
+            onDetails = { onDetails(NetworkPage.SPEED) }, modifier = modifier,
+        )
+        else -> SimpleNetworkDetail(
+            page = page, result = result, busy = busy, isRunning = isRunning,
+            stopping = stopping, onExecute = onExecute, onStop = onStop,
+            onPermission = onPermission, onOpenLocationSettings = onOpenLocationSettings,
+            onDetails = { onDetails(page) }, modifier = modifier,
+        )
+    }
+}
+
+@Composable
+private fun SimpleNetworkDetail(
+    page: NetworkPage, result: NetworkObservationUi?, busy: Boolean, isRunning: Boolean,
+    stopping: Boolean, onExecute: (NetworkExecuteCommand) -> Unit, onStop: () -> Unit,
+    onPermission: (List<String>) -> Unit, onOpenLocationSettings: () -> Unit,
+    onDetails: () -> Unit, modifier: Modifier,
 ) {
     var target by rememberSaveable(page) { mutableStateOf("") }
     var port by rememberSaveable(page) { mutableStateOf("443") }
@@ -116,11 +278,16 @@ private fun NetworkDetail(
     val run: () -> Unit = {
         error = (page.needsTarget && target.isBlank()) || (page == NetworkPage.TCP && !validPort)
         if (!error) {
-            onExecute(buildMap {
-                if (page.needsTarget) put(if (page == NetworkPage.HTTPS) "url" else "host", target.trim())
-                if (page == NetworkPage.TCP) put("port", port)
-                if (page == NetworkPage.WIFI) put("refresh", "true")
-            })
+            onExecute(
+                NetworkExecuteCommand.Simple(
+                    page,
+                    buildMap {
+                        if (page.needsTarget) put(if (page == NetworkPage.HTTPS) "url" else "host", target.trim())
+                        if (page == NetworkPage.TCP) put("port", port)
+                        if (page == NetworkPage.WIFI) put("refresh", "true")
+                    },
+                ),
+            )
         }
     }
     LazyColumn(modifier.fillMaxHeight(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -149,59 +316,174 @@ private fun NetworkDetail(
             FloeText(stringResource(if (page == NetworkPage.TCP && !validPort) R.string.network_invalid_port else R.string.network_invalid_target),
                 color = Floe.colors.destructive, style = Floe.typography.metadata)
         }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                FloeCapsuleButton(
-                    label = stringResource(if (result == null || page.needsTarget) R.string.network_start else R.string.network_refresh),
-                    onClick = run, enabled = !busy, prominent = true, modifier = Modifier.weight(1f),
-                )
-                if (isRunning) FloeCapsuleButton(stringResource(R.string.network_stop), onCancel, Modifier.weight(1f))
-            }
-        }
-        if (isRunning) item { FloeText(stringResource(R.string.network_busy), style = Floe.typography.body, color = Floe.colors.secondaryLabel) }
+        item { RunStopRow(busy, isRunning, stopping, result == null || page.needsTarget, run, onStop) }
+        if (isRunning) item { RunningElapsed(isRunning, stopping, stringResource(R.string.network_busy)) }
         if (result == null) {
             item { FloeText(stringResource(R.string.network_no_data), style = Floe.typography.body, color = Floe.colors.secondaryLabel) }
         } else {
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FloeDivider()
-                    FloeText(statusTitle(result.status), style = Floe.typography.bodyEmphasized)
-                    if (result.measuredAt.isNotBlank()) FloeText(stringResource(R.string.network_measured, result.measuredAt), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-                    result.cacheAgeMs?.takeIf { it > 0 }?.let {
-                        FloeText(stringResource(R.string.network_cache, it / 1000), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-                    }
-                }
-            }
-            if (result.status == "permissionRequired") item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FloeText(stringResource(R.string.network_permission_hint), style = Floe.typography.body)
-                    FloeCapsuleButton(stringResource(R.string.network_permission), { onPermission(result.missingPermissions) }, enabled = !busy)
-                }
-            }
-            items(result.facts) { fact ->
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    FloeText(fact.label, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-                    SelectionContainer { FloeText(fact.value, style = Floe.typography.body) }
-                }
+            item { ObservationHeader(result) }
+            if (result.status == "permissionRequired") item { PermissionSection(result, busy, onPermission) }
+            val primary = when {
+                result.primaryFacts.isNotEmpty() -> result.primaryFacts
+                // Source-compatible fallback for callers that have not yet
+                // projected the structured sections (old App controller):
+                // show their actual facts rather than an empty page.
+                result.connectionFacts.isEmpty() && result.detailFacts.isEmpty() -> result.facts
+                else -> emptyList()
             }
             if (page == NetworkPage.WIFI) {
+                val linkFacts = primary.filter { it.key?.startsWith("network.wifi.") == true }
+                val scanFacts = primary.filter { it.key?.startsWith("observations.") == true }
+                val unkeyed = primary.filter { it.key == null }
+                if (linkFacts.isNotEmpty()) item {
+                    PrimaryFactsSection(stringResource(R.string.network_this_connection), linkFacts)
+                }
+                if (scanFacts.isNotEmpty()) item {
+                    PrimaryFactsSection(stringResource(R.string.network_scan), scanFacts)
+                }
+                if (unkeyed.isNotEmpty()) item {
+                    PrimaryFactsSection(stringResource(R.string.network_primary_result), unkeyed)
+                }
+                result.cacheAgeMs?.let { age -> item { MeasurementAge(age) } }
                 val aps = result.accessPoints
-                if (aps.isEmpty()) item { FloeText(stringResource(R.string.network_no_ap), style = Floe.typography.body) }
+                if (aps.isEmpty()) {
+                    item { FloeText(stringResource(R.string.network_no_ap), style = Floe.typography.body) }
+                } else {
+                    // Actual AP rows (name, RSSI, channel/frequency) lead the
+                    // page; the channel distribution is a secondary summary.
+                    items(aps, key = { it.identity }) { ap -> AccessPointRow(ap) }
+                }
                 for (band in listOf(24, 5, 6)) {
                     val bandAps = aps.filter { ap -> ap.frequencyMHz?.let { bandForFrequency(it) == band } == true }
                     if (bandAps.isNotEmpty()) item {
                         ChannelDistribution(band, bandAps)
                     }
                 }
-                items(aps, key = { it.identity }) { ap -> AccessPointRow(ap) }
                 item { FloeCapsuleButton(stringResource(R.string.network_location), onOpenLocationSettings) }
+            } else {
+                if (primary.isNotEmpty()) item {
+                    PrimaryFactsSection(stringResource(R.string.network_primary_result), primary)
+                }
+                result.cacheAgeMs?.let { age -> item { MeasurementAge(age) } }
             }
-            items(result.limitations) { text -> FloeText(text, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel) }
-            if (result.details.isNotEmpty()) item {
-                FloeCapsuleButton(stringResource(R.string.network_details), { onDetails(result.details) })
+            item { ObservationLimitations(result) }
+            item { ObservationDetailsAction(onDetails) }
+        }
+    }
+}
+
+@Composable
+internal fun RunStopRow(
+    busy: Boolean, isRunning: Boolean, stopping: Boolean, startLabel: Boolean,
+    onStart: () -> Unit, onStop: () -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        FloeCapsuleButton(
+            label = stringResource(if (startLabel) R.string.network_start else R.string.network_refresh),
+            onClick = onStart, enabled = !busy, prominent = true, modifier = Modifier.weight(1f),
+        )
+        if (isRunning) {
+            FloeCapsuleButton(
+                label = stringResource(if (stopping) R.string.network_stopping else R.string.network_stop),
+                onClick = onStop, enabled = !stopping, modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+internal fun RunningElapsed(running: Boolean, stopping: Boolean, runningLabel: String) {
+    var seconds by remember(running) { mutableIntStateOf(0) }
+    LaunchedEffect(running) {
+        if (running) {
+            while (true) {
+                delay(1_000L)
+                seconds += 1
             }
         }
     }
+    val text = when {
+        stopping -> stringResource(R.string.network_stopping)
+        running && seconds > 0 -> "$runningLabel · ${seconds}s"
+        else -> runningLabel
+    }
+    FloeText(text, style = Floe.typography.body, color = Floe.colors.secondaryLabel)
+}
+
+@Composable
+internal fun ObservationHeader(result: NetworkObservationUi) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        FloeDivider()
+        FloeText(statusTitle(result.status), style = Floe.typography.bodyEmphasized)
+        if (result.measuredAt.isNotBlank()) {
+            FloeText(
+                stringResource(R.string.network_measured, result.measuredAt),
+                style = Floe.typography.metadata, color = Floe.colors.secondaryLabel,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun PermissionSection(result: NetworkObservationUi, busy: Boolean, onPermission: (List<String>) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        FloeText(stringResource(R.string.network_permission_hint), style = Floe.typography.body)
+        FloeCapsuleButton(
+            stringResource(R.string.network_permission),
+            { onPermission(result.missingPermissions) },
+            enabled = !busy,
+        )
+    }
+}
+
+@Composable
+internal fun ObservationLimitations(result: NetworkObservationUi) {
+    result.limitations.forEach { text ->
+        FloeText(text, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+    }
+}
+
+@Composable
+internal fun ObservationDetailsAction(onDetails: () -> Unit) {
+    FloeCapsuleButton(stringResource(R.string.network_details), onDetails)
+}
+
+@Composable
+internal fun FactLine(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        FloeText(label, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+        SelectionContainer { FloeText(value, style = Floe.typography.bodyEmphasized) }
+    }
+}
+
+/** The measured answer, in a stable display order. Actual values only. */
+@Composable
+internal fun PrimaryFactsSection(title: String, facts: List<NetworkFactUi>) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        FloeText(title, style = Floe.typography.section)
+        facts.forEach { fact ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                FloeText(fact.label, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                SelectionContainer { FloeText(fact.value, style = Floe.typography.bodyEmphasized) }
+            }
+        }
+    }
+}
+
+/**
+ * Scan freshness is an age AT MEASUREMENT, not an age "now": the service
+ * reports how old the scan already was when the observation was captured.
+ */
+@Composable
+private fun MeasurementAge(ageMs: Long) {
+    val age = ageMs.coerceAtLeast(0)
+    val text = if (age < 1000) {
+        stringResource(R.string.network_scan_age_under_second)
+    } else {
+        val seconds = (age / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        pluralStringResource(R.plurals.network_scan_age_seconds, seconds, seconds)
+    }
+    FloeText(text, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
 }
 
 @Composable
@@ -215,11 +497,15 @@ private fun AccessPointRow(ap: WifiAccessPointUi) {
             style = Floe.typography.metadata, color = Floe.colors.secondaryLabel,
         )
         ap.security?.takeIf { it.isNotBlank() }?.let { FloeText(it, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel) }
-        ap.ageMs?.takeIf { it > 0 }?.let { age ->
-            FloeText(stringResource(R.string.network_cache, age / 1000), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-        }
         if (ap.signalHistoryDbm.size >= 2) {
-            FloeText(stringResource(R.string.network_signal_history, ap.signalHistoryDbm.size), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+            FloeText(
+                pluralStringResource(
+                    R.plurals.network_signal_history,
+                    ap.signalHistoryDbm.size,
+                    ap.signalHistoryDbm.size,
+                ),
+                style = Floe.typography.metadata, color = Floe.colors.secondaryLabel,
+            )
             val accent = Floe.colors.accent
             val history = ap.signalHistoryDbm
             Canvas(Modifier.fillMaxWidth().height(56.dp).semantics { contentDescription = history.joinToString(", ") + " dBm" }) {
@@ -272,6 +558,8 @@ private fun ChannelDistribution(band: Int, aps: List<WifiAccessPointUi>) {
 private fun pageTitle(page: NetworkPage): String = stringResource(when (page) {
     NetworkPage.OVERVIEW -> R.string.network_overview
     NetworkPage.WIFI -> R.string.network_wifi
+    NetworkPage.LAN -> R.string.network_lan
+    NetworkPage.SPEED -> R.string.network_speed
     NetworkPage.DNS -> R.string.network_dns
     NetworkPage.PING -> R.string.network_ping
     NetworkPage.TCP -> R.string.network_tcp
@@ -279,7 +567,7 @@ private fun pageTitle(page: NetworkPage): String = stringResource(when (page) {
 })
 
 @Composable
-private fun statusTitle(status: String): String = stringResource(when (status) {
+internal fun statusTitle(status: String): String = stringResource(when (status) {
     "ok" -> R.string.network_status_ok
     "partial" -> R.string.network_status_partial
     "permissionRequired" -> R.string.network_status_permissionRequired

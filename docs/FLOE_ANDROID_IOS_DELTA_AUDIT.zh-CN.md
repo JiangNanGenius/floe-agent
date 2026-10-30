@@ -240,3 +240,20 @@ G06以Android Alpha15/code17交付，源码标签`86b20a34a14ebda636213fa480cdf1
 - 既有 `IOS-D01..D34` 的身份、归属和完成证据全部保留。本次没有新的 iOS 功能族，未新增 `IOS-D35`；也不整体重钉 Android 共享源，不把 iOS 1.7.64 已发布的界面、材质或图标当作 Android 已对齐。
 - G07.1 文档交互只使用只读工作线 `c5e7a3c1` 的四个 Workspace 文件作为源码参照；该工作线不是公开基线或已发布 iOS 版本。本轮手机全窗口、PDF／图片预览与返回层级仍归 D15 及后续精修，不另起差异编号。
 - 结论：G07.1 收尾没有 iOS 源码新增阻断。下次大目标收尾从 `bde65bf0` 之后的实际 `FloeAgent/FloeApp` 与 `FloeAgent/Sources` 增量继续，只做增量核对，不重启全量审计。以上为源码／元数据静态比对，未运行 iOS 编译、测试、设备安装或发布。
+
+### 2026-10-30：G07.2 收尾增量（`bde65bf0` → `0bd5b3c3`）
+
+- 本次以 `git ls-remote` 读回公共 `main` 为 `0bd5b3c3e0a32c1d5f163566da61267c8e97db5d`（tree `12eb5421cbcc3a961c52a2690d7840dc247ee431`），与本地 `origin/main` 对象一致；上一 iOS 收尾基线为 `bde65bf0b4fb6bfeae2597b0bc558b1df67f3cd2`（tree `ff1bf043bd45b719273c09208693c11e3b62b614`）。祖先关系成立，比较结果为 ahead 7／behind 0。
+- 区间共 7 个提交、95 个变更文件：`FloeAndroid/` 87 个、根 `README.md`／`README.zh-CN.md` 2 个、Android 文档 6 个。`FloeAgent/FloeApp`、`FloeAgent/Sources` 与 `FloeAgent/Tests` 的变更文件数为 0，触及 `FloeAgent` 的提交数也为 0。逐段：`372acc05`、`d4b56478` 为 Android 文档；`3266e118`、`00834f63`、`76101bf4`、`12d122b3`、`0bd5b3c3` 为 FloeAndroid 网络工具、App 集成、资格修复与发行元数据。
+- 结论：本区间没有 iOS 功能、界面、接口或测试变化。既有 `IOS-D01..D34` 的身份、归属和完成证据全部保留，不新增 `IOS-D35`，不重钉 Android 共享源，也不重启全量审计。G07.2 的局域网发现、测速、持续监测与报告均为 Android 自有实现，未消费 iOS 新代码。
+- 本地未合并 iOS 工作线（HEAD `17eccb6857627e4e0073d0d9d8df66aac2c479dc`）不是 `origin/main` 的祖先，也未推送到远端；它是进行中的私有工作树，不作为公共 iOS 主线、已发布版本或安卓缺陷证据。
+- 下次大目标收尾从 `0bd5b3c3` 之后的实际 `FloeAgent/FloeApp` 与 `FloeAgent/Sources` 增量继续；若主负责人先以 NSD 修复推进公共 main，则从届时的 live main 读回后只补查该点之后的增量。以上仅为源码／元数据静态比对，未运行 iOS 编译、测试、设备安装或发布。
+
+
+## 2026-10-30 — G07.2 修复批次的公开主线补核
+
+公开 `main` 从 `0bd5b3c3` 到本批冻结源码 `6d1e4b0984735b1432a45e963e209a018b7e136e` 为 3 个提交、14 个 Android 变更路径；`FloeAgent/FloeApp`、`FloeAgent/Sources`、`FloeAgent/Tests` 变更均为 0。原 D01..D34 的身份和已完成证据保持。另将研发工作线的原生提问等待面／通知回应、对话内搜索、关联计划任务交互分别列入 D33／G11、D27／G14、D11／G11 的下一次接口复核；这些候选源码不计为当前 Android 已实现或已验收。目标环境与 Skill 依赖按实际系统／架构／能力和任务代次选择，不能仅凭 iOS 候选版本推定 Android 可用。App 原生网络与 Office 保留在 App。
+
+### G07.2 实际交付收尾（2026-10-30）
+
+冻结源码`6d1e4b09`、候选02与Alpha17公开下载已核验。上述Android三提交未改变iOS产品源；D01..D34保留。原生提问与通知回应归D33／G11，对话可见搜索归D27／G14，关联计划任务归D11／G11。Skill依赖V2的macOS目标声明仅为候选合同；当前Hub生产源仍为V1，不能从iOS候选版本推断Android已支持或升级现有包。下一次大目标关闭从本次公开冻结点增量比较，并在相关目标接入时复核最新实际能力。

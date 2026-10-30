@@ -475,4 +475,6 @@
     <string name="notes_copy_failed">Couldn’t save to Notes. Your copy is kept for retry.</string>
     <string name="notes_copy_failed_unkept">Couldn’t save to Notes. Try again.</string>
     <string name="notes_copy_dismiss">Dismiss</string>
+    <string name="workspace_terminal_sync_hint">Terminal file changes appear in Workspace Files when this session ends.</string>
+    <string name="workspace_terminal_closed_hint">This session is closed. Reopen the terminal to start a new session.</string>
 </resources>

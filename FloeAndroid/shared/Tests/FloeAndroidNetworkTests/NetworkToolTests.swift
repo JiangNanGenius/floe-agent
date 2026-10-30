@@ -789,4 +789,38 @@ final class NetworkToolTests: XCTestCase {
         """
         return Data(json.utf8)
     }
+
+    // MARK: - Raw tool-direction regression (G07.2)
+
+    private struct UnavailableSpeedExecutor: NetworkHostExecuting {
+        var isAvailable: Bool { false }
+        func execute(request: NetworkToolRequest, context: ToolContext) async throws -> Data {
+            throw FloeError.validationFailed(
+                "the direction regression never executes a transfer")
+        }
+    }
+
+    func testSpeedToolValidateAcceptsCanonicalAndCaseMixedBidirectionalDirection() throws {
+        let tool = NetworkSpeedTestTool(executor: UnavailableSpeedExecutor())
+        for raw in ["downloadAndUpload", "DownloadAndUpload", "DOWNLOADANDUPLOAD"] {
+            let json = """
+            {"direction":"\(raw)","downloadUrl":"https://speed.example.net/payload",
+            "uploadUrl":"https://speed.example.net/upload"}
+            """
+            let args = try JSONDecoder().decode(
+                NetworkSpeedTestTool.Arguments.self, from: Data(json.utf8))
+            XCTAssertNoThrow(try tool.validate(args), raw)
+        }
+    }
+
+    func testSpeedToolValidateRejectsUnknownDirection() throws {
+        let tool = NetworkSpeedTestTool(executor: UnavailableSpeedExecutor())
+        let json = #"{"direction":"sideways","downloadUrl":"https://speed.example.net/payload"}"#
+        let args = try JSONDecoder().decode(
+            NetworkSpeedTestTool.Arguments.self, from: Data(json.utf8))
+        XCTAssertThrowsError(try tool.validate(args)) { error in
+            XCTAssertTrue(String(describing: error).contains("direction must be download"))
+        }
+    }
+
 }

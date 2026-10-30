@@ -174,6 +174,16 @@ class G04TerminalEngine(
     /** Screen text for accessibility (bounded by the caller). */
     fun visibleText(): String = emulator.getScreen().getSelectedText(0, 0, columns, rows, false)
 
+    /** Accessibility follows the same scrollback rows as the renderer; it
+     * never substitutes the live bottom screen for the user's viewport. */
+    fun viewportText(scrollRows: Int, maxCharacters: Int = 4000): String {
+        val top = -scrollRows.coerceIn(0, activeTranscriptRows())
+        val text = emulator.getScreen()
+            .getSelectedText(0, top, columns, top + rows - 1, false).trim()
+        val bounded = text.take(maxCharacters.coerceIn(0, 4000))
+        return if (bounded.lastOrNull()?.isHighSurrogate() == true) bounded.dropLast(1) else bounded
+    }
+
     fun resetEmulator() = emulator.reset()
 
     /** Physical key bytes routed through the reused KeyHandler tables. */
