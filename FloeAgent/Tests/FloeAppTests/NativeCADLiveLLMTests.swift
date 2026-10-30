@@ -186,6 +186,8 @@ private struct NativeCADLiveOwnedRoute {
         let metadata = try JSONDecoder().decode(Metadata.self,
             from: Data(contentsOf: root.appendingPathComponent("owned-route.json")))
         guard metadata.providerID == providerID, metadata.modelID == modelID,
+              metadata.baseURL.absoluteString == ProcessInfo.processInfo.environment["FLOE_NATIVE_CAD_LIVE_BASE_URL"],
+              metadata.remoteModelID == ProcessInfo.processInfo.environment["FLOE_NATIVE_CAD_LIVE_MODEL"],
               metadata.baseURL.scheme == "https", metadata.baseURL.host != nil,
               metadata.baseURL.user == nil, metadata.baseURL.password == nil,
               metadata.baseURL.query == nil,
@@ -195,7 +197,8 @@ private struct NativeCADLiveOwnedRoute {
             throw FloeError.validationFailed("Invalid owned qualification route metadata")
         }
         let existing = try await environment.configurationStore.provider(id: providerID)
-        guard existing == nil else {
+        let existingModel = try await environment.configurationStore.model(id: modelID)
+        guard existing == nil, existingModel == nil else {
             throw FloeError.validationFailed("Owned qualification provider already exists; inspect and clean its recorded state before retrying")
         }
         let account = "native-cad-qualification." + UUID().uuidString

@@ -83,10 +83,17 @@ final class TaskRemoteEnvironmentLiveTests: XCTestCase {
             let request = ShellRunRequest(command: script, cwd: ".", rootURL: root, deadline: .unlimited,
                 maxOutputBytes: 1024, sessionID: "qualification", runID: UUID(), toolEnvironment: toolEnvironment)
             let outcome = await router.run(request, cancellation: nil)
-            guard case .exited(let code, _, _, let truncated, let stderrTruncated, _) = outcome else {
+            guard case .exited(let code, _, let stderr, let truncated, let stderrTruncated, _) = outcome else {
                 XCTFail("Live SSH command did not exit normally: \(outcome)"); throw FloeError.validationFailed("Live SSH command failed")
             }
-            XCTAssertEqual(code, 0)
+            if code != 0 {
+                saveLiveSSHFault(
+                    detail: "exit=\(code)\nstderr=\(stderr)\n",
+                    root: root,
+                    input: input
+                )
+            }
+            XCTAssertEqual(code, 0, "stderr: \(stderr)")
             XCTAssertTrue(truncated || stderrTruncated)
             XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("result.txt"), encoding: .utf8), "REMOTE-FILE-OK")
             let logs = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent(".floe/terminal"), includingPropertiesForKeys: nil)
@@ -96,6 +103,54 @@ final class TaskRemoteEnvironmentLiveTests: XCTestCase {
             XCTAssertTrue(String(decoding: full, as: UTF8.self).contains("STDERR-TAIL"))
             XCTAssertTrue(String(decoding: full, as: UTF8.self).contains("UNLIMITED-FINISHED"))
             let quote: @Sendable (String) -> String = { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+            // The same oversized command shape through the initial PTY
+            // bootstrap: only the staged wrapper path is written to the
+            // terminal; the raw bytes travel through the same resolved native
+            // SSH connection. The marker proves the wide command, target env,
+            // cwd and PTY stdin/output path all survived.
+            let ptyMarker = "PTY-LONG-MARKER-" + UUID().uuidString
+            let ptyScript = "#" + String(repeating: "pty", count: 50_000) + "\n" + """
+            sleep 2
+            printf 'PTY-FILE-OK' > pty-result.txt
+            printf '%s\\n' "$PTY_MARKER"
+            """
+            let ptyRequest = ShellOpenRequest(command: ptyScript, cwd: ".", rootURL: root,
+                environment: ["PTY_MARKER": ptyMarker], columns: 100, rows: 30,
+                sessionID: "pty-qualification", runID: UUID(), toolEnvironment: toolEnvironment)
+            let opened = try await router.openSession(ptyRequest, cancellation: nil)
+            XCTAssertTrue(opened.alive)
+            var ptyOutput = opened.terminalOutput ?? Data(opened.initialOutput.utf8)
+            var ptyAlive = opened.alive
+            let ptyDeadline = Date().addingTimeInterval(60)
+            while Date() < ptyDeadline {
+                let exchange = try await router.exchangeSession(
+                    ShellExchangeRequest(sessionID: "pty-qualification", input: nil,
+                        waitMs: 1_000, maxBytes: 64 * 1024),
+                    cancellation: nil
+                )
+                ptyOutput.append(exchange.terminalOutput ?? Data(exchange.output.utf8))
+                ptyAlive = exchange.alive
+                // Wait for the wrapper to terminate (and run its own staged
+                // cleanup) rather than closing the PTY while it is still
+                // between the marker and exit.
+                if !ptyAlive { break }
+            }
+            await router.closeSession(sessionID: "pty-qualification")
+            let ptyText = String(decoding: ptyOutput, as: UTF8.self)
+            if !ptyText.contains(ptyMarker) {
+                saveLiveSSHFault(
+                    detail: "PTY marker missing\nalive=\(ptyAlive)\noutput=\(ptyText)\n",
+                    root: root,
+                    input: input
+                )
+            }
+            XCTAssertTrue(ptyText.contains(ptyMarker), "PTY output: \(ptyText)")
+            let ptyFile = try await ssh.run(
+                command: "cd " + quote(remoteRoot) + " && cat pty-result.txt",
+                hostID: hostID
+            )
+            XCTAssertEqual(ptyFile.exitCode, 0)
+            XCTAssertEqual(ptyFile.stdout, "PTY-FILE-OK")
             let operations = TaskTargetDependencyOperations { command, _, cancellation in
                 let result = try await ssh.run(command: "cd " + quote(remoteRoot) + " && " + command,
                     hostID: hostID, timeout: 180, maxOutputBytes: 128 * 1024, cancellation: cancellation)
@@ -138,8 +193,44 @@ final class TaskRemoteEnvironmentLiveTests: XCTestCase {
             XCTAssertEqual(migration.phase, .completed)
             try await mirror.removeOwnedTarget(target: target, cancellation: CancellationToken())
         } catch {
+            saveLiveSSHFault(detail: "thrown: \(error)\n", root: root, input: input)
             try? await mirror.removeOwnedTarget(target: target, cancellation: CancellationToken())
             throw error
+        }
+    }
+
+    /// Preserve the real remote failure bytes before this test's `defer`
+    /// deletes its workspace and the harness removes the remote root. The
+    /// first live run lost its 201-byte stderr because only assertion text
+    /// reached the xcresult.
+    private func saveLiveSSHFault(detail: String, root: URL, input: URL) {
+        let fault = input.appendingPathComponent("Faults/\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: fault, withIntermediateDirectories: true)
+            try Data(detail.utf8).write(to: fault.appendingPathComponent("failure.txt"))
+            let terminal = root.appendingPathComponent(".floe/terminal", isDirectory: true)
+            let logs = (try? FileManager.default.contentsOfDirectory(
+                at: terminal, includingPropertiesForKeys: nil)) ?? []
+            for (index, log) in logs.filter({ $0.pathExtension == "log" }).enumerated() {
+                try? FileManager.default.copyItem(
+                    at: log,
+                    to: fault.appendingPathComponent("terminal-\(index).log")
+                )
+            }
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: fault, includingPropertiesForKeys: nil)) ?? []
+            for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                guard let data = try? Data(contentsOf: file) else { continue }
+                let attachment = XCTAttachment(data: data)
+                attachment.name = "ssh-live-fault-\(file.lastPathComponent)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+        } catch {
+            let attachment = XCTAttachment(string: "Fault capture failed: \(error)\n\(detail)")
+            attachment.name = "ssh-live-fault-capture-error"
+            attachment.lifetime = .keepAlways
+            add(attachment)
         }
     }
 }

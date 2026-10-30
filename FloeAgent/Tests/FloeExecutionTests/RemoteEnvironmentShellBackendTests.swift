@@ -149,6 +149,98 @@ private final class FakeRemoteShellConnection: SSHRemoteShellConnection, @unchec
     }
 }
 
+/// Reconstructs the files the backend stages through
+/// `printf '%s' '<base64>' >> '<path>.b64'` commands. It never executes a
+/// command; it only lets a deterministic test inspect the exact wrapper and
+/// command bytes that a real remote shell would receive.
+private final class StagedFileRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var base64ByPath: [String: String] = [:]
+
+    func record(_ command: String) {
+        guard let marker = command.range(of: "printf '%s' '"),
+              let close = command.range(of: "' >> '", range: marker.upperBound..<command.endIndex),
+              let pathEnd = command.range(of: "'", range: close.upperBound..<command.endIndex) else { return }
+        let chunk = String(command[marker.upperBound..<close.lowerBound])
+        let path = String(command[close.upperBound..<pathEnd.lowerBound])
+        lock.withLock { base64ByPath[path, default: ""] += chunk }
+    }
+
+    func files() -> [String: Data] {
+        let snapshot = lock.withLock { base64ByPath }
+        var result: [String: Data] = [:]
+        for (path, encoded) in snapshot where path.hasSuffix(".b64") {
+            guard let data = Data(base64Encoded: encoded) else { continue }
+            result[String(path.dropLast(4))] = data
+        }
+        return result
+    }
+}
+
+/// Parse one POSIX single-quoted shell word, including the `'\\''` escape
+/// produced by the production `shellQuote` helper.
+private func shellQuotedArgument(in text: String, after marker: String) -> String? {
+    guard let start = text.range(of: marker)?.upperBound,
+          start < text.endIndex, text[start] == "'" else { return nil }
+    var index = text.index(after: start)
+    var value = ""
+    while index < text.endIndex {
+        let character = text[index]
+        if character == "'" {
+            let backslash = text.index(after: index)
+            if backslash < text.endIndex, text[backslash] == "\\" {
+                let quote = text.index(after: backslash)
+                if quote < text.endIndex, text[quote] == "'" {
+                    let reopen = text.index(after: quote)
+                    if reopen < text.endIndex, text[reopen] == "'" {
+                        value.append("'")
+                        index = text.index(after: reopen)
+                        continue
+                    }
+                }
+            }
+            return value
+        }
+        value.append(character)
+        index = text.index(after: index)
+    }
+    return nil
+}
+
+/// Emulate the Linux `execve` single-argument ceiling. A 4 KiB-page arm64
+/// guest rejects one argv element at MAX_ARG_STRLEN = 32 * 4096 = 131072
+/// bytes with E2BIG; dash then reports exit 126 before running the command.
+/// Both an inline body and a staged wrapper are checked, so raising the
+/// configured inline threshold cannot hide the same failure.
+private func emulatedLinuxSingleArgvFailure(
+    _ commandLine: String,
+    files: [String: Data]
+) -> FakeExecutionReply? {
+    let prefix = "exec /bin/sh '"
+    let inner: String?
+    let label: String
+    if commandLine.hasPrefix(prefix), commandLine.hasSuffix("'") {
+        let wrapperPath = String(commandLine.dropFirst(prefix.count).dropLast())
+        guard let wrapperData = files[wrapperPath],
+              let wrapper = String(data: wrapperData, encoding: .utf8) else { return nil }
+        inner = shellQuotedArgument(in: wrapper, after: "/bin/sh -c ")
+        label = wrapperPath
+    } else {
+        inner = shellQuotedArgument(in: commandLine, after: "/bin/sh -c ")
+        label = "inline"
+    }
+    guard let inner, inner.utf8.count >= 128 * 1024 else { return nil }
+    let stderr = Data("\(label): /bin/sh: Argument list too long\n".utf8)
+    return FakeExecutionReply(
+        result: SSHStreamExecResult(
+            exitCode: 126,
+            stderrPreview: stderr,
+            stderrBytes: Int64(stderr.count)
+        ),
+        chunks: [FakeChunk(channel: .stderr, data: stderr)]
+    )
+}
+
 private final class FakeDefaultBackend: LocalShellBackend, @unchecked Sendable {
     private let lock = NSLock()
     private var runCountStorage = 0
@@ -618,6 +710,66 @@ struct RemoteEnvironmentShellBackendTests {
         #expect(connection.userExecutionCount == 1)
     }
 
+    @Test("a configured 210 KB inline threshold is clamped and the 210 KB command is staged by path")
+    func configuredHighInlineThresholdStagesLongCommandByPath() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = makeTarget()
+        let recorder = StagedFileRecorder()
+        let connection = makeConnection { commandLine in
+            await recorder.record(commandLine)
+            if let failure = emulatedLinuxSingleArgvFailure(commandLine, files: await recorder.files()) {
+                return failure
+            }
+            return FakeExecutionReply(result: SSHStreamExecResult())
+        }
+        let limits = RemoteEnvironmentShellLimits(inlineCommandBytes: 210 * 1024)
+        // The configured transport threshold is clamped to the kernel-safe
+        // ceiling; the command itself is never capped.
+        #expect(limits.inlineCommandBytes == RemoteEnvironmentShellLimits.maximumInlineCommandBytes)
+        #expect(RemoteEnvironmentShellLimits.maximumInlineCommandBytes == 64 * 1024)
+        let backend = RemoteEnvironmentShellBackend(
+            resolver: { _ in .ssh(target) },
+            sessionFactory: { _ in connection },
+            limits: limits,
+            outputRoot: root
+        )
+        // The live fixture's shape (210,233 bytes here; 210,236 in live-2):
+        // a 210,001-byte comment, the Python writer, a >30 s sleep and both
+        // output streams.
+        // The fake never executes it; it only checks the staged bytes. The
+        // assembled inline body is 210,417 bytes, so the old 210 KiB
+        // threshold kept it inline and the emulator fails that path.
+        let command = "#" + String(repeating: "staging", count: 30_000) + "\n"
+            + "python3 -c 'import pathlib,sys; pathlib.Path(\"result.txt\").write_text(\"REMOTE-FILE-OK\"); print(\"A\"*200000+\"STDOUT-TAIL\",flush=True); print(\"B\"*100000+\"STDERR-TAIL\",file=sys.stderr,flush=True)'\n"
+            + "sleep 31\n"
+            + "printf '\nUNLIMITED-FINISHED\n'"
+        #expect(command.utf8.count > 128 * 1024)
+        let outcome = await backend.run(makeRequest(root: root, command: command), cancellation: nil)
+        guard case .exited(let code, _, let stderr, _, _, _) = outcome else {
+            Issue.record("unexpected outcome: \(outcome)")
+            return
+        }
+        #expect(code == 0, "the emulated Linux 128 KiB single-argv limit was hit: \(stderr)")
+        #expect(!stderr.contains("Argument list too long"))
+        let files = await recorder.files()
+        let commandPath = try #require(files.keys.first { $0.hasSuffix(".cmd") })
+        #expect(commandPath.contains("/remote/task/.floe-shell/"))
+        #expect(files[commandPath] == Data(command.utf8))
+        let wrapperPath = try #require(files.keys.first { $0.hasSuffix(".sh") })
+        let wrapper = try #require(files[wrapperPath].flatMap { String(data: $0, encoding: .utf8) })
+        #expect(wrapper.contains("/bin/sh '\(commandPath)'"))
+        #expect(!wrapper.contains("/bin/sh -c '"))
+        #expect(!wrapper.contains("STDOUT-TAIL"))
+        #expect(connection.recordedCommands.contains { $0.contains(".cmd.b64") })
+        #expect(connection.recordedCommands.contains { $0.contains(".sh.b64") })
+        #expect((connection.recordedCommands.map { $0.utf8.count }.max() ?? 0) < 64 * 1024)
+        #expect(!connection.recordedCommands.contains { $0.contains("STDOUT-TAIL") })
+        let cleanup = connection.recordedCommands.first { $0.hasPrefix("rm -f ") }
+        #expect(cleanup?.contains(commandPath) == true)
+        #expect(cleanup?.contains(wrapperPath) == true)
+    }
+
     @Test("a post-exit sync failure reports unknown and never reruns the command")
     func afterSyncFailureIsUnknown() async throws {
         let root = try makeTempRoot()
@@ -704,6 +856,95 @@ struct RemoteEnvironmentShellBackendTests {
         #expect(pty.written.contains(Data([0x03])))
 
         await backend.closeSession(sessionID: "pty-session")
+        #expect(pty.isClosed)
+        #expect(connection.isClosed)
+    }
+
+    @Test("an oversized initial PTY command is staged behind one bounded bootstrap line")
+    func oversizedInitialPTYCommandIsStaged() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = makeTarget()
+        let recorder = StagedFileRecorder()
+        let pty = FakeRemoteShellPTY(initial: Data("prompt$ ".utf8))
+        let connection = FakeRemoteShellConnection(pty: pty) { commandLine in
+            await recorder.record(commandLine)
+            return FakeExecutionReply(result: SSHStreamExecResult())
+        }
+        let backend = RemoteEnvironmentShellBackend(
+            resolver: { _ in .ssh(target) },
+            sessionFactory: { _ in connection },
+            outputRoot: root
+        )
+        // Longer than one MAX_ARG_STRLEN argument. The terminal must receive
+        // only the staged wrapper path, never the raw command bytes. Keep the
+        // command marker separate from the environment value: the wrapper
+        // legitimately carries the latter in its export line.
+        let environmentMarker = "PTY-ENV-MARKER-\(UUID().uuidString)"
+        let commandMarker = "PTY-COMMAND-MARKER-\(UUID().uuidString)"
+        let command = "#" + String(repeating: "pty", count: 50_000) + "\n"
+            + "# \(commandMarker)\n"
+            + "printf '%s\\n' \"$PTY_MARKER\"\n"
+            + "printf 'PTY-FILE-OK' > pty-result.txt\n"
+        #expect(command.utf8.count > 128 * 1024)
+        let openRequest = ShellOpenRequest(
+            command: command,
+            cwd: ".",
+            rootURL: root,
+            environment: ["PTY_MARKER": environmentMarker, "LANG": "C.UTF-8"],
+            columns: 120,
+            rows: 40,
+            gateTimeout: 5,
+            sessionID: "pty-long",
+            runID: UUID(),
+            toolEnvironment: makeToolEnvironment("env-ssh", root: root)
+        )
+        let opened = try await backend.openSession(openRequest, cancellation: nil)
+        #expect(opened.alive)
+        let written = pty.written
+        #expect(written.count == 1)
+        let bootstrap = try #require(written.first.flatMap { String(data: $0, encoding: .utf8) })
+        #expect(bootstrap.utf8.count < 1024)
+        #expect(bootstrap.hasPrefix("exec /bin/sh '"))
+        #expect(!bootstrap.contains(environmentMarker))
+        #expect(!bootstrap.contains(commandMarker))
+        #expect(!bootstrap.contains("PTY-FILE-OK"))
+
+        let files = await recorder.files()
+        let commandPath = try #require(files.keys.first { $0.hasSuffix(".cmd") })
+        #expect(commandPath.contains("/remote/task/.floe-shell/"))
+        #expect(files[commandPath] == Data(command.utf8))
+        #expect(String(decoding: files[commandPath] ?? Data(), as: UTF8.self).contains(commandMarker))
+        let wrapperPath = try #require(files.keys.first { $0.hasSuffix(".sh") })
+        let wrapper = try #require(files[wrapperPath].flatMap { String(data: $0, encoding: .utf8) })
+        #expect(bootstrap.contains(wrapperPath))
+        #expect(wrapper.contains("/bin/sh '\(commandPath)'"))
+        #expect(!wrapper.contains("/bin/sh -c '"))
+        #expect(!wrapper.contains(commandMarker))
+        #expect(wrapper.contains("cd '/remote/task'"))
+        #expect(wrapper.contains("PTY_MARKER='\(environmentMarker)'"))
+        #expect(wrapper.contains("LANG='C.UTF-8'"))
+        #expect(wrapper.contains("FLOE_ENVIRONMENT_ID='env-ssh'"))
+        #expect(wrapper.contains("rm -f '\(commandPath)' '\(wrapperPath)'"))
+        #expect(connection.recordedCommands.contains { $0.contains(".cmd.b64") })
+        #expect(connection.recordedCommands.contains { $0.contains(".sh.b64") })
+        #expect((connection.recordedCommands.map { $0.utf8.count }.max() ?? 0) < 64 * 1024)
+        // Nothing was written yet, so the backend must not delete the staged
+        // files early: the wrapper owns their cleanup after termination.
+        #expect(!connection.recordedCommands.contains { $0.hasPrefix("rm -f ") })
+
+        // The same session keeps the existing PTY reader/resize ownership.
+        pty.setResponse(Data("pong\n".utf8))
+        let exchange = try await backend.exchangeSession(
+            ShellExchangeRequest(sessionID: "pty-long", input: "ping\n", waitMs: 2_000, maxBytes: 1024),
+            cancellation: nil
+        )
+        #expect(exchange.alive)
+        #expect(exchange.output.contains("pong"))
+        await backend.resizeSession(sessionID: "pty-long", columns: 100, rows: 30)
+        #expect(pty.resized.last?.columns == 100)
+        #expect(pty.resized.last?.rows == 30)
+        await backend.closeSession(sessionID: "pty-long")
         #expect(pty.isClosed)
         #expect(connection.isClosed)
     }

@@ -161,8 +161,18 @@ public struct RemoteWorkspaceSyncCallbacks: Sendable {
 // MARK: - Limits
 
 public struct RemoteEnvironmentShellLimits: Sendable, Equatable {
+    /// Conservative kernel-safe ceiling for one inline remote command.
+    ///
+    /// Linux rejects a single argv element above `MAX_ARG_STRLEN`
+    /// (32 pages; 128 KiB on a 4 KiB-page host), and the inline envelope also
+    /// nests the wrapper and its `sh -c` argument. This is a TRANSPORT
+    /// threshold, not a command-length cap: any longer command is staged as a
+    /// raw file and read by path, so the command itself has no length limit.
+    public static let maximumInlineCommandBytes = 64 * 1024
+
     /// Inline wrapper-script budget. A larger assembled script (command plus
-    /// exports plus cleanup) is staged inside the remote task root.
+    /// exports plus cleanup) is staged inside the remote task root. Values
+    /// above `maximumInlineCommandBytes` are clamped to that safe ceiling.
     public var inlineCommandBytes: Int
     /// Base64 staging chunk sent as one remote command argument. Kept well
     /// below portable ARG_MAX with the rest of the command envelope.
@@ -182,7 +192,7 @@ public struct RemoteEnvironmentShellLimits: Sendable, Equatable {
         maximumSessions: Int = 8,
         stagingDirectoryName: String = ".floe-shell"
     ) {
-        self.inlineCommandBytes = max(4096, min(inlineCommandBytes, 256 * 1024))
+        self.inlineCommandBytes = max(4096, min(inlineCommandBytes, Self.maximumInlineCommandBytes))
         self.stagingChunkBytes = max(4096, min(stagingChunkBytes, 48 * 1024))
         self.previewBytesCeiling = max(4096, min(previewBytesCeiling, 4 * 1024 * 1024))
         self.ptyBufferBytes = max(16 * 1024, min(ptyBufferBytes, 1024 * 1024))
@@ -510,6 +520,7 @@ public actor RemoteEnvironmentShellBackend: LocalShellBackend {
             var body = Self.wrapperScript(
                 directory: directory,
                 command: request.command,
+                commandPath: nil,
                 requestEnvironment: requestEnvironment,
                 trustedEnvironment: trustedEnvironment,
                 stdinPath: stdinPath,
@@ -518,17 +529,38 @@ public actor RemoteEnvironmentShellBackend: LocalShellBackend {
             let commandLine: String
             if body.utf8.count > limits.inlineCommandBytes {
                 let path = Self.stagingPath(target: target, suffix: ".sh", limits: limits)
+                let commandPath = Self.stagingPath(target: target, suffix: ".cmd", limits: limits)
                 stagedPaths.append(path)
                 stagedPaths.append(path + ".b64")
+                stagedPaths.append(commandPath)
+                stagedPaths.append(commandPath + ".b64")
                 body = Self.wrapperScript(
                     directory: directory,
                     command: request.command,
+                    commandPath: commandPath,
                     requestEnvironment: requestEnvironment,
                     trustedEnvironment: trustedEnvironment,
                     stdinPath: stdinPath,
                     scriptPath: path
                 )
-                guard let budget = Self.remainingBudget(request.deadline, since: started) else {
+                guard let commandBudget = Self.remainingBudget(request.deadline, since: started) else {
+                    throw RemoteShellPreparationFailure.deadlineExhausted
+                }
+                // Stage the raw user command separately. Embedding it in an
+                // inner `sh -c` argv still fails after the wrapper itself was
+                // staged: Linux caps one argv element at MAX_ARG_STRLEN
+                // (32 pages, 128 KiB on a 4 KiB-page arm64 host), so a 210 KB
+                // command exits 126 before its first line runs.
+                try await Self.stageRemoteFile(
+                    Data(request.command.utf8),
+                    remotePath: commandPath,
+                    target: target,
+                    limits: limits,
+                    connection: connection,
+                    budget: commandBudget,
+                    cancellation: cancellation
+                )
+                guard let scriptBudget = Self.remainingBudget(request.deadline, since: started) else {
                     throw RemoteShellPreparationFailure.deadlineExhausted
                 }
                 try await Self.stageRemoteFile(
@@ -537,7 +569,7 @@ public actor RemoteEnvironmentShellBackend: LocalShellBackend {
                     target: target,
                     limits: limits,
                     connection: connection,
-                    budget: budget,
+                    budget: scriptBudget,
                     cancellation: cancellation
                 )
                 commandLine = "exec /bin/sh \(Self.shellQuote(path))"
@@ -690,6 +722,40 @@ public actor RemoteEnvironmentShellBackend: LocalShellBackend {
             throw FloeError.validationFailed(
                 "The selected SSH host \(target.hostID.uuidString) is not connected")
         }
+
+        // The initial command may be arbitrarily long. A PTY carries it as a
+        // terminal line, not as argv, so stage anything beyond the
+        // conservative PTY budget before opening the terminal. Nothing has
+        // been dispatched yet: a preparation failure can remove its own
+        // partial files safely.
+        let prepared: (bootstrap: String, stagedPaths: [String])
+        do {
+            prepared = try await Self.initialPTYBootstrap(
+                request: request,
+                target: target,
+                directory: directory,
+                connection: connection,
+                limits: limits,
+                cancellation: cancellation
+            )
+        } catch {
+            await connection.close()
+            if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
+            if let failure = error as? RemoteShellPreparationFailure {
+                switch failure {
+                case .deadlineExhausted:
+                    throw FloeError.validationFailed(
+                        "The SSH terminal command preparation deadline was exhausted; nothing was started")
+                case .stagingFailed(let detail):
+                    throw FloeError.validationFailed(
+                        "The SSH terminal command could not be staged inside the pinned task root: \(detail). Nothing was started.")
+                }
+            }
+            if let floe = error as? FloeError, floe == .cancelled { throw FloeError.cancelled }
+            if error is CancellationError { throw FloeError.cancelled }
+            throw FloeError.validationFailed("The SSH terminal command could not be prepared: \(Self.safe(error))")
+        }
+
         let pty: any SSHRemoteShellPTY
         do {
             pty = try await connection.openRemotePTY(
@@ -698,11 +764,13 @@ public actor RemoteEnvironmentShellBackend: LocalShellBackend {
                 rows: max(5, min(request.rows, 200))
             )
         } catch {
+            await Self.cleanupRemoteFiles(prepared.stagedPaths, connection: connection)
             await connection.close()
             if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
             throw FloeError.validationFailed("The SSH terminal could not be opened: \(Self.safe(error))")
         }
         if cancellation?.isCancelled == true || Task.isCancelled {
+            await Self.cleanupRemoteFiles(prepared.stagedPaths, connection: connection)
             await pty.close()
             await connection.close()
             throw FloeError.cancelled
@@ -736,38 +804,25 @@ public actor RemoteEnvironmentShellBackend: LocalShellBackend {
             sessions[sessionID] = stored
         }
 
-        if !request.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            // The remote login shell may be zsh/bash/sh or even fish/csh, so
-            // do not inject POSIX `export` syntax into it. `env` carries the
-            // trusted facts and the requested variables for the command's
-            // /bin/sh child; `cd` and `exec` are accepted by the common shells.
-            let assignments = Self.environmentAssignments(
-                Self.trustedEnvironment(target)
-                    .merging(Self.sanitizedRequestEnvironment(request.environment)) { trusted, _ in trusted }
-            )
-            let bootstrap = "cd \(Self.shellQuote(directory)) || exit 126; "
-                + "exec /usr/bin/env \(assignments) /bin/sh -c \(Self.shellQuote(request.command))\n"
-            do {
-                try await pty.write(Data(bootstrap.utf8))
-                addBytesWritten(sessionID: sessionID, count: bootstrap.utf8.count)
-            } catch {
-                await closeSession(sessionID: sessionID)
-                if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
-                throw FloeError.validationFailed("The SSH terminal command could not be started: \(Self.safe(error))")
-            }
-        } else {
-            // Keep the real interactive shell (its own startup files and
-            // prompt); only position it at the task root. No POSIX-only
-            // export syntax is injected into an unknown login shell.
-            let bootstrap = "cd \(Self.shellQuote(directory))\n"
-            do {
-                try await pty.write(Data(bootstrap.utf8))
-                addBytesWritten(sessionID: sessionID, count: bootstrap.utf8.count)
-            } catch {
-                await closeSession(sessionID: sessionID)
-                if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
-                throw FloeError.validationFailed("The SSH terminal could not be positioned at the task root: \(Self.safe(error))")
-            }
+        // The remote login shell may be zsh/bash/sh or even fish/csh, so do
+        // not inject POSIX `export` syntax into it. The inline form uses the
+        // common `cd`/`exec` words with `env`; the staged form executes the
+        // wrapper by path. Both carry the trusted facts and requested
+        // variables; the wrapper also keeps the PTY's stdin and its own
+        // staged inputs until the command terminates.
+        do {
+            try await pty.write(Data(prepared.bootstrap.utf8))
+            addBytesWritten(sessionID: sessionID, count: prepared.bootstrap.utf8.count)
+        } catch {
+            // The write may have reached the terminal, so the wrapper may
+            // already own the staged files. Retain possibly used inputs and
+            // only close the terminal.
+            await closeSession(sessionID: sessionID)
+            if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
+            let detail = request.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "The SSH terminal could not be positioned at the task root"
+                : "The SSH terminal command could not be started"
+            throw FloeError.validationFailed("\(detail): \(Self.safe(error))")
         }
 
         let initial = await waitForInitialOutput(sessionID: sessionID, waitMs: 400, maxBytes: 16 * 1024)
@@ -1001,9 +1056,90 @@ public actor RemoteEnvironmentShellBackend: LocalShellBackend {
             .joined(separator: " ")
     }
 
+    /// A PTY line is not an argv seam. The login shell reads it from a
+    /// terminal whose canonical-mode input buffer is only a few KiB, far
+    /// smaller than ARG_MAX. Keep the interactive bootstrap well inside that
+    /// buffer; a larger initial command uses the same raw-file staging and
+    /// self-cleaning wrapper as `run`.
+    private static let maximumInlinePTYBootstrapBytes = 3 * 1024
+
+    /// Builds the one bootstrap line written to the login shell's PTY.
+    ///
+    /// The inline form keeps the existing `cd` + `env` + `sh -c` semantics.
+    /// When it would exceed the conservative PTY budget, the raw command and
+    /// the existing wrapper are staged and the terminal receives only
+    /// `exec /bin/sh '<wrapper>'`; the wrapper carries the target cwd,
+    /// trusted/request environment, inherited PTY stdin and its own cleanup.
+    /// Partial files are removed here only when preparation failed before
+    /// anything was dispatched.
+    private static func initialPTYBootstrap(
+        request: ShellOpenRequest,
+        target: SSHShellTarget,
+        directory: String,
+        connection: any SSHRemoteShellConnection,
+        limits: RemoteEnvironmentShellLimits,
+        cancellation: CancellationToken?
+    ) async throws -> (bootstrap: String, stagedPaths: [String]) {
+        let command = request.command
+        guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return ("cd \(shellQuote(directory))\n", [])
+        }
+        let requestEnvironment = sanitizedRequestEnvironment(request.environment)
+        let trusted = trustedEnvironment(target)
+        let assignments = environmentAssignments(
+            trusted.merging(requestEnvironment) { trustedValue, _ in trustedValue }
+        )
+        let inline = "cd \(shellQuote(directory)) || exit 126; "
+            + "exec /usr/bin/env \(assignments) /bin/sh -c \(shellQuote(command))\n"
+        let inlineBudget = min(limits.inlineCommandBytes, maximumInlinePTYBootstrapBytes)
+        guard inline.utf8.count > inlineBudget else {
+            return (inline, [])
+        }
+
+        let scriptPath = stagingPath(target: target, suffix: ".sh", limits: limits)
+        let commandPath = stagingPath(target: target, suffix: ".cmd", limits: limits)
+        let stagedPaths = [scriptPath, scriptPath + ".b64", commandPath, commandPath + ".b64"]
+        let wrapper = wrapperScript(
+            directory: directory,
+            command: command,
+            commandPath: commandPath,
+            requestEnvironment: requestEnvironment,
+            trustedEnvironment: trusted,
+            stdinPath: nil,
+            scriptPath: scriptPath
+        )
+        do {
+            // ShellOpenRequest has no execution deadline, matching the run
+            // policy: preparation has no invented cap and stays cancellable.
+            try await stageRemoteFile(
+                Data(command.utf8),
+                remotePath: commandPath,
+                target: target,
+                limits: limits,
+                connection: connection,
+                budget: .unlimited,
+                cancellation: cancellation
+            )
+            try await stageRemoteFile(
+                Data(wrapper.utf8),
+                remotePath: scriptPath,
+                target: target,
+                limits: limits,
+                connection: connection,
+                budget: .unlimited,
+                cancellation: cancellation
+            )
+        } catch {
+            await cleanupRemoteFiles(stagedPaths, connection: connection)
+            throw error
+        }
+        return ("exec /bin/sh \(shellQuote(scriptPath))\n", stagedPaths)
+    }
+
     private static func wrapperScript(
         directory: String,
         command: String,
+        commandPath: String?,
         requestEnvironment: [String: String],
         trustedEnvironment: [String: String],
         stdinPath: String?,
@@ -1017,12 +1153,22 @@ public actor RemoteEnvironmentShellBackend: LocalShellBackend {
         lines.append("cd \(shellQuote(directory)) || exit 126;")
         lines.append("export PATH=\"$FLOE_REMOTE_TASK_ROOT/.floe-env/bin:$FLOE_REMOTE_TASK_ROOT/.floe-node/node_modules/.bin:$PATH\";")
         lines.append("export NODE_PATH=\"$FLOE_REMOTE_TASK_ROOT/.floe-node/node_modules${NODE_PATH:+:$NODE_PATH}\";")
-        var run = "/bin/sh -c \(shellQuote(command))"
+        var run: String
+        if let commandPath {
+            // Execute the staged raw command by path; its bytes are never an
+            // argv element, so an arbitrary script length is safe.
+            run = "/bin/sh \(shellQuote(commandPath))"
+        } else {
+            // Small commands retain the existing `sh -c` semantics. The
+            // assembled body is already below the inline threshold here.
+            run = "/bin/sh -c \(shellQuote(command))"
+        }
         if let stdinPath { run += " < \(shellQuote(stdinPath))" }
         lines.append(run)
         lines.append("_floe_status=$?;")
         var cleanup: [String] = []
         if let stdinPath { cleanup.append(shellQuote(stdinPath)) }
+        if let commandPath { cleanup.append(shellQuote(commandPath)) }
         if let scriptPath { cleanup.append(shellQuote(scriptPath)) }
         if !cleanup.isEmpty {
             lines.append("rm -f \(cleanup.joined(separator: " "));")
