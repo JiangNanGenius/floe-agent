@@ -278,6 +278,203 @@ actor CadDocumentCenter: CadDocumentHost {
         }
     }
 
+    // MARK: - Native animation capture / MP4 export
+
+    /// Upper bound for one verified animation video written by the tool path.
+    /// The engine also verifies the encoded file before promotion; this is the
+    /// host's external-output size boundary.
+    private var maximumAnimationExportBytes: Int64 { 512 * 1024 * 1024 }
+
+    /// One real animation frame. A durable task record makes the operation
+    /// visible to `status` and cancellable; bytes are returned to the tool,
+    /// which publishes the image artifact through RunOutput.
+    func captureAnimationFrame(documentID: String,
+                               request: CadAnimationCaptureRequest,
+                               access: CadDocumentAccess) async throws -> CadAnimationCapture {
+        let resolved = try await resolveNativeAware(documentID: documentID, access: access)
+        let url = try resolved.service.guardResolver.resolve(resolved.id)
+        let ownership = NativeCADTaskRegistry.Ownership(access: access,
+                                                       documentPath: resolved.id)
+        let taskID = await NativeCADTaskRegistry.shared.begin(
+            kind: "animation-capture", ownership: ownership)
+        if await NativeCADTaskRegistry.shared.isCancellationRequested(id: taskID) {
+            await NativeCADTaskRegistry.shared.finish(
+                id: taskID, state: .cancelled, detail: nil)
+            throw FloeError.cancelled
+        }
+        let task: Task<CadAnimationCapture, Error> = Task {
+            try await FloeCAD3DBridge.shared.captureAnimationFrame(
+                at: url, request: request)
+        }
+        inflightAnimationCaptureTasks[taskID] = task
+        defer { inflightAnimationCaptureTasks[taskID] = nil }
+        do {
+            var capture = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            if Task.isCancelled {
+                await NativeCADTaskRegistry.shared.finish(
+                    id: taskID, state: .cancelled, detail: nil)
+                throw FloeError.cancelled
+            }
+            capture.taskID = taskID
+            await NativeCADTaskRegistry.shared.finish(
+                id: taskID, state: .completed,
+                detail: "frame \(capture.frameIndex) at \(capture.frameRate) fps, "
+                    + "\(capture.width)x\(capture.height) \(capture.mimeType)")
+            return capture
+        } catch let error as CADDocumentError {
+            await NativeCADTaskRegistry.shared.finish(
+                id: taskID, state: .failed, detail: error.message)
+            throw Self.classifiedNativeError(error)
+        } catch {
+            let state: NativeCADTaskRegistry.State =
+                error is CancellationError ? .cancelled : .failed
+            await NativeCADTaskRegistry.shared.finish(
+                id: taskID, state: state, detail: error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// Verified MP4 export into the caller's task workspace. The engine writes
+    /// a staged file and verifies playable/duration/dimensions/fps/frames
+    /// before atomically promoting it; this host then re-hashes the actual
+    /// file, enforces the external-output byte bound and records the durable
+    /// task. The tool publishes the real file through RunOutput.
+    func exportAnimation(documentID: String, relativeOutput: String,
+                         options: CadAnimationExportOptions,
+                         access: CadDocumentAccess) async throws -> CadAnimationExportReceipt {
+        let resolved = try await resolveNativeAware(documentID: documentID, access: access)
+        let documentURL = try resolved.service.guardResolver.resolve(resolved.id)
+        let output = try animationOutput(resolved: resolved, raw: relativeOutput,
+                                         overwrite: options.overwrite)
+        let ownership = NativeCADTaskRegistry.Ownership(access: access,
+                                                       documentPath: resolved.id)
+        let taskID = await NativeCADTaskRegistry.shared.begin(
+            kind: "animation-export", ownership: ownership)
+        if await NativeCADTaskRegistry.shared.isCancellationRequested(id: taskID) {
+            await NativeCADTaskRegistry.shared.finish(
+                id: taskID, state: .cancelled, detail: nil)
+            throw FloeError.cancelled
+        }
+        let task: Task<CADAnimationExportResult, Error> = Task {
+            try await FloeCAD3DBridge.shared.exportAnimation(
+                at: documentURL, to: output.url, options: options)
+        }
+        inflightAnimationExportTasks[taskID] = task
+        defer { inflightAnimationExportTasks[taskID] = nil }
+        do {
+            let result = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            if Task.isCancelled {
+                try? FileManager.default.removeItem(at: output.url)
+                await NativeCADTaskRegistry.shared.finish(
+                    id: taskID, state: .cancelled, detail: nil)
+                throw FloeError.cancelled
+            }
+            guard result.url.standardizedFileURL.resolvingSymlinksInPath().path
+                    == output.url.standardizedFileURL.resolvingSymlinksInPath().path else {
+                try? FileManager.default.removeItem(at: output.url)
+                throw FloeError.storageCorrupted(
+                    "The animation export reported a different output file; it was removed.")
+            }
+            let attributes = try FileManager.default.attributesOfItem(atPath: output.url.path)
+            guard let number = attributes[.size] as? NSNumber,
+                  number.int64Value > 1024,
+                  number.int64Value <= maximumAnimationExportBytes else {
+                try? FileManager.default.removeItem(at: output.url)
+                await NativeCADTaskRegistry.shared.finish(
+                    id: taskID, state: .failed,
+                    detail: "animation video is empty or exceeds the 512 MiB bound")
+                throw FloeError.validationFailed(
+                    "The animation video is empty or exceeds the 512 MiB output bound.")
+            }
+            let byteCount = number.int64Value
+            guard byteCount == result.byteCount else {
+                try? FileManager.default.removeItem(at: output.url)
+                await NativeCADTaskRegistry.shared.finish(
+                    id: taskID, state: .failed,
+                    detail: "animation video size did not match the engine receipt")
+                throw FloeError.storageCorrupted(
+                    "The animation video size did not match the verified receipt; it was removed.")
+            }
+            let digest = try FloeDigest.sha256Hex(
+                ofFileAt: output.url, isCancelled: { Task.isCancelled })
+            if Task.isCancelled {
+                try? FileManager.default.removeItem(at: output.url)
+                await NativeCADTaskRegistry.shared.finish(
+                    id: taskID, state: .cancelled, detail: nil)
+                throw FloeError.cancelled
+            }
+            await NativeCADTaskRegistry.shared.finish(
+                id: taskID, state: .completed,
+                detail: "mp4 \(result.width)x\(result.height) "
+                    + "\(Int(result.frameRate.rounded()))fps "
+                    + "\(result.frameCount) frames, \(byteCount) bytes")
+            return CadAnimationExportReceipt(
+                relativePath: output.relative,
+                width: result.width, height: result.height,
+                frameRate: result.frameRate,
+                durationSeconds: result.durationSeconds,
+                frameCount: result.frameCount,
+                codec: result.codec,
+                hasAudio: result.hasAudio,
+                byteCount: byteCount,
+                sha256: digest,
+                posterPNG: result.posterPNG,
+                taskID: taskID,
+                note: "Actual native RealityKit animation frames encoded as verified MP4; "
+                    + "the .floecad source document was not modified.")
+        } catch let error as CADDocumentError {
+            await NativeCADTaskRegistry.shared.finish(
+                id: taskID, state: .failed, detail: error.message)
+            throw Self.classifiedNativeError(error)
+        } catch {
+            let state: NativeCADTaskRegistry.State =
+                error is CancellationError ? .cancelled : .failed
+            await NativeCADTaskRegistry.shared.finish(
+                id: taskID, state: state, detail: error.localizedDescription)
+            throw error
+        }
+    }
+
+    private func animationOutput(resolved: Resolved, raw: String,
+                                 overwrite: Bool) throws -> (relative: String, url: URL) {
+        var relative = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !relative.isEmpty, relative.utf8.count <= 1024,
+              !relative.contains("\0"),
+              !relative.split(separator: "/").contains("..") else {
+            throw FloeError.validationFailed(
+                "animation export requires a workspace-contained .mp4 output path")
+        }
+        if relative.hasPrefix("/") {
+            let rootPath = resolved.root.standardizedFileURL.resolvingSymlinksInPath().path
+            guard relative.hasPrefix(rootPath + "/") else {
+                throw FloeError.validationFailed(
+                    "The animation output must be inside the task workspace.")
+            }
+            relative = String(relative.dropFirst(rootPath.count + 1))
+        }
+        guard (relative as NSString).pathExtension.lowercased() == "mp4" else {
+            throw FloeError.validationFailed(
+                "animation export output must end in .mp4")
+        }
+        let url = try resolved.service.guardResolver.resolve(relative)
+        try resolved.service.guardResolver.assertWritable(url)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: url.path), !overwrite {
+            throw FloeError.validationFailed(
+                "The animation video already exists; pass overwrite to replace it.")
+        }
+        return (relative, url)
+    }
+
     // MARK: - Native package creation (host factory)
 
     /// Creates a new EMPTY native `.floecad` package inside the caller's
@@ -307,6 +504,8 @@ actor CadDocumentCenter: CadDocumentHost {
     /// In-flight native jobs keyed by task id, so `cancel` can actually cancel
     /// the Task rather than only writing a flag.
     private var inflightNativeTasks: [UUID: Task<String, Error>] = [:]
+    private var inflightAnimationCaptureTasks: [UUID: Task<CadAnimationCapture, Error>] = [:]
+    private var inflightAnimationExportTasks: [UUID: Task<CADAnimationExportResult, Error>] = [:]
 
     private func nativeLongOperation(resolved: Resolved, url: URL,
                                      requestJSON: String, kind: String,
@@ -364,6 +563,8 @@ actor CadDocumentCenter: CadDocumentHost {
             // Actually cancel the running Task; the operation decides at its
             // next boundary. The record keeps whatever final state it reaches.
             inflightNativeTasks[taskID]?.cancel()
+            inflightAnimationCaptureTasks[taskID]?.cancel()
+            inflightAnimationExportTasks[taskID]?.cancel()
             return Self.encodeNativeJSON([
                 "ok": true,
                 "task": Self.nativeTaskRecordJSON(record),
@@ -698,7 +899,7 @@ actor CadDocumentCenter: CadDocumentHost {
             ],
             "task_id": taskID.uuidString,
             "message": "Import drafted on a throwaway copy; the source file and package are unchanged. "
-                + "Preview it, then apply with a grant issued from the CAD UI after the user confirms.",
+                + "Apply with cad.document action=apply and this proposal_id. Ordinary authorized document editing needs no separate confirmation.",
         ])
     }
 

@@ -99,6 +99,141 @@ public struct CadViewportCapture: Sendable, Equatable {
     }
 }
 
+// MARK: - Animation values
+
+/// One actual animation-frame capture request. The host resolves the live
+/// document, applies the frame transiently and returns real rendered bytes;
+/// it never substitutes a placeholder or an engineering viewport.
+public struct CadAnimationCaptureRequest: Sendable, Equatable {
+    public var clipID: UUID?
+    public var timeSeconds: Double?
+    public var frame: Int?
+    public var fps: Int
+    public var width: Int
+    public var height: Int
+    /// `png` or `jpeg`.
+    public var format: String
+    public var jpegQuality: Double
+    public var expectedRevision: Int64?
+
+    public init(clipID: UUID? = nil, timeSeconds: Double? = nil,
+                frame: Int? = nil, fps: Int = 30,
+                width: Int = 1920, height: Int = 1080,
+                format: String = "png", jpegQuality: Double = 0.92,
+                expectedRevision: Int64? = nil) {
+        self.clipID = clipID
+        self.timeSeconds = timeSeconds
+        self.frame = frame
+        self.fps = fps
+        self.width = width
+        self.height = height
+        self.format = format
+        self.jpegQuality = jpegQuality
+        self.expectedRevision = expectedRevision
+    }
+}
+
+public struct CadAnimationCapture: Sendable, Equatable {
+    public var imageData: Data
+    public var mimeType: String
+    public var width: Int
+    public var height: Int
+    public var revision: Int64
+    public var changeCount: Int
+    public var contentSHA256: String
+    public var sha256: String
+    public var clipID: UUID
+    public var timeSeconds: Double
+    public var frameIndex: Int
+    public var frameRate: Int
+    public var renderer: String
+    public var note: String
+    /// Durable native task that produced this frame (filled by the host).
+    public var taskID: UUID?
+
+    public init(imageData: Data, mimeType: String, width: Int, height: Int,
+                revision: Int64, changeCount: Int, contentSHA256: String,
+                sha256: String, clipID: UUID, timeSeconds: Double,
+                frameIndex: Int, frameRate: Int, renderer: String, note: String,
+                taskID: UUID? = nil) {
+        self.imageData = imageData
+        self.mimeType = mimeType
+        self.width = width
+        self.height = height
+        self.revision = revision
+        self.changeCount = changeCount
+        self.contentSHA256 = contentSHA256
+        self.sha256 = sha256
+        self.clipID = clipID
+        self.timeSeconds = timeSeconds
+        self.frameIndex = frameIndex
+        self.frameRate = frameRate
+        self.renderer = renderer
+        self.note = note
+        self.taskID = taskID
+    }
+}
+
+/// MP4 export options accepted by the tool. Values are validated again by the
+/// engine; the tool only keeps the public contract small and explicit.
+public struct CadAnimationExportOptions: Sendable, Equatable {
+    public var width: Int
+    public var height: Int
+    public var frameRate: Int
+    /// `h264` (default) or `hevc`.
+    public var codec: String
+    public var bitrate: Int?
+    public var overwrite: Bool
+    public var posterEnabled: Bool
+
+    public init(width: Int = 1920, height: Int = 1080, frameRate: Int = 30,
+                codec: String = "h264", bitrate: Int? = nil,
+                overwrite: Bool = false, posterEnabled: Bool = true) {
+        self.width = width
+        self.height = height
+        self.frameRate = frameRate
+        self.codec = codec
+        self.bitrate = bitrate
+        self.overwrite = overwrite
+        self.posterEnabled = posterEnabled
+    }
+}
+
+public struct CadAnimationExportReceipt: Sendable, Equatable {
+    public var relativePath: String
+    public var width: Int
+    public var height: Int
+    public var frameRate: Double
+    public var durationSeconds: Double
+    public var frameCount: Int
+    public var codec: String
+    public var hasAudio: Bool
+    public var byteCount: Int64
+    public var sha256: String
+    public var posterPNG: Data?
+    public var taskID: UUID
+    public var note: String
+
+    public init(relativePath: String, width: Int, height: Int,
+                frameRate: Double, durationSeconds: Double, frameCount: Int,
+                codec: String, hasAudio: Bool, byteCount: Int64, sha256: String,
+                posterPNG: Data?, taskID: UUID, note: String) {
+        self.relativePath = relativePath
+        self.width = width
+        self.height = height
+        self.frameRate = frameRate
+        self.durationSeconds = durationSeconds
+        self.frameCount = frameCount
+        self.codec = codec
+        self.hasAudio = hasAudio
+        self.byteCount = byteCount
+        self.sha256 = sha256
+        self.posterPNG = posterPNG
+        self.taskID = taskID
+        self.note = note
+    }
+}
+
 /// Action names the `material` and `parameters` tool actions accept. Kept in
 /// the tool-support module so validation does not need a FloeCAD dependency;
 /// the engine service remains the authority and returns a structured refusal
@@ -109,7 +244,33 @@ public enum CadNativeEditActions {
         "reassignFaces", "mapping", "textures", "unresolved", "libraryExport",
         "libraryImport", "libraryList", "undo", "redo",
     ]
-    public static let parameters: Set<String> = ["list", "update", "updateSketchEntity", "undo", "redo"]
+    public static let parameters: Set<String> = [
+        "list", "update", "updateSketchEntity",
+        "setSketchDimension", "removeSketchDimension",
+        "feature.suppress", "feature.delete", "feature.move",
+        "undo", "redo",
+    ]
+    /// Authored/read animation operations. `capture`/`export` are media
+    /// operations handled by the host, not document mutations.
+    public static let animationReads: Set<String> = [
+        "list", "query", "evaluate",
+    ]
+    public static let animationMutations: Set<String> = [
+        "createClip", "updateClip", "deleteClip", "setActiveClip",
+        "addTrack", "deleteTrack", "setKeyframe", "setCameraKeyframe",
+        "setPartKeyframe", "deleteKeyframe", "preset", "undo", "redo",
+    ]
+    public static let animationMedia: Set<String> = ["capture", "export"]
+    public static let animation: Set<String> =
+        animationReads.union(animationMutations).union(animationMedia)
+
+    /// Model-facing driving-dimension names accepted by
+    /// `parameters setSketchDimension`. `length` is a line's point-to-point
+    /// distance; `width`/`height` are stored as the solver's horizontal/
+    /// vertical axis distances.
+    public static let sketchDimensionKinds: Set<String> = [
+        "length", "distance", "angle", "diameter", "radius", "width", "height",
+    ]
 }
 
 // MARK: - Native package naming and creation/import policy
@@ -528,10 +689,24 @@ public enum CadServiceOperationCatalog: Sendable {
                       arg("replace", "boolean", note: "default false; true replaces every existing page"),
                   ],
                   examples: [#"{"bodyID":"<body uuid>"}"#]),
-        Operation(kind: "drawing", action: "addPage", mutating: true,
-                  summary: "Add one drawing page (front/top/side/iso/section/detail) projected from bodyIDs.",
+        Operation(kind: "drawing", action: "assemblySheet", mutating: true,
+                  summary: "Create the five-page assembly sheet (front, top, side, iso, exploded) "
+                    + "projected from the live placed instances, optionally using one saved exploded view.",
                   arguments: [
-                      arg("kind", "string", required: true, note: "front | top | side | iso | section | detail"),
+                      arg("bodyIDs", "[uuid]", note: "optional source-body filter; defaults to every placed instance; alias sourceBodyIDs"),
+                      arg("title", "string", note: "title-block title; defaults to the document name"),
+                      arg("explodedViewID", "uuid", note: "saved exploded view; its offsets apply to every page"),
+                      arg("scale", "number", note: "drawing mm per model mm in (0, 1000]; default 1"),
+                      arg("paper", "string", note: "a4 | a3 | a2 | a1 | a0 | letter | tabloid | custom; default a3"),
+                      arg("replace", "boolean", note: "default false; true replaces every existing page"),
+                  ],
+                  examples: [#"{"title":"Assembly"}"#,
+                             #"{"explodedViewID":"<exploded view uuid>","scale":0.5}"#]),
+        Operation(kind: "drawing", action: "addPage", mutating: true,
+                  summary: "Add one drawing page (front/top/side/iso/section/detail/exploded) "
+                    + "projected from bodyIDs; exploded pages and assemblyMode project the placed instances.",
+                  arguments: [
+                      arg("kind", "string", required: true, note: "front | top | side | iso | section | detail | exploded"),
                       arg("bodyIDs", "[uuid]", note: "1-12 live bodies; alias sourceBodyIDs"),
                       arg("name", "string", note: "page name; defaults to the kind title"),
                       arg("title", "string"), arg("partNumbers", "[string]"),
@@ -544,32 +719,142 @@ public enum CadServiceOperationCatalog: Sendable {
                       arg("detailOrigin", "[x,y,z]", note: "detail pages require it with detailSizeMM"),
                       arg("detailSizeMM", "number | [width,height]"),
                       arg("showDimensions", "boolean"), arg("showCenterlines", "boolean"),
+                      arg("assemblyMode", "boolean", note: "default false; project the placed assembly instances"),
+                      arg("explodedViewID", "uuid", note: "saved exploded view; non-null implies assemblyMode; null clears the id"),
+                      arg("explodedViewName", "string", note: "display label; normally derived from explodedViewID"),
+                      arg("showBOM", "boolean", note: "default false; draw the page BOM table"),
                   ],
                   examples: [#"{"kind":"front","bodyIDs":["<body uuid>"]}"#,
-                             #"{"kind":"iso","bodyIDs":["<body uuid>"],"scale":0.5,"paper":"a3","showDimensions":true}"#]),
+                             #"{"kind":"iso","bodyIDs":["<body uuid>"],"scale":0.5,"paper":"a3","showDimensions":true}"#,
+                             #"{"kind":"exploded","assemblyMode":true,"explodedViewID":"<exploded view uuid>"}"#]),
         Operation(kind: "drawing", action: "updatePage", mutating: true,
                   summary: "Update one page in place; omitted fields keep the current value "
                     + "(kind defaults to the existing page kind).",
                   arguments: [arg("pageID", "uuid", required: true, note: "alias id")]
-                    + [arg("kind", "string"), arg("bodyIDs", "[uuid]"), arg("name", "string"),
+                    + [arg("kind", "string", note: "front | top | side | iso | section | detail | exploded"),
+                       arg("bodyIDs", "[uuid]"), arg("name", "string"),
                        arg("title", "string"), arg("partNumbers", "[string]"), arg("scale", "number"),
                        arg("paper", "string"), arg("customWidthMM", "number"),
                        arg("customHeightMM", "number"), arg("viewNormal", "[x,y,z]"),
                        arg("viewUp", "[x,y,z]"), arg("sectionOrigin", "[x,y,z]"),
                        arg("sectionNormal", "[x,y,z]"), arg("detailOrigin", "[x,y,z]"),
                        arg("detailSizeMM", "number | [width,height]"),
-                       arg("showDimensions", "boolean"), arg("showCenterlines", "boolean")],
-                  examples: [#"{"pageID":"<page uuid>","scale":0.5,"showDimensions":true}"#]),
+                       arg("showDimensions", "boolean"), arg("showCenterlines", "boolean"),
+                       arg("assemblyMode", "boolean", note: "switch the page to placed-instance projection"),
+                       arg("explodedViewID", "uuid", note: "saved exploded view; non-null implies assemblyMode; null clears the id"),
+                       arg("explodedViewName", "string", note: "display label; normally derived from explodedViewID"),
+                       arg("showBOM", "boolean", note: "draw or hide the page BOM table")],
+                  examples: [#"{"pageID":"<page uuid>","scale":0.5,"showDimensions":true}"#,
+                             #"{"pageID":"<page uuid>","assemblyMode":true,"explodedViewID":"<exploded view uuid>","showBOM":true}"#]),
         Operation(kind: "drawing", action: "removePage", mutating: true,
                   summary: "Remove one page from the drawing set.",
                   arguments: [arg("pageID", "uuid", required: true, note: "alias id")],
                   examples: [#"{"pageID":"<page uuid>"}"#]),
+        Operation(kind: "drawing", action: "setBOM", mutating: true,
+                  summary: "Derive the page BOM from the visible assembly (shared instances group with quantity) "
+                    + "or replace it with explicit entries.",
+                  arguments: [
+                      arg("pageID", "uuid", required: true, note: "alias id"),
+                      arg("entries", "[object]", note: "explicit rows [{itemNumber, name, bodyID, instanceIDs?, partNumber?, quantity?, id?}]; omit to derive"),
+                      arg("showBOM", "boolean", note: "default true"),
+                  ],
+                  examples: [#"{"pageID":"<page uuid>"}"#,
+                             #"{"pageID":"<page uuid>","entries":[{"itemNumber":1,"name":"Bracket","bodyID":"<body uuid>","quantity":2}]}"#]),
+        Operation(kind: "drawing", action: "addBalloon", mutating: true,
+                  summary: "Add a balloon linked to a BOM item and assembly instance; leaders follow live projection.",
+                  arguments: [
+                      arg("pageID", "uuid", required: true, note: "alias id"),
+                      arg("itemNumber", "integer", note: "positive BOM item number; or supply bomEntryID"),
+                      arg("bomEntryID", "uuid", note: "alternative to itemNumber; must be on this page's BOM"),
+                      arg("instanceID", "uuid", note: "required unless the BOM item already names an instance"),
+                      arg("anchor", "[x,y]", note: "balloon center in drawing mm; omitted = derived from projected instance bounds"),
+                      arg("target", "[x,y]", note: "leader target; omitted = nearest projected instance boundary point"),
+                      arg("text", "string"),
+                  ],
+                  examples: [#"{"pageID":"<page uuid>","itemNumber":1,"instanceID":"<instance uuid>"}"#]),
+        Operation(kind: "drawing", action: "updateBalloon", mutating: true,
+                  summary: "Update one balloon's anchor, target, item number, instance or text.",
+                  arguments: [
+                      arg("pageID", "uuid", required: true, note: "alias id"),
+                      arg("balloonID", "uuid", required: true),
+                      arg("anchor", "[x,y]", note: "drawing mm"),
+                      arg("target", "[x,y]", note: "drawing mm; null clears the leader target"),
+                      arg("text", "string"),
+                      arg("itemNumber", "integer", note: "positive; re-links the balloon to that BOM entry"),
+                      arg("instanceID", "uuid"),
+                  ],
+                  examples: [#"{"pageID":"<page uuid>","balloonID":"<balloon uuid>","anchor":[40,25]}"#]),
+        Operation(kind: "drawing", action: "removeBalloon", mutating: true,
+                  summary: "Remove one balloon from a page.",
+                  arguments: [
+                      arg("pageID", "uuid", required: true, note: "alias id"),
+                      arg("balloonID", "uuid", required: true),
+                  ],
+                  examples: [#"{"pageID":"<page uuid>","balloonID":"<balloon uuid>"}"#]),
+        Operation(kind: "drawing", action: "addDimension", mutating: true,
+                  summary: "Add a manual dimension bound to live assembly geometry; it follows instance moves "
+                    + "and is flagged stale when the part changes.",
+                  arguments: [
+                      arg("pageID", "uuid", required: true, note: "alias id"),
+                      arg("kind", "string", required: true, note: "length | angle | radius | diameter"),
+                      arg("instanceID", "uuid", note: "required to bind modelPoints and for drawingPoints"),
+                      arg("drawingPoints", "[[x,y]]", note: "2 points (3 for angle) in page mm; mapped onto the part"),
+                      arg("modelPoints", "[[x,y,z]]", note: "2 body-local points (3 for angle); needs instanceID"),
+                      arg("textPosition", "[x,y]", note: "drawing mm; defaults near the points"),
+                      arg("text", "string", note: "text override"),
+                  ],
+                  examples: [#"{"pageID":"<page uuid>","kind":"length","instanceID":"<instance uuid>","modelPoints":[[0,0,0],[40,0,0]]}"#,
+                             #"{"pageID":"<page uuid>","kind":"diameter","instanceID":"<instance uuid>","modelPoints":[[0,0,0],[20,0,0]]}"#]),
+        Operation(kind: "drawing", action: "updateDimension", mutating: true,
+                  summary: "Move one manual dimension's text or override its label; geometry follows the bound part.",
+                  arguments: [
+                      arg("pageID", "uuid", required: true, note: "alias id"),
+                      arg("dimensionID", "uuid", required: true),
+                      arg("textPosition", "[x,y]", note: "drawing mm"),
+                      arg("text", "string", note: "label override"),
+                  ],
+                  examples: [#"{"pageID":"<page uuid>","dimensionID":"<dimension uuid>","textPosition":[30,15]}"#]),
+        Operation(kind: "drawing", action: "removeDimension", mutating: true,
+                  summary: "Remove one manual dimension from a page.",
+                  arguments: [
+                      arg("pageID", "uuid", required: true, note: "alias id"),
+                      arg("dimensionID", "uuid", required: true),
+                  ],
+                  examples: [#"{"pageID":"<page uuid>","dimensionID":"<dimension uuid>"}"#]),
+        Operation(kind: "drawing", action: "addAnnotation", mutating: true,
+                  summary: "Add a text annotation; optional instance binding keeps it on the part as the view moves.",
+                  arguments: [
+                      arg("pageID", "uuid", required: true, note: "alias id"),
+                      arg("text", "string", required: true, note: "non-empty, <= 500 characters"),
+                      arg("position", "[x,y]", required: true, note: "drawing mm"),
+                      arg("heightMM", "number", note: "text height in [0.5, 50]; default 3.5"),
+                      arg("instanceID", "uuid", note: "bind the annotation to a live assembly instance"),
+                  ],
+                  examples: [#"{"pageID":"<page uuid>","text":"Apply torque 12 N·m","position":[30,20]}"#]),
+        Operation(kind: "drawing", action: "updateAnnotation", mutating: true,
+                  summary: "Update one text annotation's text, position or height.",
+                  arguments: [
+                      arg("pageID", "uuid", required: true, note: "alias id"),
+                      arg("annotationID", "uuid", required: true),
+                      arg("text", "string", note: "non-empty, <= 500 characters"),
+                      arg("position", "[x,y]", note: "drawing mm; rebinds to the part when bound"),
+                      arg("heightMM", "number", note: "in [0.5, 50]"),
+                  ],
+                  examples: [#"{"pageID":"<page uuid>","annotationID":"<annotation uuid>","heightMM":4.5}"#]),
+        Operation(kind: "drawing", action: "removeAnnotation", mutating: true,
+                  summary: "Remove one text annotation from a page.",
+                  arguments: [
+                      arg("pageID", "uuid", required: true, note: "alias id"),
+                      arg("annotationID", "uuid", required: true),
+                  ],
+                  examples: [#"{"pageID":"<page uuid>","annotationID":"<annotation uuid>"}"#]),
         Operation(kind: "drawing", action: "pages", mutating: false,
-                  summary: "List pages with id/kind/paper/scale plus stale/missing-source state.",
+                  summary: "List pages with id/kind/paper/scale plus stale/missing-source state, "
+                    + "assembly/BOM counters and annotation binding issues.",
                   arguments: [], examples: ["{}"]),
         Operation(kind: "drawing", action: "project", mutating: false,
-                  summary: "Real projected 2D geometry for one page (outline/edges/section/detail) "
-                    + "and the pinned source fingerprint.",
+                  summary: "Real projected 2D geometry for one page (outline/edges/section/detail), "
+                    + "manual dimensions, balloons, annotations and the pinned source fingerprint.",
                   arguments: [arg("pageID", "uuid", required: true, note: "alias id")],
                   examples: [#"{"pageID":"<page uuid>"}"#]),
         Operation(kind: "drawing", action: "dimensions", mutating: false,
@@ -598,19 +883,27 @@ public enum CadServiceOperationCatalog: Sendable {
                   examples: [#"{"bodyID":"<body uuid>","transform":{"position":[0,0,0]},"name":"Part 1"}"#,
                              #"{"bodyID":"<body uuid>","transform":{"position":[60,0,0],"rotation":[0,0,0,1]}}"#]),
         Operation(kind: "assembly", action: "addConstraint", mutating: true,
-                  summary: "Add an assembly constraint between two instances (or ground one).",
+                  summary: "Add an assembly constraint between two instances (or ground one); "
+                    + "live-picked face/edge references are verified against the current revision.",
                   arguments: [
                       arg("kind", "string", required: true, note: "fixed | coaxial | planarAlign | distance | angle"),
                       arg("instanceA", "uuid", required: true),
                       arg("instanceB", "uuid", note: "required for every kind except fixed"),
+                      arg("referenceA", "object", note: "assembly.reference reply for A: {point, direction, source_revision?, fence?, source?}"),
+                      arg("referenceB", "object", note: "assembly.reference reply for B"),
+                      arg("faceA", "object", note: "{index, query_token? | signature?} kernel face for A"),
+                      arg("edgeA", "object", note: "{index, query_token?} kernel edge for A"),
+                      arg("faceB", "object", note: "{index, query_token? | signature?} kernel face for B"),
+                      arg("edgeB", "object", note: "{index, query_token?} kernel edge for B"),
                       arg("pointA", "[x,y,z]"), arg("pointB", "[x,y,z]"),
-                      arg("directionA", "[x,y,z]", note: "required for coaxial/planarAlign/angle"),
-                      arg("directionB", "[x,y,z]", note: "required for coaxial/planarAlign/angle"),
+                      arg("directionA", "[x,y,z]", note: "required for coaxial/planarAlign/angle unless referenceA/faceA/edgeA is given"),
+                      arg("directionB", "[x,y,z]", note: "required for coaxial/planarAlign/angle unless referenceB/faceB/edgeB is given"),
                       arg("value", "number", note: "distance in mm (>= 0) or angle in degrees [0, 180]"),
                   ],
                   examples: [#"{"kind":"fixed","instanceA":"<instance uuid>"}"#,
                              #"{"kind":"distance","instanceA":"<instance uuid>","instanceB":"<instance uuid>","pointA":[0,0,0],"pointB":[0,0,0],"value":80}"#,
-                             #"{"kind":"coaxial","instanceA":"<instance uuid>","instanceB":"<instance uuid>","directionA":[0,0,1],"directionB":[0,0,1]}"#]),
+                             #"{"kind":"coaxial","instanceA":"<instance uuid>","instanceB":"<instance uuid>","directionA":[0,0,1],"directionB":[0,0,1]}"#,
+                             #"{"kind":"planarAlign","instanceA":"<instance uuid>","instanceB":"<instance uuid>","referenceA":{"point":[0,0,0],"direction":[0,0,1],"source_revision":1,"fence":{"document_revision":1,"change_count":0}},"faceB":{"index":0,"query_token":"<query token>"}}"#]),
         Operation(kind: "assembly", action: "removeInstance", mutating: true,
                   summary: "Remove one instance (a shared source body is never deleted).",
                   arguments: [arg("id", "uuid", required: true, note: "instance id from report/instances")],
@@ -644,8 +937,66 @@ public enum CadServiceOperationCatalog: Sendable {
         Operation(kind: "assembly", action: "clear", mutating: true,
                   summary: "Remove every instance and constraint.",
                   arguments: [], examples: ["{}"]),
+        Operation(kind: "assembly", action: "reference", mutating: false,
+                  summary: "Resolve one constraint reference in the instance frame: the live viewport selection "
+                    + "(planar face normal, fitted cylinder axis or edge direction), an explicit kernel face/edge, "
+                    + "or the instance reference point; returns the exact revision fence.",
+                  arguments: [
+                      arg("instanceID", "uuid", required: true, note: "alias id"),
+                      arg("useSelection", "boolean", note: "default false; capture the live workbench selection now"),
+                      arg("face", "object", note: "{index, query_token?, signature?} kernel planar/cylindrical face"),
+                      arg("edge", "object", note: "{index, query_token?} kernel edge"),
+                      arg("axisPreset", "[x,y,z]", note: "instance-local direction when no face/edge/selection is used; alias direction; default +Z"),
+                  ],
+                  examples: [#"{"instanceID":"<instance uuid>","useSelection":true}"#,
+                             #"{"instanceID":"<instance uuid>","face":{"index":0,"query_token":"<query token>"}}"#]),
+        Operation(kind: "assembly", action: "referenceCandidates", mutating: false,
+                  summary: "List the instance's real planar/cylindrical faces and crease edges "
+                    + "(point, direction, radius/length, stable signature, current query token).",
+                  arguments: [
+                      arg("instanceID", "uuid", required: true, note: "alias id"),
+                      arg("scope", "string", note: "all | faces | edges; default all"),
+                  ],
+                  examples: [#"{"instanceID":"<instance uuid>","scope":"all"}"#]),
+        Operation(kind: "assembly", action: "explodedViews", mutating: false,
+                  summary: "Saved exploded views with their entries and per-instance offsets, plus the transient preview state.",
+                  arguments: [], examples: ["{}"]),
+        Operation(kind: "assembly", action: "addExplodedView", mutating: true,
+                  summary: "Save a named exploded view; only listed instances are displaced, "
+                    + "and the stored base placements are never changed.",
+                  arguments: [
+                      arg("name", "string", required: true, note: "unique view name"),
+                      arg("direction", "[x,y,z]", note: "world direction for entries without their own; default [1,1,1]"),
+                      arg("distanceMM", "number", note: "default 40; >= 0"),
+                      arg("entries", "[object]", note: "[{instanceID, direction?, distanceMM?, id?}]; unlisted instances stay at base"),
+                      arg("instanceIDs", "[uuid]", note: "convenience alternative: uniform entries for these instances"),
+                  ],
+                  examples: [#"{"name":"Exploded A","direction":[1,1,1],"distanceMM":40,"entries":[{"instanceID":"<instance uuid>"}]}"#]),
+        Operation(kind: "assembly", action: "updateExplodedView", mutating: true,
+                  summary: "Update a saved exploded view in place; omitted fields keep their value.",
+                  arguments: [
+                      arg("id", "uuid", required: true, note: "alias viewID"),
+                      arg("name", "string"), arg("direction", "[x,y,z]"),
+                      arg("distanceMM", "number", note: ">= 0"),
+                      arg("entries", "[object]", note: "[{instanceID, direction?, distanceMM?, id?}]"),
+                      arg("instanceIDs", "[uuid]", note: "convenience alternative: uniform entries for these instances"),
+                  ],
+                  examples: [#"{"id":"<exploded view uuid>","distanceMM":60}"#]),
+        Operation(kind: "assembly", action: "removeExplodedView", mutating: true,
+                  summary: "Remove a saved exploded view; an active preview of that view is reset.",
+                  arguments: [arg("id", "uuid", required: true, note: "alias viewID")],
+                  examples: [#"{"id":"<exploded view uuid>"}"#]),
+        Operation(kind: "assembly", action: "previewExplodedView", mutating: false,
+                  summary: "Transiently display a saved exploded view in the viewport and presentation snapshot; "
+                    + "nothing is written, added to undo or marked dirty.",
+                  arguments: [arg("id", "uuid", required: true, note: "alias viewID")],
+                  examples: [#"{"id":"<exploded view uuid>"}"#]),
+        Operation(kind: "assembly", action: "resetExplodedView", mutating: false,
+                  summary: "Clear the transient exploded preview and return every instance to its saved placement.",
+                  arguments: [], examples: ["{}"]),
         Operation(kind: "assembly", action: "report", mutating: false,
-                  summary: "Instances, constraints, stale-source state and totals.",
+                  summary: "Instances, constraints, stale-source and stale-reference state, "
+                    + "exploded-preview state and totals.",
                   arguments: [], examples: ["{}"]),
         Operation(kind: "assembly", action: "instances", mutating: false,
                   summary: "The placed instances with their transforms.",

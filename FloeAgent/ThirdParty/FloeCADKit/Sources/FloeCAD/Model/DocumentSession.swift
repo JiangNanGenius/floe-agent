@@ -850,6 +850,7 @@ final class DocumentSession {
         loaded.scriptsData = project.scriptsData
         loaded.sceneSettingsData = project.sceneSettingsData
         loaded.materialLibraryData = project.materialsData
+        loaded.animationData = project.animationData
         document = loaded
         evalCache = EvalCache()   // a fresh memo for a freshly loaded document
         #if DEBUG
@@ -1064,6 +1065,7 @@ final class DocumentSession {
         project.scriptsData = document.scriptsData
         project.sceneSettingsData = document.sceneSettingsData
         project.materialsData = document.materialLibraryData
+        project.animationData = document.animationData
 
         // Diff by ID against the persisted objects. Every deletion loop
         // excludes `unreadableRows` — rows load() couldn't decode are not in

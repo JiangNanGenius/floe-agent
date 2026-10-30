@@ -21,6 +21,45 @@ struct CADMaterialMutationTargetTests {
         #expect(TypedMutationContract.specs(for: "cad.document", arguments: try arguments("parameters", "list")).isEmpty)
     }
 
+    @Test("Animation edits pin the package; capture writes no workspace target; export pins MP4")
+    func animationTargets() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CADAnimationTargetTests", isDirectory: true)
+        let package = root.appendingPathComponent("part.floecad")
+            .resolvingSymlinksInPath().path
+        for operation in ["createClip", "updateClip", "deleteClip", "setActiveClip",
+                          "addTrack", "deleteTrack", "setKeyframe", "setCameraKeyframe",
+                          "setPartKeyframe", "deleteKeyframe", "preset", "undo", "redo"] {
+            let targets = try #require(TypedMutationContract.resolveMutableTargets(
+                for: "cad.document",
+                arguments: try arguments("animation", operation),
+                workspaceRootURL: root, serviceStorePaths: [:]))
+            #expect(targets == [.init(path: package, role: .sourceWrite)])
+        }
+        for operation in ["list", "query", "evaluate", "capture"] {
+            #expect(TypedMutationContract.specs(
+                for: "cad.document",
+                arguments: try arguments("animation", operation)).isEmpty)
+        }
+        let defaultExport = try #require(TypedMutationContract.resolveMutableTargets(
+            for: "cad.document",
+            arguments: try arguments("animation", "export"),
+            workspaceRootURL: root, serviceStorePaths: [:]))
+        #expect(defaultExport == [.init(
+            path: root.appendingPathComponent("part.animation.mp4")
+                .resolvingSymlinksInPath().path,
+            role: .outputWrite)])
+        var explicit = try arguments("animation", "export")
+        explicit["output"] = "clip.mp4"
+        let explicitExport = try #require(TypedMutationContract.resolveMutableTargets(
+            for: "cad.document", arguments: explicit,
+            workspaceRootURL: root, serviceStorePaths: [:]))
+        #expect(explicitExport == [.init(
+            path: root.appendingPathComponent("clip.mp4")
+                .resolvingSymlinksInPath().path,
+            role: .outputWrite)])
+    }
+
     @Test("A personal-library export needs the trusted shared store as well as document identity")
     func personalLibraryWrite() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("CADTargetTests", isDirectory: true)

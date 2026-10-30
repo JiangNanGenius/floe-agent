@@ -54,6 +54,11 @@ nonisolated struct DesignDocument: Sendable {
     /// Document state so library edits are undoable/redoable exactly like
     /// geometry; `nil` on documents that never used the material library.
     var materialLibraryData: Data? = nil
+    /// Optional keyframe animation as additive JSON (`CADAnimationDocument`).
+    /// Clips/settings only: playback never mutates bodies or assembly data, and
+    /// animation edits are ordinary undoable document commands. `nil` on every
+    /// document that never animated.
+    var animationData: Data? = nil
 
     /// Monotonic revision source for mesh changes (GPU cache invalidation).
     private var revisionCounter: UInt64 = 0

@@ -156,11 +156,18 @@ final class FloeCAD3DBridge {
                 "summary": summaryObject(document),
                 "state": jsonObject(document.snapshotJSON()),
                 "scene": document.sceneSummaryJSON(),
+                "selection": document.assistantSelectionContext().jsonObject(),
             ])
 
         case "query":
             let payload = request["payload"] as? [String: Any] ?? [:]
             let scope = payload["scope"] as? String ?? "snapshot"
+            if scope == "selection" {
+                return try jsonString([
+                    "ok": true,
+                    "result": document.assistantSelectionContext().jsonObject(),
+                ])
+            }
             if scope == "assembly" {
                 let reply = await native.assembly.handleAsync(action: "report", args: [:])
                 return try jsonString(["ok": reply["ok"] as? Bool ?? false, "result": reply])
@@ -168,6 +175,9 @@ final class FloeCAD3DBridge {
             if scope == "drawings" {
                 let reply = native.drawing.handle(action: "pages", args: [:])
                 return try jsonString(["ok": reply["ok"] as? Bool ?? false, "result": reply])
+            }
+            if scope == "animation" {
+                return try jsonString(document.animationListJSON())
             }
             let outcome = document.nativeQueryJSON(payload)
             return try jsonString([
@@ -305,6 +315,54 @@ final class FloeCAD3DBridge {
             }
             return try jsonString(reply)
 
+        case "animation":
+            let payload = request["payload"] as? [String: Any] ?? [:]
+            guard let action = payload["action"] as? String,
+                  CadNativeEditActions.animation.contains(action) else {
+                throw CADDocumentError(
+                    code: "missing_action",
+                    message: "animation requires payload.action ("
+                        + CadNativeEditActions.animation.sorted().joined(separator: "|") + ").")
+            }
+            guard action != "capture", action != "export" else {
+                // Bytes/VM output belong to the host task path, never a JSON
+                // string reply that would pretend a file was produced.
+                throw CADDocumentError(
+                    code: "host_task_required",
+                    message: "animation \(action) must run through the host animation task path.")
+            }
+            try Self.requireRevisionPin(request, document: document)
+            let changeBefore = document.liveChangeCount
+            let checkpoint = document.captureEditCheckpoint()
+            var reply = CADAnimationService(document: document).handle(
+                action: action, args: payload)
+            if Self.bool(reply["mutated"]) == true {
+                let changeAfter = document.liveChangeCount
+                if changeAfter == changeBefore {
+                    reply["saved"] = false
+                    reply["note"] = "The service reported a mutation but applied no undoable document command."
+                } else {
+                    let commit = await CADNativeEditCommit.save(
+                        document: document, changeAfterMutation: changeAfter,
+                        rollback: action == "undo" ? .redo
+                            : (action == "redo" ? .undo : .undo),
+                        checkpoint: checkpoint)
+                    if commit.saved {
+                        reply["saved"] = true
+                        reply["revision"] = commit.revision
+                        reply["content_sha256"] = commit.contentSHA256
+                    } else {
+                        reply["ok"] = false
+                        reply["error"] = commit.concurrentEdit ? "concurrent_edit" : "save_failed"
+                        reply["message"] = commit.error
+                        reply["rolled_back"] = commit.rolledBack
+                        reply["concurrent_edit"] = commit.concurrentEdit
+                        reply["revision"] = commit.revision
+                    }
+                }
+            }
+            return try jsonString(reply)
+
         case "check":
             let payload = request["payload"] as? [String: Any] ?? [:]
             let outcome = document.nativeCheckJSON(payload)
@@ -409,7 +467,7 @@ final class FloeCAD3DBridge {
             return try jsonString([
                 "ok": true,
                 "proposal": proposalObject ?? [:],
-                "message": "Proposal drafted on a throwaway copy; confirm it in the CAD workbench to apply.",
+                "message": "Proposal prepared. Apply it with cad.document action=apply and this proposal_id; ordinary authorized document editing needs no separate confirmation.",
             ])
 
         case "preview":
@@ -488,6 +546,11 @@ final class FloeCAD3DBridge {
             "kernel": ["name": "OpenCASCADE",
                        "version": FloeCADDocument.kernelVersion],
             "package_schema_version": 1,
+            "editing_authorization": [
+                "separate_review_required": false,
+                "apply": "Use cad.document action=apply with proposal_id; omit grant_id for ordinary authorized editing.",
+                "document_ownership_and_revision_checks": true,
+            ],
             "actions": ["create", "read", "query", "locate", "measure", "check",
                         "import", "propose", "preview", "apply", "save", "export",
                         "status", "cancel"],
@@ -1011,6 +1074,96 @@ final class FloeCAD3DBridge {
         #endif
         return try document.captureViewportPNG(width: width, height: height,
                                                expectedRevision: expectedRevision)
+    }
+
+    /// Actual animation frame from the live Present or the service render
+    /// host. No engineering-viewport fallback: an animation frame must reflect
+    /// the native animated scene or the call fails.
+    func captureAnimationFrame(at url: URL,
+                               request: CadAnimationCaptureRequest) async throws
+    -> CadAnimationCapture {
+        let document = try await document(at: url)
+        if let expected = request.expectedRevision,
+           Int64(document.revision) != expected {
+            throw CADDocumentError(
+                code: "revision_mismatch",
+                message: "The document is at revision \(document.revision), not \(expected).")
+        }
+        let format = request.format.lowercased()
+        let capture: CADAnimationFrameCapture
+        if let frame = request.frame {
+            switch format {
+            case "png":
+                capture = try await document.captureAnimationFramePNG(
+                    clipID: request.clipID, frame: frame, fps: request.fps,
+                    width: request.width, height: request.height)
+            case "jpeg", "jpg":
+                // The time-based overload cannot take a frame index; resolve
+                // the exact frame time first so the captured pose is correct.
+                let state = document.animationLoadState()
+                let clip = request.clipID.flatMap { state.animation.clip(withID: $0) }
+                    ?? state.animation.activeClip
+                let time = clip.map {
+                    FloeCADDocument.animationFrameTime(
+                        frame: frame, fps: request.fps, duration: $0.duration)
+                } ?? 0
+                capture = try await document.captureAnimationFrame(
+                    clipID: request.clipID, time: time, width: request.width,
+                    height: request.height, frameRate: request.fps,
+                    format: .jpeg, jpegQuality: request.jpegQuality)
+            default:
+                throw CADDocumentError(
+                    code: "bad_animation_format",
+                    message: "Animation capture format must be png or jpeg.")
+            }
+        } else {
+            let time = request.timeSeconds ?? 0
+            switch format {
+            case "png":
+                capture = try await document.captureAnimationFramePNG(
+                    clipID: request.clipID, time: time, width: request.width,
+                    height: request.height, frameRate: request.fps)
+            case "jpeg", "jpg":
+                capture = try await document.captureAnimationFrame(
+                    clipID: request.clipID, time: time, width: request.width,
+                    height: request.height, frameRate: request.fps,
+                    format: .jpeg, jpegQuality: request.jpegQuality)
+            default:
+                throw CADDocumentError(
+                    code: "bad_animation_format",
+                    message: "Animation capture format must be png or jpeg.")
+            }
+        }
+        return CadAnimationCapture(
+            imageData: capture.imageData,
+            mimeType: capture.mimeType,
+            width: capture.width, height: capture.height,
+            revision: Int64(capture.revision), changeCount: capture.changeCount,
+            contentSHA256: capture.contentSHA256, sha256: capture.sha256,
+            clipID: capture.clipID, timeSeconds: capture.timeSeconds,
+            frameIndex: capture.frameIndex, frameRate: capture.frameRate,
+            renderer: capture.renderer, note: capture.note)
+    }
+
+    /// Verified MP4 export. The service writes a staged file and promotes only
+    /// after verification; the host owns the workspace-guarded destination and
+    /// durable task record around this call.
+    func exportAnimation(at url: URL, to output: URL,
+                         options: CadAnimationExportOptions) async throws
+    -> CADAnimationExportResult {
+        let document = try await document(at: url)
+        guard let codec = CADAnimationVideoCodec(rawValue: options.codec.lowercased()) else {
+            throw CADDocumentError(
+                code: "bad_animation_codec",
+                message: "Video codec must be h264 or hevc.")
+        }
+        let settings = CADAnimationExportSettings(
+            width: options.width, height: options.height,
+            frameRate: options.frameRate, codec: codec,
+            bitrate: options.bitrate, overwrite: options.overwrite,
+            posterEnabled: options.posterEnabled)
+        return try await document.exportAnimationMP4(
+            to: output, settings: settings)
     }
 
     /// App-owned shared material library file, used only by explicit

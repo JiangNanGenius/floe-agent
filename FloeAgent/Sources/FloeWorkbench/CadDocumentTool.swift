@@ -456,6 +456,18 @@ public protocol CadDocumentHost: Sendable {
     func captureViewport(documentID: String, width: Int, height: Int,
                          expectedRevision: Int64?,
                          access: CadDocumentAccess) async throws -> CadViewportCapture
+    /// One actual native animation frame. The host resolves the live document,
+    /// applies the frame transiently and returns real rendered bytes bound to
+    /// the document revision/change count.
+    func captureAnimationFrame(documentID: String,
+                               request: CadAnimationCaptureRequest,
+                               access: CadDocumentAccess) async throws -> CadAnimationCapture
+    /// Start/await a verified MP4 export into the guarded task workspace. The
+    /// host owns the native task record, real progress/cancel and atomic file
+    /// promotion; a string is never treated as a successful artifact.
+    func exportAnimation(documentID: String, relativeOutput: String,
+                         options: CadAnimationExportOptions,
+                         access: CadDocumentAccess) async throws -> CadAnimationExportReceipt
 }
 
 public extension CadDocumentHost {
@@ -476,6 +488,16 @@ public extension CadDocumentHost {
                          expectedRevision: Int64?,
                          access: CadDocumentAccess) async throws -> CadViewportCapture {
         throw FloeError.notFound("native_cad_kernel")
+    }
+    func captureAnimationFrame(documentID: String,
+                               request: CadAnimationCaptureRequest,
+                               access: CadDocumentAccess) async throws -> CadAnimationCapture {
+        throw FloeError.notFound("native_cad_animation")
+    }
+    func exportAnimation(documentID: String, relativeOutput: String,
+                         options: CadAnimationExportOptions,
+                         access: CadDocumentAccess) async throws -> CadAnimationExportReceipt {
+        throw FloeError.notFound("native_cad_animation")
     }
     /// A host that does not implement the runtime-authorized automatic apply
     /// refuses it; the interactive grant path stays available.
@@ -614,7 +636,7 @@ public enum CadDocumentAction: String, Decodable, Sendable, CaseIterable {
     /// editing/undo, and real viewport capture. These are ordinary authorized
     /// document operations (no per-edit UI grant); a model-supplied grant is
     /// never consulted.
-    case material, parameters, capture
+    case material, parameters, capture, animation
     /// Durable native-task status and cancellation (long rebuild/export/mesh
     /// jobs). `status` lists or reports one task; `cancel` requires task_id.
     case status, cancel
@@ -789,14 +811,26 @@ public struct CadDocumentTool: AgentTool {
     apply/applyFaces/reassignFaces/mapping/textures/unresolved/libraryExport/ \
     libraryImport/libraryList/undo/redo; applied appearances are snapshots \
     and survive library deletion), action "parameters" (typed feature \
-    parameter list/update/undo/redo plus updateSketchEntity for an existing \
-    circle radius — e.g. resizing a hole — with mm/degree units, dependencies \
-    and actions from query kind=features/sketches), and action "capture" (actual viewport \
-    PNG artifact bound to the document revision/change_count; only a \
-    vision-capable model may inspect it — otherwise measure, never claim to \
-    have seen the image). Nothing is written by propose/preview/import; \
-    material/parameter edits are undoable document commands committed with \
-    compare-and-swap, and temporary chat remains read-only.
+    parameter list/update/undo/redo; updateSketchEntity for an existing line's \
+    endpoints, a rectangle's position/size or a circle's center/radius; \
+    setSketchDimension/removeSketchDimension for driving length/distance/ \
+    angle/radius/diameter/width/height values; feature.suppress/delete/move \
+    with dependency checks and checkpoint rollback — units and actions come \
+    from query kind=features/sketches/constraints), action "animation" \
+    (native camera/assembly keyframe clips: list/query/evaluate, \
+    createClip/updateClip/deleteClip/setActiveClip, addTrack/deleteTrack, \
+    setKeyframe/setCameraKeyframe/setPartKeyframe/deleteKeyframe, \
+    turntable/explodeReturn presets and undo/redo; capture returns an actual \
+    animated native frame; export renders a verified MP4, default 1920x1080 \
+    at 30 fps H.264 with no audio, and reports a durable task_id for status/ \
+    cancel; authored edits are ordinary undoable document commands and \
+    playback/scrub never changes the geometry or assembly baseline), and \
+    action "capture" (actual viewport PNG artifact bound to the document \
+    revision/change_count; only a vision-capable model may inspect it — \
+    otherwise measure, never claim to have seen the image). Nothing is \
+    written by propose/preview/import; material/parameter/animation edits are \
+    undoable document commands committed with compare-and-swap, and temporary \
+    chat remains read-only.
     """
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -819,13 +853,13 @@ public struct CadDocumentTool: AgentTool {
       "additionalProperties": false,
       "required": ["action"],
       "properties": {
-        "action": { "type": "string", "enum": ["capabilities", "create", "read", "query", "locate", "measure", "check", "propose", "import", "preview", "apply", "save", "export", "status", "cancel", "material", "parameters", "capture", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
-        "path": { "type": "string", "description": "Document path relative to the task workspace (an allowed absolute workspace path is accepted too). Required for every action except capabilities without a path. A .floecad extension routes to the native 3D kernel; .dwg/.dxf route to the 2D engine. For 'create' it is the new package location (its parent directory must exist or be omitted); for 'import' it is the EXISTING .floecad package that receives the geometry. Never write a .floecad directory, manifest.json or zip yourself: use create." },
+        "action": { "type": "string", "enum": ["capabilities", "create", "read", "query", "locate", "measure", "check", "propose", "import", "preview", "apply", "save", "export", "status", "cancel", "material", "parameters", "capture", "animation", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
+        "path": { "type": "string", "description": "Document path relative to the task workspace (an allowed absolute workspace path is accepted too). Required for every action except capabilities without a path. A .floecad extension routes to the native 3D kernel; .dwg/.dxf route to the 2D engine. For 'create' it is the new package location inside the task workspace (a missing parent directory is created inside the guarded workspace; a path outside it is refused; the file need not exist); for 'import' it is the EXISTING .floecad package that receives the geometry. Never write a .floecad directory, manifest.json or zip yourself: use create." },
         "name": { "type": "string", "maxLength": 120, "description": "create: human-readable display name stored in the new native document. Letters and digits of ANY language (Chinese, Japanese, Cyrillic, ...), spaces and -_(). are accepted; it must not contain '/', '\\\\', control/invisible characters or a '..' path segment and must be at most 120 characters, otherwise the call is refused with a bilingual explanation. When omitted the display name defaults to the file stem. The FILE keeps the stem of 'path' and is uniquified, so the display name and the file name stay separate. import: optional name for the imported body(ies)." },
         "source_path": { "type": "string", "description": "import only: workspace-relative path of the source file to add to the existing .floecad package. Supported extensions: .step/.stp (exact solids), .iges/.igs (solids + render-only surfaces), .stl/.obj/.glb/.gltf (meshes). The file is read through the workspace guard (symlink-safe, size-bounded) and is never modified. DWG/DXF go through the 2D engine instead." },
         "format": { "type": "string", "enum": ["step", "stp", "iges", "igs", "stl", "obj", "glb", "gltf"], "description": "import only: explicit source format; defaults to the source_path extension. A JSON .gltf imports only when its buffers/images are embedded data URIs; external .bin/texture references are reported unsupported by the tool. A self-contained .glb always works." },
         "unit_scale": { "type": "number", "exclusiveMinimum": 0, "description": "import only: optional millimetres-per-file-unit scale for unitless meshes (STL/OBJ). Ignored for STEP/IGES and declared-unit glTF." },
-        "summary": { "type": "string", "maxLength": 2000, "description": "Human-readable proposal summary shown before confirmation (propose/import)." },
+        "summary": { "type": "string", "maxLength": 2000, "description": "Concise summary of the proposed document change (propose/import)." },
         "operations": {
           "type": "array", "maxItems": 64,
           "description": "Typed 2D engine edits (propose on a DWG/DXF drawing). Each object needs operation. Exact shapes: addLine{start:[x,y,z],end:[x,y,z],layer}; addCircle{center:[x,y,z],radius,layer}; addArc{center:[x,y,z],radius,startAngle,endAngle,layer}; addLwPolyline{points:[[x,y],...],closed?,layer} (2 numbers per point; rectangle = closed 4-point); addText{position:[x,y,z],text,height,layer}; addLeader{points:[[x,y,z],...],layer}; addDimension{kind:linear|aligned|angular|radius|diameter,points:[[x,y,z],...],layer,offset?,rotation?}; move|copy{handle,delta:[dx,dy,dz]}; rotate{handle,center:[x,y,z],angle}; scale{handle,center:[x,y,z],factor}; mirror{handle,axis:[[x,y,z],[x,y,z]]}; setText{handle,text}; setRadius{handle,radius}; setLayer{handle,layer}; setColor{handle,color}; setLineWeight{handle,lineWeight}; delete{handle}; trim|extend{handle,boundary,pick:[x,y,z]}; offset{handle,distance,side:[x,y,z]}; addLayer{name,color?,lineType?,lineWeight?}; updateLayer{name,locked?,visible?,color?,lineType?,lineWeight?}; renameLayer{from,to}; deleteLayer{name}; batch{operations:[...]} nests the same canonical shapes. Canonical vectors are arrays [x,y] (omitted z = the 2D drawing plane) or [x,y,0]; a nonzero z is rejected, never projected. The validated aliases {x,y[,z]} and {dx,dy[,dz]} are accepted and normalized to those arrays; addLwPolyline vertices are [x,y] or [x,y,0].",
@@ -833,10 +867,10 @@ public struct CadDocumentTool: AgentTool {
         },
         "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id from propose (preview/apply). Send it exactly as the propose reply printed it." },
         "grant_id": { "type": "string", "description": "apply: OPTIONAL. When present, selects the human-reviewed CAD UI confirmation path (opaque single-use token the user's acceptance issued; the model cannot mint it). Omit it to let the runtime-approved call authority for this exact apply authorize the change automatically; a made-up or model-supplied value never authorizes anything." },
-        "revision": { "type": "integer", "minimum": 0, "description": "apply/capture/material/parameters: optional base revision pin. For apply it is bound into the approved call; for the other actions the host refuses with revision_mismatch before any mutation/capture when the live document is at a different revision." },
+        "revision": { "type": "integer", "minimum": 0, "description": "apply/capture/material/parameters/animation: optional base revision pin. For apply it is bound into the approved call; for the other actions the host refuses with revision_mismatch before any mutation/capture when the live document is at a different revision." },
         "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
         "task_id": { "type": "string", "description": "Durable native task id (status reports one task; cancel requires it)." },
-        "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|variables|materials|assembly|drawings|scene|detail|snapshot. Features carry typed parameters/units/dependencies/actions; sketches carry entityRows with stable entity ids and each circle's current radius/diameter (the addressable source of an existing hole); faces/edges carry stable-matching indices, signatures and query_token/generation (revision, change_count, mesh_revision) required for index-based edits, and face rows identify planar/cylindrical kind with the actual radiusMM for a cylinder. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind). capabilities: pass drawing|assembly|script|mesh to get that service's exact operations with arguments and examples." },
+        "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|variables|materials|assembly|drawings|scene|detail|snapshot|selection. selection returns the current live workbench bodies/faces/edges/sketch/instances with document revision and change_count; query it for deictic edits such as this face, then resolve exact face/edge query tokens before modifying. Features carry typed parameters/units/dependencies/actions; sketches carry entityRows with stable entity ids and each circle's current radius/diameter (the addressable source of an existing hole); faces/edges carry stable-matching indices, signatures and query_token/generation (revision, change_count, mesh_revision) required for index-based edits, and face rows identify planar/cylindrical kind with the actual radiusMM for a cylinder. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind). capabilities: pass drawing|assembly|script|mesh to get that service's exact operations with arguments and examples." },
         "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points: 2D distance exactly 2, angle exactly 3, area 3+; snap point (first row). Native distance exactly 2 [x,y,z] rows." },
         "handles": { "type": "array", "items": { "type": "string" }, "description": "2D entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+. Native: one handle per action, body:<uuid> / face:<uuid>:<index> / edge:<uuid>:<index>; body, mesh and bounds accept body:<uuid> (a bare body UUID is also accepted); bounds takes one or more body handles." },
         "tolerance": { "type": "number", "description": "snap/check tolerance in drawing units; native interference tolerance in mm." },
@@ -849,7 +883,7 @@ public struct CadDocumentTool: AgentTool {
         "page_id": { "type": "string", "format": "uuid", "description": "export: the native drawing page id for pdf/svg/dxf exports, exactly as query with kind=drawings returned it." },
         "op": { "type": "string", "description": "Native typed operation name. Native propose requires it; native measure may use it to name the measurement kind. Exact vocabulary (also reported by capabilities as operation_names): sketch.create, sketch.addEntities, feature.extrude, feature.revolve, feature.pattern, feature.mirror, feature.transform, feature.boolean, feature.fillet, feature.chamfer, feature.shell, feature.sweep, feature.loft, feature.pushPull, feature.moveFace, feature.scaleFace, feature.rotateFace, feature.deleteFace, feature.replaceFace, feature.draftFace, body.setMaterial, item.setHidden." },
         "args": { "type": "string", "description": "JSON object string with the typed operation's arguments. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:\"line\",a:[x,y],b:[x,y]} | {kind:\"circle\",center:[x,y],radius} | {kind:\"arc\",center:[x,y],radius,startAngle,endAngle} | {kind:\"spline\",points:[[x,y],...],closed?} | {kind:\"rect\",min:[x,y],max:[x,y]} | {kind:\"polygon\",center:[x,y],radius,sides,rotation?} | {kind:\"ellipse\",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:\"throughAll\"|\"upToNext\"|\"blind\", boolean?:\"newBody\"|\"union\"|\"subtract\"|\"intersect\", booleanTargets?:[bodyID]}. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"seedPoint\":[40,20],\"distance\":10}. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet {bodyID,radius,edges,query_token?} / feature.chamfer {bodyID,setback,edges,query_token?}, feature.shell {bodyID,thickness,openFaces,query_token?}, feature.pattern {bodyID,kind,count,...}); Face/edge index operations require query_token from query kind=faces/edges (or the row's stable face signature/edge midpoint); index existence alone is rejected with requery_required because a rebuild can reuse an index for a different face/edge. measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild)." },
-        "payload": { "type": "string", "description": "JSON object string for the native workbench services (three_d_assembly / three_d_drawing) and the material/parameters/capture actions. Material actions: list|read|create|update|remove|apply|applyFaces|reassignFaces|mapping|textures|unresolved|libraryExport|libraryImport|libraryList|undo|redo; create/update/apply accept color [r,g,b(,a)] 0…1 (or #RRGGBB[AA]), metallic/roughness/opacity, emissive + emissive_strength, uv_mapping {source:mesh|planarProjection|boxProjection, axis:x|y|z, scale_mm:[u,v], rotation_degrees, offset:[u,v], flip_u, flip_v}, textures [{slot:baseColor|metallic|roughness|normal|emissive|opacity, asset_path? or asset_base64?, color_space?, orientation?}]. Parameter actions: list|update|updateSketchEntity|undo|redo; update {feature_id, changes:{distance|angle|taper_angle|radius|setback|thickness|factor|count|spacing|total_angle|symmetric|rotate_instances:...}} uses the units query kind=features reports; updateSketchEntity {sketch_id, entity_id, radius, expected_radius?} changes one existing circle's radius (for example a hole's diameter: radius 5 -> 4 for diameter 10 -> 8 mm), rebuilds every dependent feature in one undo step, and takes the stable ids/current radius from query kind=sketches entityRows. Capture: {width?,height?} returns a real viewport PNG artifact with renderer=presentation only while Present is active, otherwise renderer=engineering; it is bound to revision/change_count and image_sha256 is separate from content_sha256. applyFaces/reassignFaces require query_token from query kind=faces or face_signatures; index-only edits are refused with requery_required (query tokens are generation proof, not permission). Workbench service payloads MUST name one operation via payload.action or legacy payload.op; mutating workbench services still use propose→apply, while material/parameter edits are ordinary authorized undoable document commands. A global libraryExport/libraryImport uses the single app-owned personal library (libraryList reads it with global:true); global export writes a file so it is refused in temporary/read-only contexts. Never contains file paths other than the guarded asset_path/output/import fields above." }
+        "payload": { "type": "string", "description": "JSON object string for the native workbench services (three_d_assembly / three_d_drawing) and the material/parameters/capture/animation actions. Animation actions: list|query|evaluate (real timeline data), createClip|updateClip|deleteClip|setActiveClip, addTrack|deleteTrack, setKeyframe|setCameraKeyframe|setPartKeyframe|deleteKeyframe, preset {kind:turntable|explodeReturn}, undo|redo, capture {clip_id?,time?|frame?,fps?,width?,height?,format?}, export {output? (workspace .mp4),width?,height?,fps?,codec?,bitrate?,overwrite?,poster?}. Animation edits are ordinary undoable document commands; capture returns a real animated native frame, export returns a verified MP4 with task_id and publishes it through RunOutput. Material actions: list|read|create|update|remove|apply|applyFaces|reassignFaces|mapping|textures|unresolved|libraryExport|libraryImport|libraryList|undo|redo; create/update/apply accept color [r,g,b(,a)] 0…1 (or #RRGGBB[AA]), metallic/roughness/opacity, emissive + emissive_strength, uv_mapping {source:mesh|planarProjection|boxProjection, axis:x|y|z, scale_mm:[u,v], rotation_degrees, offset:[u,v], flip_u, flip_v}, textures [{slot:baseColor|metallic|roughness|normal|emissive|opacity, asset_path? or asset_base64?, color_space?, orientation?}]. Parameter actions: list|update|updateSketchEntity|setSketchDimension|removeSketchDimension|feature.suppress|feature.delete|feature.move|undo|redo; update {feature_id, changes:{distance|angle|taper_angle|radius|setback|thickness|factor|count|spacing|total_angle|symmetric|rotate_instances:...}} uses the units query kind=features reports; updateSketchEntity {sketch_id, entity_id, a?, b? | min?, max?, center?, width?, height? | center?, radius?, diameter?, expected_*} edits one existing line/rect/circle and updates its matching driving dimension in the same undo step (refused as constraint_conflict if the saved sketch would become unsatisfied; unsupported entity kinds report editable:false); setSketchDimension {sketch_id, entity_id|entity_ids|refs, kind:length|distance|angle|diameter|radius|width|height, value, expected_value?, dimension_id?} creates or updates one driving value, solves with the existing solver and commits one undo step (angle is degrees; length is a line's distance; width/height store as horizontal/vertical); removeSketchDimension {sketch_id, dimension_id}; feature.suppress {feature_id, suppressed}; feature.delete {feature_id, force?} refuses when later features consume its bodies unless forced and always rolls back a broken rebuild; feature.move {feature_id, to_index} verifies body dependency order before moving. Discover exact ids/flags with query kind=sketches/constraints/features. Capture: {width?,height?} returns a real viewport PNG artifact with renderer=presentation only while Present is active, otherwise renderer=engineering; it is bound to revision/change_count and image_sha256 is separate from content_sha256. applyFaces/reassignFaces require query_token from query kind=faces or face_signatures; index-only edits are refused with requery_required (query tokens are generation proof, not permission). Workbench service payloads MUST name one operation via payload.action or legacy payload.op; mutating workbench services still use propose→apply, while material/parameter edits are ordinary authorized undoable document commands. A global libraryExport/libraryImport uses the single app-owned personal library (libraryList reads it with global:true); global export writes a file so it is refused in temporary/read-only contexts. Never contains file paths other than the guarded asset_path/output/import fields above." }
       }
     }
     """#
@@ -902,6 +936,80 @@ public struct CadDocumentTool: AgentTool {
                     throw FloeError.validationFailed(
                         "capabilities kind=\(raw) describes the native .floecad workbench services; "
                             + "omit kind for the 2D engine matrix.")
+                }
+            }
+        case .animation:
+            guard native else {
+                throw FloeError.validationFailed(
+                    "animation is available for native .floecad documents only")
+            }
+            let payload = try Self.servicePayloadObject(args)
+            let rawAction = (payload["action"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard let action = CadNativeEditActions.animation.first(where: {
+                $0.lowercased() == rawAction.lowercased()
+            }) else {
+                throw FloeError.validationFailed(
+                    "animation requires payload.action ("
+                        + CadNativeEditActions.animation.sorted().joined(separator: "|")
+                        + "); got '\(rawAction)'")
+            }
+            if action == "capture" {
+                let width = Self.intValue(payload["width"] ?? 1920) ?? 1920
+                let height = Self.intValue(payload["height"] ?? 1080) ?? 1080
+                let fps = Self.intValue(payload["fps"] ?? 30) ?? 30
+                let format = ((payload["format"] as? String) ?? "png").lowercased()
+                guard (64...4096).contains(width), (64...4096).contains(height) else {
+                    throw FloeError.validationFailed(
+                        "animation capture width and height must be 64...4096")
+                }
+                guard (1...60).contains(fps) else {
+                    throw FloeError.validationFailed("animation capture fps must be 1...60")
+                }
+                guard ["png", "jpeg", "jpg"].contains(format) else {
+                    throw FloeError.validationFailed(
+                        "animation capture format must be png or jpeg")
+                }
+                if let frame = Self.intValue(payload["frame"]), frame < 0 {
+                    throw FloeError.validationFailed("animation frame must be zero or greater")
+                }
+                if let time = Self.doubleValue(payload["time"]), !time.isFinite || time < 0 {
+                    throw FloeError.validationFailed(
+                        "animation capture time must be a finite seconds value")
+                }
+            }
+            if action == "export" {
+                if let output = args.output {
+                    let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty, trimmed.count <= 1024,
+                          !trimmed.contains("\0"),
+                          !trimmed.split(separator: "/").contains(".."),
+                          (trimmed as NSString).pathExtension.lowercased() == "mp4" else {
+                        throw FloeError.validationFailed(
+                            "animation export output must be a workspace-contained .mp4 path")
+                    }
+                }
+                let width = Self.intValue(payload["width"] ?? 1920) ?? 1920
+                let height = Self.intValue(payload["height"] ?? 1080) ?? 1080
+                let fps = Self.intValue(payload["fps"] ?? 30) ?? 30
+                let codec = ((payload["codec"] as? String) ?? "h264").lowercased()
+                guard width % 2 == 0, height % 2 == 0,
+                      (64...4096).contains(width), (64...4096).contains(height),
+                      width * height <= 3840 * 2160 else {
+                    throw FloeError.validationFailed(
+                        "animation export dimensions must be even, 64...4096, and within 4K")
+                }
+                guard (1...60).contains(fps) else {
+                    throw FloeError.validationFailed("animation export fps must be 1...60")
+                }
+                guard ["h264", "hevc"].contains(codec) else {
+                    throw FloeError.validationFailed(
+                        "animation export codec must be h264 or hevc")
+                }
+                if let bitrate = Self.intValue(payload["bitrate"]),
+                   !(250_000...80_000_000).contains(bitrate) {
+                    throw FloeError.validationFailed(
+                        "animation export bitrate must be 250 kbps...80 Mbps")
                 }
             }
         case .create:
@@ -1118,16 +1226,83 @@ public struct CadDocumentTool: AgentTool {
                     throw FloeError.validationFailed(
                         "parameters updateSketchEntity requires entity_id (from query kind=sketches entityRows).")
                 }
-                guard let radius = Self.doubleValue(payload["radius"]),
-                      radius.isFinite, radius > 0 else {
+                let hasGeometry = ["a", "b", "start", "end", "endpointA", "endpointB",
+                                   "min", "max", "low", "high", "center",
+                                   "width", "height", "radius", "diameter"]
+                    .contains { payload[$0] != nil || payload["expected_\($0)"] != nil }
+                guard hasGeometry else {
                     throw FloeError.validationFailed(
-                        "parameters updateSketchEntity requires radius as a positive finite mm value.")
+                        "parameters updateSketchEntity needs real geometry: line a/b; rect min/max or "
+                            + "center/width/height; circle center/radius/diameter.")
                 }
-                if let raw = payload["expected_radius"] ?? payload["current_radius"] {
-                    guard let expected = Self.doubleValue(raw), expected.isFinite else {
-                        throw FloeError.validationFailed(
-                            "parameters updateSketchEntity expected_radius must be a finite current radius in mm.")
+                for key in ["radius", "diameter", "width", "height",
+                            "expected_radius", "expected_diameter", "expected_width", "expected_height"] {
+                    if let raw = payload[key] {
+                        guard let value = Self.doubleValue(raw), value.isFinite, value > 0 else {
+                            throw FloeError.validationFailed(
+                                "parameters updateSketchEntity \(key) must be a positive finite millimetre value.")
+                        }
                     }
+                }
+            }
+            if action == "setSketchDimension" {
+                guard payload["sketch_id"] as? String != nil
+                        || payload["sketchID"] as? String != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters setSketchDimension requires sketch_id (from query kind=sketches).")
+                }
+                guard let kind = payload["kind"] as? String,
+                      CadNativeEditActions.sketchDimensionKinds.contains(kind.lowercased()) else {
+                    throw FloeError.validationFailed(
+                        "parameters setSketchDimension requires kind ("
+                            + CadNativeEditActions.sketchDimensionKinds.sorted().joined(separator: "|") + ").")
+                }
+                guard payload["entity_id"] != nil || payload["entity_ids"] != nil
+                        || payload["refs"] != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters setSketchDimension requires entity_id, entity_ids or refs.")
+                }
+                guard let value = Self.doubleValue(payload["value"]), value.isFinite, value > 0 else {
+                    throw FloeError.validationFailed(
+                        "parameters setSketchDimension requires value as a positive finite number "
+                            + "(mm for lengths/radii, degrees for angle).")
+                }
+            }
+            if action == "removeSketchDimension" {
+                guard payload["dimension_id"] as? String != nil
+                        || payload["dimensionID"] as? String != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters removeSketchDimension requires dimension_id from query kind=constraints.")
+                }
+            }
+            if action == "feature.suppress" {
+                guard payload["feature_id"] as? String != nil
+                        || payload["featureID"] as? String != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters feature.suppress requires feature_id from query kind=features.")
+                }
+                guard payload["suppressed"] != nil || payload["restore"] != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters feature.suppress requires suppressed:true|false (or restore:true).")
+                }
+            }
+            if action == "feature.delete" {
+                guard payload["feature_id"] as? String != nil
+                        || payload["featureID"] as? String != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters feature.delete requires feature_id from query kind=features.")
+                }
+            }
+            if action == "feature.move" {
+                guard payload["feature_id"] as? String != nil
+                        || payload["featureID"] as? String != nil else {
+                    throw FloeError.validationFailed(
+                        "parameters feature.move requires feature_id from query kind=features.")
+                }
+                guard let raw = payload["to_index"] ?? payload["index"] ?? payload["to"],
+                      let index = Self.intValue(raw), index >= 0 else {
+                    throw FloeError.validationFailed(
+                        "parameters feature.move requires to_index as a non-negative 0-based history position.")
                 }
             }
         case .capture:
@@ -1187,7 +1362,8 @@ public struct CadDocumentTool: AgentTool {
     /// Native read scopes served by `query` on a `.floecad` document.
     public static let nativeQueryScopes: Set<String> = [
         "bodies", "sketches", "constraints", "features", "edges", "faces",
-        "variables", "materials", "assembly", "drawings", "scene", "detail", "snapshot",
+        "variables", "materials", "assembly", "drawings", "scene", "detail",
+        "snapshot", "selection", "animation",
     ]
 
     /// Native deterministic measurements served by `measure`.
@@ -1483,16 +1659,26 @@ public struct CadDocumentTool: AgentTool {
         // edits in a normal task. Reads/lists and a viewport capture remain
         // available.
         if context.temporaryReadOnly,
-           args.action == .material || args.action == .parameters {
+           args.action == .material || args.action == .parameters
+            || args.action == .animation {
             let payload = (try? Self.servicePayloadObject(args)) ?? [:]
             let action = payload["action"] as? String ?? ""
             let readOnlyMaterial: Set<String> = ["list", "read", "unresolved",
                                                   "libraryExport", "libraryList"]
             let globalExport = action == "libraryExport"
                 && (Self.boolValue(payload["global"]) == true)
-            let mutating = args.action == .material
-                ? (!readOnlyMaterial.contains(action) || globalExport)
-                : action != "list"
+            let mutating: Bool
+            if args.action == .animation {
+                // Temporary chat may inspect the timeline and capture a
+                // frame, but must not author clips/keyframes or run a long
+                // external video export.
+                mutating = !(CadNativeEditActions.animationReads.contains(action)
+                             || action == "capture")
+            } else if args.action == .material {
+                mutating = !readOnlyMaterial.contains(action) || globalExport
+            } else {
+                mutating = action != "list"
+            }
             if mutating {
                 throw FloeError.unauthorized
             }
@@ -1525,7 +1711,7 @@ public struct CadDocumentTool: AgentTool {
                                                         access: access)
                 let merged = CadServiceOperationCatalog.mergingCapabilities(
                     into: reply, detailKind: detailKind, offset: detailOffset, limit: detailLimit)
-                return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(merged)", 24_000))
+                return completeOutput("cad.document capabilities: \(merged)", 24_000)
             }
             if args.path == nil {
                 // A `kind` asks for one native service's exact operation
@@ -1535,7 +1721,7 @@ public struct CadDocumentTool: AgentTool {
                     let merged = CadServiceOperationCatalog.mergingCapabilities(
                         into: #"{"ok":true}"#, detailKind: detailKind,
                         offset: detailOffset, limit: detailLimit)
-                    return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(merged)", 24_000))
+                    return completeOutput("cad.document capabilities: \(merged)", 24_000)
                 }
                 // Discovery without a document reports BOTH engines: the 2D
                 // DWG/DXF surface and the native package/3D surface, each with
@@ -1576,13 +1762,19 @@ public struct CadDocumentTool: AgentTool {
                     merged["native_three_dimensional"] = nativeCaps
                     text = jsonString(merged)
                 }
-                return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(text)", 32_000))
+                return completeOutput("cad.document capabilities: \(text)", 32_000)
             }
             let caps = try await host.capabilities(access: access)
-            return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(caps)", 24_000))
+            return completeOutput("cad.document capabilities: \(caps)", 24_000)
 
         case .create:
             let path = args.path!
+            if access.workspacePath?.isEmpty != false {
+                throw FloeError.validationFailed(
+                    "cad.document create needs the run's task workspace, but this run has no "
+                        + "workspace root bound. The CAD package is created inside the task workspace "
+                        + "(use the ordinary task conversation; a project workspace is not required).")
+            }
             let fallbackName = ((path as NSString).lastPathComponent as NSString)
                 .deletingPathExtension
             // An OMITTED name defaults to the path stem; an explicitly
@@ -1608,7 +1800,7 @@ public struct CadDocumentTool: AgentTool {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let json = String(data: try encoder.encode(receipt), encoding: .utf8) ?? "{}"
-            return ToolExecutionOutput(digesting: bounded("cad.document created: \(json)", 16_000))
+            return completeOutput("cad.document created: \(json)", 16_000)
 
         case .import:
             // Import is a PROPOSAL draft, exactly like geometry propose: the
@@ -1639,30 +1831,30 @@ public struct CadDocumentTool: AgentTool {
             let request = try jsonString(envelope)
             let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                     access: access)
-            return ToolExecutionOutput(digesting: bounded("cad.document import proposal: \(reply)", 24_000))
+            return completeOutput("cad.document import proposal: \(reply)", 24_000)
 
         case .read:
             if native {
                 let reply = try await host.threeDAction(
                     documentID: args.path!, requestJSON: #"{"kind":"snapshot"}"#, access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document read: \(reply)", 48_000))
+                return completeOutput("cad.document read: \(reply)", 48_000)
             }
             let snapshot = try await host.snapshot(documentID: args.path!, access: access)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let json = String(data: try encoder.encode(snapshot), encoding: .utf8) ?? "{}"
-            return ToolExecutionOutput(digesting: bounded("cad.document read: \(json)", 24_000))
+            return completeOutput("cad.document read: \(json)", 24_000)
 
         case .query:
             if native {
                 let request = try nativeQueryRequest(args)
                 let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                         access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document query: \(reply)", 48_000))
+                return completeOutput("cad.document query: \(reply)", 48_000)
             }
             let request = try queryRequest(args)
             let reply = try await host.query(documentID: args.path!, requestJSON: request, access: access)
-            return ToolExecutionOutput(digesting: bounded("cad.document query: \(reply)", 48_000))
+            return completeOutput("cad.document query: \(reply)", 48_000)
 
         case .locate:
             if native {
@@ -1670,18 +1862,18 @@ public struct CadDocumentTool: AgentTool {
                                               "payload": ["handle": args.handles![0]]])
                 let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                         access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document locate: \(reply)", 8_000))
+                return completeOutput("cad.document locate: \(reply)", 8_000)
             }
             let request = jsonString(["operation": "locate", "handle": args.handles![0]])
             let reply = try await host.query(documentID: args.path!, requestJSON: request, access: access)
-            return ToolExecutionOutput(digesting: bounded("cad.document locate: \(reply)", 8_000))
+            return completeOutput("cad.document locate: \(reply)", 8_000)
 
         case .measure:
             if native {
                 let request = try nativeMeasureRequest(args)
                 let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                         access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document measure: \(reply)", 8_000))
+                return completeOutput("cad.document measure: \(reply)", 8_000)
             }
             // Exact engine arity per kind, checked BEFORE the worker so the
             // model receives a structured message instead of a worker
@@ -1721,7 +1913,7 @@ public struct CadDocumentTool: AgentTool {
             }
             if let handles = args.handles { fields["handles"] = handles }
             let reply = try await host.query(documentID: args.path!, requestJSON: jsonString(fields), access: access)
-            return ToolExecutionOutput(digesting: bounded("cad.document measure: \(reply)", 8_000))
+            return completeOutput("cad.document measure: \(reply)", 8_000)
 
         case .check:
             if native {
@@ -1729,11 +1921,11 @@ public struct CadDocumentTool: AgentTool {
                 let request = try jsonString(["kind": "check", "payload": payload])
                 let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                         access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document check: \(reply)", 48_000))
+                return completeOutput("cad.document check: \(reply)", 48_000)
             }
             let request = jsonString(["operation": "check", "tolerance": args.tolerance ?? 0.001])
             let reply = try await host.query(documentID: args.path!, requestJSON: request, access: access)
-            return ToolExecutionOutput(digesting: bounded("cad.document check: \(reply)", 48_000))
+            return completeOutput("cad.document check: \(reply)", 48_000)
 
         case .status, .cancel:
             guard native else {
@@ -1745,7 +1937,7 @@ public struct CadDocumentTool: AgentTool {
             let request = try jsonString(["kind": args.action.rawValue, "payload": payload])
             let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                     access: access)
-            return ToolExecutionOutput(digesting: bounded("cad.document \(args.action.rawValue): \(reply)", 24_000))
+            return completeOutput("cad.document \(args.action.rawValue): \(reply)", 24_000)
 
         case .propose:
             if native {
@@ -1755,10 +1947,10 @@ public struct CadDocumentTool: AgentTool {
                 // The proposal changes nothing yet; BOTH authorization paths are
                 // valid for the apply that follows (UI grant or the
                 // runtime-approved call), so the model is told the truth.
-                let note = "Nothing was written. Call apply with this proposal id — a grant_id the user issued "
-                    + "in the CAD UI, or (without one) this exact approved call's runtime authority, authorizes it. "
-                    + "A pending proposal alone grants nothing and stays confirmable in the CAD UI."
-                return ToolExecutionOutput(digesting: bounded("cad.document propose: \(reply)\n\(note)", 16_000))
+                let note = "Apply this prepared change with action=apply and this proposal_id. "
+                    + "Omit grant_id for ordinary authorized editing; no separate user confirmation is needed. "
+                    + "The runtime verifies document ownership and the base revision before committing."
+                return completeOutput("cad.document propose: \(reply)\n\(note)", 16_000)
             }
             let snapshot = try await host.snapshot(documentID: args.path!, access: access)
             guard snapshot.editable else {
@@ -1778,7 +1970,7 @@ public struct CadDocumentTool: AgentTool {
             User confirmation is required for a manual apply: a grant id from the CAD UI, or (without one) \
             this exact approved apply call's runtime authority; a pending proposal alone changes nothing. \(preview.note)
             """
-            return ToolExecutionOutput(digesting: bounded(summary, 8_000))
+            return completeOutput(summary, 8_000)
 
         case .preview:
             if native {
@@ -1786,7 +1978,7 @@ public struct CadDocumentTool: AgentTool {
                 let request = try jsonString(["kind": "preview", "proposal_id": id.uuidString])
                 let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                         access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document preview: \(reply)", 32_000))
+                return completeOutput("cad.document preview: \(reply)", 32_000)
             }
             guard let id = args.proposalID,
                   let proposal = try await host.loadProposal(id: id, access: access) else {
@@ -1796,7 +1988,7 @@ public struct CadDocumentTool: AgentTool {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let json = String(data: try encoder.encode(proposal.preview), encoding: .utf8) ?? "{}"
-            return ToolExecutionOutput(digesting: bounded("cad.document preview: \(json)", 32_000))
+            return completeOutput("cad.document preview: \(json)", 32_000)
 
         case .apply:
             if native {
@@ -1830,7 +2022,7 @@ public struct CadDocumentTool: AgentTool {
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
                 let json = String(data: try encoder.encode(receipt), encoding: .utf8) ?? "{}"
-                return ToolExecutionOutput(digesting: bounded("cad.document apply: \(json)", 16_000))
+                return completeOutput("cad.document apply: \(json)", 16_000)
             }
             guard let outcome = try await host.loadProposalOutcome(id: id, access: access) else {
                 throw FloeError.notFound("CAD proposal")
@@ -1847,13 +2039,13 @@ public struct CadDocumentTool: AgentTool {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let json = String(data: try encoder.encode(replay), encoding: .utf8) ?? "{}"
-            return ToolExecutionOutput(digesting: bounded("cad.document apply: \(json)", 16_000))
+            return completeOutput("cad.document apply: \(json)", 16_000)
 
         case .save:
             if native {
                 let reply = try await host.threeDAction(documentID: args.path!,
                                                         requestJSON: #"{"kind":"save"}"#, access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document save: \(reply)", 16_000))
+                return completeOutput("cad.document save: \(reply)", 16_000)
             }
             let snapshot = try await host.snapshot(documentID: args.path!, access: access)
             let receipt = try await host.save(documentID: args.path!, expectedSHA256: snapshot.sha256,
@@ -1861,7 +2053,7 @@ public struct CadDocumentTool: AgentTool {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let json = String(data: try encoder.encode(receipt), encoding: .utf8) ?? "{}"
-            return ToolExecutionOutput(digesting: bounded("cad.document save: \(json)", 16_000))
+            return completeOutput("cad.document save: \(json)", 16_000)
 
         case .export:
             if native {
@@ -1877,7 +2069,7 @@ public struct CadDocumentTool: AgentTool {
                 let request = try jsonString(["kind": "export", "payload": payload])
                 let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                         access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document export: \(reply)", 16_000))
+                return completeOutput("cad.document export: \(reply)", 16_000)
             }
             let output = args.output ?? Self.defaultExportPath(for: args.path!)
             let receipt = try await host.export(documentID: args.path!, relativeOutput: output, access: access)
@@ -1921,7 +2113,7 @@ public struct CadDocumentTool: AgentTool {
                 let message = (object["message"] as? String) ?? "The material operation was refused."
                 throw FloeError.validationFailed("\(code): \(message)")
             }
-            return ToolExecutionOutput(digesting: bounded("cad.document material: \(reply)", 48_000))
+            return completeOutput("cad.document material: \(reply)", 48_000)
 
         case .parameters:
             let payload = try Self.servicePayloadObject(args)
@@ -1936,7 +2128,114 @@ public struct CadDocumentTool: AgentTool {
                 let message = (object["message"] as? String) ?? "The parameter operation was refused."
                 throw FloeError.validationFailed("\(code): \(message)")
             }
-            return ToolExecutionOutput(digesting: bounded("cad.document parameters: \(reply)", 48_000))
+            return completeOutput("cad.document parameters: \(reply)", 48_000)
+
+        case .animation:
+            var payload = try Self.servicePayloadObject(args)
+            let rawAction = (payload["action"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard let action = CadNativeEditActions.animation.first(where: {
+                $0.lowercased() == rawAction.lowercased()
+            }) else {
+                throw FloeError.validationFailed(
+                    "animation requires a known payload.action")
+            }
+            payload["action"] = action
+            if action == "capture" {
+                let request = Self.animationCaptureRequest(
+                    payload, expectedRevision: args.revision)
+                let capture = try await host.captureAnimationFrame(
+                    documentID: args.path!, request: request, access: access)
+                let artifact = try Self.writeAnimationArtifact(
+                    capture, context: context)
+                var object: [String: Any] = [
+                    "ok": true,
+                    "action": "animation.capture",
+                    "clip_id": capture.clipID.uuidString,
+                    "time": capture.timeSeconds,
+                    "frame": capture.frameIndex,
+                    "fps": capture.frameRate,
+                    "revision": capture.revision,
+                    "change_count": capture.changeCount,
+                    "content_sha256": capture.contentSHA256,
+                    "image_sha256": capture.sha256,
+                    "renderer": capture.renderer,
+                    "width": capture.width,
+                    "height": capture.height,
+                    "mime_type": capture.mimeType,
+                    "byte_count": capture.imageData.count,
+                    "artifact": artifact.relativePath,
+                    "note": capture.note,
+                    "vision": "The attached image is the actual animated native render. "
+                        + "Only a vision-capable model may inspect it; otherwise use evaluate values.",
+                ]
+                if let taskID = capture.taskID {
+                    object["task_id"] = taskID.uuidString
+                }
+                return completeOutput(
+                    "cad.document animation.capture: \(Self.jsonText(object))",
+                    8_000, artifacts: [artifact])
+            }
+            if action == "export" {
+                let output = args.output
+                    ?? Self.defaultAnimationExportPath(for: args.path!)
+                let options = Self.animationExportOptions(payload)
+                let receipt = try await host.exportAnimation(
+                    documentID: args.path!, relativeOutput: output,
+                    options: options, access: access)
+                var object: [String: Any] = [
+                    "ok": true,
+                    "action": "animation.export",
+                    "task_id": receipt.taskID.uuidString,
+                    "output": receipt.relativePath,
+                    "width": receipt.width,
+                    "height": receipt.height,
+                    "frame_rate": receipt.frameRate,
+                    "duration": receipt.durationSeconds,
+                    "frame_count": receipt.frameCount,
+                    "codec": receipt.codec,
+                    "has_audio": receipt.hasAudio,
+                    "byte_count": receipt.byteCount,
+                    "sha256": receipt.sha256,
+                    "note": receipt.note,
+                ]
+                object["poster_png_bytes"] = receipt.posterPNG?.count ?? 0
+                let summary = Self.jsonText(object)
+                switch RunOutputWorkbenchPublication.state(context) {
+                case .legacyDirect, .temporaryExempt:
+                    return ToolExecutionOutput(
+                        digesting: "cad.document animation.export: \(summary)")
+                case .partiallyBound:
+                    throw RunOutputWorkbenchPublication.partialBindingFailure
+                case .required:
+                    let fileURL = try Self.runOutputSourceURL(
+                        relativePath: receipt.relativePath, context: context)
+                    return try RunOutputWorkbenchPublication.publish(
+                        summary: "cad.document animation.export: \(summary)",
+                        url: fileURL,
+                        sha256: receipt.sha256,
+                        byteCount: Int(receipt.byteCount),
+                        producerTool: Self.name,
+                        slot: "export",
+                        mimeType: "video/mp4",
+                        uti: "public.mpeg-4",
+                        using: context)
+                }
+            }
+            var envelope: [String: Any] = ["kind": "animation", "payload": payload]
+            if let revision = args.revision { envelope["revision"] = revision }
+            let request = try jsonString(envelope)
+            let reply = try await host.threeDAction(
+                documentID: args.path!, requestJSON: request, access: access)
+            if let object = (try? JSONSerialization.jsonObject(
+                with: Data(reply.utf8))) as? [String: Any],
+               object["ok"] as? Bool == false {
+                let code = (object["error"] as? String) ?? "animation_failed"
+                let message = (object["message"] as? String)
+                    ?? "The animation operation was refused."
+                throw FloeError.validationFailed("\(code): \(message)")
+            }
+            return completeOutput("cad.document animation: \(reply)", 48_000)
 
         case .capture:
             let payload = try Self.servicePayloadObject(args)
@@ -1963,7 +2262,7 @@ public struct CadDocumentTool: AgentTool {
                     + "otherwise use measure/query values and do not claim visual inspection.",
             ]
             let summary = Self.jsonText(object)
-            return ToolExecutionOutput(digesting: bounded("cad.document capture: \(summary)", 8_000),
+            return completeOutput("cad.document capture: \(summary)", 8_000,
                                        artifacts: [artifact])
 
         case .threeDSnapshot, .threeDMeasure, .threeDPropose, .threeDApply,
@@ -2007,12 +2306,12 @@ public struct CadDocumentTool: AgentTool {
                                                          servicePayload: servicePayload)
                 let reply = try await host.threeDAction(documentID: args.path!,
                                                         requestJSON: request, access: access)
-                return ToolExecutionOutput(digesting: bounded("cad.document \(kind): \(reply)", 48_000))
+                return completeOutput("cad.document \(kind): \(reply)", 48_000)
             }
             let request = try Self.threeDRequestJSON(kind: kind, args: args)
             let reply = try await host.threeDAction(documentID: args.path!,
                                                     requestJSON: request, access: access)
-            return ToolExecutionOutput(digesting: bounded("cad.document \(kind): \(reply)", 48_000))
+            return completeOutput("cad.document \(kind): \(reply)", 48_000)
         }
     }
 
@@ -2035,12 +2334,12 @@ public struct CadDocumentTool: AgentTool {
                                           "request_id": requestID])
             let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                     access: access)
-            return ToolExecutionOutput(digesting: bounded("cad.document apply: \(reply)", 16_000))
+            return completeOutput("cad.document apply: \(reply)", 16_000)
         }
         let authorization = try await Self.consumeAutomaticAuthorization(args: args, context: context)
         let reply = try await host.applyAutomatic(proposalID: id, authorization: authorization,
                                                   requestID: requestID, access: access)
-        return ToolExecutionOutput(digesting: bounded("cad.document apply: \(reply)", 16_000))
+        return completeOutput("cad.document apply: \(reply)", 16_000)
     }
 
     /// Consumes the runtime-issued authority for one automatic apply. The
@@ -2136,6 +2435,80 @@ public struct CadDocumentTool: AgentTool {
             mimeType: "image/png",
             byteCount: capture.pngData.count,
             sha256: capture.sha256)
+    }
+
+    /// Parse the animation capture payload into the host contract. The engine
+    /// validates every value again; defaults are the same 1920x1080/30 fps
+    /// contract the timeline/export use.
+    static func animationCaptureRequest(
+        _ payload: [String: Any], expectedRevision: Int64?
+    ) -> CadAnimationCaptureRequest {
+        CadAnimationCaptureRequest(
+            clipID: (payload["clip_id"] as? String).flatMap(UUID.init(uuidString:)),
+            timeSeconds: doubleValue(payload["time"]),
+            frame: intValue(payload["frame"]),
+            fps: intValue(payload["fps"] ?? 30) ?? 30,
+            width: intValue(payload["width"] ?? 1920) ?? 1920,
+            height: intValue(payload["height"] ?? 1080) ?? 1080,
+            format: ((payload["format"] as? String) ?? "png").lowercased(),
+            jpegQuality: doubleValue(payload["jpeg_quality"]) ?? 0.92,
+            expectedRevision: expectedRevision)
+    }
+
+    static func animationExportOptions(_ payload: [String: Any])
+    -> CadAnimationExportOptions {
+        CadAnimationExportOptions(
+            width: intValue(payload["width"] ?? 1920) ?? 1920,
+            height: intValue(payload["height"] ?? 1080) ?? 1080,
+            frameRate: intValue(payload["fps"] ?? 30) ?? 30,
+            codec: ((payload["codec"] as? String) ?? "h264").lowercased(),
+            bitrate: intValue(payload["bitrate"]),
+            overwrite: boolValue(payload["overwrite"]) ?? false,
+            posterEnabled: boolValue(payload["poster"]) ?? true)
+    }
+
+    /// Writes a real animation frame into Floe's app-storage artifact root and
+    /// returns the runtime-visible image artifact. Content-addressed by the
+    /// image SHA so repeated captures of one frame are idempotent.
+    static func writeAnimationArtifact(_ capture: CadAnimationCapture,
+                                       context: ToolContext) throws -> ToolArtifactReference {
+        guard capture.imageData.count <= 16 * 1024 * 1024 else {
+            throw FloeError.validationFailed(
+                "The animation frame exceeds the 16 MiB artifact bound.")
+        }
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true)
+        let relativeDirectory = "CADAnimationFrames/\(context.runID.uuidString)"
+        let directory = support
+            .appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent(relativeDirectory, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        let ext = capture.mimeType == "image/jpeg" ? "jpg" : "png"
+        let fileName = "\(capture.sha256).\(ext)"
+        let url = directory.appendingPathComponent(fileName, isDirectory: false)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try capture.imageData.write(to: url, options: .atomic)
+        }
+        return ToolArtifactReference(
+            id: UUID(),
+            relativePath: "\(relativeDirectory)/\(fileName)",
+            mimeType: capture.mimeType,
+            byteCount: capture.imageData.count,
+            sha256: capture.sha256)
+    }
+
+    static func defaultAnimationExportPath(for path: String) -> String {
+        let ns = path as NSString
+        // A Canvas key addresses a package inside the Canvas package root, not
+        // a literal `canvas-cad:<uuid>/` directory under that root.
+        let canvasOwned = CanvasCADBindingKey.isCanvasOwned(path)
+        let name = ns.lastPathComponent
+        let base = (name as NSString).deletingPathExtension
+        let directory = canvasOwned ? "" : ns.deletingLastPathComponent
+        let file = "\(base.isEmpty ? "part" : base).animation.mp4"
+        return directory.isEmpty ? file : "\(directory)/\(file)"
     }
 
     static func defaultExportPath(for path: String) -> String {
@@ -2430,6 +2803,19 @@ public struct CadDocumentTool: AgentTool {
         guard let data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]),
               let json = String(data: data, encoding: .utf8) else { return "{}" }
         return json
+    }
+
+    /// The engine already bounds query pages and validates their shape.
+    /// Preserve its complete reply for model budgeting/paging; truncating a
+    /// JSON response here would destroy nested parameters and continuation.
+    private func completeOutput(_ text: String, _ maximum: Int,
+                                artifacts: [ToolArtifactReference] = []) -> ToolExecutionOutput {
+        ToolExecutionOutput(
+            digesting: text,
+            artifacts: artifacts,
+            maximumSummaryCharacters: min(4096, maximum),
+            capturedOutput: text
+        )
     }
 
     private func bounded(_ text: String, _ maximum: Int) -> String {

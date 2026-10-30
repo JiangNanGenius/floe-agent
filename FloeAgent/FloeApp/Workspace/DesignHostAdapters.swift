@@ -111,7 +111,43 @@ struct AppWorkspaceFilePort: DesignWorkspaceFilePort {
         let accessing = root.startAccessingSecurityScopedResource()
         defer { if accessing { root.stopAccessingSecurityScopedResource() } }
         guard (try? guardResolver.resolve(reference)) != nil else { return false }
-        return (try? serviceMetadata(root: root, reference: reference)) != nil
+        if (try? serviceMetadata(root: root, reference: reference)) != nil { return true }
+        // A NEW file is inside the permitted target space when the nearest
+        // existing ancestor directory is guarded and writable. Existence is a
+        // separate fact (`exists`/`resolve`), not containment: without this a
+        // legitimate not-yet-created document was reported as "outside
+        // containment" and a native .floecad could never be created from
+        // ordinary chat. No bytes are read and no directory is created here;
+        // the create host performs the guarded mkdir.
+        return Self.hasWritableContainedAncestor(
+            reference: reference, guardResolver: guardResolver)
+    }
+
+    /// True when a file reference resolves inside the guard and its nearest
+    /// existing ancestor is a writable directory. A missing intermediate
+    /// directory is allowed (the guarded create makes it); an existing FILE in
+    /// place of an ancestor is refused. `resolve` still requires real bytes.
+    static func hasWritableContainedAncestor(
+        reference: String,
+        guardResolver: WorkspacePathGuard
+    ) -> Bool {
+        let trimmed = reference.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("/"), !trimmed.hasPrefix("~") else {
+            return false
+        }
+        var ancestorRelative = (trimmed as NSString).deletingLastPathComponent
+        while !ancestorRelative.isEmpty && ancestorRelative != "." {
+            guard let ancestor = try? guardResolver.resolve(ancestorRelative) else {
+                return false
+            }
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: ancestor.path, isDirectory: &isDirectory) {
+                return isDirectory.boolValue
+                    && FileManager.default.isWritableFile(atPath: ancestor.path)
+            }
+            ancestorRelative = (ancestorRelative as NSString).deletingLastPathComponent
+        }
+        return FileManager.default.isWritableFile(atPath: guardResolver.rootURL.path)
     }
 
     func exists(workspaceID: String, reference: String, environmentID: String?) async -> Bool {

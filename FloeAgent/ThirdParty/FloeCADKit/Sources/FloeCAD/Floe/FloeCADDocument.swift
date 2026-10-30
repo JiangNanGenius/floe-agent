@@ -180,6 +180,13 @@ public final class FloeCADDocument {
     }
 
     public func markClosed() {
+        #if canImport(AVFoundation) && canImport(RealityKit) && canImport(UIKit)
+        // A service-owned animation export keeps the document alive; closing
+        // it must cancel the render lease and remove its staging directory
+        // rather than let a late task promote a file for a released document.
+        CADAnimationExportCenter.shared.cancelAll(
+            documentKey: url.standardizedFileURL.path)
+        #endif
         session.flushPendingAutosave()
         closed = true
         // Fence the store: waits out any in-flight commit and forbids later

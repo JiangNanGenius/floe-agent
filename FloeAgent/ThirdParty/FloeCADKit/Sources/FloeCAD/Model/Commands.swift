@@ -214,6 +214,23 @@ struct SetSceneSettingsDataCommand: DocumentCommand {
     func revert(in document: inout DesignDocument) { document.sceneSettingsData = before }
 }
 
+/// Replaces the optional keyframe animation blob as one undoable document
+/// step. Playback/scrub never performs a command; only authored edits do.
+struct SetAnimationDataCommand: DocumentCommand {
+    var title: String = "Animation"
+    let before: Data?
+    let after: Data?
+
+    init(title: String = "Animation", before: Data?, after: Data?) {
+        self.title = title
+        self.before = before
+        self.after = after
+    }
+
+    func apply(to document: inout DesignDocument) { document.animationData = after }
+    func revert(in document: inout DesignDocument) { document.animationData = before }
+}
+
 struct AddSketchEntityCommand: DocumentCommand {
     let title = "Sketch"
     let sketchID: SketchID

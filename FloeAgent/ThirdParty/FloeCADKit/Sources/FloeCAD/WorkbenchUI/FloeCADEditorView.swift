@@ -245,6 +245,9 @@ struct FloeCADEditorView: View {
     /// True while this editor is covered by a transient presentation (the
     /// workbench fullscreen cover); its disappearance is not a close.
     @Environment(\.cadWorkbenchTransientlyCovered) private var transientlyCovered
+    /// Host-installed selection observer; nil in standalone/qualification
+    /// hosts, in which case no context is published.
+    @Environment(\.cadSelectionObserver) private var selectionObserver
     @State private var viewModel: EditorViewModel?
     @State private var exportDocument: ExportDocument?
     @State private var showItemsPanel = false
@@ -2263,6 +2266,23 @@ struct FloeCADEditorView: View {
                         "Saving failed — recent changes may not be stored. (%@) The document stays open; free storage or fix access, then save again.",
                         saveError)
                 }
+            }
+            .task(id: "\(document.revision)#\(viewModel.assistantSelectionKey)") {
+                // Publish the REAL live selection (bodies/faces/edges/sketch/
+                // assembly instances) with the package revision. The key
+                // excludes expensive mesh/B-rep reads, so this runs only when
+                // the selection or document generation actually changes.
+                guard let observer = selectionObserver else { return }
+                let inputs = viewModel.assistantSelectionInputs
+                let context = CADSelectionContext.capture(
+                    document: document,
+                    bodyIDs: inputs.bodyIDs,
+                    facePicks: inputs.facePicks,
+                    edgePicks: inputs.edgePicks,
+                    sketchID: inputs.sketchID,
+                    sketchEntityIDs: inputs.sketchEntityIDs,
+                    instanceIDs: inputs.instanceIDs)
+                observer.handler(context)
             }
     }
 

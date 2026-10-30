@@ -402,6 +402,26 @@ struct TypedMutationTargetContractTests {
 
     // MARK: - CAD family and the Canvas staged hook
 
+    @Test("Native CAD parameter edits retain exact document ownership without an extra review target")
+    func nativeCADParameterMutationsPinOnlyTheirDocument() throws {
+        let root = try makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("part.floecad").path
+        for operation in ["update", "updateSketchEntity", "setSketchDimension", "removeSketchDimension",
+                          "feature.suppress", "feature.delete", "feature.move", "undo", "redo"] {
+            let payload = String(decoding: try JSONSerialization.data(withJSONObject: ["action": operation]),
+                                 as: UTF8.self)
+            let arguments = String(decoding: try JSONSerialization.data(withJSONObject: [
+                "action": "parameters", "path": "part.floecad", "payload": payload
+            ]), as: UTF8.self)
+            let result = try resolve("cad.document", arguments, root: root)
+            #expect(result.contractCovered)
+            #expect(!result.hasUnresolvedExtent)
+            #expect(result.mutableTargets == [TypedMutableTarget(path: target, role: .sourceWrite)])
+            #expect(try authorityTarget("cad.document", arguments, root: root) == "file:" + target)
+        }
+    }
+
     @Test("cad.document types the package target, drafts and export copies")
     func cadFamilyTyping() throws {
         let root = try makeTree()

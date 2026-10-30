@@ -95,6 +95,9 @@ final class CADPresentationHandle {
     var savedCamera: CADPresentationCamera?
 
     var bounds: CADPresentationBounds? { controller?.currentBounds }
+    /// Current live camera; used by the timeline to capture a keyframe from
+    /// exactly what the user is looking at.
+    var currentCamera: CADPresentationCamera? { controller?.currentCamera }
 
     func fit() {
         controller?.fit()
@@ -142,6 +145,16 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     private var environmentTask: Task<Void, Never>?
     private(set) var currentBounds: CADPresentationBounds?
     private(set) var issues: [CADPresentationIssue] = []
+    /// Bumped whenever the stage is replaced or released. Playback and export
+    /// capture it before touching the entities and refuse to apply a frame to
+    /// a newer stage.
+    private(set) var renderGeneration: UInt64 = 0
+    /// Render-side animation state. `static` is the untransformed baseline.
+    /// This is deliberately NOT document state: playback/scrub never creates a
+    /// command and never writes the assembly.
+    private var animationToken = "static"
+    private var animationRestoreCamera: CADPresentationCamera?
+    private var animationLease: UUID?
     /// Camera/environment/build identity of the pixels the ARView currently
     /// shows. Export caches must include this or a moved camera would return
     /// an old picture for the same document revision.
@@ -154,10 +167,18 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         hasher.combine(camera.fovYDegrees)
         hasher.combine(currentScene?.environment.stableKey)
         hasher.combine(buildKey)
+        hasher.combine(animationToken)
+        hasher.combine(renderGeneration)
         hasher.combine(arView.bounds.width)
         hasher.combine(arView.bounds.height)
         return "render-\(hasher.finalize())"
     }
+    var currentCamera: CADPresentationCamera { camera }
+    var isAnimationLeased: Bool { animationLease != nil }
+    /// True once a real stage has been built and can be snapshotted. The
+    /// service-owned offscreen host waits for this instead of guessing that a
+    /// frame is ready.
+    var isStageReady: Bool { stage != nil && buildKey != nil }
     weak var handle: CADPresentationHandle?
 
     private var orbitStartCamera: CADPresentationCamera?
@@ -226,6 +247,12 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             stage = result.stage
             bodyEntities = result.bodyEntities
             originalMaterials.removeAll()
+            // A replaced stage always starts from its document baseline; any
+            // transient animation frame belonged to the previous generation.
+            animationToken = "static"
+            animationRestoreCamera = nil
+            animationLease = nil
+            renderGeneration &+= 1
             anchor.addChild(result.stage)
             issues = result.issues
             handle?.setIssues(issues)
@@ -265,6 +292,10 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         stage = nil
         bodyEntities.removeAll()
         originalMaterials.removeAll()
+        animationToken = "static"
+        animationRestoreCamera = nil
+        animationLease = nil
+        renderGeneration &+= 1
         anchor.removeFromParent()
         cache.dispose()
         buildKey = nil
@@ -470,11 +501,81 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         true
     }
 
+    // MARK: Transient animation frame
+
+    /// Exclusive render lease for a multi-frame capture/export. Playback
+    /// frames are ignored while a lease is held, so two writers can never
+    /// interleave transforms in one video.
+    func beginAnimationLease() -> UUID? {
+        guard stage != nil else { return nil }
+        let id = UUID()
+        animationLease = id
+        return id
+    }
+
+    func endAnimationLease(_ id: UUID) {
+        if animationLease == id { animationLease = nil }
+    }
+
+    func holdsAnimationLease(_ id: UUID) -> Bool { animationLease == id }
+
+    /// Apply one transient animation frame to the live stage. The document,
+    /// assembly and undo stack are untouched. `expectedGeneration` fences a
+    /// frame computed against a stage that has since been rebuilt/released.
+    @discardableResult
+    func applyAnimation(camera animationCamera: CADPresentationCamera?,
+                        instanceTransforms: [UUID: simd_float4x4],
+                        token: String,
+                        expectedGeneration: UInt64,
+                        lease: UUID?) -> Bool {
+        guard stage != nil, let scene = currentScene,
+              renderGeneration == expectedGeneration else { return false }
+        if let animationLease, lease != animationLease { return false }
+        if animationRestoreCamera == nil { animationRestoreCamera = camera }
+        if let animationCamera { camera = animationCamera }
+        for body in scene.bodies {
+            guard let nodes = bodyEntities[body.id] else { continue }
+            nodes.parent.transform = Transform(
+                matrix: instanceTransforms[body.id] ?? body.transform)
+        }
+        animationToken = token
+        applyCamera()
+        return true
+    }
+
+    /// Restore every body to its document baseline and the camera to the pose
+    /// captured before playback. Called on stop, mode exit and export finish.
+    func clearAnimation() {
+        // An export owns the stage for the whole clip; it restores when its
+        // lease ends rather than letting a UI stop clear a frame mid-write.
+        if animationLease != nil { return }
+        if let scene = currentScene {
+            for body in scene.bodies {
+                bodyEntities[body.id]?.parent.transform = Transform(matrix: body.transform)
+            }
+        }
+        if let restore = animationRestoreCamera {
+            camera = restore
+            applyCamera()
+        }
+        animationRestoreCamera = nil
+        animationToken = "static"
+    }
+
     // MARK: Capture
 
     /// Actual current ARView render. Refuses when the surface is not in a
     /// window; the caller binds the returned image to a document revision.
     func snapshotPNG(targetWidth: Int?) async throws -> (png: Data, width: Int, height: Int) {
+        let output = try await snapshotImage(targetWidth: targetWidth)
+        guard let png = output.pngData() else { throw CADPresentationError.snapshotFailed }
+        return (png, Int(output.size.width * output.scale),
+                Int(output.size.height * output.scale))
+    }
+
+    /// The same actual ARView render without PNG encoding. Video export needs
+    /// the pixels once; a poster image is encoded only for its first frame.
+    func snapshotImage(targetWidth: Int?) async throws -> UIImage {
         guard arView.window != nil else { throw CADPresentationError.notAttached }
         guard stage != nil else { throw CADPresentationError.renderingUnavailable }
         let image: UIImage? = await withCheckedContinuation { continuation in
@@ -484,16 +585,11 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         }
         guard let image else { throw CADPresentationError.snapshotFailed }
         if Task.isCancelled { throw CADPresentationError.snapshotCancelled }
-        let output: UIImage
         if let targetWidth, targetWidth > 0,
            Int(image.size.width * image.scale) != targetWidth {
-            output = Self.resized(image, targetWidth: targetWidth)
-        } else {
-            output = image
+            return Self.resized(image, targetWidth: targetWidth)
         }
-        guard let png = output.pngData() else { throw CADPresentationError.snapshotFailed }
-        return (png, Int(output.size.width * output.scale),
-                Int(output.size.height * output.scale))
+        return image
     }
 
     private static func resized(_ image: UIImage, targetWidth: Int) -> UIImage {
@@ -598,6 +694,13 @@ final class CADPresentationSnapshotService {
               document.contentSHA256 == contentSHA256 else {
             throw CADPresentationError.snapshotStale
         }
+        // A playback frame, export camera or environment change during the
+        // asynchronous snapshot must discard the image rather than return a
+        // picture of a different render state under the old key.
+        let stateAfter = controller.renderStateToken
+        guard stateAfter == stateBefore else {
+            throw CADPresentationError.snapshotStale
+        }
         let snapshot = CADPresentationSnapshot(
             pngData: result.png,
             width: result.width,
@@ -609,7 +712,6 @@ final class CADPresentationSnapshotService {
             imageSHA256: CADMaterialTexture.digest(result.png),
             capturedAt: Date(),
             note: "Actual current RealityKit presentation render bound to the open document revision.")
-        let stateAfter = controller.renderStateToken
         let keyAfter = "\(documentKey)|\(revision)|\(changeCount)|\(contentSHA256)|\(stateAfter)|\(targetWidth)"
         store(snapshot, key: keyAfter)
         return snapshot

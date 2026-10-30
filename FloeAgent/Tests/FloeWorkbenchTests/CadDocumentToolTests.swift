@@ -230,6 +230,47 @@ actor FakeCadHost: CadDocumentHost {
     }
 
     func setExportPayload(_ data: Data?) { exportRealPayload = data }
+
+    // MARK: Animation
+
+    var animationCaptureRequests: [CadAnimationCaptureRequest] = []
+    var animationExportRequests: [(String, CadAnimationExportOptions)] = []
+    var animationCaptureTask = UUID()
+    var animationExportTask = UUID()
+
+    func captureAnimationFrame(documentID: String,
+                               request: CadAnimationCaptureRequest,
+                               access: CadDocumentAccess) async throws -> CadAnimationCapture {
+        animationCaptureRequests.append(request)
+        let data = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        return CadAnimationCapture(
+            imageData: data, mimeType: "image/png",
+            width: request.width, height: request.height,
+            revision: revision, changeCount: 3,
+            contentSHA256: sha, sha256: FloeDigest.sha256Hex(data),
+            clipID: request.clipID ?? UUID(),
+            timeSeconds: request.timeSeconds ?? 0,
+            frameIndex: request.frame ?? 0,
+            frameRate: request.fps,
+            renderer: "presentation",
+            note: "fake host actual-frame test",
+            taskID: animationCaptureTask)
+    }
+
+    func exportAnimation(documentID: String, relativeOutput: String,
+                         options: CadAnimationExportOptions,
+                         access: CadDocumentAccess) async throws -> CadAnimationExportReceipt {
+        animationExportRequests.append((relativeOutput, options))
+        return CadAnimationExportReceipt(
+            relativePath: relativeOutput,
+            width: options.width, height: options.height,
+            frameRate: Double(options.frameRate),
+            durationSeconds: 5, frameCount: options.frameRate * 5,
+            codec: options.codec, hasAudio: false,
+            byteCount: 4096, sha256: String(repeating: "e", count: 64),
+            posterPNG: Data([1, 2, 3]), taskID: animationExportTask,
+            note: "fake host verified MP4")
+    }
 }
 
 @Suite("cad.document tool contract")
@@ -1477,7 +1518,7 @@ struct CadDocumentServiceRequestTests {
         await nativeHost.setThreeDReply(#"{"ok":true,"available":true}"#)
         let nativeTool = CadDocumentTool(host: nativeHost)
         let output = try await execute(nativeTool,
-            #"{"action":"capabilities","path":"part.floecad","kind":"drawing"}"#)
+            #"{"action":"capabilities","path":"part.floecad","kind":"drawing","offset":2,"limit":1}"#)
         #expect(output.summary.contains("service_operations"))
         // The reply must stay inside the runtime's 4 KiB model-visible cap so
         // the JSON is never silently truncated.
@@ -1486,9 +1527,10 @@ struct CadDocumentServiceRequestTests {
         let catalog = try #require(object["service_operations"] as? [String: Any])
         let detail = try #require(catalog["detail"] as? [String: Any])
         #expect(detail["kind"] as? String == "drawing")
-        #expect(detail["total"] as? Int == 8)
+        #expect(detail["total"] as? Int == 19)
         let operations = try #require(detail["operations"] as? [[String: Any]])
-        let addPage = try #require(operations.first { $0["action"] as? String == "addPage" })
+        let addPage = try #require(operations.first)
+        #expect(addPage["action"] as? String == "addPage")
         #expect(addPage["mutating"] as? Bool == true)
         #expect((addPage["args"] as? [[String: Any]])?.isEmpty == false)
         #expect((addPage["examples"] as? [String])?.isEmpty == false)
@@ -1651,6 +1693,86 @@ struct CadNativeEditToolTests {
         #expect(throws: FloeError.self) { try tool.validate(missing) }
     }
 
+    @Test("create refuses a run with no task workspace before touching the host factory")
+    func createRequiresTaskWorkspace() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        let context = ToolContext(
+            runID: UUID(), toolCallID: "call-no-root", scope: .local,
+            workspaceRootURL: nil, cancellation: CancellationToken(),
+            environmentID: "env-1", conversationID: UUID())
+        let args = try decode(#"{"action":"create","path":"toycar.floecad"}"#)
+        try tool.validate(args)
+        do {
+            _ = try await tool.execute(args, context: context)
+            Issue.record("create without a task workspace must refuse")
+        } catch let error as FloeError {
+            #expect(error.reason.contains("task workspace"))
+        }
+        let created = await host.createdPackages
+        #expect(created.isEmpty, "the host factory must not be reached without a task root")
+    }
+
+    @Test("new parameter actions validate and forward their typed payload")
+    func newParameterActionsRouteAndValidate() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"mutated":true,"revision":7,"change_count":4}"#)
+        let tool = CadDocumentTool(host: host)
+        let sketch = UUID().uuidString
+        let entity = UUID().uuidString
+        let feature = UUID().uuidString
+        let dimension = UUID().uuidString
+
+        let cases: [(String, String)] = [
+            ("updateSketchEntity", """
+             {"action":"parameters","path":"part.floecad","payload":
+              "{\"action\":\"updateSketchEntity\",\"sketch_id\":\"\(sketch)\",\"entity_id\":\"\(entity)\",\"a\":[0,0],\"b\":[10,0]}"}
+             """),
+            ("setSketchDimension", """
+             {"action":"parameters","path":"part.floecad","payload":
+              "{\"action\":\"setSketchDimension\",\"sketch_id\":\"\(sketch)\",\"entity_id\":\"\(entity)\",\"kind\":\"length\",\"value\":20}"}
+             """),
+            ("removeSketchDimension", """
+             {"action":"parameters","path":"part.floecad","payload":
+              "{\"action\":\"removeSketchDimension\",\"sketch_id\":\"\(sketch)\",\"dimension_id\":\"\(dimension)\"}"}
+             """),
+            ("feature.suppress", """
+             {"action":"parameters","path":"part.floecad","payload":
+              "{\"action\":\"feature.suppress\",\"feature_id\":\"\(feature)\",\"suppressed\":true}"}
+             """),
+            ("feature.delete", """
+             {"action":"parameters","path":"part.floecad","payload":
+              "{\"action\":\"feature.delete\",\"feature_id\":\"\(feature)\"}"}
+             """),
+            ("feature.move", """
+             {"action":"parameters","path":"part.floecad","payload":
+              "{\"action\":\"feature.move\",\"feature_id\":\"\(feature)\",\"to_index\":1}"}
+             """),
+        ]
+        for (action, json) in cases {
+            _ = try await execute(tool, json, context: makeContext())
+            let requests = await host.threeDRequests
+            let lastRequest = try #require(requests.last)
+            let request = try #require((try JSONSerialization.jsonObject(
+                with: Data(lastRequest.utf8))) as? [String: Any])
+            #expect(request["kind"] as? String == "parameters")
+            let payload = try #require(request["payload"] as? [String: Any])
+            #expect(payload["action"] as? String == action)
+        }
+
+        // Missing/invalid typed fields are refused before the host.
+        let invalid: [String] = [
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"updateSketchEntity\",\"sketch_id\":\"x\",\"entity_id\":\"y\"}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"setSketchDimension\",\"sketch_id\":\"x\",\"entity_id\":\"y\",\"kind\":\"explode\",\"value\":1}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"feature.move\",\"feature_id\":\"x\",\"to_index\":-1}"}"#,
+            #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"feature.suppress\",\"feature_id\":\"x\"}"}"#,
+        ]
+        for json in invalid {
+            let args = try decode(json)
+            #expect(throws: FloeError.self) { try tool.validate(args) }
+        }
+    }
+
     @Test("capture returns a real image artifact bound to revision/change count")
     func captureReturnsArtifact() async throws {
         let host = FakeCadHost()
@@ -1759,5 +1881,114 @@ struct CadNativeEditToolTests {
             let args = try decode(json)
             #expect(throws: FloeError.self) { try tool.validate(args) }
         }
+    }
+
+    // MARK: Animation
+
+    func makeLegacyContext() -> ToolContext {
+        ToolContext(runID: UUID(), toolCallID: nil, scope: .local,
+                    workspaceRootURL: URL(fileURLWithPath: "/tmp/workspace"),
+                    cancellation: CancellationToken(), environmentID: "env-1",
+                    conversationID: nil)
+    }
+
+    @Test("animation list and authored edits route through the animation kind")
+    func animationRoutes() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"clip_count":1,"clips":[]}"#)
+        let tool = CadDocumentTool(host: host)
+        let output = try await execute(
+            tool,
+            #"{"action":"animation","path":"part.floecad","revision":4,"payload":"{\"action\":\"list\"}"}"#,
+            context: makeContext())
+        #expect(output.summary.contains("cad.document animation"))
+        let requests = await host.threeDRequests
+        #expect(requests.count == 1)
+        let request = try #require(
+            try JSONSerialization.jsonObject(with: Data(requests[0].utf8)) as? [String: Any])
+        #expect(request["kind"] as? String == "animation")
+        #expect((request["payload"] as? [String: Any])?["action"] as? String == "list")
+        #expect((request["revision"] as? NSNumber)?.intValue == 4)
+    }
+
+    @Test("animation unknown action is refused before the host")
+    func animationUnknownActionRefused() throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        let args = try decode(
+            #"{"action":"animation","path":"part.floecad","payload":"{\"action\":\"explodeAll\"}"}"#)
+        #expect(throws: FloeError.self) { try tool.validate(args) }
+    }
+
+    @Test("animation capture returns the actual host frame artifact")
+    func animationCapture() async throws {
+        let host = FakeCadHost()
+        let clipID = UUID()
+        let tool = CadDocumentTool(host: host)
+        let context = makeContext()
+        let output = try await execute(
+            tool,
+            #"{"action":"animation","path":"part.floecad","payload":"{\"action\":\"capture\",\"clip_id\":\"\#(clipID.uuidString)\",\"frame\":30,\"fps\":30,\"width\":320,\"height\":240,\"format\":\"png\"}"}"#,
+            context: context)
+        #expect(output.summary.contains("animation.capture"))
+        #expect(output.summary.contains("presentation"))
+        let requests = await host.animationCaptureRequests
+        #expect(requests.count == 1)
+        #expect(requests[0].clipID == clipID)
+        #expect(requests[0].frame == 30)
+        #expect(output.artifacts.count == 1)
+        #expect(output.artifacts[0].mimeType == "image/png")
+    }
+
+    @Test("animation export validates the MP4 target and returns the host receipt")
+    func animationExport() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        let output = try await execute(
+            tool,
+            #"{"action":"animation","path":"part.floecad","output":"part.animation.mp4","payload":"{\"action\":\"export\",\"width\":640,\"height\":360,\"fps\":30,\"codec\":\"h264\"}"}"#,
+            context: makeLegacyContext())
+        #expect(output.summary.contains("animation.export"))
+        let taskID = await host.animationExportTask
+        #expect(output.summary.contains(taskID.uuidString))
+        let requests = await host.animationExportRequests
+        #expect(requests.count == 1)
+        #expect(requests[0].0 == "part.animation.mp4")
+        #expect(requests[0].1.width == 640)
+        #expect(requests[0].1.height == 360)
+    }
+
+    @Test("temporary chat refuses animation edits and export but allows a timeline read")
+    func animationTemporaryPolicy() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        var context = makeContext()
+        context.temporaryReadOnly = true
+        for json in [
+            #"{"action":"animation","path":"part.floecad","payload":"{\"action\":\"createClip\"}"}"#,
+            #"{"action":"animation","path":"part.floecad","output":"part.animation.mp4","payload":"{\"action\":\"export\"}"}"#,
+        ] {
+            let args = try decode(json)
+            try tool.validate(args)
+            do {
+                _ = try await tool.execute(args, context: context)
+                Issue.record("temporary chat must refuse animation write/export")
+            } catch {
+                // expected
+            }
+        }
+        let read = try decode(
+            #"{"action":"animation","path":"part.floecad","payload":"{\"action\":\"list\"}"}"#)
+        try tool.validate(read)
+        _ = try await tool.execute(read, context: context)
+    }
+
+    @Test("schema advertises the complete animation vocabulary")
+    func animationSchema() throws {
+        let schema = CadDocumentTool.parametersJSON
+        #expect(schema.contains(#""animation""#))
+        for action in CadNativeEditActions.animation {
+            #expect(schema.contains(action), "animation action \(action) must be advertised")
+        }
+        #expect(schema.contains("verified MP4"))
     }
 }

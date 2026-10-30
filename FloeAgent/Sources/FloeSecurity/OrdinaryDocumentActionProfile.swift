@@ -54,10 +54,9 @@
 //   `three_d_measure` are host read/query calls (the native `read` action is
 //   literally the bridge's `snapshot`); `preview` loads a stored proposal;
 //   `propose`/`three_d_propose` persist a revision-bound proposal.
-//   `cancel` (task-state mutation) and `assembly`/`drawing` (payload-dependent
-//   mutation — the host refuses mutating payloads with `proposal_required`)
-//   are NOT listed here and keep the task's existing policy, as do all write
-//   actions.
+//   Known assembly/drawing read payloads (including transient exploded
+//   preview/reset) are classified below; persistent service mutations use
+//   propose/apply. `cancel`, unknown payloads and writes remain unlisted.
 // - `FloeExecution/Compatibility/SVGDocumentTool.swift`: `operation=inspect`
 //   reads and reports the SVG source; `operation=edit` writes a new SVG and
 //   stays typed by the write contract.
@@ -106,14 +105,39 @@ public enum OrdinaryDocumentActionProfile {
             return mediaProjectActions[actionValue("action", in: arguments) ?? ""]
         case "cad.document":
             let action = actionValue("action", in: arguments) ?? ""
-            if action == "material" || action == "parameters" {
+            if action == "material" || action == "parameters" || action == "animation" {
                 guard let payload = cadPayload(in: arguments),
                       let operation = payload["action"] as? String else { return nil }
+                if action == "animation" {
+                    // Timeline reads and a single-frame capture write no
+                    // original bytes or draft state. Authored animation edits
+                    // and MP4 export stay typed by the write-target contract
+                    // (ordinary 3D edits are no-review; external output keeps
+                    // its existing boundary).
+                    return ["list", "query", "evaluate", "capture"].contains(operation)
+                        ? .readOnly : nil
+                }
                 if action == "parameters" { return operation == "list" ? .readOnly : nil }
                 if ["list", "read", "unresolved", "libraryList"].contains(operation) { return .readOnly }
                 // Export to the personal library actually writes shared state.
                 if operation == "libraryExport", payload["global"] as? Bool != true { return .readOnly }
                 return nil
+            }
+            if action == "three_d_assembly" || action == "three_d_drawing" {
+                guard let payload = cadPayload(in: arguments),
+                      let raw = (payload["action"] as? String) ?? (payload["op"] as? String) else { return nil }
+                let expectedKind = action == "three_d_assembly" ? "assembly" : "drawing"
+                let parts = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .split(separator: ".", omittingEmptySubsequences: false)
+                guard parts.count == 1 || (parts.count == 2 && parts[0] == expectedKind) else { return nil }
+                let operation = String(parts.last ?? "")
+                let reads: Set<String> = action == "three_d_assembly"
+                    ? ["report", "instances", "dof", "interference", "reference", "referenceCandidates",
+                       "explodedViews", "previewExplodedView", "resetExplodedView"]
+                    : ["pages", "project", "dimensions", "export"]
+                // Preview/reset affect only display state, not the stored CAD
+                // model. Persistent service changes still use propose/apply.
+                return reads.contains(operation) ? .readOnly : nil
             }
             return cadDocumentActions[action]
         case "image.svgDocument":
@@ -140,8 +164,8 @@ public enum OrdinaryDocumentActionProfile {
         "propose": .draftOnly
     ]
 
-    /// `cad.document` (see the audit note above). `cancel`, `assembly`,
-    /// `drawing` and every write action are intentionally unlisted.
+    /// Top-level CAD reads/drafts. Known service payload reads are resolved
+    /// separately above; cancel, unknown payloads and writes are unlisted.
     static let cadDocumentActions: [String: OrdinaryDocumentActionRole] = [
         "capabilities": .readOnly,
         "read": .readOnly,

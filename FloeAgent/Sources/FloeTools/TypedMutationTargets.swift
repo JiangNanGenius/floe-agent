@@ -99,6 +99,9 @@ public enum TypedOutputDerivation: Sendable, Hashable {
     /// drawing and `<dir>/<base|"part">.export.step` beside the package for a
     /// native `.floecad` document (the tool's documented defaults).
     case cadExportSibling(sourceArgument: String)
+    /// cad.document animation export: `<dir>/<base|"part">.animation.mp4`
+    /// beside the source package (the tool's documented default).
+    case cadAnimationSibling(sourceArgument: String)
     /// media.project export: the REAL consumer output
     /// `Workbench/Exports/<file_name>.<ext>` under the project's recorded
     /// workspace (== the run workspace). `file_name` is a validated BASENAME
@@ -243,12 +246,32 @@ public enum TypedMutationContract {
                 return [.init(argument: "path", role: .outputWrite, whenAbsent: .required)]
             case "apply", "save", "three_d_apply", "import":
                 return [.init(argument: "path", role: .sourceWrite, whenAbsent: .required)]
-            case "material", "parameters":
+            case "material", "parameters", "animation":
                 guard let raw = arguments["payload"] as? String,
                       let payload = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
                       let operation = payload["action"] as? String else { return [] }
+                if action == "animation" {
+                    // Reads and single-frame capture write no workspace target;
+                    // export pins its real MP4 output; authored edits rewrite
+                    // the .floecad package exactly like parameters.
+                    if ["list", "query", "evaluate", "capture"].contains(operation) {
+                        return []
+                    }
+                    if operation == "export" {
+                        return [.init(argument: "output", role: .outputWrite,
+                                      whenAbsent: .derive(.cadAnimationSibling(sourceArgument: "path")))]
+                    }
+                    let mutations: Set<String> = [
+                        "createClip", "updateClip", "deleteClip", "setActiveClip",
+                        "addTrack", "deleteTrack", "setKeyframe", "setCameraKeyframe",
+                        "setPartKeyframe", "deleteKeyframe", "preset", "undo", "redo",
+                    ]
+                    guard mutations.contains(operation) else { return [] }
+                    return [.init(argument: "path", role: .sourceWrite, whenAbsent: .required)]
+                }
                 if action == "parameters" {
-                    guard ["update", "updateSketchEntity", "undo", "redo"].contains(operation) else { return [] }
+                    guard ["update", "updateSketchEntity", "setSketchDimension", "removeSketchDimension",
+                           "feature.suppress", "feature.delete", "feature.move", "undo", "redo"].contains(operation) else { return [] }
                 } else if operation == "libraryExport", payload["global"] as? Bool == true {
                     // Keep the CAD document's canonical first key, and also
                     // pin the actual shared write. Missing trusted store
@@ -536,6 +559,17 @@ public enum TypedMutationContract {
             let directory = ns.deletingLastPathComponent
             let file = "\(base.isEmpty ? (isNative ? "part" : "drawing") : base).export."
                 + (isNative ? "step" : "dxf")
+            let relative = directory.isEmpty ? file : "\(directory)/\(file)"
+            return canonicalPath(relative, root: workspaceRootURL, fileManager: fileManager)
+
+        case .cadAnimationSibling(let sourceArgument):
+            guard let source = stringArgument(sourceArgument, in: arguments)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !source.isEmpty,
+                source.utf8.count <= 4096 else { return nil }
+            let ns = source as NSString
+            let base = (ns.lastPathComponent as NSString).deletingPathExtension
+            let directory = ns.deletingLastPathComponent
+            let file = "\(base.isEmpty ? "part" : base).animation.mp4"
             let relative = directory.isEmpty ? file : "\(directory)/\(file)"
             return canonicalPath(relative, root: workspaceRootURL, fileManager: fileManager)
 

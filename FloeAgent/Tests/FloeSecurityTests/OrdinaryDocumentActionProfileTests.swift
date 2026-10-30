@@ -95,6 +95,17 @@ struct OrdinaryDocumentActionProfileTests {
         for operation in ["create", "update", "remove", "apply", "applyFaces", "mapping", "textures", "libraryImport", "undo", "redo", "unknown"] {
             #expect(try payloadRole("material", operation) == nil)
         }
+        for operation in ["report", "instances", "dof", "interference", "reference", "referenceCandidates", "explodedViews", "previewExplodedView", "resetExplodedView"] {
+            #expect(try payloadRole("three_d_assembly", operation) == .readOnly)
+        }
+        for operation in ["pages", "project", "dimensions", "export"] {
+            #expect(try payloadRole("three_d_drawing", operation) == .readOnly)
+        }
+        #expect(try payloadRole("three_d_assembly", "addConstraint") == nil)
+        #expect(try payloadRole("three_d_drawing", "addAnnotation") == nil)
+        #expect(try payloadRole("three_d_assembly", "unknown") == nil)
+        #expect(role("cad.document", #"{"action":"three_d_assembly","payload":"{\"op\":\"assembly.reference\"}"}"#) == .readOnly)
+        #expect(role("cad.document", #"{"action":"three_d_assembly","payload":"{\"op\":\"drawing.pages\"}"}"#) == nil)
         #expect(role("cad.document", #"{"action":"capture","path":"part.floecad"}"#) == .readOnly)
         #expect(role("cad.document", #"{"action":"material","payload":"broken","readOnly":true}"#) == nil)
     }

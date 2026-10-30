@@ -25,6 +25,10 @@ import FloeCAD
 struct FloeCADHostChrome: ViewModifier {
     let document: FloeCADDocument
     var canvasActions: CADCanvasActions? = nil
+    /// Optional host observer for the live CAD selection (bodies/faces/edges/
+    /// sketch/assembly instances + trusted document revision). Nil keeps the
+    /// existing fullscreen/FilePreview hosts unchanged.
+    var onSelectionContextChange: (@MainActor (CADSelectionContext) -> Void)? = nil
 
     @State private var saving = false
     @State private var saveOutcome: String?
@@ -63,7 +67,10 @@ struct FloeCADHostChrome: ViewModifier {
                     // The cover's editor is a re-presentation of the SAME live
                     // session: its dismissal returns to the host editor, so it
                     // never performs a close-time flush either.
-                    FloeCADWorkbenchView(document: document, canvasActions: canvasActions)
+                    FloeCADWorkbenchView(
+                        document: document,
+                        canvasActions: canvasActions,
+                        onSelectionContextChange: onSelectionContextChange)
                         .environment(\.cadWorkbenchTransientlyCovered, true)
                         .navigationTitle(document.name)
                         .navigationBarTitleDisplayMode(.inline)

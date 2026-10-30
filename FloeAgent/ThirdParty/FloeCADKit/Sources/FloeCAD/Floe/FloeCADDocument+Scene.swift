@@ -133,9 +133,24 @@ extension FloeCADDocument {
     public static var sceneSnapshotSchemaVersion: Int { CADSceneSnapshot.currentSchemaVersion }
 
     /// Bounded public summary of the live scene (no mesh/image bytes) for the
-    /// native `snapshot`/`query kind=scene` replies.
+    /// native `snapshot`/`query kind=scene` replies. A previewed exploded view
+    /// is reported explicitly so a caller can tell transient display offsets
+    /// from the saved assembly placements.
     public func sceneSummaryJSON() -> [String: Any] {
-        sceneSnapshot().summaryJSON
+        var summary = sceneSnapshot().summaryJSON
+        guard let preview = CADExplodedViewPreview.current(for: session) else {
+            return summary
+        }
+        let assembly = (try? CADAssembly.decode(from: session.document.assemblyData))
+            ?? CADAssembly()
+        guard let viewID = preview.resolvedViewID(in: assembly) else { return summary }
+        summary["exploded_preview"] = [
+            "id": viewID.uuidString,
+            "name": preview.viewName ?? assembly.explodedView(viewID)?.name ?? "",
+            "transient": true,
+            "base_transforms_unchanged": true,
+        ]
+        return summary
     }
     /// The current appearance (persisted three-environment settings, or the
     /// mapped legacy lighting/background, or the default).
@@ -166,7 +181,14 @@ extension FloeCADDocument {
 
     /// Immutable value snapshot from the live document. CoW mesh arrays make
     /// this cheap until a mesh actually changes.
-    func sceneSnapshot() -> CADSceneSnapshot {
+    ///
+    /// `includeExplodedPreview` defaults to true so a live viewport/presentation
+    /// shows the document's transient exploded preview exactly like the
+    /// engineering viewport. Offscreen artifact producers (animation frame
+    /// export, GLB-style captures) must pass false: a display-only preview must
+    /// never be baked into an exported baseline. The saved assembly data is
+    /// never modified either way.
+    func sceneSnapshot(includeExplodedPreview: Bool = true) -> CADSceneSnapshot {
         var bodies: [CADSceneBodyResource] = []
         var unresolved: [CADSceneUnresolvedFaceBinding] = []
         var images: [String: CADSceneImageResource] = [:]
@@ -283,6 +305,8 @@ extension FloeCADDocument {
         // source mesh/material snapshot, with independent entity identity and
         // composed world placement. A hidden definition may still have a
         // visible instance, so copy it before filtering hidden renderables.
+        let explodedPreview = includeExplodedPreview
+            ? CADExplodedViewPreview.current(for: session) : nil
         if let assembly = try? CADAssembly.decode(from: session.document.assemblyData) {
             let definitions = Dictionary(uniqueKeysWithValues: bodies.map { ($0.id, $0) })
             let sourceBodies = Dictionary(uniqueKeysWithValues: session.document.bodies.map { ($0.id.raw, $0) })
@@ -290,8 +314,15 @@ extension FloeCADDocument {
             for instance in assembly.instances where !instance.isHidden {
                 let sourceID = instance.copiedBodyID ?? instance.bodyID
                 guard var placed = definitions[sourceID], let source = sourceBodies[sourceID],
-                      instance.transform.isPlaceable, placedIDs.insert(instance.id).inserted else { continue }
-                let m = instance.transform.placement3D().composed(onto: source.transform).matrix
+                      placedIDs.insert(instance.id).inserted else { continue }
+                // The transient preview adds a saved view's offset to the BASE
+                // placement read from the document; the stored instance
+                // transform is never rewritten and a removed/undone view
+                // resolves to nil (base placement).
+                let placement = explodedPreview?.transform(for: instance.id, in: assembly)
+                    ?? instance.transform
+                guard placement.isPlaceable else { continue }
+                let m = placement.placement3D().composed(onto: source.transform).matrix
                 placed.id = instance.id
                 placed.sourceBodyID = sourceID
                 placed.name = instance.name

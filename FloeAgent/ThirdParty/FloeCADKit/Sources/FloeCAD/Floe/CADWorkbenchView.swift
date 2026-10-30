@@ -16,18 +16,30 @@ import SwiftUI
 public struct FloeCADWorkbenchView: View {
     private let document: FloeCADDocument
     private let canvasActions: CADCanvasActions?
+    /// Optional host observer for the live selection. Nil keeps the workbench
+    /// fully standalone (the editor simply publishes nothing).
+    private let onSelectionContextChange: (@MainActor (CADSelectionContext) -> Void)?
 
-    public init(document: FloeCADDocument, canvasActions: CADCanvasActions? = nil) {
+    public init(
+        document: FloeCADDocument,
+        canvasActions: CADCanvasActions? = nil,
+        onSelectionContextChange: (@MainActor (CADSelectionContext) -> Void)? = nil
+    ) {
         self.document = document
         self.canvasActions = canvasActions
+        self.onSelectionContextChange = onSelectionContextChange
     }
 
     public var body: some View {
-        #if canImport(RealityKit) && canImport(UIKit)
-        CADPresentationWorkbenchView(document: document, canvasActions: canvasActions)
-        #else
-        FloeCADEditorView(document: document, canvasActions: canvasActions)
-        #endif
+        Group {
+            #if canImport(RealityKit) && canImport(UIKit)
+            CADPresentationWorkbenchView(document: document, canvasActions: canvasActions)
+            #else
+            FloeCADEditorView(document: document, canvasActions: canvasActions)
+            #endif
+        }
+        .environment(\.cadSelectionObserver,
+                     onSelectionContextChange.map { CADSelectionObserverBox(handler: $0) })
     }
 }
 

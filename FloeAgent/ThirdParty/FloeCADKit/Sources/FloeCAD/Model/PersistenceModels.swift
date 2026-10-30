@@ -75,6 +75,11 @@ final class Project {
     /// never change an existing appearance.
     var materialsData: Data? = nil
 
+    /// Optional keyframe animation (`CADAnimationDocument`) as additive JSON.
+    /// Absent on every document that never animated; the package schema stays
+    /// version 1 because the column is optional and older builds ignore it.
+    var animationData: Data? = nil
+
     init(name: String) {
         self.name = name
         self.createdAt = Date()

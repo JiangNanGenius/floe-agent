@@ -1049,3 +1049,22 @@ script 6 / mesh 10），请求必须显式指定操作，缺 action/未知 op/�
 PDF/SVG/DXF 导出需要 drawings 查询返回的 `page_id`。本线已执行：Swift 6 严格并发模块类型
 检查 0 错误、逻辑 harness 74/74、独立 Python 源校验 66/66；整 App、模拟器与新 App 闭环
 用例属集成门槛，尚未执行。以上是契约校验，不代表真实几何验收或第三方图纸兼容。
+
+
+## Native 3D review routing — 2026-10-30 source update
+
+Ordinary native 3D edits use the task's existing authority without a separate
+human or model review. This includes a resolved `.floecad` kept in a repository.
+The transaction's propose/apply steps, file ownership, revision/CAS checks,
+undo and verified saves remain in place; an internal proposal is not a request
+to open a confirmation sheet.
+
+`DeterministicLocalApprovalPolicy.isOrdinaryNativeCADWork` supplies the same
+review routing to Human, Automatic and Model policies. The runtime carries its
+resolved native document identity in `TrustedExecutionContext.nativeCADDocumentPath`,
+including verified Canvas staging. Known assembly/drawing reads and transient
+exploded-view preview/reset are classified as reads; persistent changes continue
+through propose/apply. File exports retain their normal destination policy.
+
+三维文档内编辑无需额外人工或模型审核，仍复用现有任务授权、文件归属、修订、撤销及保存保护。
+本节记录源码规则；整批编译、行为与界面验证尚未完成，不替代上文各阶段的交付记录。

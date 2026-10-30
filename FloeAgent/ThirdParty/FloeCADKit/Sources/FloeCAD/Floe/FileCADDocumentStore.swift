@@ -176,6 +176,9 @@ struct CADDocumentRecord: Codable, Sendable {
     var sceneSettings: Data?
     /// Custom-material library (`CADMaterialLibrary`). Additive optional key.
     var materials: Data?
+    /// Keyframe animation (`CADAnimationDocument`). Additive optional key;
+    /// absent on every document that never animated. Older builds ignore it.
+    var animation: Data?
 }
 
 /// Everything a commit needs, in a `Sendable` value: cheap to build on the
@@ -334,6 +337,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         project.scriptsData = document.scripts
         project.sceneSettingsData = document.sceneSettings
         project.materialsData = document.materials
+        project.animationData = document.animation
         if manifest.thumbnailSHA256 != nil {
             project.thumbnail = try? Data(contentsOf: root.appendingPathComponent("blobs/thumbnail.img"))
         }
@@ -426,7 +430,8 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             drawings: project.drawingsData,
             scripts: project.scriptsData,
             sceneSettings: project.sceneSettingsData,
-            materials: project.materialsData
+            materials: project.materialsData,
+            animation: project.animationData
         )
         var blobs: [String: Data] = [:]
 

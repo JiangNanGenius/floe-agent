@@ -126,42 +126,62 @@ public extension FloeCADDocument {
                         row["a"] = [a.x, a.y]
                         row["b"] = [b.x, b.y]
                         row["lengthMM"] = simd_length(b - a)
+                        row["editable"] = true
+                        row["update_action"] = "updateSketchEntity"
+                        row["update_fields"] = ["a", "b"]
                     case let .rect(_, low, high):
                         row["kind"] = "rect"
                         row["min"] = [low.x, low.y]
                         row["max"] = [high.x, high.y]
                         row["widthMM"] = abs(high.x - low.x)
                         row["heightMM"] = abs(high.y - low.y)
+                        row["editable"] = true
+                        row["update_action"] = "updateSketchEntity"
+                        row["update_fields"] = ["min", "max", "center", "width", "height"]
                     case let .circle(_, center, radius):
                         row["kind"] = "circle"
                         row["center"] = [center.x, center.y]
                         row["radius"] = radius
                         row["diameterMM"] = radius * 2
                         row["parameter"] = "radius"
+                        row["editable"] = true
                         row["update_action"] = "updateSketchEntity"
+                        row["update_fields"] = ["center", "radius", "diameter"]
                     case let .arc(_, center, radius, startAngle, endAngle):
                         row["kind"] = "arc"
                         row["center"] = [center.x, center.y]
                         row["radius"] = radius
                         row["startAngleRadians"] = startAngle
                         row["endAngleRadians"] = endAngle
+                        // Arc center/radius/sweep editing is a later tranche;
+                        // reporting it editable would be a false capability.
+                        row["editable"] = false
                     case let .ellipse(_, center, radiusX, radiusY, rotation):
                         row["kind"] = "ellipse"
                         row["center"] = [center.x, center.y]
                         row["radiusX"] = radiusX
                         row["radiusY"] = radiusY
                         row["rotationRadians"] = rotation
+                        row["editable"] = false
                     case let .polygon(_, center, radius, sides, rotation):
                         row["kind"] = "polygon"
                         row["center"] = [center.x, center.y]
                         row["radius"] = radius
                         row["sides"] = sides
                         row["rotationRadians"] = rotation
+                        row["editable"] = false
                     case let .spline(_, points, closed):
                         row["kind"] = "spline"
                         row["closed"] = closed
                         row["pointCount"] = points.count
+                        row["editable"] = false
                     }
+                    row["constraint_count"] = sketch.constraints.filter {
+                        $0.refs.contains(where: { $0.entityID == entity.id })
+                    }.count
+                    row["dimension_ids"] = sketch.dimensions.filter {
+                        $0.refs.contains(where: { $0.entityID == entity.id })
+                    }.map { $0.id.uuidString }
                     return row
                 }
                 var row: [String: Any] = [
@@ -192,12 +212,18 @@ public extension FloeCADDocument {
                        "revision": revision, "change_count": session.changeCount])
 
         case "constraints":
+            // Only rows with a real typed mutation carry `editable: true`:
+            // the geometric constraints are read-only here, while a driving
+            // dimension can be changed/removed through the parameter actions
+            // this same service advertises.
             var rows: [[String: Any]] = []
             for sketch in document.sketches {
                 for constraint in sketch.constraints {
                     var row = Self.encodedObject(constraint) ?? ["kind": String(describing: constraint.kind)]
                     row["sketchID"] = sketch.id.raw.uuidString
                     row["sketchName"] = sketch.name
+                    row["row_kind"] = "constraint"
+                    row["editable"] = false
                     rows.append(row)
                 }
                 for dimension in sketch.dimensions {
@@ -205,10 +231,21 @@ public extension FloeCADDocument {
                     row["sketchID"] = sketch.id.raw.uuidString
                     row["sketchName"] = sketch.name
                     row["isDimension"] = true
+                    row["row_kind"] = "dimension"
+                    row["editable"] = true
+                    row["update_action"] = "setSketchDimension"
+                    row["remove_action"] = "removeSketchDimension"
+                    row["unit"] = dimension.kind == .angle ? "deg" : "mm"
+                    row["display_value"] = dimension.kind == .angle
+                        ? dimension.value * 180 / .pi
+                        : dimension.value
+                    row["stored_unit"] = dimension.kind == .angle ? "rad" : "mm"
                     rows.append(row)
                 }
             }
-            return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows)])
+            return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows),
+                       "editable_count": rows.filter { $0["editable"] as? Bool == true }.count,
+                       "revision": revision, "change_count": session.changeCount])
 
         case "features":
             let rows: [[String: Any]] = document.features.nodes.map { node in

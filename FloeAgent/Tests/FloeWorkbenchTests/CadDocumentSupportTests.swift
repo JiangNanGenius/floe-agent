@@ -188,16 +188,27 @@ struct CadServiceOperationCatalogTests {
     /// router (and the mutate/read split of `CADServiceOperations`). Locked
     /// here; the App-level closure test and the cross-source parity check
     /// re-verify it against the engine.
-    private static let drawingActions = ["standardSheet", "addPage", "updatePage", "removePage",
-                                         "pages", "project", "dimensions", "export"]
-    private static let drawingMutating: Set<String> = ["standardSheet", "addPage", "updatePage", "removePage"]
+    private static let drawingActions = ["standardSheet", "assemblySheet", "addPage", "updatePage",
+                                         "removePage", "setBOM", "addBalloon", "updateBalloon",
+                                         "removeBalloon", "addDimension", "updateDimension",
+                                         "removeDimension", "addAnnotation", "updateAnnotation",
+                                         "removeAnnotation", "pages", "project", "dimensions", "export"]
+    private static let drawingMutating: Set<String> = ["standardSheet", "assemblySheet", "addPage", "updatePage",
+                                                       "removePage", "setBOM", "addBalloon", "updateBalloon",
+                                                       "removeBalloon", "addDimension", "updateDimension",
+                                                       "removeDimension", "addAnnotation", "updateAnnotation",
+                                                       "removeAnnotation"]
     private static let assemblyActions = ["addInstance", "addConstraint", "removeInstance",
                                           "setTransform", "setVisible", "removeConstraint",
                                           "suppressConstraint", "solve", "sourceUpdate", "clear",
+                                          "reference", "referenceCandidates", "explodedViews",
+                                          "addExplodedView", "updateExplodedView", "removeExplodedView",
+                                          "previewExplodedView", "resetExplodedView",
                                           "report", "instances", "dof", "interference"]
     private static let assemblyMutating: Set<String> = ["addInstance", "addConstraint", "removeInstance",
                                                         "setTransform", "setVisible", "removeConstraint",
-                                                        "suppressConstraint", "solve", "sourceUpdate", "clear"]
+                                                        "suppressConstraint", "solve", "sourceUpdate", "clear",
+                                                        "addExplodedView", "updateExplodedView", "removeExplodedView"]
 
     @Test("table mirrors the engine routers and separates mutating from read-only")
     func tableIntegrity() throws {
@@ -229,6 +240,114 @@ struct CadServiceOperationCatalogTests {
         // The two reported model guesses are NOT aliases; they are refused.
         #expect(CadServiceOperationCatalog.normalizedAction(kind: "drawing", raw: "createPage") == nil)
         #expect(CadServiceOperationCatalog.suggestion(for: "drawing.createPage") == "addPage")
+    }
+
+    @Test("assembly and drawing extensions expose the exact engine argument contract")
+    func extensionArgumentContracts() throws {
+        // Exact argument names per action, taken from the real routers
+        // (`CADAssemblyService` / `CADDrawingService`). A renamed or invented
+        // field on either side fails here instead of becoming a runtime refusal.
+        let expectedAssembly: [String: Set<String>] = [
+            "reference": ["instanceID", "useSelection", "face", "edge", "axisPreset"],
+            "referenceCandidates": ["instanceID", "scope"],
+            "explodedViews": [],
+            "addExplodedView": ["name", "direction", "distanceMM", "entries", "instanceIDs"],
+            "updateExplodedView": ["id", "name", "direction", "distanceMM", "entries", "instanceIDs"],
+            "removeExplodedView": ["id"],
+            "previewExplodedView": ["id"],
+            "resetExplodedView": [],
+            "addConstraint": ["kind", "instanceA", "instanceB",
+                              "referenceA", "referenceB", "faceA", "edgeA", "faceB", "edgeB",
+                              "pointA", "pointB", "directionA", "directionB", "value"],
+        ]
+        for (action, names) in expectedAssembly {
+            let operation = try #require(CadServiceOperationCatalog.operation(kind: "assembly", action: action),
+                                         "assembly.\(action) must be in the catalog")
+            #expect(Set(operation.arguments.map(\.name)) == names,
+                    "assembly.\(action) argument drift")
+        }
+        let expectedDrawing: [String: Set<String>] = [
+            "assemblySheet": ["bodyIDs", "title", "explodedViewID", "scale", "paper", "replace"],
+            "setBOM": ["pageID", "entries", "showBOM"],
+            "addBalloon": ["pageID", "itemNumber", "bomEntryID", "instanceID", "anchor", "target", "text"],
+            "updateBalloon": ["pageID", "balloonID", "anchor", "target", "text", "itemNumber", "instanceID"],
+            "removeBalloon": ["pageID", "balloonID"],
+            "addDimension": ["pageID", "kind", "instanceID", "drawingPoints", "modelPoints",
+                             "textPosition", "text"],
+            "updateDimension": ["pageID", "dimensionID", "textPosition", "text"],
+            "removeDimension": ["pageID", "dimensionID"],
+            "addAnnotation": ["pageID", "text", "position", "heightMM", "instanceID"],
+            "updateAnnotation": ["pageID", "annotationID", "text", "position", "heightMM"],
+            "removeAnnotation": ["pageID", "annotationID"],
+        ]
+        for (action, names) in expectedDrawing {
+            let operation = try #require(CadServiceOperationCatalog.operation(kind: "drawing", action: action),
+                                         "drawing.\(action) must be in the catalog")
+            #expect(Set(operation.arguments.map(\.name)) == names,
+                    "drawing.\(action) argument drift")
+        }
+
+        // Required arguments are the engine's hard requirements, not the
+        // optional page/metadata fields.
+        let requiredAssembly: [String: Set<String>] = [
+            "reference": ["instanceID"],
+            "referenceCandidates": ["instanceID"],
+            "addExplodedView": ["name"],
+            "updateExplodedView": ["id"],
+            "removeExplodedView": ["id"],
+            "previewExplodedView": ["id"],
+        ]
+        for (action, names) in requiredAssembly {
+            let operation = try #require(CadServiceOperationCatalog.operation(kind: "assembly", action: action))
+            #expect(Set(operation.arguments.filter(\.required).map(\.name)) == names,
+                    "assembly.\(action) required-argument drift")
+        }
+        let requiredDrawing: [String: Set<String>] = [
+            "assemblySheet": [],
+            "setBOM": ["pageID"],
+            "addBalloon": ["pageID"],
+            "updateBalloon": ["pageID", "balloonID"],
+            "removeBalloon": ["pageID", "balloonID"],
+            "addDimension": ["pageID", "kind"],
+            "updateDimension": ["pageID", "dimensionID"],
+            "removeDimension": ["pageID", "dimensionID"],
+            "addAnnotation": ["pageID", "text", "position"],
+            "updateAnnotation": ["pageID", "annotationID"],
+            "removeAnnotation": ["pageID", "annotationID"],
+        ]
+        for (action, names) in requiredDrawing {
+            let operation = try #require(CadServiceOperationCatalog.operation(kind: "drawing", action: action))
+            #expect(Set(operation.arguments.filter(\.required).map(\.name)) == names,
+                    "drawing.\(action) required-argument drift")
+        }
+
+        // Preview/reset/reference reads take effect immediately and write no
+        // document state, so they stay direct-callable. Every persistent
+        // assembly-sheet/BOM/annotation route must require propose → apply.
+        for action in ["reference", "referenceCandidates", "explodedViews",
+                       "previewExplodedView", "resetExplodedView"] {
+            #expect(CadServiceOperationCatalog.isMutating(kind: "assembly", action: action) == false,
+                    "assembly.\(action) must stay a direct read/transient")
+        }
+        for action in ["addExplodedView", "updateExplodedView", "removeExplodedView"] {
+            #expect(CadServiceOperationCatalog.isMutating(kind: "assembly", action: action),
+                    "assembly.\(action) writes assemblyData")
+        }
+        for action in ["assemblySheet", "setBOM", "addBalloon", "updateBalloon", "removeBalloon",
+                       "addDimension", "updateDimension", "removeDimension",
+                       "addAnnotation", "updateAnnotation", "removeAnnotation"] {
+            #expect(CadServiceOperationCatalog.isMutating(kind: "drawing", action: action),
+                    "drawing.\(action) persists the drawing set")
+        }
+
+        // Page metadata is real buildPage input, so it must be documented on
+        // both addPage and updatePage.
+        for action in ["addPage", "updatePage"] {
+            let operation = try #require(CadServiceOperationCatalog.operation(kind: "drawing", action: action))
+            let names = Set(operation.arguments.map(\.name))
+            #expect(names.isSuperset(of: ["assemblyMode", "explodedViewID", "explodedViewName", "showBOM"]),
+                    "drawing.\(action) must document the assembly-aware page metadata")
+        }
     }
 
     @Test("resolution accepts the canonical action and the documented legacy op forms")
@@ -323,7 +442,7 @@ struct CadServiceOperationCatalogTests {
         let summary = try CadServiceOperationCatalog.capabilitiesJSON()
         let kinds = try #require(summary["kinds"] as? [String: Any])
         #expect(kinds.count == 4)
-        #expect(kinds["drawing"] as? Int == 8, "the compact summary carries counts only")
+        #expect(kinds["drawing"] as? Int == 19, "the compact summary carries counts only")
         #expect(summary["detail"] == nil)
         #expect((summary["detail_hint"] as? String)?.contains("kind=") == true)
 
@@ -336,7 +455,7 @@ struct CadServiceOperationCatalogTests {
         let page = try CadServiceOperationCatalog.capabilitiesJSON(detailKind: "drawing",
                                                                    offset: 0, limit: 3)
         let detail = try #require(page["detail"] as? [String: Any])
-        #expect(detail["total"] as? Int == 8)
+        #expect(detail["total"] as? Int == 19)
         #expect(detail["next_offset"] as? Int == 3)
         let operations = try #require(detail["operations"] as? [[String: Any]])
         #expect(operations.count == 3)
@@ -346,10 +465,10 @@ struct CadServiceOperationCatalogTests {
         #expect((first["examples"] as? [String])?.isEmpty == false)
 
         let last = try CadServiceOperationCatalog.capabilitiesJSON(detailKind: "drawing",
-                                                                   offset: 6, limit: 3)
+                                                                   offset: 18, limit: 3)
         let lastDetail = try #require(last["detail"] as? [String: Any])
         #expect(lastDetail["next_offset"] is NSNull)
-        #expect((lastDetail["operations"] as? [[String: Any]])?.count == 2)
+        #expect((lastDetail["operations"] as? [[String: Any]])?.count == 1)
 
         do {
             _ = try CadServiceOperationCatalog.capabilitiesJSON(detailKind: "unknown")

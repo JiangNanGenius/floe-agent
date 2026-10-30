@@ -1644,6 +1644,53 @@ extension NativeCADDocumentCreationTests {
         XCTAssertGreaterThanOrEqual(cadEntries.count, 4)
         XCTAssertTrue(cadEntries.allSatisfy { $0.policyUsed == "human" }, "\(cadEntries.map(\.policyUsed))")
     }
+
+    // MARK: - Catalog ↔ engine mutation classification
+
+    /// The `cad.document` catalog and the engine's `CADServiceOperations`
+    /// classifier are compiled from different modules but must describe ONE
+    /// document-effect model. Every catalogued action has to agree with the
+    /// engine, and every engine mutation has to be discoverable. The new
+    /// assembly exploded-view and drawing assembly/BOM/annotation routes are
+    /// named explicitly so a rename on either side fails here instead of
+    /// surfacing as a runtime refusal or an unclassified direct write.
+    func testWorkbenchCatalogMutationClassificationMatchesEngine() {
+        for operation in CadServiceOperationCatalog.operations {
+            XCTAssertEqual(
+                operation.mutating,
+                CADServiceOperations.isMutating(kind: operation.kind, action: operation.action),
+                "\(operation.op) mutate classification drifted from CADServiceOperations")
+        }
+        for action in CADServiceOperations.mutatingAssemblyActions {
+            XCTAssertNotNil(CadServiceOperationCatalog.operation(kind: "assembly", action: action),
+                            "assembly.\(action) mutates in the engine but is missing from the catalog")
+        }
+        for action in CADServiceOperations.mutatingDrawingActions {
+            XCTAssertNotNil(CadServiceOperationCatalog.operation(kind: "drawing", action: action),
+                            "drawing.\(action) mutates in the engine but is missing from the catalog")
+        }
+
+        // Transient previews and reference queries are direct reads: they must
+        // never require propose → apply.
+        for action in ["reference", "referenceCandidates", "explodedViews",
+                       "previewExplodedView", "resetExplodedView"] {
+            XCTAssertNotNil(CadServiceOperationCatalog.operation(kind: "assembly", action: action))
+            XCTAssertFalse(CADServiceOperations.isMutating(kind: "assembly", action: action),
+                           "assembly.\(action) is a direct read/transient")
+            XCTAssertFalse(CadServiceOperationCatalog.isMutating(kind: "assembly", action: action))
+        }
+        for action in ["addExplodedView", "updateExplodedView", "removeExplodedView"] {
+            XCTAssertTrue(CADServiceOperations.mutatingAssemblyActions.contains(action))
+            XCTAssertTrue(CadServiceOperationCatalog.isMutating(kind: "assembly", action: action))
+        }
+        for action in ["assemblySheet", "setBOM",
+                       "addBalloon", "updateBalloon", "removeBalloon",
+                       "addDimension", "updateDimension", "removeDimension",
+                       "addAnnotation", "updateAnnotation", "removeAnnotation"] {
+            XCTAssertTrue(CADServiceOperations.mutatingDrawingActions.contains(action))
+            XCTAssertTrue(CadServiceOperationCatalog.isMutating(kind: "drawing", action: action))
+        }
+    }
 }
 
 #endif

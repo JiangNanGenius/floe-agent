@@ -11,6 +11,7 @@ import Foundation
 import FloeCore
 import FloePersistence
 import FloeTools
+import FloeWorkbench
 
 enum DesignToolOutput {
     static func make(_ dictionary: [String: Any], status: Int32 = 0) -> ToolExecutionOutput {
@@ -1386,6 +1387,19 @@ extension DesignToolOutput {
     /// Structured routing failure (nonzero status) instead of a thrown
     /// validation error: the request was well-formed but belongs to the
     /// retained Canvas authority or to a capability that is not connected.
+    /// A native .floecad package is not a byte source. Route freeze/register/
+    /// propose to the canonical cad.document tool instead of letting the byte
+    /// resolver read a package directory and report an opaque verification
+    /// failure. Nil for every non-package target.
+    static func nativeCADRouting(_ target: DesignTarget, action: String) -> ToolExecutionOutput? {
+        guard target.kind == .fileDocument,
+              DesignResolveTargetTool.isNativeCADPackage(target.sourceID) else { return nil }
+        return routingFailure(
+            "design.\(action) works on verified byte sources; a native .floecad package is a "
+                + "directory document. Use cad.document to read/query/propose/apply it.",
+            compatibleTool: "cad.document")
+    }
+
     static func routingFailure(_ reason: String, compatibleTool: String? = nil) -> ToolExecutionOutput {
         var payload: [String: Any] = ["error": reason]
         if let compatibleTool {
@@ -1632,15 +1646,46 @@ private struct DesignResolveTargetTool: AgentTool {
         // Cheap live probe first: it never loads bytes for non-canvas kinds.
         let contains = await dependencies.targets.contains(target, runID: context.runID)
         let exists = await dependencies.targets.exists(target)
-        let currentToken = await dependencies.targets.currentRevisionToken(target, runID: context.runID)
+        // A native package is a directory, not a byte source: resolving it as
+        // bytes is both meaningless and needless work. Only ordinary file
+        // targets carry a byte revision token.
+        let nativePackage = target.kind == .fileDocument
+            && Self.isNativeCADPackage(target.sourceID)
+        let currentToken = nativePackage
+            ? nil
+            : await dependencies.targets.currentRevisionToken(target, runID: context.runID)
+        let liveTaskID = await dependencies.runTask(context.runID)?.uuidString.lowercased()
         guard contains else {
-            return DesignToolOutput.make([
+            var payload: [String: Any] = [
                 "target": DesignToolOutput.target(target),
+                "state": "unavailable",
                 "contains": false,
                 "exists": exists,
                 "currentRevisionToken": currentToken ?? "",
-                "unavailableReason": "the live run context is not authorized for this target or it is outside the permitted containment"
-            ], status: 2)
+                "error": target.kind == .fileDocument
+                    ? "outside_containment" : "not_authorized",
+                "unavailableReason": target.kind == .fileDocument
+                    ? "the run's task does not own this workspace, the path is outside the permitted "
+                        + "workspace/mount, the parent directory is missing/not writable, or the path is "
+                        + "denied by the workspace guard. Nothing was read or created."
+                    : "the live run context is not authorized for this target.",
+                "nextAction": target.kind == .fileDocument
+                    ? "Use the workspace id and relative path returned by the task workspace listing; "
+                        + "for a new native CAD document call cad.document action=create with path."
+                    : "Resolve the target from the originating task.",
+            ]
+            if let liveTaskID { payload["liveTaskID"] = liveTaskID }
+            return DesignToolOutput.make(payload, status: 2)
+        }
+        // A native .floecad package is a DIRECTORY-backed parametric document,
+        // not a byte stream: design.freezeInput/propose cannot read it as a
+        // source. Discovery still has to succeed so the model can route to the
+        // canonical cad.document tool instead of treating a new/existing
+        // package as an unavailable file.
+        if nativePackage {
+            return DesignToolOutput.make(Self.nativeCADTargetPlan(
+                target: target, contains: contains, exists: exists,
+                currentToken: currentToken, liveTaskID: liveTaskID))
         }
         // The resolve returns verified bytes metadata (bytes themselves are
         // not exposed to the model here; freeze/propose consume them).
@@ -1648,18 +1693,111 @@ private struct DesignResolveTargetTool: AgentTool {
         do {
             resolved = try await dependencies.targets.resolve(target, runID: context.runID)
         } catch let error as DesignTargetError {
-            return DesignToolOutput.make([
+            let missing = Self.isMissingError(error)
+            var payload: [String: Any] = [
                 "target": DesignToolOutput.target(target),
+                "state": missing ? "new" : "unavailable",
                 "contains": contains,
                 "exists": false,
                 "currentRevisionToken": currentToken ?? "",
-                "unavailableReason": String(describing: error)
-            ], status: 2)
+                "error": missing ? "missing" : "unavailable",
+                "unavailableReason": String(describing: error),
+            ]
+            if missing, target.kind == .fileDocument {
+                payload["nextAction"] = "The file does not exist yet. Only native .floecad documents "
+                    + "can be created by a tool (cad.document action=create); other formats must be "
+                    + "created/imported first."
+            }
+            if let liveTaskID { payload["liveTaskID"] = liveTaskID }
+            return DesignToolOutput.make(payload, status: 2)
         }
         var payload = DesignToolOutput.resolved(resolved)
         payload["contains"] = true
         payload["exists"] = true
+        payload["state"] = "existing"
+        if let liveTaskID { payload["liveTaskID"] = liveTaskID }
         return DesignToolOutput.make(payload)
+    }
+
+    /// True for the native parametric package extension. Kept here (not a
+    /// second format registry): `NativeCADPolicy.packageExtension` owns the
+    /// real extension and `cad.document` owns the representation.
+    static func isNativeCADPackage(_ reference: String) -> Bool {
+        (reference as NSString).pathExtension.lowercased() == NativeCADPolicy.packageExtension
+    }
+
+    static func isMissingError(_ error: DesignTargetError) -> Bool {
+        if case .notFound = error { return true }
+        return false
+    }
+
+    /// Discovery for a native `.floecad` package. A package is a directory
+    /// document, so `DesignResolvedSource` (bytes + SHA) is the WRONG
+    /// authority: it would read/freeze the package as an opaque file. The
+    /// canonical authority is `cad.document`, which owns package identity,
+    /// revision, SHA, proposals and CAS. This reply gives the model the real
+    /// state and the exact next call without pretending a byte source exists.
+    static func nativeCADTargetPlan(
+        target: DesignTarget,
+        contains: Bool,
+        exists: Bool,
+        currentToken: String?,
+        liveTaskID: String?
+    ) -> [String: Any] {
+        var payload: [String: Any] = [
+            "target": DesignToolOutput.target(target),
+            "contains": contains,
+            "exists": exists,
+            "format": NativeCADPolicy.packageExtension,
+            "contentType": DesignContentType.cad.rawValue,
+            "editable": true,
+            "revisionTokenAvailable": currentToken != nil,
+            "currentRevisionToken": currentToken ?? "",
+            "revisionSource": "cad.document",
+            "canonicalTool": "cad.document",
+        ]
+        if let liveTaskID { payload["liveTaskID"] = liveTaskID }
+        guard contains else {
+            payload["state"] = "unavailable"
+            payload["creatable"] = false
+            payload["editable"] = false
+            payload["error"] = "outside_containment"
+            payload["unavailableReason"] =
+                "the run's task does not own this workspace, or the package path is outside the "
+                + "permitted workspace/mount. Nothing was read or created."
+            payload["nextAction"] = "Use the workspace id and relative package path from the task workspace."
+            return payload
+        }
+        if exists {
+            payload["state"] = "existing"
+            payload["creatable"] = false
+            payload["nextAction"] =
+                "Read and edit the package through cad.document: action=read or query "
+                + "{kind: snapshot|bodies|sketches|constraints|features|faces|edges|scene|assembly|drawings}; "
+                + "changes go through propose then apply. design.freezeInput/propose do not read a "
+                + "native package as a byte source."
+            payload["queryScopes"] = [
+                "snapshot", "bodies", "sketches", "constraints", "features",
+                "faces", "edges", "variables", "materials", "assembly", "drawings", "scene", "detail", "selection",
+            ]
+        } else {
+            payload["state"] = "new"
+            payload["creatable"] = true
+            payload["createWith"] = "cad.document"
+            payload["createAction"] = "create"
+            payload["suggestedArguments"] = [
+                "action": "create",
+                "path": target.sourceID,
+            ]
+            payload["nextAction"] =
+                "The parent directory is authorized and writable, but the package does not exist. "
+                + "Call cad.document action=create with path=\(target.sourceID) (and an optional name). "
+                + "It creates a verified empty native package through the built-in factory; do not "
+                + "create the directory/manifest/zip yourself. No Canvas is required."
+        }
+        payload["note"] = "Native .floecad identity is a package, not file bytes; use cad.document "
+            + "for revision-bound read/query/propose/apply."
+        return payload
     }
 }
 
@@ -1688,6 +1826,21 @@ private struct DesignGetOwnerStateTool: AgentTool {
             let snapshot = try await dependencies.canvasService.snapshot(
                 runID: context.runID, canvasID: canvasID, nodeID: nodeID)
             return DesignToolOutput.make(DesignToolOutput.state(snapshot))
+        }
+        if target.kind == .fileDocument,
+           DesignResolveTargetTool.isNativeCADPackage(target.sourceID) {
+            // A native package has no byte-source design envelope. Report the
+            // real package state and the canonical cad.document route instead
+            // of "no shared design state exists", which reads as unavailable.
+            let contains = await dependencies.targets.contains(target, runID: context.runID)
+            let exists = await dependencies.targets.exists(target)
+            let liveTaskID = await dependencies.runTask(context.runID)?.uuidString.lowercased()
+            var payload = DesignResolveTargetTool.nativeCADTargetPlan(
+                target: target, contains: contains, exists: exists,
+                currentToken: nil, liveTaskID: liveTaskID)
+            payload["design"] = NSNull()
+            let status: Int32 = payload["state"] as? String == "unavailable" ? 2 : 0
+            return DesignToolOutput.make(payload, status: status)
         }
         guard let envelope = try await dependencies.workflow.state(target, runID: context.runID) else {
             return DesignToolOutput.make([
@@ -1823,6 +1976,7 @@ private struct DesignFreezeInputTool: AgentTool {
         }
         let target = try await authorizedTarget(args.target, context: context, dependencies: dependencies)
         if let routed = DesignCanvasCompatibility.routeCanvasMutation(target, action: "freezeInput") { return routed }
+        if let routed = DesignToolOutput.nativeCADRouting(target, action: "freezeInput") { return routed }
         let outcome = try await dependencies.workflow.freezeInput(
             target: target, operationID: args.operationID,
             expectedOwnerRevision: args.expectedOwnerRevision,
@@ -1866,6 +2020,7 @@ private struct DesignRegisterEditTool: AgentTool {
         }
         let target = try await authorizedTarget(args.target, context: context, dependencies: dependencies)
         if let routed = DesignCanvasCompatibility.routeCanvasMutation(target, action: "registerEdit") { return routed }
+        if let routed = DesignToolOutput.nativeCADRouting(target, action: "registerEdit") { return routed }
         let origin = args.origin.flatMap(DesignRevisionOrigin.init(rawValue:)) ?? .edit
         let payload = try DesignToolOutput.verifiedPayload(
             args.payloadRelativePath, claimedSHA256: args.proposedContentSHA256)
@@ -2124,6 +2279,7 @@ private struct DesignProposeOwnerTool: AgentTool {
         }
         let target = try await authorizedTarget(args.target, context: context, dependencies: dependencies)
         if let routed = DesignCanvasCompatibility.routeCanvasMutation(target, action: "propose") { return routed }
+        if let routed = DesignToolOutput.nativeCADRouting(target, action: "propose") { return routed }
         let payload = try DesignToolOutput.verifiedPayload(
             args.payloadRelativePath, claimedSHA256: args.proposedContentSHA256)
         // Replay and exact-input verification live INSIDE the shared

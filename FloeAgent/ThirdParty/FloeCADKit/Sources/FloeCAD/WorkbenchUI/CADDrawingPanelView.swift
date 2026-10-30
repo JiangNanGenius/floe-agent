@@ -6,8 +6,9 @@
 //  (SwiftUI Canvas over the same `pageGeometry` payload the exports use — never
 //  a screenshot), full page/view editing (kind, sources, scale, paper,
 //  orientation, section/detail windows, title, part numbers, centerlines,
-//  dimensions) through `CADDrawingService`, and vector PDF/SVG/DXF export of
-//  exactly the document shown.
+//  dimensions) through `CADDrawingService`, assembly-aware projected views with
+//  named exploded offsets, BOM/balloons/manual dimensions/text annotations, and
+//  vector PDF/SVG/DXF export of exactly the document shown.
 //
 //  SPDX-License-Identifier: MPL-2.0
 //
@@ -35,6 +36,13 @@ struct CADDrawingPreviewDimension {
     var kind: String
 }
 
+struct CADDrawingPreviewText {
+    var text: String
+    var position: CGPoint
+    var height: Double
+    var layer: String
+}
+
 struct CADDrawingPreview {
     var pageID: UUID
     var name: String
@@ -42,6 +50,10 @@ struct CADDrawingPreview {
     var scale: Double
     var entities: [CADDrawingPreviewEntity]
     var dimensions: [CADDrawingPreviewDimension]
+    var texts: [CADDrawingPreviewText] = []
+    var balloons: [[String: Any]] = []
+    var manualDimensions: [[String: Any]] = []
+    var bomRows: [[String: Any]] = []
     var centerlines: [CADDrawingPreviewEntity] = []
     var counts: [String: Int] = [:]
     var notes: [String] = []
@@ -67,6 +79,23 @@ struct CADDrawingPreview {
                 text: text,
                 position: CGPoint(x: position[0], y: position[1]),
                 kind: row["kind"] as? String ?? "linear")
+        }
+        texts = (reply["texts"] as? [[String: Any]] ?? []).compactMap { row in
+            guard let text = row["text"] as? String,
+                  let position = row["position"] as? [Double], position.count == 2 else {
+                return nil
+            }
+            return CADDrawingPreviewText(
+                text: text,
+                position: CGPoint(x: position[0], y: position[1]),
+                height: row["height"] as? Double ?? 3,
+                layer: row["layer"] as? String ?? "annotation")
+        }
+        balloons = reply["balloons"] as? [[String: Any]] ?? []
+        manualDimensions = reply["manualDimensions"] as? [[String: Any]] ?? []
+        bomRows = ((reply["bom"] as? [String: Any])?["entries"] as? [[String: Any]]) ?? []
+        if let issues = reply["bindingIssues"] as? [String], !issues.isEmpty {
+            notes.append(contentsOf: issues)
         }
     }
 
@@ -162,7 +191,7 @@ struct CADDrawingPanelView: View {
     @State private var exportURL: URL?
     @State private var busy = false
     @State private var preview: CADDrawingPreview?
-    @State private var editingPage: CADDrawingPageEditorRequest?
+    @State private var activeSheet: CADDrawingSheetRoute?
 
     /// Explicit source body: the current viewport selection ONLY (never a
     /// silent first body).
@@ -176,11 +205,17 @@ struct CADDrawingPanelView: View {
             PanelActionGrid {
                 PanelActionButton(title: FloeCADStrings.label("cad.workbench.drawing.add", "Add page"),
                                   systemImage: "plus.rectangle", disabled: busy) {
-                    editingPage = CADDrawingPageEditorRequest(page: nil)
+                    activeSheet = .edit(CADDrawingPageEditorRequest(page: nil))
                 }
                 PanelActionButton(title: FloeCADStrings.label("cad.workbench.drawing.sheet", "Standard sheet"),
                                   systemImage: "doc.on.doc", disabled: busy || selectedBodyID == nil) {
                     standardSheet()
+                }
+                PanelActionButton(title: FloeCADStrings.label("cad.workbench.drawing.assemblySheet",
+                                                              "Assembly sheet"),
+                                  systemImage: "square.stack.3d.up",
+                                  disabled: busy) {
+                    assemblySheet()
                 }
                 PanelActionButton(title: FloeCADStrings.label("cad.workbench.drawing.refresh", "Refresh"),
                                   systemImage: "arrow.clockwise", disabled: busy) {
@@ -224,6 +259,17 @@ struct CADDrawingPanelView: View {
                                         .font(.callout)
                                         .foregroundStyle(.secondary)
                                 }
+                                if page["assemblyMode"] as? Bool == true {
+                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.drawing.badgeAssembly",
+                                                                         "assembly"))
+                                }
+                                if let name = page["explodedViewName"] as? String, !name.isEmpty {
+                                    PanelBadge(text: name, tint: .purple)
+                                }
+                                if page["showBOM"] as? Bool == true {
+                                    PanelBadge(text: "BOM \(page["bomEntryCount"] as? Int ?? 0)",
+                                               tint: .brown)
+                                }
                                 Spacer(minLength: 4)
                                 if page["stale"] as? Bool == true {
                                     PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.stale", "stale"),
@@ -237,7 +283,7 @@ struct CADDrawingPanelView: View {
                                     .buttonStyle(.bordered)
                                     .controlSize(.small))
                                 panelHitTarget(Button(FloeCADStrings.label("cad.workbench.drawing.edit", "Edit")) {
-                                    editingPage = CADDrawingPageEditorRequest(page: page)
+                                    activeSheet = .edit(CADDrawingPageEditorRequest(page: page))
                                 }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small))
@@ -250,6 +296,29 @@ struct CADDrawingPanelView: View {
                                     .buttonStyle(.bordered)
                                     .controlSize(.small))
                                 panelHitTarget(Button("DXF") { export(page, format: "dxf") }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small))
+                                panelHitTarget(Button(FloeCADStrings.label("cad.workbench.drawing.bom", "BOM")) {
+                                    activeSheet = .bom(CADDrawingAnnotationPageRequest(page: page))
+                                }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small))
+                                panelHitTarget(Button(FloeCADStrings.label("cad.workbench.drawing.balloon",
+                                                                           "Balloon")) {
+                                    activeSheet = .balloon(CADDrawingAnnotationPageRequest(page: page))
+                                }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small))
+                                panelHitTarget(Button(FloeCADStrings.label("cad.workbench.drawing.dimension",
+                                                                           "Dimension")) {
+                                    activeSheet = .dimension(CADDrawingAnnotationPageRequest(page: page))
+                                }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small))
+                                panelHitTarget(Button(FloeCADStrings.label("cad.workbench.drawing.annotate",
+                                                                           "Text")) {
+                                    activeSheet = .annotation(CADDrawingAnnotationPageRequest(page: page))
+                                }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small))
                                 panelHitTarget(Button(role: .destructive) {
@@ -275,22 +344,49 @@ struct CADDrawingPanelView: View {
             }
         }
         .task { refresh() }
-        .sheet(item: $editingPage) { request in
-            CADDrawingPageEditorSheet(
-                document: document,
-                page: request.page,
-                preferredSourceBodyID: selectedBodyID,
-                busy: $busy,
-                onSaved: { reply in
-                    outcome = reply
-                    if reply["ok"] as? Bool == true {
-                        if let page = reply["page"] as? [String: Any],
-                           let id = page["id"] as? String {
-                            showGeometry(pages.first { $0["id"] as? String == id } ?? page)
+        .sheet(item: $activeSheet) { route in
+            switch route {
+            case .bom(let request):
+                CADDrawingBOMSheet(document: document, page: request.page,
+                                   onChanged: { reply in
+                                       outcome = reply
+                                       if reply["mutated"] as? Bool == true { refresh() }
+                                   })
+            case .balloon(let request):
+                CADDrawingBalloonSheet(document: document, page: request.page,
+                                       onChanged: { reply in
+                                           outcome = reply
+                                           if reply["mutated"] as? Bool == true { refresh() }
+                                       })
+            case .dimension(let request):
+                CADDrawingDimensionSheet(document: document, page: request.page,
+                                         onChanged: { reply in
+                                             outcome = reply
+                                             if reply["mutated"] as? Bool == true { refresh() }
+                                         })
+            case .annotation(let request):
+                CADDrawingAnnotationSheet(document: document, page: request.page,
+                                          onChanged: { reply in
+                                              outcome = reply
+                                              if reply["mutated"] as? Bool == true { refresh() }
+                                          })
+            case .edit(let request):
+                CADDrawingPageEditorSheet(
+                    document: document,
+                    page: request.page,
+                    preferredSourceBodyID: selectedBodyID,
+                    busy: $busy,
+                    onSaved: { reply in
+                        outcome = reply
+                        if reply["ok"] as? Bool == true {
+                            if let page = reply["page"] as? [String: Any],
+                               let id = page["id"] as? String {
+                                showGeometry(pages.first { $0["id"] as? String == id } ?? page)
+                            }
+                            refresh()
                         }
-                        refresh()
-                    }
-                })
+                    })
+            }
         }
     }
 
@@ -313,6 +409,19 @@ struct CADDrawingPanelView: View {
             let service = CADDrawingService(document: document)
             let reply = service.handle(action: "standardSheet",
                                        args: ["bodyID": bodyID.uuidString, "title": document.name])
+            if reply["mutated"] as? Bool == true { _ = await document.save() }
+            outcome = reply
+            refresh()
+            busy = false
+        }
+    }
+
+    private func assemblySheet() {
+        busy = true
+        Task { @MainActor in
+            let service = CADDrawingService(document: document)
+            let reply = service.handle(action: "assemblySheet",
+                                       args: ["title": document.name])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             outcome = reply
             refresh()
@@ -410,6 +519,9 @@ struct CADDrawingVectorPreview: View {
         case "section": return .orange
         case "dimension": return .teal
         case "centerline": return .gray
+        case "annotation": return .indigo
+        case "balloon": return .purple
+        case "bom": return .brown
         case "title": return .brown
         default: return .primary
         }
@@ -482,9 +594,12 @@ struct CADDrawingVectorPreview: View {
                                    style: StrokeStyle(lineWidth: layer == "outline" ? 1.6 : 1.0,
                                                       dash: dashed ? [4, 3] : []))
                 }
-                for dimension in preview.dimensions {
-                    let position = transform(dimension.position)
-                    context.draw(Text(dimension.text).font(.caption2).foregroundStyle(.teal),
+                for text in preview.texts {
+                    let position = transform(text.position)
+                    let fontSize = max(6, CGFloat(text.height) * scale * 1.15)
+                    context.draw(Text(text.text)
+                                    .font(.system(size: fontSize))
+                                    .foregroundStyle(color(for: text.layer)),
                                  at: position)
                 }
             }
@@ -498,8 +613,31 @@ struct CADDrawingVectorPreview: View {
                     PanelBadge(text: "\(localizedDrawingCount(key)) \(value)")
                 }
             }
+            if !preview.bomRows.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(FloeCADStrings.text("cad.workbench.drawing.bom", "BOM"))
+                        .font(.caption.weight(.semibold))
+                    ForEach(Array(preview.bomRows.prefix(8).enumerated()), id: \.offset) { _, row in
+                        HStack(spacing: 6) {
+                            Text("\(row["itemNumber"] as? Int ?? 0)")
+                                .font(.caption2.monospacedDigit())
+                                .frame(width: 22, alignment: .leading)
+                            Text(row["name"] as? String ?? "—")
+                                .font(.caption2)
+                            Spacer(minLength: 4)
+                            Text("×\(row["quantity"] as? Int ?? 0)")
+                                .font(.caption2.monospacedDigit())
+                            if row["stale"] as? Bool == true {
+                                Text(FloeCADStrings.text("cad.workbench.badge.stale", "stale"))
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+                }
+            }
             if !preview.notes.isEmpty {
-                Text(preview.notes.joined(separator: " · "))
+                Text(preview.notes.prefix(6).joined(separator: " · "))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -513,6 +651,29 @@ struct CADDrawingVectorPreview: View {
 struct CADDrawingPageEditorRequest: Identifiable {
     let id = UUID()
     let page: [String: Any]?
+}
+
+struct CADDrawingAnnotationPageRequest: Identifiable {
+    let id = UUID()
+    let page: [String: Any]
+}
+
+enum CADDrawingSheetRoute: Identifiable {
+    case edit(CADDrawingPageEditorRequest)
+    case bom(CADDrawingAnnotationPageRequest)
+    case balloon(CADDrawingAnnotationPageRequest)
+    case dimension(CADDrawingAnnotationPageRequest)
+    case annotation(CADDrawingAnnotationPageRequest)
+
+    var id: String {
+        switch self {
+        case .edit(let request): return "edit-\(request.id.uuidString)"
+        case .bom(let request): return "bom-\(request.id.uuidString)"
+        case .balloon(let request): return "balloon-\(request.id.uuidString)"
+        case .dimension(let request): return "dimension-\(request.id.uuidString)"
+        case .annotation(let request): return "annotation-\(request.id.uuidString)"
+        }
+    }
 }
 
 private struct CADDrawingPageEditorSheet: View {
@@ -551,6 +712,11 @@ private struct CADDrawingPageEditorSheet: View {
     @State private var detailHeight: String
     @State private var showCenterlines: Bool
     @State private var showDimensions: Bool
+    @State private var assemblyMode: Bool
+    @State private var explodedViewID: String?
+    @State private var explodedViewName: String?
+    @State private var showBOM: Bool
+    @State private var explodedViews: [[String: Any]] = []
     @State private var errorText: String?
 
     init(document: FloeCADDocument, page: [String: Any]?, preferredSourceBodyID: UUID?,
@@ -607,12 +773,18 @@ private struct CADDrawingPageEditorSheet: View {
         _detailHeight = State(initialValue: number(detailSize.count > 1 ? detailSize[1] : 50))
         _showCenterlines = State(initialValue: page?["showCenterlines"] as? Bool ?? false)
         _showDimensions = State(initialValue: page?["showDimensions"] as? Bool ?? false)
+        _assemblyMode = State(initialValue: page?["assemblyMode"] as? Bool ?? false)
+        _explodedViewID = State(initialValue: page?["explodedViewID"] as? String)
+        _explodedViewName = State(initialValue: page?["explodedViewName"] as? String)
+        _showBOM = State(initialValue: page?["showBOM"] as? Bool ?? false)
     }
 
     private var bodies: [CADPanelBodyOption] { document.panelBodyOptions }
 
     private var canSave: Bool {
-        guard !busy, !sourceIDs.isEmpty, sourceIDs.count <= CADDrawingService.maxSourceBodies,
+        guard !busy,
+              assemblyMode || !sourceIDs.isEmpty,
+              sourceIDs.count <= CADDrawingService.maxSourceBodies,
               let scaleValue = Double(scale), scaleValue > 0, scaleValue <= 1000 else { return false }
         if paper == "custom" {
             guard let w = Double(customWidth), let h = Double(customHeight), w > 0, h > 0 else { return false }
@@ -643,6 +815,7 @@ private struct CADDrawingPageEditorSheet: View {
                         Text(localizedDrawingKind("iso")).tag("iso")
                         Text(localizedDrawingKind("section")).tag("section")
                         Text(localizedDrawingKind("detail")).tag("detail")
+                        Text(localizedDrawingKind("exploded")).tag("exploded")
                     }
                     .accessibilityIdentifier("CADDrawingPageKind")
                     CADPanelNumberField(title: FloeCADStrings.text("cad.workbench.drawing.scale", "Scale (drawing mm per model mm)"),
@@ -677,6 +850,39 @@ private struct CADDrawingPageEditorSheet: View {
                         }
                         .accessibilityIdentifier("CADDrawingSource-\(body.id.uuidString)")
                     }
+                }
+
+                Section(FloeCADStrings.text("cad.workbench.drawing.assembly", "Assembly")) {
+                    Toggle(FloeCADStrings.text("cad.workbench.drawing.projectInstances",
+                                               "Project assembly instances"),
+                           isOn: $assemblyMode)
+                        .accessibilityIdentifier("CADDrawingPageAssemblyMode")
+                        .onChange(of: assemblyMode) { _, value in
+                            if !value { explodedViewID = nil }
+                        }
+                    Picker(FloeCADStrings.text("cad.workbench.drawing.explodedView", "Exploded view"),
+                           selection: $explodedViewID) {
+                        Text(FloeCADStrings.text("cad.workbench.drawing.noExplodedView", "None"))
+                            .tag(String?.none)
+                        ForEach(Array(explodedViews.enumerated()), id: \.offset) { _, view in
+                            if let id = view["id"] as? String {
+                                Text(view["name"] as? String ?? id).tag(String?.some(id))
+                            }
+                        }
+                    }
+                    .disabled(explodedViews.isEmpty)
+                    .accessibilityIdentifier("CADDrawingPageExplodedView")
+                    if let explodedViewName, !explodedViewName.isEmpty,
+                       explodedViewID != nil {
+                        Text(FloeCADStrings.format("cad.workbench.drawing.explodedActive",
+                                                   "Using %@ offsets (base geometry unchanged).",
+                                                   explodedViewName))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Toggle(FloeCADStrings.text("cad.workbench.drawing.showBOM", "BOM table"),
+                           isOn: $showBOM)
+                        .accessibilityIdentifier("CADDrawingPageShowBOM")
                 }
 
                 Section(FloeCADStrings.text("cad.workbench.drawing.orientation", "View orientation")) {
@@ -757,6 +963,17 @@ private struct CADDrawingPageEditorSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .task { loadExplodedViews() }
+    }
+
+    private func loadExplodedViews() {
+        let service = CADAssemblyService(document: document)
+        let reply = service.handle(action: "explodedViews", args: [:])
+        explodedViews = reply["views"] as? [[String: Any]] ?? []
+        if let id = explodedViewID,
+           let view = explodedViews.first(where: { $0["id"] as? String == id }) {
+            explodedViewName = view["name"] as? String
+        }
     }
 
     private func save() {
@@ -773,7 +990,14 @@ private struct CADDrawingPageEditorSheet: View {
                 .filter { !$0.isEmpty },
             "showCenterlines": showCenterlines,
             "showDimensions": showDimensions,
+            "assemblyMode": assemblyMode,
+            "showBOM": showBOM,
         ]
+        if let explodedViewID {
+            args["explodedViewID"] = explodedViewID
+        } else {
+            args["explodedViewID"] = NSNull()
+        }
         if let nx = Double(normalX), let ny = Double(normalY), let nz = Double(normalZ),
            nx != 0 || ny != 0 || nz != 0 {
             args["viewNormal"] = [nx, ny, nz]
@@ -820,4 +1044,658 @@ private struct CADDrawingPageEditorSheet: View {
         }
     }
 }
+// MARK: - BOM sheet
+
+private struct CADDrawingBOMSheet: View {
+    let document: FloeCADDocument
+    let page: [String: Any]
+    let onChanged: ([String: Any]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var entries: [[String: Any]] = []
+    @State private var issues: [String] = []
+    @State private var showBOM = true
+    @State private var busy = false
+    @State private var errorText: String?
+
+    private var pageID: String? { page["id"] as? String }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle(FloeCADStrings.text("cad.workbench.drawing.showBOM", "BOM table"),
+                           isOn: $showBOM)
+                        .onChange(of: showBOM) { _, value in
+                            setVisible(value)
+                        }
+                        .accessibilityIdentifier("CADDrawingBOMVisible")
+                    Button {
+                        derive()
+                    } label: {
+                        Label(FloeCADStrings.text("cad.workbench.drawing.deriveBOM",
+                                                  "Refresh from assembly"),
+                              systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .disabled(busy)
+                    .accessibilityIdentifier("CADDrawingBOMDerive")
+                } header: {
+                    Text(FloeCADStrings.text("cad.workbench.drawing.bom", "BOM"))
+                }
+
+                if entries.isEmpty {
+                    Text(FloeCADStrings.text("cad.workbench.drawing.bomEmpty",
+                                             "No BOM items. Refresh from a live assembly to derive names and quantities."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Section {
+                        ForEach(Array(entries.enumerated()), id: \.offset) { _, row in
+                            HStack(spacing: 8) {
+                                Text("\(row["itemNumber"] as? Int ?? 0)")
+                                    .font(.callout.monospacedDigit())
+                                    .frame(width: 24, alignment: .leading)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(row["name"] as? String ?? "—")
+                                        .font(.callout)
+                                    if let part = row["partNumber"] as? String, !part.isEmpty {
+                                        Text(part).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer(minLength: 4)
+                                Text("×\(row["quantity"] as? Int ?? 0)")
+                                    .font(.callout.monospacedDigit())
+                                if row["stale"] as? Bool == true {
+                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.stale", "stale"),
+                                               tint: .orange)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !issues.isEmpty {
+                    Section {
+                        ForEach(issues, id: \.self) { issue in
+                            Text(issue).font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                }
+                if let errorText {
+                    Section { Text(errorText).foregroundStyle(.red).font(.callout) }
+                }
+            }
+            .navigationTitle(FloeCADStrings.text("cad.workbench.drawing.bom", "BOM"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(FloeCADStrings.text("cad.ui.common.close", "Close")) { dismiss() }
+                }
+            }
+            .task { load() }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func load() {
+        guard let pageID = pageID else { return }
+        let reply = CADDrawingService(document: document).pageGeometry(pageID: UUID(uuidString: pageID) ?? UUID())
+        let bom = reply["bom"] as? [String: Any] ?? [:]
+        entries = bom["entries"] as? [[String: Any]] ?? []
+        issues = bom["issues"] as? [String] ?? []
+        showBOM = page["showBOM"] as? Bool ?? false
+        if reply["ok"] as? Bool != true {
+            errorText = reply["message"] as? String
+        }
+    }
+
+    private func derive() {
+        guard let pageID else { return }
+        busy = true
+        Task { @MainActor in
+            let service = CADDrawingService(document: document)
+            let reply = service.handle(action: "setBOM",
+                                       args: ["pageID": pageID, "showBOM": true])
+            if reply["mutated"] as? Bool == true { _ = await document.save() }
+            busy = false
+            onChanged(reply)
+            if reply["ok"] as? Bool == true {
+                entries = reply["entries"] as? [[String: Any]] ?? []
+                issues = reply["issues"] as? [String] ?? []
+                showBOM = true
+            } else {
+                errorText = reply["message"] as? String
+            }
+        }
+    }
+
+    private func setVisible(_ value: Bool) {
+        guard let pageID else { return }
+        busy = true
+        Task { @MainActor in
+            let service = CADDrawingService(document: document)
+            let reply = service.handle(action: "updatePage",
+                                       args: ["pageID": pageID, "showBOM": value])
+            if reply["mutated"] as? Bool == true { _ = await document.save() }
+            busy = false
+            onChanged(reply)
+            if reply["ok"] as? Bool != true {
+                errorText = reply["message"] as? String
+            }
+        }
+    }
+}
+
+// MARK: - Balloon sheet
+
+private struct CADDrawingBalloonSheet: View {
+    let document: FloeCADDocument
+    let page: [String: Any]
+    let onChanged: ([String: Any]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var instances: [[String: Any]] = []
+    @State private var balloons: [[String: Any]] = []
+    @State private var bomRows: [[String: Any]] = []
+    @State private var itemNumber = "1"
+    @State private var instanceID: String?
+    @State private var anchorX = ""
+    @State private var anchorY = ""
+    @State private var busy = false
+    @State private var errorText: String?
+
+    private var pageID: String? { page["id"] as? String }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(FloeCADStrings.text("cad.workbench.drawing.newBalloon", "New balloon")) {
+                    CADPanelNumberField(title: FloeCADStrings.text("cad.workbench.drawing.itemNumber", "Item"),
+                                        text: $itemNumber)
+                    if !bomRows.isEmpty {
+                        Text(FloeCADStrings.format("cad.workbench.drawing.bomItems",
+                                                   "%@ BOM items available; the balloon links to the matching item.",
+                                                   bomRows.count))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Picker(FloeCADStrings.text("cad.workbench.drawing.balloonInstance", "Instance"),
+                           selection: $instanceID) {
+                        Text(FloeCADStrings.text("cad.workbench.drawing.pickInstance", "Select…"))
+                            .tag(String?.none)
+                        ForEach(Array(instances.enumerated()), id: \.offset) { _, row in
+                            if let id = row["instanceID"] as? String {
+                                Text(row["name"] as? String ?? id).tag(String?.some(id))
+                            }
+                        }
+                    }
+                    HStack(spacing: 10) {
+                        CADPanelNumberField(title: FloeCADStrings.text("cad.workbench.drawing.anchorX",
+                                                                       "X (auto)"), text: $anchorX)
+                        CADPanelNumberField(title: FloeCADStrings.text("cad.workbench.drawing.anchorY",
+                                                                       "Y (auto)"), text: $anchorY)
+                    }
+                    Button(FloeCADStrings.text("cad.workbench.drawing.addBalloon", "Add balloon")) {
+                        add()
+                    }
+                    .disabled(busy || instanceID == nil || Int(itemNumber) == nil)
+                    .accessibilityIdentifier("CADDrawingBalloonAdd")
+                }
+
+                if !balloons.isEmpty {
+                    Section(FloeCADStrings.text("cad.workbench.drawing.balloons", "Balloons")) {
+                        ForEach(Array(balloons.enumerated()), id: \.offset) { _, row in
+                            HStack(spacing: 8) {
+                                Text(row["text"] as? String ?? "—")
+                                    .font(.callout.monospacedDigit())
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("item \(row["itemNumber"] as? Int ?? 0)")
+                                        .font(.caption)
+                                    if let reasons = row["reasons"] as? [String], !reasons.isEmpty {
+                                        Text(reasons.joined(separator: " · "))
+                                            .font(.caption2)
+                                            .foregroundStyle(.orange)
+                                    }
+                                }
+                                Spacer(minLength: 4)
+                                if row["invalid"] as? Bool == true {
+                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.invalid",
+                                                                         "invalid"), tint: .red)
+                                } else if row["stale"] as? Bool == true {
+                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.stale",
+                                                                         "stale"), tint: .orange)
+                                }
+                                Button(role: .destructive) {
+                                    remove(row["id"] as? String ?? "")
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                }
+                if let errorText {
+                    Section { Text(errorText).foregroundStyle(.red).font(.callout) }
+                }
+            }
+            .navigationTitle(FloeCADStrings.text("cad.workbench.drawing.balloon", "Balloon"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(FloeCADStrings.text("cad.ui.common.close", "Close")) { dismiss() }
+                }
+            }
+            .task { load() }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func load() {
+        guard let pageID, let uuid = UUID(uuidString: pageID) else { return }
+        let reply = CADDrawingService(document: document).pageGeometry(pageID: uuid)
+        instances = reply["instances"] as? [[String: Any]] ?? []
+        balloons = reply["balloons"] as? [[String: Any]] ?? []
+        bomRows = ((reply["bom"] as? [String: Any])?["entries"] as? [[String: Any]]) ?? []
+        if instanceID == nil {
+            instanceID = instances.first?["instanceID"] as? String
+        }
+        if let first = bomRows.first?["itemNumber"] as? Int {
+            itemNumber = "\(first)"
+        }
+        if reply["ok"] as? Bool != true {
+            errorText = reply["message"] as? String
+        }
+    }
+
+    private func add() {
+        guard let pageID, let instanceID, let number = Int(itemNumber) else { return }
+        var args: [String: Any] = [
+            "pageID": pageID,
+            "itemNumber": number,
+            "instanceID": instanceID,
+        ]
+        if let x = Double(anchorX), let y = Double(anchorY) {
+            args["anchor"] = [x, y]
+        }
+        busy = true
+        Task { @MainActor in
+            let service = CADDrawingService(document: document)
+            let reply = service.handle(action: "addBalloon", args: args)
+            if reply["mutated"] as? Bool == true { _ = await document.save() }
+            busy = false
+            onChanged(reply)
+            if reply["ok"] as? Bool == true {
+                balloons = reply["balloons"] as? [[String: Any]] ?? balloons
+                errorText = nil
+            } else {
+                errorText = reply["message"] as? String
+            }
+        }
+    }
+
+    private func remove(_ balloonID: String) {
+        guard let pageID, let uuid = UUID(uuidString: balloonID) else { return }
+        busy = true
+        Task { @MainActor in
+            let service = CADDrawingService(document: document)
+            let reply = service.handle(action: "removeBalloon",
+                                       args: ["pageID": pageID, "balloonID": uuid.uuidString])
+            if reply["mutated"] as? Bool == true { _ = await document.save() }
+            busy = false
+            onChanged(reply)
+            if reply["ok"] as? Bool == true { load() } else {
+                errorText = reply["message"] as? String
+            }
+        }
+    }
+}
+
+// MARK: - Manual dimension sheet
+
+private struct CADDrawingDimensionSheet: View {
+    let document: FloeCADDocument
+    let page: [String: Any]
+    let onChanged: ([String: Any]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var kind = "length"
+    @State private var instanceID: String?
+    @State private var instances: [[String: Any]] = []
+    @State private var manual: [[String: Any]] = []
+    @State private var points: [String] = ["0", "0", "0", "0", "0", "0"]
+    @State private var text = ""
+    @State private var textX = ""
+    @State private var textY = ""
+    @State private var busy = false
+    @State private var errorText: String?
+
+    private var pageID: String? { page["id"] as? String }
+    private var requiredPoints: Int { kind == "angle" ? 3 : 2 }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(FloeCADStrings.text("cad.workbench.drawing.newDimension", "New dimension")) {
+                    Picker(FloeCADStrings.text("cad.workbench.drawing.dimensionKind", "Kind"),
+                           selection: $kind) {
+                        ForEach(CADDrawingDimensionKind.allCases, id: \.self) { kind in
+                            Text(kind.title).tag(kind.rawValue)
+                        }
+                    }
+                    .onChange(of: kind) { _, _ in prefill() }
+                    Picker(FloeCADStrings.text("cad.workbench.drawing.boundInstance", "Instance"),
+                           selection: $instanceID) {
+                        Text(FloeCADStrings.text("cad.workbench.drawing.pickInstance", "Select…"))
+                            .tag(String?.none)
+                        ForEach(Array(instances.enumerated()), id: \.offset) { _, row in
+                            if let id = row["instanceID"] as? String {
+                                Text(row["name"] as? String ?? id).tag(String?.some(id))
+                            }
+                        }
+                    }
+                    .onChange(of: instanceID) { _, _ in prefill() }
+                    ForEach(0..<requiredPoints, id: \.self) { index in
+                        HStack(spacing: 10) {
+                            CADPanelNumberField(title: "P\(index) x", text: Binding(
+                                get: { points[index * 2] },
+                                set: { points[index * 2] = $0 }))
+                            CADPanelNumberField(title: "P\(index) y", text: Binding(
+                                get: { points[index * 2 + 1] },
+                                set: { points[index * 2 + 1] = $0 }))
+                        }
+                    }
+                    TextField(FloeCADStrings.text("cad.workbench.drawing.dimensionText",
+                                                  "Text override (optional)"), text: $text)
+                    HStack(spacing: 10) {
+                        CADPanelNumberField(title: "Text X", text: $textX)
+                        CADPanelNumberField(title: "Text Y", text: $textY)
+                    }
+                    Button(FloeCADStrings.text("cad.workbench.drawing.addDimension", "Add dimension")) {
+                        add()
+                    }
+                    .disabled(busy || instanceID == nil || !pointsComplete)
+                    .accessibilityIdentifier("CADDrawingDimensionAdd")
+                }
+
+                if !manual.isEmpty {
+                    Section(FloeCADStrings.text("cad.workbench.drawing.manualDimensions",
+                                                "Manual dimensions")) {
+                        ForEach(Array(manual.enumerated()), id: \.offset) { _, row in
+                            HStack(spacing: 8) {
+                                Text(row["text"] as? String ?? "—")
+                                    .font(.callout)
+                                Spacer(minLength: 4)
+                                if row["invalid"] as? Bool == true {
+                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.invalid",
+                                                                         "invalid"), tint: .red)
+                                } else if row["stale"] as? Bool == true {
+                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.stale",
+                                                                         "stale"), tint: .orange)
+                                } else if row["unbound"] as? Bool == true {
+                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.unbound",
+                                                                         "unbound"), tint: .secondary)
+                                }
+                                Button(role: .destructive) {
+                                    remove(row["id"] as? String ?? "")
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                }
+                if let errorText {
+                    Section { Text(errorText).foregroundStyle(.red).font(.callout) }
+                }
+            }
+            .navigationTitle(FloeCADStrings.text("cad.workbench.drawing.dimension", "Dimension"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(FloeCADStrings.text("cad.ui.common.close", "Close")) { dismiss() }
+                }
+            }
+            .task { load() }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var pointsComplete: Bool {
+        (0..<requiredPoints).allSatisfy {
+            Double(points[$0 * 2]) != nil && Double(points[$0 * 2 + 1]) != nil
+        }
+    }
+
+    private func load() {
+        guard let pageID, let uuid = UUID(uuidString: pageID) else { return }
+        let reply = CADDrawingService(document: document).pageGeometry(pageID: uuid)
+        instances = reply["instances"] as? [[String: Any]] ?? []
+        manual = reply["manualDimensions"] as? [[String: Any]] ?? []
+        if instanceID == nil { instanceID = instances.first?["instanceID"] as? String }
+        prefill()
+        if reply["ok"] as? Bool != true {
+            errorText = reply["message"] as? String
+        }
+    }
+
+    private func prefill() {
+        guard let instanceID,
+              let row = instances.first(where: { $0["instanceID"] as? String == instanceID }),
+              let bounds = row["bounds"] as? [[Double]], bounds.count == 2,
+              bounds[0].count == 2, bounds[1].count == 2 else { return }
+        let minPoint = bounds[0]
+        let maxPoint = bounds[1]
+        points[0] = CADPanelTransform.format(minPoint[0])
+        points[1] = CADPanelTransform.format(minPoint[1])
+        if kind == "radius" || kind == "diameter" {
+            points[0] = CADPanelTransform.format((minPoint[0] + maxPoint[0]) / 2)
+            points[1] = CADPanelTransform.format((minPoint[1] + maxPoint[1]) / 2)
+            points[2] = CADPanelTransform.format((minPoint[0] + maxPoint[0]) / 2)
+            points[3] = CADPanelTransform.format(maxPoint[1])
+        } else if kind == "angle" {
+            points[2] = CADPanelTransform.format(maxPoint[0])
+            points[3] = CADPanelTransform.format(minPoint[1])
+            points[4] = CADPanelTransform.format(minPoint[0])
+            points[5] = CADPanelTransform.format(maxPoint[1])
+        } else {
+            points[2] = CADPanelTransform.format(maxPoint[0])
+            points[3] = CADPanelTransform.format(minPoint[1])
+        }
+    }
+
+    private func add() {
+        guard let pageID, let instanceID else { return }
+        var drawingPoints: [[Double]] = []
+        for index in 0..<requiredPoints {
+            guard let x = Double(points[index * 2]), let y = Double(points[index * 2 + 1]) else {
+                return
+            }
+            drawingPoints.append([x, y])
+        }
+        var args: [String: Any] = [
+            "pageID": pageID,
+            "kind": kind,
+            "instanceID": instanceID,
+            "drawingPoints": drawingPoints,
+        ]
+        if !text.trimmingCharacters(in: .whitespaces).isEmpty { args["text"] = text }
+        if let x = Double(textX), let y = Double(textY) { args["textPosition"] = [x, y] }
+        busy = true
+        Task { @MainActor in
+            let service = CADDrawingService(document: document)
+            let reply = service.handle(action: "addDimension", args: args)
+            if reply["mutated"] as? Bool == true { _ = await document.save() }
+            busy = false
+            onChanged(reply)
+            if reply["ok"] as? Bool == true {
+                manual = reply["manualDimensions"] as? [[String: Any]] ?? manual
+                errorText = nil
+            } else {
+                errorText = reply["message"] as? String
+            }
+        }
+    }
+
+    private func remove(_ dimensionID: String) {
+        guard let pageID, let uuid = UUID(uuidString: dimensionID) else { return }
+        busy = true
+        Task { @MainActor in
+            let service = CADDrawingService(document: document)
+            let reply = service.handle(action: "removeDimension",
+                                       args: ["pageID": pageID, "dimensionID": uuid.uuidString])
+            if reply["mutated"] as? Bool == true { _ = await document.save() }
+            busy = false
+            onChanged(reply)
+            if reply["ok"] as? Bool == true { load() } else {
+                errorText = reply["message"] as? String
+            }
+        }
+    }
+}
+
+// MARK: - Text annotation sheet
+
+private struct CADDrawingAnnotationSheet: View {
+    let document: FloeCADDocument
+    let page: [String: Any]
+    let onChanged: ([String: Any]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var annotations: [[String: Any]] = []
+    @State private var instances: [[String: Any]] = []
+    @State private var text = ""
+    @State private var x = "20"
+    @State private var y = "20"
+    @State private var height = "3.5"
+    @State private var instanceID: String?
+    @State private var busy = false
+    @State private var errorText: String?
+
+    private var pageID: String? { page["id"] as? String }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(FloeCADStrings.text("cad.workbench.drawing.newAnnotation", "New text")) {
+                    TextField(FloeCADStrings.text("cad.workbench.drawing.annotationText", "Text"),
+                              text: $text, axis: .vertical)
+                        .lineLimit(1...4)
+                    HStack(spacing: 10) {
+                        CADPanelNumberField(title: "X", text: $x)
+                        CADPanelNumberField(title: "Y", text: $y)
+                        CADPanelNumberField(title: FloeCADStrings.text("cad.workbench.drawing.textHeight",
+                                                                       "Height"), text: $height)
+                    }
+                    Picker(FloeCADStrings.text("cad.workbench.drawing.bindText", "Bind to instance"),
+                           selection: $instanceID) {
+                        Text(FloeCADStrings.text("cad.workbench.drawing.noBinding", "Free text"))
+                            .tag(String?.none)
+                        ForEach(Array(instances.enumerated()), id: \.offset) { _, row in
+                            if let id = row["instanceID"] as? String {
+                                Text(row["name"] as? String ?? id).tag(String?.some(id))
+                            }
+                        }
+                    }
+                    Button(FloeCADStrings.text("cad.workbench.drawing.addAnnotation", "Add text")) {
+                        add()
+                    }
+                    .disabled(busy || text.trimmingCharacters(in: .whitespaces).isEmpty
+                              || Double(x) == nil || Double(y) == nil)
+                    .accessibilityIdentifier("CADDrawingAnnotationAdd")
+                }
+
+                if !annotations.isEmpty {
+                    Section(FloeCADStrings.text("cad.workbench.drawing.annotations", "Text annotations")) {
+                        ForEach(Array(annotations.enumerated()), id: \.offset) { _, row in
+                            HStack(spacing: 8) {
+                                Text(row["text"] as? String ?? "—")
+                                    .font(.callout)
+                                Spacer(minLength: 4)
+                                if row["stale"] as? Bool == true {
+                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.stale", "stale"),
+                                               tint: .orange)
+                                } else if row["invalid"] as? Bool == true {
+                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.invalid",
+                                                                         "invalid"), tint: .red)
+                                }
+                                Button(role: .destructive) {
+                                    remove(row["id"] as? String ?? "")
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                }
+                if let errorText {
+                    Section { Text(errorText).foregroundStyle(.red).font(.callout) }
+                }
+            }
+            .navigationTitle(FloeCADStrings.text("cad.workbench.drawing.annotate", "Text"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(FloeCADStrings.text("cad.ui.common.close", "Close")) { dismiss() }
+                }
+            }
+            .task { load() }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func load() {
+        guard let pageID, let uuid = UUID(uuidString: pageID) else { return }
+        let reply = CADDrawingService(document: document).pageGeometry(pageID: uuid)
+        instances = reply["instances"] as? [[String: Any]] ?? []
+        annotations = reply["annotations"] as? [[String: Any]] ?? []
+        if reply["ok"] as? Bool != true {
+            errorText = reply["message"] as? String
+        }
+    }
+
+    private func add() {
+        guard let pageID, let xValue = Double(x), let yValue = Double(y) else { return }
+        var args: [String: Any] = [
+            "pageID": pageID,
+            "text": text,
+            "position": [xValue, yValue],
+            "heightMM": Double(height) ?? 3.5,
+        ]
+        if let instanceID { args["instanceID"] = instanceID }
+        busy = true
+        Task { @MainActor in
+            let service = CADDrawingService(document: document)
+            let reply = service.handle(action: "addAnnotation", args: args)
+            if reply["mutated"] as? Bool == true { _ = await document.save() }
+            busy = false
+            onChanged(reply)
+            if reply["ok"] as? Bool == true {
+                load()
+                text = ""
+            } else {
+                errorText = reply["message"] as? String
+            }
+        }
+    }
+
+    private func remove(_ annotationID: String) {
+        guard let pageID, let uuid = UUID(uuidString: annotationID) else { return }
+        busy = true
+        Task { @MainActor in
+            let service = CADDrawingService(document: document)
+            let reply = service.handle(action: "removeAnnotation",
+                                       args: ["pageID": pageID, "annotationID": uuid.uuidString])
+            if reply["mutated"] as? Bool == true { _ = await document.save() }
+            busy = false
+            onChanged(reply)
+            if reply["ok"] as? Bool == true { load() } else {
+                errorText = reply["message"] as? String
+            }
+        }
+    }
+}
+
 #endif

@@ -8,7 +8,8 @@
 //  uses on its throwaway clone (propose) and on the live document (apply), and
 //  the classifier the host uses to refuse direct mutating payload calls.
 //
-//  Read-only service actions (reports, pages, dimensions, script list/status/
+//  Read-only service actions (reports, pages, dimensions, assembly references,
+//  exploded-view queries and the transient preview/reset, script list/status/
 //  preview, mesh boundary) stay directly callable; every mutating action name
 //  is listed here so the host never has to guess.
 //
@@ -38,18 +39,29 @@ public nonisolated enum CADServiceOperations {
     // MARK: Classification
 
     /// Mutating assembly actions (every one that writes `assemblyData` or
-    /// bodies). `report`/`instances`/`dof`/`interference` are read-only.
+    /// bodies). `report`/`instances`/`dof`/`interference`/`reference`/
+    /// `referenceCandidates` are read-only. `previewExplodedView` and
+    /// `resetExplodedView` change only the transient viewport preview and are
+    /// deliberately NOT mutations: they write no assembly JSON, undo step or
+    /// dirty state, so they stay directly callable like the other reads.
     public static let mutatingAssemblyActions: Set<String> = [
         "addInstance", "removeInstance", "setTransform", "setVisible",
         "addConstraint", "removeConstraint", "suppressConstraint",
         "solve", "sourceUpdate", "clear",
+        "addExplodedView", "updateExplodedView", "removeExplodedView",
     ]
 
     /// Mutating drawing actions. `pages`/`project`/`dimensions`/`export` are
     /// read-only (project pins the fingerprint, which is metadata, but it does
-    /// not change user-visible geometry — kept read-only deliberately).
+    /// not change user-visible geometry — kept read-only deliberately). Every
+    /// assembly-sheet/BOM/balloon/manual-dimension/annotation action persists
+    /// the drawing set and is therefore included.
     public static let mutatingDrawingActions: Set<String> = [
         "addPage", "updatePage", "removePage", "standardSheet",
+        "assemblySheet", "setBOM",
+        "addBalloon", "updateBalloon", "removeBalloon",
+        "addDimension", "updateDimension", "removeDimension",
+        "addAnnotation", "updateAnnotation", "removeAnnotation",
     ]
 
     /// Mutating script actions. `list`/`status`/`preview` are read-only.

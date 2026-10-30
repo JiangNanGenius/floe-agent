@@ -56,6 +56,11 @@ protocol ViewportCameraControl: AnyObject {
 @Observable
 final class EditorViewModel {
     let session: DocumentSession
+    /// Transient, document-owned exploded-view display state (never persisted,
+    /// never an undo command). The viewport applies its offsets instead of the
+    /// stored instance placements while a saved view is previewed; `scene` and
+    /// `assistantSelectionKey` read it so activation/reset repaints.
+    let explodedPreview: CADExplodedViewPreview
     var mode: EditorMode = .idle {
         didSet {
             if !mode.isSketching || mode.sketchTool != nil { sketchTransformActive = false }
@@ -75,6 +80,84 @@ final class EditorViewModel {
     /// it, and area selects add instead of replace. Boolean tool picking
     /// has its own always-additive tap flow and is unaffected.
     var selectionAdditive = false
+
+    /// Inputs for the trusted selection snapshot an assistant entry point
+    /// receives. The facade (`FloeCADDocument`) owns the package revision, so
+    /// the workbench view builds `CADSelectionContext` from this value; the
+    /// view model never invents a document identity.
+    struct AssistantSelectionInputs {
+        var bodyIDs: Set<BodyID>
+        var facePicks: [CADSelectionContext.FaceTrianglePick]
+        var edgePicks: [CADSelectionContext.EdgeSegmentPick]
+        var sketchID: SketchID?
+        var sketchEntityIDs: Set<UUID>
+        var instanceIDs: Set<UUID>
+    }
+
+    var assistantSelectionInputs: AssistantSelectionInputs {
+        var bodyIDs = selection
+        var facePicks: [CADSelectionContext.FaceTrianglePick] = []
+        switch mode {
+        case .selected(let id), .editingPrimitive(let id):
+            bodyIDs.insert(id)
+        case .faceSelected(let id):
+            bodyIDs.insert(id)
+            if let context = toolContext, !context.faceTriangles.isEmpty {
+                facePicks.append(CADSelectionContext.FaceTrianglePick(
+                    bodyID: id.raw,
+                    triangles: context.faceTriangles,
+                    curved: context.curvedRegion))
+            }
+        default:
+            break
+        }
+        var edgePicks: [CADSelectionContext.EdgeSegmentPick] = []
+        if let blendBodyID, !blendSelectedEdges.isEmpty {
+            bodyIDs.insert(blendBodyID)
+            edgePicks = blendSelectedEdges.map {
+                CADSelectionContext.EdgeSegmentPick(
+                    bodyID: blendBodyID.raw,
+                    start: SIMD3(Double($0.start.x), Double($0.start.y), Double($0.start.z)),
+                    end: SIMD3(Double($0.end.x), Double($0.end.y), Double($0.end.z)),
+                    isConvex: $0.isConvex)
+            }
+        }
+        let sketch = activeSketch ?? session.document.sketches.first { candidate in
+            !selectedSketchEntityIDs.isDisjoint(with: candidate.entities.map(\.id))
+        }
+        return AssistantSelectionInputs(
+            bodyIDs: bodyIDs,
+            facePicks: facePicks,
+            edgePicks: edgePicks,
+            sketchID: sketch?.id,
+            sketchEntityIDs: selectedSketchEntityIDs,
+            instanceIDs: selectedAssemblyInstances)
+    }
+
+    /// Cheap change key for the SwiftUI observer: it tracks every input the
+    /// context depends on without measuring meshes or reading B-reps. The
+    /// transient exploded preview belongs here too — it changes the placements
+    /// the viewport draws, and this key is the existing viewport-redraw trigger
+    /// (an edit alone must never repaint, a preview change must).
+    var assistantSelectionKey: String {
+        var parts: [String] = [
+            String(session.changeCount),
+            "preview:\(explodedPreview.revision)",
+            selection.map(\.raw.uuidString).sorted().joined(separator: ","),
+            selectedAssemblyInstances.map(\.uuidString).sorted().joined(separator: ","),
+            selectedSketchEntityIDs.map(\.uuidString).sorted().joined(separator: ","),
+            blendBodyID?.raw.uuidString ?? "-",
+            String(blendSelectedEdges.count),
+        ]
+        switch mode {
+        case .selected(let id): parts.append("selected:\(id.raw.uuidString)")
+        case .editingPrimitive(let id): parts.append("primitive:\(id.raw.uuidString)")
+        case .faceSelected(let id):
+            parts.append("face:\(id.raw.uuidString):\(toolContext?.faceTriangles.count ?? 0)")
+        default: parts.append("mode:other")
+        }
+        return parts.joined(separator: "#")
+    }
 
     weak var cameraControl: (any ViewportCameraControl)?
 
@@ -105,7 +188,9 @@ final class EditorViewModel {
     }
 
     init(project: Project, modelContext: CADModelContext) {
-        self.session = DocumentSession(project: project, modelContext: modelContext)
+        let session = DocumentSession(project: project, modelContext: modelContext)
+        self.session = session
+        self.explodedPreview = CADExplodedViewPreview.state(for: session)
         loadAutoConstrainSettings()
         reloadSceneSettings()
         // Data-safety warnings from load (newer-format store opens read-only,
@@ -117,6 +202,7 @@ final class EditorViewModel {
     /// headless command executor and the workbench UI share ONE document.
     init(session: DocumentSession) {
         self.session = session
+        self.explodedPreview = CADExplodedViewPreview.state(for: session)
         loadAutoConstrainSettings()
         reloadSceneSettings()
         errorMessage = session.loadWarning
@@ -635,6 +721,7 @@ final class EditorViewModel {
 
     var scene: ViewportScene {
         _ = session.changeCount // establish observation dependency
+        _ = explodedPreview.revision // …and the transient exploded preview
         var drawables: [BodyDrawable] = []
         // During a face push/pull, the preview IS the modified source body, so
         // hide the original to avoid it poking through the preview.
@@ -703,13 +790,23 @@ final class EditorViewModel {
         // selected instance highlights like a selected body. The scene reads
         // `assemblyData` through `session.changeCount`, so solve/update/hide/
         // delete/undo and reopen all refresh the visible placements.
+        //
+        // A transient exploded preview adds its saved view's offset to the
+        // BASE placement resolved live from the document — the stored instance
+        // transform is never rewritten, and a view that was removed or undone
+        // resolves to nil, so the assembly safely snaps back to the baseline.
         if let data = session.document.assemblyData,
            let assembly = try? CADAssembly.decode(from: data) {
+            let preview = CADExplodedViewPreview.current(for: session)
             for instance in assembly.instances where !instance.isHidden {
                 let effectiveID = instance.copiedBodyID ?? instance.bodyID
-                guard let source = session.document.bodies.first(where: { $0.id.raw == effectiveID }),
-                      instance.transform.isPlaceable else { continue }
-                let world = instance.transform.placement3D().composed(onto: source.transform)
+                guard let source = session.document.bodies.first(where: { $0.id.raw == effectiveID }) else {
+                    continue
+                }
+                let placement = preview?.transform(for: instance.id, in: assembly)
+                    ?? instance.transform
+                guard placement.isPlaceable else { continue }
+                let world = placement.placement3D().composed(onto: source.transform)
                 var state = SelectionStateNone.rawValue
                 if selectedAssemblyInstances.contains(instance.id) {
                     state = SelectionStateSelected.rawValue

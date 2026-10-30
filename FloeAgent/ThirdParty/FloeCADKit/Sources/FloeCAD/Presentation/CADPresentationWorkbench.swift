@@ -60,6 +60,7 @@ final class CADPresentationSceneStore {
     let document: FloeCADDocument
     private(set) var scene: CADPresentationScene?
     private(set) var lastChangeCount = -1
+    private var lastExplodedPreviewRevision = -1
     @ObservationIgnored private var observationTask: Task<Void, Never>?
 
     init(document: FloeCADDocument) {
@@ -68,7 +69,9 @@ final class CADPresentationSceneStore {
 
     func refresh(force: Bool = false) {
         let changeCount = document.liveChangeCount
+        let previewRevision = CADExplodedViewPreview.current(for: document.session)?.revision ?? 0
         if !force, scene != nil, changeCount == lastChangeCount,
+           previewRevision == lastExplodedPreviewRevision,
            scene?.documentRevision == document.revision {
             return
         }
@@ -77,6 +80,7 @@ final class CADPresentationSceneStore {
             snapshot: snapshot,
             documentKey: document.url.standardizedFileURL.path)
         lastChangeCount = changeCount
+        lastExplodedPreviewRevision = previewRevision
     }
 
     /// Bounded, cancellable subscription. Observation tracking alone cannot be
@@ -259,6 +263,13 @@ struct CADPresentationWorkbenchContent: View {
     @State private var showPNGExporter = false
     @State private var showGLBExporter = false
     @State private var exportError: String?
+    @State private var playback = CADAnimationPlaybackModel()
+    @State private var animationState = CADAnimationLoadState()
+    @State private var showTimeline = false
+    @State private var movieExport: MovieFileDocument?
+    @State private var showMovieExporter = false
+    @State private var exportProgress: CADAnimationExportProgress?
+    @State private var exportHandle: CADAnimationExportHandle?
 
     init(document: FloeCADDocument, canvasActions: CADCanvasActions?) {
         self.document = document
@@ -279,7 +290,25 @@ struct CADPresentationWorkbenchContent: View {
         }
         .overlay(alignment: .topTrailing) { modeChrome }
         .overlay(alignment: .bottom) {
-            if mode == .present { presentToolbar }
+            if mode == .present {
+                VStack(spacing: 8) {
+                    if showTimeline {
+                        CADAnimationTimelineView(
+                            document: document,
+                            handle: handle,
+                            playback: playback,
+                            state: animationState,
+                            onChanged: { refreshAnimation() })
+                            .padding(.horizontal, 12)
+                    }
+                    presentToolbar
+                }
+            }
+        }
+        .overlay {
+            if let progress = exportProgress, !progress.isFinished {
+                exportProgressCard(progress)
+            }
         }
         .sheet(isPresented: $showMaterialInspector) {
             CADMaterialInspectorView(
@@ -313,6 +342,11 @@ struct CADPresentationWorkbenchContent: View {
                       contentType: .data, defaultFilename: "\(document.name)") { _ in
             glbExport = nil
         }
+        .fileExporter(isPresented: $showMovieExporter, document: movieExport,
+                      contentType: .mpeg4Movie,
+                      defaultFilename: "\(document.name) animation") { _ in
+            movieExport = nil
+        }
         .alert(FloeCADStrings.text("cad.present.export.failed", "Couldn't export"),
                isPresented: Binding(
                 get: { exportError != nil },
@@ -321,11 +355,131 @@ struct CADPresentationWorkbenchContent: View {
         } message: {
             Text(exportError ?? "")
         }
+        .onAppear {
+            refreshAnimation(attach: true)
+        }
+        .onDisappear {
+            playback.stop()
+        }
+        .onChange(of: store.lastChangeCount) { _, _ in
+            refreshAnimation()
+        }
+        .onChange(of: handle.isReady) { _, ready in
+            if ready, mode == .present { refreshAnimation(attach: true) }
+        }
         .onChange(of: mode) { _, newMode in
             presentSink.endMaterialPreview()
             if newMode == .present {
                 store.refresh(force: true)
+                refreshAnimation(attach: true)
+                if !animationState.animation.isEmpty { showTimeline = true }
+            } else {
+                playback.stop()
             }
+        }
+    }
+
+    // MARK: Animation
+
+    private func refreshAnimation(attach: Bool = false) {
+        let next = document.animationLoadState()
+        animationState = next
+        if attach || playback.clipID == nil {
+            playback.attach(document: document, handle: handle,
+                            clipID: next.animation.activeClip?.id)
+        } else {
+            playback.documentDidChange(next)
+        }
+    }
+
+    private func exportProgressCard(_ progress: CADAnimationExportProgress) -> some View {
+        VStack(spacing: 10) {
+            ProgressView(value: progress.fraction)
+                .frame(width: 240)
+            Text(exportStatusText(progress))
+                .font(.callout)
+                .multilineTextAlignment(.center)
+            Button(FloeCADStrings.text("cad.animation.cancel", "Cancel")) {
+                if let exportHandle {
+                    document.cancelAnimationExport(exportHandle.id)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
+        .accessibilityIdentifier("CADAnimationExportProgress")
+    }
+
+    private func exportStatusText(_ progress: CADAnimationExportProgress) -> String {
+        switch progress.phase {
+        case .preparing:
+            return FloeCADStrings.text("cad.animation.export.preparing",
+                                       "Preparing video…")
+        case .rendering:
+            return FloeCADStrings.format(
+                "cad.animation.export.progress",
+                "Rendering %d of %d frames",
+                progress.completedFrames, progress.totalFrames)
+        case .finalizing:
+            return FloeCADStrings.text("cad.animation.export.finalizing",
+                                       "Finishing video…")
+        case .finished:
+            return FloeCADStrings.text("cad.animation.export.finished", "Video exported")
+        case .failed:
+            return FloeCADStrings.text("cad.animation.export.failed",
+                                       "Couldn't export the video.")
+        case .cancelled:
+            return FloeCADStrings.text("cad.animation.export.cancelled",
+                                       "Video export cancelled.")
+        }
+    }
+
+    private func exportVideo() {
+        guard animationState.activeClip != nil else {
+            exportError = FloeCADStrings.text("cad.animation.empty",
+                                              "Add a clip to animate the camera or parts.")
+            return
+        }
+        playback.pause()
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "\(document.name)-animation-\(UUID().uuidString).mp4")
+        let handle: CADAnimationExportHandle
+        do {
+            handle = try document.startAnimationExportMP4(
+                to: temporary, settings: .default) { progress in
+                    exportProgress = progress
+                }
+            exportHandle = handle
+        } catch {
+            exportError = error.localizedDescription
+            exportProgress = nil
+            return
+        }
+        Task {
+            let status = await document.waitForAnimationExport(handle.id)
+            exportHandle = nil
+            exportProgress = status.progress
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            guard let result = status.result else {
+                if !status.isCancelled {
+                    exportError = status.error
+                        ?? FloeCADStrings.text("cad.present.export.failed",
+                                               "Couldn't export")
+                }
+                return
+            }
+            guard let data = try? Data(contentsOf: result.url) else {
+                exportError = FloeCADStrings.text(
+                    "cad.animation.export.readFailed",
+                    "The exported video could not be read.")
+                return
+            }
+            movieExport = MovieFileDocument(data: data)
+            showMovieExporter = true
         }
     }
 
@@ -351,6 +505,12 @@ struct CADPresentationWorkbenchContent: View {
 
     private var presentToolbar: some View {
         HStack(spacing: 4) {
+            presentButton(FloeCADStrings.text("cad.animation.title", "Animation"),
+                          symbol: "timeline.selection",
+                          identifier: "CADPresentAnimation") {
+                showTimeline.toggle()
+                if showTimeline { refreshAnimation(attach: playback.clipID == nil) }
+            }
             presentButton(FloeCADStrings.text("cad.ui.tool.material", "Material"),
                           symbol: "paintpalette", identifier: "CADPresentMaterial") {
                 openMaterialInspector()
@@ -371,6 +531,14 @@ struct CADPresentationWorkbenchContent: View {
                     Label(FloeCADStrings.text("cad.present.export.png", "PNG image"),
                           systemImage: "photo")
                 }
+                Button {
+                    exportVideo()
+                } label: {
+                    Label(FloeCADStrings.text("cad.animation.export.video", "MP4 video"),
+                          systemImage: "film")
+                }
+                .disabled(animationState.activeClip == nil)
+
                 Button {
                     exportGLB()
                 } label: {
@@ -551,6 +719,15 @@ public final class CADPresentationCaptureRegistry {
         handles[key(for: document)]?.handle?.controller != nil
     }
 
+    /// The live Present handle for animation playback/capture/export. Nil when
+    /// Present is not showing this document; callers must report that instead
+    /// of substituting an image or an offscreen fake.
+    func activeHandle(for document: FloeCADDocument) -> CADPresentationHandle? {
+        guard let handle = handles[key(for: document)]?.handle,
+              handle.controller != nil else { return nil }
+        return handle
+    }
+
     public func capture(document: FloeCADDocument,
                         width: Int = 2048) async throws -> CADPresentationCapture {
         guard let handle = handles[key(for: document)]?.handle,
@@ -588,6 +765,21 @@ public final class CADPresentationCaptureRegistry {
 
 struct PNGFileDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.png] }
+    var data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+struct MovieFileDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.mpeg4Movie] }
     var data: Data
 
     init(data: Data) { self.data = data }

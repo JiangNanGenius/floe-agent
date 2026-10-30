@@ -31,17 +31,17 @@
 //    `meshRevision` from its load counter, so pages read stale after reopen
 //    until they are re-projected once. `pages` reports both the recorded and
 //    the live revision; a missing source body is always stale.
-//  * The persisted `CADDrawingPage` has no detail-window fields. To avoid
-//    changing an existing file, a `detail` page stores its window center in
-//    `sectionOrigin` (model-space point) and its window size as
-//    `sectionNormal = (width, height, 0)`. `sectionOrigin`/`sectionNormal` are
-//    deliberately not inherited across a kind change, so converting a detail
-//    page to another kind clears the window. `customWidthMM`/`customHeightMM`
-//    remain paper-only. This mapping is isolated in `buildPage`/
-//    `projectDetail`; the model should grow real `detailOrigin`/`detailSizeMM`
-//    fields when a schema bump is acceptable.
+//  * `CADDrawingPage` v2 stores the typed detail window (`detailOrigin` /
+//    `detailSizeMM`); v3 adds assembly-aware projection (`assemblyMode`,
+//    `explodedViewID`), BOM/balloons `showBOM`, `bom`, `balloons`, manual
+//    dimensions and text annotations. Every v3 field decodes to a default, so
+//    v1/v2 pages load unchanged. Ordinary pages keep projecting raw body
+//    transforms; only pages that ask for assembly mode project placed
+//    instances (shared bodies and independent copies) with their exploded
+//    view offsets. Paper/scale/title remain page data in both modes.
 //  * Export layers: GEOMETRY (outline/edges/section), DIMENSIONS,
-//    CENTERLINES, TITLE (sheet frame + title block + text). DXF is R12 ASCII,
+//    CENTERLINES, ANNOTATIONS (manual dimensions/balloons/text), BOM (sheet
+//    table) and TITLE (sheet frame + title block + text). DXF is R12 ASCII,
 //    `$INSUNITS` = 4 (mm), with a real LAYER table and TEXT entities.
 //  * Bounds: ≤ 64 pages per set, ≤ 12 source bodies per page. Mutating actions
 //    only edit `Project.drawingsData` and return `"mutated": true`; the host
@@ -84,6 +84,17 @@ public final class CADDrawingService {
         case "project": return projectAction(args)
         case "dimensions": return dimensionsAction(args)
         case "export": return exportAction(args)
+        case "assemblySheet": return assemblySheetAction(args)
+        case "setBOM": return setBOMAction(args)
+        case "addBalloon": return addBalloonAction(args)
+        case "updateBalloon": return updateBalloonAction(args)
+        case "removeBalloon": return removeBalloonAction(args)
+        case "addDimension": return addDimensionAction(args)
+        case "updateDimension": return updateDimensionAction(args)
+        case "removeDimension": return removeDimensionAction(args)
+        case "addAnnotation": return addAnnotationAction(args)
+        case "updateAnnotation": return updateAnnotationAction(args)
+        case "removeAnnotation": return removeAnnotationAction(args)
         default:
             return fail("unknown_action", "Unknown drawing action '\(action)'.")
         }
@@ -143,6 +154,7 @@ public final class CADDrawingService {
         case .failure(let error): return fail(error.code, error.message)
         case .success(let loaded): set = loaded
         }
+        let assembly = loadAssemblyValue()
         var rows: [[String: Any]] = []
         rows.reserveCapacity(set.pages.count)
         for page in set.pages {
@@ -155,6 +167,13 @@ public final class CADDrawingService {
             if !missing.isEmpty {
                 row["missingBodyIDs"] = missing.map(\.uuidString)
             }
+            let binding = pageBindingReport(page: page, assembly: assembly)
+            row["bindingIssueCount"] = binding.issueCount
+            row["bindingIssues"] = binding.messages
+            if !binding.missingInstanceIDs.isEmpty {
+                row["missingInstanceIDs"] = binding.missingInstanceIDs
+            }
+            if page.showBOM { row["bomCount"] = page.bom?.entries.count ?? 0 }
             rows.append(row)
         }
         return ["ok": true, "count": rows.count, "maxPages": Self.maxPages, "pages": rows]
@@ -174,10 +193,14 @@ public final class CADDrawingService {
         }
         let projection = projectPage(page)
         let dims = dimensions(for: page, projection: projection)
+        let manual = resolvedManualDimensions(page: page, projection: projection)
         return ["ok": true,
                 "pageID": id.uuidString,
                 "count": dims.count,
-                "dimensions": dims.map(dimensionPayload)]
+                "dimensions": dims.map(dimensionPayload),
+                "manualDimensions": manual.rows,
+                "manualDimensionCount": manual.rows.count,
+                "dimensionBindingIssues": manual.issues]
     }
 
     private func projectAction(_ args: [String: Any]) -> [String: Any] {
@@ -200,7 +223,9 @@ public final class CADDrawingService {
         // informational max meshRevision.
         var mutated = false
         let live = liveFingerprint(for: page)
-        if live.sources.allSatisfy({ !$0.missing }), !page.sourceBodyIDs.isEmpty {
+        let hasGeometry = !page.sourceBodyIDs.isEmpty
+            || !(live.instances ?? []).isEmpty
+        if live.sources.allSatisfy({ !$0.missing }), hasGeometry {
             let revision = maxMeshRevision(for: page)
             if page.sourceFingerprint != live || page.modelRevision != revision {
                 page.sourceFingerprint = live
@@ -344,6 +369,755 @@ public final class CADDrawingService {
         }
     }
 
+    // MARK: - Assembly sheet
+
+    /// Build the five-page assembly-aware sheet (front/top/side/iso/exploded)
+    /// from the SAME placed instances and optional exploded view. Paper,
+    /// scale and title are page data and stay editable per page afterwards.
+    private func assemblySheetAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let assembly = loadAssemblyValue(), !assembly.instances.isEmpty else {
+            return fail("empty_assembly", "Place assembly instances before creating an assembly drawing sheet.")
+        }
+        var bodyIDs: [UUID] = []
+        if let raw = args["bodyIDs"] ?? args["sourceBodyIDs"] {
+            guard let strings = raw as? [String] else {
+                return fail("bad_body_ids", "bodyIDs must be an array of body UUID strings.")
+            }
+            for string in strings {
+                guard let id = UUID(uuidString: string), body(for: id) != nil else {
+                    return fail("unknown_body", "bodyIDs must all reference live document bodies.")
+                }
+                bodyIDs.append(id)
+            }
+            guard bodyIDs.count <= Self.maxSourceBodies else {
+                return fail("too_many_bodies",
+                            "A page is bounded to \(Self.maxSourceBodies) source bodies.")
+            }
+            guard Set(bodyIDs).count == bodyIDs.count else {
+                return fail("duplicate_body", "bodyIDs must not repeat.")
+            }
+        }
+        var scale = 1.0
+        if let raw = args["scale"] {
+            guard let value = doubleValue(raw), value.isFinite, value > 0, value <= 1000 else {
+                return fail("bad_scale", "scale must be a finite number in (0, 1000].")
+            }
+            scale = value
+        }
+        var paper = CADPaperSize.a3
+        if let raw = args["paper"] {
+            guard let name = raw as? String, let parsed = CADPaperSize(rawValue: name) else {
+                return fail("unknown_paper",
+                            "paper must be a4, a3, a2, a1, a0, letter, tabloid or custom.")
+            }
+            paper = parsed
+        }
+        var explodedViewID: UUID?
+        if let raw = args["explodedViewID"], !(raw is NSNull) {
+            guard let id = uuidValue(raw), assembly.explodedView(id) != nil else {
+                return fail("unknown_exploded_view",
+                            "explodedViewID does not reference a stored exploded view.")
+            }
+            explodedViewID = id
+        }
+        let viewName = explodedViewID.flatMap { assembly.explodedView($0)?.name }
+        let title = (args["title"] as? String) ?? document.name
+        let sheet = CADDrawingSet.assemblySheet(bodyIDs: bodyIDs, title: title,
+                                                explodedViewID: explodedViewID,
+                                                explodedViewName: viewName,
+                                                scale: scale, paper: paper)
+        let replace = boolValue(args["replace"]) ?? false
+        var pages = replace ? [] : set.pages
+        pages.append(contentsOf: sheet.pages)
+        guard pages.count <= Self.maxPages else {
+            return fail("too_many_pages", "A drawing set is bounded to \(Self.maxPages) pages.")
+        }
+        var updated = set
+        updated.pages = pages
+        if let failure = persist(updated) { return failure }
+        return [
+            "ok": true,
+            "mutated": true,
+            "pageCount": updated.pages.count,
+            "createdIDs": sheet.pages.map(\.id.uuidString),
+            "pages": sheet.pages.map(pagePayload),
+            "explodedViewID": (explodedViewID?.uuidString as Any?) ?? NSNull(),
+        ]
+    }
+
+    // MARK: - BOM
+
+    /// Derive (or explicitly replace) the page BOM. Shared instances of one
+    /// part definition group into one row with a quantity; an independent
+    /// copy owns its own body and therefore its own row.
+    private func setBOMAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let id = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        let assembly = loadAssemblyValue()
+        if let rawEntries = args["entries"] as? [[String: Any]] {
+            var entries: [CADDrawingBOMEntry] = []
+            var numbers = Set<Int>()
+            for raw in rawEntries {
+                guard let number = intValue(raw["itemNumber"]), number > 0 else {
+                    return fail("bad_item_number", "Every BOM entry needs a positive itemNumber.")
+                }
+                guard numbers.insert(number).inserted else {
+                    return fail("duplicate_item_number", "BOM item numbers must be unique.")
+                }
+                guard let name = (raw["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !name.isEmpty else {
+                    return fail("bad_bom_name", "Every BOM entry needs a non-empty name.")
+                }
+                guard let bodyID = uuidValue(raw["bodyID"]), body(for: bodyID) != nil else {
+                    return fail("unknown_body", "Every BOM entry bodyID must reference a live body.")
+                }
+                var instanceIDs: [UUID] = []
+                if let rawIDs = raw["instanceIDs"] as? [String] {
+                    for text in rawIDs {
+                        guard let instanceID = UUID(uuidString: text),
+                              let instance = assembly?.instance(instanceID) else {
+                            return fail("unknown_instance",
+                                        "BOM entry instanceIDs must reference live instances.")
+                        }
+                        instanceIDs.append(instance.id)
+                    }
+                }
+                let quantity = intValue(raw["quantity"]) ?? max(instanceIDs.count, 1)
+                guard quantity > 0 else {
+                    return fail("bad_quantity", "BOM quantity must be positive.")
+                }
+                entries.append(CADDrawingBOMEntry(
+                    id: uuidValue(raw["id"]) ?? UUID(),
+                    itemNumber: number,
+                    name: name,
+                    partNumber: (raw["partNumber"] as? String) ?? "",
+                    bodyID: bodyID,
+                    instanceIDs: instanceIDs,
+                    quantity: quantity))
+            }
+            entries.sort { $0.itemNumber < $1.itemNumber }
+            page.bom = CADDrawingBOM(entries: entries)
+            page.showBOM = boolValue(args["showBOM"]) ?? true
+            var updated = set
+            updated.pages[index] = page
+            if let failure = persist(updated) { return failure }
+            var reply = bomReply(page: page, assembly: assembly)
+            reply["mutated"] = true
+            return reply
+        }
+
+        guard let assembly else {
+            return fail("empty_assembly", "There is no assembly data to derive a BOM from.")
+        }
+        let filter = Set(page.sourceBodyIDs)
+        // Explicit BOMs may intentionally list one body twice (different
+        // items); keep the first row as the stable id/number source instead of
+        // trapping on duplicate dictionary keys.
+        var oldByBody: [UUID: CADDrawingBOMEntry] = [:]
+        for old in page.bom?.entries ?? [] where oldByBody[old.bodyID] == nil {
+            oldByBody[old.bodyID] = old
+        }
+        var groups: [(bodyID: UUID, instances: [CADAssemblyInstance])] = []
+        var indexByBody: [UUID: Int] = [:]
+        for instance in assembly.instances where !instance.isHidden {
+            let bodyID = effectiveBodyID(instance)
+            guard filter.isEmpty || filter.contains(bodyID) else { continue }
+            if let existing = indexByBody[bodyID] {
+                groups[existing].instances.append(instance)
+            } else {
+                indexByBody[bodyID] = groups.count
+                groups.append((bodyID, [instance]))
+            }
+        }
+        guard !groups.isEmpty else {
+            return fail("empty_bom", "No visible instance matches this page's source bodies.")
+        }
+        var usedNumbers = Set<Int>()
+        for old in page.bom?.entries ?? [] { usedNumbers.insert(old.itemNumber) }
+        var nextNumber = 1
+        var entries: [CADDrawingBOMEntry] = []
+        for group in groups {
+            let bodyName = body(for: group.bodyID)?.name
+            let name = bodyName ?? group.instances.first?.name ?? "Part"
+            let old = oldByBody[group.bodyID]
+            var number = old?.itemNumber ?? 0
+            if number <= 0 {
+                while usedNumbers.contains(nextNumber) { nextNumber += 1 }
+                number = nextNumber
+                usedNumbers.insert(number)
+            }
+            entries.append(CADDrawingBOMEntry(
+                id: old?.id ?? UUID(),
+                itemNumber: number,
+                name: name,
+                partNumber: old?.partNumber ?? "",
+                bodyID: group.bodyID,
+                instanceIDs: group.instances.map(\.id),
+                quantity: group.instances.count))
+        }
+        entries.sort { $0.itemNumber < $1.itemNumber }
+        page.bom = CADDrawingBOM(entries: entries)
+        page.showBOM = boolValue(args["showBOM"]) ?? true
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        var reply = bomReply(page: page, assembly: assembly)
+        reply["ok"] = true
+        reply["mutated"] = true
+        return reply
+    }
+
+    // MARK: - Balloons
+
+    private func addBalloonAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let id = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard page.balloons.count < 128 else {
+            return fail("too_many_balloons", "A page is bounded to 128 balloons.")
+        }
+        let assembly = loadAssemblyValue()
+        var itemNumber = intValue(args["itemNumber"]) ?? 0
+        var bomEntryID = uuidValue(args["bomEntryID"])
+        if let bomEntryID, let entry = page.bom?.entry(id: bomEntryID) {
+            itemNumber = entry.itemNumber
+        } else if bomEntryID != nil {
+            return fail("unknown_bom_item", "bomEntryID does not reference this page's BOM.")
+        }
+        if itemNumber <= 0 {
+            return fail("bad_item_number", "A balloon needs a positive itemNumber or a BOM entry.")
+        }
+        if let bom = page.bom, !bom.entries.isEmpty {
+            guard let entry = bom.entry(itemNumber: itemNumber) else {
+                return fail("unknown_bom_item",
+                            "Item \(itemNumber) is not in this page's BOM; refresh the BOM first.")
+            }
+            bomEntryID = entry.id
+        }
+        var instance: CADAssemblyInstance?
+        if let instanceID = uuidValue(args["instanceID"]) {
+            guard let live = assembly?.instance(instanceID) else {
+                return fail("unknown_instance", "instanceID must reference a live assembly instance.")
+            }
+            instance = live
+        } else if let bomEntryID, let entry = page.bom?.entry(id: bomEntryID),
+                  let firstID = entry.instanceIDs.first {
+            instance = assembly?.instance(firstID)
+        }
+        guard let instance else {
+            return fail("missing_instance",
+                        "A balloon needs an assembly instance (or a BOM item with instances).")
+        }
+        let projection = projectPage(page)
+        let anchor: SIMD2<Double>
+        if let raw = args["anchor"] {
+            guard let parsed = point2(raw) else {
+                return fail("bad_anchor", "anchor must be a finite [x,y] drawing point.")
+            }
+            anchor = parsed
+        } else {
+            anchor = autoBalloonAnchor(instanceID: instance.id,
+                                       page: page, projection: projection)
+        }
+        var target: SIMD2<Double>?
+        if let raw = args["target"], !(raw is NSNull) {
+            guard let parsed = point2(raw) else {
+                return fail("bad_target", "target must be a finite [x,y] drawing point.")
+            }
+            target = parsed
+        }
+        let balloon = CADDrawingBalloon(
+            id: UUID(),
+            itemNumber: itemNumber,
+            bomEntryID: bomEntryID,
+            instanceID: instance.id,
+            anchor: anchor,
+            target: target,
+            text: args["text"] as? String)
+        page.balloons.append(balloon)
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        let rows = resolvedBalloons(page: page, projection: projection)
+        var reply: [String: Any] = ["ok": true, "mutated": true,
+                                    "balloon": rows.first { ($0["id"] as? String) == balloon.id.uuidString } ?? [:]]
+        reply["balloons"] = rows
+        return reply
+    }
+
+    private func updateBalloonAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let id = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard let balloonID = uuidValue(args["balloonID"]) ?? uuidValue(args["balloonId"]),
+              let balloonIndex = page.balloons.firstIndex(where: { $0.id == balloonID }) else {
+            return fail("unknown_balloon", "No balloon with that id on this page.")
+        }
+        var balloon = page.balloons[balloonIndex]
+        if let raw = args["anchor"] {
+            guard let parsed = point2(raw) else {
+                return fail("bad_anchor", "anchor must be a finite [x,y] drawing point.")
+            }
+            balloon.anchor = parsed
+        }
+        if args.keys.contains("target") {
+            if args["target"] == nil || args["target"] is NSNull {
+                balloon.target = nil
+            } else {
+                guard let parsed = point2(args["target"]) else {
+                    return fail("bad_target", "target must be a finite [x,y] drawing point.")
+                }
+                balloon.target = parsed
+            }
+        }
+        if let text = args["text"] as? String {
+            balloon.text = text
+        }
+        if let number = intValue(args["itemNumber"]), number > 0 {
+            balloon.itemNumber = number
+            balloon.bomEntryID = page.bom?.entry(itemNumber: number)?.id
+        }
+        if let instanceID = uuidValue(args["instanceID"]) {
+            guard loadAssemblyValue()?.instance(instanceID) != nil else {
+                return fail("unknown_instance", "instanceID must reference a live assembly instance.")
+            }
+            balloon.instanceID = instanceID
+        }
+        page.balloons[balloonIndex] = balloon
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        let rows = resolvedBalloons(page: page, projection: projectPage(page))
+        return ["ok": true, "mutated": true,
+                "balloon": rows.first { ($0["id"] as? String) == balloon.id.uuidString } ?? [:],
+                "balloons": rows]
+    }
+
+    private func removeBalloonAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let id = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard let balloonID = uuidValue(args["balloonID"]) ?? uuidValue(args["balloonId"]),
+              page.balloons.contains(where: { $0.id == balloonID }) else {
+            return fail("unknown_balloon", "No balloon with that id on this page.")
+        }
+        page.balloons.removeAll { $0.id == balloonID }
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true, "removedBalloon": balloonID.uuidString,
+                "balloonCount": page.balloons.count]
+    }
+
+    // MARK: - Manual dimensions
+
+    private func addDimensionAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let id = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard page.manualDimensions.count < 128 else {
+            return fail("too_many_dimensions", "A page is bounded to 128 manual dimensions.")
+        }
+        guard let rawKind = args["kind"] as? String,
+              let kind = CADDrawingDimensionKind(rawValue: rawKind) else {
+            return fail("unknown_dimension_kind",
+                        "kind must be length, angle, radius or diameter.")
+        }
+        let required = kind == .angle ? 3 : 2
+        var drawingPoints: [SIMD2<Double>] = []
+        if let raw = args["drawingPoints"] {
+            guard let rows = raw as? [[Double]] else {
+                return fail("bad_points", "drawingPoints must be an array of [x,y] points.")
+            }
+            guard rows.count == required else {
+                return fail("bad_points", "\(kind.rawValue) needs \(required) drawing points.")
+            }
+            drawingPoints = rows.compactMap { row in
+                row.count == 2 && row.allSatisfy(\.isFinite)
+                    ? SIMD2<Double>(row[0], row[1]) : nil
+            }
+            guard drawingPoints.count == required else {
+                return fail("bad_points", "drawingPoints must all be finite [x,y] pairs.")
+            }
+        }
+        var modelPoints: [SIMD3<Double>] = []
+        if let raw = args["modelPoints"] {
+            guard let rows = raw as? [[Double]] else {
+                return fail("bad_model_points", "modelPoints must be an array of [x,y,z] points.")
+            }
+            guard rows.count == required else {
+                return fail("bad_model_points",
+                            "\(kind.rawValue) needs \(required) body-local model points.")
+            }
+            modelPoints = rows.compactMap { row in
+                row.count == 3 && row.allSatisfy(\.isFinite)
+                    ? SIMD3<Double>(row[0], row[1], row[2]) : nil
+            }
+            guard modelPoints.count == required else {
+                return fail("bad_model_points",
+                            "modelPoints must all be finite [x,y,z] pairs.")
+            }
+        }
+        if modelPoints.isEmpty && drawingPoints.isEmpty {
+            return fail("bad_points",
+                        "Provide drawingPoints (page space) or modelPoints with an instance binding.")
+        }
+        var instance: CADAssemblyInstance?
+        var source: Body?
+        if let instanceID = uuidValue(args["instanceID"]) {
+            guard let live = loadAssemblyValue()?.instance(instanceID) else {
+                return fail("unknown_instance", "instanceID must reference a live assembly instance.")
+            }
+            guard let body = body(for: effectiveBodyID(live)) else {
+                return fail("unknown_body", "The instance's source body no longer resolves.")
+            }
+            instance = live
+            source = body
+        }
+        let plane = plane(for: page)
+        if !modelPoints.isEmpty, instance == nil {
+            return fail("missing_instance",
+                        "Body-local modelPoints need an assembly instance frame.")
+        }
+        if modelPoints.isEmpty {
+            guard let plane else {
+                return fail("bad_view_direction", "The page's view direction is invalid.")
+            }
+            guard let instance, let source else {
+                return fail("missing_instance",
+                            "A dimension from drawing points must reference an assembly instance; "
+                            + "pass modelPoints with a page-local frame only when bound.")
+            }
+            guard let world = instanceWorldTransform(instance: instance, source: source, page: page) else {
+                return fail("unknown_instance", "The instance transform is not placeable.")
+            }
+            for point in drawingPoints {
+                guard let local = bodyLocalPointFromDrawing(point, page: page, plane: plane,
+                                                           world: world, source: source) else {
+                    return fail("bad_points", "A drawing point could not be mapped onto the part.")
+                }
+                modelPoints.append(local)
+            }
+        } else if drawingPoints.isEmpty {
+            guard let plane, let instance, let source,
+                  let world = instanceWorldTransform(instance: instance, source: source, page: page) else {
+                return fail("bad_points",
+                            "The page view or instance transform cannot project the model points.")
+            }
+            for point in modelPoints {
+                guard let drawing = drawingPointFromBodyLocal(point, page: page,
+                                                              plane: plane, world: world) else {
+                    return fail("bad_points", "A model point could not be projected.")
+                }
+                drawingPoints.append(drawing)
+            }
+        }
+        let value: Double
+        switch kind {
+        case .length:
+            value = simd_distance(modelPoints[0], modelPoints[1])
+        case .angle:
+            let a = modelPoints[1] - modelPoints[0]
+            let b = modelPoints[2] - modelPoints[0]
+            guard simd_length(a) > 1e-12, simd_length(b) > 1e-12 else {
+                return fail("bad_points", "Angle references need two non-zero rays.")
+            }
+            value = acos(min(max(simd_dot(simd_normalize(a), simd_normalize(b)), -1), 1))
+                * 180 / .pi
+        case .radius:
+            value = simd_distance(modelPoints[0], modelPoints[1])
+        case .diameter:
+            value = simd_distance(modelPoints[0], modelPoints[1]) * 2
+        }
+        guard value.isFinite, value >= 0 else {
+            return fail("bad_value", "The dimension value is not finite.")
+        }
+        var textPosition: SIMD2<Double>
+        if let raw = args["textPosition"] {
+            guard let parsed = point2(raw) else {
+                return fail("bad_text_position", "textPosition must be a finite [x,y] point.")
+            }
+            textPosition = parsed
+        } else {
+            textPosition = defaultDimensionTextPosition(kind: kind, points: drawingPoints)
+        }
+        let binding = instance.flatMap { instance -> CADDrawingBinding? in
+            guard let source else { return nil }
+            return CADDrawingBinding(instanceID: instance.id,
+                                     bodyID: source.id.raw,
+                                     modelPoints: modelPoints,
+                                     sourceRevision: source.meshRevision)
+        }
+        let dimension = CADDrawingManualDimension(
+            id: UUID(), kind: kind, drawingPoints: drawingPoints, value: value,
+            textPosition: textPosition,
+            textOverride: args["text"] as? String, binding: binding)
+        page.manualDimensions.append(dimension)
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        let resolved = resolvedManualDimensions(page: page, projection: projectPage(page))
+        return ["ok": true, "mutated": true,
+                "dimension": resolved.rows.first { ($0["id"] as? String) == dimension.id.uuidString } ?? [:],
+                "manualDimensions": resolved.rows]
+    }
+
+    private func updateDimensionAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let id = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard let dimensionID = uuidValue(args["dimensionID"]),
+              let dimensionIndex = page.manualDimensions.firstIndex(where: { $0.id == dimensionID }) else {
+            return fail("unknown_dimension", "No manual dimension with that id on this page.")
+        }
+        var dimension = page.manualDimensions[dimensionIndex]
+        if let raw = args["textPosition"] {
+            guard let parsed = point2(raw) else {
+                return fail("bad_text_position", "textPosition must be a finite [x,y] point.")
+            }
+            dimension.textPosition = parsed
+        }
+        if args.keys.contains("text") {
+            dimension.textOverride = args["text"] as? String
+        }
+        page.manualDimensions[dimensionIndex] = dimension
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        let resolved = resolvedManualDimensions(page: page, projection: projectPage(page))
+        return ["ok": true, "mutated": true,
+                "dimension": resolved.rows.first { ($0["id"] as? String) == dimension.id.uuidString } ?? [:],
+                "manualDimensions": resolved.rows]
+    }
+
+    private func removeDimensionAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let id = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard let dimensionID = uuidValue(args["dimensionID"]),
+              page.manualDimensions.contains(where: { $0.id == dimensionID }) else {
+            return fail("unknown_dimension", "No manual dimension with that id on this page.")
+        }
+        page.manualDimensions.removeAll { $0.id == dimensionID }
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true, "removedDimension": dimensionID.uuidString,
+                "manualDimensionCount": page.manualDimensions.count]
+    }
+
+    // MARK: - Text annotations
+
+    private func addAnnotationAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let id = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard page.annotations.count < 128 else {
+            return fail("too_many_annotations", "A page is bounded to 128 text annotations.")
+        }
+        guard let text = (args["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty, text.count <= 500 else {
+            return fail("bad_text", "text must be a non-empty string of at most 500 characters.")
+        }
+        guard let rawPosition = args["position"], let position = point2(rawPosition) else {
+            return fail("bad_position", "position must be a finite [x,y] drawing point.")
+        }
+        var height = 3.5
+        if let raw = args["heightMM"] {
+            guard let value = doubleValue(raw), value.isFinite, value >= 0.5, value <= 50 else {
+                return fail("bad_height", "heightMM must be a finite number in [0.5, 50].")
+            }
+            height = value
+        }
+        var binding: CADDrawingBinding?
+        if let instanceID = uuidValue(args["instanceID"]) {
+            guard let instance = loadAssemblyValue()?.instance(instanceID),
+                  let source = body(for: effectiveBodyID(instance)) else {
+                return fail("unknown_instance", "instanceID must reference a live assembly instance.")
+            }
+            guard let plane = plane(for: page),
+                  let world = instanceWorldTransform(instance: instance, source: source, page: page),
+                  let local = bodyLocalPointFromDrawing(position, page: page, plane: plane,
+                                                       world: world, source: source) else {
+                return fail("bad_position", "The annotation position could not be bound to the part.")
+            }
+            binding = CADDrawingBinding(instanceID: instance.id, bodyID: source.id.raw,
+                                        modelPoints: [local],
+                                        sourceRevision: source.meshRevision)
+        }
+        let annotation = CADDrawingTextAnnotation(
+            id: UUID(), text: text, position: position,
+            heightMM: height, binding: binding)
+        page.annotations.append(annotation)
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true,
+                "annotation": annotationRow(annotation, page: page,
+                                            projection: projectPage(page))]
+    }
+
+    private func updateAnnotationAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let id = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard let annotationID = uuidValue(args["annotationID"]),
+              let annotationIndex = page.annotations.firstIndex(where: { $0.id == annotationID }) else {
+            return fail("unknown_annotation", "No text annotation with that id on this page.")
+        }
+        var annotation = page.annotations[annotationIndex]
+        if let text = (args["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            guard !text.isEmpty, text.count <= 500 else {
+                return fail("bad_text", "text must be a non-empty string of at most 500 characters.")
+            }
+            annotation.text = text
+        }
+        if let raw = args["position"] {
+            guard let parsed = point2(raw) else {
+                return fail("bad_position", "position must be a finite [x,y] drawing point.")
+            }
+            annotation.position = parsed
+            if let binding = annotation.binding,
+               let instance = loadAssemblyValue()?.instance(binding.instanceID ?? UUID()),
+               let source = binding.bodyID.flatMap({ body(for: $0) })
+                    ?? body(for: effectiveBodyID(instance)),
+               let plane = plane(for: page),
+               let world = instanceWorldTransform(instance: instance, source: source, page: page),
+               let local = bodyLocalPointFromDrawing(parsed, page: page, plane: plane,
+                                                     world: world, source: source) {
+                annotation.binding = CADDrawingBinding(
+                    instanceID: instance.id, bodyID: source.id.raw,
+                    modelPoints: [local],
+                    sourceRevision: source.meshRevision)
+            }
+        }
+        if let raw = args["heightMM"] {
+            guard let value = doubleValue(raw), value.isFinite, value >= 0.5, value <= 50 else {
+                return fail("bad_height", "heightMM must be a finite number in [0.5, 50].")
+            }
+            annotation.heightMM = value
+        }
+        page.annotations[annotationIndex] = annotation
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true,
+                "annotation": annotationRow(annotation, page: page,
+                                            projection: projectPage(page))]
+    }
+
+    private func removeAnnotationAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let id = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard let annotationID = uuidValue(args["annotationID"]),
+              page.annotations.contains(where: { $0.id == annotationID }) else {
+            return fail("unknown_annotation", "No text annotation with that id on this page.")
+        }
+        page.annotations.removeAll { $0.id == annotationID }
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true, "removedAnnotation": annotationID.uuidString,
+                "annotationCount": page.annotations.count]
+    }
+
     // MARK: - Page construction / validation
 
     private func buildPage(args: [String: Any],
@@ -354,7 +1128,7 @@ public final class CADDrawingService {
             guard let name = raw as? String, let parsed = CADDrawingViewKind(rawValue: name) else {
                 return .failure(CADDrawingServiceError(
                     code: "unknown_kind",
-                    message: "kind must be front, top, side, iso, section or detail."))
+                    message: "kind must be front, top, side, iso, section, detail or exploded."))
             }
             kind = parsed
         } else if let existing {
@@ -578,6 +1352,55 @@ public final class CADDrawingService {
             name = value
         }
 
+        // Assembly-aware projection. A page only switches to placed instances
+        // when it explicitly asks (or is an exploded view); ordinary pages
+        // keep projecting raw body transforms exactly as before.
+        var assemblyMode = existing?.assemblyMode ?? false
+        if let raw = args["assemblyMode"] {
+            guard let value = boolValue(raw) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_flag", message: "assemblyMode must be a boolean."))
+            }
+            assemblyMode = value
+        }
+        if kind == .exploded { assemblyMode = true }
+        var explodedViewID = existing?.explodedViewID
+        if args.keys.contains("explodedViewID") {
+            let raw = args["explodedViewID"]
+            if raw == nil || raw is NSNull {
+                explodedViewID = nil
+            } else {
+                guard let id = uuidValue(raw) else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_view_id", message: "explodedViewID must be an exploded-view UUID."))
+                }
+                guard let assembly = loadAssemblyValue(),
+                      assembly.explodedView(id) != nil else {
+                    return .failure(CADDrawingServiceError(
+                        code: "unknown_exploded_view",
+                        message: "explodedViewID does not reference a stored exploded view."))
+                }
+                explodedViewID = id
+            }
+        }
+        if explodedViewID != nil { assemblyMode = true }
+        var explodedViewName = existing?.explodedViewName
+        if let id = explodedViewID,
+           let view = loadAssemblyValue()?.explodedView(id) {
+            explodedViewName = view.name
+        } else if args.keys.contains("explodedViewName") {
+            explodedViewName = args["explodedViewName"] as? String
+        }
+
+        var showBOM = existing?.showBOM ?? false
+        if let raw = args["showBOM"] {
+            guard let value = boolValue(raw) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_flag", message: "showBOM must be a boolean."))
+            }
+            showBOM = value
+        }
+
         var page = CADDrawingPage(
             id: existing?.id ?? UUID(),
             name: name,
@@ -595,7 +1418,15 @@ public final class CADDrawingService {
             detailSizeMM: detailSizeMM,
             modelRevision: nil,
             showCenterlines: showCenterlines,
-            showDimensions: showDimensions)
+            showDimensions: showDimensions,
+            assemblyMode: assemblyMode,
+            explodedViewID: explodedViewID,
+            explodedViewName: explodedViewName,
+            showBOM: showBOM,
+            bom: existing?.bom,
+            balloons: existing?.balloons ?? [],
+            manualDimensions: existing?.manualDimensions ?? [],
+            annotations: existing?.annotations ?? [])
         page.customWidthMM = customWidth
         page.customHeightMM = customHeight
         return .success(page)
@@ -607,6 +1438,7 @@ public final class CADDrawingService {
         case .top: return SIMD3(0, 0, 1)
         case .side: return SIMD3(1, 0, 0)
         case .iso: return SIMD3(1, -1, 1)
+        case .exploded: return SIMD3(1, -1, 1)
         case .section: return SIMD3(0, 0, 1)
         case .detail: return SIMD3(0, -1, 0)
         }
@@ -614,25 +1446,135 @@ public final class CADDrawingService {
 
     // MARK: - Projection
 
-    private func projectPage(_ page: CADDrawingPage) -> PageProjection {
-        let bodies = page.sourceBodyIDs.compactMap { body(for: $0) }
-        let missing = page.sourceBodyIDs.filter { body(for: $0) == nil }
-        var notes: [String] = []
-        if !missing.isEmpty {
-            notes.append("\(missing.count) source body id(s) no longer resolve; "
-                       + "their geometry is omitted.")
+    /// Resolved geometry inputs for one page. In assembly mode these are the
+    /// actual placed instances (base placement + optional exploded offset),
+    /// never the raw source-body transforms; ordinary pages keep the previous
+    /// body-id behaviour.
+    private func projectionSources(for page: CADDrawingPage) -> ResolvedProjectionSources {
+        var result = ResolvedProjectionSources()
+        let assemblyAware = page.assemblyMode || page.kind == .exploded
+            || page.explodedViewID != nil
+        guard assemblyAware else {
+            for id in page.sourceBodyIDs {
+                if let body = body(for: id) {
+                    result.sources.append(ProjectionSource(instanceID: nil,
+                                                           name: body.name,
+                                                           body: body))
+                } else {
+                    result.missingBodies.append(id)
+                }
+            }
+            if !result.missingBodies.isEmpty {
+                result.notes.append("\(result.missingBodies.count) source body id(s) no longer resolve; "
+                                    + "their geometry is omitted.")
+            }
+            return result
         }
+
+        guard let data = document.session.document.assemblyData, !data.isEmpty else {
+            result.notes.append("This page projects assembly instances, but the document has no assembly data.")
+            return result
+        }
+        let assembly: CADAssembly
+        do {
+            assembly = try CADAssembly.decode(from: data)
+        } catch {
+            result.notes.append("The stored assembly JSON could not be read; the page projected nothing.")
+            return result
+        }
+        let view = page.explodedViewID.flatMap { assembly.explodedView($0) }
+        if let id = page.explodedViewID, view == nil {
+            result.notes.append("Exploded view \(page.explodedViewName ?? id.uuidString) no longer exists; "
+                                + "the base placements were projected instead.")
+        }
+        result.explodedViewID = view?.id
+        result.explodedViewName = view?.name ?? page.explodedViewName
+
+        let filter = Set(page.sourceBodyIDs)
+        let maxInstances = 64
+        var instances = assembly.instances.filter { !$0.isHidden }
+        if !filter.isEmpty {
+            instances = instances.filter { filter.contains($0.copiedBodyID ?? $0.bodyID) }
+            let used = Set(instances.map { $0.copiedBodyID ?? $0.bodyID })
+            let unused = filter.subtracting(used)
+            if !unused.isEmpty {
+                result.notes.append("\(unused.count) source body id(s) have no visible assembly instance.")
+            }
+        }
+        if instances.count > maxInstances {
+            instances = Array(instances.prefix(maxInstances))
+            result.notes.append("Projection is bounded to \(maxInstances) assembly instances; "
+                                + "later instances were omitted.")
+        }
+        if instances.isEmpty {
+            result.notes.append("No visible assembly instance matches this page's source bodies.")
+        }
+
+        for instance in instances {
+            let sourceID = instance.copiedBodyID ?? instance.bodyID
+            guard let source = body(for: sourceID) else {
+                result.missingBodies.append(sourceID)
+                result.missingInstances.append(instance.id)
+                continue
+            }
+            guard instance.transform.isPlaceable else {
+                result.missingInstances.append(instance.id)
+                result.notes.append("Instance \(instance.name) has a non-placeable transform and was omitted.")
+                continue
+            }
+            var world = instance.transform.placement3D().composed(onto: source.transform)
+            if let view {
+                let offset = view.offset(for: instance.id)
+                if offset != .zero {
+                    world = Transform3D(translation: offset).composed(onto: world)
+                }
+            }
+            var placed = Body(id: BodyID(raw: instance.id),
+                              name: instance.name,
+                              transform: world,
+                              render: source.render,
+                              edges: source.edges,
+                              revision: source.meshRevision)
+            // The B-rep is body-local and immutable; carrying it lets exact
+            // section/circle work run on the placed transform.
+            placed.brep = source.brep
+            result.sources.append(ProjectionSource(instanceID: instance.id,
+                                                   name: instance.name,
+                                                   body: placed))
+        }
+        if !result.missingInstances.isEmpty {
+            result.notes.append("\(result.missingInstances.count) placed instance(s) no longer resolve a body.")
+        }
+        return result
+    }
+
+    private func projectPage(_ page: CADDrawingPage) -> PageProjection {
+        let resolved = projectionSources(for: page)
+        var notes = resolved.notes
         guard page.scale.isFinite, page.scale > 0 else {
             notes.append("page scale is invalid; nothing was projected.")
-            return PageProjection(entities: [], notes: notes, missing: missing)
+            return PageProjection(entities: [], notes: notes,
+                                  missing: resolved.missingBodies,
+                                  missingInstances: resolved.missingInstances,
+                                  explodedViewID: resolved.explodedViewID,
+                                  explodedViewName: resolved.explodedViewName)
         }
+        let header = PageProjection(entities: [], notes: notes,
+                                    missing: resolved.missingBodies,
+                                    missingInstances: resolved.missingInstances,
+                                    explodedViewID: resolved.explodedViewID,
+                                    explodedViewName: resolved.explodedViewName)
+        guard !resolved.sources.isEmpty else { return header }
         switch page.kind {
         case .section:
-            return projectSection(page, bodies: bodies, missing: missing, notes: notes)
-        case .front, .top, .side, .iso:
-            return projectView(page, bodies: bodies, missing: missing, notes: notes)
+            return projectSection(page, sources: resolved.sources,
+                                  header: header)
+        case .front, .top, .side, .iso, .exploded:
+            return projectView(page, sources: resolved.sources,
+                               header: header)
         case .detail:
-            return projectDetail(page, bodies: bodies, missing: missing, notes: notes)
+            return projectDetail(page, sources: resolved.sources,
+                                 header: header)
         }
     }
 
@@ -653,49 +1595,56 @@ public final class CADDrawingService {
         return SketchPlane(origin: .zero, xAxis: frame.xAxis, yAxis: frame.yAxis)
     }
 
-    private func projectView(_ page: CADDrawingPage, bodies: [Body],
-                             missing: [UUID], notes: [String]) -> PageProjection {
+    private func projectView(_ page: CADDrawingPage, sources: [ProjectionSource],
+                             header: PageProjection) -> PageProjection {
         guard let plane = plane(for: page) else {
-            return PageProjection(entities: [], notes: notes + ["view direction is invalid"],
-                                  missing: missing)
+            var result = header
+            result.notes.append("view direction is invalid")
+            return result
         }
-        var outline: [ProjectedEntity] = []
-        var edges: [ProjectedEntity] = []
-        for body in bodies {
-            outline.append(contentsOf: ProjectionKit.projectSilhouette(body: body, onto: plane)
-                .map { convert($0, layer: "outline") })
-            edges.append(contentsOf: ProjectionKit.project(body: body, onto: plane)
-                .map { convert($0, layer: "edges") })
+        var entities: [ProjectedEntity] = []
+        var groups: [UUID: [ProjectedEntity]] = [:]
+        for source in sources {
+            let outline = ProjectionKit.projectSilhouette(body: source.body, onto: plane)
+                .map { convert($0, layer: "outline") }
+            let edges = ProjectionKit.project(body: source.body, onto: plane)
+                .map { convert($0, layer: "edges") }
+            let exact = exactCylinderCircles(bodies: [source.body], plane: plane,
+                                             normal: plane.normal)
+            var projected = dedupe(circularize(outline, exact: exact)
+                                    + circularize(edges, exact: exact))
+            projected = projected.map { $0.scaled(by: page.scale) }
+            entities.append(contentsOf: projected)
+            if let id = source.instanceID {
+                groups[id, default: []].append(contentsOf: projected)
+            }
         }
-        // Exact analytic circle radii, when the view looks down a cylinder axis.
-        let exact = exactCylinderCircles(bodies: bodies, plane: plane, normal: plane.normal)
-        let circularOutline = circularize(outline, exact: exact)
-        let circularEdges = circularize(edges, exact: exact)
-        var entities = dedupe(circularOutline + circularEdges)
-        entities = entities.map { $0.scaled(by: page.scale) }
-        return PageProjection(entities: entities, notes: notes, missing: missing)
+        return completedProjection(header: header, page: page,
+                                   entities: entities, groups: groups,
+                                   sources: sources)
     }
 
-    private func projectSection(_ page: CADDrawingPage, bodies: [Body],
-                                missing: [UUID], notes: [String]) -> PageProjection {
+    private func projectSection(_ page: CADDrawingPage, sources: [ProjectionSource],
+                                header: PageProjection) -> PageProjection {
         guard let origin = page.sectionOrigin,
               let storedNormal = page.sectionNormal,
               simd_length(storedNormal) > 1e-9 else {
-            return PageProjection(
-                entities: [],
-                notes: notes + ["section pages need sectionOrigin and sectionNormal"],
-                missing: missing)
+            var result = header
+            result.notes.append("section pages need sectionOrigin and sectionNormal")
+            return result
         }
         let normal = simd_normalize(storedNormal)
         let frame = SectionKit.frame(normal: normal, xAxisHint: page.viewUp)
         var entities: [ProjectedEntity] = []
+        var groups: [UUID: [ProjectedEntity]] = [:]
         var skipped = 0
-        for body in bodies {
-            guard let brep = body.brep else { skipped += 1; continue }
+        for source in sources {
+            guard let brep = source.body.brep else { skipped += 1; continue }
             // The kernel section runs on the body-local solid: map the world
             // plane in, then the resulting points back out.
-            let localOrigin = bodyLocal(origin, body.transform)
-            let localNormal = normalizeDirection(body.transform.rotation.inverse.act(normal))
+            let localOrigin = bodyLocal(origin, source.body.transform)
+            let localNormal = normalizeDirection(
+                source.body.transform.rotation.inverse.act(normal))
             // A fine chord deflection keeps curved section boundaries (bores,
             // rounds) faithful at drawing scale; the default 0.05 mm visibly
             // underestimates small hole areas.
@@ -703,34 +1652,41 @@ public final class CADDrawingService {
                                                         normal: localNormal,
                                                         deflection: 0.005)
             let worldPieces = polylines.map { piece in
-                piece.map { body.transform.applying(to: $0) }
+                piece.map { source.body.transform.applying(to: $0) }
             }
             let loops = SectionKit.loops(from: worldPieces, origin: origin,
                                          xAxis: frame.xAxis, yAxis: frame.yAxis)
+            var projected: [ProjectedEntity] = []
             for loop in loops where loop.points.count >= 2 {
-                entities.append(ProjectedEntity(
+                projected.append(ProjectedEntity(
                     shape: .polyline(points: loop.points.map { $0 * page.scale },
                                      closed: loop.closed),
-                    layer: "geometry",
+                    layer: "section",
                     area: loop.area * page.scale * page.scale))
             }
+            entities.append(contentsOf: projected)
+            if let id = source.instanceID {
+                groups[id, default: []].append(contentsOf: projected)
+            }
         }
-        var notes = notes
+        var result = completedProjection(header: header, page: page,
+                                         entities: entities, groups: groups,
+                                         sources: sources)
         if skipped > 0 {
-            notes.append("\(skipped) mesh-only body/bodies skipped in section (no B-rep).")
+            result.notes.append("\(skipped) mesh-only body/bodies skipped in section (no B-rep).")
         }
-        return PageProjection(entities: entities, notes: notes, missing: missing)
+        return result
     }
 
-    private func projectDetail(_ page: CADDrawingPage, bodies: [Body],
-                               missing: [UUID], notes: [String]) -> PageProjection {
-        var notes = notes
+    private func projectDetail(_ page: CADDrawingPage, sources: [ProjectionSource],
+                               header: PageProjection) -> PageProjection {
+        var header = header
         guard let plane = plane(for: page),
               let centerPoint = page.detailOrigin,
               let windowSize = page.detailSizeMM,
               windowSize.x > 0, windowSize.y > 0 else {
-            notes.append("detail window is missing; projecting the full view.")
-            return projectView(page, bodies: bodies, missing: missing, notes: notes)
+            header.notes.append("detail window is missing; projecting the full view.")
+            return projectView(page, sources: sources, header: header)
         }
         let width = windowSize.x
         let height = windowSize.y
@@ -738,15 +1694,40 @@ public final class CADDrawingService {
         let rect = (min: SIMD2(center.x - width / 2, center.y - height / 2),
                     max: SIMD2(center.x + width / 2, center.y + height / 2))
         var entities: [ProjectedEntity] = []
-        for body in bodies {
-            let projected = ProjectionKit.projectSilhouette(body: body, onto: plane)
-                + ProjectionKit.project(body: body, onto: plane)
+        var groups: [UUID: [ProjectedEntity]] = [:]
+        for source in sources {
+            let projected = ProjectionKit.projectSilhouette(body: source.body, onto: plane)
+                + ProjectionKit.project(body: source.body, onto: plane)
+            var clippedEntities: [ProjectedEntity] = []
             for entity in projected {
-                entities.append(contentsOf: clipped(convert(entity, layer: "detail"), to: rect))
+                clippedEntities.append(contentsOf: clipped(convert(entity, layer: "detail"),
+                                                           to: rect))
+            }
+            clippedEntities = clippedEntities.map { $0.scaled(by: page.scale) }
+            entities.append(contentsOf: clippedEntities)
+            if let id = source.instanceID {
+                groups[id, default: []].append(contentsOf: clippedEntities)
             }
         }
-        entities = entities.map { $0.scaled(by: page.scale) }
-        return PageProjection(entities: entities, notes: notes, missing: missing)
+        return completedProjection(header: header, page: page,
+                                   entities: entities, groups: groups,
+                                   sources: sources)
+    }
+
+    private func completedProjection(header: PageProjection,
+                                     page: CADDrawingPage,
+                                     entities: [ProjectedEntity],
+                                     groups: [UUID: [ProjectedEntity]],
+                                     sources: [ProjectionSource]) -> PageProjection {
+        var result = header
+        result.entities = entities
+        result.instances = sources.compactMap { source -> ProjectedInstance? in
+            guard let id = source.instanceID else { return nil }
+            return ProjectedInstance(id: id, name: source.name,
+                                     entities: groups[id] ?? [])
+        }
+        _ = page
+        return result
     }
 
     private func convert(_ entity: SketchEntity, layer: String) -> ProjectedEntity {
@@ -1155,13 +2136,561 @@ public final class CADDrawingService {
         return segments
     }
 
+    // MARK: - Annotation resolution
+
+    private struct ResolvedAnnotations {
+        var balloons: [[String: Any]] = []
+        var manualDimensions: [[String: Any]] = []
+        var annotations: [[String: Any]] = []
+        var issues: [String] = []
+
+        var rows: [[String: Any]] { manualDimensions }
+    }
+
+    private func intValue(_ raw: Any?) -> Int? {
+        if let value = raw as? Int { return value }
+        if let value = raw as? NSNumber { return value.intValue }
+        if let value = raw as? String { return Int(value) }
+        return nil
+    }
+
+    private func point2(_ raw: Any?) -> SIMD2<Double>? {
+        guard let values = doubleArray(raw), values.count == 2,
+              values.allSatisfy(\.isFinite) else { return nil }
+        return SIMD2(values[0], values[1])
+    }
+
+    /// Live world transform of one placed instance for THIS page, including
+    /// the page's named exploded offset. Nil when the instance or source body
+    /// no longer resolves.
+    private func instanceWorldTransform(instance: CADAssemblyInstance,
+                                        source: Body,
+                                        page: CADDrawingPage) -> Transform3D? {
+        guard instance.transform.isPlaceable else { return nil }
+        var world = instance.transform.placement3D().composed(onto: source.transform)
+        if let id = page.explodedViewID,
+           let view = loadAssemblyValue()?.explodedView(id) {
+            let offset = view.offset(for: instance.id)
+            if offset != .zero {
+                world = Transform3D(translation: offset).composed(onto: world)
+            }
+        }
+        return world
+    }
+
+    private func inverseApply(_ point: SIMD3<Double>, _ transform: Transform3D) -> SIMD3<Double>? {
+        guard transform.scale.isFinite, abs(transform.scale) > 1e-12 else { return nil }
+        return transform.rotation.inverse.act(point - transform.translation) / transform.scale
+    }
+
+    private func bodyLocalPointFromDrawing(_ drawing: SIMD2<Double>,
+                                           page: CADDrawingPage,
+                                           plane: SketchPlane,
+                                           world: Transform3D,
+                                           source: Body) -> SIMD3<Double>? {
+        guard page.scale.isFinite, page.scale > 0 else { return nil }
+        let modelPoint = plane.origin + plane.xAxis * (drawing.x / page.scale)
+            + plane.yAxis * (drawing.y / page.scale)
+        guard let bodyLocal = inverseApply(modelPoint, world) else { return nil }
+        // `world` already includes the source body transform; the stored
+        // binding is body-local, which is the document's part frame.
+        _ = source
+        return bodyLocal
+    }
+
+    private func drawingPointFromBodyLocal(_ local: SIMD3<Double>,
+                                           page: CADDrawingPage,
+                                           plane: SketchPlane,
+                                           world: Transform3D) -> SIMD2<Double>? {
+        guard page.scale.isFinite, page.scale > 0 else { return nil }
+        let point = plane.toLocal(world.applying(to: local))
+        return point * page.scale
+    }
+
+    private func instanceBounds(_ instanceID: UUID,
+                                projection: PageProjection)
+        -> (min: SIMD2<Double>, max: SIMD2<Double>)? {
+        guard let instance = projection.instances.first(where: { $0.id == instanceID }) else {
+            return nil
+        }
+        return entityBounds(instance.entities)
+    }
+
+    private func autoBalloonAnchor(instanceID: UUID,
+                                   page: CADDrawingPage,
+                                   projection: PageProjection) -> SIMD2<Double> {
+        if let bounds = instanceBounds(instanceID, projection: projection) {
+            return SIMD2(bounds.max.x + 12, bounds.max.y + 12)
+        }
+        return SIMD2(max(page.paperWidthMM * 0.5, 20), max(page.paperHeightMM * 0.5, 20))
+    }
+
+    private func defaultDimensionTextPosition(kind: CADDrawingDimensionKind,
+                                              points: [SIMD2<Double>]) -> SIMD2<Double> {
+        guard let first = points.first else { return SIMD2(10, 10) }
+        if points.count >= 2 {
+            let delta = points[1] - first
+            let length = simd_length(delta)
+            if length > 1e-9 {
+                let normal = SIMD2(-delta.y, delta.x) / length
+                return (first + points[1]) / 2 + normal * 7
+            }
+        }
+        return first + SIMD2(6, 6)
+    }
+
+    private func resolvedBalloons(page: CADDrawingPage,
+                                  projection: PageProjection) -> [[String: Any]] {
+        let assembly = loadAssemblyValue()
+        return page.balloons.map { balloon -> [String: Any] in
+            let entry = page.bom?.entry(id: balloon.bomEntryID ?? UUID())
+                ?? page.bom?.entry(itemNumber: balloon.itemNumber)
+            let instance = balloon.instanceID.flatMap { assembly?.instance($0) }
+            var target = balloon.target
+            var stale = false
+            var invalid = false
+            var reasons: [String] = []
+            if let entry, entry.itemNumber != balloon.itemNumber {
+                stale = true
+                reasons.append("BOM item number changed.")
+            }
+            if let pageBOM = page.bom, !pageBOM.entries.isEmpty, entry == nil {
+                stale = true
+                reasons.append("Balloon item \(balloon.itemNumber) is not in the current BOM.")
+            }
+            if let instance {
+                if let source = body(for: effectiveBodyID(instance)), source.isHidden {
+                    stale = true
+                    reasons.append("The source body is hidden.")
+                }
+                if target == nil {
+                    if let bounds = instanceBounds(instance.id, projection: projection) {
+                        target = nearestBoundaryPoint(to: balloon.anchor, bounds: bounds)
+                    } else {
+                        stale = true
+                        reasons.append("The instance has no projected geometry on this page.")
+                        target = balloon.anchor + SIMD2(10, 10)
+                    }
+                }
+            } else {
+                invalid = true
+                reasons.append("The associated assembly instance no longer exists.")
+                target = target ?? balloon.anchor + SIMD2(10, 10)
+            }
+            if let entry {
+                let liveCount = entry.instanceIDs.compactMap { assembly?.instance($0) }
+                    .filter { effectiveBodyID($0) == entry.bodyID }.count
+                if liveCount != entry.quantity {
+                    stale = true
+                    reasons.append("The item quantity differs from the captured BOM.")
+                }
+            }
+            var row: [String: Any] = [
+                "id": balloon.id.uuidString,
+                "itemNumber": balloon.itemNumber,
+                "text": balloon.text ?? "\(balloon.itemNumber)",
+                "anchor": pointPayload(balloon.anchor),
+                "target": pointPayload(target ?? balloon.anchor),
+                "stale": stale,
+                "invalid": invalid,
+                "bomEntryID": ((entry?.id.uuidString ?? balloon.bomEntryID?.uuidString) as Any?) ?? NSNull(),
+                "instanceID": (balloon.instanceID?.uuidString as Any?) ?? NSNull(),
+            ]
+            if !reasons.isEmpty { row["reasons"] = reasons }
+            return row
+        }
+    }
+
+    private func nearestBoundaryPoint(to point: SIMD2<Double>,
+                                      bounds: (min: SIMD2<Double>, max: SIMD2<Double>))
+        -> SIMD2<Double> {
+        let clamped = simd_clamp(point, bounds.min, bounds.max)
+        if clamped != point { return clamped }
+        // Anchor inside the projected part: exit toward the nearest side.
+        let candidates = [
+            SIMD2(bounds.min.x, point.y), SIMD2(bounds.max.x, point.y),
+            SIMD2(point.x, bounds.min.y), SIMD2(point.x, bounds.max.y),
+        ]
+        return candidates.min { simd_length($0 - point) < simd_length($1 - point) } ?? clamped
+    }
+
+    private func resolvedManualDimensions(page: CADDrawingPage,
+                                          projection: PageProjection)
+        -> ResolvedAnnotations {
+        var result = ResolvedAnnotations()
+        let assembly = loadAssemblyValue()
+        let plane = plane(for: page)
+        for dimension in page.manualDimensions {
+            var points = dimension.drawingPoints
+            var value = dimension.value
+            var textPosition = dimension.textPosition
+            var stale = false
+            var invalid = false
+            var reasons: [String] = []
+            var currentRevision: UInt64?
+            if let binding = dimension.binding {
+                let instance = binding.instanceID.flatMap { assembly?.instance($0) }
+                let source = binding.bodyID.flatMap { body(for: $0) }
+                    ?? instance.flatMap { body(for: effectiveBodyID($0)) }
+                if let instance, let source {
+                    currentRevision = source.meshRevision
+                    if let recorded = binding.sourceRevision, recorded != source.meshRevision {
+                        stale = true
+                        reasons.append("The source part changed since this dimension was placed.")
+                    }
+                    if let plane,
+                       let world = instanceWorldTransform(instance: instance,
+                                                          source: source, page: page) {
+                        let live = binding.modelPoints.compactMap {
+                            drawingPointFromBodyLocal($0, page: page, plane: plane, world: world)
+                        }
+                        if !live.isEmpty, live.count == points.count {
+                            let delta = live[0] - points[0]
+                            points = live
+                            textPosition += delta
+                            value = measuredValue(kind: dimension.kind,
+                                                  points: binding.modelPoints)
+                            if !delta.x.isFinite || !delta.y.isFinite { invalid = true }
+                        } else {
+                            invalid = true
+                            reasons.append("The bound part geometry no longer projects.")
+                        }
+                    } else {
+                        invalid = true
+                        reasons.append("The page view or instance transform is invalid.")
+                    }
+                } else {
+                    invalid = true
+                    reasons.append("The bound instance or source body no longer exists.")
+                }
+            } else {
+                reasons.append("This dimension is not bound to a part; it will not follow the model.")
+            }
+            let text = dimension.textOverride
+                ?? dimensionText(kind: dimension.kind, value: value)
+            var row: [String: Any] = [
+                "id": dimension.id.uuidString,
+                "kind": dimension.kind.rawValue,
+                "value": value,
+                "unit": dimension.kind == .angle ? "deg" : "mm",
+                "text": text,
+                "textPosition": pointPayload(textPosition),
+                "drawingPoints": points.map(pointPayload),
+                "stale": stale,
+                "invalid": invalid,
+                "unbound": dimension.binding == nil,
+                "binding": bindingPayload(dimension.binding,
+                                          currentRevision: currentRevision),
+            ]
+            if !reasons.isEmpty { row["reasons"] = reasons }
+            result.manualDimensions.append(row)
+            if stale || invalid {
+                result.issues.append("Dimension \(dimension.id.uuidString): "
+                                     + reasons.joined(separator: " "))
+            }
+        }
+        result.balloons = resolvedBalloons(page: page, projection: projection)
+        result.annotations = page.annotations.map {
+            annotationRow($0, page: page, projection: projection)
+        }
+        return result
+    }
+
+    private func annotationRow(_ annotation: CADDrawingTextAnnotation,
+                               page: CADDrawingPage,
+                               projection: PageProjection) -> [String: Any] {
+        let assembly = loadAssemblyValue()
+        var position = annotation.position
+        var stale = false
+        var invalid = false
+        var reasons: [String] = []
+        var currentRevision: UInt64?
+        if let binding = annotation.binding,
+           let instance = binding.instanceID.flatMap({ assembly?.instance($0) }),
+           let source = binding.bodyID.flatMap({ body(for: $0) }) ?? body(for: effectiveBodyID(instance)),
+           let local = binding.modelPoints.first {
+            currentRevision = source.meshRevision
+            if let recorded = binding.sourceRevision, recorded != source.meshRevision {
+                stale = true
+                reasons.append("The source part changed since this annotation was placed.")
+            }
+            if let plane = plane(for: page),
+               let world = instanceWorldTransform(instance: instance, source: source, page: page),
+               let live = drawingPointFromBodyLocal(local, page: page, plane: plane, world: world) {
+                position = live
+            } else {
+                invalid = true
+                reasons.append("The bound instance no longer projects on this page.")
+            }
+        }
+        var row: [String: Any] = [
+            "id": annotation.id.uuidString,
+            "text": annotation.text,
+            "position": pointPayload(position),
+            "heightMM": annotation.heightMM,
+            "stale": stale,
+            "invalid": invalid,
+            "binding": bindingPayload(annotation.binding, currentRevision: currentRevision),
+        ]
+        if !reasons.isEmpty { row["reasons"] = reasons }
+        return row
+    }
+
+    private func bindingPayload(_ binding: CADDrawingBinding?,
+                                currentRevision: UInt64?) -> [String: Any] {
+        guard let binding else { return ["bound": false] }
+        var object: [String: Any] = [
+            "bound": true,
+            "modelPointCount": binding.modelPoints.count,
+        ]
+        if let instanceID = binding.instanceID { object["instanceID"] = instanceID.uuidString }
+        if let bodyID = binding.bodyID { object["bodyID"] = bodyID.uuidString }
+        if let sourceRevision = binding.sourceRevision { object["sourceRevision"] = sourceRevision }
+        if let currentRevision { object["currentRevision"] = currentRevision }
+        return object
+    }
+
+    private func measuredValue(kind: CADDrawingDimensionKind,
+                               points: [SIMD3<Double>]) -> Double {
+        switch kind {
+        case .length:
+            guard points.count >= 2 else { return 0 }
+            return simd_distance(points[0], points[1])
+        case .angle:
+            guard points.count >= 3 else { return 0 }
+            let a = points[1] - points[0]
+            let b = points[2] - points[0]
+            guard simd_length(a) > 1e-12, simd_length(b) > 1e-12 else { return 0 }
+            return acos(min(max(simd_dot(simd_normalize(a), simd_normalize(b)), -1), 1))
+                * 180 / .pi
+        case .radius:
+            guard points.count >= 2 else { return 0 }
+            return simd_distance(points[0], points[1])
+        case .diameter:
+            guard points.count >= 2 else { return 0 }
+            return simd_distance(points[0], points[1]) * 2
+        }
+    }
+
+    private func dimensionText(kind: CADDrawingDimensionKind, value: Double) -> String {
+        switch kind {
+        case .length: return "\(formatLength(value)) mm"
+        case .angle: return "\(formatLength(value))°"
+        case .radius: return "R\(formatLength(value))"
+        case .diameter: return "Ø\(formatLength(value))"
+        }
+    }
+
+    private func bomReply(page: CADDrawingPage, assembly: CADAssembly?) -> [String: Any] {
+        var rows: [[String: Any]] = []
+        var issues: [String] = []
+        for entry in page.bom?.entries ?? [] {
+            let liveInstances = entry.instanceIDs.compactMap { assembly?.instance($0) }
+            let missing = entry.instanceIDs.filter { assembly?.instance($0) == nil }
+            let matching = liveInstances.filter { effectiveBodyID($0) == entry.bodyID }
+            let liveQuantity = matching.count
+            let body = body(for: entry.bodyID)
+            let stale = !missing.isEmpty || liveQuantity != entry.quantity
+            var row: [String: Any] = [
+                "id": entry.id.uuidString,
+                "itemNumber": entry.itemNumber,
+                "name": body?.name ?? entry.name,
+                "partNumber": entry.partNumber,
+                "bodyID": entry.bodyID.uuidString,
+                "instanceIDs": entry.instanceIDs.map(\.uuidString),
+                "quantity": liveQuantity,
+                "capturedQuantity": entry.quantity,
+                "stale": stale,
+                "missingInstanceIDs": missing.map(\.uuidString),
+                "missingBody": body == nil,
+            ]
+            if !missing.isEmpty {
+                issues.append("BOM item \(entry.itemNumber) is missing \(missing.count) instance(s).")
+            }
+            rows.append(row)
+        }
+        var payload: [String: Any] = [
+            "ok": true,
+            "mutated": false,
+            "showBOM": page.showBOM,
+            "entries": rows,
+            "entryCount": rows.count,
+            "issues": issues,
+        ]
+        if page.bom == nil { payload["bom"] = NSNull() }
+        return payload
+    }
+
+    private func pageBindingReport(page: CADDrawingPage,
+                                   assembly: CADAssembly?) -> (issueCount: Int,
+                                                               messages: [String],
+                                                               missingInstanceIDs: [String]) {
+        var messages: [String] = []
+        var missing: Set<UUID> = []
+        for balloon in page.balloons {
+            if let id = balloon.instanceID, assembly?.instance(id) == nil {
+                missing.insert(id)
+                messages.append("Balloon \(balloon.itemNumber) references a missing instance.")
+            }
+        }
+        for dimension in page.manualDimensions {
+            if let id = dimension.binding?.instanceID, assembly?.instance(id) == nil {
+                missing.insert(id)
+                messages.append("Dimension \(dimension.id.uuidString) references a missing instance.")
+            } else if let binding = dimension.binding,
+                      let instance = binding.instanceID.flatMap({ assembly?.instance($0) }),
+                      let source = body(for: effectiveBodyID(instance)),
+                      let recorded = binding.sourceRevision,
+                      recorded != source.meshRevision {
+                messages.append("Dimension \(dimension.id.uuidString) is stale: the source part changed.")
+            }
+        }
+        for annotation in page.annotations {
+            if let id = annotation.binding?.instanceID, assembly?.instance(id) == nil {
+                missing.insert(id)
+                messages.append("Annotation \(annotation.id.uuidString) references a missing instance.")
+            } else if let binding = annotation.binding,
+                      let instance = binding.instanceID.flatMap({ assembly?.instance($0) }),
+                      let source = body(for: effectiveBodyID(instance)),
+                      let recorded = binding.sourceRevision,
+                      recorded != source.meshRevision {
+                messages.append("Annotation \(annotation.id.uuidString) is stale: the source part changed.")
+            }
+        }
+        if let viewID = page.explodedViewID, assembly?.explodedView(viewID) == nil {
+            messages.append("Exploded view \(viewID.uuidString) no longer exists.")
+        }
+        return (messages.count, messages, missing.map(\.uuidString).sorted())
+    }
+
+    // MARK: - Shared page graphics
+
+    /// The ONE annotation geometry path shared by the preview payload and all
+    /// vector exports. Coordinates are page model-space (before the sheet
+    /// placement offset); PDF/SVG/DXF add the same sheet frame on top.
+    private func pageGraphics(page: CADDrawingPage,
+                              projection: PageProjection) -> RenderGraphics {
+        pageGraphics(page: page, projection: projection,
+                     resolved: resolvedManualDimensions(page: page, projection: projection))
+    }
+
+    private func pageGraphics(page: CADDrawingPage,
+                              projection: PageProjection,
+                              resolved: ResolvedAnnotations) -> RenderGraphics {
+        var entities = projection.entities
+        var texts: [DrawingText] = []
+        if page.showDimensions {
+            for dim in dimensions(for: page, projection: projection) {
+                for (a, b) in dim.extensionLines {
+                    entities.append(ProjectedEntity(shape: .line(a, b), layer: "dimension"))
+                }
+                if let line = dim.dimensionLine {
+                    entities.append(ProjectedEntity(shape: .line(line.0, line.1),
+                                                    layer: "dimension"))
+                }
+                if let leader = dim.leader {
+                    entities.append(ProjectedEntity(shape: .line(leader.0, leader.1),
+                                                    layer: "dimension"))
+                }
+                texts.append(DrawingText(text: dim.text, position: dim.textPosition,
+                                         height: 3.0, layer: "dimension"))
+            }
+        }
+        if page.showCenterlines {
+            for (a, b) in centerlineSegments(projection) {
+                entities.append(ProjectedEntity(shape: .line(a, b), layer: "centerline"))
+            }
+        }
+        let annotations = annotationGraphics(page: page, resolved: resolved)
+        entities.append(contentsOf: annotations.entities)
+        texts.append(contentsOf: annotations.texts)
+        return RenderGraphics(entities: entities, texts: texts)
+    }
+
+    private func annotationGraphics(page: CADDrawingPage,
+                                    resolved: ResolvedAnnotations) -> RenderGraphics {
+        var entities: [ProjectedEntity] = []
+        var texts: [DrawingText] = []
+        for row in resolved.manualDimensions {
+            guard let kindRaw = row["kind"] as? String,
+                  let kind = CADDrawingDimensionKind(rawValue: kindRaw),
+                  let rawPoints = row["drawingPoints"] as? [[Double]],
+                  let text = row["text"] as? String else { continue }
+            let points = rawPoints.compactMap { values -> SIMD2<Double>? in
+                guard values.count == 2 else { return nil }
+                return SIMD2(values[0], values[1])
+            }
+            guard points.count >= 2 else { continue }
+            switch kind {
+            case .length:
+                let a = points[0], b = points[1]
+                let delta = b - a
+                let length = simd_length(delta)
+                let normal = length > 1e-9
+                    ? SIMD2(-delta.y, delta.x) / length
+                    : SIMD2(0, 1)
+                let offset = normal * 6
+                entities.append(ProjectedEntity(
+                    shape: .line(a + offset, b + offset), layer: "dimension"))
+                entities.append(ProjectedEntity(
+                    shape: .line(a, a + offset * 1.25), layer: "dimension"))
+                entities.append(ProjectedEntity(
+                    shape: .line(b, b + offset * 1.25), layer: "dimension"))
+            case .angle:
+                entities.append(ProjectedEntity(
+                    shape: .line(points[0], points[1]), layer: "dimension"))
+                if points.count >= 3 {
+                    entities.append(ProjectedEntity(
+                        shape: .line(points[0], points[2]), layer: "dimension"))
+                }
+            case .radius, .diameter:
+                entities.append(ProjectedEntity(
+                    shape: .line(points[0], points[1]), layer: "dimension"))
+            }
+            if let position = row["textPosition"] as? [Double], position.count == 2 {
+                texts.append(DrawingText(text: text,
+                                         position: SIMD2(position[0], position[1]),
+                                         height: 3.0, layer: "dimension"))
+            }
+        }
+        for row in resolved.balloons {
+            guard let anchorRaw = row["anchor"] as? [Double], anchorRaw.count == 2,
+                  let targetRaw = row["target"] as? [Double], targetRaw.count == 2,
+                  let text = row["text"] as? String else { continue }
+            let anchor = SIMD2(anchorRaw[0], anchorRaw[1])
+            let target = SIMD2(targetRaw[0], targetRaw[1])
+            let radius = 4.0
+            let direction = target - anchor
+            let length = simd_length(direction)
+            let start = length > 1e-9 ? anchor + (direction / length) * radius : anchor
+            entities.append(ProjectedEntity(
+                shape: .circle(center: anchor, radius: radius), layer: "balloon"))
+            entities.append(ProjectedEntity(
+                shape: .line(start, target), layer: "balloon"))
+            texts.append(DrawingText(text: text,
+                                     position: anchor + SIMD2(-1.4, -1.4),
+                                     height: 3.2, layer: "balloon"))
+        }
+        for row in resolved.annotations {
+            guard let text = row["text"] as? String,
+                  let position = row["position"] as? [Double], position.count == 2,
+                  let height = row["heightMM"] as? Double else { continue }
+            texts.append(DrawingText(text: text,
+                                     position: SIMD2(position[0], position[1]),
+                                     height: height, layer: "annotation"))
+        }
+        return RenderGraphics(entities: entities, texts: texts)
+    }
+
     // MARK: - JSON payloads
 
     private func projectionPayload(page: CADDrawingPage, projection: PageProjection,
                                    mutated: Bool) -> [String: Any] {
         let dims = dimensions(for: page, projection: projection)
+        let resolved = resolvedManualDimensions(page: page, projection: projection)
+        let graphics = pageGraphics(page: page, projection: projection, resolved: resolved)
         var lines = 0, circles = 0, arcs = 0, polylines = 0
-        for entity in projection.entities {
+        for entity in graphics.entities {
             switch entity.shape {
             case .line: lines += 1
             case .circle: circles += 1
@@ -1170,26 +2699,73 @@ public final class CADDrawingService {
             }
         }
         var counts: [String: Any] = [
-            "entities": projection.entities.count,
+            "entities": graphics.entities.count,
+            "modelEntities": projection.entities.count,
             "lines": lines,
             "circles": circles,
             "arcs": arcs,
             "polylines": polylines,
             "dimensions": dims.count,
+            "manualDimensions": resolved.manualDimensions.count,
+            "balloons": resolved.balloons.count,
+            "annotations": resolved.annotations.count,
         ]
         let centerlines = page.showCenterlines ? centerlineSegments(projection) : []
         if page.showCenterlines { counts["centerlines"] = centerlines.count }
+        let assembly = loadAssemblyValue()
+        let instanceRows = projection.instances.map { instance -> [String: Any] in
+            var row: [String: Any] = [
+                "instanceID": instance.id.uuidString,
+                "name": instance.name,
+                "entityCount": instance.entities.count,
+            ]
+            if let bounds = entityBounds(instance.entities) {
+                row["bounds"] = [pointPayload(bounds.min), pointPayload(bounds.max)]
+            }
+            return row
+        }
+        var issues = resolved.issues
+        for row in resolved.balloons where (row["stale"] as? Bool == true)
+            || (row["invalid"] as? Bool == true) {
+            let reasons = row["reasons"] as? [String] ?? []
+            issues.append("Balloon \(row["id"] as? String ?? "?"): "
+                          + reasons.joined(separator: " "))
+        }
+        for row in resolved.annotations where (row["stale"] as? Bool == true)
+            || (row["invalid"] as? Bool == true) {
+            let reasons = row["reasons"] as? [String] ?? []
+            issues.append("Text \(row["id"] as? String ?? "?"): "
+                          + reasons.joined(separator: " "))
+        }
         var payload: [String: Any] = [
             "ok": true,
             "mutated": mutated,
             "noRasterization": true,
             "page": pagePayload(page),
             "counts": counts,
-            "entities": projection.entities.map(entityPayload),
+            "entities": graphics.entities.map(entityPayload),
+            "texts": graphics.texts.map(textPayload),
             "dimensions": dims.map(dimensionPayload),
+            "manualDimensions": resolved.manualDimensions,
+            "manualDimensionCount": resolved.manualDimensions.count,
+            "balloons": resolved.balloons,
+            "balloonCount": resolved.balloons.count,
+            "annotations": resolved.annotations,
+            "annotationCount": resolved.annotations.count,
+            "bom": bomReply(page: page, assembly: assembly),
+            "instances": instanceRows,
             "notes": projection.notes,
             "missingBodyIDs": projection.missing.map(\.uuidString),
+            "missingInstanceIDs": projection.missingInstances.map(\.uuidString),
+            "bindingIssues": issues,
         ]
+        if let viewID = page.explodedViewID {
+            payload["explodedView"] = [
+                "id": viewID.uuidString,
+                "name": projection.explodedViewName ?? page.explodedViewName ?? "",
+                "found": assembly?.explodedView(viewID) != nil,
+            ]
+        }
         if page.showCenterlines {
             payload["centerlines"] = centerlines.map {
                 entityPayload(ProjectedEntity(shape: .line($0.0, $0.1), layer: "centerline"))
@@ -1214,7 +2790,15 @@ public final class CADDrawingService {
             "viewUp": vectorPayload(page.viewUp),
             "showCenterlines": page.showCenterlines,
             "showDimensions": page.showDimensions,
+            "assemblyMode": page.assemblyMode,
+            "showBOM": page.showBOM,
+            "balloonCount": page.balloons.count,
+            "manualDimensionCount": page.manualDimensions.count,
+            "annotationCount": page.annotations.count,
         ]
+        payload["bomEntryCount"] = page.bom?.entries.count ?? 0
+        if let viewID = page.explodedViewID { payload["explodedViewID"] = viewID.uuidString }
+        if let viewName = page.explodedViewName { payload["explodedViewName"] = viewName }
         if let width = page.customWidthMM { payload["customWidthMM"] = width }
         if let height = page.customHeightMM { payload["customHeightMM"] = height }
         if page.kind == .detail {
@@ -1241,6 +2825,15 @@ public final class CADDrawingService {
             }
         }
         return payload
+    }
+
+    private func textPayload(_ text: DrawingText) -> [String: Any] {
+        [
+            "text": text.text,
+            "position": pointPayload(text.position),
+            "height": text.height,
+            "layer": text.layer,
+        ]
     }
 
     private func entityPayload(_ entity: ProjectedEntity) -> [String: Any] {
@@ -1294,40 +2887,17 @@ public final class CADDrawingService {
 
     private func renderGraphics(page: CADDrawingPage,
                                 projection: PageProjection) -> RenderGraphics {
-        let dims = dimensions(for: page, projection: projection)
-        var modelEntities = projection.entities
-        var modelTexts: [DrawingText] = []
-        if page.showDimensions {
-            for dim in dims {
-                for (a, b) in dim.extensionLines {
-                    modelEntities.append(ProjectedEntity(shape: .line(a, b),
-                                                         layer: "dimension"))
-                }
-                if let line = dim.dimensionLine {
-                    modelEntities.append(ProjectedEntity(shape: .line(line.0, line.1),
-                                                         layer: "dimension"))
-                }
-                if let leader = dim.leader {
-                    modelEntities.append(ProjectedEntity(shape: .line(leader.0, leader.1),
-                                                         layer: "dimension"))
-                }
-                modelTexts.append(DrawingText(text: dim.text, position: dim.textPosition,
-                                              height: 3.0, layer: "dimension"))
-            }
-        }
-        if page.showCenterlines {
-            for (a, b) in centerlineSegments(projection) {
-                modelEntities.append(ProjectedEntity(shape: .line(a, b), layer: "centerline"))
-            }
-        }
+        let graphics = pageGraphics(page: page, projection: projection)
         // Sheet layout: model geometry in the upper-left area, clear of the
-        // title block at the bottom. All exports share this placement.
+        // title block at the bottom. All exports share this placement, and the
+        // preview uses the same pre-offset model space.
         var offset = SIMD2<Double>.zero
-        if let bounds = entityBounds(modelEntities) {
+        if let bounds = entityBounds(projection.entities)
+            ?? entityBounds(graphics.entities) {
             offset = SIMD2(20 - bounds.min.x, 40 - bounds.min.y)
         }
-        let placedEntities = modelEntities.map { $0.translated(by: offset) }
-        let placedTexts = modelTexts.map {
+        let placedEntities = graphics.entities.map { $0.translated(by: offset) }
+        let placedTexts = graphics.texts.map {
             DrawingText(text: $0.text, position: $0.position + offset,
                         height: $0.height, layer: $0.layer)
         }
@@ -1370,6 +2940,98 @@ public final class CADDrawingService {
             texts.append(DrawingText(text: page.partNumbers.joined(separator: ", "),
                                      position: SIMD2(blockMin.x + 72, blockMin.y + 4),
                                      height: 3.5, layer: "title"))
+        }
+        if page.showBOM, let bom = page.bom, !bom.entries.isEmpty {
+            let table = bomTableGraphics(page: page, bom: bom,
+                                         frameMin: frameMin, frameMax: frameMax,
+                                         titleBlockWidth: blockWidth)
+            entities.append(contentsOf: table.entities)
+            texts.append(contentsOf: table.texts)
+        }
+        return RenderGraphics(entities: entities, texts: texts)
+    }
+
+    /// Vector BOM table in the free bottom-left sheet area. Shared instances
+    /// group by part definition; the quantity is the LIVE count, so a stale
+    /// captured quantity is visible in the row rather than silently reused.
+    private func bomTableGraphics(page: CADDrawingPage,
+                                  bom: CADDrawingBOM,
+                                  frameMin: SIMD2<Double>,
+                                  frameMax: SIMD2<Double>,
+                                  titleBlockWidth: Double) -> RenderGraphics {
+        let reply = bomReply(page: page, assembly: loadAssemblyValue())
+        let rows = (reply["entries"] as? [[String: Any]]) ?? []
+        guard !rows.isEmpty else { return RenderGraphics(entities: [], texts: []) }
+        let available = frameMax.x - frameMin.x - titleBlockWidth - 14
+        let tableWidth = min(132, max(64, available))
+        let rowHeight = 5.0
+        let maxRows = 8
+        let displayRows = Array(rows.prefix(maxRows))
+        let tableHeight = rowHeight * Double(displayRows.count + 1)
+        let minPoint = SIMD2(frameMin.x + 2, frameMin.y + 2)
+        let maxPoint = SIMD2(minPoint.x + tableWidth, minPoint.y + tableHeight)
+        var entities = rectangleEntities(min: minPoint, max: maxPoint, layer: "bom")
+        var texts: [DrawingText] = []
+        let partWidth: Double = tableWidth >= 110 ? 40 : 0
+        let itemWidth = 10.0
+        let quantityWidth = 12.0
+        let nameWidth = tableWidth - itemWidth - quantityWidth - partWidth
+        let itemX = minPoint.x
+        let nameX = itemX + itemWidth
+        let quantityX = nameX + nameWidth
+        let partX = quantityX + quantityWidth
+        entities.append(ProjectedEntity(
+            shape: .line(SIMD2(nameX, minPoint.y), SIMD2(nameX, maxPoint.y)),
+            layer: "bom"))
+        entities.append(ProjectedEntity(
+            shape: .line(SIMD2(quantityX, minPoint.y), SIMD2(quantityX, maxPoint.y)),
+            layer: "bom"))
+        if partWidth > 0 {
+            entities.append(ProjectedEntity(
+                shape: .line(SIMD2(partX, minPoint.y), SIMD2(partX, maxPoint.y)),
+                layer: "bom"))
+        }
+        for rowIndex in 0...displayRows.count {
+            let y = maxPoint.y - rowHeight * Double(rowIndex)
+            if rowIndex > 0 {
+                entities.append(ProjectedEntity(
+                    shape: .line(SIMD2(minPoint.x, y), SIMD2(maxPoint.x, y)),
+                    layer: "bom"))
+            }
+            let baseline = y - rowHeight + 1.4
+            if rowIndex == 0 {
+                texts.append(DrawingText(text: "#", position: SIMD2(itemX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+                texts.append(DrawingText(text: "Part", position: SIMD2(nameX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+                texts.append(DrawingText(text: "Qty", position: SIMD2(quantityX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+                if partWidth > 0 {
+                    texts.append(DrawingText(text: "Part no.",
+                                             position: SIMD2(partX + 1, baseline),
+                                             height: 2.8, layer: "bom"))
+                }
+            } else {
+                let row = displayRows[rowIndex - 1]
+                let item = row["itemNumber"] as? Int ?? rowIndex
+                let name = (row["name"] as? String) ?? "—"
+                let quantity = row["quantity"] as? Int ?? 0
+                texts.append(DrawingText(text: "\(item)",
+                                         position: SIMD2(itemX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+                texts.append(DrawingText(text: String(name.prefix(40)),
+                                         position: SIMD2(nameX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+                texts.append(DrawingText(text: "\(quantity)",
+                                         position: SIMD2(quantityX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+                if partWidth > 0 {
+                    let part = (row["partNumber"] as? String) ?? ""
+                    texts.append(DrawingText(text: String(part.prefix(24)),
+                                             position: SIMD2(partX + 1, baseline),
+                                             height: 2.8, layer: "bom"))
+                }
+            }
         }
         return RenderGraphics(entities: entities, texts: texts)
     }
@@ -1566,7 +3228,8 @@ public final class CADDrawingService {
         out += "<svg xmlns=\"http://www.w3.org/2000/svg\""
         out += " width=\"\(number(width))mm\" height=\"\(number(height))mm\""
         out += " viewBox=\"0 0 \(number(width)) \(number(height))\">\n"
-        let layerOrder = ["outline", "edges", "geometry", "dimension", "centerline", "title"]
+        let layerOrder = ["outline", "edges", "geometry", "section", "dimension",
+                          "centerline", "annotation", "balloon", "bom", "title"]
         // All model/annotation layers merge into ONE SVG group per named layer
         // (GEOMETRY/DIMENSIONS/CENTERLINES/TITLE) so a document never emits
         // duplicate ids and every shape — including projected circles — is
@@ -1578,7 +3241,7 @@ public final class CADDrawingService {
             groupedEntities[name, default: []].append(contentsOf: graphics.entities.filter { $0.layer == layer })
             groupedTexts[name, default: []].append(contentsOf: graphics.texts.filter { $0.layer == layer })
         }
-        for groupName in ["GEOMETRY", "DIMENSIONS", "CENTERLINES", "TITLE"] {
+        for groupName in ["GEOMETRY", "DIMENSIONS", "CENTERLINES", "ANNOTATIONS", "BOM", "TITLE"] {
             let entities = groupedEntities[groupName] ?? []
             let texts = groupedTexts[groupName] ?? []
             guard !entities.isEmpty || !texts.isEmpty else { continue }
@@ -1649,8 +3312,8 @@ public final class CADDrawingService {
         out += "9\n$INSUNITS\n70\n4\n"
         out += "9\n$MEASUREMENT\n70\n1\n"
         out += "0\nENDSEC\n"
-        out += "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n4\n"
-        for layer in ["GEOMETRY", "DIMENSIONS", "CENTERLINES", "TITLE"] {
+        out += "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n6\n"
+        for layer in ["GEOMETRY", "DIMENSIONS", "CENTERLINES", "ANNOTATIONS", "BOM", "TITLE"] {
             out += "0\nLAYER\n2\n\(layer)\n70\n0\n62\n7\n6\nCONTINUOUS\n"
         }
         out += "0\nENDTAB\n0\nENDSEC\n"
@@ -1702,6 +3365,8 @@ public final class CADDrawingService {
         switch layer {
         case "dimension": return "DIMENSIONS"
         case "centerline": return "CENTERLINES"
+        case "annotation", "balloon": return "ANNOTATIONS"
+        case "bom": return "BOM"
         case "title": return "TITLE"
         default: return "GEOMETRY"
         }
@@ -1711,6 +3376,8 @@ public final class CADDrawingService {
         switch layer {
         case "dimension": return "DIMENSIONS"
         case "centerline": return "CENTERLINES"
+        case "annotation", "balloon": return "ANNOTATIONS"
+        case "bom": return "BOM"
         case "title": return "TITLE"
         default: return "GEOMETRY"
         }
@@ -1873,8 +3540,13 @@ public final class CADDrawingService {
                         "The drawing set uses schema v\(set.schemaVersion), newer than this build "
                         + "(v\(CADDrawingSet.currentSchemaVersion)); edits are refused.")
         }
+        var updated = set
+        // v3 is additive: old v1/v2 pages decoded with defaults, but the first
+        // write this build produces is honestly stamped v3 so an older reader
+        // cannot silently drop the new fields on a later edit.
+        updated.schemaVersion = CADDrawingSet.currentSchemaVersion
         do {
-            let data = try set.encoded()
+            let data = try updated.encoded()
             document.session.perform(SetDrawingsDataCommand(
                 before: document.session.document.drawingsData, after: data))
             return nil
@@ -1888,11 +3560,34 @@ public final class CADDrawingService {
         document.session.document.bodies.first { $0.id.raw == id }
     }
 
+    private func loadAssemblyValue() -> CADAssembly? {
+        guard let data = document.session.document.assemblyData else { return nil }
+        return try? CADAssembly.decode(from: data)
+    }
+
+    private func effectiveBodyID(_ instance: CADAssemblyInstance) -> UUID {
+        instance.copiedBodyID ?? instance.bodyID
+    }
+
+    private func pageIsAssemblyAware(_ page: CADDrawingPage) -> Bool {
+        page.assemblyMode || page.kind == .exploded || page.explodedViewID != nil
+    }
+
     /// Informational revision for the status line: the max `meshRevision`
     /// over resolvable sources. NOT the staleness authority (see
     /// `liveFingerprint`).
     private func maxMeshRevision(for page: CADDrawingPage) -> UInt64? {
         var revision: UInt64?
+        if pageIsAssemblyAware(page) {
+            let filter = Set(page.sourceBodyIDs)
+            for instance in loadAssemblyValue()?.instances ?? [] where !instance.isHidden {
+                let id = effectiveBodyID(instance)
+                guard filter.isEmpty || filter.contains(id),
+                      let source = body(for: id) else { continue }
+                revision = max(revision ?? 0, source.meshRevision)
+            }
+            return revision
+        }
         for id in page.sourceBodyIDs {
             guard let body = body(for: id) else { continue }
             revision = max(revision ?? 0, body.meshRevision)
@@ -1900,13 +3595,45 @@ public final class CADDrawingService {
         return revision
     }
 
-    /// Ordered per-source identity of the page's live geometry: one entry per
-    /// `sourceBodyIDs` entry (order preserved) with a render-mesh content hash
-    /// and a placement hash, or an explicit `missing` entry. This notices a
-    /// changed NON-maximum source and survives reopen, because content hashes —
-    /// not per-session revision counters — are the identity.
+    /// Ordered per-source identity of the page's live geometry. Ordinary
+    /// pages keep one entry per `sourceBodyIDs` entry (order preserved).
+    /// Assembly-aware pages add one `InstanceSource` per visible placed
+    /// instance with the hash of its world placement INCLUDING the exploded
+    /// offset, so switching a view (or moving an instance) marks the page
+    /// stale even when the source mesh is unchanged.
     private func liveFingerprint(for page: CADDrawingPage) -> CADDrawingSourceFingerprint {
-        CADDrawingSourceFingerprint(sources: page.sourceBodyIDs.map { id in
+        guard pageIsAssemblyAware(page) else {
+            return CADDrawingSourceFingerprint(sources: page.sourceBodyIDs.map { id in
+                guard let body = body(for: id) else {
+                    return CADDrawingSourceFingerprint.Source(bodyID: id, missing: true)
+                }
+                return CADDrawingSourceFingerprint.Source(
+                    bodyID: id,
+                    missing: false,
+                    renderSHA256: CADScriptService.renderHash(body.render),
+                    placementSHA256: Self.transformHash(body.transform))
+            })
+        }
+        let assembly = loadAssemblyValue()
+        let view = page.explodedViewID.flatMap { assembly?.explodedView($0) }
+        let filter = Set(page.sourceBodyIDs)
+        var instances = (assembly?.instances ?? []).filter { !$0.isHidden }
+        if !filter.isEmpty {
+            instances = instances.filter { filter.contains(effectiveBodyID($0)) }
+        }
+        if instances.count > 64 { instances = Array(instances.prefix(64)) }
+
+        var sourceIDs: [UUID] = []
+        var seen = Set<UUID>()
+        if page.sourceBodyIDs.isEmpty {
+            for instance in instances {
+                let id = effectiveBodyID(instance)
+                if seen.insert(id).inserted { sourceIDs.append(id) }
+            }
+        } else {
+            sourceIDs = page.sourceBodyIDs
+        }
+        let sources = sourceIDs.map { id -> CADDrawingSourceFingerprint.Source in
             guard let body = body(for: id) else {
                 return CADDrawingSourceFingerprint.Source(bodyID: id, missing: true)
             }
@@ -1915,7 +3642,28 @@ public final class CADDrawingService {
                 missing: false,
                 renderSHA256: CADScriptService.renderHash(body.render),
                 placementSHA256: Self.transformHash(body.transform))
-        })
+        }
+        let instanceSources = instances.map { instance -> CADDrawingSourceFingerprint.InstanceSource in
+            let id = effectiveBodyID(instance)
+            guard let source = body(for: id),
+                  instance.transform.isPlaceable else {
+                return CADDrawingSourceFingerprint.InstanceSource(
+                    instanceID: instance.id, bodyID: id, missing: true,
+                    explodedViewID: view?.id)
+            }
+            var world = instance.transform.placement3D().composed(onto: source.transform)
+            if let view {
+                let offset = view.offset(for: instance.id)
+                if offset != .zero {
+                    world = Transform3D(translation: offset).composed(onto: world)
+                }
+            }
+            return CADDrawingSourceFingerprint.InstanceSource(
+                instanceID: instance.id, bodyID: id, missing: false,
+                placementSHA256: Self.transformHash(world),
+                explodedViewID: view?.id)
+        }
+        return CADDrawingSourceFingerprint(sources: sources, instances: instanceSources)
     }
 
     /// Deterministic placement hash: the numeric TRS components, not a JSON
@@ -2076,9 +3824,36 @@ private nonisolated struct ProjectedEntity {
 }
 
 private nonisolated struct PageProjection {
+    var entities: [ProjectedEntity] = []
+    var notes: [String] = []
+    var missing: [UUID] = []
+    var missingInstances: [UUID] = []
+    var instances: [ProjectedInstance] = []
+    var explodedViewID: UUID?
+    var explodedViewName: String?
+}
+
+/// One geometry source for projection: a plain body (instanceID nil) or one
+/// placed assembly instance. `body` already carries the world transform.
+private nonisolated struct ProjectionSource {
+    var instanceID: UUID?
+    var name: String
+    var body: Body
+}
+
+private nonisolated struct ProjectedInstance {
+    var id: UUID
+    var name: String
     var entities: [ProjectedEntity]
-    var notes: [String]
-    var missing: [UUID]
+}
+
+private nonisolated struct ResolvedProjectionSources {
+    var sources: [ProjectionSource] = []
+    var missingBodies: [UUID] = []
+    var missingInstances: [UUID] = []
+    var notes: [String] = []
+    var explodedViewID: UUID?
+    var explodedViewName: String?
 }
 
 private nonisolated struct DrawingDimension {

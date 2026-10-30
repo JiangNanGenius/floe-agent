@@ -3,8 +3,10 @@
 //  FloeCADKit
 //
 //  JSON-action service over the persisted `CADAssembly`: instance placement,
-//  positioning constraints, an iterative projection solver, approximate DOF
-//  reporting, and exact (OCCT) / approximate (AABB) interference checks.
+//  positioning constraints (including live face/axis/edge picks with query-
+//  generation fences), named exploded views (display/drawing state only), an
+//  iterative projection solver, approximate DOF reporting, and exact (OCCT) /
+//  approximate (AABB) interference checks.
 //
 //  The service is a MainActor façade. It reads and writes the assembly JSON in
 //  `document.project.assemblyData` and manipulates document bodies only through
@@ -60,6 +62,14 @@ public final class CADAssemblyService {
                         + "call handleAsync(action:args:) instead.")
         case "sourceUpdate": return sourceUpdateAction(args)
         case "clear": return clearAction()
+        case "reference": return referenceAction(args)
+        case "referenceCandidates": return referenceCandidatesAction(args)
+        case "explodedViews": return explodedViewsAction()
+        case "addExplodedView": return addExplodedViewAction(args)
+        case "updateExplodedView": return updateExplodedViewAction(args)
+        case "removeExplodedView": return removeExplodedViewAction(args)
+        case "previewExplodedView": return previewExplodedViewAction(args)
+        case "resetExplodedView": return resetExplodedViewAction(args)
         default:
             return fail("unknown_action", "Unknown assembly action '\(action)'.")
         }
@@ -85,6 +95,35 @@ public final class CADAssemblyService {
     private struct KernelRevisionToken: Equatable, Sendable {
         let revision: Int
         let changeCount: Int
+    }
+
+    /// One resolved constraint reference in the instance's placement-local
+    /// frame (the same frame `CADAssemblySolver` consumes). Produced by
+    /// `reference` / inline face-edge picking; never guessed from an index
+    /// without its query generation.
+    struct CADAssemblyReference {
+        var point: SIMD3<Double>
+        var direction: SIMD3<Double>
+        var sourceRevision: UInt64?
+        var sourceKind: String
+        var resolvedIndex: Int?
+        var bodyID: UUID?
+        var fence: [String: Any]?
+        var notes: [String] = []
+
+        var payload: [String: Any] {
+            var object: [String: Any] = [
+                "point": [point.x, point.y, point.z],
+                "direction": [direction.x, direction.y, direction.z],
+                "source": sourceKind,
+            ]
+            if let sourceRevision { object["source_revision"] = sourceRevision }
+            if let resolvedIndex { object["index"] = resolvedIndex }
+            if let bodyID { object["body_id"] = bodyID.uuidString }
+            if let fence { object["fence"] = fence }
+            if !notes.isEmpty { object["notes"] = notes }
+            return object
+        }
     }
 
     private struct ExactPairPlan: Sendable {
@@ -276,7 +315,40 @@ public final class CADAssemblyService {
                     entry["instanceB"] = instanceB.uuidString
                 }
                 if let value = constraint.value { entry["value"] = value }
+                let revisionState = constraintRevisionState(constraint, assembly: assembly)
+                entry["staleReference"] = revisionState.stale
+                if let a = constraint.sourceRevisionA { entry["sourceRevisionA"] = a }
+                if let b = constraint.sourceRevisionB { entry["sourceRevisionB"] = b }
+                if !revisionState.staleBodies.isEmpty {
+                    entry["staleReferenceBodies"] = revisionState.staleBodies
+                }
                 constraintEntries.append(entry)
+            }
+
+            let explodedRows = assembly.explodedViews.map { view -> [String: Any] in
+                let invalid = view.entries.filter { assembly.instance($0.instanceID) == nil }
+                return [
+                    "id": view.id.uuidString,
+                    "name": view.name,
+                    "direction": vectorPayload(safeDirection(view.direction)),
+                    "distanceMM": view.distanceMM,
+                    "entryCount": view.entries.count,
+                    "invalidEntryIDs": invalid.map(\.id.uuidString),
+                    "missingInstanceIDs": invalid.map { $0.instanceID.uuidString },
+                ]
+            }
+
+            // Report (and repair) the TRANSIENT preview: a view removed by an
+            // edit or undo must not stay active on a stale id.
+            let preview = CADExplodedViewPreview.current(for: document.session)
+            preview?.reconcile(with: assembly)
+            let previewPayload: [String: Any]
+            if let preview, preview.isActive, let viewID = preview.viewID {
+                previewPayload = ["active": true, "id": viewID.uuidString,
+                                  "name": preview.viewName ?? "",
+                                  "transient": true]
+            } else {
+                previewPayload = ["active": false]
             }
 
             return [
@@ -286,6 +358,9 @@ public final class CADAssemblyService {
                 "constraintCount": assembly.constraints.count,
                 "instances": instanceEntries,
                 "constraints": constraintEntries,
+                "explodedViewCount": assembly.explodedViews.count,
+                "explodedViews": explodedRows,
+                "explodedPreview": previewPayload,
                 // Total remaining mobility, including the 6 global rigid modes
                 // while nothing is grounded (two free instances read 12).
                 "assemblyDOF": dof.total,
@@ -433,6 +508,20 @@ public final class CADAssemblyService {
             .filter { $0.instanceA == id || $0.instanceB == id }
             .map(\.id.uuidString)
         updated.constraints.removeAll { $0.instanceA == id || $0.instanceB == id }
+        // Exploded-view entries are display state: drop the removed instance's
+        // entries so a later preview cannot point at a dead placement. The
+        // named view itself is retained.
+        var droppedExplodedEntries: [String] = []
+        for index in updated.explodedViews.indices {
+            let removed = updated.explodedViews[index].entries
+                .filter { $0.instanceID == id }
+                .map(\.id.uuidString)
+            droppedExplodedEntries.append(contentsOf: removed)
+            updated.explodedViews[index].entries.removeAll { $0.instanceID == id }
+            if !removed.isEmpty {
+                updated.explodedViews[index].updatedAt = Date()
+            }
+        }
         if let failure = persist(updated) { return failure }
 
         // The instance is removed, but an independent copy's body is a
@@ -444,6 +533,7 @@ public final class CADAssemblyService {
             "mutated": true,
             "removedInstance": id.uuidString,
             "removedConstraintIDs": dropped,
+            "removedExplodedEntryIDs": droppedExplodedEntries,
         ]
         if let copied = removed?.copiedBodyID {
             payload["orphanedBodyID"] = copied.uuidString
@@ -533,66 +623,115 @@ public final class CADAssemblyService {
             return fail("missing_instance_b", "\(kind.rawValue) needs an instanceB reference.")
         }
 
+        // Live-picked references take precedence over numeric hand entry. A
+        // reference carries its own revision fence; a stale pick is refused
+        // instead of being applied to a changed part. `referenceX` supplies a
+        // point+direction already resolved by `reference`; `faceX`/`edgeX`
+        // resolve a kernel face/edge with the same query-token proof.
+        let instanceAValue = updated.instances.first { $0.id == instanceA }!
+        let instanceBValue = instanceB.flatMap { id in updated.instances.first { $0.id == id } }
+        var referenceA: CADAssemblyReference?
+        if let resolved = parseInlineReference(args: args, key: "referenceA",
+                                               faceKey: "faceA", edgeKey: "edgeA",
+                                               instance: instanceAValue,
+                                               assembly: updated, label: "A") {
+            switch resolved {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let value): referenceA = value
+            }
+        }
+        var referenceB: CADAssemblyReference?
+        if let instanceBValue,
+           let resolved = parseInlineReference(args: args, key: "referenceB",
+                                               faceKey: "faceB", edgeKey: "edgeB",
+                                               instance: instanceBValue,
+                                               assembly: updated, label: "B") {
+            switch resolved {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let value): referenceB = value
+            }
+        }
+
         let pointA: SIMD3<Double>
-        switch parseVector(args["pointA"]) {
-        case .failure(let error): return fail(error.code, error.message)
-        case .success(let parsed): pointA = parsed ?? .zero
+        if let referenceA {
+            pointA = referenceA.point
+        } else {
+            switch parseVector(args["pointA"]) {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let parsed): pointA = parsed ?? .zero
+            }
         }
         var pointB: SIMD3<Double>?
-        if let raw = args["pointB"], !(raw is NSNull) {
+        if let referenceB {
+            pointB = referenceB.point
+        } else if let raw = args["pointB"], !(raw is NSNull) {
             switch parseVector(raw) {
             case .failure(let error): return fail(error.code, error.message)
             case .success(let parsed): pointB = parsed
             }
         }
 
-        var directionA = SIMD3<Double>(0, 0, 1)
-        var directionB: SIMD3<Double>?
+        var directionA = referenceA?.direction ?? SIMD3<Double>(0, 0, 1)
+        var directionB = referenceB?.direction
         switch kind {
         case .fixed:
             // Geometry references are ignored; the constraint only anchors A.
-            if let raw = args["directionA"], !(raw is NSNull) {
+            if referenceA == nil, let raw = args["directionA"], !(raw is NSNull) {
                 switch parseVector(raw) {
                 case .failure(let error): return fail(error.code, error.message)
                 case .success(let parsed): directionA = parsed ?? directionA
                 }
             }
         case .coaxial, .planarAlign, .angle:
-            guard let rawA = args["directionA"], !(rawA is NSNull) else {
-                return fail("missing_direction", "\(kind.rawValue) needs a directionA.")
-            }
-            switch parseVector(rawA) {
-            case .failure(let error): return fail(error.code, error.message)
-            case .success(let parsed):
-                guard let parsed, simd_length(parsed) > 1e-12 else {
-                    return fail("zero_direction", "directionA must be a non-zero [x,y,z] vector.")
+            if referenceA == nil {
+                guard let rawA = args["directionA"], !(rawA is NSNull) else {
+                    return fail("missing_direction", "\(kind.rawValue) needs a directionA.")
                 }
-                directionA = parsed
-            }
-            guard let rawB = args["directionB"], !(rawB is NSNull) else {
-                return fail("missing_direction", "\(kind.rawValue) needs a directionB.")
-            }
-            switch parseVector(rawB) {
-            case .failure(let error): return fail(error.code, error.message)
-            case .success(let parsed):
-                guard let parsed, simd_length(parsed) > 1e-12 else {
-                    return fail("zero_direction", "directionB must be a non-zero [x,y,z] vector.")
+                switch parseVector(rawA) {
+                case .failure(let error): return fail(error.code, error.message)
+                case .success(let parsed):
+                    guard let parsed, simd_length(parsed) > 1e-12 else {
+                        return fail("zero_direction", "directionA must be a non-zero [x,y,z] vector.")
+                    }
+                    directionA = parsed
                 }
-                directionB = parsed
+            }
+            if directionB == nil {
+                guard let rawB = args["directionB"], !(rawB is NSNull) else {
+                    return fail("missing_direction", "\(kind.rawValue) needs a directionB.")
+                }
+                switch parseVector(rawB) {
+                case .failure(let error): return fail(error.code, error.message)
+                case .success(let parsed):
+                    guard let parsed, simd_length(parsed) > 1e-12 else {
+                        return fail("zero_direction", "directionB must be a non-zero [x,y,z] vector.")
+                    }
+                    directionB = parsed
+                }
             }
         case .distance:
-            if let raw = args["directionA"], !(raw is NSNull) {
+            if referenceA == nil, let raw = args["directionA"], !(raw is NSNull) {
                 switch parseVector(raw) {
                 case .failure(let error): return fail(error.code, error.message)
                 case .success(let parsed): directionA = parsed ?? directionA
                 }
             }
-            if let raw = args["directionB"], !(raw is NSNull) {
+            if referenceB == nil, let raw = args["directionB"], !(raw is NSNull) {
                 switch parseVector(raw) {
                 case .failure(let error): return fail(error.code, error.message)
                 case .success(let parsed): directionB = parsed
                 }
             }
+        }
+        guard simd_length(directionA) > 1e-12 else {
+            return fail("zero_direction", "directionA must be a non-zero [x,y,z] vector.")
+        }
+        directionA = simd_normalize(directionA)
+        if let value = directionB {
+            guard simd_length(value) > 1e-12 else {
+                return fail("zero_direction", "directionB must be a non-zero [x,y,z] vector.")
+            }
+            directionB = simd_normalize(value)
         }
 
         var value: Double?
@@ -615,6 +754,11 @@ public final class CADAssemblyService {
             break
         }
 
+        let sourceRevisionA = referenceA?.sourceRevision
+            ?? body(for: effectiveBodyID(instanceAValue))?.meshRevision
+        let sourceRevisionB = instanceBValue.flatMap { instance in
+            referenceB?.sourceRevision ?? body(for: effectiveBodyID(instance))?.meshRevision
+        }
         let constraint = CADAssemblyConstraint(
             id: UUID(),
             kind: kind,
@@ -624,7 +768,10 @@ public final class CADAssemblyService {
             directionA: directionA,
             pointB: pointB,
             directionB: directionB,
-            value: value
+            value: value,
+            isSuppressed: false,
+            sourceRevisionA: sourceRevisionA,
+            sourceRevisionB: sourceRevisionB
         )
         updated.constraints.append(constraint)
         if let failure = persist(updated) { return failure }
@@ -632,6 +779,8 @@ public final class CADAssemblyService {
         var payload = constraintPayload(constraint)
         payload["ok"] = true
         payload["mutated"] = true
+        if let referenceA { payload["referenceA"] = referenceA.payload }
+        if let referenceB { payload["referenceB"] = referenceB.payload }
         return payload
     }
 
@@ -675,6 +824,1110 @@ public final class CADAssemblyService {
         if let failure = persist(updated) { return failure }
         return ["ok": true, "mutated": true,
                 "constraint": constraintPayload(updated.constraints[index])]
+    }
+
+    // MARK: - Live reference picking
+
+    /// Resolve one constraint reference from the CURRENT workbench selection
+    /// or an explicit kernel face/edge with its query generation. The reply
+    /// is in the instance placement-local frame and carries the document
+    /// revision/change-count/body-revision fence the caller must pass back to
+    /// `addConstraint` as `referenceA`/`referenceB`.
+    private func referenceAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        guard let instanceID = uuidValue(args["instanceID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_instance_id", "instanceID must be an assembly instance UUID string.")
+        }
+        guard let instance = assembly.instance(instanceID) else {
+            return fail("unknown_instance", "No assembly instance with that id.")
+        }
+        guard let source = body(for: effectiveBodyID(instance)) else {
+            return fail("unknown_body", "The instance's source body no longer resolves.")
+        }
+
+        if let rawFace = args["face"] as? [String: Any] {
+            switch resolveKernelFaceReference(instance: instance, source: source, args: rawFace) {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let reference): return referenceReply(instance: instance, reference: reference)
+            }
+        }
+        if let rawEdge = args["edge"] as? [String: Any] {
+            switch resolveKernelEdgeReference(instance: instance, source: source, args: rawEdge) {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let reference): return referenceReply(instance: instance, reference: reference)
+            }
+        }
+
+        if boolValue(args["useSelection"]) ?? false {
+            let context = document.assistantSelectionContext()
+            let inputs = document.viewModel().assistantSelectionInputs
+            switch referenceFromSelection(instance: instance, source: source,
+                                          selection: context,
+                                          facePicks: inputs.facePicks,
+                                          edgePicks: inputs.edgePicks,
+                                          axisPreset: args["axisPreset"]) {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let reference): return referenceReply(instance: instance, reference: reference)
+            }
+        }
+
+        // Explicit instance/reference-point pick: the constraint frame's
+        // origin is the instance placement point. Direction is a local preset
+        // (default +Z), never inferred from a stale index.
+        let preset: SIMD3<Double>
+        switch parseVector(args["axisPreset"] ?? args["direction"]) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let parsed): preset = parsed ?? SIMD3(0, 0, 1)
+        }
+        guard simd_length(preset) > 1e-12 else {
+            return fail("zero_direction", "axisPreset must be a non-zero [x,y,z] vector.")
+        }
+        let reference = CADAssemblyReference(
+            point: .zero,
+            direction: simd_normalize(preset),
+            sourceRevision: source.meshRevision,
+            sourceKind: "reference_point",
+            resolvedIndex: nil,
+            bodyID: source.id.raw,
+            fence: fenceJSON(source: source),
+            notes: ["No face or edge was selected; the instance reference point (placement origin) was used."])
+        return referenceReply(instance: instance, reference: reference)
+    }
+
+    /// Live, validated pick candidates for one instance: the kernel's planar
+    /// faces (plane normal), cylindrical faces (real axis) and crease edges
+    /// (real direction), all expressed in the instance placement-local frame
+    /// with the exact query generation token the edit must echo back. This is
+    /// what the native reference picker lists; it never invents a face index.
+    private func referenceCandidatesAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        guard let instanceID = uuidValue(args["instanceID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_instance_id", "instanceID must be an assembly instance UUID string.")
+        }
+        guard let instance = assembly.instance(instanceID) else {
+            return fail("unknown_instance", "No assembly instance with that id.")
+        }
+        guard let source = body(for: effectiveBodyID(instance)) else {
+            return fail("unknown_body", "The instance's source body no longer resolves.")
+        }
+        let scope = (args["scope"] as? String) ?? "all"
+        guard ["all", "faces", "edges"].contains(scope) else {
+            return fail("unknown_scope", "scope must be all, faces or edges.")
+        }
+        var notes: [String] = []
+        var faces: [[String: Any]] = []
+        var edges: [[String: Any]] = []
+        let faceToken = CADGeometryQueryGeneration(
+            scope: "faces", bodyID: source.id.raw,
+            documentRevision: document.revision, changeCount: document.session.changeCount,
+            meshRevision: source.meshRevision).token
+        let edgeToken = CADGeometryQueryGeneration(
+            scope: "edges", bodyID: source.id.raw,
+            documentRevision: document.revision, changeCount: document.session.changeCount,
+            meshRevision: source.meshRevision).token
+
+        if scope != "edges", let brep = source.brep {
+            for face in OCCTKernel.faceInfo(brep).prefix(256) {
+                guard let signature = face.signature else { continue }
+                let kind: String
+                let radius: Double?
+                switch signature.kind {
+                case .planar: kind = "planar"; radius = nil
+                case .cylindrical(let value): kind = "cylindrical"; radius = value
+                }
+                let point = source.transform.applying(to: face.centroid)
+                let direction = normalized(source.transform.rotation.act(face.normal))
+                var row: [String: Any] = [
+                    "index": face.index,
+                    "kind": kind,
+                    "reference": kind == "planar" ? "face" : "axis",
+                    "label": kind == "planar"
+                        ? "Face \(face.index) · plane"
+                        : "Face \(face.index) · cylinder axis",
+                    "point": vectorPayload(point),
+                    "direction": vectorPayload(direction),
+                    "areaMM2": face.area,
+                    "query_token": faceToken,
+                ]
+                if let radius { row["radiusMM"] = radius }
+                row["signature"] = CADFaceSignatureCodec.json(signature)
+                faces.append(row)
+            }
+            if faces.isEmpty {
+                notes.append("The body has no referenceable planar/cylindrical faces.")
+            }
+        } else if scope != "edges" {
+            notes.append("The source body has no analytic B-rep; pick a live face/edge instead.")
+        }
+
+        if scope != "faces" {
+            let midpoints = source.brep.map { OCCTKernel.edgeMidpoints($0) } ?? [:]
+            for (index, midpoint) in midpoints.sorted(by: { $0.key < $1.key }).prefix(256) {
+                var direction: SIMD3<Double>?
+                var length: Double?
+                if let brep = source.brep {
+                    var best = Double.greatestFiniteMagnitude
+                    let segments = source.edges.segments
+                    for offset in stride(from: 0, to: max(segments.count - 1, 0), by: 2) {
+                        let start = segments[offset]
+                        let end = segments[offset + 1]
+                        let localMid = SIMD3<Double>(Double((start.x + end.x) / 2),
+                                                    Double((start.y + end.y) / 2),
+                                                    Double((start.z + end.z) / 2))
+                        let segmentLength = simd_length(SIMD3<Double>(Double(end.x - start.x),
+                                                                     Double(end.y - start.y),
+                                                                     Double(end.z - start.z)))
+                        guard let mapped = OCCTKernel.nearestEdgeIndex(
+                            brep, to: localMid,
+                            tolerance: max(1e-4, segmentLength * 0.01)),
+                            mapped == index else { continue }
+                        let distance = simd_length(localMid - midpoint)
+                        if distance < best {
+                            best = distance
+                            direction = normalized(source.transform.rotation.act(
+                                SIMD3<Double>(Double(end.x - start.x),
+                                              Double(end.y - start.y),
+                                              Double(end.z - start.z))))
+                            length = segmentLength
+                        }
+                    }
+                }
+                var row: [String: Any] = [
+                    "index": index,
+                    "kind": "edge",
+                    "reference": "edge",
+                    "label": "Edge \(index)",
+                    "point": vectorPayload(source.transform.applying(to: midpoint)),
+                    "query_token": edgeToken,
+                ]
+                if let direction { row["direction"] = vectorPayload(direction) }
+                if let length { row["lengthMM"] = length }
+                edges.append(row)
+            }
+            if edges.isEmpty {
+                notes.append("The body has no kernel edges.")
+            }
+        }
+
+        return [
+            "ok": true,
+            "mutated": false,
+            "instanceID": instance.id.uuidString,
+            "instanceName": instance.name,
+            "bodyID": source.id.raw.uuidString,
+            "fence": fenceJSON(source: source),
+            "faces": faces,
+            "edges": edges,
+            "faceCount": faces.count,
+            "edgeCount": edges.count,
+            "notes": notes,
+        ]
+    }
+
+    private func referenceReply(instance: CADAssemblyInstance,
+                                reference: CADAssemblyReference) -> [String: Any] {
+        var payload = reference.payload
+        payload["ok"] = true
+        payload["mutated"] = false
+        payload["instanceID"] = instance.id.uuidString
+        payload["instanceName"] = instance.name
+        payload["bodyID"] = reference.bodyID?.uuidString ?? effectiveBodyID(instance).uuidString
+        payload["point"] = [reference.point.x, reference.point.y, reference.point.z]
+        payload["direction"] = [reference.direction.x, reference.direction.y, reference.direction.z]
+        return payload
+    }
+
+    /// Resolve a live selection into a constraint reference. Face picks are
+    /// real render-mesh triangles from the current revision; a curved pick is
+    /// fitted to an actual cylinder axis, a planar pick uses its measured
+    /// plane, and an edge pick uses the selected crease segment. No kernel
+    /// index is guessed from a stale row.
+    func referenceFromSelection(
+        instance: CADAssemblyInstance,
+        source: Body,
+        selection: CADSelectionContext,
+        facePicks: [CADSelectionContext.FaceTrianglePick],
+        edgePicks: [CADSelectionContext.EdgeSegmentPick],
+        axisPreset: Any? = nil
+    ) -> Result<CADAssemblyReference, CADAssemblyServiceError> {
+        guard selection.documentRevision == Int64(document.revision),
+              selection.changeCount == document.session.changeCount else {
+            return .failure(CADAssemblyServiceError(
+                code: "requery_required",
+                message: "The selection snapshot is stale (revision \(selection.documentRevision), "
+                    + "change \(selection.changeCount); current \(document.revision), "
+                    + "\(document.session.changeCount)). Select the geometry again."))
+        }
+        let sourceID = source.id.raw
+        var notes: [String] = []
+
+        if let pick = facePicks.first(where: { $0.bodyID == sourceID }) {
+            switch referenceFromFacePick(pick, source: source) {
+            case .failure(let error): return .failure(error)
+            case .success(let reference):
+                notes.append("Resolved from the live face selection.")
+                var adjusted = reference
+                adjusted.notes.append(contentsOf: notes)
+                return .success(adjusted)
+            }
+        }
+        if let contextFace = selection.faces.first(where: { $0.bodyID == sourceID.uuidString }) {
+            if contextFace.curved {
+                return .failure(CADAssemblyServiceError(
+                    code: "needs_cylinder_pick",
+                    message: "The selected face is curved but its tessellation was not supplied; "
+                        + "a coaxial axis needs the live face pick, not a cached normal."))
+            }
+            let worldPoint = SIMD3<Double>(contextFace.centroid[0], contextFace.centroid[1],
+                                           contextFace.centroid[2])
+            let worldNormal = SIMD3<Double>(contextFace.normal[0], contextFace.normal[1],
+                                            contextFace.normal[2])
+            guard let localPoint = bodyLocalPoint(worldPoint, in: source),
+                  let localDirection = bodyLocalDirection(worldNormal, in: source) else {
+                return .failure(CADAssemblyServiceError(
+                    code: "bad_selection", message: "The selected face geometry is not finite."))
+            }
+            notes.append("Resolved from the cached selection face (planar normal).")
+            return .success(CADAssemblyReference(
+                point: source.transform.applying(to: localPoint),
+                direction: normalized(source.transform.rotation.act(localDirection)),
+                sourceRevision: source.meshRevision,
+                sourceKind: "face",
+                resolvedIndex: nil,
+                bodyID: sourceID,
+                fence: fenceJSON(source: source),
+                notes: notes))
+        }
+        if let pick = edgePicks.first(where: { $0.bodyID == sourceID }) {
+            let midpoint = (pick.start + pick.end) / 2
+            let direction = pick.end - pick.start
+            guard simd_length(direction) > 1e-9 else {
+                return .failure(CADAssemblyServiceError(
+                    code: "zero_edge", message: "The selected edge has zero length."))
+            }
+            notes.append("Resolved from the live edge selection (crease segment).")
+            return .success(CADAssemblyReference(
+                point: source.transform.applying(to: midpoint),
+                direction: normalized(source.transform.rotation.act(direction)),
+                sourceRevision: source.meshRevision,
+                sourceKind: "edge",
+                resolvedIndex: nil,
+                bodyID: sourceID,
+                fence: fenceJSON(source: source),
+                notes: notes))
+        }
+
+        // The instance itself is selected (no sub-entity): use its reference
+        // point. This is still a live pick, not a numeric guess.
+        let preset: SIMD3<Double>
+        switch parseVector(axisPreset) {
+        case .failure(let error): return .failure(error)
+        case .success(let parsed): preset = parsed ?? SIMD3(0, 0, 1)
+        }
+        guard simd_length(preset) > 1e-12 else {
+            return .failure(CADAssemblyServiceError(
+                code: "zero_direction", message: "axisPreset must be a non-zero [x,y,z] vector."))
+        }
+        notes.append("No face or edge pick matched the source body; the instance reference point was used.")
+        return .success(CADAssemblyReference(
+            point: .zero,
+            direction: simd_normalize(preset),
+            sourceRevision: source.meshRevision,
+            sourceKind: "reference_point",
+            resolvedIndex: nil,
+            bodyID: sourceID,
+            fence: fenceJSON(source: source),
+            notes: notes))
+    }
+
+    private func referenceFromFacePick(
+        _ pick: CADSelectionContext.FaceTrianglePick,
+        source: Body
+    ) -> Result<CADAssemblyReference, CADAssemblyServiceError> {
+        let triangles = pick.triangles.filter {
+            $0 >= 0 && $0 < source.render.triangleCount
+        }
+        guard !triangles.isEmpty else {
+            return .failure(CADAssemblyServiceError(
+                code: "bad_selection", message: "The selected face triangles no longer resolve."))
+        }
+        if pick.curved, let seed = triangles.first,
+           let cylinder = FaceTopology.cylindricalFace(in: source.render, seedTriangle: seed) {
+            return .success(CADAssemblyReference(
+                point: source.transform.applying(to: cylinder.axisPoint),
+                direction: normalized(source.transform.rotation.act(cylinder.axisDir)),
+                sourceRevision: source.meshRevision,
+                sourceKind: "axis",
+                resolvedIndex: nil,
+                bodyID: source.id.raw,
+                fence: fenceJSON(source: source),
+                notes: ["Curved face fitted to a real cylinder axis "
+                        + "(radius \(String(format: "%.3f", cylinder.radius)) mm)."]))
+        }
+        if pick.curved {
+            return .failure(CADAssemblyServiceError(
+                code: "unsupported_curved_face",
+                message: "The selected curved face is not a clean cylinder; "
+                    + "pick a planar face or an edge for this reference."))
+        }
+        var normal = SIMD3<Double>.zero
+        var centroid = SIMD3<Double>.zero
+        let positions = source.render.positions
+        let indices = source.render.indices
+        var used = 0
+        for triangle in triangles {
+            let i0 = Int(indices[triangle * 3])
+            let i1 = Int(indices[triangle * 3 + 1])
+            let i2 = Int(indices[triangle * 3 + 2])
+            guard i0 < positions.count, i1 < positions.count, i2 < positions.count else { continue }
+            let a = SIMD3<Double>(positions[i0])
+            let b = SIMD3<Double>(positions[i1])
+            let c = SIMD3<Double>(positions[i2])
+            let cross = simd_cross(b - a, c - a)
+            if simd_length(cross) > 1e-12 {
+                normal += simd_normalize(cross)
+                centroid += (a + b + c) / 3
+                used += 1
+            }
+        }
+        guard used > 0, simd_length(normal) > 1e-9 else {
+            return .failure(CADAssemblyServiceError(
+                code: "bad_selection", message: "The selected face has no measurable normal."))
+        }
+        centroid /= Double(used)
+        let localNormal = simd_normalize(normal)
+        return .success(CADAssemblyReference(
+            point: source.transform.applying(to: centroid),
+            direction: normalized(source.transform.rotation.act(localNormal)),
+            sourceRevision: source.meshRevision,
+            sourceKind: "face",
+            resolvedIndex: nil,
+            bodyID: source.id.raw,
+            fence: fenceJSON(source: source),
+            notes: ["Planar face normal measured from \(used) live triangle(s)."]))
+    }
+
+    private func resolveKernelFaceReference(instance: CADAssemblyInstance,
+                                            source: Body,
+                                            args: [String: Any])
+        -> Result<CADAssemblyReference, CADAssemblyServiceError> {
+        guard let brep = source.brep else {
+            return .failure(CADAssemblyServiceError(
+                code: "face_requires_brep",
+                message: "Body '\(source.name)' has no analytic B-rep faces; "
+                    + "pick a live face/edge from its render mesh instead."))
+        }
+        let faces = OCCTKernel.faceInfo(brep)
+        guard !faces.isEmpty else {
+            return .failure(CADAssemblyServiceError(
+                code: "no_faces", message: "The body has no kernel faces."))
+        }
+        var resolvedIndex: Int?
+        var resolvedBySignature = false
+        var notes: [String] = []
+        if let signatureObject = args["signature"] as? [String: Any],
+           let reference = CADFaceSignatureCodec.signature(from: signatureObject) {
+            var scored: [(index: Int, score: Double)] = []
+            for face in faces {
+                guard let candidate = face.signature,
+                      let score = CADFaceMaterialResolver.score(reference, candidate) else { continue }
+                scored.append((face.index, score))
+            }
+            scored.sort { $0.score == $1.score ? $0.index < $1.index : $0.score > $1.score }
+            guard let best = scored.first,
+                  best.score >= CADFaceMaterialResolver.matchThreshold else {
+                return .failure(CADAssemblyServiceError(
+                    code: "stale_face_ref",
+                    message: "The supplied face signature no longer matches this body. "
+                        + "Re-query kind=faces and use the current row."))
+            }
+            if scored.count > 1, best.score - scored[1].score < 0.05 {
+                return .failure(CADAssemblyServiceError(
+                    code: "ambiguous_face",
+                    message: "The supplied face signature matches several faces; "
+                        + "re-query kind=faces and pass its index with the current query_token."))
+            }
+            resolvedIndex = best.index
+            resolvedBySignature = true
+            notes.append("Resolved by stable face signature.")
+        } else {
+            guard let index = intValue(args["index"]) else {
+                return .failure(CADAssemblyServiceError(
+                    code: "requery_required",
+                    message: "A kernel face reference needs index + the current query_token "
+                        + "(or a stable signature). Re-query kind=faces."))
+            }
+            resolvedIndex = index
+        }
+        guard let index = resolvedIndex, let face = faces.first(where: { $0.index == index }) else {
+            return .failure(CADAssemblyServiceError(
+                code: "stale_face_ref",
+                message: "Face index \(resolvedIndex.map(String.init) ?? "?") no longer exists. "
+                    + "Re-query kind=faces."))
+        }
+        if !resolvedBySignature,
+           let token = args["query_token"] as? String,
+           !tokenIsCurrent(token, scope: "faces", source: source) {
+            return .failure(CADAssemblyServiceError(
+                code: "requery_required",
+                message: "The face query generation is stale. Re-query kind=faces "
+                    + "and pass its current query_token with the current index."))
+        }
+        guard let signature = face.signature else {
+            return .failure(CADAssemblyServiceError(
+                code: "unsupported_face",
+                message: "Face \(index) has a surface kind with no reference direction "
+                    + "(only planar and cylindrical faces are supported)."))
+        }
+        let kindName: String
+        switch signature.kind {
+        case .planar: kindName = "face"
+        case .cylindrical: kindName = "axis"
+        }
+        notes.append(kindName == "axis"
+                     ? "Cylindrical face resolved to its kernel axis."
+                     : "Planar face resolved to its kernel plane.")
+        return .success(CADAssemblyReference(
+            point: source.transform.applying(to: face.centroid),
+            direction: normalized(source.transform.rotation.act(face.normal)),
+            sourceRevision: source.meshRevision,
+            sourceKind: kindName,
+            resolvedIndex: index,
+            bodyID: source.id.raw,
+            fence: fenceJSON(source: source),
+            notes: notes))
+    }
+
+    private func resolveKernelEdgeReference(instance: CADAssemblyInstance,
+                                            source: Body,
+                                            args: [String: Any])
+        -> Result<CADAssemblyReference, CADAssemblyServiceError> {
+        guard let brep = source.brep else {
+            return .failure(CADAssemblyServiceError(
+                code: "edge_requires_brep",
+                message: "Body '\(source.name)' has no analytic B-rep edges; "
+                    + "pick a live edge from its render mesh instead."))
+        }
+        guard let index = intValue(args["index"]) else {
+            return .failure(CADAssemblyServiceError(
+                code: "requery_required",
+                message: "A kernel edge reference needs an index from query kind=edges."))
+        }
+        if let token = args["query_token"] as? String,
+           !tokenIsCurrent(token, scope: "edges", source: source) {
+            return .failure(CADAssemblyServiceError(
+                code: "requery_required",
+                message: "The edge query generation is stale. Re-query kind=edges "
+                    + "and pass its current query_token with the current index."))
+        }
+        let midpoints = OCCTKernel.edgeMidpoints(brep)
+        guard let kernelMidpoint = midpoints[index] else {
+            return .failure(CADAssemblyServiceError(
+                code: "stale_edge_ref",
+                message: "Edge \(index) no longer exists. Re-query kind=edges."))
+        }
+        // The kernel reports a midpoint, not a direction. Use the renderer's
+        // crease segment that maps to this kernel edge; it is live geometry,
+        // not a guess at a stored index.
+        var chosenStart: SIMD3<Double>?
+        var chosenEnd: SIMD3<Double>?
+        var bestDistance = Double.greatestFiniteMagnitude
+        let segments = source.edges.segments
+        for offset in stride(from: 0, to: max(segments.count - 1, 0), by: 2) {
+            let start = segments[offset]
+            let end = segments[offset + 1]
+            let midpoint = SIMD3<Double>(Double((start.x + end.x) / 2),
+                                         Double((start.y + end.y) / 2),
+                                         Double((start.z + end.z) / 2))
+            let length = simd_length(SIMD3<Double>(Double(end.x - start.x),
+                                                   Double(end.y - start.y),
+                                                   Double(end.z - start.z)))
+            guard let mapped = OCCTKernel.nearestEdgeIndex(
+                brep, to: midpoint, tolerance: max(1e-4, length * 0.01)),
+                mapped == index else { continue }
+            let distance = simd_length(midpoint - kernelMidpoint)
+            if distance < bestDistance {
+                bestDistance = distance
+                chosenStart = SIMD3<Double>(Double(start.x), Double(start.y), Double(start.z))
+                chosenEnd = SIMD3<Double>(Double(end.x), Double(end.y), Double(end.z))
+            }
+        }
+        guard let start = chosenStart, let end = chosenEnd else {
+            return .failure(CADAssemblyServiceError(
+                code: "edge_direction_unavailable",
+                message: "Edge \(index) has no renderer crease segment to give its direction; "
+                    + "pick it live in the viewport or pass pointA/directionA explicitly."))
+        }
+        return .success(CADAssemblyReference(
+            point: source.transform.applying(to: (start + end) / 2),
+            direction: normalized(source.transform.rotation.act(end - start)),
+            sourceRevision: source.meshRevision,
+            sourceKind: "edge",
+            resolvedIndex: index,
+            bodyID: source.id.raw,
+            fence: fenceJSON(source: source),
+            notes: ["Kernel edge resolved with its live renderer crease direction."]))
+    }
+
+    /// Parse `referenceA`/`faceA`/`edgeA` (same for B). Returns nil when the
+    /// caller supplied none of them (legacy numeric geometry path).
+    private func parseInlineReference(args: [String: Any],
+                                      key: String,
+                                      faceKey: String,
+                                      edgeKey: String,
+                                      instance: CADAssemblyInstance,
+                                      assembly: CADAssembly,
+                                      label: String)
+        -> Result<CADAssemblyReference?, CADAssemblyServiceError>? {
+        guard let source = body(for: effectiveBodyID(instance)) else {
+            if args[key] != nil || args[faceKey] != nil || args[edgeKey] != nil {
+                return .failure(CADAssemblyServiceError(
+                    code: "unknown_body",
+                    message: "The instance's source body no longer resolves."))
+            }
+            return nil
+        }
+        if let raw = args[key] as? [String: Any] {
+            guard raw["point"] != nil, raw["direction"] != nil else {
+                return .failure(CADAssemblyServiceError(
+                    code: "bad_reference",
+                    message: "reference\(label) needs the point and direction returned by the reference action."))
+            }
+            var reference = CADAssemblyReference(
+                point: .zero,
+                direction: SIMD3(0, 0, 1),
+                sourceRevision: source.meshRevision,
+                sourceKind: "reference",
+                resolvedIndex: nil,
+                bodyID: source.id.raw,
+                fence: fenceJSON(source: source))
+            if let pointRaw = raw["point"] {
+                switch parseVector(pointRaw) {
+                case .failure(let error): return .failure(error)
+                case .success(let parsed):
+                    guard let parsed else {
+                        return .failure(CADAssemblyServiceError(
+                            code: "bad_reference", message: "reference\(label).point is invalid."))
+                    }
+                    reference.point = parsed
+                }
+            }
+            if let directionRaw = raw["direction"] {
+                switch parseVector(directionRaw) {
+                case .failure(let error): return .failure(error)
+                case .success(let parsed):
+                    guard let parsed, simd_length(parsed) > 1e-12 else {
+                        return .failure(CADAssemblyServiceError(
+                            code: "bad_reference",
+                            message: "reference\(label).direction must be a non-zero vector."))
+                    }
+                    reference.direction = simd_normalize(parsed)
+                }
+            }
+            if let revision = raw["source_revision"] {
+                guard let value = uint64Value(revision) else {
+                    return .failure(CADAssemblyServiceError(
+                        code: "bad_reference",
+                        message: "reference\(label).source_revision must be an unsigned integer."))
+                }
+                reference.sourceRevision = value
+            }
+            if let fence = raw["fence"] as? [String: Any] {
+                if let failure = validateReferenceFence(fence, source: source, label: label) {
+                    return .failure(failure)
+                }
+                reference.fence = fence
+            }
+            if let kind = raw["source"] as? String, !kind.isEmpty {
+                reference.sourceKind = kind
+            }
+            return .success(reference)
+        }
+        if let raw = args[faceKey] as? [String: Any] {
+            return resolveKernelFaceReference(instance: instance, source: source, args: raw)
+                .map { Optional($0) }
+        }
+        if let raw = args[edgeKey] as? [String: Any] {
+            return resolveKernelEdgeReference(instance: instance, source: source, args: raw)
+                .map { Optional($0) }
+        }
+        return nil
+    }
+
+    /// The fence is a staleness proof, not an authority token: it only proves
+    /// the pick came from this document/body generation.
+    private func validateReferenceFence(_ fence: [String: Any],
+                                        source: Body,
+                                        label: String) -> CADAssemblyServiceError? {
+        if let revision = intValue(fence["document_revision"] ?? fence["revision"]),
+           revision > document.revision {
+            return CADAssemblyServiceError(
+                code: "requery_required",
+                message: "reference\(label) was picked from a newer document revision "
+                    + "(\(revision) > \(document.revision)). Re-pick it.")
+        }
+        if let changeCount = intValue(fence["change_count"]),
+           changeCount != document.session.changeCount {
+            return CADAssemblyServiceError(
+                code: "requery_required",
+                message: "reference\(label) was picked at change \(changeCount); the document "
+                    + "is now at \(document.session.changeCount). Re-pick it.")
+        }
+        if let rawBody = fence["body_id"] as? String,
+           UUID(uuidString: rawBody) != source.id.raw {
+            return CADAssemblyServiceError(
+                code: "stale_face_ref",
+                message: "reference\(label) targets a different body than this instance "
+                    + "currently places. Re-pick it.")
+        }
+        if let meshRevision = uint64Value(fence["mesh_revision"]),
+           meshRevision != source.meshRevision {
+            return CADAssemblyServiceError(
+                code: "stale_face_ref",
+                message: "The source body changed since reference\(label) was picked "
+                    + "(mesh revision \(meshRevision) -> \(source.meshRevision)). Re-pick it.")
+        }
+        return nil
+    }
+
+    private func tokenIsCurrent(_ token: String, scope: String, source: Body) -> Bool {
+        guard let generation = CADGeometryQueryGeneration.parse(token),
+              generation.scope == scope else { return false }
+        return generation.matches(documentRevision: document.revision,
+                                  changeCount: document.session.changeCount,
+                                  bodyID: source.id.raw,
+                                  meshRevision: source.meshRevision)
+    }
+
+    private func fenceJSON(source: Body) -> [String: Any] {
+        [
+            "document_revision": document.revision,
+            "change_count": document.session.changeCount,
+            "body_id": source.id.raw.uuidString,
+            "mesh_revision": source.meshRevision,
+        ]
+    }
+
+    private func bodyLocalPoint(_ world: SIMD3<Double>, in body: Body) -> SIMD3<Double>? {
+        let transform = body.transform
+        guard transform.scale.isFinite, abs(transform.scale) > 1e-12 else { return nil }
+        let inverseRotation = transform.rotation.inverse
+        return inverseRotation.act(world - transform.translation) / transform.scale
+    }
+
+    private func bodyLocalDirection(_ world: SIMD3<Double>, in body: Body) -> SIMD3<Double>? {
+        let direction = body.transform.rotation.inverse.act(world)
+        return simd_length(direction) > 1e-12 ? direction : nil
+    }
+
+    private func normalized(_ vector: SIMD3<Double>) -> SIMD3<Double> {
+        let length = simd_length(vector)
+        return length > 1e-12 ? vector / length : SIMD3(0, 0, 1)
+    }
+
+    private func safeDirection(_ vector: SIMD3<Double>) -> SIMD3<Double> {
+        normalized(vector)
+    }
+
+    private func uint64Value(_ raw: Any?) -> UInt64? {
+        if let value = raw as? UInt64 { return value }
+        if let value = raw as? Int, value >= 0 { return UInt64(value) }
+        if let value = raw as? NSNumber { return value.uint64Value }
+        if let value = raw as? String { return UInt64(value) }
+        return nil
+    }
+
+    private func intValue(_ raw: Any?) -> Int? {
+        if let value = raw as? Int { return value }
+        if let value = raw as? NSNumber { return value.intValue }
+        if let value = raw as? String { return Int(value) }
+        return nil
+    }
+
+    /// A constraint's picked geometry is stale when a recorded source
+    /// revision no longer matches the live source body. Legacy numeric
+    /// constraints (nil revisions) are not falsely flagged.
+    private func constraintRevisionState(_ constraint: CADAssemblyConstraint,
+                                         assembly: CADAssembly)
+        -> (stale: Bool, staleBodies: [String]) {
+        var staleBodies: [String] = []
+        if let recorded = constraint.sourceRevisionA,
+           let instance = assembly.instance(constraint.instanceA) {
+            if let source = body(for: effectiveBodyID(instance)) {
+                if source.meshRevision != recorded { staleBodies.append(source.id.raw.uuidString) }
+            } else {
+                staleBodies.append(effectiveBodyID(instance).uuidString)
+            }
+        }
+        if let recorded = constraint.sourceRevisionB,
+           let instanceID = constraint.instanceB,
+           let instance = assembly.instance(instanceID) {
+            if let source = body(for: effectiveBodyID(instance)) {
+                if source.meshRevision != recorded { staleBodies.append(source.id.raw.uuidString) }
+            } else {
+                staleBodies.append(effectiveBodyID(instance).uuidString)
+            }
+        }
+        return (!staleBodies.isEmpty, Array(Set(staleBodies)).sorted())
+    }
+
+    // MARK: - Exploded views
+
+    private func explodedViewsAction() -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        // A saved view that was removed/undone while it was previewed must not
+        // keep the viewport exploded on a stale id.
+        CADExplodedViewPreview.current(for: document.session)?.reconcile(with: assembly)
+        let rows = assembly.explodedViews.map { view -> [String: Any] in
+            var row = explodedViewPayload(view, assembly: assembly)
+            row["offsets"] = assembly.instances.map { instance in
+                let offset = view.offset(for: instance.id)
+                return [
+                    "instanceID": instance.id.uuidString,
+                    "name": instance.name,
+                    "offset": vectorPayload(offset),
+                    "distanceMM": simd_length(offset),
+                ]
+            }
+            return row
+        }
+        var payload: [String: Any] = ["ok": true, "count": rows.count, "views": rows]
+        if let preview = CADExplodedViewPreview.current(for: document.session),
+           preview.isActive {
+            payload["previewActive"] = true
+            payload["activeExplodedViewID"] = preview.viewID?.uuidString
+            payload["activeExplodedViewName"] = preview.viewName
+        } else {
+            payload["previewActive"] = false
+        }
+        return payload
+    }
+
+    private func addExplodedViewAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        guard assembly.explodedViews.count < CADAssembly.maxExplodedViews else {
+            return fail("too_many_exploded_views",
+                        "An assembly is bounded to \(CADAssembly.maxExplodedViews) exploded views.")
+        }
+        switch parseExplodedView(args: args, existing: nil, assembly: assembly) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let view):
+            var updated = assembly
+            updated.explodedViews.append(view)
+            if let failure = persist(updated) { return failure }
+            var payload = explodedViewPayload(view, assembly: updated)
+            payload["ok"] = true
+            payload["mutated"] = true
+            return payload
+        }
+    }
+
+    private func updateExplodedViewAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        guard let id = uuidValue(args["id"]) ?? uuidValue(args["viewID"]) else {
+            return fail("bad_view_id", "id must be an exploded-view UUID string.")
+        }
+        guard let index = assembly.explodedViews.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_exploded_view", "No exploded view with that id.")
+        }
+        switch parseExplodedView(args: args, existing: assembly.explodedViews[index],
+                                 assembly: assembly) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let view):
+            var updated = assembly
+            updated.explodedViews[index] = view
+            if let failure = persist(updated) { return failure }
+            // A rename of the view being previewed must reach the viewport
+            // label immediately; offsets resolve live from the saved view.
+            CADExplodedViewPreview.current(for: document.session)?.reconcile(with: updated)
+            var payload = explodedViewPayload(view, assembly: updated)
+            payload["ok"] = true
+            payload["mutated"] = true
+            return payload
+        }
+    }
+
+    private func removeExplodedViewAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        guard let id = uuidValue(args["id"]) ?? uuidValue(args["viewID"]) else {
+            return fail("bad_view_id", "id must be an exploded-view UUID string.")
+        }
+        guard assembly.explodedViews.contains(where: { $0.id == id }) else {
+            return fail("unknown_exploded_view", "No exploded view with that id.")
+        }
+        var updated = assembly
+        updated.explodedViews.removeAll { $0.id == id }
+        if let failure = persist(updated) { return failure }
+        // Removing the view that is being previewed must return the viewport
+        // to the baseline immediately instead of leaving a stale name/offset.
+        var previewReset = false
+        if let preview = CADExplodedViewPreview.current(for: document.session),
+           preview.viewID == id {
+            previewReset = preview.reset()
+        }
+        return ["ok": true, "mutated": true, "removedExplodedView": id.uuidString,
+                "viewCount": updated.explodedViews.count, "previewReset": previewReset]
+    }
+
+    /// Transient placements for a named view. NOTHING is persisted and the
+    /// stored instance transforms are unchanged; the named view becomes the
+    /// document's live transient preview, so the engineering viewport and the
+    /// presentation snapshot immediately draw the same placements. "Reset"
+    /// below returns the baseline placements from the same read path and
+    /// deactivates that preview.
+    private func previewExplodedViewAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        guard let id = uuidValue(args["id"]) ?? uuidValue(args["viewID"]) else {
+            return fail("bad_view_id", "id must be an exploded-view UUID string.")
+        }
+        guard let view = assembly.explodedView(id) else {
+            // A stale id (the view was deleted, undone or replaced) must never
+            // keep an older preview alive: fall back to the base placements.
+            CADExplodedViewPreview.current(for: document.session)?.reset()
+            return fail("unknown_exploded_view", "No exploded view with that id.")
+        }
+        CADExplodedViewPreview.state(for: document.session)
+            .activate(viewID: view.id, name: view.name)
+        return explodedPreviewPayload(view: view, assembly: assembly)
+    }
+
+    private func resetExplodedViewAction(_ args: [String: Any]) -> [String: Any] {
+        // Clear the transient viewport state FIRST: a corrupt/unreadable
+        // assembly must still be able to return the viewport to the baseline.
+        let wasActive = CADExplodedViewPreview.current(for: document.session)?.reset() ?? false
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        var payload: [String: Any] = ["ok": true, "mutated": false,
+                                      "applied": false, "preview": false,
+                                      "reset": true, "previewActive": false,
+                                      "wasPreviewing": wasActive]
+        payload["explodedPreview"] = ["active": false]
+        payload["instances"] = assembly.instances.map { instance in
+            [
+                "instanceID": instance.id.uuidString,
+                "name": instance.name,
+                "transform": transformPayload(instance.transform),
+                "offset": [0.0, 0.0, 0.0],
+            ]
+        }
+        return payload
+    }
+
+    private func explodedPreviewPayload(view: CADExplodedView,
+                                        assembly: CADAssembly) -> [String: Any] {
+        var rows: [[String: Any]] = []
+        var invalid: [String] = []
+        for instance in assembly.instances {
+            guard let exploded = assembly.explodedTransform(for: instance.id, viewID: view.id) else {
+                invalid.append(instance.id.uuidString)
+                continue
+            }
+            let offset = view.offset(for: instance.id)
+            rows.append([
+                "instanceID": instance.id.uuidString,
+                "name": instance.name,
+                "offset": vectorPayload(offset),
+                "distanceMM": simd_length(offset),
+                "baseTransform": transformPayload(instance.transform),
+                "transform": transformPayload(exploded),
+            ])
+        }
+        var payload = explodedViewPayload(view, assembly: assembly)
+        payload["ok"] = true
+        // "applied" means applied to the TRANSIENT viewport preview, never to
+        // the document: the persisted assembly/undo/dirty state is untouched.
+        payload["mutated"] = false
+        payload["applied"] = true
+        payload["preview"] = true
+        payload["previewActive"] = true
+        payload["activeExplodedViewID"] = view.id.uuidString
+        payload["baselineUnchanged"] = true
+        payload["writesGeometry"] = false
+        payload["instances"] = rows
+        payload["invalidInstances"] = invalid
+        return payload
+    }
+
+    private func parseExplodedView(args: [String: Any],
+                                   existing: CADExplodedView?,
+                                   assembly: CADAssembly)
+        -> Result<CADExplodedView, CADAssemblyServiceError> {
+        var name = existing?.name ?? ""
+        if let raw = args["name"] {
+            guard let value = raw as? String,
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .failure(CADAssemblyServiceError(
+                    code: "bad_name", message: "name must be a non-empty string."))
+            }
+            name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !name.isEmpty else {
+            return .failure(CADAssemblyServiceError(
+                code: "missing_name", message: "An exploded view needs a name."))
+        }
+        if assembly.explodedViews.contains(where: {
+            $0.id != existing?.id && $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }) {
+            return .failure(CADAssemblyServiceError(
+                code: "duplicate_name", message: "Another exploded view already uses that name."))
+        }
+        var direction = existing?.direction ?? SIMD3(1, 1, 1)
+        if let raw = args["direction"] {
+            switch parseVector(raw) {
+            case .failure(let error): return .failure(error)
+            case .success(let parsed):
+                guard let parsed, simd_length(parsed) > 1e-9 else {
+                    return .failure(CADAssemblyServiceError(
+                        code: "bad_direction",
+                        message: "direction must be a non-zero finite [x,y,z]."))
+                }
+                direction = parsed
+            }
+        }
+        var distance = existing?.distanceMM ?? 40
+        if let raw = args["distanceMM"] {
+            guard let value = doubleValue(raw), value.isFinite, value >= 0 else {
+                return .failure(CADAssemblyServiceError(
+                    code: "bad_distance",
+                    message: "distanceMM must be a finite, non-negative number of mm."))
+            }
+            distance = value
+        }
+        var entries = existing?.entries ?? []
+        if let rawEntries = args["entries"] as? [[String: Any]] {
+            guard rawEntries.count <= CADAssembly.maxExplodedEntriesPerView else {
+                return .failure(CADAssemblyServiceError(
+                    code: "too_many_entries",
+                    message: "A view is bounded to \(CADAssembly.maxExplodedEntriesPerView) instance entries."))
+            }
+            var parsed: [CADExplodedViewEntry] = []
+            var seen = Set<UUID>()
+            for raw in rawEntries {
+                guard let instanceID = uuidValue(raw["instanceID"]),
+                      assembly.instance(instanceID) != nil else {
+                    return .failure(CADAssemblyServiceError(
+                        code: "unknown_instance",
+                        message: "Every exploded entry instanceID must reference a live instance."))
+                }
+                guard seen.insert(instanceID).inserted else {
+                    return .failure(CADAssemblyServiceError(
+                        code: "duplicate_entry",
+                        message: "An exploded view lists each instance at most once."))
+                }
+                var entryDirection: SIMD3<Double>?
+                if let rawDirection = raw["direction"], !(rawDirection is NSNull) {
+                    switch parseVector(rawDirection) {
+                    case .failure(let error): return .failure(error)
+                    case .success(let vector):
+                        guard let vector, simd_length(vector) > 1e-9 else {
+                            return .failure(CADAssemblyServiceError(
+                                code: "bad_direction",
+                                message: "An entry direction must be a non-zero finite [x,y,z]."))
+                        }
+                        entryDirection = vector
+                    }
+                }
+                var entryDistance: Double?
+                if let rawDistance = raw["distanceMM"], !(rawDistance is NSNull) {
+                    guard let value = doubleValue(rawDistance), value.isFinite, value >= 0 else {
+                        return .failure(CADAssemblyServiceError(
+                            code: "bad_distance",
+                            message: "An entry distanceMM must be a finite, non-negative number."))
+                    }
+                    entryDistance = value
+                }
+                parsed.append(CADExplodedViewEntry(
+                    id: uuidValue(raw["id"]) ?? UUID(),
+                    instanceID: instanceID,
+                    direction: entryDirection,
+                    distanceMM: entryDistance))
+            }
+            entries = parsed
+        } else if let rawIDs = args["instanceIDs"] as? [String] {
+            // Convenience: uniform per-instance offsets for a set of ids.
+            guard rawIDs.count <= CADAssembly.maxExplodedEntriesPerView else {
+                return .failure(CADAssemblyServiceError(
+                    code: "too_many_entries",
+                    message: "A view is bounded to \(CADAssembly.maxExplodedEntriesPerView) instance entries."))
+            }
+            var parsed: [CADExplodedViewEntry] = []
+            for rawID in rawIDs {
+                guard let instanceID = UUID(uuidString: rawID),
+                      assembly.instance(instanceID) != nil else {
+                    return .failure(CADAssemblyServiceError(
+                        code: "unknown_instance",
+                        message: "Every instanceID must reference a live instance."))
+                }
+                parsed.append(CADExplodedViewEntry(instanceID: instanceID))
+            }
+            entries = parsed
+        }
+        let now = Date()
+        return .success(CADExplodedView(
+            id: existing?.id ?? UUID(),
+            name: name,
+            direction: direction,
+            distanceMM: distance,
+            entries: entries,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now))
+    }
+
+    private func explodedViewPayload(_ view: CADExplodedView,
+                                     assembly: CADAssembly) -> [String: Any] {
+        var payload: [String: Any] = [
+            "id": view.id.uuidString,
+            "name": view.name,
+            "direction": vectorPayload(safeDirection(view.direction)),
+            "distanceMM": view.distanceMM,
+            "entryCount": view.entries.count,
+            "createdAt": ISO8601DateFormatter().string(from: view.createdAt),
+            "updatedAt": ISO8601DateFormatter().string(from: view.updatedAt),
+        ]
+        payload["entries"] = view.entries.map { entry -> [String: Any] in
+            var row: [String: Any] = [
+                "id": entry.id.uuidString,
+                "instanceID": entry.instanceID.uuidString,
+                "valid": assembly.instance(entry.instanceID) != nil,
+            ]
+            if let direction = entry.direction {
+                row["direction"] = vectorPayload(safeDirection(direction))
+            }
+            if let distance = entry.distanceMM { row["distanceMM"] = distance }
+            return row
+        }
+        return payload
     }
 
     // MARK: - Solve
@@ -835,9 +2088,10 @@ public final class CADAssemblyService {
     // MARK: - Clear
 
     private func clearAction() -> [String: Any] {
+        let previewReset = CADExplodedViewPreview.current(for: document.session)?.reset() ?? false
         document.session.perform(SetAssemblyDataCommand(
             before: document.session.document.assemblyData, after: nil))
-        return ["ok": true, "mutated": true, "cleared": true]
+        return ["ok": true, "mutated": true, "cleared": true, "previewReset": previewReset]
     }
 
     // MARK: - Assembly I/O
@@ -1095,7 +2349,7 @@ public final class CADAssemblyService {
 
 // MARK: - Errors
 
-private nonisolated struct CADAssemblyServiceError: Error {
+nonisolated struct CADAssemblyServiceError: Error {
     let code: String
     let message: String
 }

@@ -104,6 +104,12 @@ public nonisolated struct CADAssemblyConstraint: Codable, Sendable, Equatable, I
     /// Distance (mm) or angle (degrees) for the driven kinds.
     public var value: Double?
     public var isSuppressed: Bool
+    /// Mesh revision of the placed source body when the reference was picked.
+    /// Optional so constraint JSON written before this field existed decodes;
+    /// nil reads as "unrecorded" (legacy hand-entered geometry). A mismatch is
+    /// reported as a stale reference, never silently re-bound.
+    public var sourceRevisionA: UInt64?
+    public var sourceRevisionB: UInt64?
 
     public init(id: UUID = UUID(),
                 kind: CADAssemblyConstraintKind,
@@ -114,7 +120,9 @@ public nonisolated struct CADAssemblyConstraint: Codable, Sendable, Equatable, I
                 pointB: SIMD3<Double>? = nil,
                 directionB: SIMD3<Double>? = nil,
                 value: Double? = nil,
-                isSuppressed: Bool = false) {
+                isSuppressed: Bool = false,
+                sourceRevisionA: UInt64? = nil,
+                sourceRevisionB: UInt64? = nil) {
         self.id = id
         self.kind = kind
         self.instanceA = instanceA
@@ -125,17 +133,119 @@ public nonisolated struct CADAssemblyConstraint: Codable, Sendable, Equatable, I
         self.directionB = directionB
         self.value = value
         self.isSuppressed = isSuppressed
+        self.sourceRevisionA = sourceRevisionA
+        self.sourceRevisionB = sourceRevisionB
+    }
+}
+
+// MARK: - Exploded views
+
+/// One instance's override inside an exploded view. A nil direction/distance
+/// inherits the view default; the offset itself is still explicit per
+/// instance, so a named view never depends on assembly order or viewport
+/// state.
+public nonisolated struct CADExplodedViewEntry: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var instanceID: UUID
+    /// World-space direction; nil = the view's default direction.
+    public var direction: SIMD3<Double>?
+    /// Offset length in mm; nil = the view's default distance.
+    public var distanceMM: Double?
+
+    public init(id: UUID = UUID(), instanceID: UUID,
+                direction: SIMD3<Double>? = nil,
+                distanceMM: Double? = nil) {
+        self.id = id
+        self.instanceID = instanceID
+        self.direction = direction
+        self.distanceMM = distanceMM
+    }
+}
+
+/// A persisted, named exploded view. It is DISPLAY/DRAWING state only: the
+/// view never rewrites `CADAssemblyInstance.transform` or any body geometry.
+/// Preview offsets are derived from this value on demand; reset simply stops
+/// using them.
+public nonisolated struct CADExplodedView: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var name: String
+    /// Unit world-space direction used by entries without their own.
+    public var direction: SIMD3<Double>
+    /// Default offset length in mm.
+    public var distanceMM: Double
+    public var entries: [CADExplodedViewEntry]
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(id: UUID = UUID(),
+                name: String,
+                direction: SIMD3<Double> = SIMD3(1, 1, 1),
+                distanceMM: Double = 40,
+                entries: [CADExplodedViewEntry] = [],
+                createdAt: Date = Date(),
+                updatedAt: Date = Date()) {
+        self.id = id
+        self.name = name
+        self.direction = direction
+        self.distanceMM = distanceMM
+        self.entries = entries
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public func entry(for instanceID: UUID) -> CADExplodedViewEntry? {
+        entries.first { $0.instanceID == instanceID }
+    }
+
+    /// Resolved world-space offset for one instance. Only instances listed in
+    /// `entries` are displaced — an unlisted instance stays at its base
+    /// placement, which is what makes the per-instance include list honest.
+    /// Non-finite/zero input directions resolve to no offset rather than a
+    /// NaN placement.
+    public func offset(for instanceID: UUID) -> SIMD3<Double> {
+        guard let entry = entry(for: instanceID) else { return .zero }
+        let rawDirection = entry.direction ?? direction
+        let rawDistance = entry.distanceMM ?? distanceMM
+        guard rawDistance.isFinite, rawDistance != 0,
+              rawDirection.x.isFinite, rawDirection.y.isFinite, rawDirection.z.isFinite else {
+            return .zero
+        }
+        let length = simd_length(rawDirection)
+        guard length > 1e-12 else { return .zero }
+        return (rawDirection / length) * rawDistance
     }
 }
 
 public nonisolated struct CADAssembly: Codable, Sendable, Equatable {
+    public static let maxExplodedViews = 32
+    public static let maxExplodedEntriesPerView = 128
+
     public var instances: [CADAssemblyInstance]
     public var constraints: [CADAssemblyConstraint]
+    /// Additive persisted exploded views. Missing in older assembly JSON;
+    /// the custom decoder below defaults it to empty instead of failing.
+    public var explodedViews: [CADExplodedView]
 
     public init(instances: [CADAssemblyInstance] = [],
-                constraints: [CADAssemblyConstraint] = []) {
+                constraints: [CADAssemblyConstraint] = [],
+                explodedViews: [CADExplodedView] = []) {
         self.instances = instances
         self.constraints = constraints
+        self.explodedViews = explodedViews
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case instances, constraints, explodedViews
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        instances = try container.decodeIfPresent([CADAssemblyInstance].self,
+                                                  forKey: .instances) ?? []
+        constraints = try container.decodeIfPresent([CADAssemblyConstraint].self,
+                                                    forKey: .constraints) ?? []
+        explodedViews = try container.decodeIfPresent([CADExplodedView].self,
+                                                      forKey: .explodedViews) ?? []
     }
 
     public static func decode(from data: Data?) throws -> CADAssembly {
@@ -149,6 +259,22 @@ public nonisolated struct CADAssembly: Codable, Sendable, Equatable {
 
     public func instance(_ id: UUID) -> CADAssemblyInstance? {
         instances.first { $0.id == id }
+    }
+
+    public func explodedView(_ id: UUID) -> CADExplodedView? {
+        explodedViews.first { $0.id == id }
+    }
+
+    /// Base placement with the named view's world offset added. Only the
+    /// translation changes; rotation/scale (and every stored transform) stay
+    /// untouched. A view whose id is missing yields the base placement.
+    public func explodedTransform(for instanceID: UUID,
+                                  viewID: UUID?) -> CADTransform? {
+        guard let instance = instance(instanceID) else { return nil }
+        guard let viewID, let view = explodedView(viewID) else { return instance.transform }
+        var transform = instance.transform
+        transform.position += view.offset(for: instanceID)
+        return transform
     }
 }
 

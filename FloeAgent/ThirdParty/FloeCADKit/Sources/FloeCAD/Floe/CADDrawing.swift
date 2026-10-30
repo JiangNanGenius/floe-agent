@@ -11,7 +11,7 @@
 import Foundation
 
 public nonisolated enum CADDrawingViewKind: String, Codable, Sendable, CaseIterable {
-    case front, top, side, iso, section, detail
+    case front, top, side, iso, section, detail, exploded
 
     public var title: String {
         switch self {
@@ -21,6 +21,15 @@ public nonisolated enum CADDrawingViewKind: String, Codable, Sendable, CaseItera
         case .iso: return "Isometric"
         case .section: return "Section"
         case .detail: return "Detail"
+        case .exploded: return "Exploded"
+        }
+    }
+
+    /// Projection kinds that share the orthographic silhouette/edge path.
+    public var isOrthographic: Bool {
+        switch self {
+        case .front, .top, .side, .iso, .exploded: return true
+        case .section, .detail: return false
         }
     }
 }
@@ -68,10 +77,36 @@ public nonisolated struct CADDrawingSourceFingerprint: Codable, Sendable, Equata
         }
     }
 
-    public var sources: [Source]
+    /// One placed assembly instance's durable identity for an assembly-aware
+    /// page. `placementSHA256` covers the world placement INCLUDING the named
+    /// exploded-view offset, so switching/previewing a view marks the page
+    /// stale until it is re-projected.
+    public nonisolated struct InstanceSource: Codable, Sendable, Equatable {
+        public var instanceID: UUID
+        public var bodyID: UUID
+        public var missing: Bool
+        public var placementSHA256: String?
+        public var explodedViewID: UUID?
 
-    public init(sources: [Source] = []) {
+        public init(instanceID: UUID, bodyID: UUID, missing: Bool,
+                    placementSHA256: String? = nil,
+                    explodedViewID: UUID? = nil) {
+            self.instanceID = instanceID
+            self.bodyID = bodyID
+            self.missing = missing
+            self.placementSHA256 = placementSHA256
+            self.explodedViewID = explodedViewID
+        }
+    }
+
+    public var sources: [Source]
+    /// Present only for assembly-aware pages; nil on ordinary pages and on
+    /// pages written before assembly projection existed.
+    public var instances: [InstanceSource]?
+
+    public init(sources: [Source] = [], instances: [InstanceSource]? = nil) {
         self.sources = sources
+        self.instances = instances
     }
 
     /// Compare against the live fingerprint. A legacy page without a recorded
@@ -79,6 +114,162 @@ public nonisolated struct CADDrawingSourceFingerprint: Codable, Sendable, Equata
     public func matches(_ live: CADDrawingSourceFingerprint?) -> Bool {
         guard let live else { return false }
         return self == live
+    }
+}
+
+// MARK: - Assembly annotations
+
+/// Binds a drawing annotation to live assembly geometry. `modelPoints` are
+/// BODY-LOCAL (part-frame) points; projection re-applies the page's live
+/// instance placement (and its exploded offset) so an annotation follows a
+/// moved or exploded instance. `sourceRevision` is the body mesh revision the
+/// points were picked from; a mismatch is reported as stale, never re-bound
+/// to an unrelated surface.
+public nonisolated struct CADDrawingBinding: Codable, Sendable, Equatable {
+    public var instanceID: UUID?
+    public var bodyID: UUID?
+    public var modelPoints: [SIMD3<Double>]
+    public var sourceRevision: UInt64?
+
+    public init(instanceID: UUID? = nil, bodyID: UUID? = nil,
+                modelPoints: [SIMD3<Double>] = [], sourceRevision: UInt64? = nil) {
+        self.instanceID = instanceID
+        self.bodyID = bodyID
+        self.modelPoints = modelPoints
+        self.sourceRevision = sourceRevision
+    }
+}
+
+public nonisolated enum CADDrawingDimensionKind: String, Codable, Sendable, CaseIterable {
+    case length, angle, radius, diameter
+
+    public var title: String {
+        switch self {
+        case .length: return "Length"
+        case .angle: return "Angle"
+        case .radius: return "Radius"
+        case .diameter: return "Diameter"
+        }
+    }
+}
+
+/// A manually placed basic dimension. `value` is captured in model units (mm,
+/// or degrees for angle) and is never silently rewritten; a live projection
+/// recomputes geometry positions and reports a stale binding when the source
+/// part changed.
+public nonisolated struct CADDrawingManualDimension: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var kind: CADDrawingDimensionKind
+    /// Drawing-space reference points captured at creation (page mm), matching
+    /// `binding.modelPoints` order.
+    public var drawingPoints: [SIMD2<Double>]
+    public var value: Double
+    public var textPosition: SIMD2<Double>
+    public var textOverride: String?
+    public var binding: CADDrawingBinding?
+
+    public init(id: UUID = UUID(), kind: CADDrawingDimensionKind,
+                drawingPoints: [SIMD2<Double>], value: Double,
+                textPosition: SIMD2<Double>, textOverride: String? = nil,
+                binding: CADDrawingBinding? = nil) {
+        self.id = id
+        self.kind = kind
+        self.drawingPoints = drawingPoints
+        self.value = value
+        self.textPosition = textPosition
+        self.textOverride = textOverride
+        self.binding = binding
+    }
+}
+
+/// A balloon keyed by BOM item number and, when available, a concrete
+/// assembly instance. The leader target is recomputed from live projected
+/// instance geometry; a missing instance is reported, never silently dropped.
+public nonisolated struct CADDrawingBalloon: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var itemNumber: Int
+    public var bomEntryID: UUID?
+    public var instanceID: UUID?
+    /// Drawing-space balloon centre (page mm).
+    public var anchor: SIMD2<Double>
+    /// Explicit leader target; nil = nearest point of the instance's live
+    /// projected bounds.
+    public var target: SIMD2<Double>?
+    public var text: String?
+
+    public init(id: UUID = UUID(), itemNumber: Int, bomEntryID: UUID? = nil,
+                instanceID: UUID? = nil, anchor: SIMD2<Double>,
+                target: SIMD2<Double>? = nil, text: String? = nil) {
+        self.id = id
+        self.itemNumber = itemNumber
+        self.bomEntryID = bomEntryID
+        self.instanceID = instanceID
+        self.anchor = anchor
+        self.target = target
+        self.text = text
+    }
+}
+
+public nonisolated struct CADDrawingBOMEntry: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var itemNumber: Int
+    public var name: String
+    public var partNumber: String
+    /// The part definition this item groups (the shared source body, or an
+    /// independent copy's own body).
+    public var bodyID: UUID
+    /// The assembly instances that make up this item. Shared instances of one
+    /// body are one row with a quantity; an independent copy is its own row.
+    public var instanceIDs: [UUID]
+    /// Quantity captured when the BOM was derived; live reports also compute
+    /// the current count and flag a difference.
+    public var quantity: Int
+
+    public init(id: UUID = UUID(), itemNumber: Int, name: String,
+                partNumber: String = "", bodyID: UUID,
+                instanceIDs: [UUID] = [], quantity: Int = 1) {
+        self.id = id
+        self.itemNumber = itemNumber
+        self.name = name
+        self.partNumber = partNumber
+        self.bodyID = bodyID
+        self.instanceIDs = instanceIDs
+        self.quantity = quantity
+    }
+}
+
+public nonisolated struct CADDrawingBOM: Codable, Sendable, Equatable {
+    public var entries: [CADDrawingBOMEntry]
+
+    public init(entries: [CADDrawingBOMEntry] = []) {
+        self.entries = entries
+    }
+
+    public func entry(itemNumber: Int) -> CADDrawingBOMEntry? {
+        entries.first { $0.itemNumber == itemNumber }
+    }
+
+    public func entry(id: UUID) -> CADDrawingBOMEntry? {
+        entries.first { $0.id == id }
+    }
+}
+
+/// Free text placed on the sheet. An optional binding anchors it to live
+/// assembly geometry; loose text is a plain manual annotation.
+public nonisolated struct CADDrawingTextAnnotation: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var text: String
+    public var position: SIMD2<Double>
+    public var heightMM: Double
+    public var binding: CADDrawingBinding?
+
+    public init(id: UUID = UUID(), text: String, position: SIMD2<Double>,
+                heightMM: Double = 3.5, binding: CADDrawingBinding? = nil) {
+        self.id = id
+        self.text = text
+        self.position = position
+        self.heightMM = heightMM
+        self.binding = binding
     }
 }
 
@@ -115,6 +306,25 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
     public var showCenterlines: Bool
     public var showDimensions: Bool
 
+    // Additive v3 assembly/annotation state. Every field decodes to a
+    // default when missing, so a v1/v2 page opens unchanged; the service
+    // never infers assembly projection for a page that did not ask for it.
+
+    /// Project the live assembly placements (not the raw body transforms).
+    /// `sourceBodyIDs` stays the optional filter; empty = every visible
+    /// instance.
+    public var assemblyMode: Bool
+    /// Named exploded view applied to this page's placements. A missing view
+    /// is reported on projection and falls back to the base placement.
+    public var explodedViewID: UUID?
+    /// Captured view name for display when the view no longer exists.
+    public var explodedViewName: String?
+    public var showBOM: Bool
+    public var bom: CADDrawingBOM?
+    public var balloons: [CADDrawingBalloon]
+    public var manualDimensions: [CADDrawingManualDimension]
+    public var annotations: [CADDrawingTextAnnotation]
+
     public init(id: UUID = UUID(),
                 name: String,
                 kind: CADDrawingViewKind,
@@ -132,7 +342,15 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
                 modelRevision: UInt64? = nil,
                 sourceFingerprint: CADDrawingSourceFingerprint? = nil,
                 showCenterlines: Bool = false,
-                showDimensions: Bool = false) {
+                showDimensions: Bool = false,
+                assemblyMode: Bool = false,
+                explodedViewID: UUID? = nil,
+                explodedViewName: String? = nil,
+                showBOM: Bool = false,
+                bom: CADDrawingBOM? = nil,
+                balloons: [CADDrawingBalloon] = [],
+                manualDimensions: [CADDrawingManualDimension] = [],
+                annotations: [CADDrawingTextAnnotation] = []) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -151,6 +369,63 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
         self.sourceFingerprint = sourceFingerprint
         self.showCenterlines = showCenterlines
         self.showDimensions = showDimensions
+        self.assemblyMode = assemblyMode
+        self.explodedViewID = explodedViewID
+        self.explodedViewName = explodedViewName
+        self.showBOM = showBOM
+        self.bom = bom
+        self.balloons = balloons
+        self.manualDimensions = manualDimensions
+        self.annotations = annotations
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, kind, scale, paper, title, partNumbers, sourceBodyIDs
+        case customWidthMM, customHeightMM
+        case viewNormal, viewUp, sectionOrigin, sectionNormal
+        case detailOrigin, detailSizeMM, modelRevision, sourceFingerprint
+        case showCenterlines, showDimensions
+        case assemblyMode, explodedViewID, explodedViewName, showBOM
+        case bom, balloons, manualDimensions, annotations
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        kind = try container.decode(CADDrawingViewKind.self, forKey: .kind)
+        scale = try container.decodeIfPresent(Double.self, forKey: .scale) ?? 1
+        paper = try container.decodeIfPresent(CADPaperSize.self, forKey: .paper) ?? .a3
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        partNumbers = try container.decodeIfPresent([String].self, forKey: .partNumbers) ?? []
+        sourceBodyIDs = try container.decodeIfPresent([UUID].self, forKey: .sourceBodyIDs) ?? []
+        viewNormal = try container.decodeIfPresent(SIMD3<Double>.self, forKey: .viewNormal)
+            ?? SIMD3(0, 0, 1)
+        viewUp = try container.decodeIfPresent(SIMD3<Double>.self, forKey: .viewUp)
+            ?? SIMD3(0, 1, 0)
+        sectionOrigin = try container.decodeIfPresent(SIMD3<Double>.self, forKey: .sectionOrigin)
+        sectionNormal = try container.decodeIfPresent(SIMD3<Double>.self, forKey: .sectionNormal)
+        detailOrigin = try container.decodeIfPresent(SIMD3<Double>.self, forKey: .detailOrigin)
+        detailSizeMM = try container.decodeIfPresent(SIMD2<Double>.self, forKey: .detailSizeMM)
+        modelRevision = try container.decodeIfPresent(UInt64.self, forKey: .modelRevision)
+        sourceFingerprint = try container.decodeIfPresent(CADDrawingSourceFingerprint.self,
+                                                          forKey: .sourceFingerprint)
+        showCenterlines = try container.decodeIfPresent(Bool.self, forKey: .showCenterlines) ?? false
+        showDimensions = try container.decodeIfPresent(Bool.self, forKey: .showDimensions) ?? false
+        customWidthMM = try container.decodeIfPresent(Double.self, forKey: .customWidthMM)
+        customHeightMM = try container.decodeIfPresent(Double.self, forKey: .customHeightMM)
+        assemblyMode = try container.decodeIfPresent(Bool.self, forKey: .assemblyMode) ?? false
+        explodedViewID = try container.decodeIfPresent(UUID.self, forKey: .explodedViewID)
+        explodedViewName = try container.decodeIfPresent(String.self, forKey: .explodedViewName)
+        showBOM = try container.decodeIfPresent(Bool.self, forKey: .showBOM) ?? false
+        bom = try container.decodeIfPresent(CADDrawingBOM.self, forKey: .bom)
+        balloons = try container.decodeIfPresent([CADDrawingBalloon].self, forKey: .balloons) ?? []
+        manualDimensions = try container.decodeIfPresent([CADDrawingManualDimension].self,
+                                                         forKey: .manualDimensions) ?? []
+        annotations = try container.decodeIfPresent([CADDrawingTextAnnotation].self,
+                                                    forKey: .annotations) ?? []
+        if viewNormal == .zero { viewNormal = SIMD3(0, 0, 1) }
+        if viewUp == .zero { viewUp = SIMD3(0, 1, 0) }
     }
 
     public var paperWidthMM: Double {
@@ -178,9 +453,12 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
 
 public nonisolated struct CADDrawingSet: Codable, Sendable, Equatable {
     /// Drawing schema. v1 pages carry no detail fields and no source
-    /// fingerprint; v2 adds typed detail windows and the fingerprint. A newer
-    /// value opens for reading and blocks edits (the service refuses).
-    public static let currentSchemaVersion = 2
+    /// fingerprint; v2 adds typed detail windows and the fingerprint; v3 adds
+    /// assembly-aware projection, exploded views, BOM/balloons and manual
+    /// annotation. Every v3 page field has a decoding default, so v1/v2 pages
+    /// open unchanged. A newer value opens for reading and blocks edits (the
+    /// service refuses).
+    public static let currentSchemaVersion = 3
     public var schemaVersion: Int
     public var pages: [CADDrawingPage]
 
@@ -222,5 +500,34 @@ public nonisolated struct CADDrawingSet: Codable, Sendable, Equatable {
             CADDrawingPage(name: kind.title, kind: kind, title: title,
                            sourceBodyIDs: [bodyID], viewNormal: normal)
         })
+    }
+
+    /// Assembly-aware sheet: front/top/side/iso plus a dedicated exploded
+    /// view. All five pages project the SAME placed instances/transforms (and
+    /// the named exploded offsets), never raw body transforms. `bodyIDs`
+    /// optionally filters the instance source bodies; empty = every visible
+    /// instance.
+    public static func assemblySheet(bodyIDs: [UUID] = [],
+                                     title: String,
+                                     explodedViewID: UUID? = nil,
+                                     explodedViewName: String? = nil,
+                                     scale: Double = 1,
+                                     paper: CADPaperSize = .a3) -> CADDrawingSet {
+        let views: [(CADDrawingViewKind, SIMD3<Double>)] = [
+            (.front, SIMD3(0, -1, 0)),
+            (.top, SIMD3(0, 0, 1)),
+            (.side, SIMD3(1, 0, 0)),
+            (.iso, SIMD3(1, -1, 1)),
+            (.exploded, SIMD3(1, -1, 1)),
+        ]
+        let pages = views.map { kind, normal in
+            CADDrawingPage(name: kind.title, kind: kind, scale: scale, paper: paper,
+                           title: title, sourceBodyIDs: bodyIDs, viewNormal: normal,
+                           assemblyMode: true,
+                           explodedViewID: explodedViewID,
+                           explodedViewName: explodedViewName,
+                           showBOM: true)
+        }
+        return CADDrawingSet(pages: pages, schemaVersion: currentSchemaVersion)
     }
 }
