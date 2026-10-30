@@ -52,8 +52,7 @@ IMMUTABLE_PROVIDER_PACKAGE_SHA256 = {
     "1.1.0": "290e7962f9659eb8d22d08586176bb9559c4b98532a50a57abe72fe444a1f33d",
 }
 
-# The search catalog published in the signed feed stays 1.0.0; its archive is
-# immutable while the 1.1.0 candidate is staged.
+# Historical search archives remain immutable before and after promotion.
 IMMUTABLE_SEARCH_PACKAGE_SHA256 = {
     "1.0.0": "5d85ea6f3804c6108a273f229c613e947307c0cef1b0de6aaf18f3af53a6543c",
 }
@@ -78,8 +77,7 @@ PROVIDER_CANDIDATE = {
 
 # Exact reviewed search-catalog candidate. 1.1.0 adds the compiled DeepSeek
 # adapter kind, so it must target App 1.7.65; 1.7.64 would fail closed and drop
-# the new entry. The signed feed still serves 1.0.0 until the release owner
-# signs and publishes this candidate.
+# the new entry. Both the old feed and this exact promoted entry are checked.
 SEARCH_CATALOG_CANDIDATE = {
     "version": "1.1.0",
     "minimumAppVersion": "1.7.65",
@@ -184,8 +182,7 @@ class ContentHubBuildTests(unittest.TestCase):
             self.assertTrue(path.is_file())
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
 
-        # The reviewed search-catalog candidate is staged with its exact
-        # deterministic archive while the signed feed still serves 1.0.0.
+        # The exact reviewed archive is required both before and after promotion.
         identifier = "floe.search.providers"
         search = next(entry for entry in entries if entry["id"] == identifier)
         for field, value in SEARCH_CATALOG_CANDIDATE.items():
@@ -206,16 +203,20 @@ class ContentHubBuildTests(unittest.TestCase):
         published_search = next(
             entry for entry in state["index"]["entries"] if entry["id"] == identifier
         )
-        self.assertEqual(published_search["version"], "1.0.0")
-        self.assertEqual(
-            published_search["sha256"],
-            IMMUTABLE_SEARCH_PACKAGE_SHA256["1.0.0"],
-        )
+        self.assertIn(published_search["version"], ("1.0.0", search["version"]))
+        if published_search["version"] == "1.0.0":
+            self.assertEqual(published_search["minimumAppVersion"], "1.7.47")
+            self.assertEqual(published_search["sha256"], IMMUTABLE_SEARCH_PACKAGE_SHA256["1.0.0"])
+        else:
+            self.assertEqual(published_search, search)
         published_search_path = build.ROOT / published_search["path"][len(build.PATH_PREFIX):]
         self.assertEqual(
             hashlib.sha256(published_search_path.read_bytes()).hexdigest(),
-            IMMUTABLE_SEARCH_PACKAGE_SHA256["1.0.0"],
+            published_search["sha256"],
         )
+        for version, digest in IMMUTABLE_SEARCH_PACKAGE_SHA256.items():
+            historical = build.ROOT / f"packages/{identifier}/{version}/{identifier}.zip"
+            self.assertEqual(hashlib.sha256(historical.read_bytes()).hexdigest(), digest)
 
         for entry in entries:
             self.assertEqual(entry["path"], f"content-hub/packages/{entry['id']}/{entry['version']}/{entry['id']}.zip")
@@ -418,14 +419,17 @@ class ContentHubBuildTests(unittest.TestCase):
         self.assertEqual(files["content.json"], (source / "content.json").read_bytes())
         self.assertEqual(build.canonical(files), SEARCH_CATALOG_CANDIDATE["contentDigest"])
 
-        # The signed feed and its published 1.0.0 archive remain untouched.
+        # The signed feed may retain 1.0.0 or promote this exact reviewed entry.
         index = json.loads((build.ROOT / "index.json").read_bytes())
         published = next(
             entry for entry in index["entries"] if entry["id"] == "floe.search.providers"
         )
-        self.assertEqual(published["version"], "1.0.0")
-        self.assertEqual(published["minimumAppVersion"], "1.7.47")
-        self.assertEqual(published["sha256"], IMMUTABLE_SEARCH_PACKAGE_SHA256["1.0.0"])
+        self.assertIn(published["version"], ("1.0.0", staged["version"]))
+        if published["version"] == "1.0.0":
+            self.assertEqual(published["minimumAppVersion"], "1.7.47")
+            self.assertEqual(published["sha256"], IMMUTABLE_SEARCH_PACKAGE_SHA256["1.0.0"])
+        else:
+            self.assertEqual(published, staged)
 
     def test_deterministic_rebuild(self):
         with tempfile.TemporaryDirectory() as temporary:

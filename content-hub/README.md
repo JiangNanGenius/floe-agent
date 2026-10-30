@@ -36,16 +36,15 @@ deterministically; the bundled, canonical and content-package catalogs must agre
 `--check-offline` checks their local consistency and explicitly does not verify the
 upstream network snapshot.
 
-`floe.providers.compatibility` 1.1.2 requires App 1.7.64 and is a staged content
-candidate. Its source and archive are checked independently of the existing signed
-feed; publishing a new App does not replace the old feed's signature. The App bundles
+`floe.providers.compatibility` 1.1.2 requires App 1.7.64 and is included in the signed
+feed. Its source, immutable archive and index signature are checked together. The App bundles
 the same reviewed model catalog, so these entries do not require a separate download.
 
 `providers/curated-overrides.json` 单独记录经核对的官方套餐及媒体模型资料，
 与固定的 models.dev 基线按确定规则合并；内置、规范目录和内容包正文保持一致。
 `--check-offline` 只检查本地一致性，不代替上游原始快照校验。
-兼容目录 1.1.2 的最低 App 版本为 1.7.64，目前是候选内容包；源文件与归档独立校验，
-已发布目录的签名仍保留。App 内置相同模型目录，使用这些条目不需要另行下载。
+兼容目录 1.1.2 的最低 App 版本为 1.7.64，已纳入签名目录；源文件、不可变归档与索引
+签名一并校验。App 内置相同模型目录，使用这些条目不需要另行下载。
 
 ## Index schema / 索引结构
 
@@ -92,10 +91,9 @@ compiled into the App and cannot be replaced by a content package.
 
 `sources/providers/floe.search.providers/` is the search-provider catalog
 package: `content.json` is the signed envelope and `SearchProviderCatalog.json`
-is the payload the app validates. The signed feed still publishes 1.0.0 with
-`minimumAppVersion` `1.7.47`; the staged 1.1.0 candidate adds DeepSeek's
+is the payload the app validates. The signed feed publishes 1.1.0, which adds DeepSeek's
 compiled adapter kind and therefore requires App `1.7.65` (`1.7.64` fails
-closed and drops that entry). The candidate is not signed or published yet.
+closed and drops that entry). The historical 1.0.0 archive remains immutable.
 Entries describe **existing compiled adapters only** —
 preset id, adapter kind, bilingual name/blurb, documented default endpoint,
 required credential field keys and option defaults. The package carries no
@@ -106,28 +104,23 @@ as every other content kind and keeps its previously active catalog on any
 signature/schema/minimum-version failure.
 
 `sources/providers/floe.search.providers/` 为搜索服务目录包：`content.json`
-是签名信封，`SearchProviderCatalog.json` 是 App 校验的目录正文。当前签名目录仍发布
-1.0.0（`minimumAppVersion` 为 `1.7.47`）；暂存的 1.1.0 候选新增 DeepSeek 已编译
-适配器类型，因此要求 App `1.7.65`（`1.7.64` 会安全失败并丢弃该条目）。候选包尚未
-签名或发布。条目只描述**已编译的现有
+是签名信封，`SearchProviderCatalog.json` 是 App 校验的目录正文。当前签名目录发布
+1.1.0，新增 DeepSeek 已编译适配器类型，因此要求 App `1.7.65`（`1.7.64` 会安全失败
+并丢弃该条目）。历史 1.0.0 归档保持不可变。条目只描述**已编译的现有
 适配器**：预设 ID、适配器类型、中英文名称与简介、官方默认端点、必填凭据字段与
 选项默认值。包内无脚本、无凭据值、无启用开关、不引入新的运行时协议；App 未编译的
 适配器类型会被安全丢弃并需升级 App。安装与其它内容类型使用同一签名事务，任何签名、
 结构或最低版本失败都保留原有目录。
 
-The search catalog package 1.0.0 remains signed by the official trust root in
-the active feed. The 1.1.0 candidate (DeepSeek search adapter, minimum App
-1.7.65) is staged only: its source and deterministic archive are checked, but
-`index.json`/`index.sig` are unchanged, so it is not live. Tests verify the
-published 1.0.0 bytes and pinned signature, both minimum App versions, package
-hashes and the staged candidate archive. New candidates can be checked before
-signing without replacing the active signed feed.
+The search catalog 1.1.0 is signed by the official trust root. Tests accept only
+the approved pre-promotion 1.0.0 feed or the exact promoted 1.1.0 source entry,
+including minimum App version, package identity and digest. Historical archive
+bytes and the pinned signature are checked in both states. New candidates can be
+checked before signing without replacing the active signed feed.
 
-搜索目录包 1.0.0 仍由官方信任根签名并在当前目录中生效。1.1.0 候选（DeepSeek 搜索
-适配器，最低 App 1.7.65）仅处于暂存状态：测试校验其源码与确定性归档，但
-`index.json`/`index.sig` 未改动，因此尚未上线。测试同时核对已发布 1.0.0 的字节与
-固定签名、两个最低 App 版本、包摘要以及暂存候选归档。新候选可在签名前验证，
-不会替换当前有效的签名目录。
+搜索目录 1.1.0 已由官方信任根签名。测试仅接受已批准的发布前 1.0.0 目录，或与
+1.1.0 源条目完全一致的发布后目录，同时核对最低 App 版本、包身份和摘要。
+两种状态都检查历史归档字节和固定签名。新候选可在签名前验证，不会替换当前有效目录。
 
 ## Build / Check / Sign / 构建、校验、签名
 
