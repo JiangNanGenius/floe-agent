@@ -35,6 +35,7 @@
 
 
 import Foundation
+import CoreFoundation
 import simd
 
 // MARK: - Failure
@@ -1047,7 +1048,7 @@ nonisolated enum AgentExec {
     }
 
     private static func vector2(_ a: [String: Any], _ key: String) throws -> SIMD2<Double> {
-        guard let raw = a[key] as? [Double], raw.count == 2 else {
+        guard let raw = numericVector(a[key]), raw.count == 2 else {
             throw AgentExecError(code: "missing_\(key)", message: "args.\(key) must be [x, y] in mm.")
         }
         guard raw.allSatisfy(\.isFinite) else {
@@ -1058,13 +1059,29 @@ nonisolated enum AgentExec {
 
     private static func vector3(_ a: [String: Any], _ key: String, default fallback: SIMD3<Double>) throws -> SIMD3<Double> {
         guard let raw = a[key] else { return fallback }
-        guard let v = raw as? [Double], v.count == 3 else {
+        guard let v = numericVector(raw), v.count == 3 else {
             throw AgentExecError(code: "bad_\(key)", message: "args.\(key) must be [x, y, z].")
         }
         guard v.allSatisfy(\.isFinite) else {
             throw AgentExecError(code: "non_finite", message: "args.\(key) must be finite.")
         }
         return SIMD3(v[0], v[1], v[2])
+    }
+
+    /// Both public entrypoints accept JSON-compatible values. Native callers
+    /// can supply [Int] or mixed numeric arrays, whereas JSONSerialization
+    /// bridges every number through NSNumber. An array-wide [Double] cast
+    /// accepted the wire request but rejected the equivalent native command.
+    private static func numericVector(_ value: Any?) -> [Double]? {
+        guard let values = value as? [Any] else { return nil }
+        var result: [Double] = []
+        result.reserveCapacity(values.count)
+        for value in values {
+            guard let number = value as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            result.append(number.doubleValue)
+        }
+        return result
     }
 }
 

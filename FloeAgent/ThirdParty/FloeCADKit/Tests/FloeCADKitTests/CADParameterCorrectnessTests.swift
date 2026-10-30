@@ -16,6 +16,34 @@ import simd
 final class CADParameterCorrectnessTests: XCTestCase {
     private var workDir: URL!
 
+    func testNativeIntegerVectorsAndJSONNumbersShareTheCommandContract() throws {
+        let sketchID = UUID().uuidString
+        let commands: [[String: Any]] = [
+            ["op": "sketch.create", "args": ["origin": [10, 20, 0]]],
+            ["op": "sketch.addEntities", "args": ["sketchID": sketchID,
+                "entities": [["kind": "rect", "min": [0, 0], "max": [100, 60]]]]],
+            ["op": "feature.extrude", "args": ["sketchID": sketchID, "seedPoint": [50, 30], "distance": 10]],
+            ["op": "feature.extrude", "args": ["sketchID": sketchID,
+                "seedPoint": [NSNumber(value: 50), 30.5] as [Any], "distance": 10.0]]
+        ]
+        for command in commands {
+            let encoded = try JSONSerialization.data(withJSONObject: command)
+            let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+            for representation in [command, decoded] {
+                if case .failure(let error) = AgentExec.parse(representation) {
+                    XCTFail("Equivalent native/JSON numeric input was rejected: \(error)")
+                }
+            }
+        }
+        for invalid in [[true, 0] as [Any], ["50", "30"] as [Any], [Double.infinity, 0] as [Any]] {
+            let command: [String: Any] = ["op": "feature.extrude", "args": [
+                "sketchID": sketchID, "seedPoint": invalid, "distance": 10]]
+            if case .success = AgentExec.parse(command) {
+                XCTFail("Boolean, string, or non-finite coordinates must not become a numeric vector")
+            }
+        }
+    }
+
     override func setUp() async throws {
         workDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("FloeCADParameterCorrectness-\(UUID().uuidString)",
