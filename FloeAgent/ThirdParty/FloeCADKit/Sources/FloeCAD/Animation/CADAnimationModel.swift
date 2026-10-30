@@ -291,6 +291,11 @@ public nonisolated struct CADAnimationKeyframe: Codable, Sendable, Equatable, Id
             clean.time = min(frame.time, max(maximumTime, 0))
             clean.interpolation = frame.interpolation
             if let index = result.firstIndex(where: { abs($0.time - clean.time) < 1e-6 }) {
+                // Collapse a near-identical duplicate onto the time already
+                // stored for that bucket: the later value wins, but a 1e-7 s
+                // duplicate must not move the bucket away from 0, or a
+                // sanitized track would start at a non-zero time.
+                clean.time = result[index].time
                 result[index] = clean
             } else {
                 result.append(clean)

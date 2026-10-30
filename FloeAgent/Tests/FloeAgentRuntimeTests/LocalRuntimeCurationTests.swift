@@ -159,7 +159,7 @@ struct LocalRuntimeCurationTests {
             executor: mockExecutor
         )
 
-        try await runtime.start(goal: "用 shell 执行命令并创建文件")
+        try await runtime.start(goal: "用 shell 执行命令并创建文件，然后搜索今天的新闻")
 
         let request = try #require(adapter.requests.first)
         let presented = Set(request.toolSchemas.map(\.name))

@@ -25,7 +25,8 @@ public nonisolated enum CADAnimationEvaluator {
         var seen = Set<String>()
 
         for track in clip.tracks {
-            if track.keyframes.isEmpty { continue }
+            // A malformed target is diagnosed even when the track is empty: the
+            // payload is invalid, while an empty VALID track is merely unused.
             guard track.target.isValid else {
                 issues.append(CADAnimationIssue(
                     id: "invalid-target-\(track.id.uuidString)",
@@ -33,6 +34,7 @@ public nonisolated enum CADAnimationEvaluator {
                     detail: "The track target is incomplete and was skipped."))
                 continue
             }
+            if track.keyframes.isEmpty { continue }
             guard seen.insert(track.target.stableKey).inserted else {
                 issues.append(CADAnimationIssue(
                     id: "duplicate-\(track.id.uuidString)",

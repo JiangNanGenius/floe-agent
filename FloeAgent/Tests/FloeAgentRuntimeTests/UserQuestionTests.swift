@@ -384,6 +384,21 @@ struct UserQuestionTests {
         #expect(descriptor.executionBoundary == .mainRunOnly)
     }
 
+    @Test("The catalog preserves the complete typed question schema")
+    func completeQuestionSchemaSurvivesCatalogAdmission() throws {
+        let descriptor = ToolCatalog.Descriptor(name: UserAskTool.name,
+            parametersJSON: UserAskTool.parametersJSON, riskLabels: [], isSideEffecting: false)
+        #expect(descriptor.parametersJSON == UserAskTool.parametersJSON)
+        let raw = try JSONSerialization.jsonObject(with: Data(descriptor.parametersJSON.utf8))
+        let root = try #require(raw as? [String: Any])
+        #expect(root["required"] as? [String] == ["questions"])
+        let properties = try #require(root["properties"] as? [String: Any])
+        let questions = try #require(properties["questions"] as? [String: Any])
+        let item = try #require(questions["items"] as? [String: Any])
+        #expect(item["required"] as? [String] == ["question"])
+        #expect(questions["maxItems"] as? Int == 3)
+    }
+
     @Test("Tool metadata is a main-run-only local interaction, never an approval")
     func toolMetadataIsNarrow() throws {
         #expect(UserAskTool.name == "user.ask")

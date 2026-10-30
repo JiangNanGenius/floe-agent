@@ -966,7 +966,9 @@ struct ToolResultTransientCaptureTests {
     func codecRoundTripExcludesCapture() throws {
         let large = String(repeating: "Z", count: 2 * 1024 * 1024)
         let original = result(capture: large)
-        let data = try JSONEncoder().encode(original)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(original)
         #expect(data.count < 16 * 1024, "the transient capture must not enter the durable encoding")
         let decoded = try JSONDecoder().decode(ToolResult.self, from: data)
         #expect(decoded.capturedOutput == nil)
@@ -974,7 +976,7 @@ struct ToolResultTransientCaptureTests {
         // Equality is over durable fields only, so a decoded result equals its
         // source even though the transient capture was not encoded.
         #expect(decoded == original)
-        let reencoded = try JSONEncoder().encode(decoded)
+        let reencoded = try encoder.encode(decoded)
         #expect(reencoded == data)
     }
 
@@ -1143,14 +1145,16 @@ struct ToolResultSelectionTests {
     }
 
     @Test("A large explicitly loaded CAD schema is admitted whole ahead of optional core")
-    func largeLoadedSchemaSurvivesDynamicBudget() {
+    func largeLoadedSchemaSurvivesDynamicBudget() throws {
         func descriptor(_ name: String, description: String, schema: String) -> ToolCatalog.Descriptor {
             .init(name: name, toolDescription: description, parametersJSON: schema,
                   riskLabels: [], isSideEffecting: false)
         }
-        let cadSchema = #"{"type":"object","properties":{"operation":{"enum":[""# +
-            String(repeating: "x", count: 14_000) +
-            #""]},"required":["operation"],"additionalProperties":false}"#
+        let cadSchema = String(decoding: try JSONSerialization.data(withJSONObject: [
+            "type": "object", "properties": ["operation": [
+                "type": "string", "enum": [String(repeating: "x", count: 14_000)]
+            ]], "required": ["operation"], "additionalProperties": false
+        ]), as: UTF8.self)
         let cad = descriptor(
             "cad.document",
             description: String(repeating: "drawing operation ", count: 180),
@@ -1310,6 +1314,24 @@ struct ToolArgumentSanitizerTests {
     func malformedFallback() {
         let redacted = ToolArgumentSanitizer.redactedArgumentText(#"{"headers":{"Cookie":"a=SECRET"#)
         #expect(!redacted.contains("SECRET"))
+    }
+
+    @Test("Malformed nested credentials and storage setters never persist partial values")
+    func malformedCredentialContainers() {
+        let samples: [(String, String?)] = [
+            (#"{"cookie":{"value":"SECRET"#, "browser.cookies"),
+            (#"{"headers":[{"name":"Authorization","value":"SECRET"#, nil),
+            (#"{"action":"set","name":"session","value":"SECRET"#, "browser.storage")
+        ]
+        for (text, tool) in samples {
+            let data = Data(text.utf8)
+            #expect(ToolArgumentSanitizer.containsSensitiveValues(data, toolName: tool))
+            let result = ToolArgumentSanitizer.redactedArgumentText(text, toolName: tool)
+            #expect(!result.contains("SECRET"))
+            #expect(result.contains("_redacted"))
+        }
+        let ordinary = #"{"path":"report.txt"#
+        #expect(ToolArgumentSanitizer.redactedArgumentText(ordinary) == ordinary)
     }
 }
 

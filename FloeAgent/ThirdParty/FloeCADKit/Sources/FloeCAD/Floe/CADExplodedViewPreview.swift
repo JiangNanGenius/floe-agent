@@ -118,9 +118,13 @@ extension CADExplodedViewPreview {
 
     /// The live preview for this document, or nil when the assembly is drawn
     /// at its base placements. Never creates state (safe from read-only
-    /// snapshot/query paths).
+    /// snapshot/query paths). An inactive state object exists as soon as the
+    /// editor is constructed, so it must not be reported as a live preview.
     static func current(for session: DocumentSession) -> CADExplodedViewPreview? {
-        states.object(forKey: session)
+        guard let preview = states.object(forKey: session), preview.isActive else {
+            return nil
+        }
+        return preview
     }
 
     /// The stable state object for this document, created on first use.

@@ -1356,8 +1356,24 @@ public actor LocalModelRuntime {
     /// stream, clear MLX's allocator cache, and drain the autorelease pool so
     /// freed Metal pages return before the next measurement or load. Tolerant
     /// by construction: a queued teardown error is logged, never thrown.
+    ///
+    /// A deterministic engine factory (focused tests, qualification) never
+    /// constructs MLX. Reading `MLX.Stream.gpu` here would initialize the
+    /// native Metal device before any engine exists; on the Simulator that
+    /// aborts inside libc++ (`std::string(nullptr)` from a missing Metal
+    /// architecture name) before a Swift error is possible. Skip the native
+    /// drain until this process has actually entered the MLX runtime. This is
+    /// also correct for the first production load: there are no MLX allocations
+    /// to reclaim yet, and `MLXTextEngine.init` performs its own baseline drain
+    /// once it owns that state.
     private func reclaimMemory(context: String, traceID: String) {
         lifecycle.recordReclaim()
+        guard MLXTextEngine.hasInitializedRuntime else {
+            FloeLogger(category: .providers).debug(
+                "localInferenceReclaimSkipped context=\(context) trace=\(traceID) reason=noMLXRuntimeState"
+            )
+            return
+        }
         MLXTextEngine.drainPipelineAndClearCaches(context: context, traceID: traceID)
     }
 

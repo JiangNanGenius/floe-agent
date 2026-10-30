@@ -5598,6 +5598,13 @@ public actor FloeAgentRuntime {
     /// keeps a complete result available after recovery without encoding its
     /// bytes twice per tool turn. Missing captures stay explicit; a recovery
     /// marker is never presented as if the bytes were restored.
+    ///
+    /// The snapshot normally copies the live output verbatim. Those bytes are
+    /// replayed exactly: re-running selection over them could append a
+    /// "not retained" note or re-excerpt a body the live request already
+    /// carried complete, breaking byte-identical recovery. Only the explicit
+    /// recovery marker written when the checkpoint had to drop the body is
+    /// resolved against the capture store.
     private func rehydrateRestoredToolResults(_ request: inout ProviderStreamRequest) async {
         guard !request.toolResults.isEmpty else { return }
         let pagingIDs = Self.pagingCallIDs(in: request.pendingToolCalls)
@@ -5608,37 +5615,84 @@ public actor FloeAgentRuntime {
                 .first(where: { $0.id == item.callID })?.toolName ?? ""
             if sensitivePendingCallIDs.contains(item.callID)
                 || sensitiveOutputCallIDs.contains(item.callID) {
+                // The snapshot intentionally replaced the transient value with
+                // an omission marker. Keep that exact marker: it is already
+                // bounded, not pageable and must never be re-expanded.
                 inputs.append(ToolResultSelectionInput(
                     callID: item.callID,
                     toolName: toolName,
                     text: item.output,
                     ref: nil,
                     totalBytes: item.output.utf8.count,
-                    captureUnavailable: true,
+                    captureUnavailable: false,
                     isPagingPage: pagingIDs.contains(item.callID),
                     isSensitive: true
                 ))
                 continue
             }
-            let ref = ToolResultCaptureStore.reference(runID: runID, callID: item.callID)
-            let retained = await toolResultCaptures.retainedCapture(
-                conversationID: configuration.conversationID,
-                ref: ref
-            )
-            var body = retained?.text
-            if body == nil, item.output.hasPrefix("[tool result persisted for recovery:") {
-                body = "[complete captured tool output is no longer available after recovery; only this notice remains]"
+            if item.output.hasPrefix("[tool result persisted for recovery:") {
+                let ref = Self.persistedCaptureReference(in: item.output)
+                var retained: ToolResultCapture?
+                if let ref {
+                    retained = await toolResultCaptures.retainedCapture(
+                        conversationID: configuration.conversationID,
+                        ref: ref
+                    )
+                }
+                // The durable pending result keeps the runtime-authored
+                // provenance even when the checkpoint compacted its body.
+                // Rebuild the same envelope the live request carried instead
+                // of dropping trusted source identity on recovery.
+                let durableResult = pendingToolResults.first { $0.callID == item.callID }
+                if let ref, let retained {
+                    // The checkpoint dropped this body and stored the stable
+                    // ref. Rehydrate the retained bytes for the same budget
+                    // planner the live turn used; the marker itself is never
+                    // sent as evidence.
+                    let text = durableResult.map {
+                        Self.modelVisibleToolResult($0, body: retained.text)
+                    } ?? retained.text
+                    inputs.append(ToolResultSelectionInput(
+                        callID: item.callID,
+                        toolName: toolName,
+                        text: text,
+                        ref: ref,
+                        totalBytes: retained.text.utf8.count,
+                        captureTruncated: retained.retentionTruncated,
+                        executionReportedTruncation: retained.executionReportedTruncation,
+                        captureUnavailable: false,
+                        isPagingPage: pagingIDs.contains(item.callID)
+                    ))
+                } else {
+                    // The marker promised a capture this process cannot read.
+                    // Say so explicitly instead of repeating its promise.
+                    let notice = "[complete captured tool output is no longer available after recovery; only this notice remains]"
+                    let text = durableResult.map {
+                        Self.modelVisibleToolResult($0, body: notice)
+                    } ?? notice
+                    inputs.append(ToolResultSelectionInput(
+                        callID: item.callID,
+                        toolName: toolName,
+                        text: text,
+                        ref: nil,
+                        totalBytes: text.utf8.count,
+                        captureUnavailable: false,
+                        isPagingPage: pagingIDs.contains(item.callID)
+                    ))
+                }
+                continue
             }
-            let text = body ?? item.output
+            // Exact live output, or an explicit excerpt/omission marker. The
+            // bytes already state what the snapshot could keep; re-running
+            // selection over them could append a second, contradictory note
+            // and break byte-identical recovery.
             inputs.append(ToolResultSelectionInput(
                 callID: item.callID,
                 toolName: toolName,
-                text: text,
-                ref: retained == nil ? nil : ref,
-                totalBytes: retained?.text.utf8.count ?? text.utf8.count,
-                captureTruncated: retained?.retentionTruncated ?? false,
-                executionReportedTruncation: retained?.executionReportedTruncation ?? false,
-                captureUnavailable: retained == nil,
+                text: item.output,
+                ref: nil,
+                totalBytes: item.output.utf8.count,
+                captureUnavailable: false,
                 isPagingPage: pagingIDs.contains(item.callID)
             ))
         }
@@ -5654,6 +5708,20 @@ public actor FloeAgentRuntime {
             budgetBytes: min(size.toolResultBudgetBytes, Self.maximumProviderToolResultBytes)
         )
         request.toolResults = plan.items.map { (callID: $0.callID, output: $0.output) }
+    }
+
+    /// Extracts the stable capture ref from the recovery marker emitted by
+    /// `persistedDispatchSnapshot`. Exact live output never starts with that
+    /// marker, so ordinary bytes cannot accidentally opt into capture lookup.
+    /// The ref is still validated by the store before any read.
+    private static func persistedCaptureReference(in output: String) -> String? {
+        let marker = "[tool result persisted for recovery:"
+        let refMarker = "complete captured output ref="
+        guard output.hasPrefix(marker),
+              let range = output.range(of: refMarker) else { return nil }
+        let candidate = output[range.upperBound...].prefix(64)
+        let ref = String(candidate.prefix { !$0.isWhitespace && $0 != "]" })
+        return ToolResultCaptureStore.isGeneratedReference(ref) ? ref : nil
     }
 
     private static func modelVisibleToolResult(

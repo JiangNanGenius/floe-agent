@@ -488,6 +488,38 @@ struct LocalSearchRepairRegressionTests {
         #expect(engine.captured.last?.tools.isEmpty == true)
     }
 
+    #if targetEnvironment(simulator)
+    @Test("An unsupported native MLX host fails with a typed error, never a Metal abort")
+    @available(macOS 15.4, iOS 26.0, *)
+    func unsupportedNativeRuntimeFailsClosed() async {
+        // The canonical reused Simulator is the host where MLX's device
+        // construction aborts in libc++ (nil Metal architecture name). A
+        // production load attempt must stop before MLX/Metal/tokenizer work
+        // and surface a typed failure. No weights or fixture files exist here
+        // on purpose: the guard runs before any snapshot access.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-mlx-unsupported-\(UUID().uuidString)", isDirectory: true)
+        do {
+            _ = try await MLXTextEngine(
+                modelDirectory: directory,
+                includesVisionProjector: false,
+                resourceProfile: LocalInferenceResourcePolicy.profile(
+                    mappedBytes: 0,
+                    physicalMemoryBytes: 0
+                )
+            )
+            Issue.record("MLX construction must not succeed on an unsupported host")
+        } catch let error as LocalInferenceError {
+            guard case .runtimeUnavailable = error else {
+                Issue.record("expected runtimeUnavailable, got \(error)")
+                return
+            }
+        } catch {
+            Issue.record("expected LocalInferenceError.runtimeUnavailable, got \(error)")
+        }
+    }
+    #endif
+
     @Test("A device-sized runtime envelope remains eligible for bounded repair")
     @available(macOS 15.4, iOS 26.0, *)
     func deviceSizedEnvelopeCanRepair() throws {

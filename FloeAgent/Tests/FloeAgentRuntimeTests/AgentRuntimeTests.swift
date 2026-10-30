@@ -2407,12 +2407,17 @@ struct AgentRuntimeTests {
         #expect(legacyDecoded.replayedToolPairs == nil)
     }
 
-    @Test("A large first tool result crosses the boundary bounded, byte-identical and resumable")
-    func largeFirstToolResultCrossesBoundaryBounded() async throws {
+    @Test("A large first tool result crosses the boundary bounded, byte-identical and resumable", arguments: [200, 900])
+    func largeFirstToolResultCrossesBoundaryBounded(rowCount: Int) async throws {
+        let conversationID = UUID()
+        let captureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("runtime-recovery-capture-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: captureRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: captureRoot) }
         let provider = TestFixtures.localhostProvider()
         let model = TestFixtures.testModel(providerID: provider.id)
         let call = try TestFixtures.toolCall(id: "bounded-first")
-        let rawOutput = (0..<200).map { "row-\($0)-" + String(repeating: "z", count: 40) }
+        let rawOutput = (0..<rowCount).map { "row-\($0)-" + String(repeating: "z", count: 40) }
             .joined(separator: "\n")
         let rawReasoning = String(repeating: "r", count: 6_000)
         let adapter = MockAdapter()
@@ -2426,13 +2431,20 @@ struct AgentRuntimeTests {
         ]
         let executor = MockExecutor()
         registerEcho(in: executor)
+        // Mirror the real CatalogToolExecutor boundary: the durable summary is
+        // capped at 4 KiB, while the transient `capturedOutput` carries the
+        // complete post-redaction bytes for request selection and retention.
+        // Without it the fixture itself declares a 4 KiB self-truncation and
+        // the runtime correctly sends only those declared bytes.
         executor.results = [ToolResult(
             callID: call.id, status: .ok,
-            outputSummary: rawOutput, outputDigest: "d"
+            outputSummary: rawOutput, outputDigest: "d",
+            capturedOutput: rawOutput
         )]
         let store = MockCheckpointStore()
         let runtime = FloeAgentRuntime(
-            configuration: .init(provider: provider, model: model),
+            configuration: .init(conversationID: conversationID, provider: provider, model: model,
+                toolResultCaptureRoot: captureRoot),
             adapter: adapter,
             policy: HumanApprovalPolicy(),
             executor: executor,
@@ -2473,7 +2485,16 @@ struct AgentRuntimeTests {
         // envelope digests must be reproducible after a process restart.
         let dispatchCheckpoint = try #require(store.saved.last { $0.providerDispatchRequest != nil })
         let snapshot = try #require(dispatchCheckpoint.providerDispatchRequest)
-        #expect(snapshot.toolResults.map(\.output) == liveRequest.toolResults.map(\.output))
+        if rowCount == 200 {
+            #expect(snapshot.toolResults.map(\.output) == liveRequest.toolResults.map(\.output))
+        } else {
+            // Cross the 16 KiB checkpoint cap: recovery must use the stable
+            // original-run tr_ reference, not invent a ref from the resumed run.
+            let storedOutput = try #require(snapshot.toolResults.first?.output)
+            #expect(storedOutput.hasPrefix("[tool result persisted for recovery:"))
+            #expect(storedOutput.contains("complete captured output ref=tr_"))
+            #expect(!storedOutput.contains(rawOutput))
+        }
         #expect(snapshot.pendingAssistantReasoning == liveReasoning)
         #expect(dispatchCheckpoint.pendingAssistantReasoning == liveReasoning)
 
@@ -2482,7 +2503,8 @@ struct AgentRuntimeTests {
         let replayAdapter = MockAdapter()
         replayAdapter.script = [[.textDelta(.init(text: "resumed")), .completed(.init(stopReason: .endTurn))]]
         let replay = FloeAgentRuntime(
-            configuration: .init(provider: provider, model: model),
+            configuration: .init(conversationID: conversationID, provider: provider, model: model,
+                toolResultCaptureRoot: captureRoot),
             adapter: replayAdapter,
             policy: HumanApprovalPolicy(),
             executor: MockExecutor(),
@@ -2502,13 +2524,22 @@ struct AgentRuntimeTests {
     // MARK: Sensitive tool output
 
     struct SensitiveCookieTool: AgentTool {
+        /// The browser cookie contract carries a structured cookie object
+        /// (name/value/domain), not a bare string. Decoding it here keeps
+        /// typed argument admission active while the persistence sanitizer
+        /// masks the nested `value` leaf instead of the whole object.
+        struct Cookie: Decodable, Sendable {
+            var name: String
+            var value: String
+            var domain: String?
+        }
         struct Arguments: Decodable, Sendable {
-            var cookie: String?
+            var cookie: Cookie?
             var headers: [String: String]?
         }
         static let name = "test.sensitiveCookie"
         static let toolDescription = "Return an authorized Cookie value for this request only."
-        static let parametersJSON = #"{"type":"object","properties":{"cookie":{"type":"string"},"headers":{"type":"object"}},"additionalProperties":true}"#
+        static let parametersJSON = #"{"type":"object","properties":{"cookie":{"type":"object","properties":{"name":{"type":"string"},"value":{"type":"string"},"domain":{"type":"string"}},"required":["name","value"],"additionalProperties":true},"headers":{"type":"object","additionalProperties":{"type":"string"}}},"additionalProperties":true}"#
         static let riskLabels: Set<RiskLabel> = [.networkAccess]
         static let isSideEffecting = false
 

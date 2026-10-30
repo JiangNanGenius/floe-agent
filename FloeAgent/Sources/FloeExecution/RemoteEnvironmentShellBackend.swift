@@ -566,7 +566,9 @@ public actor RemoteEnvironmentShellBackend: LocalShellBackend {
                     }
                 )
             } catch let failure as SSHStreamExecFailure {
-                await Self.cleanupRemoteFiles(stagedPaths, connection: connection)
+                // The remote process may still be opening its script/stdin.
+                // Keep owned staging until termination is confirmed; closing
+                // the SSH stream does not authorize deleting in-use inputs.
                 return Self.mapStreamFailure(
                     failure,
                     dispatched: true,
@@ -576,11 +578,9 @@ public actor RemoteEnvironmentShellBackend: LocalShellBackend {
                     started: started
                 )
             } catch is CancellationError {
-                await Self.cleanupRemoteFiles(stagedPaths, connection: connection)
                 return .outcomeUnknown(jobID: jobID,
                     message: "The SSH connection closed after dispatch. The remote operation may still be running; inspect the saved output at \(log.url.path) before retrying.")
             } catch {
-                await Self.cleanupRemoteFiles(stagedPaths, connection: connection)
                 return .outcomeUnknown(
                     jobID: jobID,
                     message: "The SSH stream failed after the command was dispatched: \(Self.safe(error)). The command may have run; inspect the saved output at \(log.url.path) and do not rerun it.")

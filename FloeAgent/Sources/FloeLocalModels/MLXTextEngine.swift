@@ -82,6 +82,46 @@ public actor MLXTextEngine {
     /// diagnostic counter race-free under concurrent first loads.
     private static let serialCounter = Mutex<Int>(0)
 
+    /// True once this process has begun constructing an MLX engine. MLX owns
+    /// process-wide Metal allocations that outlive an individual container, so
+    /// teardown must keep draining after that container is released. Before
+    /// the first MLX construction there is nothing of ours to reclaim — and
+    /// merely reading `MLX.Stream.gpu` initializes the native Metal device.
+    /// On the iOS Simulator that initialization terminates the process inside
+    /// libc++: `metal::Device` constructs a `std::string` from a nil
+    /// `MTLArchitecture.name`, which trips the hardened `__s != nullptr`
+    /// assertion (crash 2026-10-30 22:37:42, thread 23, frames
+    /// `Stream.gpu` → `mlx_stream_new_thread_unsafe` → `metal::Device`).
+    /// A deterministic engine factory and the pre-load reclaim therefore stay
+    /// entirely off the native path.
+    private static let runtimeInitialized = Mutex<Bool>(false)
+
+    /// Whether this process has already entered the MLX runtime. Reclaim
+    /// callers use this to avoid starting Metal solely to synchronize a stream
+    /// that no engine ever created.
+    nonisolated static var hasInitializedRuntime: Bool {
+        runtimeInitialized.withLock { $0 }
+    }
+
+    private static func markRuntimeInitialized() {
+        runtimeInitialized.withLock { $0 = true }
+    }
+
+    /// Fails with a typed error when this process cannot host MLX. MLX's
+    /// Metal backend is unsupported in the Simulator: its first device
+    /// construction aborts inside libc++ (nil `MTLArchitecture.name` fed to a
+    /// hardened `std::string(char const*)`) rather than throwing, so a
+    /// production attempt there would kill the app instead of surfacing a
+    /// load failure. The check lives in a helper so the real device path stays
+    /// a normal throwing call rather than statically unreachable code.
+    private static func requireSupportedRuntime() throws {
+        #if targetEnvironment(simulator)
+        throw LocalInferenceError.runtimeUnavailable(
+            "the iOS Simulator has no supported MLX Metal device"
+        )
+        #endif
+    }
+
     /// Blocks until queued MLX work has left the device stream. Freeing the
     /// container or clearing the process-wide cache while an `asyncEval`
     /// still references its buffers is an ownership error; the stream is the
@@ -168,14 +208,23 @@ public actor MLXTextEngine {
     /// allowance right after teardown. Draining the pool here returns those
     /// pages deterministically before the next preflight measures headroom.
     ///
-    /// Returns `true` when the drain completed cleanly, `false` when a queued
-    /// MLX error was observed.
+    /// Returns `true` when the drain completed cleanly (including when no MLX
+    /// runtime has been initialized in this process and there is nothing of
+    /// ours to drain), `false` when a queued MLX error was observed.
     @discardableResult
     nonisolated static func drainPipelineAndClearCaches(
         context: String,
         traceID: String? = nil
     ) -> Bool {
-        autoreleasepool {
+        // No MLX engine has ever been constructed in this process, so there is
+        // no MLX GPU stream or allocator cache of ours to drain. Do not touch
+        // `MLX.Stream.gpu` just to find that out: its one-time initialization
+        // builds the native Metal device, which aborts on the Simulator before
+        // any Swift error can be thrown (see `runtimeInitialized`). This is the
+        // exact path that a deterministic engine injection and the preflight
+        // reclaim used to take.
+        guard hasInitializedRuntime else { return true }
+        return autoreleasepool {
             do {
                 try MLX.withError { errors in
                     Self.drainMLXPipeline()
@@ -197,6 +246,13 @@ public actor MLXTextEngine {
         includesVisionProjector: Bool,
         resourceProfile: LocalInferenceResourceProfile
     ) async throws {
+        // MLX's Metal backend is unsupported in the Simulator. Its first device
+        // construction aborts inside libc++ (nil `MTLArchitecture.name` fed to
+        // a hardened `std::string(char const*)`) rather than throwing, so a
+        // production attempt there would kill the app instead of surfacing a
+        // load failure. Fail with a typed error before any MLX, Metal or
+        // tokenizer work; real devices continue through the exact path below.
+        try Self.requireSupportedRuntime()
         // Must precede every MLX model/graph construction below. MLX caches its
         // global compile mode the first time a compiled trace is built, and on
         // the accepted pins the enabled path retained ~1.3-1.6 GB per engine
@@ -231,6 +287,10 @@ public actor MLXTextEngine {
         // allocations cached even after its Swift container is gone. Start a
         // new load from a known baseline so the preflight allowance describes
         // this model, rather than this model plus stale MLX cache pages.
+        // From here on the engine owns MLX process state, so teardown and
+        // later reclaims are allowed to touch the native stream. The
+        // deterministic-engine path never reaches this line.
+        Self.markRuntimeInitialized()
         Self.drainPipelineAndClearCaches(context: "modelLoadBaseline")
         // Staged attribution: the tokenizer is loaded in its own stage before
         // the container construction so a tokenizer.json/chat-template parse

@@ -257,12 +257,12 @@ struct ChildResultPagingIsolationTests {
                 runID: runID, cancellation: CancellationToken(), conversationID: conversationID
             )
             let parentPageA = try await paging.execute(
-                .init(ref: refA, offset: bodyA.utf8.count - 16, maxBytes: 64),
+                .init(ref: refA, offset: bodyA.utf8.count - 16, maxBytes: 256),
                 context: parentContext
             )
             #expect(parentPageA.summary.contains(String(bodyA.suffix(16))))
             let parentPageB = try await paging.execute(
-                .init(ref: refB, offset: bodyB.utf8.count - 16, maxBytes: 64),
+                .init(ref: refB, offset: bodyB.utf8.count - 16, maxBytes: 256),
                 context: parentContext
             )
             #expect(parentPageB.summary.contains(String(bodyB.suffix(16))))
@@ -270,7 +270,7 @@ struct ChildResultPagingIsolationTests {
             // A child may page its own sibling-isolated ref directly too.
             let childRefCallA = try TestFixtures.toolCall(
                 id: "page-by-ref-A", toolName: ToolResultPagingTool.name,
-                arguments: #"{"ref":"\#(refA)","offset":\#(bodyA.utf8.count - 16),"maxBytes":64}"#
+                arguments: #"{"ref":"\#(refA)","offset":\#(bodyA.utf8.count - 16),"maxBytes":256}"#
             )
             let childRefPageA = await runtime.dispatchChildTool(
                 childRefCallA, identity: identityA, childContext: context(for: identityA)
@@ -279,7 +279,7 @@ struct ChildResultPagingIsolationTests {
             #expect(childRefPageA.outputSummary.contains(String(bodyA.suffix(16))))
             let childRefCallB = try TestFixtures.toolCall(
                 id: "page-by-ref-B", toolName: ToolResultPagingTool.name,
-                arguments: #"{"ref":"\#(refB)","offset":\#(bodyB.utf8.count - 16),"maxBytes":64}"#
+                arguments: #"{"ref":"\#(refB)","offset":\#(bodyB.utf8.count - 16),"maxBytes":256}"#
             )
             let childRefPageB = await runtime.dispatchChildTool(
                 childRefCallB, identity: identityB, childContext: context(for: identityB)
@@ -296,7 +296,7 @@ struct ChildResultPagingIsolationTests {
             ) async throws -> ToolResult {
                 let call = try TestFixtures.toolCall(
                     id: callIDForCall, toolName: ToolResultPagingTool.name,
-                    arguments: #"{"callID":"\#(callID)","offset":\#(bodyA.utf8.count - 16),"maxBytes":64}"#
+                    arguments: #"{"callID":"\#(callID)","offset":\#(bodyA.utf8.count - 16),"maxBytes":256}"#
                 )
                 return await runtime.dispatchChildTool(
                     call, identity: identity, childContext: context(for: identity)
@@ -315,7 +315,7 @@ struct ChildResultPagingIsolationTests {
             #expect(childPageB.outputSummary.contains(String(bodyB.suffix(16))))
             #expect(!childPageB.outputSummary.contains(String(bodyA.suffix(16))))
             let parentByCallID = try await paging.execute(
-                .init(callID: sharedCallID, offset: bodyP.utf8.count - 16, maxBytes: 64),
+                .init(callID: sharedCallID, offset: bodyP.utf8.count - 16, maxBytes: 256),
                 context: parentContext
             )
             #expect(parentByCallID.summary.contains(String(bodyP.suffix(16))))
@@ -338,7 +338,7 @@ struct ChildResultPagingIsolationTests {
             // A foreign task can never read the record, even with the exact
             // generated ref.
             if case .missing = await store.page(
-                conversationID: UUID(), ref: refA, offset: 0, maxBytes: 64
+                conversationID: UUID(), ref: refA, offset: 0, maxBytes: 256
             ) {
                 // Expected: ownership is the trusted conversation.
             } else {
@@ -458,7 +458,7 @@ struct ChildResultPagingIsolationTests {
             #expect(LargeBodyEcho.body.hasPrefix(headPage.text))
             guard case .page(let tailPage) = await store.page(
                 conversationID: conversationID, ref: expectedRef,
-                offset: LargeBodyEcho.body.utf8.count - 64, maxBytes: 64
+                offset: LargeBodyEcho.body.utf8.count - 64, maxBytes: 256
             ) else {
                 Issue.record("the retained tail must be pageable")
                 return

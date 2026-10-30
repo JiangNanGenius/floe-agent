@@ -1723,33 +1723,21 @@ struct CadNativeEditToolTests {
         let feature = UUID().uuidString
         let dimension = UUID().uuidString
 
-        let cases: [(String, String)] = [
-            ("updateSketchEntity", """
-             {"action":"parameters","path":"part.floecad","payload":
-              "{\"action\":\"updateSketchEntity\",\"sketch_id\":\"\(sketch)\",\"entity_id\":\"\(entity)\",\"a\":[0,0],\"b\":[10,0]}"}
-             """),
-            ("setSketchDimension", """
-             {"action":"parameters","path":"part.floecad","payload":
-              "{\"action\":\"setSketchDimension\",\"sketch_id\":\"\(sketch)\",\"entity_id\":\"\(entity)\",\"kind\":\"length\",\"value\":20}"}
-             """),
-            ("removeSketchDimension", """
-             {"action":"parameters","path":"part.floecad","payload":
-              "{\"action\":\"removeSketchDimension\",\"sketch_id\":\"\(sketch)\",\"dimension_id\":\"\(dimension)\"}"}
-             """),
-            ("feature.suppress", """
-             {"action":"parameters","path":"part.floecad","payload":
-              "{\"action\":\"feature.suppress\",\"feature_id\":\"\(feature)\",\"suppressed\":true}"}
-             """),
-            ("feature.delete", """
-             {"action":"parameters","path":"part.floecad","payload":
-              "{\"action\":\"feature.delete\",\"feature_id\":\"\(feature)\"}"}
-             """),
-            ("feature.move", """
-             {"action":"parameters","path":"part.floecad","payload":
-              "{\"action\":\"feature.move\",\"feature_id\":\"\(feature)\",\"to_index\":1}"}
-             """),
+        let cases: [(String, [String: Any])] = [
+            ("updateSketchEntity", ["sketch_id": sketch, "entity_id": entity, "a": [0, 0], "b": [10, 0]]),
+            ("setSketchDimension", ["sketch_id": sketch, "entity_id": entity, "kind": "length", "value": 20]),
+            ("removeSketchDimension", ["sketch_id": sketch, "dimension_id": dimension]),
+            ("feature.suppress", ["feature_id": feature, "suppressed": true]),
+            ("feature.delete", ["feature_id": feature]),
+            ("feature.move", ["feature_id": feature, "to_index": 1]),
         ]
-        for (action, json) in cases {
+        for (action, fields) in cases {
+            var body = fields
+            body["action"] = action
+            let payloadJSON = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
+            let json = String(decoding: try JSONSerialization.data(withJSONObject: [
+                "action": "parameters", "path": "part.floecad", "payload": payloadJSON
+            ]), as: UTF8.self)
             _ = try await execute(tool, json, context: makeContext())
             let requests = await host.threeDRequests
             let lastRequest = try #require(requests.last)

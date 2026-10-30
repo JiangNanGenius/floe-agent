@@ -935,15 +935,16 @@ struct ChildToolDiscoveryTests {
             )
             try await ActiveParentTestScope.activate(runtime)
 
-            // The active parent's first request persists its core schemas.
-            // Settle that baseline before testing the child's isolation.
+            // Core schemas are offered without becoming discovered names.
+            // Settle the initial empty discovery baseline before testing
+            // whether the child's skill.read can contaminate it.
             var beforeChild = try await store.load(conversationID: conversationID)
             for _ in 0..<50 where beforeChild == nil {
                 try await Task.sleep(for: .milliseconds(20))
                 beforeChild = try await store.load(conversationID: conversationID)
             }
             let parentBaseline = try #require(beforeChild)
-            #expect(parentBaseline.names == Set(["skill.read"]))
+            #expect(parentBaseline.names.isEmpty)
             #expect(parentBaseline.priority.isEmpty)
 
             // 1. A CHILD's skill.read is audited in the child's own scope: the

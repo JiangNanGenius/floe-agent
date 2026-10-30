@@ -176,9 +176,35 @@ enum ToolDiscovery {
                     ? left.descriptor.name < right.descriptor.name
                     : left.score > right.score
             }
-            return ranked.prefix(8).map { $0.descriptor }
+            return appendingInterpreterFallback(
+                ranked.prefix(8).map { $0.descriptor },
+                query: query,
+                descriptors: descriptors
+            )
         }
-        return descriptors.filter { groups.contains(group($0.name)) }
+        return appendingInterpreterFallback(
+            descriptors.filter { groups.contains(group($0.name)) },
+            query: query,
+            descriptors: descriptors
+        )
+    }
+
+    /// A media query keeps an offered general shell as a peer capability, not
+    /// as a hidden fallback. Discovery does not enforce a backend: the model
+    /// chooses among the tools this run actually authorized, and a matching
+    /// native tool must not make the interpreter disappear. Only the real
+    /// `exec.shell` descriptor is appended, and only when this run offers it;
+    /// retired aliases never enter discovery.
+    private static func appendingInterpreterFallback(
+        _ matched: [ToolCatalog.Descriptor],
+        query: String,
+        descriptors: [ToolCatalog.Descriptor]
+    ) -> [ToolCatalog.Descriptor] {
+        guard ToolRoutingPolicy.concernsNativeMedia(query),
+              !matched.contains(where: { $0.name == "exec.shell" }),
+              let shell = descriptors.first(where: { $0.name == "exec.shell" })
+        else { return matched }
+        return matched + [shell]
     }
 
     /// Tools whose canonical name (or a known alias) is an EXACT token of one

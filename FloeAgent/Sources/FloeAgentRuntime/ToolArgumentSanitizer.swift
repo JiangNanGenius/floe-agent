@@ -39,6 +39,12 @@ public enum ToolArgumentSanitizer {
     ) -> Data {
         let storageSetter = isBrowserStorageSetter(toolName)
         guard let object = try? JSONSerialization.jsonObject(with: data) else {
+            // A truncated credential container cannot be scrubbed structurally:
+            // its nested value or header-list entry may lack a closing quote.
+            // Persist only an omission marker; dispatch still uses the original.
+            if containsSensitiveValues(data, toolName: toolName) {
+                return Data(#"{"_redacted":"Malformed credential arguments omitted"}"#.utf8)
+            }
             return Data(redactedText(String(decoding: data, as: UTF8.self)).utf8)
         }
         let scrubbed = scrub(
@@ -72,7 +78,8 @@ public enum ToolArgumentSanitizer {
     ) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) else {
             let lowered = String(decoding: data, as: UTF8.self).lowercased()
-            return sensitiveNames.contains { lowered.contains("\"\($0)\"") }
+            return isBrowserStorageSetter(toolName)
+                || sensitiveNames.contains { lowered.contains("\"\($0)\"") }
         }
         let storageSetter = isBrowserStorageSetter(toolName)
             && (object as? [String: Any]).map {
@@ -294,8 +301,11 @@ public enum ToolArgumentSanitizer {
 
     /// Fallback for malformed JSON: conservative pattern replacement so a
     /// secret never reaches a checkpoint simply because the JSON was invalid.
+    /// The closing quote is optional because a truncated payload can end in
+    /// the middle of the credential value; without that arm the old pattern
+    /// left the whole unterminated secret intact.
     private static func redactedText(_ text: String) -> String {
-        let pattern = #"(?i)("(?:cookie|cookies|set-cookie|authorization|proxy-authorization|x-api-key|api-key|x-auth-token)"\s*:\s*")((?:\\.|[^"\\])*)(")"#
+        let pattern = #"(?i)("(?:cookie|cookies|set-cookie|authorization|proxy-authorization|x-api-key|api-key|x-auth-token|access_token|refresh_token|id_token)"\s*:\s*")((?:\\.|[^"\\])*)("?)"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
             return text
         }

@@ -518,7 +518,6 @@ struct SQLiteRunCheckpointStoreTests: Sendable {
         let conversationID = UUID()
         let oldBinding = makeBinding(conversationID, environmentID: "env-old", generation: 1)
         let bindings = TaskExecutionBindingStore(database: database)
-        _ = try await bindings.bindInitial(oldBinding)
 
         let runID = UUID()
         try await SQLiteConversationStore(database: database).saveConversation(
@@ -538,6 +537,7 @@ struct SQLiteRunCheckpointStoreTests: Sendable {
                 startedAt: Self.baseDate
             )
         )
+        _ = try await bindings.bindInitial(oldBinding)
         try await bindings.pinRun(runID: runID, binding: oldBinding)
 
         let directory = try makeLegacyDirectory()

@@ -154,10 +154,12 @@ actor SkillWorkspaceResourceStager {
                 return .unavailable(reason: SkillStageReason.noWorkspaceShare)
             }
         } else {
-            guard let pathMap = await pathMappingProvider(environmentID),
-                  pathMap.workspaceGuestRoot == LinuxGuestMountPoint.workspace,
-                  let root = pathMap.hostPath(forGuestPath: LinuxGuestMountPoint.workspace) else {
+            guard let pathMap = await pathMappingProvider(environmentID) else {
                 return .unavailable(reason: SkillStageReason.noShareMap)
+            }
+            guard pathMap.workspaceGuestRoot == LinuxGuestMountPoint.workspace,
+                  let root = pathMap.hostPath(forGuestPath: LinuxGuestMountPoint.workspace) else {
+                return .unavailable(reason: SkillStageReason.noWorkspaceShare)
             }
             exportedRoot = root; executionRoot = LinuxGuestMountPoint.workspace
         }

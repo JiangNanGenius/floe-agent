@@ -20,6 +20,13 @@ public enum LocalInferenceError: LocalizedError {
     /// end. Distinct from `insufficientMemory` so the UI can tell the user to
     /// re-download the snapshot instead of freeing memory.
     case corruptModelSnapshot(String)
+    /// The native runtime that on-device inference needs is not usable in this
+    /// environment. The iOS Simulator has no supported MLX Metal architecture:
+    /// constructing MLX's device aborts inside libc++ (`std::string(nullptr)`
+    /// from a missing `MTLArchitecture.name`) instead of throwing. A typed
+    /// failure lets the local runtime report the limitation honestly without
+    /// initializing the native stack at all.
+    case runtimeUnavailable(String)
     public var errorDescription: String? {
         switch self {
         case .modelLoadFailed: "Unable to load the local model runtime."
@@ -36,6 +43,8 @@ public enum LocalInferenceError: LocalizedError {
                 : "This model needs more safe memory headroom (model files: \(required) bytes, device memory: \(physical) bytes). Choose a smaller model or omit vision input."
         case .corruptModelSnapshot(let reason):
             "The on-device model snapshot is damaged or incomplete: " + reason + ". Delete and re-download this model in Local Models settings; existing files are only removed by your explicit action."
+        case .runtimeUnavailable(let reason):
+            "On-device models are unavailable in this environment: " + reason + "."
         }
     }
 }

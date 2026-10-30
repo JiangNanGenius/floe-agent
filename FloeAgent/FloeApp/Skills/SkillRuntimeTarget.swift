@@ -567,7 +567,7 @@ enum SkillRuntimeCompatibility {
             externalWorkDeferred: deferred,
             target: target,
             isInstallable: installable,
-            isRunnableOnTarget: base.isRunnable && problems.isEmpty
+            isRunnableOnTarget: base.isRunnable && problems.isEmpty && !deferred
         )
     }
 }

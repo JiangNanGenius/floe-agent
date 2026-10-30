@@ -1472,21 +1472,30 @@ extension NativeCADDocumentCreationTests {
         XCTAssertTrue(cadEntries.allSatisfy { $0.decision.hasPrefix("allow") }, "\(cadEntries.map(\.decision))")
         XCTAssertTrue(cadEntries.allSatisfy { $0.policyUsed == "human" }, "\(cadEntries.map(\.policyUsed))")
 
-        // Delegated-child inheritance through the canonical dispatcher: the
-        // child's ordinary document read is decided by the SAME trusted
-        // carve-out (no card) and executes for real.
+        // A delegated read must belong to a live parent. The completed CAD
+        // loop above cannot authorize late child work. Hold a real parent in
+        // its normal provider stream, then exercise the same policy path.
+        let childParentID = UUID()
+        let childParent = FloeAgentRuntime(
+            configuration: .init(conversationID: conversationID, provider: provider, model: model,
+                allowedToolNames: [CadDocumentTool.name], workspaceRootURL: workspace),
+            adapter: ActiveParentTestAdapter(), policy: HumanApprovalPolicy(),
+            executor: CatalogToolExecutor(), auditSink: audit, runID: childParentID)
         let childIdentity = ChildExecutionIdentity(
-            parentRunID: runID, rootTaskID: conversationID, delegateCallID: "delegate-human-read")
+            parentRunID: childParentID, rootTaskID: conversationID, delegateCallID: "delegate-human-read")
         let childCall = try cadMakeCall("child-read", ["action": "read", "path": "Loop.floecad"])
-        let childResult = await runtime.dispatchChildTool(
-            childCall,
-            identity: childIdentity,
-            childContext: ToolContext(
-                runID: runID, toolCallID: "child-read", scope: .local,
-                allowedToolNames: [CadDocumentTool.name], workspaceRootURL: workspace,
-                cancellation: CancellationToken(), conversationID: conversationID))
-        XCTAssertEqual(childResult.status, .ok,
-                       "a delegated child read must execute: \(childResult.outputSummary)")
+        let childContext = ToolContext(
+            runID: childParentID, toolCallID: "child-read", scope: .local,
+            allowedToolNames: [CadDocumentTool.name], workspaceRootURL: workspace,
+            cancellation: CancellationToken(), conversationID: conversationID)
+        try await ActiveParentTestScope.withScope {
+            try await ActiveParentTestScope.activate(childParent)
+            let childResult = await childParent.dispatchChildTool(
+                childCall, identity: childIdentity, childContext: childContext)
+            XCTAssertEqual(childResult.status, .ok,
+                           "a delegated child read must execute: \(childResult.outputSummary)")
+        }
+
     }
 
     // MARK: 8. Canvas staged scope through the runtime: REL path + foreign

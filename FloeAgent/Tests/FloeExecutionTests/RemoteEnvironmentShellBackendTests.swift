@@ -443,7 +443,7 @@ struct RemoteEnvironmentShellBackendTests {
         #expect(defaultBackend.runCount == 0)
     }
 
-    @Test("cancellation is terminal and does not run after-run synchronization")
+    @Test("cancellation after dispatch preserves uncertainty and skips after-run synchronization")
     func cancellationIsTerminal() async throws {
         let root = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -462,7 +462,11 @@ struct RemoteEnvironmentShellBackendTests {
             outputRoot: root
         )
         let outcome = await backend.run(makeRequest(root: root), cancellation: CancellationToken())
-        #expect(outcome == .cancelled)
+        guard case .outcomeUnknown(let jobID, _) = outcome else {
+            Issue.record("SSH cancellation after dispatch must not invent termination: \(outcome)")
+            return
+        }
+        #expect(!jobID.isEmpty)
         let phases = await sync.snapshot()
         #expect(phases == [.beforeRun])
     }
@@ -545,6 +549,30 @@ struct RemoteEnvironmentShellBackendTests {
         #expect(files.count == 1)
         let saved = try Data(contentsOf: files[0])
         #expect(saved.count == full.count + warning.count)
+    }
+
+    @Test("unconfirmed remote termination preserves staged script and stdin")
+    func uncertainStagedInvocationKeepsInputs() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let connection = makeConnection { command in
+            if command.hasPrefix("exec /bin/sh '") {
+                return FakeExecutionReply(result: SSHStreamExecResult(), failure: .cancelled)
+            }
+            return FakeExecutionReply(result: SSHStreamExecResult())
+        }
+        let target = makeTarget()
+        let backend = RemoteEnvironmentShellBackend(resolver: { _ in .ssh(target) },
+            sessionFactory: { _ in connection }, outputRoot: root)
+        let outcome = await backend.run(makeRequest(root: root,
+            command: "echo " + String(repeating: "x", count: 60_000), stdin: "owned stdin"), cancellation: nil)
+        guard case .outcomeUnknown = outcome else {
+            Issue.record("Expected unknown termination after dispatch: \(outcome)")
+            return
+        }
+        #expect(connection.recordedCommands.contains { $0.hasPrefix("exec /bin/sh '") })
+        #expect(!connection.recordedCommands.contains { $0.hasPrefix("rm -f ") },
+                "an unconfirmed process may still be reading its staged inputs")
     }
 
     @Test("oversized commands and stdin are staged separately inside the remote task root")

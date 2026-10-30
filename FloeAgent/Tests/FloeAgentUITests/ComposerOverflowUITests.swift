@@ -117,6 +117,16 @@ final class ComposerOverflowUITests: XCTestCase {
         XCTAssertTrue(homeToggle.exists,
                       "Acceptance is on the Home launchpad, never an existing thread")
 
+        // This launch flag owns a separate synthetic Home draft slot. A
+        // previous large-text case intentionally persisted its exact draft;
+        // clear only that slot through the real editor before line-count
+        // assertions, without touching the user's ordinary Home draft.
+        input.tap()
+        let previousDraft = input.value as? String ?? ""
+        if !previousDraft.isEmpty {
+            input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousDraft.count))
+        }
+        XCTAssertEqual(input.value as? String ?? "", "")
         let restHeight = input.frame.height
         XCTAssertLessThan(restHeight, 120, "An empty launchpad composer rests near one line")
 

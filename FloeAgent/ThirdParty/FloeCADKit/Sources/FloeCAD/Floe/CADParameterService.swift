@@ -1651,13 +1651,23 @@ public final class CADParameterService {
     private static func bodyReferences(in kind: FeatureKind) -> [BodyRef] {
         switch kind {
         case let .boolean(_, target, tools): return [target] + tools
+        // Profile features consume the bodies their boolean intent names
+        // (union/subtract/intersect), e.g. an extruded hole cut. Omitting them
+        // hid real edges in the dependency graph, so deleting/ moving the
+        // producer slipped through to the rebuild and failed there instead of
+        // being refused as `has_dependents` / `dependency_order`.
+        case let .extrude(_, _, _, _, boolean, _),
+             let .draftExtrude(_, _, _, _, _, boolean),
+             let .revolve(_, _, _, _, boolean),
+             let .sweep(_, _, _, boolean, _),
+             let .loft(_, boolean):
+            return boolean.resolvedTargets
         case let .transform(body, _), let .mirror(body, _, _),
              let .pattern(body, _), let .chamfer(body, _, _),
              let .fillet(body, _, _), let .shell(body, _, _),
              let .deleteFace(body, _):
             return [body]
-        case .primitive, .extrude, .draftExtrude, .revolve, .sweep, .loft,
-             .pushPull, .moveFace, .scaleFace, .rotateFace, .draftFace, .replaceFace:
+        case .primitive, .pushPull, .moveFace, .scaleFace, .rotateFace, .draftFace, .replaceFace:
             return []
         }
     }

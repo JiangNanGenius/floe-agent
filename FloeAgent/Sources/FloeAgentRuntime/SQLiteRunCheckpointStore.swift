@@ -46,7 +46,7 @@ public actor SQLiteRunCheckpointStore: CheckpointStore {
     /// pin is a late callback from an old environment and is rejected too.
     /// Only the legacy read-through import may adopt a nil legacy pin.
     public func save(_ checkpoint: AgentCheckpoint) async throws {
-        let encoded = try checkpoint.encoded()
+        let encoded = String(decoding: try checkpoint.encoded(), as: UTF8.self)
         try await database.writer { db in
             guard let row = try Row.fetchOne(
                 db,
@@ -169,6 +169,9 @@ public actor SQLiteRunCheckpointStore: CheckpointStore {
             } else {
                 body = legacyData
             }
+            guard let bodyJSON = String(data: body, encoding: .utf8) else {
+                throw FloeError.validationFailed("The saved checkpoint is not UTF-8 JSON")
+            }
             let now = Self.encodeTimestamp(Date())
             try db.execute(
                 sql: """
@@ -181,7 +184,7 @@ public actor SQLiteRunCheckpointStore: CheckpointStore {
                     legacy.conversationID.uuidString,
                     legacy.formatVersion,
                     legacy.state.name,
-                    body,
+                    bodyJSON,
                     now,
                     now,
                 ]
