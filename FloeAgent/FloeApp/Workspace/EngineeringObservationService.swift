@@ -82,7 +82,7 @@ final class EngineeringObservationService {
             error: Binding(get: { errors.message }, set: { errors.message = $0 }),
             onReview: nil, onSave: nil, onDirty: nil,
             dark: false, locale: Locale.current.identifier)
-        web.frame = CGRect(x: 0, y: 0, width: request.width, height: request.height)
+        web.frame = CGRect(x: 0, y: 0, width: CGFloat(request.width), height: CGFloat(request.height))
         web.layoutIfNeeded()
         let deadline = ContinuousClock.now.advanced(by: .seconds(65))
         while session.sceneState?.ready != true {
