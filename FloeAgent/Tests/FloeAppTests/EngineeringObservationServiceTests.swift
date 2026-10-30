@@ -60,12 +60,26 @@ struct EngineeringObservationServiceTests {
         #expect(result.frames.count == 2)
         let summary = try #require(try JSONSerialization.jsonObject(with: Data(result.summaryJSON.utf8)) as? [String: Any])
         let hierarchy = try #require(summary["hierarchy"] as? [String: Any])
-        #expect(hierarchy["total"] as? Int == 241)
-        #expect(hierarchy["offset"] as? Int == 200)
-        #expect((hierarchy["nodes"] as? [Any])?.count == 41)
-        #expect(hierarchy["nextOffset"] is NSNull)
+        // This is the live render graph: the selected glTF scene root,
+        // Main and its240 mesh children. The scene root is intentionally
+        // retained, distinct from a source glTF node or native CAD topology.
+        let pageBytes = try JSONSerialization.data(withJSONObject: hierarchy)
+        let page = try JSONDecoder().decode(EngineeringSceneHierarchyPage.self, from: pageBytes)
+        #expect(page.total == 242)
+        #expect(page.offset == 200)
+        #expect(page.sceneIndex == 0)
+        #expect(page.nodes.count == 42)
+        #expect(page.nodes.map(\.name) == (198..<240).map { "Part_\($0)" })
+        #expect(Set(page.nodes.map(\.path)).count == 42)
+        #expect(page.nextOffset == nil)
+        let stateObject = try #require(summary["state"] as? [String: Any])
+        let visibleNodes = try #require(stateObject["nodes"] as? [[String: Any]])
+        #expect(visibleNodes.prefix(2).compactMap { $0["name"] as? String } == ["Assembly", "Main"])
+        Attachment.record(result.summaryJSON, named: "original-scene-observation.json")
         #expect(summary["sourceUnchanged"] as? Bool == true)
-        for frame in result.frames {
+        for (index, frame) in result.frames.enumerated() {
+            Attachment.record(Array(frame.pngData), named: "original-scene-view-\(index).png")
+            Attachment.record(frame.metadataJSON, named: "original-scene-view-\(index).json")
             let image = try #require(CGImageSourceCreateWithData(frame.pngData as CFData, nil))
             let properties = try #require(CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [CFString: Any])
             #expect(properties[kCGImagePropertyPixelWidth] as? Int == 320)

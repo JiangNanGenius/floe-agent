@@ -3,6 +3,21 @@ import UIKit
 import Vision
 
 @MainActor
+func assertComposerAboveSoftwareKeyboardIfRequired(
+    _ app: XCUIApplication, input: XCUIElement,
+    file: StaticString = #filePath, line: UInt = #line
+) {
+    guard ProcessInfo.processInfo.environment["FLOE_REQUIRE_SOFTWARE_KEYBOARD"] == "1" else { return }
+    let keyboard = app.keyboards.firstMatch
+    XCTAssertTrue(keyboard.waitForExistence(timeout: 10),
+                  "This acceptance run requires the actual onscreen keyboard", file: file, line: line)
+    guard keyboard.exists else { return }
+    XCTAssertLessThanOrEqual(input.frame.maxY, keyboard.frame.minY + 1,
+                            "The editable viewport and current line must stay above the keyboard",
+                            file: file, line: line)
+}
+
+@MainActor
 final class ComposerOverflowUITests: XCTestCase {
     /// Read the visible field pixels, not its AX value or allocated height.
     /// The previous regression passed both while painting only "one".
@@ -227,6 +242,7 @@ final class ComposerOverflowUITests: XCTestCase {
         stacked.name = "New Task composer: field owns the row, controls below (device screenshot)"
         stacked.lifetime = .keepAlways
         add(stacked)
+        assertComposerAboveSoftwareKeyboardIfRequired(app, input: input)
 
         // 3. The single logical line was never mutated by layout.
         XCTAssertEqual(input.value as? String, mixed,

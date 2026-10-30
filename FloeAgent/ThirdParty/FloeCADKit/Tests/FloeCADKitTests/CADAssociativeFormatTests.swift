@@ -298,7 +298,8 @@ final class CADAssociativeFormatTests: XCTestCase {
     func testFutureSchemaAllSaveRoutesRefuseAndOpaqueSemanticsNeverExemptIntegrity() async throws {
         let url = url()
         try await CADAssociativeFormatFixture.basicPackage(at: url)
-        try CADAssociativeFormatFixture.rewrite(url, schema: 3) { _ in }
+        try CADAssociativeFormatFixture.rewrite(
+            url, schema: FileCADDocumentStore.currentSchemaVersion + 1) { _ in }
         let before = try CADAssociativeFormatFixture.bytes(url)
         let document = try await open(url)
         XCTAssertTrue(document.isReadOnly)
