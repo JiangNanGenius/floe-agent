@@ -229,6 +229,14 @@ public actor BackgroundJobStore {
         }
     }
 
+    /// Complete task-environment safety set; an arbitrary UI page limit must not hide running work.
+    public func activeJobs(environmentID: String) async throws -> [BackgroundJob] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM background_jobs WHERE environment_id=? AND state IN ('queued','running') ORDER BY created_at",
+                             arguments: [environmentID]).map { try Self.decode($0) }
+        }
+    }
+
     public func jobs(environmentID: String, targetTool: String? = nil, limit: Int = 50) async throws -> [BackgroundJob] {
         try await database.reader { db in
             try Row.fetchAll(db, sql: "SELECT * FROM background_jobs WHERE environment_id=? AND (? IS NULL OR target_tool=?) ORDER BY CASE WHEN state IN ('queued','running') THEN 0 ELSE 1 END,created_at DESC LIMIT ?",

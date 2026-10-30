@@ -9,12 +9,18 @@ public actor EnvironmentExecutionCoordinator {
     private let bundledBaseURL: URL?
     private var active: [String: [UUID: CancellationToken]] = [:]
     private var stopping = Set<String>()
+    private var migrationFences = Set<String>()
 
     public init(roots: EnvironmentRoots, registry: EnvironmentRegistry, bundledBaseURL: URL? = nil) {
         self.roots = roots; self.registry = registry; self.bundledBaseURL = bundledBaseURL
     }
 
     public func acquire(_ original: ToolContext) async throws -> ToolEnvironmentLease {
+        // Native tools retain App ownership even when the task's commands run elsewhere.
+        if let name = original.executionToolName,
+           CapabilityExecutionRouter.decision(for: name).backend == .nativeApple {
+            return ToolEnvironmentLease(context: original)
+        }
         guard original.scope == .local, let workspace = original.workspaceRootURL else {
             return ToolEnvironmentLease(context: original)
         }
@@ -57,17 +63,17 @@ public actor EnvironmentExecutionCoordinator {
     }
 
     private func lease(_ original: ToolContext, record: ContainerRecord) async throws -> ToolEnvironmentLease {
-        if record.effectiveExecutionBackend == .macBridge {
+        if record.effectiveExecutionBackend == .macBridge || record.effectiveExecutionBackend == .remoteSSH {
             guard record.kind.isWritableLayer, record.state == .active, !record.requiresRebuild,
                   record.isCompatible(withLayerFormat: ContainerRecord.currentLayerFormat),
-                  !stopping.contains(record.id) else {
+                  !stopping.contains(record.id), !migrationFences.contains(record.id) else {
                 throw FloeError.validationFailed("The Mac environment is stopped or being removed")
             }
             if let parentID = record.parentID {
                 guard let parent = await registry.record(id: parentID), parent.state == .active,
-                      parent.effectiveExecutionBackend == .macBridge, !parent.requiresRebuild,
+                      parent.effectiveExecutionBackend == record.effectiveExecutionBackend, !parent.requiresRebuild,
                       parent.isCompatible(withLayerFormat: ContainerRecord.currentLayerFormat),
-                      !stopping.contains(parentID) else {
+                      !stopping.contains(parentID), !migrationFences.contains(parentID) else {
                     throw FloeError.validationFailed("The parent Mac environment is unavailable")
                 }
             }
@@ -76,7 +82,8 @@ public actor EnvironmentExecutionCoordinator {
             let writable = roots.layerURL(id: record.id, kind: record.kind)
             context.environment = ToolEnvironment(id: record.id, writableLayerURL: writable,
                 layerURLs: [writable], variables: [
-                    "FLOE_ENVIRONMENT_ID": record.id, "FLOE_EXECUTION_BACKEND": "macBridge"
+                    "FLOE_ENVIRONMENT_ID": record.id,
+                    "FLOE_EXECUTION_BACKEND": record.effectiveExecutionBackend.rawValue
                 ])
             let leaseID = UUID()
             active[record.id, default: [:]][leaseID] = original.cancellation
@@ -86,7 +93,7 @@ public actor EnvironmentExecutionCoordinator {
         }
         let stack = await registry.layerStack(for: record.id, bundledBaseURL: bundledBaseURL)
         guard let latest = await registry.record(id: record.id), latest.state == .active,
-              !latest.requiresRebuild, !stopping.contains(record.id) else {
+              !latest.requiresRebuild, !stopping.contains(record.id), !migrationFences.contains(record.id) else {
             throw FloeError.validationFailed("Environment is stopped, being deleted, or requires a dependency rebuild")
         }
         for layer in stack.layers where layer.kind != .base {
@@ -135,8 +142,22 @@ public actor EnvironmentExecutionCoordinator {
         if active[environmentID]?.isEmpty == true { active.removeValue(forKey: environmentID) }
     }
 
+    public func activeLeaseCount(environmentID: String) -> Int { active[environmentID]?.count ?? 0 }
+
+    /// Atomically prevent new external leases after the last owner exits.
+    public func fenceMigrationIfIdle(environmentID: String) -> Bool {
+        guard active[environmentID]?.isEmpty != false, !stopping.contains(environmentID), !migrationFences.contains(environmentID) else { return false }
+        migrationFences.insert(environmentID)
+        return true
+    }
+
+    public func releaseMigrationFence(environmentID: String) { migrationFences.remove(environmentID) }
+
     /// Cancellation is not proof of termination: retain the environment if any lease remains.
     public func stopAndWait(environmentID: String, timeout: Duration = .seconds(10)) async throws {
+        guard !migrationFences.contains(environmentID) else {
+            throw FloeError.validationFailed("Finish or cancel the task migration before stopping this environment")
+        }
         stopping.insert(environmentID)
         defer { stopping.remove(environmentID) }
         active[environmentID]?.values.forEach { $0.cancel() }

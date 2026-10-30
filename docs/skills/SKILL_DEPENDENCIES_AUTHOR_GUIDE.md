@@ -1,4 +1,4 @@
-# Official Skill dependency declarations — author contract (schemaVersion 1)
+# Official Skill dependency declarations — author contract (schemaVersion 1 and 2)
 
 Audience: authors of **official, reviewed and signed Skill Hub packages**. External
 (pulled/imported) skills keep model-led dependency handling through the ordinary
@@ -10,9 +10,11 @@ restriction.
 
 The native strict decoder is the authority:
 `FloeAgent/Sources/FloeSkills/SkillDependency.swift` (mirrors the frozen
-`SkillRuntimeDependency` descriptor pattern). The machine-readable shape documented here
-lives at [dependencies.schema.json](dependencies.schema.json); the five worked examples
-live in [examples/](examples/).
+`SkillRuntimeDependency` descriptor pattern). The machine-readable shapes
+documented here live at [dependencies.schema.json](dependencies.schema.json)
+(v1, Linux) and [dependencies.v2.schema.json](dependencies.v2.schema.json)
+(v2, adds macOS pip/npm profiles); the five frozen v1 worked examples plus one
+v2 macOS example live in [examples/](examples/).
 
 ## What the declaration does
 
@@ -30,13 +32,18 @@ a weakened audit). A runtime-component requirement's artifact is fetched through
 existing GitHub-only transport at the pinned publication commit, verified (exact size
 + sha256 + static-ELF gate) and committed atomically into the same app-owned component
 cache the first use re-reads and re-verifies. A wheel fetch that cannot persist (no
-wired store) is honestly recorded as waiting, never as prepared. apt/npm/font identities resolve only against a real
-guest's configured sources and architecture, so they get an explicit `awaiting target
-environment` state. The durable per-resource status is shown by `skill.read` and
-survives views and restarts; prefetch is **never** readiness — no cache hit is claimed
-and nothing is marked `packages ready`. When the skill is exactly read (`skill.read`)
-inside a task bound to a resolved Linux guest environment, the app records an immutable
-plan for `(environmentID, runID)`.
+wired store) is honestly recorded as waiting, never as prepared. apt/npm/font
+identities resolve only against the actual target's configured sources and
+architecture, so they get an explicit `awaiting target environment` state (macOS
+profiles only ever carry pip/npm). The durable per-resource status is shown by
+`skill.read` and survives views and restarts; prefetch is **never** readiness — no
+cache hit is claimed and nothing is marked `packages ready`. On a macOS target, only
+`pip`/`npm` profiles participate; their exact pins and declared pip locks are
+installed and read back through that target's real package operations. The Linux
+guest's shared wheel store and prefetch status are not evidence of macOS readiness.
+
+When the skill is exactly read (`skill.read`) inside a task bound to a resolved
+external target, the app records an immutable plan for `(environmentID, runID)`.
 At the skill's approved `exec.shell` invocation that carries `"skillID"`, Floe
 automatically prepares and installs the declared resources **in that same resolved
 environment**, reads every requirement back, and either proceeds (annotating optional
@@ -93,7 +100,7 @@ Kinds (exact per-kind key sets):
 is a boolean: `true` gates that skill's dependency-aware invocation; `false` proceeds
 with a visible annotation.
 
-Limits: ≤64 KiB file, 1–8 profiles, 1–32 requirements per profile, unique profile ids,
+v1 limits: ≤64 KiB file, 1–8 profiles, 1–32 requirements per profile, unique profile ids,
 unique `(kind,name)` within a profile, `os` exactly `"linux"`, `architectures` ⊆
 `{riscv64, arm64, x86_64, any}`.
 
@@ -106,6 +113,68 @@ that refuses before any transaction, while identical exact duplicates across mat
 profiles simply reuse. If today's Floe ships only riscv64 guests, an `arm64`-only profile
 is never installed by this build — declare what actually runs (`any`, or the guest's real
 architecture), and add per-architecture profiles only when a backend for them exists.
+
+## Schema v2 — macOS pip/npm profiles
+
+`schemaVersion: 2` is an additive parser version for the macOS external target. It
+uses the SAME top-level keys, profile keys, per-kind requirement key sets, exact
+pins, pip lock format/closure rules, limits and trust model as v1. The only new
+shape is `target.os: "macos"`:
+
+- A v2 profile targets `"linux"` or `"macos"`.
+- A **macOS profile may contain only `pip` and `npm` requirements**. `apt`,
+  `font` and `runtimeComponent` are Debian/Linux resources and fail closed at
+  decode on macOS — there is no Homebrew substitution and no cross-OS descriptor
+  guess.
+- Linux profiles in a v2 document keep every v1 kind and rule, including the
+  frozen runtime component.
+- `architectures` still SELECTS against the actual resolved target:
+  provisioning matches the profile's OS and architectures to the real Linux
+  guest/Mac bridge/SSH target. macOS profiles normally declare `arm64`,
+  `x86_64`, both, or `any`; a profile whose architecture does not match the
+  actual target never plans, prefetches or installs.
+- The same package-local pip lock rule applies on macOS: a declared
+  `references/…​.txt` lock is a full pinned closure with sha256 digests and must
+  exist inside the signed package bytes. Whether a particular macOS target can
+  satisfy an exact pin/lock is decided by that target's real package operations
+  and read back; no macOS readiness is inferred from a download or from the
+  Linux guest's wheel store.
+- **V1 remains Linux-only and unchanged.** A `schemaVersion: 1` file that says
+  `os: "macos"` still fails closed with an unsupported-target reason; published
+  V1 bytes and semantics are never rewritten.
+- An unknown/newer `schemaVersion` (currently 3 and above) fails compatibility
+  for the provisioning channel instead of being guessed; it never breaks
+  reading, staging or the rest of the skill.
+- A package carrying a v2 declaration must keep its EXISTING hub-entry
+  `minimumAppVersion` at **1.7.65 or newer** (the first capable candidate; the
+  release owner verifies actual build availability — do not claim an
+  unavailable client). This is not a new field and not a second runtime version
+  counter. V1 packages keep the historical 1.7.60 floor; the V2 floor does not
+  raise them.
+
+```json
+{
+  "schemaVersion": 2,
+  "profiles": [
+    {
+      "id": "mac-host",
+      "target": { "os": "macos", "architectures": ["arm64", "x86_64"] },
+      "requirements": [
+        { "kind": "pip", "name": "pypdf", "version": "5.4.0",
+          "purpose": "Read and merge PDF pages on the Mac bridge.",
+          "required": true, "lockfile": "references/requirements.lock.txt" },
+        { "kind": "npm", "name": "typescript", "version": "5.9.3",
+          "purpose": "Type-check the generated helper.", "required": true }
+      ]
+    }
+  ]
+}
+```
+
+The machine-readable v2 shape is
+[dependencies.v2.schema.json](dependencies.v2.schema.json); the frozen v1 shape
+stays [dependencies.schema.json](dependencies.schema.json). The example file is
+[examples/dependencies.macos.json](examples/dependencies.macos.json).
 
 ## Version management (frozen distinctions)
 
@@ -133,9 +202,11 @@ single package authority.**
    not claim proof for history this client never observed — publisher CI remains
    mandatory for that.
 2. **`schemaVersion` in `dependencies.json`** — parser compatibility only. This build
-   accepts exactly `1`. An unknown newer value fails compatibility for the provisioning
-   channel (required resources are reported not ready with the honest reason) instead of
-   being guessed; it never breaks reading, staging or the rest of the skill.
+   accepts `1` (frozen Linux target contract) and `2` (adds macOS pip/npm profiles with
+   the same keys, pins and lock rules). V1 continues to reject `"macos"`. An unknown
+   newer value fails compatibility for the provisioning channel (required resources are
+   reported not ready with the honest reason) instead of being guessed; it never breaks
+   reading, staging or the rest of the skill.
 3. **Exact resource/dependency versions plus locks** — the `version` pins per
    requirement (pip, apt, npm **and font**: a font requirement is an exact apt
    identity+version pin, and the readback receipt records that version verbatim)
@@ -145,20 +216,31 @@ single package authority.**
    an implicit upgrade, never a silent downgrade (a same-environment collision with a
    different installed version is refused honestly).
 4. **`minimumAppVersion`** — the existing old-client gate. A curated hub entry whose
-   declaration needs the new native behavior raises the entry's existing
-   `minimumAppVersion` to the first capable build (candidate `1.7.60`); older clients see
-   the unchanged `.incompatibleApp` offer state and can never install it. The pinned
-   component descriptor keeps its own `minimumAppVersion` gate unchanged.
+   declaration needs newer native behavior raises the entry's existing
+   `minimumAppVersion` to the first capable build. V1 keeps its historical floor of
+   `1.7.60`; a v2 (macOS-capable) declaration requires `1.7.65` or newer. The floors
+   stay distinct: publishing a v2 package must not raise the floor for already-published
+   v1 packages. Older clients see the unchanged `.incompatibleApp` offer state and can
+   never install it. The pinned component descriptor keeps its own `minimumAppVersion`
+   gate unchanged.
+
+A changed declaration is always a new artifact, never an in-place edit: bump the Skill
+package `version`, produce a new `contentDigest`, and re-sign the new bytes. Never
+overwrite an already published `(id, version)` with different declaration bytes, and
+never auto-rewrite, auto-upgrade or silently refresh dependencies of an installed package
+from a changed declaration. The existing receipt/immutable identity checks fail a
+same-version bytes mismatch closed; publisher CI must reject it first.
 
 ### What a readiness receipt binds
 
 Every receipt binds, together and reverified on use: the **package version**, the package
 **contentDigest**, the **dependencyManifestDigest** (SHA-256 of the exact
 `dependencies.json` bytes), the profile id and requirement identity (kind, name, exact
-version), the resolved **environment** and the guest **launch generation**. A receipt is
-reusable only while every one of those facts still matches and the installed
-authorization revalidates; boot rotation, disable, uninstall, edit or a revoked grant
-invalidates it (reauthorize/recheck — a serialized copy is never a ready token).
+version), the resolved **environment/target identity** and its **generation token**. A
+receipt is reusable only while every one of those facts still matches and the installed
+authorization revalidates; boot rotation, target change, disable, uninstall, edit or a
+revoked grant invalidates it (reauthorize/recheck — a serialized copy is never a ready
+token).
 
 ### Update, rollback, and running invocations
 
@@ -180,9 +262,11 @@ invalidates it (reauthorize/recheck — a serialized copy is never a ready token
 
 ## Authoring rules
 
-- Pin against the Debian release the guest image actually serves. The runtime always
-  uses the author's exact pins and fails honestly when a pin cannot be served — it
-  never substitutes a "close enough" version. Example pins here were checked against
+- Pin against the package source the actual target serves. Linux apt/font pins must
+  match the Debian release the guest image really serves; macOS `pip`/`npm` pins must
+  match the real interpreter/registry the Mac target uses. The runtime always uses the
+  author's exact pins and fails honestly when a pin cannot be served — it never
+  substitutes a "close enough" version. Example Debian pins here were checked against
   live `packages.debian.org`/`sources.debian.org` trixie metadata
   (`python3-scipy 1.15.3-1`, `python3-matplotlib 3.10.1+dfsg1-4`,
   `poppler-utils 25.03.0-5+deb13u4`, `fontconfig 2.15.0-2.3`,
@@ -190,7 +274,8 @@ invalidates it (reauthorize/recheck — a serialized copy is never a ready token
 - Declare only what the skill actually needs; prefer reusing what the reviewed recipe or
   the environment already ships (exact pins annotated as such), and reuse pure wheels,
   Debian apt binaries and the one small optional CJK font instead of heavyweight
-  preinstalled extras. No new base image, no heavyweight science stack.
+  preinstalled extras. No new base image, no heavyweight science stack. A macOS profile
+  is limited to pip/npm; do not invent an apt or Homebrew path for it.
 - No fake hashes, no heavy binaries or wheel blobs inside the package: locks list
   digests; the wheels themselves download through the shared cache at first use (an
   official install may persist the audited bytes into the shared wheel store under
@@ -199,7 +284,9 @@ invalidates it (reauthorize/recheck — a serialized copy is never a ready token
 - Keep legacy caps intact: this contract never widens ordinary Skill package artifact
   limits (2 MiB/file, 8 MiB/package) — the only elevated cap is the existing
   explicitly-allowlisted runtime component's own bound.
-- Add the file under `references/`, pin `schemaVersion: 1`, bump the **package version**,
+- Add the file under `references/`, pin `schemaVersion: 1` (Linux) or `2` (adds
+  macOS pip/npm), set the existing hub entry's `minimumAppVersion` to the matching
+  floor (`1.7.60` for v1; `1.7.65` or newer for v2), bump the **package version**,
   re-sign the digest, and let the normal reviewed publication flow carry it.
 
 ## Worked examples
@@ -216,6 +303,7 @@ existing no-sidecar behavior for old and new clients alike.
 | [examples/dependencies.debian.json](examples/dependencies.debian.json) | Debian apt identities with exact versions installed through the guest's own single transaction |
 | [examples/dependencies.npm.json](examples/dependencies.npm.json) | exact `name@version` npm pins (lock bytes are review evidence, never replayed) |
 | [examples/dependencies.cjk.json](examples/dependencies.cjk.json) | Debian science stack pins (`python3-matplotlib`, `fontconfig`) plus the optional font identity+exact-version pin with the fixed CJK glyph-render probe |
+| [examples/dependencies.macos.json](examples/dependencies.macos.json) | schemaVersion 2 macOS profile with an exact pip pin (same package-local lock reference) and an exact npm pin; no apt/font/runtimeComponent on macOS |
 
 A `runtimeComponent` requirement looks like:
 
@@ -234,14 +322,19 @@ managed deployment path.
 requirement (kind, exact pin, required/optional) and the invocation contract: call
 `exec.shell` with `"skillID": "<skill id>"` in the same task run. With `skillID` the run
 verifies the installed record, the current run binding and the grant, automatically
-prepares/installs the declared resources into the task's resolved Linux environment and
-reads them back. A required resource that is not ready refuses **that skill's**
+prepares/installs the declared resources into the task's resolved external target (Linux
+guest or macOS bridge) and reads them back. Profile selection uses that target's ACTUAL
+OS and architecture: a v2 macOS profile never runs on a Linux guest and a Linux profile
+never plans on macOS. A required resource that is not ready refuses **that skill's**
 invocation with the honest reason; optional gaps appear as a visible annotation;
 commands without `skillID` are unchanged, which is how ordinary repair work proceeds.
 
 ## Scope and non-promises
 
 - Automatic provisioning applies only to official reviewed/signed Hub installs.
+- macOS declaration support is limited to `pip` and `npm`; `apt`, `font`,
+  `runtimeComponent`, Homebrew auto-install and an App-native dependency target are not
+  offered. A declaration never selects a different target or package manager.
 - No generic native execution of untrusted external install instructions.
 - No new execution aliases, no package installer tools, no environment picker.
 - Cross-environment physical deduplication is not promised (dpkg shards and venvs are

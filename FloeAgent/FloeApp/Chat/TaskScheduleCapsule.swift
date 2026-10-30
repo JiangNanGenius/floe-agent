@@ -293,7 +293,7 @@ enum TaskScheduleCommands {
     static func runNow(
         scheduleID: UUID,
         environment: AppEnvironment
-    ) async throws -> FloeSelectedScheduleRunReceipt {
+    ) async throws -> BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt {
         try await environment.backgroundRunCoordinator.runScheduleNow(scheduleID: scheduleID)
     }
 

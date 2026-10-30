@@ -314,7 +314,9 @@ A saved rule is not a live listener. The VM must be running and the service must
 
 Settings → Execution Environments → choose project/task → Python·PyPI or Node.js·npm. Confirm the environment before installing; project and shared dependencies have different write locations.
 
-Local Python/Node primarily run inside Linux. Packages must support that guest architecture; desktop/macOS/iOS binaries are not interchangeable. In the full IDE, Run shows the target and command. Resolve save errors/conflicts first. Remote single-file execution does not synchronize the entire project and requires the remote runtime, dependencies and assistant service where applicable.
+Commands use the task’s selected environment: on-device Linux, a connected Mac bridge or a configured SSH host. Packages must support that system and architecture; binaries are not interchangeable. In the full IDE, Run shows the target and command. Resolve save errors/conflicts first. Remote single-file execution does not synchronize the entire project and requires the remote runtime, dependencies and assistant service where applicable.
+
+The task menu’s **Task Environment** shows its saved location. Check a new destination to review files, dependencies and unavailable skills, then choose **Prepare and Move**. New defaults do not move existing tasks. Close running terminals and services first. Preparation can continue after dismissing the sheet; before the switch, cancellation keeps the original location. If a move pauses, retry or cancel it. After the switch, reconnect to the destination rather than rerunning old commands. Browsing, documents and design stay in Floe.
 
 Use `pip list`, `python3 --version` and `node --version` to verify real state. Check network and package compatibility after installation failures. See [local shell](ARCHITECTURE_LOCAL_SHELL.md) and [IDE/languages](FLOE_IDE_AND_LANGUAGES.md).
 

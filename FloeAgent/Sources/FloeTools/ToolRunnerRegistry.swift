@@ -125,7 +125,9 @@ public struct AnyAgentTool: Sendable {
     /// Executes the tool with JSON-encoded arguments.
     public func execute(argumentsJSON: Data, context: ToolContext) async throws -> ToolExecutionOutput {
         guard isAvailable() else { throw FloeError.validationFailed("Tool is disabled or not configured: \(descriptor.name)") }
-        let lease = try await routing.acquire(context)
+        var routedContext = context
+        routedContext.executionToolName = descriptor.name
+        let lease = try await routing.acquire(routedContext)
         do {
             let output = try await run(argumentsJSON, lease.context)
             await lease.finish()

@@ -1,4 +1,4 @@
-// FloeSkillsTests — strict official Skill dependency declaration v1.
+// FloeSkillsTests — strict official Skill dependency declaration v1/v2.
 //
 // Locks the frozen author contract the app-side preparation center consumes:
 //   * exact top/profile/requirement key sets per tagged kind; unknown fields
@@ -7,16 +7,20 @@
 //     ("latest", "stable") can never pass, including for the font kind, which
 //     carries an exact Debian version like apt (v1 has no unversioned
 //     exception);
-//   * schemaVersion compatibility: 1 decodes, a newer unknown value fails
-//     compatibility (never guessed), older/invalid values fail shape;
+//   * schemaVersion compatibility: V1 (Linux only) keeps its exact semantics,
+//     V2 adds a macOS pip/npm target with the same keys/pins/locks, and a
+//     newer unknown value fails compatibility (never guessed); older/invalid
+//     values fail shape;
 //   * lock paths are package-local under references/ with no traversal, and
 //     cross-validation requires the declared lock/descriptor bytes to exist
-//     inside the signed package (the contentDigest already covers them);
+//     inside the signed package (the contentDigest already covers them) for
+//     both Linux and macOS profiles;
 //   * the runtimeComponent kind may only point at the frozen
 //     references/engine-dependency.json and inherits the existing strict
 //     descriptor decode + allowlist unchanged (never widened here);
-//   * the minimumAppVersion candidate (1.7.60) gates hub entries on the
-//     publisher side; the native helper is consistent with SignedContentVersion.
+//   * V1 keeps the 1.7.60 publisher floor; V2 requires 1.7.65. The floors stay
+//     distinct and the existing hub-entry minimumAppVersion remains the only
+//     old-client gate.
 
 import Foundation
 import Testing
@@ -117,6 +121,19 @@ struct SkillDependencyTests {
         }
     }
 
+    @Test func publishedMacOSExampleDecodesAsV2() throws {
+        let declaration = try SkillDependency.decode(
+            repoFile("docs/skills/examples/dependencies.macos.json")
+        )
+        #expect(declaration.schemaVersion == 2)
+        #expect(declaration.profiles.count == 1)
+        let profile = try #require(declaration.profiles.first)
+        #expect(profile.os == "macos")
+        #expect(profile.architectures == ["arm64", "x86_64"])
+        #expect(profile.requirements.contains { $0.kind == .pip })
+        #expect(profile.requirements.contains { $0.kind == .npm })
+    }
+
     @Test func positiveKindsDecodeExactly() throws {
         let declaration = try SkillDependency.decode(encoded(makeDeclaration(requirements: [
             ["kind": "pip", "name": "sympy", "version": "1.14.0", "purpose": "Symbolic math.",
@@ -142,23 +159,53 @@ struct SkillDependencyTests {
 
     @Test func pinDigestHelperAndConstants() throws {
         #expect(SkillDependency.frozenSchemaVersion == 1)
+        #expect(SkillDependency.v2SchemaVersion == 2)
         #expect(SkillDependency.packagePath == "references/dependencies.json")
         #expect(SkillDependency.componentDescriptorPath == "references/engine-dependency.json")
-        // Old-client gate candidate: first capable release; the native side is
-        // honest about capability for current + future versions.
+        // V1 keeps the historical old-client floor; the native side is honest
+        // about capability for current + future versions.
         #expect(SkillDependency.minimumCapableAppVersion == "1.7.60")
         #expect(SkillDependency.isProvisioningCapable(appVersion: "1.7.60"))
         #expect(SkillDependency.isProvisioningCapable(appVersion: "1.7.61"))
         #expect(!SkillDependency.isProvisioningCapable(appVersion: "1.7.59"))
         #expect(!SkillDependency.isProvisioningCapable(appVersion: "1.8"))
         #expect(!SkillDependency.isProvisioningCapable(appVersion: "garbage"))
+        // V2 keeps a DISTINCT first capable candidate (1.7.65); it does not
+        // raise the V1 floor for already-published packages.
+        #expect(SkillDependency.minimumCapableAppVersionV2 == "1.7.65")
+        #expect(SkillDependency.minimumCapableAppVersion(forSchemaVersion: 1) == "1.7.60")
+        #expect(SkillDependency.minimumCapableAppVersion(forSchemaVersion: 2) == "1.7.65")
+        #expect(SkillDependency.minimumCapableAppVersion(forSchemaVersion: 3) == nil)
+        #expect(!SkillDependency.isProvisioningCapable(appVersion: "1.7.64", schemaVersion: 2))
+        #expect(SkillDependency.isProvisioningCapable(appVersion: "1.7.65", schemaVersion: 2))
+        #expect(!SkillDependency.isProvisioningCapable(appVersion: "1.7.60", schemaVersion: 2))
+        #expect(!SkillDependency.isProvisioningCapable(appVersion: "1.7.65", schemaVersion: 3))
+        // The EXISTING hub-entry minimumAppVersion is the publisher gate: a V2
+        // package must declare at least 1.7.65, while V1 remains at 1.7.60.
+        #expect(SkillDependency.isMinimumAppVersionSufficient("1.7.60", forSchemaVersion: 1))
+        #expect(!SkillDependency.isMinimumAppVersionSufficient("1.7.59", forSchemaVersion: 1))
+        #expect(!SkillDependency.isMinimumAppVersionSufficient("1.7.64", forSchemaVersion: 2))
+        #expect(SkillDependency.isMinimumAppVersionSufficient("1.7.65", forSchemaVersion: 2))
+        #expect(!SkillDependency.isMinimumAppVersionSufficient("1.7.60", forSchemaVersion: 2))
+        #expect(!SkillDependency.isMinimumAppVersionSufficient("1.7.65", forSchemaVersion: 3))
+        #expect(!SkillDependency.isMinimumAppVersionSufficient("garbage", forSchemaVersion: 2))
     }
 
     // MARK: - SchemaVersion compatibility (the frozen distinction #2)
 
+    @Test func v1IsLinuxOnlyAndStillRejectsMacOS() throws {
+        try expectDecodeError(makeDeclaration(
+            schemaVersion: 1,
+            profileID: "mac-host",
+            target: ["os": "macos", "architectures": ["arm64"]]
+        )) { error in
+            error == .unsupportedTarget("macos")
+        }
+    }
+
     @Test func newerSchemaFailsCompatibilityNotGuessing() throws {
-        try expectDecodeError(makeDeclaration(schemaVersion: 2)) { error in
-            if case .unsupportedSchemaVersion(2) = error { return true }
+        try expectDecodeError(makeDeclaration(schemaVersion: 3)) { error in
+            if case .unsupportedSchemaVersion(3) = error { return true }
             return false
         }
         try expectDecodeError(makeDeclaration(schemaVersion: 99)) { error in
@@ -168,8 +215,147 @@ struct SkillDependencyTests {
         try expectDecodeError(makeDeclaration(schemaVersion: 0)) { error in
             error == .invalidField("schemaVersion")
         }
+        try expectDecodeError(makeDeclaration(schemaVersion: -1)) { error in
+            error == .invalidField("schemaVersion")
+        }
         try expectDecodeError(makeDeclaration(schemaVersion: true)) { _ in true }
         try expectDecodeError(makeDeclaration(schemaVersion: "1")) { _ in true }
+        try expectDecodeError(makeDeclaration(schemaVersion: 1.5)) { _ in true }
+    }
+
+    // MARK: - Schema v2 macOS target (same keys/pins/locks, pip+npm only)
+
+    @Test func v2MacOSProfileAcceptsExactPipAndNpmPins() throws {
+        let declaration = try SkillDependency.decode(encoded(makeDeclaration(
+            schemaVersion: 2,
+            requirements: [
+                ["kind": "pip", "name": "pypdf", "version": "5.4.0",
+                 "purpose": "Read and merge PDF pages.", "required": true,
+                 "lockfile": "references/requirements.lock.txt"],
+                ["kind": "npm", "name": "@scope/validator", "version": "1.2.0",
+                 "purpose": "Validate the generated manifest.", "required": false]
+            ],
+            profileID: "mac-host",
+            target: ["os": "macos", "architectures": ["arm64", "x86_64"]]
+        )))
+        #expect(declaration.schemaVersion == 2)
+        #expect(declaration.profiles.count == 1)
+        let profile = declaration.profiles[0]
+        #expect(profile.os == "macos")
+        #expect(profile.architectures == ["arm64", "x86_64"])
+        #expect(profile.requirements[0].kind == .pip)
+        #expect(profile.requirements[0].pipSpec == "pypdf==5.4.0")
+        #expect(profile.requirements[0].lockfile == "references/requirements.lock.txt")
+        #expect(profile.requirements[1].kind == .npm)
+        #expect(profile.requirements[1].npmSpec == "@scope/validator@1.2.0")
+        // Cross-validation applies the SAME rule: the declared lock bytes must
+        // exist inside the signed package (the digest covers them).
+        let lock = Data("pypdf==5.4.0 --hash=sha256:\(String(repeating: "a", count: 64))\n".utf8)
+        try SkillDependency.validate(
+            declaration,
+            packageFiles: ["SKILL.md": Data("x".utf8), "references/requirements.lock.txt": lock]
+        )
+    }
+
+    @Test func v2MacOSProfileRejectsLinuxOnlyKinds() throws {
+        let linuxOnly: [(kind: String, requirement: [String: Any])] = [
+            ("apt", ["kind": "apt", "name": "python3-scipy", "version": "1.15.3-1",
+                     "purpose": "Numeric.", "required": true]),
+            ("font", ["kind": "font", "name": "fonts-noto-cjk", "version": "1:20240730+repack1-1",
+                      "purpose": "CJK glyphs.", "required": false]),
+            ("runtimeComponent", ["kind": "runtimeComponent",
+                                  "componentDescriptorPath": "references/engine-dependency.json",
+                                  "purpose": "Engine.", "required": true])
+        ]
+        for entry in linuxOnly {
+            try expectDecodeError(makeDeclaration(
+                schemaVersion: 2,
+                requirements: [entry.requirement],
+                profileID: "mac-host",
+                target: ["os": "macos", "architectures": ["arm64"]]
+            )) { error in
+                if case .kindNotSupportedOnTarget(let kind, let targetOS) = error {
+                    return kind == entry.kind && targetOS == "macos"
+                }
+                return false
+            }
+        }
+    }
+
+    @Test func v2LinuxProfileKeepsEveryV1Kind() throws {
+        let declaration = try SkillDependency.decode(encoded(makeDeclaration(
+            schemaVersion: 2,
+            requirements: [
+                ["kind": "pip", "name": "sympy", "version": "1.14.0", "purpose": "Math.", "required": true],
+                ["kind": "apt", "name": "python3-scipy", "version": "1.15.3-1", "purpose": "Numeric.", "required": true],
+                ["kind": "npm", "name": "typescript", "version": "5.9.3", "purpose": "Type-check.", "required": true],
+                ["kind": "font", "name": "fonts-noto-cjk", "version": "1:20240730+repack1-1", "purpose": "CJK.", "required": false],
+                ["kind": "runtimeComponent", "componentDescriptorPath": "references/engine-dependency.json",
+                 "purpose": "Engine.", "required": true]
+            ]
+        )))
+        #expect(declaration.schemaVersion == 2)
+        #expect(declaration.profiles[0].os == "linux")
+        #expect(declaration.profiles[0].requirements.map(\.kind) == [.pip, .apt, .npm, .font, .runtimeComponent])
+    }
+
+    @Test func v2MacOSCrossValidationRequiresTheDeclaredLockBytes() throws {
+        let declaration = try SkillDependency.decode(encoded(makeDeclaration(
+            schemaVersion: 2,
+            requirements: [
+                ["kind": "pip", "name": "pypdf", "version": "5.4.0", "purpose": "PDF.",
+                 "required": true, "lockfile": "references/requirements.lock.txt"]
+            ],
+            profileID: "mac-host",
+            target: ["os": "macos", "architectures": ["any"]]
+        )))
+        do {
+            try SkillDependency.validate(declaration, packageFiles: ["SKILL.md": Data("x".utf8)])
+            Issue.record("a declared macOS lock must exist in the signed package")
+        } catch let error as SkillDependencyError {
+            guard case .lockFileMissing("references/requirements.lock.txt") = error else {
+                Issue.record("unexpected \(error)"); return
+            }
+        }
+        // A macOS profile can never smuggle a runtime-component descriptor:
+        // the kind is rejected at decode, before any inventory check.
+        try expectDecodeError(makeDeclaration(
+            schemaVersion: 2,
+            requirements: [
+                ["kind": "runtimeComponent", "componentDescriptorPath": "references/engine-dependency.json",
+                 "purpose": "Engine.", "required": false]
+            ],
+            profileID: "mac-host",
+            target: ["os": "macos", "architectures": ["any"]]
+        )) { error in
+            if case .kindNotSupportedOnTarget(let kind, let targetOS) = error {
+                return kind == "runtimeComponent" && targetOS == "macos"
+            }
+            return false
+        }
+    }
+
+    @Test func v2UnknownTargetsAndMixedProfiles() throws {
+        try expectDecodeError(makeDeclaration(
+            schemaVersion: 2,
+            profileID: "windows-host",
+            target: ["os": "windows", "architectures": ["x86_64"]]
+        )) { error in
+            error == .unsupportedTarget("windows")
+        }
+        var object = makeDeclaration(schemaVersion: 2)
+        object["profiles"] = [
+            ["id": "linux-guest", "target": ["os": "linux", "architectures": ["any"]],
+             "requirements": [["kind": "apt", "name": "hello", "version": "2.10-3",
+                               "purpose": "Smoke.", "required": true]]],
+            ["id": "mac-host", "target": ["os": "macos", "architectures": ["arm64"]],
+             "requirements": [["kind": "npm", "name": "typescript", "version": "5.9.3",
+                               "purpose": "Type-check.", "required": true]]]
+        ]
+        let declaration = try SkillDependency.decode(encoded(object))
+        #expect(declaration.schemaVersion == 2)
+        #expect(declaration.profiles.map(\.os) == ["linux", "macos"])
+        #expect(declaration.profiles.map(\.requirements.count) == [1, 1])
     }
 
     // MARK: - Exact-key discipline (no URL/command/env/approval can exist)
@@ -191,6 +377,14 @@ struct SkillDependencyTests {
             return false
         }
         try expectDecodeError(makeDeclaration(profileID: "p", extraTop: ["minimumAppVersion": "1.7.60"])) { _ in true }
+        // V2 does NOT add a minimumAppVersion field to the declaration; the
+        // existing hub-entry field remains the only old-client gate.
+        try expectDecodeError(makeDeclaration(
+            schemaVersion: 2, extraTop: ["minimumAppVersion": "1.7.65"]
+        )) { error in
+            if case .unknownFields(let fields) = error { return fields == ["minimumAppVersion"] }
+            return false
+        }
     }
 
     @Test func missingFieldsFailClosed() throws {

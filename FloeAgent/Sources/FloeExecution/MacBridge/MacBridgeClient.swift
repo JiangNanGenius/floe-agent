@@ -129,7 +129,10 @@ public actor MacBridgeClient {
             guard let next = page["next"]?.integer, next > offset else { break }
             offset = next
         } while true
-        return result
+        return result.filter { row in
+            guard let path = row["path"]?.string else { return false }
+            return !BridgeWorkspaceTransferPolicy.excludes(path)
+        }
     }
     /// Shell script size is not a transport limit. Larger commands travel in
     /// bounded chunks to private, task-owned storage and never enter argv.

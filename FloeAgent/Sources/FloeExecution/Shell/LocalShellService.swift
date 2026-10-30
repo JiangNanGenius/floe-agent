@@ -111,7 +111,8 @@ public actor LocalShellService {
     /// and this service never disagree. Exposed for tests.
     public nonisolated func resolvedDeadline(
         _ requested: TimeInterval?,
-        policy: ShellTimeoutPolicy
+        policy: ShellTimeoutPolicy,
+        environment: ToolEnvironment? = nil
     ) -> ResolvedDeadline {
         guard let requested, requested.isFinite, requested > 0 else {
             // Omitted (or an invalid value that tool validation already
@@ -133,7 +134,8 @@ public actor LocalShellService {
                     requestedSeconds: requested,
                     clampReason: "invalidHard")
             }
-            let enforced = backend.normalizedRunDeadline(checked)
+            let external = ["remoteSSH", "macBridge"].contains(environment?.variables["FLOE_EXECUTION_BACKEND"] ?? "")
+            let enforced = external ? checked : backend.normalizedRunDeadline(checked)
             return ResolvedDeadline(
                 deadline: enforced,
                 requestedSeconds: requested,
@@ -228,7 +230,9 @@ public actor LocalShellService {
         }
         do { _ = try ShellInputValidation.directory(cwd: cwd, root: root) }
         catch { return .outcome(.failed(message: String(describing: error))) }
-        var mergedEnvironment = environmentDefaults
+        let selectedBackend = context.environment?.variables["FLOE_EXECUTION_BACKEND"]
+        // Host substrate paths must not replace the selected Mac/SSH machine's environment.
+        var mergedEnvironment = selectedBackend == "remoteSSH" || selectedBackend == "macBridge" ? [:] : environmentDefaults
         for (key, value) in environment { mergedEnvironment[key] = value }
         // The backend session key is the runtime-issued per-CLIENT scope, not
         // the bare provider tool-call id: a parent run and two delegated
@@ -239,7 +243,7 @@ public actor LocalShellService {
         // uses the same token so a reviewer can correlate the run's request
         // with its recorded outcome. The provider-visible call id is
         // unchanged (it is still journaled in `toolCallID`).
-        let resolved = resolvedDeadline(requestedTimeout, policy: timeoutPolicy)
+        let resolved = resolvedDeadline(requestedTimeout, policy: timeoutPolicy, environment: context.environment)
         let request = ShellRunRequest(
             command: command,
             cwd: cwd,

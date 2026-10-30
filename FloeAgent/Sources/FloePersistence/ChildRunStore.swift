@@ -245,13 +245,15 @@ public struct ChildRunCheckpoint: Sendable, Equatable, Codable {
         /// Safe reference metadata only; full output and browser secrets are
         /// never checkpointed. Older checkpoints decode this as nil.
         public var captureInfo: ToolResultCaptureInfo?
+        public var outcomeUnknown: Bool?
         public init(
             callID: String,
             status: String,
             outputSummary: String,
             outputDigest: String,
             exitStatus: Int32? = nil,
-            captureInfo: ToolResultCaptureInfo? = nil
+            captureInfo: ToolResultCaptureInfo? = nil,
+            outcomeUnknown: Bool? = nil
         ) {
             self.callID = callID
             self.status = status
@@ -259,6 +261,7 @@ public struct ChildRunCheckpoint: Sendable, Equatable, Codable {
             self.outputDigest = outputDigest
             self.exitStatus = exitStatus
             self.captureInfo = captureInfo
+            self.outcomeUnknown = outcomeUnknown
         }
     }
 

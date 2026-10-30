@@ -24,11 +24,13 @@ public actor MacBridgeShellBackend: LocalShellBackend {
         do {
             try check(cancellation)
             let workspaceID = try await client.synchronizeBeforeExecution(root: request.rootURL)
+            let remoteWorkspace = try await client.workspace(root: request.rootURL)
+            let executableCommand = Self.withManagedPaths(request.command, root: remoteWorkspace.path)
             try check(cancellation)
             var payload = startPayload(jobID: jobID, workspaceID: workspaceID,
-                command: request.command, cwd: request.cwd, environment: request.environment, columns: 100, rows: 30)
-            if MacBridgeCommandTransfer.requiresStaging(utf8Bytes: request.command.utf8.count) {
-                let digest = try await client.stageCommand(request.command, jobID: jobID, cancellation: cancellation)
+                command: executableCommand, cwd: request.cwd, environment: request.environment, columns: 100, rows: 30)
+            if MacBridgeCommandTransfer.requiresStaging(utf8Bytes: executableCommand.utf8.count) {
+                let digest = try await client.stageCommand(executableCommand, jobID: jobID, cancellation: cancellation)
                 payload["command"] = nil; payload["commandFile"] = .string(jobID); payload["commandDigest"] = .string(digest)
             }
             try check(cancellation)
@@ -115,15 +117,17 @@ public actor MacBridgeShellBackend: LocalShellBackend {
     public func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
         try check(cancellation)
         let workspaceID = try await client.synchronizeBeforeExecution(root: request.rootURL)
+            let remoteWorkspace = try await client.workspace(root: request.rootURL)
+            let executableCommand = Self.withManagedPaths(request.command, root: remoteWorkspace.path)
         let jobID = UUID().uuidString
         var submitted = false
         defer {
             if !submitted { Task { [client] in _ = try? await client.call("command.discard", ["jobID": .string(jobID)]) } }
         }
         var payload = startPayload(jobID: jobID, workspaceID: workspaceID,
-            command: request.command, cwd: request.cwd, environment: request.environment, columns: request.columns, rows: request.rows)
-        if MacBridgeCommandTransfer.requiresStaging(utf8Bytes: request.command.utf8.count) {
-            let digest = try await client.stageCommand(request.command, jobID: jobID, cancellation: cancellation)
+            command: executableCommand, cwd: request.cwd, environment: request.environment, columns: request.columns, rows: request.rows)
+        if MacBridgeCommandTransfer.requiresStaging(utf8Bytes: executableCommand.utf8.count) {
+            let digest = try await client.stageCommand(executableCommand, jobID: jobID, cancellation: cancellation)
             payload["command"] = nil; payload["commandFile"] = .string(jobID); payload["commandDigest"] = .string(digest)
         }
         try check(cancellation)
@@ -183,6 +187,12 @@ public actor MacBridgeShellBackend: LocalShellBackend {
         guard let session = sessions[sessionID] else { return }
         _ = try? await client.call("resize", ["jobID": .string(session.jobID), "columns": .integer(Int64(columns)), "rows": .integer(Int64(rows))])
     }
+    private static func withManagedPaths(_ command: String, root: String) -> String {
+        guard !command.isEmpty else { return command }
+        func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        return "export PATH=" + quote(root + "/.floe-env/bin") + ":" + quote(root + "/.floe-node/node_modules/.bin") + ":\"$PATH\"; export NODE_PATH=" + quote(root + "/.floe-node/node_modules") + "\"${NODE_PATH:+:$NODE_PATH}\";\n" + command
+    }
+
     private func startPayload(jobID: String, workspaceID: String, command: String, cwd: String,
                               environment: [String: String], columns: Int, rows: Int) -> [String: BridgeValue] {
         ["jobID": .string(jobID), "workspaceID": .string(workspaceID), "command": .string(command), "cwd": .string(cwd),

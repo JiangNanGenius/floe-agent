@@ -55,7 +55,7 @@ public actor EnvironmentRegistry {
             }
             records = Dictionary(uniqueKeysWithValues: snapshot.containers.map { ($0.id, $0) })
             quota = snapshot.quota
-            for (id, var record) in records where record.baseRevision != baseRevision && record.effectiveExecutionBackend != .macBridge {
+            for (id, var record) in records where record.baseRevision != baseRevision && record.effectiveExecutionBackend != .macBridge && record.effectiveExecutionBackend != .remoteSSH {
                 if compatibleBaseRevisions.contains(record.baseRevision), record.state != .deleting,
                    record.layerFormat == ContainerRecord.currentLayerFormat {
                     do {
@@ -219,10 +219,11 @@ public actor EnvironmentRegistry {
     /// A distinct host-backed record. Never mutates a previously selected
     /// Linux project/session merely because a bridge became available.
     public func ensureMacBridgeSessionContainer(
-        conversationID: String, workspaceID: String, workspaceRootPath: String
+        conversationID: String, workspaceID: String, workspaceRootPath: String,
+        forceNew: Bool = false
     ) throws -> ContainerRecord {
         try prepare()
-        if let existing = records.values.first(where: {
+        if !forceNew, let existing = records.values.first(where: {
             $0.kind == .session && $0.ownerID == conversationID
                 && $0.effectiveExecutionBackend == .macBridge
         }) {
@@ -234,6 +235,40 @@ public actor EnvironmentRegistry {
             baseRevision: baseRevision, parentID: project.id, executionBackend: .macBridge)
         try materialize(session)
         try saveRecord(session)
+        return session
+    }
+
+    /// Explicit SSH identity, independent of the Linux base image. Metadata only: no VM download.
+    public func ensureRemoteSessionContainer(
+        conversationID: String, workspaceID: String, workspaceRootPath: String,
+        hostID: UUID, remoteRootPath: String, operatingSystem: String,
+        architecture: String, distribution: String? = nil, runtimeGeneration: String? = nil,
+        forceNew: Bool = false
+    ) throws -> ContainerRecord {
+        try prepare()
+        guard remoteRootPath.hasPrefix("/"), !remoteRootPath.contains("\0"),
+              !operatingSystem.isEmpty, !architecture.isEmpty else {
+            throw FloeError.validationFailed("The remote execution target has not been verified")
+        }
+        if !forceNew, let existing = records.values.first(where: {
+            $0.kind == .session && $0.ownerID == conversationID
+                && $0.effectiveExecutionBackend == .remoteSSH && $0.remoteHostID == hostID
+                && $0.remoteRootPath == remoteRootPath && $0.state == .active
+        }) { return existing }
+        let project = ContainerRecord(kind: .project, ownerID: workspaceID,
+            name: URL(fileURLWithPath: workspaceRootPath).lastPathComponent,
+            baseRevision: baseRevision, executionBackend: .remoteSSH,
+            remoteHostID: hostID, remoteRootPath: remoteRootPath,
+            operatingSystem: operatingSystem, architecture: architecture,
+            distribution: distribution, runtimeGeneration: runtimeGeneration)
+        try materialize(project); try saveRecord(project)
+        rememberWorkspaceRoot(workspaceID: workspaceID, path: workspaceRootPath, containerID: project.id)
+        let session = ContainerRecord(kind: .session, ownerID: conversationID,
+            baseRevision: baseRevision, parentID: project.id, executionBackend: .remoteSSH,
+            remoteHostID: hostID, remoteRootPath: remoteRootPath,
+            operatingSystem: operatingSystem, architecture: architecture,
+            distribution: distribution, runtimeGeneration: runtimeGeneration)
+        try materialize(session); try saveRecord(session)
         return session
     }
 
@@ -251,7 +286,7 @@ public actor EnvironmentRegistry {
         executionBackend: EnvironmentExecutionBackend? = nil
     ) throws -> ContainerRecord {
         try prepare()
-        if let existing = records.values.first(where: { $0.kind == .project && $0.ownerID == workspaceID && ($0.effectiveExecutionBackend != .macBridge || executionBackend == .macBridge) }) {
+        if let existing = records.values.first(where: { $0.kind == .project && $0.ownerID == workspaceID && ($0.effectiveExecutionBackend == (executionBackend ?? defaultExecutionBackend)) }) {
             if let executionBackend, existing.executionBackend != executionBackend {
                 var updated = existing
                 updated.executionBackend = executionBackend
@@ -292,7 +327,8 @@ public actor EnvironmentRegistry {
         workspaceID: String?,
         workspaceRootPath: String?,
         inheritFromProject: Bool = true,
-        executionBackend: EnvironmentExecutionBackend? = nil
+        executionBackend: EnvironmentExecutionBackend? = nil,
+        forceNew: Bool = false
     ) throws -> ContainerRecord {
         try prepare()
         var parent: ContainerRecord?
@@ -309,7 +345,7 @@ public actor EnvironmentRegistry {
                 throw FloeError.validationFailed("Project environment is stopped, deleting, or requires rebuilding")
             }
         }
-        if let existing = records.values.first(where: { $0.kind == .session && $0.ownerID == conversationID && $0.parentID == parent?.id }) {
+        if !forceNew, let existing = records.values.first(where: { $0.kind == .session && $0.ownerID == conversationID && $0.parentID == parent?.id }) {
             touch(existing.id)
             return records[existing.id] ?? existing
         }
@@ -687,6 +723,13 @@ public actor EnvironmentRegistry {
     /// Switching to `linuxVM` only starts a guest whose image is qualified,
     /// and the backend reports the recorded reason honestly when one cannot
     /// start.
+    public func updateRuntimeGeneration(id: String, generation: String?) throws {
+        guard var record = records[id], record.state == .active else { throw FloeError.notFound("Execution environment") }
+        guard record.runtimeGeneration != generation else { return }
+        record.runtimeGeneration = generation
+        try saveRecord(record)
+    }
+
     public func setExecutionBackend(id: String, backend: EnvironmentExecutionBackend?) throws {
         try prepare()
         guard var record = records[id] else { throw FloeError.notFound("Execution environment \(id)") }
@@ -816,7 +859,7 @@ public actor EnvironmentRegistry {
 
     private func materialize(_ record: ContainerRecord, seedFrom sourceID: String? = nil) throws {
         let url = roots.layerURL(id: record.id, kind: record.kind)
-        if record.effectiveExecutionBackend == .macBridge {
+        if record.effectiveExecutionBackend == .macBridge || record.effectiveExecutionBackend == .remoteSSH {
             try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
             return
         }

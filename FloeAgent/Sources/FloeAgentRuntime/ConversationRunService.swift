@@ -51,6 +51,23 @@ public actor ConversationRunService {
             pendingUserQuestion != nil || stateName == "waitingUserQuestion"
         }
         public var checkpointReason: String?
+        /// Last compression state the runtime actually published for this run.
+        /// Sizing/compacting/compacted/failed/overflow-recovery/schema-reduced
+        /// stay distinct here; the UI projection never infers one phase from
+        /// another. Presentation only — it never changes provider context.
+        public var contextCompression: ContextCompressionSnapshot?
+        /// Bounded newest-last settlement classes; `toolOutcome(callID:)`
+        /// resolves the exact finished call instead of guessing from its
+        /// status text. Never read by the runtime's loop guards.
+        public var recentToolOutcomes: [ToolOutcomeClassification]
+
+        public var lastToolOutcome: ToolOutcomeClassification? {
+            recentToolOutcomes.last
+        }
+
+        public func toolOutcome(callID: String) -> ToolOutcomeClassification? {
+            recentToolOutcomes.last { $0.callID == callID }
+        }
 
         public init(
             runID: UUID,
@@ -68,7 +85,9 @@ public actor ConversationRunService {
             isTerminal: Bool,
             pendingApproval: AgentState.WaitingApproval? = nil,
             pendingUserQuestion: UserQuestionWaitingSnapshot? = nil,
-            checkpointReason: String? = nil
+            checkpointReason: String? = nil,
+            contextCompression: ContextCompressionSnapshot? = nil,
+            recentToolOutcomes: [ToolOutcomeClassification] = []
         ) {
             self.runID = runID
             self.conversationID = conversationID
@@ -82,6 +101,8 @@ public actor ConversationRunService {
             self.pendingApproval = pendingApproval
             self.pendingUserQuestion = pendingUserQuestion
             self.checkpointReason = checkpointReason
+            self.contextCompression = contextCompression
+            self.recentToolOutcomes = recentToolOutcomes
         }
     }
 
@@ -96,6 +117,7 @@ public actor ConversationRunService {
     /// Immutable execution contract copied into the durable run and live UI
     /// projection. Recovery must never infer this from mutable conversation UI.
     public nonisolated let conversationMode: ConversationMode
+    private let executionBinding: TaskExecutionBinding?
     /// Push channel for UI projections. Durable writes remain coalesced, but
     /// token/reasoning display no longer polls actor snapshots at 20 Hz.
     public nonisolated let eventChannel = HarnessEventChannel(bufferLimit: 512)
@@ -176,6 +198,17 @@ public actor ConversationRunService {
     private var latestState: AgentState = .idle
     private var isReviewingApproval = false
     private var pendingUserQuestion: UserQuestionWaitingSnapshot?
+    /// Last runtime-published compression state for this exact run. Stored so
+    /// a subscriber attaching late, or re-reading on an existing event, sees
+    /// the same typed status the live runtime emitted instead of inferring a
+    /// phase from the run state name.
+    private var contextCompression: ContextCompressionSnapshot?
+    /// Newest settlement classes, oldest first, at most one per call id and
+    /// bounded so a long run cannot grow this projection without limit.
+    /// Presentation and diagnostics only; the runtime's loop and authority
+    /// decisions never read this value.
+    private var recentToolOutcomes: [ToolOutcomeClassification] = []
+    private static let recentToolOutcomeLimit = 32
     /// Set only while handling the provider's terminal event, after the final
     /// assistant/outbox boundary and terminal event have both flushed. The
     /// runtime transitions to `.completed` after this callback returns, so
@@ -332,6 +365,7 @@ public actor ConversationRunService {
         self.runningInputStore = runningInputStore
         self.intelligenceStore = intelligenceStore
         self.conversationMode = configuration.conversationMode
+        self.executionBinding = configuration.executionBinding
         self.runContext = runContext
         self.conversationHistory = conversationHistory
         self.currentUserImages = currentUserImages
@@ -420,6 +454,12 @@ public actor ConversationRunService {
         forwarder.onCompaction = { [weak self] record in
             await self?.handleCompaction(record)
         }
+        forwarder.onContextCompression = { [weak self] snapshot in
+            await self?.handleContextCompression(snapshot)
+        }
+        forwarder.onToolOutcome = { [weak self] classification in
+            await self?.handleToolOutcomeClassification(classification)
+        }
         forwarder.onApprovalReview = { [weak self] snapshot in
             await self?.handleApprovalReview(snapshot)
         }
@@ -458,7 +498,9 @@ public actor ConversationRunService {
             isTerminal: isTerminal(latestState),
             pendingApproval: pendingApproval,
             pendingUserQuestion: pendingUserQuestion,
-            checkpointReason: checkpointReason
+            checkpointReason: checkpointReason,
+            contextCompression: contextCompression,
+            recentToolOutcomes: recentToolOutcomes
         )
     }
 
@@ -543,7 +585,8 @@ public actor ConversationRunService {
             state: AgentState.preparing(AgentState.PreparingInfo(goal: goal)).name,
             goal: goal,
             startedAt: Date(),
-            conversationMode: conversationMode.rawValue
+            conversationMode: conversationMode.rawValue,
+            executionBinding: executionBinding
         ))
         let userMessageID = UUID()
         try await conversationStore.appendMessage(PersistedMessage(
@@ -1037,6 +1080,37 @@ public actor ConversationRunService {
         } catch {
             return .unreadable
         }
+    }
+
+    /// Forwards the runtime's typed compression snapshot into the live
+    /// projection. A sink callback can arrive after a cancel/park/terminal
+    /// transition (or out of order relative to an older turn); such a late
+    /// value must not revive an "active compaction" indicator or overwrite a
+    /// newer honest phase. Wall-clock `at` is the runtime's own emission stamp,
+    /// and equal stamps stay accepted because each phase is a separate await.
+    func handleContextCompression(_ snapshot: ContextCompressionSnapshot) {
+        guard !isTerminal(latestState) else { return }
+        if let current = contextCompression, snapshot.at < current.at { return }
+        contextCompression = snapshot
+        logger.debug(
+            "contextCompression run=\(runID.uuidString) phase=\(snapshot.phase.rawValue) before=\(snapshot.beforeTokens ?? -1) after=\(snapshot.afterTokens ?? -1) available=\(snapshot.availableInputTokens ?? -1) schemas=\(snapshot.toolSchemaTokens ?? -1) compacted=\(snapshot.compactedMessageCount)"
+        )
+    }
+
+    /// Forwards the runtime's settlement class into the live projection and a
+    /// bounded per-call window. This is diagnostic/presentation truth only:
+    /// the runtime already applied every guard decision before publishing it,
+    /// so nothing here can change tool authority, retries or terminal state.
+    func handleToolOutcomeClassification(_ classification: ToolOutcomeClassification) {
+        guard !isTerminal(latestState) else { return }
+        recentToolOutcomes.removeAll { $0.callID == classification.callID }
+        recentToolOutcomes.append(classification)
+        if recentToolOutcomes.count > Self.recentToolOutcomeLimit {
+            recentToolOutcomes.removeFirst(recentToolOutcomes.count - Self.recentToolOutcomeLimit)
+        }
+        logger.info(
+            "toolOutcomeClassified run=\(runID.uuidString) tool=\(classification.toolName) call=\(classification.callID) kind=\(classification.kind.rawValue) recovery=\(classification.recovery.rawValue)"
+        )
     }
 
     private func handleCompaction(_ record: ContextCompactionRecord) async {
@@ -2283,7 +2357,7 @@ public actor ConversationRunService {
                     : "Installed tool groups: \(Set(toolNames.map(ToolCapabilityGroups.group)).sorted().joined(separator: ", ")). Use tools.search for exact callable definitions; not all schemas are loaded at once."
             )
             lines.append(contentsOf: ToolWorkflowGuidance.contextLines(for: toolNames))
-            lines.append("Discovery routing: use skill.search then skill.read when domain workflow guidance is needed or a tool error requires clarification. Exact tool calls do not require reading a guide; use tools.search directly. Compiled tools are available to any authorized official, custom or imported skill. Reading a guide can load its available executable definitions. A deferred schema is not a missing capability. Do not repeat a broad search: use the returned exact ID/name and distinguish loaded from deferred results. Never infer permission from a guide. Run Python, JavaScript and other installed language commands through exec.shell in the task-owned Linux guest. SSH Executor targets the configured remote host; interactive Terminal is separate. Guides do not grant either capability.")
+            lines.append("Discovery routing: use skill.search then skill.read when domain workflow guidance is needed or a tool error requires clarification. Exact tool calls do not require reading a guide; use tools.search directly. Compiled tools are available to any authorized official, custom or imported skill. Reading a guide can load its available executable definitions. A deferred schema is not a missing capability. Do not repeat a broad search: use the returned exact ID/name and distinguish loaded from deferred results. Never infer permission from a guide. The external execution environment is pinned to this task. App-native tools retain their own services. Inspect actual platform tools rather than assuming a runtime. Guides do not grant permissions.")
         } else {
             lines.append("Available tools: none (native tool calling is disabled for this model)")
         }
@@ -2559,6 +2633,8 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onApprovalDecisionRecorded: (@Sendable (ApprovalDecisionReceipt) async -> Void)?
     var onToolDispatch: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
     var onToolFinish: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
+    var onContextCompression: (@Sendable (ContextCompressionSnapshot) async -> Void)?
+    var onToolOutcome: (@Sendable (ToolOutcomeClassification) async -> Void)?
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
         await onTransition?(state)
@@ -2617,6 +2693,20 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async {
         await onCompaction?(record)
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didChangeContextCompression snapshot: ContextCompressionSnapshot
+    ) async {
+        await onContextCompression?(snapshot)
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didClassifyToolOutcome classification: ToolOutcomeClassification
+    ) async {
+        await onToolOutcome?(classification)
     }
 
     func agentRuntime(

@@ -76,6 +76,12 @@ struct SkillStagingBundle: Sendable {
     let files: [File]
 }
 
+struct SkillExternalStageTarget: Sendable {
+    let workspaceRoot: URL
+    let executionRoot: String
+    let publish: @Sendable (URL, SkillStagedBundle, CancellationToken) async throws -> Void
+}
+
 actor SkillWorkspaceResourceStager {
     /// Reserved hidden cache tree inside the task workspace:
     /// `<workspace>/.floe/skills`. Entries whose name starts with "." are
@@ -98,12 +104,15 @@ actor SkillWorkspaceResourceStager {
 
     private let pathMappingProvider: @Sendable (String) async -> LinuxGuestPathMap?
     private let limits: SkillValidationLimits
+    private let externalTarget: (@Sendable (String, URL) async -> SkillExternalStageTarget?)?
 
     init(
         limits: SkillValidationLimits = SkillValidationLimits(),
+        externalTarget: (@Sendable (String, URL) async -> SkillExternalStageTarget?)? = nil,
         pathMappingProvider: @escaping @Sendable (String) async -> LinuxGuestPathMap?
     ) {
         self.limits = limits
+        self.externalTarget = externalTarget
         self.pathMappingProvider = pathMappingProvider
     }
 
@@ -136,18 +145,24 @@ actor SkillWorkspaceResourceStager {
         // guest does not need to be running: a cold read stages into the
         // workspace that a later first boot mounts. Nil (remote/unresolved)
         // stays an honest unavailable here — never a host fallback.
-        guard let pathMap = await pathMappingProvider(environmentID) else {
-            return .unavailable(reason: SkillStageReason.noShareMap)
+        let external = await externalTarget?(environmentID, workspaceRootURL)
+        let executionRoot: String
+        let exportedRoot: URL
+        if let external {
+            executionRoot = external.executionRoot; exportedRoot = external.workspaceRoot
+            guard executionRoot.hasPrefix("/"), !executionRoot.split(separator: "/").contains("..") else {
+                return .unavailable(reason: SkillStageReason.noWorkspaceShare)
+            }
+        } else {
+            guard let pathMap = await pathMappingProvider(environmentID),
+                  pathMap.workspaceGuestRoot == LinuxGuestMountPoint.workspace,
+                  let root = pathMap.hostPath(forGuestPath: LinuxGuestMountPoint.workspace) else {
+                return .unavailable(reason: SkillStageReason.noShareMap)
+            }
+            exportedRoot = root; executionRoot = LinuxGuestMountPoint.workspace
         }
-        // A cancellation that arrived while the descriptor lookup was
-        // suspended must stop all later work: nothing is created and no
-        // staged path is ever returned from the reuse route.
         guard !cancellation.isCancelled, !Task.isCancelled else {
             return .unavailable(reason: SkillStageReason.cancelled)
-        }
-        guard pathMap.workspaceGuestRoot == LinuxGuestMountPoint.workspace,
-              let exportedRoot = pathMap.hostPath(forGuestPath: LinuxGuestMountPoint.workspace) else {
-            return .unavailable(reason: SkillStageReason.noWorkspaceShare)
         }
         let workspaceRoot = workspaceRootURL.resolvingSymlinksInPath().standardizedFileURL
         guard workspaceRoot == exportedRoot.resolvingSymlinksInPath().standardizedFileURL else {
@@ -166,11 +181,7 @@ actor SkillWorkspaceResourceStager {
         }
         let leaf = "\(bundle.skillID)@\(bundle.digest)"
         let stagedRoot = reservedRoot.appendingPathComponent(leaf, isDirectory: true)
-        guard let guestRoot = pathMap.guestPath(forHostPath: stagedRoot.path),
-              guestRoot.hasPrefix(LinuxGuestMountPoint.workspace + "/"),
-              !guestRoot.split(separator: "/").contains("..") else {
-            return .unavailable(reason: SkillStageReason.noWorkspaceShare)
-        }
+        let guestRoot = executionRoot + "/.floe/skills/" + leaf
         let published = SkillStagedBundle(
             guestRoot: guestRoot,
             pinnedSHA256: bundle.digest,
@@ -195,6 +206,10 @@ actor SkillWorkspaceResourceStager {
             Self.pruneStaleStagingTemps(in: reservedRoot)
             guard !cancellation.isCancelled, !Task.isCancelled else {
                 return .unavailable(reason: SkillStageReason.cancelled)
+            }
+            if let external {
+                do { try await external.publish(stagedRoot, published, cancellation) }
+                catch { return .unavailable(reason: cancellation.isCancelled ? SkillStageReason.cancelled : SkillStageReason.writeFailed) }
             }
             return .staged(published)
         }
@@ -259,6 +274,10 @@ actor SkillWorkspaceResourceStager {
         // Fenced immediately before the staged return.
         guard !cancellation.isCancelled, !Task.isCancelled else {
             return .unavailable(reason: SkillStageReason.cancelled)
+        }
+        if let external {
+            do { try await external.publish(stagedRoot, published, cancellation) }
+            catch { return .unavailable(reason: cancellation.isCancelled ? SkillStageReason.cancelled : SkillStageReason.writeFailed) }
         }
         return .staged(published)
     }

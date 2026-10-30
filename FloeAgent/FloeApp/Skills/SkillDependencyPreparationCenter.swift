@@ -12,9 +12,10 @@
 //       Global UI install has NO run/environment, so this half may show only
 //       "installed/verified" and never "packages ready".
 //   plan — a verified exact `skill.read` inside a task bound to a resolved
-//       Linux environment records an immutable (environmentID, runID)-bound
-//       plan pinning package VERSION + contentDigest + dependencyManifest
-//       digest (SHA-256 of the declaration bytes). Recording installs nothing.
+//       external target records an immutable (environmentID, runID,
+//       target-identity)-bound plan pinning package VERSION + contentDigest +
+//       dependencyManifest digest (SHA-256 of the declaration bytes).
+//       Recording installs nothing.
 //   prepare — at the skill's approved `exec.shell` invocation that carries
 //       `skillID`, requirements install automatically INTO THAT SAME
 //       environment (no user target picker, no rerouting, no new environment,
@@ -30,12 +31,14 @@
 //       caps and nonblocking hook stay exactly as designed). Downloads
 //       deduplicate in the environment's shared `/floe/cache` like every
 //       managed install; install state always lives in the environment layer.
-//   target — profile `target.architectures` is SELECTED, not ignored: only
-//       profiles matching the actual local Linux backend (the pinned guest
-//       is riscv64; the native Mac CPU is never consulted) plan, prefetch or
-//       install. Zero matching profiles refuses honestly before any mutation;
-//       matching profiles that pin the same identity to different exact
-//       versions contradict and refuse before any transaction, while
+//   target — the trusted actual target is SELECTED, never inferred from the
+//       client OS or the native CPU. Profile OS + `target.architectures` must
+//       intersect the resolved backend's verified facts (Linux ARM64/x86_64,
+//       the pinned Linux guest, or a typed SSH host). apt/font preparation is
+//       Debian-family Linux only; macOS never gets apt or a Homebrew
+//       auto-install. Zero matching profiles refuses honestly before any
+//       mutation; matching profiles that pin the same identity to different
+//       exact versions contradict and refuse before any transaction, while
 //       identical exact duplicates reuse instead of conflicting.
 //   lock — a declared pip lockfile is binding, not decoration: its
 //       sha256 pins for the exact spec gate persisted store wheels
@@ -43,10 +46,16 @@
 //       the guest pip transaction into its own --require-hashes mode. A
 //       lock without a digest for the declared spec fails honestly;
 //       lock-free exact pins keep today's behavior.
+//   migration — the environment migration coordinator calls the native-only
+//       `prepareForMigration` after the user's explicit "Prepare and Migrate"
+//       consent. It uses the same authority/recordPlan/prepare/readback path
+//       without minting or reusing a tool ApprovalGrant; ordinary exec.shell
+//       invocation still requires the real grant.
 //   receipt — per requirement, bound to (packageVersion, contentDigest,
-//       declarationSHA256, environmentID, guest launchGeneration). Reusable
-//       only while the live authority still matches and the generation is
-//       current; boot rotation, disable, uninstall, edit or a revoked grant
+//       declarationSHA256, environmentID, target identity, generation token).
+//       Reusable only while the live authority still matches, the resolved
+//       target fingerprint is identical and the generation is current; boot
+//       rotation, target change, disable, uninstall, edit or a revoked grant
 //       invalidates it. A same-environment collision with a different
 //       installed version is a fail-closed conflict checked BEFORE any
 //       mutation: never a silent downgrade, never an implicit upgrade.
@@ -135,7 +144,12 @@ struct SkillDependencyRequirementReceipt: Sendable, Equatable {
     let packageVersion: String
     let contentDigest: String
     let declarationSHA256: String
-    let launchGeneration: UInt64?
+    /// Comparable generation token (guest launch generation or the core
+    /// bridge/SSH runtime generation). Nil/foreign tokens are never reused.
+    let generationToken: String?
+    /// OS/architecture/backend/distribution identity this receipt was verified
+    /// against. A receipt is NEVER reused across target identities.
+    let targetFingerprint: String
     let entry: SkillDependencyEntry
     let verifiedAt: Date
 }
@@ -163,9 +177,42 @@ enum SkillDependencyInvocationOutcome: Sendable, Equatable {
     case refused(reason: String)
 }
 
+/// One participating requirement's migration-preparation state. Non-matching
+/// profiles do not participate on the resolved target and are not emitted as
+/// a readiness claim.
+struct SkillDependencyMigrationRequirement: Sendable, Equatable {
+    enum State: String, Sendable, Equatable {
+        case verified
+        case refused
+        case unavailable
+    }
+
+    let kind: String
+    let name: String
+    let version: String?
+    let required: Bool
+    let state: State
+    let reason: String?
+}
+
+/// Native-only preparation result for the migration coordinator. The caller
+/// has already obtained the user's explicit "Prepare and Migrate" consent for
+/// the displayed target and declared dependencies; this method mints no
+/// approval grant and never reuses an exec.shell tool-call grant.
+enum SkillDependencyMigrationPreparationOutcome: Sendable, Equatable {
+    /// Every required participating dependency is verified for this exact
+    /// target/package pair. `annotation` lists optional gaps.
+    case verified(annotation: String, requirements: [SkillDependencyMigrationRequirement])
+    /// A required dependency is not ready; the migration must not commit.
+    case refused(reason: String, requirements: [SkillDependencyMigrationRequirement])
+    /// No reviewed declaration/authority, or no resolvable external target.
+    /// No readiness is claimed; an external skill remains model-managed.
+    case unavailable(reason: String)
+}
+
 /// Stable, model-safe reasons. None carries a host path.
 enum SkillDependencyReason {
-    static let noEnvironment = "no task Linux environment is bound to this run"
+    static let noEnvironment = "no task execution environment is bound to this run"
     static let noRun = "no run identity is bound to this read or invocation"
     static let authorizationUnavailable = "the installed skill authorization could not be revalidated"
     static let declarationRejected = "the packaged dependency declaration failed strict validation"
@@ -174,7 +221,7 @@ enum SkillDependencyReason {
     static let cancelled = "dependency preparation was cancelled"
     static let provisioningUnavailable = "official Skill dependency provisioning is not configured in this build"
     static func sharedPreparationDeferred(skillID: String) -> String {
-        "official skill \(skillID) is installed/verified with a validated dependency declaration; the shared-store prefetch (host-side audited wheels / cached component artifact, if any) is recorded in the preparation status, and the environment install + readback half runs automatically at the skill's first exec.shell invocation with skillID in a task bound to a resolved Linux environment — a global install picks no environment, reroutes nothing and claims no readiness"
+        "official skill \(skillID) is installed/verified with a validated dependency declaration; the shared-store prefetch (host-side audited wheels / cached component artifact, if any) is recorded in the preparation status, and the environment install + readback half runs automatically at the skill's first exec.shell invocation with skillID in a task bound to a resolved external target — a global install picks no environment, reroutes nothing and claims no readiness"
     }
     static func conflict(name: String, installed: String, pinned: String) -> String {
         "the environment already installs \(name) at \(installed), which conflicts with the reviewed pin \(pinned); nothing was changed and no silent downgrade or upgrade is performed"
@@ -209,6 +256,30 @@ enum SkillDependencyReason {
     }
     static func nonMatchingArchSkipped(architectures: [String], supported: [String]) -> String {
         "profile targets \(architectures.joined(separator: ", ")), not this Linux backend (\(supported.joined(separator: ", "))); install/readback never runs for it here"
+    }
+
+    // MARK: - Actual target reasons (injected target facts)
+
+    /// No trusted target was produced. This is final: the caller must not
+    /// substitute the Mac host, the first environment or a foreign cache.
+    static let targetUnavailable = "the task's resolved execution target is unavailable; no local or Mac-host fallback was used"
+    static let targetDisconnected = "the task's resolved execution target is not connected; nothing was installed and no local fallback ran"
+    /// The target is the App's own native toolchain, not an external shell.
+    static let targetUnsupported = "the resolved execution target runs App-native tools only; external scripts and dependencies need a Linux or macOS target"
+    /// The plan was recorded for a different target identity.
+    static let targetChanged = "the task's execution target changed since this run read the skill; re-read the skill on the new target"
+    /// A dependency-aware migration request for a package with no reviewed
+    /// declaration/authority. It is not a failure of a declared requirement:
+    /// the external skill stays model-managed and nothing is claimed ready.
+    static let noDeclaration = "this skill has no reviewed dependency declaration or its installed authorization cannot be revalidated; external work remains model-managed and no readiness is claimed"
+    static func noMatchingTarget(os: String, architectures: [String]) -> String {
+        "none of the reviewed profiles targets the resolved \(os) architecture (\(architectures.joined(separator: ", "))); nothing was installed or prefetched"
+    }
+    static func unsupportedPackageManager(kind: String, target: String) -> String {
+        "\(kind) preparation is not supported on the resolved \(target) target; the reviewed profile requires a Debian-family Linux target"
+    }
+    static func runtimeComponentTargetMismatch(component: String, target: String, required: String) -> String {
+        "runtime component \(component) is built for \(required), not the resolved \(target) target; nothing was staged"
     }
 }
 
@@ -507,13 +578,29 @@ actor SkillDependencyPreparationCenter {
     typealias EnvironmentResolver = @Sendable (_ environmentID: String) async -> ToolEnvironment?
     typealias EnvironmentPreparation = @Sendable (_ environmentID: String, _ cancellation: CancellationToken?) async throws -> Void
     typealias LaunchGenerationProvider = @Sendable (_ environmentID: String) async -> UInt64?
+    /// Trusted actual-target lookup (App/core-owned). A configured provider
+    /// returning nil is final and must never fall back to a legacy target.
+    typealias TargetProvider = @Sendable (_ environmentID: String, _ runID: UUID?) async -> SkillRuntimeTarget?
+    /// Operations bound to the actual target. Returning nil refuses this
+    /// target; Linux-guest operations are never used for a Mac/SSH target.
+    typealias OperationsResolver = @Sendable (_ target: SkillRuntimeTarget)
+        async -> (any SkillDependencyPackageOperating)?
+    /// Connect/boot/prepare the actual target only (never installs packages,
+    /// never picks another environment).
+    typealias TargetPreparation = @Sendable (_ target: SkillRuntimeTarget, _ cancellation: CancellationToken?) async throws -> Void
     /// Observes the EXISTING allowlisted managed runtime-component deployment
     /// without broadening it: nil when the component is probed-ready for this
     /// environment/run, otherwise a model-safe deferral reason.
     typealias RuntimeComponentProbe = @Sendable (_ environmentID: String, _ runID: UUID, _ cancellation: CancellationToken?) async -> String?
 
-    private struct PlanKey: Hashable { let environmentID: String; let runID: UUID }
-    private struct ReceiptKey: Hashable { let environmentID: String; let requirementKey: String }
+    private struct PlanKey: Hashable { let environmentID: String; let runID: UUID; let skillID: String }
+    private struct ReceiptKey: Hashable {
+        let environmentID: String
+        let requirementKey: String
+        /// Foreign-target in-flight work/receipts never coalesce even under a
+        /// reused environment id.
+        let targetFingerprint: String
+    }
     private struct StateKey: Hashable { let environmentID: String; let skillID: String }
 
     private struct Plan {
@@ -522,6 +609,10 @@ actor SkillDependencyPreparationCenter {
         let runID: UUID
         let declaration: SkillDependencyDeclaration
         let authority: SkillDependencyAuthority
+        /// Actual target identity captured by the verified read. Invoke
+        /// re-resolves and refuses a changed target; a reboot keeps the plan
+        /// but forces receipt re-verification through the generation.
+        let target: SkillRuntimeTarget
         let recordedAt: Date
     }
 
@@ -560,6 +651,9 @@ actor SkillDependencyPreparationCenter {
     let prepareEnvironment: EnvironmentPreparation?
     let launchGenerationProvider: LaunchGenerationProvider
     let operations: (any SkillDependencyPackageOperating)?
+    let targetProvider: TargetProvider?
+    let operationsResolver: OperationsResolver?
+    let targetPreparation: TargetPreparation?
     let runtimeComponentProbe: RuntimeComponentProbe?
     let lateBindings: SkillDependencyLateBindings
     private let appVersion: @Sendable () -> String
@@ -592,6 +686,9 @@ actor SkillDependencyPreparationCenter {
         operations: (any SkillDependencyPackageOperating)?,
         prepareEnvironment: EnvironmentPreparation? = nil,
         runtimeComponentProbe: RuntimeComponentProbe? = nil,
+        targetProvider: TargetProvider? = nil,
+        operationsResolver: OperationsResolver? = nil,
+        targetPreparation: TargetPreparation? = nil,
         pipWheels: (@Sendable ([String]) async throws -> [SkillDependencyWheelBundle])? = nil,
         wheelStoreURL: URL? = nil,
         wheelStoreGuestPath: String? = nil,
@@ -604,6 +701,9 @@ actor SkillDependencyPreparationCenter {
         self.environmentResolver = environmentResolver
         self.launchGenerationProvider = launchGeneration
         self.operations = operations
+        self.targetProvider = targetProvider
+        self.operationsResolver = operationsResolver
+        self.targetPreparation = targetPreparation
         self.prepareEnvironment = prepareEnvironment
         self.runtimeComponentProbe = runtimeComponentProbe
         self.appVersion = appVersion
@@ -631,19 +731,39 @@ actor SkillDependencyPreparationCenter {
 
     /// The profile `target.architectures` field is part of the ORIGINAL
     /// declaration contract, so it must be SELECTED, not ignored: a profile
-    /// only participates when its architectures intersect the ACTUAL local
-    /// Linux backend set ("any" always participates). The set is an injected
-    /// backend fact (the pinned guest is riscv64; the native Mac CPU is
-    /// deliberately never consulted — remote external skills keep their own
-    /// host architecture outside this center).
+    /// only participates when its OS and architectures intersect the ACTUAL
+    /// target ("any" always participates).
+    ///
+    /// Legacy overload used ONLY by the pre-integration fallback and the
+    /// unbound shared prefetch. It keeps the historical Linux/riscv64 fact.
     nonisolated static func profileMatches(_ profile: SkillDependencyProfile, architectures supported: [String]) -> Bool {
         guard profile.os == "linux", !supported.isEmpty else { return false }
         return profile.architectures.contains("any")
-            || !Set(profile.architectures).isDisjoint(with: supported)
+            || !Set(profile.architectures.map(SkillRuntimeTarget.normalizeArchitecture))
+                .isDisjoint(with: supported.map(SkillRuntimeTarget.normalizeArchitecture))
+    }
+
+    /// Actual-target matching: v1 Linux or v2 Linux/macOS profiles use the
+    /// verified system/architecture. App-native execution matches nothing.
+    nonisolated static func profileMatches(_ profile: SkillDependencyProfile, target: SkillRuntimeTarget) -> Bool {
+        guard target.isResolved, target.hasExternalExecution,
+              let os = target.profileOS, profile.os == os else { return false }
+        let supported = target.normalizedArchitectures
+        guard !supported.isEmpty else { return false }
+        return profile.architectures.contains("any")
+            || !Set(profile.architectures.map(SkillRuntimeTarget.normalizeArchitecture))
+                .isDisjoint(with: supported)
     }
 
     func matchingProfiles(_ declaration: SkillDependencyDeclaration) -> [SkillDependencyProfile] {
         declaration.profiles.filter { Self.profileMatches($0, architectures: localLinuxArchitectures) }
+    }
+
+    func matchingProfiles(
+        _ declaration: SkillDependencyDeclaration,
+        target: SkillRuntimeTarget
+    ) -> [SkillDependencyProfile] {
+        declaration.profiles.filter { Self.profileMatches($0, target: target) }
     }
 
     /// Cross-profile overlap check over the matching profiles: the SAME
@@ -669,18 +789,108 @@ actor SkillDependencyPreparationCenter {
         return nil
     }
 
+    /// Resolve the ACTUAL target. With no injected provider the legacy
+    /// in-process fact is used (tests/pre-integration). Once a provider is
+    /// injected, nil is final: there is no fallback to the Mac host or the
+    /// first environment.
+    private func resolveTarget(environmentID: String, runID: UUID?) async -> SkillRuntimeTarget? {
+        if let targetProvider {
+            return await targetProvider(environmentID, runID)
+        }
+        return .legacyLinuxGuest(
+            environmentID: environmentID,
+            architectures: localLinuxArchitectures
+        )
+    }
+
+    /// Operations bound to the actual target. Linux-guest verbs are reused
+    /// only for a Linux VM target; a Mac bridge/SSH target with no injected
+    /// resolver returns nil (refusal), never the guest adapter.
+    private func operationsForTarget(_ target: SkillRuntimeTarget) async -> (any SkillDependencyPackageOperating)? {
+        if let operationsResolver { return await operationsResolver(target) }
+        if targetProvider == nil { return operations }
+        if target.backend == .linuxVM, target.operatingSystem == .linux { return operations }
+        return nil
+    }
+
+    /// One requirement's target support. Package-manager kinds are checked
+    /// against the actual OS/distribution; the frozen runtime component is
+    /// cross-checked against its descriptor target.
+    nonisolated static func targetRefusal(
+        requirement: SkillDependencyRequirement,
+        target: SkillRuntimeTarget,
+        authority: SkillDependencyAuthority?
+    ) -> String? {
+        switch requirement.kind {
+        case .apt, .font:
+            guard target.supportsDebianAPT else {
+                return SkillDependencyReason.unsupportedPackageManager(
+                    kind: requirement.kind.rawValue, target: target.runtimeDescription
+                )
+            }
+        case .pip, .npm:
+            guard target.supportsPackageManager(requirement.kind.rawValue) else {
+                return SkillDependencyReason.unsupportedPackageManager(
+                    kind: requirement.kind.rawValue, target: target.runtimeDescription
+                )
+            }
+        case .runtimeComponent:
+            guard let path = requirement.componentDescriptorPath,
+                  let bytes = authority?.packageFiles[path],
+                  let descriptor = try? SkillRuntimeDependency.decode(bytes) else {
+                return SkillDependencyReason.declarationRejected
+            }
+            let descriptorArch = SkillRuntimeTarget.normalizeArchitecture(descriptor.target.arch)
+            guard let targetOS = target.profileOS, targetOS == descriptor.target.os,
+                  target.normalizedArchitectures.contains(descriptorArch) else {
+                return SkillDependencyReason.runtimeComponentTargetMismatch(
+                    component: descriptor.componentID,
+                    target: target.runtimeDescription,
+                    required: "\(descriptor.target.os) \(descriptor.target.arch)"
+                )
+            }
+        }
+        return nil
+    }
+
     /// The shared pre-mutation target validation used by recordPlan and
-    /// invoke: at least one profile matches this backend, and matching
-    /// profiles never contradict each other on an exact pin.
-    private func targetValidation(_ declaration: SkillDependencyDeclaration) -> String? {
-        let matching = matchingProfiles(declaration)
+    /// invoke: the actual target must exist and support external execution;
+    /// at least one reviewed profile must match its OS/architecture/package
+    /// manager facts; matching profiles must not contradict exact pins.
+    private func targetValidation(
+        _ declaration: SkillDependencyDeclaration,
+        target: SkillRuntimeTarget?,
+        authority: SkillDependencyAuthority?
+    ) -> String? {
+        guard let target, target.isResolved else {
+            return SkillDependencyReason.targetUnavailable
+        }
+        guard target.hasExternalExecution else {
+            return SkillDependencyReason.targetUnsupported
+        }
+        let matching = matchingProfiles(declaration, target: target)
         guard !matching.isEmpty else {
-            return SkillDependencyReason.noMatchingProfile(architectures: localLinuxArchitectures)
+            if targetProvider == nil {
+                return SkillDependencyReason.noMatchingProfile(architectures: localLinuxArchitectures)
+            }
+            return SkillDependencyReason.noMatchingTarget(
+                os: target.profileOS ?? target.runtimeDescription,
+                architectures: target.normalizedArchitectures
+            )
         }
         if let clash = Self.crossProfileConflict(in: matching) {
             return SkillDependencyReason.profileConflict(
                 name: clash.identity, first: clash.first, second: clash.second
             )
+        }
+        for profile in matching {
+            for requirement in profile.requirements where requirement.required {
+                if let reason = Self.targetRefusal(
+                    requirement: requirement, target: target, authority: authority
+                ) {
+                    return reason
+                }
+            }
         }
         return nil
     }
@@ -709,7 +919,7 @@ actor SkillDependencyPreparationCenter {
     /// the declaration is always strict-decoded and the ownership record
     /// persisted (service-owned). Where the install itself is bound to a
     /// resolved task environment (the tool path), the shared resource
-    /// preparation runs automatically IN THAT environment now — coalesced
+    /// preparation runs automatically IN THAT actual target now — coalesced
     /// downloads into the environment's shared `/floe/cache`, per-family
     /// installs and exact readback — so the first ordinary task invocation
     /// later reuses verified receipts instead of starting from zero. A
@@ -755,12 +965,13 @@ actor SkillDependencyPreparationCenter {
         }
         pendingSharedPreparation[skillID] = nil
         persistDeclarationRecord(for: authority)
-        _ = await recordPlan(
+        let plan = await recordPlan(
             skillID: skillID,
             environmentID: environmentID,
             runID: runID,
             authority: authority
         )
+        if case .rejected(let reason) = plan { return .refused(reason: reason) }
         return await invoke(
             skillID: skillID,
             environmentID: environmentID,
@@ -835,20 +1046,26 @@ actor SkillDependencyPreparationCenter {
             setState(environmentID, skillID) { $0.deferredReason = SkillDependencyReason.declarationRejected }
             return .rejected(reason: SkillDependencyReason.declarationRejected)
         }
-        // Target contract is validated at the earliest honest point: a plan
-        // for a declaration that cannot run on this Linux backend (or whose
-        // matching profiles contradict each other) is refused here, before
-        // any invocation, prefetch or mutation could act on it.
-        if let refusal = targetValidation(declaration) {
+        // Target contract is validated at the earliest honest point: the
+        // plan is pinned to the ACTUAL target identity, and a declaration that
+        // cannot run there (or whose matching profiles contradict each other)
+        // is refused before any invocation, prefetch or mutation.
+        let target = await resolveTarget(environmentID: environmentID, runID: runID)
+        if let refusal = targetValidation(declaration, target: target, authority: authority) {
             setState(environmentID, skillID) { $0.deferredReason = refusal }
             return .rejected(reason: refusal)
         }
-        plans[PlanKey(environmentID: environmentID, runID: runID)] = Plan(
+        guard let target else {
+            setState(environmentID, skillID) { $0.deferredReason = SkillDependencyReason.targetUnavailable }
+            return .rejected(reason: SkillDependencyReason.targetUnavailable)
+        }
+        plans[PlanKey(environmentID: environmentID, runID: runID, skillID: skillID)] = Plan(
             skillID: skillID,
             environmentID: environmentID,
             runID: runID,
             declaration: declaration,
             authority: authority,
+            target: target,
             recordedAt: Date()
         )
         setState(environmentID, skillID) {
@@ -1409,12 +1626,15 @@ actor SkillDependencyPreparationCenter {
         // install-time record alone — a global prefetch summary read by
         // another center instance, a restart or a released environment — never
         // claims environment readiness: the environment half honestly stays
-        // "deferred" until a task binds a resolved Linux environment again.
+        // "deferred" until a task binds a resolved external target again.
+        let planTarget = plans.values.first { $0.skillID == skillID }?.target
+        let targetLabel = planTarget.map { "resolved \($0.runtimeDescription) target" } ?? "resolved external environment"
         let pendingEnvironmentInstall = pendingSharedPreparation[skillID] != nil
-            || !plans.values.contains { $0.skillID == skillID }
+            || planTarget == nil
         lines.append(pendingEnvironmentInstall
-            ? "environment install/readback: deferred to the skill's first exec.shell invocation with skillID in a task bound to a resolved Linux environment (global installs prepare no task state and claim no readiness)"
-            : "environment install/readback: runs (or has run) in the task's resolved Linux environment with receipts bound to the package version + digests + launch generation")
+            ? "environment install/readback: deferred to the skill's first exec.shell invocation with skillID in a task bound to a \(targetLabel) (global installs prepare no task state and claim no readiness)"
+            : "environment install/readback: runs (or has run) in the task's \(targetLabel) with receipts bound to the package version + digests + target identity + launch generation")
+        lines.append("shared prefetch bytes are an app-owned download cache only; target readiness is never inferred from them")
         return lines.joined(separator: "\n")
     }
 
@@ -1435,8 +1655,7 @@ actor SkillDependencyPreparationCenter {
         guard let environmentID = trimmedEnvironmentID, !environmentID.isEmpty else {
             return .refused(reason: SkillDependencyReason.noEnvironment)
         }
-        guard let plan = plans[PlanKey(environmentID: environmentID, runID: runID)],
-              plan.skillID == skillID else {
+        guard let plan = plans[PlanKey(environmentID: environmentID, runID: runID, skillID: skillID)] else {
             return .refused(reason: SkillDependencyReason.noRun)
         }
         // Live reauthorization first. An update/rollback/disable/edit/uninstall
@@ -1449,23 +1668,41 @@ actor SkillDependencyPreparationCenter {
               authority.contentDigest == plan.authority.contentDigest,
               authority.declarationSHA256 == plan.authority.declarationSHA256,
               authority.packageVersion == plan.authority.packageVersion else {
-            plans[PlanKey(environmentID: environmentID, runID: runID)] = nil
+            plans[PlanKey(environmentID: environmentID, runID: runID, skillID: skillID)] = nil
             setState(environmentID, skillID) {
                 $0.sourceAuthorized = false
                 $0.deferredReason = SkillDependencyReason.planStale
             }
             return .refused(reason: SkillDependencyReason.planStale)
         }
+        // Re-resolve the ACTUAL target and require the exact identity the
+        // plan pinned. A changed backend/OS/architecture/distribution refuses;
+        // a disconnected or unresolved target refuses. There is deliberately
+        // no fallback to the Mac host, the local guest or a foreign receipt.
+        guard let resolvedTarget = await resolveTarget(environmentID: environmentID, runID: runID),
+              resolvedTarget.isResolved else {
+            setState(environmentID, skillID) { $0.deferredReason = SkillDependencyReason.targetUnavailable }
+            return .refused(reason: SkillDependencyReason.targetUnavailable)
+        }
+        guard resolvedTarget.identityFingerprint == plan.target.identityFingerprint else {
+            setState(environmentID, skillID) { $0.deferredReason = SkillDependencyReason.targetChanged }
+            return .refused(reason: SkillDependencyReason.targetChanged)
+        }
+        guard resolvedTarget.isConnected else {
+            setState(environmentID, skillID) { $0.deferredReason = SkillDependencyReason.targetDisconnected }
+            return .refused(reason: SkillDependencyReason.targetDisconnected)
+        }
         // Re-check the target contract BEFORE anything can mutate (this also
-        // covers plans recorded by an older build): non-matching profiles
-        // refuse honestly, and no boot/install runs for them. The
-        // operations-free allowance is then judged ONLY on the requirements
-        // that would actually participate here.
-        if let refusal = targetValidation(plan.declaration) {
+        // covers plans recorded by an older build): non-matching profiles or
+        // unsupported package managers refuse honestly, and no boot/install
+        // runs for them. The operations-free allowance is judged ONLY on the
+        // requirements that would actually participate here.
+        if let refusal = targetValidation(plan.declaration, target: resolvedTarget, authority: authority) {
             setState(environmentID, skillID) { $0.deferredReason = refusal }
             return .refused(reason: refusal)
         }
-        guard operations != nil || matchingProfiles(plan.declaration).allSatisfy({ profile in
+        let targetOperations = await operationsForTarget(resolvedTarget)
+        guard targetOperations != nil || matchingProfiles(plan.declaration, target: resolvedTarget).allSatisfy({ profile in
             profile.requirements.allSatisfy { $0.kind == .runtimeComponent }
         }) else {
             return .refused(reason: SkillDependencyReason.provisioningUnavailable)
@@ -1473,7 +1710,11 @@ actor SkillDependencyPreparationCenter {
         do {
             try Task.checkCancellation()
             try cancellation?.throwIfCancelled()
-            try await prepareEnvironment?(environmentID, cancellation)
+            if let targetPreparation {
+                try await targetPreparation(resolvedTarget, cancellation)
+            } else if resolvedTarget.backend == .linuxVM {
+                try await prepareEnvironment?(environmentID, cancellation)
+            }
             try Task.checkCancellation()
             try cancellation?.throwIfCancelled()
         } catch {
@@ -1483,23 +1724,264 @@ actor SkillDependencyPreparationCenter {
         guard let environment = await environmentResolver(environmentID) else {
             return .refused(reason: SkillDependencyReason.environmentUnavailable)
         }
-        let launchGeneration = await launchGenerationProvider(environmentID)
+        // Preparation may have booted/connected the target: take the fresh
+        // generation and connection state, but never a different identity.
+        let liveTarget = (await resolveTarget(environmentID: environmentID, runID: runID))
+            ?? SkillRuntimeTarget.unresolved
+        guard liveTarget.isResolved else {
+            return .refused(reason: SkillDependencyReason.targetUnavailable)
+        }
+        guard liveTarget.identityFingerprint == plan.target.identityFingerprint else {
+            return .refused(reason: SkillDependencyReason.targetChanged)
+        }
+        guard liveTarget.isConnected else {
+            return .refused(reason: SkillDependencyReason.targetDisconnected)
+        }
+        let generationToken = liveTarget.generationToken
+            ?? (await launchGenerationProvider(environmentID)).map { String($0) }
+        let liveOperations = targetOperations ?? await operationsForTarget(liveTarget)
 
+        let prepared = await prepareMatchingRequirements(
+            skillID: skillID,
+            plan: plan,
+            authority: authority,
+            target: liveTarget,
+            environment: environment,
+            operations: liveOperations,
+            generationToken: generationToken,
+            cancellation: cancellation
+        )
+        if let refusal = prepared.refusal {
+            return .refused(reason: refusal)
+        }
+        return .ready(annotation: Self.verifiedAnnotation(
+            authority: authority,
+            verified: prepared.verified,
+            optionalNotes: prepared.optionalNotes
+        ))
+    }
+
+    // MARK: - Native migration preparation (no tool-call grant)
+
+    /// App-native preparation used by the environment migration coordinator
+    /// AFTER the user explicitly chose "Prepare and Migrate" for the displayed
+    /// target and declared dependencies under the existing task policy. This
+    /// method mints no ApprovalGrant and never reuses an `exec.shell` call
+    /// grant: it is an internal service entrypoint, not a model-callable tool.
+    /// Ordinary `invoke` still requires the actual approval grant at its
+    /// existing gate. Nothing is committed here; the migration coordinator
+    /// commits only after `verified`.
+    ///
+    /// Returns `.unavailable` when no reviewed declaration/authority exists or
+    /// no external target can be resolved (an external skill without a
+    /// declaration stays model-managed and no readiness is claimed),
+    /// `.refused` when a required participating dependency is not ready, and
+    /// `.verified` only when every required participating dependency readback
+    /// succeeded on this exact target/package pair.
+    func prepareForMigration(
+        skillID: String,
+        environmentID: String,
+        migrationID: UUID,
+        cancellation: CancellationToken?
+    ) async -> SkillDependencyMigrationPreparationOutcome {
+        let trimmed = environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return .unavailable(reason: SkillDependencyReason.noEnvironment)
+        }
+        // A migration must use actual target facts. The legacy riscv64
+        // pre-integration fallback is never acceptable for a target switch.
+        guard targetProvider != nil else {
+            return .unavailable(reason: SkillDependencyReason.targetUnavailable)
+        }
+        guard let authority = await authorityProvider(skillID),
+              Self.isFormallyValid(authority),
+              authority.skillID == skillID else {
+            // No declaration and a no-longer-valid install both mean this
+            // native path cannot prepare anything; never fake readiness.
+            return .unavailable(reason: SkillDependencyReason.noDeclaration)
+        }
+        do {
+            _ = try Self.decodeAndValidate(authority)
+        } catch let error as SkillDependencyError {
+            if case .unsupportedSchemaVersion = error {
+                return .refused(reason: SkillDependencyReason.unsupportedSchema, requirements: [])
+            }
+            return .refused(reason: SkillDependencyReason.declarationRejected, requirements: [])
+        } catch {
+            return .refused(reason: SkillDependencyReason.declarationRejected, requirements: [])
+        }
+        guard let target = await resolveTarget(environmentID: trimmed, runID: migrationID),
+              target.isResolved else {
+            return .unavailable(reason: SkillDependencyReason.targetUnavailable)
+        }
+        guard target.hasExternalExecution else {
+            return .unavailable(reason: SkillDependencyReason.targetUnsupported)
+        }
+        guard target.isConnected else {
+            return .unavailable(reason: SkillDependencyReason.targetDisconnected)
+        }
+        let planKey = PlanKey(environmentID: trimmed, runID: migrationID, skillID: skillID)
+        let planOutcome = await recordPlan(
+            skillID: skillID,
+            environmentID: trimmed,
+            runID: migrationID,
+            authority: authority
+        )
+        guard case .recorded = planOutcome, let plan = plans[planKey] else {
+            if case .rejected(let reason) = planOutcome {
+                if reason == SkillDependencyReason.targetUnavailable
+                    || reason == SkillDependencyReason.targetUnsupported
+                    || reason == SkillDependencyReason.targetDisconnected {
+                    return .unavailable(reason: reason)
+                }
+                return .refused(reason: reason, requirements: [])
+            }
+            return .unavailable(reason: SkillDependencyReason.targetUnavailable)
+        }
+        // A migration id is an ownership/retry token, not a task run. The
+        // plan exists only for this preparation pass; the post-commit run
+        // re-reads and pins its own plan.
+        defer { plans[planKey] = nil }
+
+        do {
+            try Task.checkCancellation()
+            try cancellation?.throwIfCancelled()
+            if let targetPreparation {
+                try await targetPreparation(target, cancellation)
+            } else if target.backend == .linuxVM {
+                try await prepareEnvironment?(trimmed, cancellation)
+            }
+            try Task.checkCancellation()
+            try cancellation?.throwIfCancelled()
+        } catch {
+            return .unavailable(reason: cancellation?.isCancelled == true || Task.isCancelled
+                ? SkillDependencyReason.cancelled : SkillDependencyReason.environmentUnavailable)
+        }
+        guard let environment = await environmentResolver(trimmed) else {
+            return .unavailable(reason: SkillDependencyReason.environmentUnavailable)
+        }
+        let liveTarget = (await resolveTarget(environmentID: trimmed, runID: migrationID))
+            ?? SkillRuntimeTarget.unresolved
+        guard liveTarget.isResolved else {
+            return .unavailable(reason: SkillDependencyReason.targetUnavailable)
+        }
+        guard liveTarget.identityFingerprint == plan.target.identityFingerprint else {
+            return .refused(reason: SkillDependencyReason.targetChanged, requirements: [])
+        }
+        guard liveTarget.isConnected else {
+            return .unavailable(reason: SkillDependencyReason.targetDisconnected)
+        }
+        // Re-read the live reviewed authority immediately before mutation.
+        // An update/rollback/disable/edit between the plan and this point
+        // fails closed; the migration must re-check before retrying.
+        guard let liveAuthority = await authorityProvider(skillID),
+              Self.isFormallyValid(liveAuthority),
+              liveAuthority.contentDigest == plan.authority.contentDigest,
+              liveAuthority.declarationSHA256 == plan.authority.declarationSHA256,
+              liveAuthority.packageVersion == plan.authority.packageVersion else {
+            return .refused(reason: SkillDependencyReason.planStale, requirements: [])
+        }
+        let operations = await operationsForTarget(liveTarget)
+        let participating = matchingProfiles(plan.declaration, target: liveTarget)
+        let needsPackageOperations = participating.contains { profile in
+            profile.requirements.contains { $0.kind != .runtimeComponent }
+        }
+        guard operations != nil || !needsPackageOperations else {
+            return .unavailable(reason: SkillDependencyReason.provisioningUnavailable)
+        }
+        let generationToken = liveTarget.generationToken
+            ?? (await launchGenerationProvider(trimmed)).map { String($0) }
+        let prepared = await prepareMatchingRequirements(
+            skillID: skillID,
+            plan: plan,
+            authority: liveAuthority,
+            target: liveTarget,
+            environment: environment,
+            operations: operations,
+            generationToken: generationToken,
+            cancellation: cancellation
+        )
+        if let refusal = prepared.refusal {
+            return .refused(reason: refusal, requirements: prepared.requirements)
+        }
+        return .verified(
+            annotation: Self.verifiedAnnotation(
+                authority: liveAuthority,
+                verified: prepared.verified,
+                optionalNotes: prepared.optionalNotes
+            ),
+            requirements: prepared.requirements
+        )
+    }
+
+    private struct PreparedRequirementRun {
         var verified: [SkillDependencyEntry] = []
         var optionalNotes: [String] = []
-        // Only profiles matching this backend prepare/annotate; the refusal
-        // case (zero matching) was handled above, non-matching profiles are
-        // simply not installed here.
-        for profile in matchingProfiles(plan.declaration) {
+        var requirements: [SkillDependencyMigrationRequirement] = []
+        var refusal: String?
+    }
+
+    /// The one verified preparation loop shared by `invoke` (after its
+    /// approval-grant gate) and `prepareForMigration` (after the user's
+    /// explicit migration consent). It performs the same per-requirement
+    /// conflict checks, owned-preparation coalescing, installs, readbacks and
+    /// target-bound receipts; it never mints authority.
+    private func prepareMatchingRequirements(
+        skillID: String,
+        plan: Plan,
+        authority: SkillDependencyAuthority,
+        target: SkillRuntimeTarget,
+        environment: ToolEnvironment,
+        operations: (any SkillDependencyPackageOperating)?,
+        generationToken: String?,
+        cancellation: CancellationToken?
+    ) async -> PreparedRequirementRun {
+        var run = PreparedRequirementRun()
+        for profile in matchingProfiles(plan.declaration, target: target) {
             for requirement in profile.requirements {
                 if cancellation?.isCancelled == true || Task.isCancelled {
-                    return .refused(reason: SkillDependencyReason.cancelled)
+                    run.refusal = SkillDependencyReason.cancelled
+                    return run
+                }
+                func appendState(_ state: SkillDependencyMigrationRequirement.State, reason: String?) {
+                    run.requirements.append(SkillDependencyMigrationRequirement(
+                        kind: requirement.kind.rawValue, name: requirement.name,
+                        version: requirement.version, required: requirement.required,
+                        state: state, reason: reason
+                    ))
+                }
+                if let refusal = Self.targetRefusal(
+                    requirement: requirement, target: target, authority: authority
+                ) {
+                    if requirement.required {
+                        appendState(.refused, reason: refusal)
+                        setState(environmentID: plan.environmentID, skillID: skillID) {
+                            $0.deferredReason = refusal
+                            $0.readbackVerified = false
+                        }
+                        run.refusal = refusal
+                        return run
+                    }
+                    appendState(.unavailable, reason: refusal)
+                    run.optionalNotes.append(SkillDependencyReason.optionalGap(
+                        requirement: requirement.identityKey, reason: refusal
+                    ))
+                    continue
                 }
                 let identityKey = "\(skillID)|\(profile.id)|\(requirement.identityKey)"
-                let receiptKey = ReceiptKey(environmentID: environmentID, requirementKey: identityKey)
+                let receiptKey = ReceiptKey(
+                    environmentID: plan.environmentID,
+                    requirementKey: identityKey,
+                    targetFingerprint: target.identityFingerprint
+                )
                 if let existing = receipts[receiptKey],
-                   Self.isReusable(existing, authority: authority, generation: launchGeneration) {
-                    verified.append(existing.entry)
+                   Self.isReusable(
+                    existing, authority: authority,
+                    generationToken: generationToken,
+                    targetFingerprint: target.identityFingerprint
+                   ) {
+                    run.verified.append(existing.entry)
+                    appendState(.verified, reason: nil)
                     continue
                 }
                 let outcome = await prepareRequirement(
@@ -1509,64 +1991,80 @@ actor SkillDependencyPreparationCenter {
                     authority: authority,
                     receiptKey: receiptKey,
                     environment: environment,
-                    launchGeneration: launchGeneration,
+                    operations: operations,
                     cancellation: cancellation
                 )
                 switch outcome {
                 case .verified(let entry):
-                    verified.append(entry)
+                    run.verified.append(entry)
                     receipts[receiptKey] = SkillDependencyRequirementReceipt(
                         skillID: skillID,
                         packageVersion: authority.packageVersion,
                         contentDigest: authority.contentDigest,
                         declarationSHA256: authority.declarationSHA256,
-                        launchGeneration: launchGeneration,
+                        generationToken: generationToken,
+                        targetFingerprint: target.identityFingerprint,
                         entry: entry,
                         verifiedAt: Date()
                     )
-                    setState(environmentID, skillID) { $0.deferredReason = nil }
+                    appendState(.verified, reason: nil)
+                    setState(environmentID: plan.environmentID, skillID: skillID) { $0.deferredReason = nil }
                 case .deferred(let reason):
                     if requirement.required {
-                        setState(environmentID, skillID) {
+                        appendState(.refused, reason: reason)
+                        setState(environmentID: plan.environmentID, skillID: skillID) {
                             $0.deferredReason = reason
                             $0.readbackVerified = false
                         }
-                        return .refused(reason: reason)
+                        run.refusal = reason
+                        return run
                     }
-                    optionalNotes.append(SkillDependencyReason.optionalGap(
+                    appendState(.unavailable, reason: reason)
+                    run.optionalNotes.append(SkillDependencyReason.optionalGap(
                         requirement: requirement.identityKey, reason: reason
                     ))
                 }
             }
         }
         guard !Task.isCancelled, cancellation?.isCancelled != true else {
-            return .refused(reason: SkillDependencyReason.cancelled)
+            run.refusal = SkillDependencyReason.cancelled
+            return run
         }
-        setState(environmentID, skillID) {
+        setState(environmentID: plan.environmentID, skillID: skillID) {
             $0.prepared = true
             $0.readbackVerified = true
-            $0.deferredReason = optionalNotes.isEmpty ? nil : optionalNotes.joined(separator: "; ")
+            $0.deferredReason = run.optionalNotes.isEmpty ? nil : run.optionalNotes.joined(separator: "; ")
         }
+        return run
+    }
+
+    private static func verifiedAnnotation(
+        authority: SkillDependencyAuthority,
+        verified: [SkillDependencyEntry],
+        optionalNotes: [String]
+    ) -> String {
         var annotation = "skillDependencies=verified package=\(authority.packageVersion) manifest=\(String(authority.declarationSHA256.prefix(12)))"
         annotation += " " + verified.map { entry -> String in
             let version = entry.version.map { "@" + $0 } ?? ""
             return "\(entry.kind.rawValue):\(entry.name)\(version)=\(entry.evidence)"
-            }.joined(separator: " ")
+        }.joined(separator: " ")
         if !optionalNotes.isEmpty {
             annotation += " " + optionalNotes.joined(separator: "; ")
         }
-        return .ready(annotation: annotation)
+        return annotation
     }
 
     private static func isReusable(
         _ receipt: SkillDependencyRequirementReceipt,
         authority: SkillDependencyAuthority,
-        generation: UInt64?
+        generationToken: String?,
+        targetFingerprint: String
     ) -> Bool {
-        guard let generation, receipt.launchGeneration == generation,
+        guard let generationToken, receipt.generationToken == generationToken,
               receipt.packageVersion == authority.packageVersion,
               receipt.contentDigest == authority.contentDigest,
-              receipt.declarationSHA256 == authority.declarationSHA256 else { return false }
+              receipt.declarationSHA256 == authority.declarationSHA256,
+              receipt.targetFingerprint == targetFingerprint else { return false }
         return true
     }
 
@@ -1582,7 +2080,7 @@ actor SkillDependencyPreparationCenter {
         authority: SkillDependencyAuthority,
         receiptKey: ReceiptKey,
         environment: ToolEnvironment,
-        launchGeneration: UInt64?,
+        operations: (any SkillDependencyPackageOperating)?,
         cancellation: CancellationToken?
     ) async -> SkillDependencyRequirementOutcome {
         let subscriptionID = UUID()
@@ -1981,7 +2479,7 @@ actor SkillDependencyPreparationCenter {
                 lines.append("- \(requirement.kind.rawValue): \(identity)\(pin) (\(flag)) — \(requirement.purpose)")
             }
         }
-        lines.append("Invoke with exec.shell \"skillID\": \"\(skillID)\" in this task run: Floe verifies the installed record, the current run binding and the grant, then automatically installs and reads back the declared resources in THIS task's resolved Linux environment (shared download cache; environment-scoped install state). A required resource that is not ready refuses this skill's invocation with the honest reason; optional gaps appear as an annotation. Commands without skillID are unchanged, so ordinary repair work stays available. Exact pins are installed and read back as declared — never ranges, never a silent downgrade.")
+        lines.append("Invoke with exec.shell \"skillID\": \"\(skillID)\" in this task run: Floe verifies the installed record, the current run binding and the grant, then automatically installs and reads back the declared resources in THIS task's resolved external target (shared download cache; target-scoped install state and receipts). A required resource that is not ready refuses this skill's invocation with the honest reason; optional gaps appear as an annotation. Commands without skillID are unchanged, so ordinary repair work stays available. Exact pins are installed and read back as declared — never ranges, never a silent downgrade.")
         return lines.joined(separator: "\n")
     }
 

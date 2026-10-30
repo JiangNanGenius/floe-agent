@@ -556,7 +556,10 @@ final class SkillsCenter: ObservableObject {
         let scratch = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
         defer { try? FileManager.default.removeItem(at: scratch.url); scratch.lease.release() }
         let staged = try await stageCuratedPackage(publication, id: request.id, at: scratch.url)
-        try await requireCompatibility(staged.content.package)
+        try await requireCompatibility(
+            staged.content.package, runID: context.runID,
+            resourceContext: Self.resourceContext(for: context)
+        )
         try Self.validateDependencyDeclaration(in: staged.content)
         try context.cancellation.throwIfCancelled()
         let candidate: SkillUpgradeCandidate?
@@ -842,7 +845,10 @@ final class SkillsCenter: ObservableObject {
         let staged = try await stageCuratedPackage(publication, id: entryID, at: scratch.url)
         try checkCancelled()
         context.report(.checking, nil)
-        try await requireCompatibility(staged.content.package)
+        try await requireCompatibility(
+            staged.content.package, runID: context.runID,
+            resourceContext: Self.resourceContext(for: context)
+        )
         try Self.validateDependencyDeclaration(in: staged.content)
         let candidate: SkillUpgradeCandidate?
         if let current {
@@ -1469,6 +1475,11 @@ final class SkillsCenter: ObservableObject {
     /// then keeps its historical Markdown-only behavior.
     private let runtimeComponents: SkillRuntimeComponentCenter?
     private let dependencyPreparation: SkillDependencyPreparationCenter?
+    /// Trusted App/core resolver for the task's ACTUAL execution target.
+    /// Nil keeps the pre-integration/App-native baseline; a configured
+    /// resolver returning nil is final (never replaced by the Mac host, the
+    /// first environment or any other fallback).
+    private let runtimeTargetResolver: SkillRuntimeTargetResolver?
     private var packageMutationInProgress = false
     private var builtinSeedTask: Task<Void, Never>?
     @Published private(set) var builtinSeedFailures: [String: String] = [:]
@@ -1648,11 +1659,12 @@ final class SkillsCenter: ObservableObject {
         environment.conversationCenter.modelPreferences.defaultAgentModelID
     }
 
-    init(environment: AppEnvironment, installationRoot: URL? = nil, resourceStager: SkillWorkspaceResourceStager? = nil, runtimeComponents: SkillRuntimeComponentCenter? = nil, dependencyPreparation: SkillDependencyPreparationCenter? = nil) {
+    init(environment: AppEnvironment, installationRoot: URL? = nil, resourceStager: SkillWorkspaceResourceStager? = nil, runtimeComponents: SkillRuntimeComponentCenter? = nil, dependencyPreparation: SkillDependencyPreparationCenter? = nil, runtimeTargetResolver: SkillRuntimeTargetResolver? = nil) {
         self.environment = environment
         self.resourceStager = resourceStager
         self.runtimeComponents = runtimeComponents
         self.dependencyPreparation = dependencyPreparation
+        self.runtimeTargetResolver = runtimeTargetResolver
         let support = (try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
@@ -2222,8 +2234,122 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
-    /// Mac execution retains the product's proven bundled/native guides, not
-    /// downloaded iOS adaptations or the Linux-only Python substrate guide.
+    // MARK: - Trusted execution target
+
+    /// The task's actual execution target, produced only by the injected
+    /// resolver. When no resolver is wired yet, a Mac-bound run still resolves
+    /// to the Mac bridge fact (the run identity is already pinned); every
+    /// other run stays unresolved instead of guessing a host.
+    func resolvedRuntimeTarget(
+        runID: UUID?,
+        resourceContext: SkillResourceContext? = nil
+    ) async -> SkillRuntimeTarget? {
+        if let runtimeTargetResolver {
+            return await runtimeTargetResolver.resolve(runID, resourceContext)
+        }
+        if let runID, MacOriginalSkillsCenter.shared.isMacRun(runID) {
+            return .macBridge(
+                environmentID: resourceContext?.environmentID ?? "",
+                runID: runID
+            )
+        }
+        return nil
+    }
+
+    /// Explicit unresolved target when a resolver is configured but cannot
+    /// produce one. A nil resolver keeps the pre-integration behavior.
+    private func effectiveRuntimeTarget(
+        runID: UUID?,
+        resourceContext: SkillResourceContext? = nil
+    ) async -> SkillRuntimeTarget? {
+        if let target = await resolvedRuntimeTarget(runID: runID, resourceContext: resourceContext) {
+            return target
+        }
+        return runtimeTargetResolver == nil ? nil : .unresolved
+    }
+
+    /// App-owned facts. Native tools stay callable on every target; the
+    /// external capability is added only by the target-aware evaluator when
+    /// the actual target can execute external work.
+    private func appCompatibilityContext() async -> (capabilities: Set<SkillCapability>, tools: Set<String>) {
+        var capabilities: Set<SkillCapability> = [
+            .workspaceRead, .workspaceWrite, .workspaceDelete, .network,
+            .browserObserve, .browserInteract
+        ]
+        if case .available = await environment.localPythonProbe.probe() {
+            capabilities.insert(.localPython)
+        }
+        var tools = Set(ToolCatalog.allDescriptors.map(\.name))
+        if !capabilities.contains(.localPython) { tools.remove(LocalPythonTool.name) }
+        return (capabilities, tools)
+    }
+
+    /// A bounded model-safe limitation note. A remote/default target never
+    /// hides the App-native/text part of a guide; it only states which external
+    /// steps cannot run there.
+    private func targetLimitationNote(
+        package: ValidatedSkillPackage,
+        target: SkillRuntimeTarget?,
+        context: (capabilities: Set<SkillCapability>, tools: Set<String>)
+    ) -> String? {
+        guard let target else { return nil }
+        let report = SkillRuntimeCompatibility.evaluate(
+            package, target: target,
+            appCapabilities: context.capabilities, appTools: context.tools,
+            mode: .run
+        )
+        guard let limitation = report.limitationDescription else { return nil }
+        return "External steps are not available on \(target.runtimeDescription): \(limitation). The App-native and text parts of this guide remain available."
+    }
+
+    /// Same bounded metadata projection the Skills module uses for list
+    /// discovery. Kept here because that helper is module-internal.
+    private static func discoveryRow(_ row: ManagedSkill) -> ManagedSkill {
+        var projected = row
+        projected.markdown = nil
+        projected.nextOffset = nil
+        projected.totalCharacters = nil
+        projected.resources = nil
+        projected.description = row.description.map { String($0.prefix(1_024)) }
+        return projected
+    }
+
+    /// Merge target selections without collapsing independent variants. The
+    /// primary uses this to add Mac originals to the device selection.
+    static func mergedRuntimeSelection(_ selections: [RuntimeSelection]) -> RuntimeSelection {
+        let nonEmpty = selections.filter { !$0.skillIDs.isEmpty || $0.instructions?.isEmpty == false }
+        guard !nonEmpty.isEmpty else { return .none }
+        var ids: Set<String> = []
+        var related: [String: [String]] = [:]
+        var instructions: [String] = []
+        var scripts: Set<String> = []
+        var packages: Set<String> = []
+        var restrictedTools: Set<String>?
+        for selection in nonEmpty {
+            ids.formUnion(selection.skillIDs)
+            if let block = selection.instructions, !block.isEmpty { instructions.append(block) }
+            scripts.formUnion(selection.preapprovedPythonScriptSHA256)
+            packages.formUnion(selection.preapprovedPythonPackages)
+            for (tool, skillIDs) in selection.relatedSkillIDsByTool {
+                related[tool, default: []].append(contentsOf: skillIDs)
+            }
+            if let allowed = selection.allowedToolNames {
+                restrictedTools = restrictedTools.map { $0.intersection(allowed) } ?? allowed
+            }
+        }
+        return RuntimeSelection(
+            skillIDs: ids,
+            allowedToolNames: restrictedTools,
+            instructions: instructions.joined(separator: "\n\n"),
+            preapprovedPythonScriptSHA256: scripts,
+            preapprovedPythonPackages: packages,
+            relatedSkillIDsByTool: related.mapValues { Array(Set($0)).sorted() }
+        )
+    }
+
+    /// The product's proven bundled/native guides, used as a fallback when a
+    /// seeded store row is missing for a non-App-native target. The Linux-only
+    /// Python substrate guide is deliberately not a native App guide.
     func nativeBundledSkillsForMac() async throws -> [ManagedSkill] {
         await seedBuiltinDomainSkills()
         let rows = try await environment.skillStore.all()
@@ -2245,15 +2371,27 @@ final class SkillsCenter: ObservableObject {
 
     /// Guides provide routing metadata; they never replace the conversation's
     /// tool universe. Only verified script bytes can reuse installation review.
-    func runtimeSelection(runID: UUID? = nil) async -> RuntimeSelection {
+    ///
+    /// The selection always starts from the installed store, so a Mac bridge,
+    /// remote/default or migrated target never replaces the whole skill
+    /// universe. Mac-original implementations remain independent rows and are
+    /// merged by the primary through `mergedRuntimeSelection`; the external
+    /// compatibility of this run is evaluated against its actual target.
+    func runtimeSelection(
+        runID: UUID? = nil,
+        resourceContext: SkillResourceContext? = nil,
+        executionTarget: SkillRuntimeTarget? = nil
+    ) async -> RuntimeSelection {
         await seedBuiltinDomainSkills()
         guard let skills = try? await environment.skillStore.all() else { return .none }
+        let target: SkillRuntimeTarget?
+        if let executionTarget { target = executionTarget }
+        else { target = await effectiveRuntimeTarget(runID: runID, resourceContext: resourceContext) }
+        let compatibilityContext = await appCompatibilityContext()
         let enabled = skills.filter { row in
             row.status == "enabled" || DomainSkillLibrary.all.contains { $0.id == row.id && !$0.exposed }
         }
-        guard !enabled.isEmpty else { return .none }
-
-        var activeIDs: Set<String> = []
+        var activeIDs = Set(enabled.map(\.id))
         var relatedSkillIDsByTool: [String: [String]] = [:]
         var instructionBlocks: [String] = []
         var preapprovedPythonScriptSHA256: Set<String> = []
@@ -2264,7 +2402,6 @@ final class SkillsCenter: ObservableObject {
             let manifest = snapshot.package.manifest
             let granted = (try? await environment.skillStore.allowedCapabilities(skillID: skill.id)) ?? []
             let effective = Set(manifest.capabilities).intersection(granted)
-            activeIDs.insert(skill.id)
             let references = Set(manifest.tools + (DomainSkillLibrary.all.first { $0.id == skill.id }?.toolNames ?? []))
             for name in references { relatedSkillIDsByTool[name, default: []].append(skill.id) }
 
@@ -2285,8 +2422,29 @@ final class SkillsCenter: ObservableObject {
                     }
                 }
             }
-            instructionBlocks.append("- \(skill.id): \(snapshot.package.metadata.description) [version=\(manifest.version), digest=\(snapshot.package.canonicalSHA256)]")
+            var block = "- \(skill.id): \(snapshot.package.metadata.description) [version=\(manifest.version), digest=\(snapshot.package.canonicalSHA256)]"
+            if let limitation = targetLimitationNote(
+                package: snapshot.package, target: target, context: compatibilityContext
+            ) {
+                block += " [\(limitation)]"
+            }
+            instructionBlocks.append(block)
         }
+
+        // Bundled native guides normally arrive through the seeded store.
+        // They are added here only for an ID the store does not carry (for
+        // example a damaged/partial seed), never as a replacement universe.
+        if let bundled = try? await nativeBundledSkillsForMac() {
+            let installedIDs = Set(skills.map(\.id))
+            for row in bundled where !installedIDs.contains(row.id) {
+                activeIDs.insert(row.id)
+                for name in row.requiredToolNames ?? [] {
+                    relatedSkillIDsByTool[name, default: []].append(row.id)
+                }
+                instructionBlocks.append("- \(row.id): \(row.description ?? row.name) [bundled native guide]")
+            }
+        }
+
         guard !activeIDs.isEmpty else { return .none }
         return RuntimeSelection(
             skillIDs: activeIDs,
@@ -2453,25 +2611,81 @@ final class SkillsCenter: ObservableObject {
     /// the pinned bundle into the task workspace when the tool supplied the
     /// run's execution binding; staging never executes anything, never grants
     /// permission and fails closed with an honest `resources` status.
+    ///
+    /// Discovery is target-independent on purpose: installed text/native/
+    /// mixed guides and bundled App-native guides stay visible for a Mac
+    /// bridge, remote SSH or default target. Only the external execution
+    /// portion is annotated against the actual target. Mac originals are
+    /// additional independent rows (same id/different digest is two variants,
+    /// never a silent replacement).
     func readSkills(id: String?, runID: UUID? = nil, resourceContext: SkillResourceContext? = nil) async throws -> [ManagedSkill] {
-        if let runID, MacOriginalSkillsCenter.shared.isMacRun(runID) {
-            let originals = MacOriginalSkillsCenter.shared.read(id: id, runID: runID)
-            if id != nil, !originals.isEmpty { return originals }
-            let native = try await nativeBundledSkillsForMac().filter { id == nil || $0.id == id }
-            return originals + native.filter { row in !originals.contains { $0.id == row.id } }
-        }
         await seedBuiltinDomainSkills()
         if let id { try SkillManageTool.validateID(id) }
+        let target = await effectiveRuntimeTarget(runID: runID, resourceContext: resourceContext)
+        let compatibilityContext = await appCompatibilityContext()
+        let isMacOriginalRun = runID.map { MacOriginalSkillsCenter.shared.isMacRun($0) } ?? false
+
         let rows = try await environment.skillStore.all().filter { id == nil || $0.id == id }
-        if id != nil, rows.isEmpty { throw SkillStoreConflict.changedOrMissing }
+        // Bundled native guides are normally already seeded into the store.
+        // They are added only for an ID the store does not carry, so a
+        // disabled or user-managed row is never duplicated/overridden.
+        let installedIDs = Set(rows.map(\.id))
+        var nativeBundled: [ManagedSkill] = []
+        if isMacOriginalRun || target != nil {
+            nativeBundled = try await nativeBundledSkillsForMac().filter {
+                !installedIDs.contains($0.id) && (id == nil || $0.id == id)
+            }
+        }
+        var macOriginals: [ManagedSkill] = []
+        if isMacOriginalRun, let runID {
+            macOriginals = MacOriginalSkillsCenter.shared.read(id: id, runID: runID)
+        }
+        if id != nil, rows.isEmpty, nativeBundled.isEmpty, macOriginals.isEmpty {
+            throw SkillStoreConflict.changedOrMissing
+        }
         if id == nil {
-            return rows.map { row in
+            let metadata = rows.map { row in
                 ManagedSkill(id: row.id, name: DomainSkillLibrary.all.first { $0.id == row.id }?.name ?? row.name,
                     version: row.version, enabled: row.status == "enabled", digest: row.rewrittenDigest, markdown: nil,
                     description: (try? SkillPackageValidator().parseSkillMarkdown(Data(row.skillMarkdown.utf8)))?.description)
             }
+            return SkillRuntimeDiscovery.merged(
+                installed: metadata,
+                nativeBundled: nativeBundled.map(Self.discoveryRow),
+                macOriginals: macOriginals.map(Self.discoveryRow)
+            )
         }
-        let pythonManifest = id == "floe-python" ? await environment.localPythonProbe.runtimeManifest() : nil
+        let exact = try await exactInstalledSkillRows(
+            rows: rows, runID: runID, resourceContext: resourceContext,
+            target: target, compatibilityContext: compatibilityContext
+        )
+        return SkillRuntimeDiscovery.merged(
+            installed: exact, nativeBundled: nativeBundled, macOriginals: macOriginals
+        )
+    }
+
+    /// Exact reads of installed rows. Kept separate from discovery so the
+    /// target-independent merge above stays the single visibility authority.
+    private func exactInstalledSkillRows(
+        rows: [PersistedSkill],
+        runID: UUID?,
+        resourceContext: SkillResourceContext?,
+        target: SkillRuntimeTarget?,
+        compatibilityContext: (capabilities: Set<SkillCapability>, tools: Set<String>)
+    ) async throws -> [ManagedSkill] {
+        let pythonManifest = rows.contains { $0.id == "floe-python" } ? await environment.localPythonProbe.runtimeManifest() : nil
+        // Two different eligibility questions, deliberately split:
+        // - a reviewed dependency declaration may be recorded for ANY real
+        //   external target (Linux VM, Mac bridge, remote SSH Linux/macOS), so
+        //   a Mac pip/npm profile is not silently dropped just because the
+        //   read happened on a Mac; an unresolved/App-native target never
+        //   falls back to a plan.
+        // - the frozen Linux/RISC-V native component stays Linux/RISC-V only;
+        //   a Mac target must never record a Linux component plan.
+        // `nil` is the pre-integration no-resolver path and keeps the
+        // historical behavior for both channels.
+        let canPlanTargetBoundDependencies = Self.targetAllowsDeclaredDependencyPlan(target)
+        let canPlanRuntimeComponents = Self.targetAllowsRuntimeComponentPlan(target)
         var results: [ManagedSkill] = []
         for row in rows {
             let snapshot = try snapshot(for: row, runID: runID)
@@ -2479,6 +2693,11 @@ final class SkillsCenter: ObservableObject {
             let builtin = DomainSkillLibrary.all.first { $0.id == row.id }
             var markdown = String(decoding: snapshot.files["SKILL.md"] ?? Data(), as: UTF8.self)
             if let pythonManifest { markdown += "\n## Current build runtime probe\n\(pythonManifest)\n" }
+            if let limitation = targetLimitationNote(
+                package: snapshot.package, target: target, context: compatibilityContext
+            ) {
+                markdown += "\n## Execution target\n\(limitation)\n"
+            }
             // Bundle delivery: only this exact-read path with the run's
             // execution binding may prepare the task-owned resource cache.
             // The `id == nil` return above guarantees list reads never stage.
@@ -2514,7 +2733,7 @@ final class SkillsCenter: ObservableObject {
                 // Recording downloads nothing, stages nothing new and executes
                 // nothing — readiness runs only at the approved exec.shell
                 // boundary. Packages without the descriptor file are untouched.
-                if let dependencyPreparation, let runID,
+                if canPlanTargetBoundDependencies, let dependencyPreparation, let runID,
                    let declarationBytes = snapshot.files[SkillDependency.packagePath] {
                     // A verified exact read of an installed official package
                     // that carries the dependency declaration records an
@@ -2546,7 +2765,7 @@ final class SkillsCenter: ObservableObject {
                         markdown += "\nPreparation status:\n\(status)\n"
                     }
                 }
-                if let runtimeComponents, let runID,
+                if canPlanRuntimeComponents, let runtimeComponents, let runID,
                    snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath] != nil {
                     let stagedRoot: String? = {
                         if case .staged(let staged) = outcome { return staged.guestRoot }
@@ -2568,7 +2787,8 @@ final class SkillsCenter: ObservableObject {
                 }
             }
             for path in snapshot.files.keys.sorted() where path.hasPrefix("scripts/") && path.hasSuffix(".py") {
-                markdown += "\n### Audited source: \(path)\nRun this source with python3 through exec.shell in the task's Linux environment. Preserve the source and follow its argument or JSON-stdin interface; no inputJSON variable is injected automatically.\n```python\n\(String(decoding: snapshot.files[path]!, as: UTF8.self))\n```\n"
+                let scriptTarget = target?.runtimeDescription ?? "resolved external target"
+                markdown += "\n### Audited source: \(path)\nRun this source with python3 through exec.shell in the task's \(scriptTarget) when that target provides python3. Preserve the source and follow its argument or JSON-stdin interface; no inputJSON variable is injected automatically.\n```python\n\(String(decoding: snapshot.files[path]!, as: UTF8.self))\n```\n"
                 if let stagedRoot {
                     markdown += "Staged copy: \(stagedRoot)/\(path) (the same pinned bytes; the pasted source above remains the fallback).\n"
                 }
@@ -3149,31 +3369,59 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
-    private func requireCompatibility(_ package: ValidatedSkillPackage) async throws {
-        let hasRemoteHost = ((try? await environment.remoteHostStore.hosts()) ?? []).isEmpty == false
-        // The selected task environment can be the app's local Linux guest or
-        // an authorized remote host; shell/Node scripts reuse that existing
-        // environment rather than requiring a remote connection.
-        let hasTaskEnvironment = hasRemoteHost || environment.linuxGuestService != nil
-        var supported: Set<SkillCapability> = [
-            .workspaceRead, .workspaceWrite, .workspaceDelete, .network,
-            .browserObserve, .browserInteract
-        ]
-        if case .available = await environment.localPythonProbe.probe() {
-            supported.insert(.localPython)
-        }
-        if hasTaskEnvironment { supported.insert(.remoteExecution) }
-        let environmentSnapshot = SkillRuntimeEnvironment(
-            platform: .iOS,
-            supportedCapabilities: supported,
-            registeredTools: Set(ToolCatalog.allDescriptors.map(\.name)).subtracting(supported.contains(.localPython) ? [] : [LocalPythonTool.name]),
-            // JavaScriptCore availability is not an executable tool.
-            supportsJavaScriptCore: false,
-            hasRemoteExecutionHost: hasTaskEnvironment
+    /// Task installs carry the exact run binding into admission so the actual
+    /// target (when resolvable) is part of the compatibility facts.
+    private static func resourceContext(for context: ToolContext) -> SkillResourceContext {
+        SkillResourceContext(
+            environmentID: context.environmentID ?? context.environment?.id,
+            workspaceRootURL: context.workspaceRootURL,
+            cancellation: context.cancellation
         )
-        let compatibility = SkillCompatibility.evaluate(package, in: environmentSnapshot)
-        guard compatibility.isRunnable else {
-            throw FloeError.invalidConfiguration("This skill requests capabilities unavailable on this iPhone/iPad")
+    }
+
+    /// Install/update admission. App-native capability and tool ownership is
+    /// judged against this build; external work is allowed to install even
+    /// when the current target cannot run it (it is deferred honestly), but a
+    /// KNOWN target's real limitations are part of the report. The old
+    /// "exists any remote host" snapshot is gone: a target is used only when
+    /// the trusted resolver actually produced one.
+    private func requireCompatibility(
+        _ package: ValidatedSkillPackage,
+        runID: UUID? = nil,
+        resourceContext: SkillResourceContext? = nil
+    ) async throws {
+        let target = await effectiveRuntimeTarget(
+            runID: runID, resourceContext: resourceContext
+        )
+        let context = await appCompatibilityContext()
+        let report = SkillRuntimeCompatibility.evaluate(
+            package, target: target,
+            appCapabilities: context.capabilities,
+            appTools: context.tools,
+            mode: .install
+        )
+        guard report.isInstallable else {
+            throw FloeError.invalidConfiguration(
+                report.base.problems.first.map(Self.compatibilityProblemText)
+                    ?? "This skill requests capabilities unavailable on this iPhone/iPad"
+            )
+        }
+    }
+
+    private static func compatibilityProblemText(_ problem: SkillCompatibilityProblem) -> String {
+        switch problem {
+        case .unsupportedPlatform:
+            return "This skill does not support iPhone or iPad"
+        case .unavailableCapability(let capability):
+            return "This build does not support the declared \(capability.rawValue) capability"
+        case .unavailableTool(let tool):
+            return "A required tool is not available in this build: \(tool)"
+        case .javaScriptCoreUnavailable:
+            return "This build has no executable JavaScript runtime for this skill"
+        case .localPythonUnavailable:
+            return "The managed Python environment is not available in this build"
+        case .remoteHostRequired:
+            return "This skill requires an external execution target, but none is configured"
         }
     }
 
@@ -3353,6 +3601,574 @@ extension SkillsCenter: SkillDependencyInvocationGating {
             return .proceed(annotation: annotation)
         case .refused(let reason):
             return .refused(reason: reason)
+        }
+    }
+}
+
+// MARK: - Native migration preview and compatible pinned resource staging
+
+/// One enabled installed Skill whose EXTERNAL portion cannot execute on the
+/// requested migration target. App-native/text guidance is never a
+/// capability loss: only the external script/dependency half is reported.
+struct SkillMigrationSkillLimitation: Sendable, Equatable {
+    let skillID: String
+    let name: String
+    let version: String
+    /// Model-safe external limitation messages. Never empty.
+    let reasons: [String]
+    /// True only for an installed, enabled, digest-verified curated package
+    /// whose reviewed declaration/authority validates in this build.
+    let hasReviewedDependencyDeclaration: Bool
+}
+
+/// One reviewed declared dependency relevant to the migration target. Derived
+/// ONLY from an installed, enabled, digest-verified curated package with a
+/// valid typed receipt; never from model text, a foreign declaration or an
+/// unverified install.
+struct SkillMigrationDependency: Sendable, Equatable {
+    let skillID: String
+    let skillName: String
+    let kind: String
+    let name: String
+    let version: String?
+    let required: Bool
+    /// False when the exact target cannot prepare this kind, for example apt
+    /// on macOS or a runtime component on a non-Linux/RISC-V target.
+    let targetSupported: Bool
+    let reason: String?
+}
+
+/// Read-only preflight for one trusted migration target. It records no plan,
+/// stages nothing, executes nothing and mints no grant.
+struct SkillMigrationPreview: Sendable, Equatable {
+    let target: SkillRuntimeTarget
+    /// Enabled installed Skills whose external portion cannot run on target.
+    let limitations: [SkillMigrationSkillLimitation]
+    /// Exact reviewed declaration pins whose profiles match the target.
+    let dependencies: [SkillMigrationDependency]
+    /// Enabled external Skills with no valid reviewed declaration. They remain
+    /// model-managed; no verified readiness is claimed.
+    let modelManagedSkillIDs: [String]
+    /// Non-empty means the primary must not commit the migration.
+    let blockingReasons: [String]
+
+    /// User-facing optional losses. External capability loss plus optional
+    /// dependency gaps; App-native/text guidance never appears here.
+    var optionalCapabilityLosses: [String] {
+        var losses: [String] = []
+        for limitation in limitations {
+            losses.append(
+                "\(limitation.name) [\(limitation.skillID)]: "
+                    + limitation.reasons.joined(separator: "; ")
+            )
+        }
+        for dependency in dependencies where !dependency.required && !dependency.targetSupported {
+            let pin = dependency.version.map { " \($0)" } ?? ""
+            let reason = dependency.reason.map { ": " + $0 } ?? ""
+            losses.append(
+                "\(dependency.skillName) [\(dependency.skillID)]: "
+                    + "\(dependency.kind) \(dependency.name)\(pin) cannot be prepared on this target\(reason)"
+            )
+        }
+        return losses
+    }
+
+    /// True only when the UI must obtain explicit user acceptance for an
+    /// optional loss. A blocking required gap is never "accepted".
+    var requiresExplicitAcceptance: Bool {
+        !limitations.isEmpty || dependencies.contains { !$0.required && !$0.targetSupported }
+    }
+
+    /// False blocks the migration; required dependency gaps are structural.
+    var canProceed: Bool { blockingReasons.isEmpty }
+
+    /// True when at least one exact reviewed requirement must be prepared and
+    /// read back before the migration may commit.
+    var requiresDependencyPreparation: Bool { dependencies.contains { $0.required } }
+
+    /// Stable target identity for the primary's preflight/ledger comparison.
+    var targetFingerprint: String { target.identityFingerprint }
+}
+
+/// One per-Skill result of compatible pinned resource staging.
+struct SkillMigrationStagedResource: Sendable, Equatable {
+    enum State: String, Sendable, Equatable {
+        case staged
+        case skipped
+        case unavailable
+    }
+
+    let skillID: String
+    let version: String
+    let digest: String
+    let state: State
+    /// Portable guest path; only for `.staged`.
+    let guestRoot: String?
+    let fileCount: Int?
+    /// Model-safe reason; only for `.skipped`/`.unavailable`.
+    let reason: String?
+}
+
+/// Migration-owned receipt for compatible pinned resource staging. The
+/// migration id is provenance/ownership only: no run record is synthesized,
+/// no approval grant is created and no dependency plan/receipt is touched.
+/// The marked `.run-snapshots/<migrationID>` preparation tree is removed by
+/// `releaseMigrationResources`; it is never a task-run snapshot.
+struct SkillMigrationResourceStaging: Sendable, Equatable {
+    let migrationID: UUID
+    let targetFingerprint: String
+    /// Sorted by skill id. Empty when the whole request failed before
+    /// enumeration (see `failureReason`).
+    let entries: [SkillMigrationStagedResource]
+    let failureReason: String?
+
+    var stagedCount: Int { entries.filter { $0.state == .staged }.count }
+    var unavailableCount: Int { entries.filter { $0.state == .unavailable }.count }
+
+    /// Enabled installed skill id -> the digest observed for this staging
+    /// selection. The primary can compare this snapshot with its transactional
+    /// enabled-installed digest CAS before commit; `.skipped`/`.unavailable`
+    /// rows are included so the selection is complete, but they are not staged.
+    var skillDigests: [String: String] {
+        Dictionary(uniqueKeysWithValues: entries.map { ($0.skillID, $0.digest) })
+    }
+}
+
+/// Outcome of removing the migration-owned pinned preparation snapshot.
+/// `.notOwned` means a same-UUID entry exists but carries no migration marker
+/// (for example a REAL task-run snapshot); it is never removed.
+enum SkillMigrationResourceRelease: String, Sendable, Equatable {
+    case released
+    case absent
+    case notOwned
+    case failed
+}
+
+enum SkillMigrationStagingReason {
+    static let notConfigured = "Skill resource staging is not configured in this build"
+    static let noWorkspace = "the migration resource context carries no workspace root"
+    static let environmentMismatch = "the provided tool environment does not match the migration resource context"
+    static let inventoryUnavailable = "the installed Skill inventory could not be read"
+    static let invalidPinnedPackage = "the installed pinned package could not be validated"
+    static let snapshotConflict = "the migration preparation snapshot root is unavailable or already owned by a non-migration task snapshot; nothing was staged or removed"
+    static let pinnedSnapshotStale = "the installed package changed after this migration pinned its snapshot; release and re-stage the migration"
+}
+
+/// Marker proving a `.run-snapshots/<uuid>` tree was created by migration
+/// staging for a migration id, never by a real task run. Release refuses any
+/// directory without this exact marker.
+private let skillMigrationSnapshotMarker = ".floe-migration-owner"
+
+private func skillMigrationSnapshotMarkerValue(_ migrationID: UUID) -> String {
+    "migration:\(migrationID.uuidString)"
+}
+
+extension SkillsCenter {
+    /// Whether a verified exact read on this target may record the reviewed
+    /// dependency plan. `nil` is the pre-integration no-resolver fact; a
+    /// resolver that returns `.unresolved` is final and never treated as that
+    /// legacy path. Every real external target (Linux VM / Mac bridge / typed
+    /// SSH Linux or macOS) may plan pip/npm declarations.
+    nonisolated static func targetAllowsDeclaredDependencyPlan(_ target: SkillRuntimeTarget?) -> Bool {
+        guard let target else { return true }
+        return target.isResolved && target.hasExternalExecution
+    }
+
+    /// The frozen Linux/RISC-V native component channel stays Linux/RISC-V
+    /// only. `nil` keeps the historical no-resolver behavior; a macOS or
+    /// non-RISC-V target never records a Linux component plan.
+    nonisolated static func targetAllowsRuntimeComponentPlan(_ target: SkillRuntimeTarget?) -> Bool {
+        guard let target else { return true }
+        return target.supportsPackageManager("runtimeComponent")
+    }
+
+    /// Native migration preflight. Read-only: installed pinned snapshots are
+    /// digest-verified, only curated declarations become dependency data, and
+    /// no plan, stage, install or grant is produced.
+    func migrationPreview(
+        target: SkillRuntimeTarget,
+        skillIDs: [String]? = nil,
+        requiredSkillIDs: Set<String>? = nil
+    ) async -> SkillMigrationPreview {
+        let compatibilityContext = await appCompatibilityContext()
+        var limitations: [SkillMigrationSkillLimitation] = []
+        var dependencies: [SkillMigrationDependency] = []
+        var modelManaged = Set<String>()
+        var blockingReasons: [String] = []
+        func appendBlocking(_ reason: String) {
+            guard !blockingReasons.contains(reason) else { return }
+            blockingReasons.append(reason)
+        }
+
+        if !target.isResolved {
+            appendBlocking(SkillDependencyReason.targetUnavailable)
+        } else if !target.hasExternalExecution {
+            appendBlocking(SkillDependencyReason.targetUnsupported)
+        } else if !target.isConnected {
+            appendBlocking(SkillDependencyReason.targetDisconnected)
+        }
+
+        let requested: Set<String>? = skillIDs.map { Set($0) }
+        let rows: [PersistedSkill]
+        do {
+            rows = try await environment.skillStore.all()
+        } catch {
+            appendBlocking(SkillMigrationStagingReason.inventoryUnavailable)
+            return SkillMigrationPreview(
+                target: target,
+                limitations: [],
+                dependencies: [],
+                modelManagedSkillIDs: [],
+                blockingReasons: blockingReasons
+            )
+        }
+        for row in rows where row.status == "enabled" && (requested?.contains(row.id) ?? true) {
+            guard let installedSnapshot = try? snapshot(for: row, runID: nil) else {
+                appendBlocking("\(row.id): \(SkillMigrationStagingReason.invalidPinnedPackage)")
+                continue
+            }
+            let package = installedSnapshot.package
+            guard SkillRuntimeCompatibility.requiresExternalExecution(package) else {
+                // App-native/text guidance is never a migration capability
+                // loss; it stays readable on every target.
+                continue
+            }
+            let report = SkillRuntimeCompatibility.evaluate(
+                package, target: target,
+                appCapabilities: compatibilityContext.capabilities,
+                appTools: compatibilityContext.tools,
+                mode: .run
+            )
+            let reasons = report.targetProblems.map { $0.message }
+
+            let grants: Set<String>
+            do {
+                grants = try await environment.skillStore.allowedCapabilities(skillID: row.id)
+            } catch {
+                if !reasons.isEmpty {
+                    limitations.append(SkillMigrationSkillLimitation(
+                        skillID: row.id,
+                        name: row.name,
+                        version: package.manifest.version,
+                        reasons: reasons,
+                        hasReviewedDependencyDeclaration: false
+                    ))
+                }
+                appendBlocking("\(row.id): \(SkillDependencyReason.authorizationUnavailable)")
+                continue
+            }
+            let authority = Self.dependencyAuthority(
+                row: row, snapshot: installedSnapshot, grantedCapabilities: grants
+            )
+            let declaration = authority.flatMap {
+                try? SkillDependencyPreparationCenter.decodeAndValidate($0)
+            }
+            if !reasons.isEmpty {
+                limitations.append(SkillMigrationSkillLimitation(
+                    skillID: row.id,
+                    name: row.name,
+                    version: package.manifest.version,
+                    reasons: reasons,
+                    hasReviewedDependencyDeclaration: declaration != nil
+                ))
+            }
+            guard let authority, let declaration else {
+                // An external skill without a reviewed declaration stays
+                // model-managed; no dependency readiness is claimed.
+                modelManaged.insert(row.id)
+                continue
+            }
+            // Installed availability is broader than this task's unfinished work.
+            // Dormant external packages may be unavailable after a move without
+            // forcing all their dependencies into every destination.
+            guard requiredSkillIDs?.contains(row.id) ?? true else { continue }
+            let matching = declaration.profiles.filter {
+                SkillDependencyPreparationCenter.profileMatches($0, target: target)
+            }
+            guard !matching.isEmpty else {
+                // A platform-mismatched declaration is a structural block only
+                // when it actually declares a REQUIRED dependency. An
+                // optional-only declaration is an optional capability gap; the
+                // primary can skip its preparation instead of blocking.
+                let requiredPins = Set(declaration.profiles.flatMap { profile in
+                    profile.requirements.filter { $0.required }.map { requirement in
+                        requirement.version.map {
+                            "\(requirement.kind.rawValue) \(requirement.name)==\($0)"
+                        } ?? "\(requirement.kind.rawValue) \(requirement.name)"
+                    }
+                }).sorted()
+                if !requiredPins.isEmpty, target.isResolved, target.hasExternalExecution {
+                    appendBlocking(
+                        "\(row.id): " + SkillDependencyReason.noMatchingTarget(
+                            os: target.profileOS ?? target.runtimeDescription,
+                            architectures: target.normalizedArchitectures
+                        ) + " (required: \(requiredPins.joined(separator: ", ")))"
+                    )
+                }
+                continue
+            }
+            for profile in matching {
+                for requirement in profile.requirements {
+                    let refusal = SkillDependencyPreparationCenter.targetRefusal(
+                        requirement: requirement, target: target, authority: authority
+                    )
+                    let dependency = SkillMigrationDependency(
+                        skillID: row.id,
+                        skillName: row.name,
+                        kind: requirement.kind.rawValue,
+                        name: requirement.name,
+                        version: requirement.version,
+                        required: requirement.required,
+                        targetSupported: refusal == nil,
+                        reason: refusal
+                    )
+                    if !dependencies.contains(dependency) { dependencies.append(dependency) }
+                    if requirement.required, let refusal {
+                        appendBlocking("\(row.id): \(requirement.identityKey): \(refusal)")
+                    }
+                }
+            }
+        }
+
+        limitations.sort { $0.skillID == $1.skillID ? $0.version < $1.version : $0.skillID < $1.skillID }
+        dependencies.sort {
+            if $0.skillID != $1.skillID { return $0.skillID < $1.skillID }
+            if $0.kind != $1.kind { return $0.kind < $1.kind }
+            return $0.name < $1.name
+        }
+        return SkillMigrationPreview(
+            target: target,
+            limitations: limitations,
+            dependencies: dependencies,
+            modelManagedSkillIDs: modelManaged.sorted(),
+            blockingReasons: blockingReasons
+        )
+    }
+
+    /// Stage ONLY compatible, exact-pinned installed Skill resources for the
+    /// native migration UI. Uses the existing stager and its external publish
+    /// seam; does not synthesize a run, mint an approval grant or touch
+    /// dependency plans/receipts. `migrationID` owns a marked preparation
+    /// snapshot (never a real task-run snapshot) that
+    /// `releaseMigrationResources(migrationID:)` removes after the migration
+    /// reaches a terminal state.
+    func stageMigrationSkillResources(
+        migrationID: UUID,
+        target: SkillRuntimeTarget,
+        toolEnvironment: ToolEnvironment,
+        resourceContext: SkillResourceContext,
+        skillIDs: [String]? = nil
+    ) async -> SkillMigrationResourceStaging {
+        let fingerprint = target.identityFingerprint
+        func refusal(_ reason: String) -> SkillMigrationResourceStaging {
+            SkillMigrationResourceStaging(
+                migrationID: migrationID,
+                targetFingerprint: fingerprint,
+                entries: [],
+                failureReason: reason
+            )
+        }
+        guard target.isResolved else { return refusal(SkillDependencyReason.targetUnavailable) }
+        guard target.hasExternalExecution else { return refusal(SkillDependencyReason.targetUnsupported) }
+        guard target.isConnected else { return refusal(SkillDependencyReason.targetDisconnected) }
+        guard !resourceContext.cancellation.isCancelled else { return refusal(SkillStageReason.cancelled) }
+        guard let resourceStager else { return refusal(SkillMigrationStagingReason.notConfigured) }
+        guard let workspaceRootURL = resourceContext.workspaceRootURL else {
+            return refusal(SkillMigrationStagingReason.noWorkspace)
+        }
+        let declaredEnvironmentID = resourceContext.environmentID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let declaredEnvironmentID, !declaredEnvironmentID.isEmpty,
+           declaredEnvironmentID != toolEnvironment.id {
+            return refusal(SkillMigrationStagingReason.environmentMismatch)
+        }
+        let context = SkillResourceContext(
+            environmentID: toolEnvironment.id,
+            workspaceRootURL: workspaceRootURL,
+            cancellation: resourceContext.cancellation
+        )
+        let compatibilityContext = await appCompatibilityContext()
+        guard let rows = try? await environment.skillStore.all() else {
+            return refusal(SkillMigrationStagingReason.inventoryUnavailable)
+        }
+        let requested: Set<String>? = skillIDs.map { Set($0) }
+        var entries: [SkillMigrationStagedResource] = []
+        var preparedMigrationSnapshot = false
+        for row in rows where row.status == "enabled" && (requested?.contains(row.id) ?? true) {
+            if resourceContext.cancellation.isCancelled {
+                entries.sort { $0.skillID < $1.skillID }
+                return SkillMigrationResourceStaging(
+                    migrationID: migrationID,
+                    targetFingerprint: fingerprint,
+                    entries: entries,
+                    failureReason: SkillStageReason.cancelled
+                )
+            }
+            if !preparedMigrationSnapshot {
+                // A migration is not a task run. Its pinned bytes live in a
+                // `.run-snapshots/<migrationID>` tree carrying the migration
+                // marker; staging refuses to adopt a same-UUID tree without
+                // that marker (a real task-run snapshot) and release will
+                // never delete one. Created lazily only when a real row will
+                // be pinned, so an empty/refused preflight leaks nothing.
+                guard prepareMigrationSnapshotRoot(migrationID: migrationID) else {
+                    return refusal(SkillMigrationStagingReason.snapshotConflict)
+                }
+                preparedMigrationSnapshot = true
+            }
+            guard let installedSnapshot = try? snapshot(for: row, runID: migrationID) else {
+                entries.append(SkillMigrationStagedResource(
+                    skillID: row.id,
+                    version: row.version,
+                    digest: row.rewrittenDigest,
+                    state: .unavailable,
+                    guestRoot: nil,
+                    fileCount: nil,
+                    reason: SkillMigrationStagingReason.invalidPinnedPackage
+                ))
+                continue
+            }
+            // A retry must not stage bytes that no longer match the enabled
+            // installed row. The primary's transactional digest CAS is the
+            // final commit gate; this is the honest staging-time check.
+            guard installedSnapshot.package.canonicalSHA256 == row.rewrittenDigest else {
+                entries.append(SkillMigrationStagedResource(
+                    skillID: row.id,
+                    version: row.version,
+                    digest: row.rewrittenDigest,
+                    state: .unavailable,
+                    guestRoot: nil,
+                    fileCount: nil,
+                    reason: SkillMigrationStagingReason.pinnedSnapshotStale
+                ))
+                continue
+            }
+            let package = installedSnapshot.package
+            if SkillRuntimeCompatibility.requiresExternalExecution(package) {
+                let report = SkillRuntimeCompatibility.evaluate(
+                    package, target: target,
+                    appCapabilities: compatibilityContext.capabilities,
+                    appTools: compatibilityContext.tools,
+                    mode: .run
+                )
+                if !report.targetProblems.isEmpty {
+                    entries.append(SkillMigrationStagedResource(
+                        skillID: row.id,
+                        version: package.manifest.version,
+                        digest: package.canonicalSHA256,
+                        state: .skipped,
+                        guestRoot: nil,
+                        fileCount: nil,
+                        reason: report.limitationDescription
+                            ?? "external steps are not available on \(target.runtimeDescription)"
+                    ))
+                    continue
+                }
+            }
+            let outcome = await resourceStager.stage(snapshot: installedSnapshot, in: context)
+            switch outcome {
+            case .staged(let staged):
+                entries.append(SkillMigrationStagedResource(
+                    skillID: row.id,
+                    version: package.manifest.version,
+                    digest: package.canonicalSHA256,
+                    state: .staged,
+                    guestRoot: staged.guestRoot,
+                    fileCount: staged.fileCount,
+                    reason: nil
+                ))
+            case .unavailable(let reason):
+                entries.append(SkillMigrationStagedResource(
+                    skillID: row.id,
+                    version: package.manifest.version,
+                    digest: package.canonicalSHA256,
+                    state: .unavailable,
+                    guestRoot: nil,
+                    fileCount: nil,
+                    reason: reason
+                ))
+            }
+        }
+        entries.sort { $0.skillID < $1.skillID }
+        return SkillMigrationResourceStaging(
+            migrationID: migrationID,
+            targetFingerprint: fingerprint,
+            entries: entries,
+            failureReason: nil
+        )
+    }
+
+    private func migrationSnapshotDirectory(_ migrationID: UUID) -> URL {
+        installationRoot
+            .appendingPathComponent(".run-snapshots", isDirectory: true)
+            .appendingPathComponent(migrationID.uuidString, isDirectory: true)
+    }
+
+    /// Create/adopt ONLY a migration-marked pinned snapshot tree. A directory
+    /// without the exact marker is a foreign entry (normally a REAL run
+    /// snapshot) and is never adopted, written into or later removed.
+    private func prepareMigrationSnapshotRoot(migrationID: UUID) -> Bool {
+        let fileManager = FileManager.default
+        let runsRoot = installationRoot.appendingPathComponent(".run-snapshots", isDirectory: true)
+        if fileManager.fileExists(atPath: runsRoot.path) {
+            guard SkillWorkspaceResourceStager.isPlainDirectory(runsRoot) else { return false }
+        } else {
+            try? fileManager.createDirectory(at: runsRoot, withIntermediateDirectories: false)
+            guard SkillWorkspaceResourceStager.isPlainDirectory(runsRoot) else { return false }
+        }
+        let directory = migrationSnapshotDirectory(migrationID)
+        guard !SkillWorkspaceResourceStager.isSymbolicLink(directory) else { return false }
+        let marker = directory.appendingPathComponent(skillMigrationSnapshotMarker)
+        let expectedMarker = skillMigrationSnapshotMarkerValue(migrationID)
+        if fileManager.fileExists(atPath: directory.path) {
+            guard SkillWorkspaceResourceStager.isPlainDirectory(directory),
+                  !SkillWorkspaceResourceStager.isSymbolicLink(marker),
+                  let bytes = try? Data(contentsOf: marker),
+                  String(decoding: bytes, as: UTF8.self) == expectedMarker else {
+                return false
+            }
+            return true
+        }
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: false)
+            guard SkillWorkspaceResourceStager.isPlainDirectory(directory) else {
+                try? fileManager.removeItem(at: directory)
+                return false
+            }
+            try Data(expectedMarker.utf8).write(to: marker, options: .atomic)
+            return true
+        } catch {
+            // Only a directory this branch just created is cleaned; a
+            // pre-existing foreign/real-run tree is never touched.
+            try? fileManager.removeItem(at: directory)
+            return false
+        }
+    }
+
+    /// Remove ONLY the migration-owned pinned preparation snapshot created by
+    /// `stageMigrationSkillResources`. The primary calls this after the
+    /// migration is committed/completed/cancelled and no worker still uses the
+    /// snapshot. Real task-run snapshots, the target's staged workspace bundle
+    /// and dependency receipts/shared version resources are never touched.
+    @discardableResult
+    func releaseMigrationResources(migrationID: UUID) -> SkillMigrationResourceRelease {
+        let fileManager = FileManager.default
+        let directory = migrationSnapshotDirectory(migrationID)
+        guard fileManager.fileExists(atPath: directory.path) else { return .absent }
+        let runsRoot = installationRoot.appendingPathComponent(".run-snapshots", isDirectory: true)
+        guard SkillWorkspaceResourceStager.isPlainDirectory(runsRoot),
+              SkillWorkspaceResourceStager.isPlainDirectory(directory) else { return .notOwned }
+        let marker = directory.appendingPathComponent(skillMigrationSnapshotMarker)
+        guard !SkillWorkspaceResourceStager.isSymbolicLink(marker),
+              let bytes = try? Data(contentsOf: marker),
+              String(decoding: bytes, as: UTF8.self) == skillMigrationSnapshotMarkerValue(migrationID) else {
+            return .notOwned
+        }
+        do {
+            try fileManager.removeItem(at: directory)
+            return .released
+        } catch {
+            return .failed
         }
     }
 }

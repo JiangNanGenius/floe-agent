@@ -2248,6 +2248,7 @@ public struct SubagentRunner: Sendable {
                     outputFiles: result.outputFiles,
                     provenance: result.provenance,
                     maximumSummaryCharacters: maximumResultBytes,
+                    outcomeUnknown: result.outcomeUnknown,
                     // Safe receipt metadata survives clipping: it names the
                     // retained record without carrying any output body.
                     captureInfo: result.captureInfo
@@ -2683,7 +2684,7 @@ public struct SubagentRunner: Sendable {
             outputSummary: result.outputSummary,
             outputDigest: result.outputDigest,
             exitStatus: result.exitStatus,
-            captureInfo: result.captureInfo
+            captureInfo: result.captureInfo, outcomeUnknown: result.outcomeUnknown
         )
     }
 
@@ -2723,6 +2724,7 @@ public struct SubagentRunner: Sendable {
             outputSummary: result.outputSummary,
             outputDigest: result.outputDigest,
             exitStatus: result.exitStatus,
+            outcomeUnknown: result.outcomeUnknown ?? false,
             captureInfo: result.captureInfo
         )
     }

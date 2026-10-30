@@ -11,6 +11,7 @@
 // new fixture of their own.
 
 import XCTest
+import UIKit
 
 @MainActor
 final class ThreadSearchScheduleUITests: XCTestCase {

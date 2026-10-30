@@ -226,8 +226,8 @@ struct BrowserSettingsView: View {
                 Text(IDELanguageRunText.t("模型接收方", "Model recipient"))
             } footer: {
                 Text(IDELanguageRunText.t(
-                    "授权按提供商保留，不会按网站或每次调用重复询问。",
-                    "Authorization is retained per provider, not requested per site or per call."
+                    "提供商授权会保留。工具操作仍遵循当前任务的审批设置。",
+                    "Provider consent is saved. Tool actions still follow this task’s approval settings."
                 ))
             }
         }

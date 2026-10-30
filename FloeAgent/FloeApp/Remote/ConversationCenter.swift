@@ -1117,6 +1117,7 @@ final class ConversationCenter: ObservableObject {
     /// Live run services keyed by run ID. The center is the single owner;
     /// thread view-models observe through it.
     private var runServices: [UUID: ConversationRunService] = [:]
+    private var environmentMigrationWaitingLaunches: Set<UUID> = []
     /// Provider-loop tasks retained so destructive actions can cancel and
     /// await them before cascading database rows.
     private var runTasks: [UUID: Task<Result<Void, Error>, Never>] = [:]
@@ -3340,6 +3341,14 @@ final class ConversationCenter: ObservableObject {
         // stores, no workspace lease, no personalization/memory recall, and a
         // strict read-only tool ceiling — never a parallel runtime.
         let isTemporary = temporaryAuthority ?? isTemporaryConversation(conversationID)
+        if !isTemporary, runSurface == .ordinary, environment.taskExecutionEnvironments.isMigrating(conversationID) {
+            environmentMigrationWaitingLaunches.insert(runID)
+            defer { environmentMigrationWaitingLaunches.remove(runID) }
+            while environment.taskExecutionEnvironments.isMigrating(conversationID) {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        }
         // Canonical temporary execution configuration. Sending `.chat` used
         // to set `toolsEnabled == false`, which produced a model request with
         // ZERO tool schemas and silently bypassed the audited read-only
@@ -3527,36 +3536,29 @@ final class ConversationCenter: ObservableObject {
         // runs without a task root never bind (no first-project fallback) and
         // nil keeps the execution layer's existing resolution.
         let runExecutionEnvironmentID: String?
-        if let environmentBindingOverride {
-            // Explicit, TRUSTED binding from a scheduled task's frozen
-            // record: revalidated against the real registry (exists and is
-            // not deleting) and used as-is. It reaches the launched run and
-            // every child; it is never derived from model text and never
-            // falls back silently: a removed/stopped binding stops launch
-            // before a different environment can be resolved or downloaded.
-            guard let bound = await environment.environmentRegistry.record(id: environmentBindingOverride),
-                  bound.state == .active, !bound.requiresRebuild else {
-                throw FloeError.invalidConfiguration(String(localized: "environment.binding.unavailable"))
+        var runExecutionBinding: TaskExecutionBinding?
+        var externalEnvironmentUnavailable: String?
+        if isTemporary || runSurface == .canvas {
+            runExecutionEnvironmentID = nil
+        } else if isNotesAssistant {
+            runExecutionEnvironmentID = await Self.ensureRunEnvironmentBinding(
+                registry: environment.environmentRegistry, conversationID: conversationID,
+                taskRoot: notesScratchRoot)
+        } else if let root = taskRootLease?.url {
+            do {
+                let pin = try await environment.taskExecutionEnvironments.resolveBinding(
+                    conversationID: conversationID, runID: runID, root: root,
+                    workspace: canonicalWorkspace, override: environmentBindingOverride)
+                runExecutionBinding = pin
+                runExecutionEnvironmentID = pin.target.environmentID
+            } catch let unavailable as TaskExecutionAvailabilityError {
+                // A disconnected command target does not disable App-native
+                // search, documents, browser or CAD, and never selects a VM.
+                externalEnvironmentUnavailable = unavailable.localizedDescription
+                runExecutionEnvironmentID = nil
             }
-            runExecutionEnvironmentID = environmentBindingOverride
-        } else if isTemporary {
-            runExecutionEnvironmentID = nil
-        } else if runSurface == .canvas {
-            runExecutionEnvironmentID = nil
         } else {
-            let environmentRoot = taskRootLease?.url ?? notesScratchRoot
-            let bridgeConnected: Bool
-            if ProcessInfo.processInfo.isiOSAppOnMac, MacBridgeRoutingPreferences.preferMacForNewTasks {
-                bridgeConnected = await MacBridgeClient.shared.isConnected()
-            } else {
-                bridgeConnected = false
-            }
-            runExecutionEnvironmentID = try await Self.ensurePreferredRunEnvironmentBinding(
-                registry: environment.environmentRegistry,
-                conversationID: conversationID,
-                taskRoot: environmentRoot,
-                macBridgeConnected: bridgeConnected
-            )
+            runExecutionEnvironmentID = nil
         }
 
         let catalogExecutor = CatalogToolExecutor()
@@ -3579,24 +3581,13 @@ final class ConversationCenter: ObservableObject {
             activeGoal = nil
             contentOverlay = .empty
         } else {
-            if let environmentID = runExecutionEnvironmentID,
-               let record = await environment.environmentRegistry.record(id: environmentID),
-               record.effectiveExecutionBackend == .macBridge {
-                let originals = try await MacOriginalSkillsCenter.shared.runtimeSelection(runID: runID)
-                let native = await environment.skillsCenter.nativeBundledRuntimeSelectionForMac(
-                    excluding: originals.skillIDs
-                )
-                skills = SkillsCenter.RuntimeSelection(
-                    skillIDs: native.skillIDs.union(originals.skillIDs),
-                    allowedToolNames: nil,
-                    instructions: [native.instructions, originals.instructions].compactMap { $0 }
-                        .filter { !$0.isEmpty }.joined(separator: "\n\n"),
-                    preapprovedPythonScriptSHA256: [], preapprovedPythonPackages: [],
-                    relatedSkillIDsByTool: native.relatedSkillIDsByTool
-                )
-            } else {
-                skills = await environment.skillsCenter.runtimeSelection(runID: runID)
-            }
+            let installed = await environment.skillsCenter.runtimeSelection(runID: runID,
+                resourceContext: SkillResourceContext(environmentID: runExecutionEnvironmentID,
+                    workspaceRootURL: runWorkspaceRoot, cancellation: CancellationToken()))
+            if runExecutionBinding?.target.backend == .macBridge {
+                let originals = (try? await MacOriginalSkillsCenter.shared.runtimeSelection(runID: runID)) ?? .none
+                skills = SkillsCenter.mergedRuntimeSelection([installed, originals])
+            } else { skills = installed }
             personalization = await runtimePersonalizationContext(
                 query: memoryQuery,
                 workspaceID: canonicalWorkspaceID,
@@ -3623,6 +3614,11 @@ final class ConversationCenter: ObservableObject {
             var names = taskPolicy.allowedToolNames
                 ?? Set(availableDescriptors.map(\.name))
             for descriptor in availableDescriptors {
+                if runExecutionBinding?.target.backend == .remoteSSH,
+                   taskPolicy.remoteExecutionAllowed == false,
+                   CapabilityExecutionRouter.decision(for: descriptor.name).backend == .linuxGuest {
+                    names.remove(descriptor.name)
+                }
                 let risks = Set(descriptor.riskLabels)
                 let denied = (taskPolicy.networkAllowed == false && risks.contains(.networkAccess))
                     || (taskPolicy.approvalMode == "readOnly" && descriptor.effect != .readOnly)
@@ -3647,6 +3643,12 @@ final class ConversationCenter: ObservableObject {
         )
         allowedToolNames = allowedToolNames.map { $0.intersection(appleEnabledTools) }
             ?? appleEnabledTools
+        if externalEnvironmentUnavailable != nil {
+            let usable = Set(availableDescriptors.filter {
+                CapabilityExecutionRouter.decision(for: $0.name).backend != .linuxGuest
+            }.map(\.name))
+            allowedToolNames = allowedToolNames.map { $0.intersection(usable) } ?? usable
+        }
         if !Self.requestsAgentMemoryTools(memoryQuery) {
             let withoutMemory = Set(availableDescriptors.lazy
                 .map(\.name)
@@ -3864,6 +3866,8 @@ final class ConversationCenter: ObservableObject {
             // children (see `runBoundExecutionEnvironmentID`). A temporary
             // chat or a fresh task has no such container and stays nil.
             environmentID: runExecutionEnvironmentID,
+            executionBinding: runExecutionBinding,
+            remoteExecutionEnvironment: runExecutionBinding?.target.backend == .remoteSSH,
             // Trusted guest classification for the deterministic local
             // command carve-out: true for a local Linux guest environment
             // (see `isLocalLinuxGuestEnvironment`); shared/project guests are
@@ -4005,7 +4009,9 @@ final class ConversationCenter: ObservableObject {
             currentUserImages: currentUserImages,
             runContext: ConversationRunService.RunContext(
                 workspaceName: canonicalWorkspace?.name,
-                executionTarget: canonicalWorkspace?.activeTarget.kindName,
+                executionTarget: runExecutionBinding.map { "\($0.target.backend.rawValue) (\($0.target.operatingSystem)/\($0.target.architecture)); App-native tools keep their App-owned services and paths" }
+                    ?? externalEnvironmentUnavailable.map { "Selected command environment unavailable: \($0). App-native tools remain available. No fallback environment was started." }
+                    ?? canonicalWorkspace?.activeTarget.kindName,
                 availableToolNames: allowedToolNames,
                 skillInstructions: [
                     skills.instructions,
@@ -7355,6 +7361,10 @@ final class ConversationCenter: ObservableObject {
     /// True while this process still owns either preprocessing or a concrete
     /// runtime service for the run. UI projections use this to distinguish
     /// the atomic-launch gap from a genuinely parked run.
+    func hasLiveOwnerForEnvironmentMigration(runID: UUID) -> Bool {
+        !environmentMigrationWaitingLaunches.contains(runID) && hasLiveOwner(runID: runID)
+    }
+
     func hasLiveOwner(runID: UUID?) -> Bool {
         guard let runID else { return false }
         return runTasks[runID] != nil || runServices[runID] != nil || activeRuns[runID] != nil

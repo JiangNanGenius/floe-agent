@@ -1,0 +1,359 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "floe://schemas/skill-dependencies/2",
+  "title": "Floe official Skill dependency declaration v2 (references/dependencies.json)",
+  "description": "Author-facing documentation of schemaVersion 2. The native strict decoder in FloeAgent/Sources/FloeSkills/SkillDependency.swift is the authority. V2 keeps the SAME top-level, profile and requirement key sets, exact pins, pip lock/integrity rules and limits as v1, and adds exactly one new target value: profiles may target `macos` with `pip` and `npm` requirements only. apt, font and runtimeComponent stay Linux-only and fail closed on macOS; v1 remains Linux-only and unchanged. The file still lives inside the canonical Skill package at references/dependencies.json, so the signed contentDigest covers its bytes and every referenced lock; old clients treat it as inert data, and a client that does not yet decode v2 fails the provisioning channel closed. Every v2 declaration must keep the package's EXISTING hub-entry minimumAppVersion at 1.7.65 or newer (first capable candidate); the declaration itself has no version field. Adding fields requires a new schemaVersion and a capable native build.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "profiles"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 2,
+      "description": "Parser compatibility version only. This document describes exactly 2; schemaVersion 1 remains its own frozen Linux-only schema. This is NOT the Skill package version: floe.json id/version remain the single user-visible package authority."
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "description": "Dependency profiles. Provisioning selects the profile that matches the task's ACTUAL resolved target OS and architecture; there is no user target picker and task execution is never rerouted.",
+      "items": {
+        "oneOf": [
+          {
+            "title": "Linux profile",
+            "type": "object",
+            "required": [
+              "id",
+              "target",
+              "requirements"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/profileID"
+              },
+              "target": {
+                "type": "object",
+                "required": [
+                  "os",
+                  "architectures"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "os": {
+                    "const": "linux",
+                    "description": "Linux target. V2 Linux profiles keep every v1 requirement kind and rule."
+                  },
+                  "architectures": {
+                    "$ref": "#/$defs/architectures"
+                  }
+                }
+              },
+              "requirements": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "description": "Linux profiles may use pip, apt, npm, font and runtimeComponent exactly as in v1.",
+                "items": {
+                  "$ref": "#/$defs/linuxRequirement"
+                }
+              }
+            }
+          },
+          {
+            "title": "macOS profile",
+            "type": "object",
+            "required": [
+              "id",
+              "target",
+              "requirements"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/profileID"
+              },
+              "target": {
+                "type": "object",
+                "required": [
+                  "os",
+                  "architectures"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "os": {
+                    "const": "macos",
+                    "description": "The real macOS host target reached through the existing Mac bridge/SSH execution route. No Homebrew auto-install and no Debian package manager are implied."
+                  },
+                  "architectures": {
+                    "$ref": "#/$defs/architectures"
+                  }
+                }
+              },
+              "requirements": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "description": "macOS profiles accept ONLY pip and npm. apt, font and runtimeComponent fail closed because they are Debian/Linux resources; there is no silent substitution with another host package manager.",
+                "items": {
+                  "$ref": "#/$defs/macOSRequirement"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "profileID": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "description": "Unique lowercase profile slug."
+    },
+    "architectures": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "description": "Architecture SELECTION, not documentation: provisioning matches these against the actual resolved target architecture. `any` participates on every architecture. Declare what the target really runs (for macOS, arm64 and/or x86_64; riscv64 only describes a Linux guest).",
+      "items": {
+        "enum": [
+          "riscv64",
+          "arm64",
+          "x86_64",
+          "any"
+        ]
+      }
+    },
+    "pipRequirement": {
+      "title": "pip",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "version",
+        "purpose",
+        "required"
+      ],
+      "properties": {
+        "kind": {
+          "const": "pip"
+        },
+        "name": {
+          "$ref": "#/$defs/pipName"
+        },
+        "version": {
+          "$ref": "#/$defs/pipVersion"
+        },
+        "purpose": {
+          "$ref": "#/$defs/purpose"
+        },
+        "required": {
+          "$ref": "#/$defs/required"
+        },
+        "lockfile": {
+          "$ref": "#/$defs/lockfile"
+        }
+      }
+    },
+    "aptRequirement": {
+      "title": "apt",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "version",
+        "purpose",
+        "required"
+      ],
+      "properties": {
+        "kind": {
+          "const": "apt"
+        },
+        "name": {
+          "$ref": "#/$defs/aptName"
+        },
+        "version": {
+          "$ref": "#/$defs/aptVersion"
+        },
+        "purpose": {
+          "$ref": "#/$defs/purpose"
+        },
+        "required": {
+          "$ref": "#/$defs/required"
+        }
+      }
+    },
+    "npmRequirement": {
+      "title": "npm",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "version",
+        "purpose",
+        "required"
+      ],
+      "properties": {
+        "kind": {
+          "const": "npm"
+        },
+        "name": {
+          "$ref": "#/$defs/npmName"
+        },
+        "version": {
+          "$ref": "#/$defs/npmVersion"
+        },
+        "purpose": {
+          "$ref": "#/$defs/purpose"
+        },
+        "required": {
+          "$ref": "#/$defs/required"
+        }
+      }
+    },
+    "fontRequirement": {
+      "title": "font",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "version",
+        "purpose",
+        "required"
+      ],
+      "properties": {
+        "kind": {
+          "const": "font"
+        },
+        "name": {
+          "$ref": "#/$defs/fontIdentity"
+        },
+        "version": {
+          "$ref": "#/$defs/aptVersion"
+        },
+        "purpose": {
+          "$ref": "#/$defs/purpose"
+        },
+        "required": {
+          "$ref": "#/$defs/required"
+        }
+      }
+    },
+    "runtimeComponentRequirement": {
+      "title": "runtimeComponent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "componentDescriptorPath",
+        "purpose",
+        "required"
+      ],
+      "properties": {
+        "kind": {
+          "const": "runtimeComponent"
+        },
+        "componentDescriptorPath": {
+          "$ref": "#/$defs/componentDescriptorPath"
+        },
+        "purpose": {
+          "$ref": "#/$defs/purpose"
+        },
+        "required": {
+          "$ref": "#/$defs/required"
+        }
+      }
+    },
+    "linuxRequirement": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/pipRequirement"
+        },
+        {
+          "$ref": "#/$defs/aptRequirement"
+        },
+        {
+          "$ref": "#/$defs/npmRequirement"
+        },
+        {
+          "$ref": "#/$defs/fontRequirement"
+        },
+        {
+          "$ref": "#/$defs/runtimeComponentRequirement"
+        }
+      ]
+    },
+    "macOSRequirement": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/pipRequirement"
+        },
+        {
+          "$ref": "#/$defs/npmRequirement"
+        }
+      ]
+    },
+    "pipName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "PyPI distribution name; extras, ranges, URLs, paths and VCS references are rejected."
+    },
+    "pipVersion": {
+      "type": "string",
+      "pattern": "^(?=.*[0-9])[A-Za-z0-9][A-Za-z0-9.*+!_-]{0,127}$",
+      "description": "One exact PEP 440 version. Provisioning installs name==version only; no operators, ranges or 'latest'. The pin must contain a digit (floating aliases like 'latest' never pass). The pip lock rules are unchanged on macOS and Linux: a declared lock must be a package-local references/...txt file whose bytes are covered by the package digest."
+    },
+    "aptName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$",
+      "description": "Debian package identity (Linux profiles only)."
+    },
+    "aptVersion": {
+      "type": "string",
+      "pattern": "^(?:[0-9]+:)?(?=[A-Za-z0-9+~:.+-]*[0-9])[A-Za-z0-9][A-Za-z0-9+~:.+-]{0,127}$",
+      "description": "Exact Debian version, epoch preserved; +dfsg/-rev/+tilde suffixes stay part of the pin. The version body (after any epoch) must contain a digit, so floating aliases like 'latest' or '1:latest' never pass. Linux profiles only (apt and font)."
+    },
+    "npmName": {
+      "type": "string",
+      "pattern": "^(?:@[a-z0-9-~][a-z0-9-._~]{0,63}/)?[a-z0-9-~][a-z0-9-._~]{0,127}$"
+    },
+    "npmVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$",
+      "description": "Exact semver. Managed npm provisioning is exact name@version with real readback; a packaged package-lock.json is review evidence and is never replayed as an install."
+    },
+    "fontIdentity": {
+      "type": "string",
+      "pattern": "^fonts-[a-z0-9][a-z0-9+._-]{0,127}$",
+      "description": "Exactly one Debian font package identity plus the shared exact Debian version pin; Linux profiles only."
+    },
+    "lockfile": {
+      "type": "string",
+      "pattern": "^references/[^ ][^\"]{0,254}\\.txt$",
+      "description": "Package-local pip lock reference inside the signed archive. The lock lists wheel names with sha256 digests; its bytes are covered by the package contentDigest, so review binding covers the lock without external hashes. No path traversal. Same rule on Linux and macOS profiles."
+    },
+    "componentDescriptorPath": {
+      "const": "references/engine-dependency.json",
+      "description": "The frozen runtime-component descriptor path. Identity, version, artifact sha256 and size come from the pinned descriptor through the existing managed runtime-component allowlist; the allowlist, the component-only cap and the nonblocking hook are NOT broadened here. Linux profiles only."
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Short model-safe rationale shown in skill.read; never a command."
+    },
+    "required": {
+      "type": "boolean",
+      "description": "true: that skill's dependency-aware exec.shell invocation is refused with the honest reason while the requirement is not verified ready (ordinary shell commands without skillID keep working). false: execution proceeds with a visible annotation."
+    }
+  }
+}

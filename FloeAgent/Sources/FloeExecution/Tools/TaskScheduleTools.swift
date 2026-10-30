@@ -298,7 +298,7 @@ public struct TaskScheduleTool: AgentTool {
                 // TRUSTED origin only: the app resolver's value, or the
                 // submitting run's own conversation from the runtime context.
                 // Never a model argument, title guess or later occurrence.
-                originConversationID: binding.originConversationID ?? context?.conversationID
+                originConversationID: binding.originConversationID ?? context.conversationID
             )
         }
         if let title = args.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {

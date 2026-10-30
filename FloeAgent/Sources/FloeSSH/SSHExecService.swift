@@ -184,3 +184,351 @@ private final class ExecRaceArbiter: @unchecked Sendable {
         continuation.resume(with: outcome)
     }
 }
+
+// MARK: - Unlimited/streaming exec seam
+//
+// The historical helper above is intentionally bounded and buffers stdout/
+// stderr in memory. The remote-environment shell backend needs different
+// semantics on the SAME existing Citadel raw stream:
+//   * `.unlimited` arms no watchdog and adds no product cap (the policy
+//     default for long-running work);
+//   * a finite deadline is honored exactly, with no 300 s-style clamp;
+//   * every byte is handed to a sink (the App saves it to disk) while only
+//     bounded previews stay in memory;
+//   * cancellation and timeout close only this owned session's client, and a
+//     transport loss after dispatch is distinguishable from a real exit.
+// No new SSH client or execution alias is introduced; this is still
+// `targetClient.executeCommandStream`.
+
+/// Deadline supplied to the streaming exec seam. `.unlimited` is a real
+/// policy case, never `Double.infinity`, `0` or a fake large cap.
+public enum SSHStreamExecDeadline: Sendable, Equatable {
+    case unlimited
+    case seconds(TimeInterval)
+}
+
+public enum SSHStreamChannel: String, Sendable, Equatable {
+    case stdout
+    case stderr
+}
+
+/// One streaming run. Previews are bounded; the total byte counters describe
+/// what was actually observed. `exitCode` is the remote command's status
+/// (0 when the stream ended normally).
+public struct SSHStreamExecResult: Sendable, Equatable {
+    public var exitCode: Int32
+    public var stdoutPreview: Data
+    public var stderrPreview: Data
+    public var stdoutBytes: Int64
+    public var stderrBytes: Int64
+    public var stdoutTruncated: Bool
+    public var stderrTruncated: Bool
+
+    public init(
+        exitCode: Int32 = 0,
+        stdoutPreview: Data = Data(),
+        stderrPreview: Data = Data(),
+        stdoutBytes: Int64 = 0,
+        stderrBytes: Int64 = 0,
+        stdoutTruncated: Bool = false,
+        stderrTruncated: Bool = false
+    ) {
+        self.exitCode = exitCode
+        self.stdoutPreview = stdoutPreview
+        self.stderrPreview = stderrPreview
+        self.stdoutBytes = stdoutBytes
+        self.stderrBytes = stderrBytes
+        self.stdoutTruncated = stdoutTruncated
+        self.stderrTruncated = stderrTruncated
+    }
+}
+
+/// Typed streaming failure. `.interrupted` and `.sinkFailed` mean the command
+/// MAY have run: callers must inspect the saved job, never rerun it as if it
+/// had not started.
+public enum SSHStreamExecFailure: Error, Sendable, Equatable {
+    case timedOut
+    case cancelled
+    case interrupted(String)
+    case sinkFailed(String)
+}
+
+public extension SSHSessionHandle {
+
+    /// Streams one command's stdout/stderr to `onOutput` and returns the real
+    /// exit status. Memory is bounded by the preview limit; the sink sees the
+    /// full output. The existing client is closed on timeout/cancellation so
+    /// no remote process is intentionally left running.
+    func executeStreaming(
+        _ command: String,
+        deadline: SSHStreamExecDeadline,
+        cancellation: CancellationToken? = nil,
+        maxPreviewBytes: Int = 64 * 1024,
+        onOutput: @escaping @Sendable (SSHStreamChannel, Data) async throws -> Void
+    ) async throws -> SSHStreamExecResult {
+        if cancellation?.isCancelled == true { throw SSHStreamExecFailure.cancelled }
+        try Task.checkCancellation()
+
+        if case .seconds(let seconds) = deadline, !(seconds.isFinite && seconds > 0) {
+            throw SSHStreamExecFailure.timedOut
+        }
+        guard isConnected else {
+            throw SSHStreamExecFailure.interrupted("The SSH session is not connected")
+        }
+
+        let previewLimit = max(1, min(maxPreviewBytes, 1024 * 1024))
+        let client = targetClient
+        let clientBox = SSHStreamClientBox(client: client)
+        let gate = SSHStreamAbortGate()
+
+        let watchdog: Task<Void, Never>?
+        switch deadline {
+        case .unlimited:
+            watchdog = nil
+        case .seconds(let seconds):
+            watchdog = Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                guard !Task.isCancelled else { return }
+                if gate.record(.timedOut) { await clientBox.close() }
+            }
+        }
+        let cancelWatch: Task<Void, Never>? = cancellation.map { token in
+            Task {
+                while !Task.isCancelled, !token.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(25))
+                }
+                guard !Task.isCancelled else { return }
+                if gate.record(.cancelled) { await clientBox.close() }
+            }
+        }
+        defer {
+            watchdog?.cancel()
+            cancelWatch?.cancel()
+        }
+
+        let stream: AsyncThrowingStream<ExecCommandOutput, Error>
+        do {
+            stream = try await client.executeCommandStream(command)
+        } catch let error as SSHClient.CommandFailed {
+            if let reason = gate.reason { throw reason }
+            if Task.isCancelled { throw SSHStreamExecFailure.cancelled }
+            return SSHStreamExecResult(exitCode: Int32(error.exitCode))
+        } catch {
+            if let reason = gate.reason { throw reason }
+            if Task.isCancelled { throw SSHStreamExecFailure.cancelled }
+            throw SSHStreamExecFailure.interrupted(SecretRedactor.redact(error.localizedDescription))
+        }
+
+        let collect = Task { () throws -> SSHStreamExecResult in
+            var result = SSHStreamExecResult()
+            // One bounded combined preview budget, matching
+            // ShellRunRequest.maxOutputBytes (stdout + stderr together).
+            var previewBytes = 0
+            do {
+                for try await chunk in stream {
+                    if let reason = gate.reason { throw reason }
+                    switch chunk {
+                    case .stdout(let buffer):
+                        let data = Data(buffer.readableBytesView)
+                        guard !data.isEmpty else { continue }
+                        result.stdoutBytes += Int64(data.count)
+                        SSHStreamPreview.append(
+                            data, to: &result.stdoutPreview,
+                            limit: previewLimit, used: &previewBytes,
+                            truncated: &result.stdoutTruncated)
+                        try await SSHStreamSupport.emit(
+                            .stdout, data, onOutput: onOutput,
+                            gate: gate, client: clientBox, cancellation: cancellation)
+                    case .stderr(let buffer):
+                        let data = Data(buffer.readableBytesView)
+                        guard !data.isEmpty else { continue }
+                        result.stderrBytes += Int64(data.count)
+                        SSHStreamPreview.append(
+                            data, to: &result.stderrPreview,
+                            limit: previewLimit, used: &previewBytes,
+                            truncated: &result.stderrTruncated)
+                        try await SSHStreamSupport.emit(
+                            .stderr, data, onOutput: onOutput,
+                            gate: gate, client: clientBox, cancellation: cancellation)
+                    }
+                }
+            } catch let failure as SSHStreamExecFailure {
+                throw failure
+            } catch let error as SSHClient.CommandFailed {
+                if let reason = gate.reason { throw reason }
+                result.exitCode = Int32(error.exitCode)
+            } catch {
+                if let reason = gate.reason { throw reason }
+                throw SSHStreamExecFailure.interrupted(SecretRedactor.redact(error.localizedDescription))
+            }
+            if let reason = gate.reason { throw reason }
+            return result
+        }
+
+        return try await withTaskCancellationHandler(
+            operation: {
+                try await withCheckedThrowingContinuation { continuation in
+                    let arbiter = SSHStreamRaceArbiter(continuation: continuation)
+                    let context = SSHStreamWatchContext(
+                        client: clientBox, collect: collect, gate: gate, arbiter: arbiter)
+                    let watcher = Task {
+                        while !Task.isCancelled {
+                            if let reason = gate.reason {
+                                await context.abort(with: reason)
+                                return
+                            }
+                            try? await Task.sleep(for: .milliseconds(25))
+                        }
+                    }
+                    Task {
+                        do {
+                            arbiter.win(.success(try await collect.value))
+                        } catch {
+                            arbiter.win(.failure(error))
+                        }
+                        watcher.cancel()
+                        watchdog?.cancel()
+                        cancelWatch?.cancel()
+                    }
+                }
+            },
+            onCancel: {
+                if gate.record(.cancelled) {
+                    Task { await clientBox.close() }
+                }
+            }
+        )
+    }
+}
+
+private enum SSHStreamPreview {
+    static func append(
+        _ data: Data,
+        to preview: inout Data,
+        limit: Int,
+        used: inout Int,
+        truncated: inout Bool
+    ) {
+        let remaining = max(0, limit - used)
+        guard remaining > 0 else {
+            truncated = true
+            return
+        }
+        let accepted = data.prefix(remaining)
+        preview.append(contentsOf: accepted)
+        used += accepted.count
+        if accepted.count < data.count { truncated = true }
+    }
+}
+
+private enum SSHStreamSupport {
+    static func emit(
+        _ channel: SSHStreamChannel,
+        _ data: Data,
+        onOutput: @escaping @Sendable (SSHStreamChannel, Data) async throws -> Void,
+        gate: SSHStreamAbortGate,
+        client: SSHStreamClientBox,
+        cancellation: CancellationToken?
+    ) async throws {
+        do {
+            try await onOutput(channel, data)
+        } catch {
+            if let reason = gate.reason { throw reason }
+            if Task.isCancelled || cancellation?.isCancelled == true {
+                throw SSHStreamExecFailure.cancelled
+            }
+            let failure = SSHStreamExecFailure.sinkFailed(
+                SecretRedactor.redact(error.localizedDescription))
+            gate.record(failure)
+            await client.close()
+            throw gate.reason ?? failure
+        }
+    }
+}
+
+/// First-writer-wins abort reason shared by the watchdog, cancellation watcher
+/// and collection task.
+private final class SSHStreamAbortGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: SSHStreamExecFailure?
+
+    var reason: SSHStreamExecFailure? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    @discardableResult
+    func record(_ reason: SSHStreamExecFailure) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard stored == nil else { return false }
+        stored = reason
+        return true
+    }
+}
+
+/// Boxes the non-Sendable Citadel client for the abort closures.
+private final class SSHStreamClientBox: @unchecked Sendable {
+    private let client: SSHClient
+    private let lock = NSLock()
+    private var closed = false
+
+    init(client: SSHClient) { self.client = client }
+
+    func close() async {
+        let shouldClose = lock.withLock {
+            guard !closed else { return false }
+            closed = true
+            return true
+        }
+        if shouldClose { try? await client.close() }
+    }
+}
+
+/// Stops collection and resolves the continuation. Used by the abort poller.
+private final class SSHStreamWatchContext: @unchecked Sendable {
+    private let client: SSHStreamClientBox
+    private let collect: Task<SSHStreamExecResult, Error>
+    private let gate: SSHStreamAbortGate
+    private let arbiter: SSHStreamRaceArbiter
+
+    init(
+        client: SSHStreamClientBox,
+        collect: Task<SSHStreamExecResult, Error>,
+        gate: SSHStreamAbortGate,
+        arbiter: SSHStreamRaceArbiter
+    ) {
+        self.client = client
+        self.collect = collect
+        self.gate = gate
+        self.arbiter = arbiter
+    }
+
+    func abort(with reason: SSHStreamExecFailure) async {
+        gate.record(reason)
+        let effective = gate.reason ?? reason
+        collect.cancel()
+        await client.close()
+        arbiter.win(.failure(effective))
+    }
+}
+
+/// One-shot race arbiter: only the first completion resumes the continuation.
+private final class SSHStreamRaceArbiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    private let continuation: CheckedContinuation<SSHStreamExecResult, Error>
+
+    init(continuation: CheckedContinuation<SSHStreamExecResult, Error>) {
+        self.continuation = continuation
+    }
+
+    func win(_ outcome: Result<SSHStreamExecResult, Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+        finished = true
+        continuation.resume(with: outcome)
+    }
+}

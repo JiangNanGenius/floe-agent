@@ -33,6 +33,8 @@ public struct SSHCommandService: Sendable {
 
     /// Runs `command` on the resolved host and returns the bounded result
     /// (non-zero exit is a value, not a throw — the agent reads exitCode).
+    /// The production factory creates one owned connection per call; this
+    /// helper closes it after the command on success and error/timeout paths.
     public func run(
         command: String,
         hostID: UUID?,
@@ -44,28 +46,56 @@ public struct SSHCommandService: Sendable {
 
         let resolvedID = try await resolveHostID(hostID)
         let session = try await makeSession(hostID: resolvedID)
-        return try await session.execute(
-            command,
-            timeout: timeout,
-            maxOutputBytes: maxOutputBytes,
-            cancellation: cancellation
-        )
+        do {
+            let result = try await session.execute(
+                command,
+                timeout: timeout,
+                maxOutputBytes: maxOutputBytes,
+                cancellation: cancellation
+            )
+            await closeOwnedSession(session)
+            return result
+        } catch {
+            await closeOwnedSession(session)
+            throw error
+        }
     }
 
     /// Performs read-only, vendor-neutral probes before the model chooses an
     /// execution strategy. Network appliances are probed with `show version`
     /// first so we never assume a POSIX shell merely because SSH connected.
+    /// The owned connection is closed before returning, including on error.
     public func inspectTarget(
         hostID: UUID?,
         cancellation: CancellationToken? = nil
     ) async throws -> RemoteTargetInspection {
         let resolvedID = try await resolveHostID(hostID)
         let session = try await makeSession(hostID: resolvedID)
+        do {
+            let inspection = try await inspectTarget(
+                using: session,
+                hostID: resolvedID,
+                cancellation: cancellation
+            )
+            await closeOwnedSession(session)
+            return inspection
+        } catch {
+            await closeOwnedSession(session)
+            throw error
+        }
+    }
 
+    /// Probes one owned session. The caller closes the session after this
+    /// helper returns or throws; it never opens or reuses a shared connection.
+    private func inspectTarget(
+        using session: any RemotePythonSession,
+        hostID: UUID,
+        cancellation: CancellationToken?
+    ) async throws -> RemoteTargetInspection {
         let showVersion = try await boundedProbe("show version", session: session, cancellation: cancellation)
         if let appliance = RemoteTargetClassifier.classifyNetworkAppliance(showVersion.combined) {
             return Self.persist(RemoteTargetInspection(
-                hostID: resolvedID,
+                hostID: hostID,
                 kind: .networkDevice,
                 vendor: appliance.vendor,
                 operatingSystem: appliance.operatingSystem,
@@ -84,13 +114,13 @@ public struct SSHCommandService: Sendable {
         )
         if let inspection = RemoteTargetClassifier.classifyUnix(
             unix.combined,
-            hostID: resolvedID
+            hostID: hostID
         ) { return Self.persist(inspection) }
 
         let windows = try await boundedProbe("cmd /c ver", session: session, cancellation: cancellation)
         if windows.combined.localizedCaseInsensitiveContains("Windows") {
             return Self.persist(RemoteTargetInspection(
-                hostID: resolvedID,
+                hostID: hostID,
                 kind: .windows,
                 vendor: "Microsoft",
                 operatingSystem: windows.combined,
@@ -100,7 +130,7 @@ public struct SSHCommandService: Sendable {
             ))
         }
         return Self.persist(RemoteTargetInspection(
-            hostID: resolvedID,
+            hostID: hostID,
             kind: .unknown,
             vendor: nil,
             operatingSystem: nil,
@@ -252,6 +282,52 @@ public struct SSHCommandService: Sendable {
             throw RemotePythonError.connectionFailed("SSH tunnel transport is unavailable")
         }
         return (resolvedID, handle)
+    }
+
+    /// Opens the real verified SSH connection for a pinned remote environment.
+    /// The host is explicit: this never consults `defaultHostProvider`, so a
+    /// selected SSH environment cannot silently execute on another host.
+    public func openShellConnection(hostID: UUID) async throws -> any SSHRemoteShellConnection {
+        let (_, session) = try await openTunnelSession(hostID: hostID)
+        return session
+    }
+
+    /// Streams one command over the existing SSH connection path. Unlike the
+    /// historical `run` helper this does not apply a 30 s default and does not
+    /// buffer the full output: the caller's sink receives every byte and the
+    /// returned preview stays bounded. `.unlimited` arms no watchdog.
+    public func runStreaming(
+        command: String,
+        hostID: UUID,
+        deadline: SSHStreamExecDeadline,
+        maxPreviewBytes: Int = 64 * 1024,
+        cancellation: CancellationToken? = nil,
+        onOutput: @escaping @Sendable (SSHStreamChannel, Data) async throws -> Void
+    ) async throws -> SSHStreamExecResult {
+        let connection = try await openShellConnection(hostID: hostID)
+        do {
+            let result = try await connection.executeStreaming(
+                command,
+                deadline: deadline,
+                cancellation: cancellation,
+                maxPreviewBytes: maxPreviewBytes,
+                onOutput: onOutput
+            )
+            await connection.close()
+            return result
+        } catch {
+            await connection.close()
+            throw error
+        }
+    }
+
+    /// The production session factory creates one owned `SSHSessionHandle`
+    /// per call, so short-lived helpers close it after use. A factory that
+    /// returns a shared handle must not be used with `run`/`inspectTarget`;
+    /// test fakes (not `SSHSessionHandle`) are intentionally left alone.
+    private func closeOwnedSession(_ session: any RemotePythonSession) async {
+        guard let handle = session as? SSHSessionHandle else { return }
+        await handle.close()
     }
 
     private func boundedProbe(

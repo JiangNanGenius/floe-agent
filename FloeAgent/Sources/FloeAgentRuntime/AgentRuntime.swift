@@ -529,6 +529,8 @@ public actor FloeAgentRuntime {
         /// any UI-global state. `nil` means "the execution layer's own
         /// resolution", never "pick a default".
         public var environmentID: String?
+        public var executionBinding: TaskExecutionBinding?
+        public var remoteExecutionEnvironment: Bool
         /// Bounded wait for an unsafe environment lifecycle operation
         /// (start/stop/restart/repair) while other clients of the same
         /// environment are still executing. On exhaustion the operation fails
@@ -611,6 +613,8 @@ public actor FloeAgentRuntime {
             chatFastMode: Bool = false,
             reasoningPolicy: ProviderReasoningPolicy = .modelDefault,
             environmentID: String? = nil,
+            executionBinding: TaskExecutionBinding? = nil,
+            remoteExecutionEnvironment: Bool = false,
             environmentLifecycleWait: TimeInterval = 30,
             localLinuxGuestEnvironment: Bool = false,
             serviceStorePaths: [String: String] = [:],
@@ -655,6 +659,8 @@ public actor FloeAgentRuntime {
             self.chatFastMode = chatFastMode
             self.reasoningPolicy = reasoningPolicy
             self.environmentID = environmentID
+            self.executionBinding = executionBinding
+            self.remoteExecutionEnvironment = remoteExecutionEnvironment
             self.environmentLifecycleWait = max(0, environmentLifecycleWait)
             self.localLinuxGuestEnvironment = localLinuxGuestEnvironment
             self.serviceStorePaths = serviceStorePaths
@@ -1635,6 +1641,11 @@ public actor FloeAgentRuntime {
     public func resume(from checkpoint: AgentCheckpoint) async throws {
         guard checkpoint.formatVersion <= AgentCheckpoint.currentFormatVersion else {
             throw FloeError.validationFailed("Unsupported checkpoint format v\(checkpoint.formatVersion)")
+        }
+        if let pin = checkpoint.executionBinding {
+            guard pin == configuration.executionBinding else {
+                throw FloeError.validationFailed("The saved task environment is unavailable or has changed; reconnect before continuing")
+            }
         }
         messages = checkpoint.messages
         ownedSystemContextID = checkpoint.ownedSystemContextID
@@ -3734,6 +3745,10 @@ public actor FloeAgentRuntime {
             .path
         let environmentClass: ApprovalEnvironmentClass = {
             if case .local = call.scope {
+                if configuration.remoteExecutionEnvironment,
+                   CapabilityExecutionRouter.decision(for: call.toolName).backend == .linuxGuest {
+                    return .remote
+                }
                 return configuration.localLinuxGuestEnvironment ? .localLinuxVM : .localNative
             }
             return .remote
@@ -4340,6 +4355,7 @@ public actor FloeAgentRuntime {
             cancellation: effectiveCancellation,
             childBudget: childBudget,
             environmentID: effectiveEnvironmentID,
+            executionBindingGeneration: configuration.executionBinding?.generation,
             conversationID: configuration.conversationID,
             childExecution: handoff,
             runtimeAuthority: runtimeAuthority,
@@ -5773,6 +5789,7 @@ public actor FloeAgentRuntime {
                 cancellation: cancellationToken,
                 childBudget: childBudget,
                 environmentID: configuration.environmentID,
+                executionBindingGeneration: configuration.executionBinding?.generation,
                 conversationID: configuration.conversationID,
                 childExecution: handoff,
                 callOrigin: makeCallOrigin(for: call, handoff: handoff),
@@ -6064,6 +6081,7 @@ public actor FloeAgentRuntime {
             cancellation: cancellationToken,
             childBudget: childBudget,
             environmentID: configuration.environmentID,
+            executionBindingGeneration: configuration.executionBinding?.generation,
             conversationID: configuration.conversationID,
             childExecution: handoff,
             temporaryReadOnly: configuration.temporaryReadOnly,
@@ -6705,6 +6723,7 @@ public actor FloeAgentRuntime {
             approvals: grants,
             idempotencyKeys: executedIdempotencyKeys,
             conversationMode: configuration.conversationMode,
+            executionBinding: configuration.executionBinding,
             contextCompaction: latestContextCompaction,
             parentIterationCount: iterationSnapshot.parent,
             totalIterationCount: iterationSnapshot.total,

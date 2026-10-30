@@ -268,6 +268,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// V2 orchestration metadata. Optional fields keep V1 files decodable.
     public var parentRunID: UUID?
     public var conversationMode: ConversationMode?
+    public var executionBinding: TaskExecutionBinding?
     public var planID: UUID?
     public var goalID: UUID?
     public var contextCompaction: ContextCompactionRecord?
@@ -331,6 +332,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         schemaVersion: Int = AgentCheckpoint.currentSchemaVersion,
         parentRunID: UUID? = nil,
         conversationMode: ConversationMode? = nil,
+        executionBinding: TaskExecutionBinding? = nil,
         planID: UUID? = nil,
         goalID: UUID? = nil,
         contextCompaction: ContextCompactionRecord? = nil,
@@ -360,6 +362,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.schemaVersion = schemaVersion
         self.parentRunID = parentRunID
         self.conversationMode = conversationMode
+        self.executionBinding = executionBinding
         self.planID = planID
         self.goalID = goalID
         self.contextCompaction = contextCompaction

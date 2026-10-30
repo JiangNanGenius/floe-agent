@@ -37,6 +37,7 @@ public enum EnvironmentExecutionBackend: String, Codable, Sendable, CaseIterable
     case native
     case linuxVM
     case macBridge
+    case remoteSSH
 }
 
 /// One container record. `ownerID` is the conversation (session) or workspace
@@ -63,6 +64,12 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
     /// Immutable template version/digest this container was seeded from. A
     /// later template commit never retroactively re-points a container: the
     /// pinned version stays the one the environment actually boots.
+    public var remoteHostID: UUID?
+    public var remoteRootPath: String?
+    public var operatingSystem: String?
+    public var architecture: String?
+    public var distribution: String?
+    public var runtimeGeneration: String?
     public var templateVersion: Int?
     public var templateDigest: String?
 
@@ -87,7 +94,10 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
         rebuildReason: String? = nil,
         executionBackend: EnvironmentExecutionBackend? = nil,
         templateVersion: Int? = nil,
-        templateDigest: String? = nil
+        templateDigest: String? = nil,
+        remoteHostID: UUID? = nil, remoteRootPath: String? = nil,
+        operatingSystem: String? = nil, architecture: String? = nil,
+        distribution: String? = nil, runtimeGeneration: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -107,6 +117,9 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
         self.executionBackend = executionBackend
         self.templateVersion = templateVersion
         self.templateDigest = templateDigest
+        self.remoteHostID = remoteHostID; self.remoteRootPath = remoteRootPath
+        self.operatingSystem = operatingSystem; self.architecture = architecture
+        self.distribution = distribution; self.runtimeGeneration = runtimeGeneration
     }
 
     public static let currentLayerFormat = 1

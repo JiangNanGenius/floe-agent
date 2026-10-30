@@ -1,11 +1,12 @@
-# 官方 Skill 依赖声明 — 作者契约（schemaVersion 1）
+# 官方 Skill 依赖声明 — 作者契约（schemaVersion 1 与 2）
 
 读者：**经过人工审核并签名的官方 Skill Hub 包**的作者。外部（拉取/导入）Skill 继续通过现有执行工具由模型主导处理依赖：存在 `references/dependencies.json` 时仍会严格校验，但外部包绝不会触发原生自动准备。普通 `apt` / `pip` / `npm` 下载在 `exec.shell` 中依旧不受限制；本契约是小型、经审核的便捷集成，不是新的执行系统，也不是下载限制。
 
 原生严格解码器是唯一权威：`FloeAgent/Sources/FloeSkills/SkillDependency.swift`（与已冻结的
 `SkillRuntimeDependency` 描述符模式一致）。机器可读形状见
-[dependencies.schema.json](dependencies.schema.json)；五个完整示例见
-[examples/](examples/)。
+[dependencies.schema.json](dependencies.schema.json)（v1，Linux）与
+[dependencies.v2.schema.json](dependencies.v2.schema.json)（v2，增加 macOS pip/npm
+profile）；五个冻结 v1 完整示例加一个 v2 macOS 示例见 [examples/](examples/)。
 
 ## 声明的作用
 
@@ -16,11 +17,13 @@
 字节、无需重下载（文件被淘汰或缺失时只是回退到有界索引下载——仓库是优化，绝不削弱审计）。
 runtime-component 需求的制品经既有 GitHub-only 传输在钉住的发布 commit 处下载，通过
 精确大小 + sha256 + 静态 ELF 门校验后原子写入首次使用会重新校验的同一应用私有组件缓存。
-apt/npm/font 身份只有真实客户机的已配置源与架构下才可解析，因此显式记录
-`等待任务环境` 状态。逐资源的持久状态由 `skill.read` 展示并跨视图与重启保留；
-prefetch **绝不等于就绪**——不宣称命中缓存，也绝不显示"包已就绪"；无法持久写入的临时校验
-只会记为等待，绝不记为已准备。任务在已解析的 Linux 客户环境中精确读取
-（`skill.read`）该技能时，应用会记录绑定 `(environmentID, runID)` 的不可变计划。在该技能
+apt/npm/font 身份只有实际目标已配置的源与架构下才可解析，因此显式记录
+`等待任务环境` 状态（macOS profile 只允许 pip/npm）。逐资源的持久状态由 `skill.read`
+展示并跨视图与重启保留；prefetch **绝不等于就绪**——不宣称命中缓存，也绝不显示
+"包已就绪"；无法持久写入的临时校验只会记为等待，绝不记为已准备。macOS 目标只让
+`pip`/`npm` profile 参与；其精确 pin 与声明的 pip 锁通过该目标真实的包操作安装并回读。
+Linux 客户机的共享 wheel 仓库与预取状态不是 macOS 就绪的证据。任务在已解析的外部目标中
+精确读取（`skill.read`）该技能时，应用会记录绑定 `(environmentID, runID)` 的不可变计划。在该技能
 携带 `"skillID"` 的已批准 `exec.shell` 调用点，Floe 会在**同一个已解析环境**中自动准备并
 安装声明的资源，逐项回读校验；必需资源未就绪时，仅拒绝**该技能**的调用并给出真实原因。
 没有目标环境选择器，执行绝不改道；不带 `skillID` 的命令保持原有行为（自行修复即走这条
@@ -68,7 +71,7 @@ kind（逐 kind 的精确键集）：
 `purpose` 为 1–200 字节的简短、模型安全文本，经 `skill.read` 展示。`required` 为布尔：
 `true` 门控该技能感知依赖的调用；`false` 继续执行并附带可见注解。
 
-限制：文件 ≤64 KiB；1–8 个 profile；每 profile 1–32 条需求；profile id 唯一；profile 内
+限制（v1）：文件 ≤64 KiB；1–8 个 profile；每 profile 1–32 条需求；profile id 唯一；profile 内
 `(kind,name)` 唯一；`os` 恰为 `"linux"`；`architectures` ⊆ `{riscv64, arm64, x86_64, any}`。
 
 `target.architectures` 是**选择**契约，不是文档注释：供给会把每个 profile 与实际本地 Linux
@@ -78,6 +81,55 @@ kind（逐 kind 的精确键集）：
 精确 pin 只是复用。若当前 Floe 只有 riscv64 客户机，`arm64`-only 的 profile 永远不会被本构建
 安装——请声明真正会运行的架构（`any` 或客户机真实架构），只有对应后端存在时才增加按架构划分的
 profile。
+
+## Schema v2 —— macOS pip/npm profile
+
+`schemaVersion: 2` 是面向 macOS 外部目标的增量解析版本。它使用与 v1 **完全相同**的顶层键、
+profile 键、逐 kind 需求键集、精确 pin、pip 锁格式/闭包规则、限制与信任模型。唯一新增形状是
+`target.os: "macos"`：
+
+- v2 profile 的 `os` 为 `"linux"` 或 `"macos"`。
+- **macOS profile 只允许 `pip` 与 `npm` 需求**。`apt`、`font` 与 `runtimeComponent` 是
+  Debian/Linux 资源，在 macOS 上解码即失败关闭——不会替换成 Homebrew，也不会跨 OS 猜测
+  描述符。
+- v2 文档中的 Linux profile 保留 v1 的全部 kind 与规则，包括冻结的运行时组件。
+- `architectures` 仍是**选择**契约：供给会把 profile 的 OS 与架构匹配到真实的 Linux 客户机/
+  Mac bridge/SSH 目标。macOS profile 通常声明 `arm64`、`x86_64`、两者或 `any`；架构与真实
+  目标不匹配的 profile 绝不进入计划、预取或安装。
+- macOS 沿用相同的包内 pip 锁规则：声明的 `references/…​.txt` 锁是带 sha256 摘要的完整钉定
+  闭包，且必须存在于签名包字节中。某个 macOS 目标能否满足精确 pin/锁，由该目标真实的包操作
+  与回读决定；下载命中或 Linux 客户机 wheel 仓库都不构成 macOS 就绪。
+- **V1 仍然只支持 Linux 且语义不变。** `schemaVersion: 1` 但写 `os: "macos"` 的文件仍以
+  不支持的目标失败关闭；已发布 V1 字节与语义不会被改写。
+- 未知/更新的 `schemaVersion`（当前为 3 及以上）会使准备通道兼容性失败关闭，而不是猜测；
+  读取、暂存与技能其余功能不受影响。
+- 携带 v2 声明的包必须把**既有** hub 条目 `minimumAppVersion` 保持在 **1.7.65 或更高**
+  （首个具备能力的候选；由发布负责人核实构建真实可用，不得声称不可用的客户端）。这不是新字段，
+  也不是第二个运行时版本计数器。V1 包保留历史 `1.7.60` 下限；V2 下限不会抬高它们。
+
+```json
+{
+  "schemaVersion": 2,
+  "profiles": [
+    {
+      "id": "mac-host",
+      "target": { "os": "macos", "architectures": ["arm64", "x86_64"] },
+      "requirements": [
+        { "kind": "pip", "name": "pypdf", "version": "5.4.0",
+          "purpose": "在 Mac bridge 上读取并合并 PDF 页面。",
+          "required": true, "lockfile": "references/requirements.lock.txt" },
+        { "kind": "npm", "name": "typescript", "version": "5.9.3",
+          "purpose": "运行前对生成的辅助脚本做类型检查。", "required": true }
+      ]
+    }
+  ]
+}
+```
+
+机器可读 v2 形状为
+[dependencies.v2.schema.json](dependencies.v2.schema.json)；冻结 v1 形状仍是
+[dependencies.schema.json](dependencies.schema.json)。示例文件是
+[examples/dependencies.macos.json](examples/dependencies.macos.json)。
 
 ## 版本管理（冻结区分）
 
@@ -96,25 +148,32 @@ profile。
    身份（id + version + contentDigest + publication commit）；之后携带同 id+version 但
    摘要不同的 curated 安装或更新会失败关闭（"发布身份冲突"）。保留的身份不替换字节，也
    不为本客户端从未观察到的历史提供证明——发布方 CI 对该场景仍属强制。
-2. **`dependencies.json` 的 `schemaVersion`** —— 仅用于解析器兼容。当前构建恰好接受 `1`。
-   未知更高值会使准备通道兼容性失败（必需资源以真实原因报告为未就绪），而不是猜测；读取、
-   暂存与技能其余功能不受影响。
+2. **`dependencies.json` 的 `schemaVersion`** —— 仅用于解析器兼容。当前构建接受 `1`
+   （冻结的 Linux 目标契约）与 `2`（增加 macOS pip/npm profile，键、pin 与锁规则相同）。
+   V1 继续拒绝 `"macos"`。未知更高值会使准备通道兼容性失败（必需资源以真实原因报告为未就绪），
+   而不是猜测；读取、暂存与技能其余功能不受影响。
 3. **精确资源/依赖版本与锁** —— 每条需求的 `version` pin（pip、apt、npm **以及
    font**：字体需求是精确 apt 身份+版本 pin，回读回执逐字记录该版本），pip 另有被引用
    锁中的 wheel `sha256`，运行时组件另有被钉住描述符自身的 `componentVersion`/制品摘要。
    安装与回读只认这些——绝不装范围、绝不 `latest`、绝不隐式升级、绝不静默降级（同环境
    已存在不同版本的冲突会被诚实拒绝）。
-4. **`minimumAppVersion`** —— 既有的旧客户端门。需要新原生行为的声明所对应的 curated hub
-   条目，把其现有 `minimumAppVersion` 提升到首个具备能力的构建（候选 `1.7.60`）；旧客户端
-   照旧得到未改变的 `.incompatibleApp` 报价状态且永远无法安装。被钉住组件描述符自身的
-   `minimumAppVersion` 门保持不变。
+4. **`minimumAppVersion`** —— 既有的旧客户端门。需要更新原生行为的声明所对应的 curated hub
+   条目，把其现有 `minimumAppVersion` 提升到首个具备能力的构建。V1 保留历史下限 `1.7.60`；
+   v2（具备 macOS 能力）声明需要 `1.7.65` 或更高。两个下限保持独立：发布 v2 包不得抬高已发布
+   v1 包的下限。旧客户端照旧得到未改变的 `.incompatibleApp` 报价状态且永远无法安装。被钉住
+   组件描述符自身的 `minimumAppVersion` 门保持不变。
+
+声明一旦变化就是新工件，绝不做原地编辑：提升 Skill 包 `version`、产生新的 `contentDigest`、
+重新签名新字节。绝不以不同声明字节覆盖已发布的 `(id, version)`，也绝不依据变化后的声明自动
+改写、自动升级或静默刷新已安装包的依赖。既有回执/不可变身份检查会让同版本字节不符失败关闭；
+发布方 CI 必须首先拒绝。
 
 ### 就绪回执绑定内容
 
 每份回执共同绑定、且每次使用都会重新校验：**包版本**、包 **contentDigest**、
 **dependencyManifestDigest**（`dependencies.json` 精确字节的 SHA-256）、profile id 与需求
-身份（kind、name、精确版本）、已解析**环境**以及客户机**启动代**。仅当以上事实全部仍然
-一致且安装授权重新有效时回执才可复用；重启轮换、禁用、卸载、编辑或收回授权都会使其失效
+身份（kind、name、精确版本）、已解析**环境/目标身份**及其**代数令牌**。仅当以上事实全部仍然
+一致且安装授权重新有效时回执才可复用；重启轮换、目标变化、禁用、卸载、编辑或收回授权都会使其失效
 （重新授权/重新检查——序列化副本永远不是就绪令牌）。
 
 ### 升级、回滚与进行中的调用
@@ -132,22 +191,24 @@ profile。
 
 ## 编写规则
 
-- pin 必须对准客户机镜像实际服务的 Debian 发行版。运行时始终使用作者的精确 pin，
-  pin 无法满足时诚实失败——绝不替换成"差不多"的版本。本文示例 pin 已对照实时
-  `packages.debian.org`/`sources.debian.org` trixie 元数据核验
+- pin 必须对准实际目标真正服务的包源。Linux apt/font pin 必须对准客户机镜像实际服务的
+  Debian 发行版；macOS `pip`/`npm` pin 必须对准 Mac 目标真实使用的解释器/registry。运行时
+  始终使用作者的精确 pin，pin 无法满足时诚实失败——绝不替换成"差不多"的版本。本文示例
+  Debian pin 已对照实时 `packages.debian.org`/`sources.debian.org` trixie 元数据核验
   （`python3-scipy 1.15.3-1`、`python3-matplotlib 3.10.1+dfsg1-4`、
   `poppler-utils 25.03.0-5+deb13u4`、`fontconfig 2.15.0-2.3`、
   `fonts-noto-cjk 1:20240730+repack1-1`）。
 - 只声明技能真正需要的内容；优先复用已审核配方或环境已有之物（精确 pin 并注明），用纯
   wheel、Debian apt 二进制与一个小型可选 CJK 字体，而不是重量级预装扩展。不加新基础镜像，
-  不加重量级科学栈。
+  不加重量级科学栈。macOS profile 只限 pip/npm；不要为它编造 apt 或 Homebrew 路径。
 - 不放假哈希，不在包内放大体积二进制或 wheel 实体：锁只列摘要；wheel 本体在首次使用时
   经共享缓存下载（官方安装在首次使用时可把已审计字节以真实规范的 PEP 427 文件名持久化进
   共享 wheel 存储，客户机 `--find-links` 的 pip 因此能真正消费它）。
 - 保持既有上限：本契约绝不扩大普通 Skill 包工件限制（单文件 2 MiB、整包 8 MiB）——唯一
   扩大的上限仍是现有显式白名单运行时组件自身的界限。
-- 把文件放在 `references/` 下，`schemaVersion` 钉为 `1`，提升**包版本**，重新签名摘要，
-  交由正常审核发布流程携带。
+- 把文件放在 `references/` 下，`schemaVersion` 钉为 `1`（Linux）或 `2`（增加 macOS
+  pip/npm），把既有 hub 条目的 `minimumAppVersion` 设为对应下限（v1 为 `1.7.60`；v2 为
+  `1.7.65` 或更高），提升**包版本**，重新签名摘要，交由正常审核发布流程携带。
 
 ## 完整示例
 
@@ -162,6 +223,7 @@ profile。
 | [examples/dependencies.debian.json](examples/dependencies.debian.json) | Debian apt 身份 + 精确版本，经客户机自身单事务安装 |
 | [examples/dependencies.npm.json](examples/dependencies.npm.json) | 精确 `name@version` npm pin（锁字节是审核证据，绝不重放） |
 | [examples/dependencies.cjk.json](examples/dependencies.cjk.json) | Debian 科学栈 pin（`python3-matplotlib`、`fontconfig`）+ 可选字体精确身份+版本 pin 与固定 CJK 字形渲染探测 |
+| [examples/dependencies.macos.json](examples/dependencies.macos.json) | schemaVersion 2 macOS profile：精确 pip pin（同一包内锁引用）加精确 npm pin；macOS 不用 apt/font/runtimeComponent |
 
 `runtimeComponent` 需求形如：
 
@@ -177,13 +239,17 @@ profile。
 
 对装有声明的官方技能执行精确 `skill.read`，会报告 profile、每条需求（kind、精确 pin、
 必需/可选）与调用契约：在同一任务运行内对 `exec.shell` 传 `"skillID": "<skill id>"`。
-携带 `skillID` 时，该运行会校验安装记录、当前运行绑定与授权，自动在任务的已解析 Linux
-环境中准备/安装声明资源并回读。必需资源未就绪只拒绝**该技能**的调用并给出真实原因；
-可选缺口以可见注解出现；不带 `skillID` 的命令行为完全不变，普通修复即走此路径。
+携带 `skillID` 时，该运行会校验安装记录、当前运行绑定与授权，自动在任务的已解析外部目标
+（Linux 客户机或 macOS bridge）中准备/安装声明资源并回读。profile 选择使用该目标**真实**的
+OS 与架构：v2 macOS profile 绝不在 Linux 客户机上运行，Linux profile 也绝不在 macOS 上规划。
+必需资源未就绪只拒绝**该技能**的调用并给出真实原因；可选缺口以可见注解出现；不带 `skillID`
+的命令行为完全不变，普通修复即走此路径。
 
 ## 范围与不做承诺
 
 - 自动准备仅适用于官方已审核/已签名的 Hub 安装。
+- macOS 声明支持仅限 `pip` 与 `npm`；不提供 `apt`、`font`、`runtimeComponent`、Homebrew
+  自动安装或 App 原生依赖目标。声明绝不选择另一个目标或包管理器。
 - 不对外部不可信安装指令做通用原生自动执行。
 - 无新执行别名、无新包安装工具、无环境选择器。
 - 不承诺跨环境物理去重（dpkg 分片与 venv 按设计每环境一份）；共享存储只去重下载。

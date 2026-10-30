@@ -119,6 +119,7 @@ final class AppEnvironment: ObservableObject {
     /// Shared verified-SSH command service used by model tools and explicit
     /// host-management actions such as remote-agent updates.
     let sshCommandService: SSHCommandService
+    let taskWorkspaceMirror: TaskWorkspaceMirror
     let interactiveShellService: InteractiveShellSessionService
     let cloudWorkspaceService: CloudWorkspaceService
     let cloudWorkspaceCleanupQueue: CloudWorkspaceCleanupQueue
@@ -293,6 +294,23 @@ final class AppEnvironment: ObservableObject {
                 return await components.state(environmentID: id, componentID: SkillRuntimeDependency.knownComponentID)
                     .deferredReason ?? "Runtime component is not ready"
             },
+            targetProvider: { [weak self] id, runID in
+                await self?.resolveSkillRuntimeTarget(environmentID: id, runID: runID)
+            },
+            operationsResolver: { [weak self] target in
+                guard let self else { return nil }
+                if target.backend == .linuxVM { return operations }
+                guard target.backend == .macBridge || target.backend == .remoteSSH else { return nil }
+                return TaskTargetDependencyOperations { [weak self] command, environment, cancellation in
+                    guard let self else { throw CancellationError() }
+                    return try await self.runTargetDependencyCommand(command, environment: environment, cancellation: cancellation)
+                }
+            },
+            targetPreparation: { [weak self] target, cancellation in
+                guard let self, let id = target.environmentID,
+                      let record = await self.environmentRegistry.record(id: id) else { throw CancellationError() }
+                try await self.prepareExecutionTarget(self.taskExecutionEnvironments.target(record), cancellation: cancellation ?? CancellationToken())
+            },
             pipWheels: { specs in
                 try await ManagedPythonPackageInspector.fetchVerifiedWheels(specs: specs).map {
                     SkillDependencyWheelBundle(spec: $0.spec, filename: $0.filename,
@@ -313,11 +331,19 @@ final class AppEnvironment: ObservableObject {
         let guestService = linuxGuestService
         return SkillsCenter(
             environment: self,
-            resourceStager: SkillWorkspaceResourceStager { environmentID in
+            resourceStager: SkillWorkspaceResourceStager(externalTarget: { [weak self] id, root in
+                await self?.externalSkillStageTarget(environmentID: id, root: root)
+            }) { environmentID in
                 await guestService?.linuxGuestPathMap(environmentID: environmentID)
             },
             runtimeComponents: skillRuntimeComponents,
-            dependencyPreparation: skillDependencies
+            dependencyPreparation: skillDependencies,
+            runtimeTargetResolver: SkillRuntimeTargetResolver { [weak self] runID, resourceContext in
+                guard let self else { return nil }
+                let runPin = if let runID { try? await self.runStore.run(id: runID)?.executionBinding } else { nil as TaskExecutionBinding? }
+                guard let id = resourceContext?.environmentID ?? runPin?.target.environmentID else { return nil }
+                return await self.resolveSkillRuntimeTarget(environmentID: id, runID: runID)
+            }
         )
     }()
     private lazy var _mcpServiceCreationBackend = MCPServiceCreationAppBackend(
@@ -453,10 +479,44 @@ final class AppEnvironment: ObservableObject {
     /// `defaultAgentMode` through it without a construction cycle.
     var settingsCenter: SettingsCenter { _settingsCenter }
     var skillsCenter: SkillsCenter { _skillsCenter }
+    lazy var taskExecutionEnvironments = TaskExecutionEnvironmentCenter(environment: self)
+
+    var executionDependencyPreparation: SkillDependencyPreparationCenter { skillDependencies }
+
+    func prepareExecutionTarget(_ target: TaskExecutionTarget, cancellation: CancellationToken) async throws {
+        try cancellation.throwIfCancelled()
+        switch target.backend {
+        case .linuxVM:
+            _ = try await skillDependencyPrepareLinux(LinuxPreparationRequest(environmentID: target.environmentID, cancellation: cancellation))
+        case .macBridge:
+            try await MacBridgeClient.shared.bootstrap()
+            guard await MacBridgeClient.shared.isConnected() else { throw FloeError.validationFailed("Connect this Mac before continuing") }
+        case .remoteSSH:
+            guard let host = target.remoteHostID else { throw FloeError.validationFailed("The remote host is missing") }
+            let result = try await sshCommandService.run(command: "printf floe-ready", hostID: host, timeout: 10, maxOutputBytes: 64, cancellation: cancellation)
+            guard result.exitCode == 0, result.stdout == "floe-ready" else { throw FloeError.validationFailed("Reconnect the remote host before continuing") }
+        }
+        try cancellation.throwIfCancelled()
+    }
+
+    func executionManagementLease(_ id: String, cancellation: CancellationToken) async throws -> ToolEnvironmentLease {
+        try await environmentExecutions.acquireManagement(environmentID: id, cancellation: cancellation)
+    }
+    func executionLeaseCount(_ id: String) async -> Int { await environmentExecutions.activeLeaseCount(environmentID: id) }
+    func fenceExecutionForMigration(_ id: String) async -> Bool { await environmentExecutions.fenceMigrationIfIdle(environmentID: id) }
+    func releaseExecutionMigrationFence(_ id: String) async { await environmentExecutions.releaseMigrationFence(environmentID: id) }
+
+    func executionManagementEnvironment(_ id: String, cancellation: CancellationToken = CancellationToken()) async throws -> ToolEnvironment {
+        let lease = try await environmentExecutions.acquireManagement(environmentID: id, cancellation: cancellation)
+        guard let result = lease.context.environment else { await lease.finish(); throw FloeError.notFound("Execution environment") }
+        await lease.finish()
+        return result
+    }
+
 
     private func resolveSkillDependencyEnvironment(_ id: String) async -> ToolEnvironment? {
         guard let record = await environmentRegistry.record(id: id),
-              record.effectiveExecutionBackend == .linuxVM else { return nil }
+              record.effectiveExecutionBackend != .native else { return nil }
         do {
             // Reuse the canonical layer/variable resolution. The caller's
             // tool lease remains held throughout dependency preparation.
@@ -706,7 +766,7 @@ final class AppEnvironment: ObservableObject {
             in: .userDomainMask
         ).first?.appendingPathComponent("FloeAgent/Checkpoints", isDirectory: true)
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("FloeAgent-Checkpoints")
-        self.checkpointStore = FileCheckpointStore(directory: checkpointRoot)
+        self.checkpointStore = SQLiteRunCheckpointStore(database: database, legacyDirectory: checkpointRoot)
         let intelligenceStore = SQLiteIntelligenceStore(database: database)
         self.intelligenceStore = intelligenceStore
         let personalizationStore = SQLitePersonalizationStore(database: database)
@@ -749,10 +809,12 @@ final class AppEnvironment: ObservableObject {
         // continues to resolve credentials at the call site only.
         let hostStore = RemoteHostStore(database: database)
         self.remoteHostStore = hostStore
-        let remoteServices = Self.makeRemoteServices(hostStore: hostStore)
+        let remoteServices = Self.makeRemoteServices(hostStore: hostStore, settings: SQLiteSettingsStore(database: database))
         let pythonService = remoteServices.python
         let sshCommandService = remoteServices.ssh
         self.sshCommandService = sshCommandService
+        let taskWorkspaceMirror = TaskWorkspaceMirror(ssh: sshCommandService)
+        self.taskWorkspaceMirror = taskWorkspaceMirror
         self.interactiveShellService = remoteServices.interactiveShell
         let remoteAgentReadiness = RemoteAgentReadinessCoordinator(
             manager: RemoteAgentInstaller(service: sshCommandService),
@@ -811,7 +873,28 @@ final class AppEnvironment: ObservableObject {
         let containerCAS = ContainerCAS(roots: environmentRoots)
         let environmentExecutions = EnvironmentExecutionCoordinator(roots: environmentRoots, registry: environmentRegistry)
         self.environmentExecutions = environmentExecutions
-        ToolEnvironmentRouting.shared.configure { context in try await environmentExecutions.acquire(context) }
+        let executionPins = SQLiteRunStore(database: database)
+        ToolEnvironmentRouting.shared.configure { original in
+            var context = original
+            if let name = context.executionToolName,
+               CapabilityExecutionRouter.decision(for: name).backend != .nativeApple,
+               let run = try await executionPins.run(id: context.childExecution?.identity.parentRunID ?? context.runID) {
+                if let pin = run.executionBinding {
+                    guard context.environmentID == pin.target.environmentID,
+                          context.executionBindingGeneration == nil || context.executionBindingGeneration == pin.generation else {
+                        throw FloeError.validationFailed("The task environment changed. Continue from its saved state; this command was not executed.")
+                    }
+                    // Service-restored jobs carry their persisted environment
+                    // ID. Resolve the missing additive generation ONLY from
+                    // this exact run pin, never model arguments or defaults.
+                    context.executionBindingGeneration = pin.generation
+                } else if context.environmentID == nil,
+                          CapabilityExecutionRouter.decision(for: name).backend == .linuxGuest {
+                    throw FloeError.validationFailed("The selected execution environment is unavailable. Reconnect or explicitly choose another location; no fallback was started.")
+                }
+            }
+            return try await environmentExecutions.acquire(context)
+        }
 
         // Linux guest backend: one TinyEMU-backed service for the whole app,
         // injected into the platform services seam so apt/dpkg, exec.shell and
@@ -1055,7 +1138,39 @@ final class AppEnvironment: ObservableObject {
         )
         // Only a trusted macBridge lease routes to the same-Mac shell; every
         // other environment keeps the Linux guest backend.
-        let shellBackend = MacBridgeExecutionRouter(defaultBackend: linuxShellBackend)
+        let defaultShellBackend = MacBridgeExecutionRouter(defaultBackend: linuxShellBackend)
+        let targetBindings = TaskExecutionBindingStore(database: database)
+        let remoteResolver: SSHShellTargetResolver = { id in
+            guard let record = await environmentRegistry.record(id: id), record.state == .active,
+                  !record.requiresRebuild else {
+                return .unavailable(environmentID: id, reason: "The saved environment is unavailable")
+            }
+            guard record.effectiveExecutionBackend == .remoteSSH else { return .notSSH }
+            guard let hostID = record.remoteHostID, let root = record.remoteRootPath else {
+                return .unavailable(environmentID: id, reason: "The remote environment is not configured")
+            }
+            let pin = if let owner = record.ownerID.flatMap(UUID.init(uuidString:)) {
+                try? await targetBindings.binding(conversationID: owner)
+            } else { nil as TaskExecutionBinding? }
+            guard let boot = record.runtimeGeneration, !boot.isEmpty else {
+                return .unavailable(environmentID: id, reason: "Reconnect to verify the remote environment")
+            }
+            let epoch = boot + ":binding:" + String(pin?.generation ?? 1)
+            guard let target = SSHShellTarget(hostID: hostID, remoteTaskRoot: root,
+                                             environmentID: id, generation: epoch) else {
+                return .unavailable(environmentID: id, reason: "The remote workspace is invalid")
+            }
+            return .ssh(target)
+        }
+        let shellBackend = RemoteEnvironmentShellRouter(defaultBackend: defaultShellBackend,
+            resolver: remoteResolver,
+            sessionFactory: { target in try await sshCommandService.openShellConnection(hostID: target.hostID) },
+            sync: RemoteWorkspaceSyncCallbacks { target, _, cancellation in
+                guard let root = try await environmentRegistry.workspaceRoot(for: target.environmentID) else {
+                    throw FloeError.notFound("Task workspace")
+                }
+                _ = try await taskWorkspaceMirror.synchronize(target: target, root: root, cancellation: cancellation)
+            })
         let advisoryRelay = DurationAdvisoryRelay()
         self.durationAdvisoryRelay = advisoryRelay
         self.durationReminder = LongRunDurationReminder { [relay = advisoryRelay] milestone, fence in
@@ -2093,7 +2208,7 @@ final class AppEnvironment: ObservableObject {
     /// Sessions open on demand through SSHConnectionService; credentials
     /// resolve through the Keychain and are never held beyond the connect.
     private static func makeRemoteServices(
-        hostStore: RemoteHostStore
+        hostStore: RemoteHostStore, settings: any SettingsStore
     ) -> (python: RemotePythonService, ssh: SSHCommandService, interactiveShell: InteractiveShellSessionService) {
         let sshService = SSHConnectionService(hostStore: hostStore)
 
@@ -2131,14 +2246,13 @@ final class AppEnvironment: ObservableObject {
         }
 
         let defaultHostProvider: RemotePythonService.DefaultHostProvider = {
-            try await hostStore.hosts().first { stored in
-                guard stored.isRemoteExecutionEnvironment ?? true,
-                      let auth = try? JSONDecoder().decode(
-                        SSHAuthMethod.self,
-                        from: Data(stored.authJSON.utf8)
-                      ) else { return false }
-                return auth != .none
-            }?.id
+            guard let preference = try await settings.value(forKey: AppSettingsKey.executionTarget, as: ExecutionTargetPreference.self),
+                  case .host(let id) = preference else { return nil }
+            guard let stored = try await hostStore.host(id: id), stored.isRemoteExecutionEnvironment ?? true,
+                  let auth = try? JSONDecoder().decode(SSHAuthMethod.self, from: Data(stored.authJSON.utf8)), auth != .none else {
+                throw FloeError.invalidConfiguration("The selected remote host is unavailable")
+            }
+            return id
         }
 
         let python = RemotePythonService(
@@ -2436,6 +2550,7 @@ final class AppEnvironment: ObservableObject {
             }
             #if DEBUG
             try await LinkedScheduleUIFixture.prepareIfRequested(database: database)
+            try await TaskEnvironmentUIFixture.prepareIfRequested(environment: self)
             #endif
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains(DesignWorkflowFixture.launchArgument) {

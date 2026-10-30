@@ -75,6 +75,10 @@ struct ThreadDetailView: View {
     @State private var editingPendingInput: PendingUserInput?
     @State private var showingGoalBuilder = false
     @State private var showingPermissionsSheet = false
+    /// This task's execution-location sheet. Only a saved ordinary chat may
+    /// open it; Notes, canvas-embedded threads and temporary chats never do.
+    @State private var showingTaskEnvironment = false
+    @State private var taskEnvironmentEligible = false
     /// Full temporary-chat explanation (lifecycle, tools/cloud, voice) opened
     /// from the compact badge menu's About action.
     @State private var showsTemporaryAbout = false
@@ -220,6 +224,20 @@ struct ThreadDetailView: View {
             .task {
                 if !embedded { viewModel.selectedRunID = router.selectedRunID }
                 await viewModel.load()
+                if !embedded {
+                    // Execution locations belong to SAVED ordinary tasks only.
+                    // Notes assistants are embedded, and temporary sessions
+                    // have no durable task row; both stay ineligible even if a
+                    // caller ever changes their presentation.
+                    if let conversation = try? await environment.conversationStore
+                        .conversation(id: viewModel.conversationID) {
+                        taskEnvironmentEligible = !viewModel.isConversationMissing
+                            && conversation.purpose == .ordinary
+                            && conversation.visibility == .normal
+                    } else {
+                        taskEnvironmentEligible = false
+                    }
+                }
                 // Re-derive the shared design-entry state when a thread
                 // opens: bootstrap-time refresh can race design-service
                 // initialization, and run-end updates land here too.
@@ -303,6 +321,13 @@ struct ThreadDetailView: View {
                 NavigationStack {
                     ChildAgentDetailView(childRunID: child.id)
                 }
+            }
+            .sheet(isPresented: $showingTaskEnvironment) {
+                // Dismissal never cancels an in-flight migration: the job is
+                // owned by the center service and resumes on reopen.
+                TaskExecutionEnvironmentView(
+                    environment: environment,
+                    conversationID: viewModel.conversationID)
             }
             .sheet(isPresented: $showsTemporaryAbout) {
                 TemporaryChatAboutSheet()
@@ -710,16 +735,9 @@ struct ThreadDetailView: View {
                 : ConversationSearchQuery(raw: "")
             // A visible phrase may cross Markdown delimiters. Match the
             // same projection used by retrieval, never raw source bytes.
-            let visibleSearchText: String
-            let searchRanges: [Range<Int>]
-            if !searchQuery.isEmpty {
-                visibleSearchText = ConversationSearchText.visibleText(
-                    role: "assistant", content: text)
-                searchRanges = searchQuery.ranges(in: visibleSearchText)
-            } else {
-                visibleSearchText = ""
-                searchRanges = []
-            }
+            let visibleSearchText = searchQuery.isEmpty ? ""
+                : ConversationSearchText.visibleText(role: "assistant", content: text)
+            let searchRanges = searchQuery.ranges(in: visibleSearchText)
             if !searchRanges.isEmpty {
                 ThreadSearchHighlightedAssistantMessage(
                     text: visibleSearchText,
@@ -893,7 +911,6 @@ struct ThreadDetailView: View {
         }
     }
 
-    @ToolbarContentBuilder
     /// Opens the find bar and focuses its field. The composer draft,
     /// attachments and selection are untouched; closing find does not move
     /// the reader away from the current hit.
@@ -901,6 +918,7 @@ struct ThreadDetailView: View {
         search.begin()
     }
 
+    @ToolbarContentBuilder
     private var stateToolbar: some ToolbarContent {
         if !embedded {
             temporaryToolbarItems
@@ -937,6 +955,16 @@ struct ThreadDetailView: View {
                 .accessibilityIdentifier("thread.find.menu")
                 Divider()
                 if !viewModel.isTemporary {
+                if taskEnvironmentEligible {
+                    Button {
+                        showingTaskEnvironment = true
+                    } label: {
+                        Label(IDELanguageRunText.t("任务运行位置", "Task Environment"),
+                              systemImage: "shippingbox")
+                    }
+                    .accessibilityIdentifier("thread.taskEnvironment.menu")
+                    Divider()
+                }
                 Button(refreshingMediaJobs ? "chat.thread_detail_view.refreshing_media_tasks" : "chat.thread_detail_view.refresh_media_task_status", systemImage: "arrow.clockwise") {
                     refreshingMediaJobs = true
                     Task {

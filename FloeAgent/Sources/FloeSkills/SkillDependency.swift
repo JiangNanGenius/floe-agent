@@ -1,8 +1,9 @@
-// FloeSkills — managed official Skill dependency declaration v1 (strict, fail-closed).
+// FloeSkills — managed official Skill dependency declaration v1/v2 (strict,
+// fail-closed).
 //
 // Contract: `references/dependencies.json` inside a canonical Skill package declares
 // the resources the official Skill Hub installation flow may automatically prepare
-// and install into the task's resolved Linux guest environment. The channel is
+// and install into the task's resolved external target. The channel is
 // reviewed/signed only: the bytes live inside the canonical package, so the package
 // `contentDigest` and the review `.sig` binding already cover the declaration and
 // every referenced lock — no external hashes exist in this file's trust path.
@@ -14,16 +15,19 @@
 //      version and a NEW signed digest. Bytes are never replaced under a published
 //      same version; the curated receipt digest equality (existing authority gates)
 //      fails a same-id/same-version bytes-mismatch closed.
-//   2. `schemaVersion` — parser compatibility ONLY. This build accepts exactly 1; a
-//      newer unknown value fails compatibility instead of being guessed, and never
-//      breaks reading, staging or the rest of the skill.
+//   2. `schemaVersion` — parser compatibility ONLY. This build accepts 1 (the
+//      frozen Linux target contract) and 2 (adds a macOS pip/npm target; same
+//      keys, pins, lock/integrity/permission rules and limits). A newer unknown
+//      value fails compatibility instead of being guessed, and never breaks
+//      reading, staging or the rest of the skill.
 //   3. Exact resource versions + locks — per-requirement pins, wheel sha256s in the
 //      referenced pip lock, and the pinned component descriptor's own facts. These
 //      are what gets installed and read back; no ranges, no `latest`, no silent
 //      downgrade, no hidden same-version dependency refresh.
 //   4. `minimumAppVersion` — the existing hub-entry old-client gate, raised by the
-//      publisher to the first capable build (candidate 1.7.60); the component
-//      descriptor keeps its own gate unchanged.
+//      publisher to the first capable build. V1 keeps its historical floor
+//      (1.7.60); a V2 declaration needs 1.7.65 or newer. The component descriptor
+//      keeps its own gate unchanged.
 //
 // Trust rules (declaration is DATA, never authority):
 // - Decoded only from bytes of the digest-verified official curated snapshot; the
@@ -57,6 +61,7 @@ public enum SkillDependencyError: Error, Equatable, Sendable, LocalizedError {
     case duplicateProfileID(String)
     case duplicateRequirement(String)
     case unsupportedKind(String)
+    case kindNotSupportedOnTarget(kind: String, targetOS: String)
     case unsupportedTarget(String)
     case lockPathRejected(String)
     case descriptorPathRejected(String)
@@ -69,12 +74,13 @@ public enum SkillDependencyError: Error, Equatable, Sendable, LocalizedError {
         case .missingFields(let fields): "The dependency declaration is missing required fields: \(fields.sorted().joined(separator: ", "))"
         case .unknownFields(let fields): "The dependency declaration has fields outside the contract: \(fields.sorted().joined(separator: ", "))"
         case .invalidField(let field): "The dependency declaration field '\(field)' has an invalid value"
-        case .unsupportedSchemaVersion(let version): "The dependency declaration schemaVersion \(version) is newer than this build supports (1); provisioning is unavailable until a capable app is installed"
+        case .unsupportedSchemaVersion(let version): "The dependency declaration schemaVersion \(version) is newer than this build supports (1 or 2); provisioning is unavailable until a capable app is installed"
         case .tooManyProfiles(let count): "The dependency declaration carries \(count) profiles; at most 8 are allowed"
         case .tooManyRequirements(let count): "A dependency profile carries \(count) requirements; at most 32 are allowed"
         case .duplicateProfileID(let id): "Dependency profile id '\(id)' is declared more than once"
         case .duplicateRequirement(let key): "Dependency requirement '\(key)' is declared more than once in one profile"
         case .unsupportedKind(let kind): "Dependency requirement kind '\(kind)' is not one of pip, apt, npm, font or runtimeComponent"
+        case .kindNotSupportedOnTarget(let kind, let targetOS): "Dependency requirement kind '\(kind)' is not supported for target os '\(targetOS)'; macOS profiles accept pip and npm only"
         case .unsupportedTarget(let value): "The dependency target '\(value)' cannot be provisioned in this build"
         case .lockPathRejected(let path): "The dependency lock path '\(path)' is outside the package-local references contract"
         case .descriptorPathRejected(let path): "The runtime-component descriptor path '\(path)' is not the frozen references/engine-dependency.json"
@@ -139,8 +145,9 @@ public struct SkillDependencyRequirement: Sendable, Equatable, Codable {
     public var npmSpec: String? { kind == .npm ? "\(name)@\(version ?? "")" : nil }
 }
 
-/// One decoded profile: an id, a Linux target with allowed architectures, and its
-/// requirements.
+/// One decoded profile: an id, an execution target with allowed architectures,
+/// and its requirements. `os` is exactly `linux` in v1; v2 may also carry a
+/// `macos` profile (pip/npm only).
 public struct SkillDependencyProfile: Sendable, Equatable, Codable {
     public let id: String
     public let os: String
@@ -148,7 +155,8 @@ public struct SkillDependencyProfile: Sendable, Equatable, Codable {
     public let requirements: [SkillDependencyRequirement]
 }
 
-/// The whole decoded declaration. Immutable after strict decode.
+/// The whole decoded declaration. Immutable after strict decode; `schemaVersion`
+/// is the actual accepted schema (1 or 2), never silently rewritten to 1.
 public struct SkillDependencyDeclaration: Sendable, Equatable, Codable {
     public let schemaVersion: Int
     public let profiles: [SkillDependencyProfile]
@@ -161,7 +169,7 @@ public enum SkillDependency {
     /// Bounded declaration read (the published declarations are < 4 KiB).
     public static let maximumDeclarationBytes = 65_536
 
-    // Frozen v1 constants.
+    // Frozen v1 constants (published V1 bytes keep these exact semantics).
     public static let frozenSchemaVersion = 1
     public static let maximumProfiles = 8
     public static let maximumRequirementsPerProfile = 32
@@ -169,17 +177,70 @@ public enum SkillDependency {
     public static let frozenTargetOS = "linux"
     public static let supportedArchitectures: Set<String> = ["riscv64", "arm64", "x86_64", "any"]
 
-    /// The first app version whose native provisioning honors this contract. The
-    /// publisher raises a dependency-carrying curated entry's existing
-    /// `minimumAppVersion` to at least this value (old-client gate); the native side
-    /// does NOT self-gate on it, and no second user-visible version counter is
-    /// introduced.
+    // Additive schema v2: the SAME envelope, requirement key sets, exact pins,
+    // lock/integrity rules and limits, plus one new target value — `macos` for
+    // pip/npm profiles only. V1 keeps rejecting `macos` exactly as before; a
+    // v2 Linux profile keeps every v1 kind and rule unchanged.
+    public static let v2SchemaVersion = 2
+    public static let macOSTargetOS = "macos"
+    /// Schema versions this build decodes. Anything else fails closed.
+    static let supportedSchemaVersions: Set<Int> = [frozenSchemaVersion, v2SchemaVersion]
+    /// Kinds a v2 macOS profile may carry. apt/font/runtimeComponent are
+    /// Debian/Linux resources and fail closed on macOS instead of silently
+    /// resolving through another host manager.
+    static let macOSRequirementKinds: [SkillDependencyRequirement.Kind] = [.pip, .npm]
+
+    /// The first app version whose native provisioning honors the V1 contract.
+    /// This historical floor is unchanged: raising it would unnecessarily gate
+    /// already-published V1 packages. The publisher raises a dependency-carrying
+    /// curated entry's existing `minimumAppVersion` to at least this value
+    /// (old-client gate); the native side does NOT self-gate on it, and no
+    /// second user-visible version counter is introduced.
     public static let minimumCapableAppVersion = "1.7.60"
 
-    /// True when `appVersion` parses and is >= `minimumCapableAppVersion`.
+    /// The first capable candidate for a V2 (macOS-capable target) declaration.
+    /// A V2 package must raise its existing hub-entry `minimumAppVersion` to at
+    /// least this value. This is a candidate floor, not a claim that the build is
+    /// already shipped/available; the release owner verifies availability.
+    public static let minimumCapableAppVersionV2 = "1.7.65"
+
+    /// First capable app version for a declaration schema, or nil for an unknown
+    /// schema (callers must fail closed). V1 and V2 floors stay distinct.
+    public static func minimumCapableAppVersion(forSchemaVersion schemaVersion: Int) -> String? {
+        if schemaVersion == frozenSchemaVersion { return minimumCapableAppVersion }
+        if schemaVersion == v2SchemaVersion { return minimumCapableAppVersionV2 }
+        return nil
+    }
+
+    /// True when `appVersion` parses and can provision the given declaration
+    /// schema. Unknown schemas never pass.
+    public static func isProvisioningCapable(appVersion: String, schemaVersion: Int) -> Bool {
+        guard let floor = minimumCapableAppVersion(forSchemaVersion: schemaVersion) else {
+            return false
+        }
+        return SkillRuntimeDependency.isCompatible(
+            minimumAppVersion: floor, appVersion: appVersion
+        )
+    }
+
+    /// True when `appVersion` parses and is >= the historical V1 floor.
+    /// Kept for source compatibility with existing callers/tests.
     public static func isProvisioningCapable(appVersion: String) -> Bool {
-        SkillRuntimeDependency.isCompatible(
-            minimumAppVersion: minimumCapableAppVersion, appVersion: appVersion
+        isProvisioningCapable(appVersion: appVersion, schemaVersion: frozenSchemaVersion)
+    }
+
+    /// Publisher/author gate over the EXISTING hub-entry `minimumAppVersion`:
+    /// the declared floor must itself be at least the first capable version for
+    /// the declaration schema. This adds no field and no second runtime counter.
+    public static func isMinimumAppVersionSufficient(
+        _ minimumAppVersion: String,
+        forSchemaVersion schemaVersion: Int
+    ) -> Bool {
+        guard let floor = minimumCapableAppVersion(forSchemaVersion: schemaVersion) else {
+            return false
+        }
+        return SkillRuntimeDependency.isCompatible(
+            minimumAppVersion: floor, appVersion: minimumAppVersion
         )
     }
 
@@ -365,7 +426,8 @@ public enum SkillDependency {
     // MARK: - Strict decode
 
     /// Strictly decode one declaration byte string. Fail-closed on unknown schema,
-    /// unknown fields, untagged kinds, pattern misses, duplicates and limits.
+    /// unknown fields, untagged kinds, target/kind mismatches, pattern misses,
+    /// duplicates and limits.
     public static func decode(_ bytes: Data) throws -> SkillDependencyDeclaration {
         guard bytes.count <= maximumDeclarationBytes else {
             throw SkillDependencyError.invalidJSON("declaration exceeds the \(maximumDeclarationBytes)-byte bound")
@@ -385,13 +447,17 @@ public enum SkillDependency {
             throw SkillDependencyError.invalidField("schemaVersion")
         }
         let schemaVersion = number.intValue
-        if schemaVersion > frozenSchemaVersion {
+        if schemaVersion > v2SchemaVersion {
             // Unknown newer schema: fail compatibility, never guess forward.
             throw SkillDependencyError.unsupportedSchemaVersion(schemaVersion)
         }
-        if schemaVersion < frozenSchemaVersion {
+        guard supportedSchemaVersions.contains(schemaVersion) else {
             throw SkillDependencyError.invalidField("schemaVersion")
         }
+        // V1 is the frozen Linux-only contract; V2 adds macOS for pip/npm only.
+        let supportedTargets: Set<String> = schemaVersion == frozenSchemaVersion
+            ? [frozenTargetOS]
+            : [frozenTargetOS, macOSTargetOS]
 
         guard let profileArray = object["profiles"] as? [Any], !profileArray.isEmpty else {
             throw SkillDependencyError.invalidField("profiles")
@@ -417,7 +483,7 @@ public enum SkillDependency {
             try exactKeys(targetObject, allowed: ["os", "architectures"],
                           required: ["os", "architectures"], path: "\(path).target")
             let os = try string(targetObject["os"], path: "\(path).target.os")
-            guard os == frozenTargetOS else {
+            guard supportedTargets.contains(os) else {
                 throw SkillDependencyError.unsupportedTarget(os)
             }
             guard let architectureArray = targetObject["architectures"] as? [Any],
@@ -444,7 +510,8 @@ public enum SkillDependency {
             var seenRequirements = Set<String>()
             for (requirementIndex, rawRequirement) in requirementArray.enumerated() {
                 let requirement = try decodeRequirement(
-                    rawRequirement, path: "\(path).requirements[\(requirementIndex)]"
+                    rawRequirement, path: "\(path).requirements[\(requirementIndex)]",
+                    targetOS: os
                 )
                 guard seenRequirements.insert(requirement.identityKey).inserted else {
                     throw SkillDependencyError.duplicateRequirement(requirement.identityKey)
@@ -455,7 +522,7 @@ public enum SkillDependency {
                 id: id, os: os, architectures: architectures, requirements: requirements
             ))
         }
-        return SkillDependencyDeclaration(schemaVersion: frozenSchemaVersion, profiles: profiles)
+        return SkillDependencyDeclaration(schemaVersion: schemaVersion, profiles: profiles)
     }
 
     /// Cross-validate the decoded declaration against the exact package inventory:
@@ -497,13 +564,22 @@ public enum SkillDependency {
     /// a requirement can never shadow, replace or bypass the descriptor's own
     /// pinned values (its strict decoder + allowlist stay the single authority).
 
-    private static func decodeRequirement(_ raw: Any, path: String) throws -> SkillDependencyRequirement {
+    private static func decodeRequirement(
+        _ raw: Any, path: String, targetOS: String
+    ) throws -> SkillDependencyRequirement {
         guard let object = raw as? [String: Any] else {
             throw SkillDependencyError.invalidField(path)
         }
         let rawKind = try string(object["kind"], path: "\(path).kind")
         guard let kind = SkillDependencyRequirement.Kind(rawValue: rawKind) else {
             throw SkillDependencyError.unsupportedKind(rawKind)
+        }
+        // v2 macOS profiles carry pip/npm only. apt/font/runtimeComponent are
+        // Debian/Linux resources, never guessed onto another package manager.
+        if targetOS == macOSTargetOS, !macOSRequirementKinds.contains(kind) {
+            throw SkillDependencyError.kindNotSupportedOnTarget(
+                kind: kind.rawValue, targetOS: targetOS
+            )
         }
         try exactKeys(object, allowed: kind.exactKeys,
                       required: kind.exactKeys.filter { $0 != "lockfile" }, path: path)

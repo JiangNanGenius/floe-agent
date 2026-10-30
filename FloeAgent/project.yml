@@ -688,6 +688,15 @@ targets:
       Debug: Vendor/Office/native-host.xcconfig
       Release: Vendor/Office/native-host.xcconfig
     sources:
+      - path: Tests/FloeAppTests/SkillRuntimeTargetTests.swift
+      - path: Tests/FloeAppTests/TaskEnvironmentOwnershipTests.swift
+      - path: Tests/FloeAppTests/TaskRemoteEnvironmentLiveTests.swift
+      - path: Tests/FloeAppTests/TaskWorkspaceMirrorTests.swift
+      - path: Tests/FloePersistenceTests/TaskExecutionBindingStoreTests.swift
+      - path: Tests/FloeExecutionTests/RemoteEnvironmentShellBackendTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ConversationContextFeedbackTests.swift
+      - path: Tests/FloeAgentRuntimeTests/SQLiteRunCheckpointStoreTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ContextCompactionDegradeTests.swift
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
       - path: Tests/FloeAppTests/BackgroundWorkSessionTests.swift
       - path: Tests/FloeAppTests/BackgroundDownloadSettlementTests.swift
@@ -1218,6 +1227,8 @@ targets:
       - path: Tests/FloePersistenceTests/UserQuestionStoreTests.swift
       - path: Tests/FloeAgentRuntimeTests/UserQuestionTests.swift
       - path: Tests/FloeExecutionTests/DeepSeekSearchTests.swift
+      - path: Tests/FloeExecutionTests/SearchProviderCatalogTests.swift
+      - path: Tests/FloeWorkbenchTests/CadDocumentSupportTests.swift
     dependencies:
       - target: FloeAgent
       - package: FloeMacBridge

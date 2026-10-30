@@ -251,9 +251,25 @@ private final class FakeOperations: SkillDependencyPackageOperating, @unchecked 
 private final class AuthorityBox: @unchecked Sendable {
     private let lock = NSLock()
     private var current: SkillDependencyAuthority?
-    init(_ value: SkillDependencyAuthority?) { current = value }
+    private var bySkillID: [String: SkillDependencyAuthority] = [:]
+    init(_ value: SkillDependencyAuthority?) {
+        current = value
+        if let value { bySkillID[value.skillID] = value }
+    }
     var value: SkillDependencyAuthority? { lock.withLock { current } }
-    func set(_ value: SkillDependencyAuthority?) { lock.withLock { current = value } }
+    func value(for skillID: String) -> SkillDependencyAuthority? {
+        lock.withLock { bySkillID[skillID] ?? current }
+    }
+    func set(_ value: SkillDependencyAuthority?) {
+        lock.withLock {
+            current = value
+            bySkillID.removeAll()
+            if let value { bySkillID[value.skillID] = value }
+        }
+    }
+    func set(_ value: SkillDependencyAuthority, for skillID: String) {
+        lock.withLock { bySkillID[skillID] = value }
+    }
 }
 
 private final class GenerationBox: @unchecked Sendable {
@@ -271,6 +287,15 @@ private final class ProbeBox: @unchecked Sendable {
     func get() -> String? { lock.withLock { reason } }
     func setReady() { lock.withLock { reason = nil } }
     func setDeferred(_ reason: String) { lock.withLock { self.reason = reason } }
+}
+
+/// Mutable actual-target fact for migration/target-change tests.
+private final class TargetBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: SkillRuntimeTarget?
+    init(_ value: SkillRuntimeTarget?) { self.value = value }
+    func get() -> SkillRuntimeTarget? { lock.withLock { value } }
+    func set(_ value: SkillRuntimeTarget?) { lock.withLock { self.value = value } }
 }
 
 /// The canonical PEP 427 basename a PyPI pure-wheel artifact for an exact
@@ -326,8 +351,14 @@ private func pipWithLock() -> String {
     """
 }
 
-private func makeHarness(requirementsJSON: String, lockText: String? = nil) -> Harness {
-    let operations = FakeOperations()
+private func makeHarness(
+    requirementsJSON: String,
+    lockText: String? = nil,
+    operations: FakeOperations = FakeOperations(),
+    targetProvider: (@Sendable (_ environmentID: String, _ runID: UUID?) async -> SkillRuntimeTarget?)? = nil,
+    operationsResolver: (@Sendable (SkillRuntimeTarget) async -> (any SkillDependencyPackageOperating)?)? = nil,
+    targetPreparation: (@Sendable (SkillRuntimeTarget, CancellationToken?) async throws -> Void)? = nil
+) -> Harness {
     let persistenceRoot = makeTempDirectory("store")
     let environmentID = "env-" + UUID().uuidString
     let environment = ToolEnvironment(
@@ -366,11 +397,14 @@ private func makeHarness(requirementsJSON: String, lockText: String? = nil) -> H
     let generationBox = GenerationBox(7)
     let probeBox = ProbeBox(nil)
     let center = SkillDependencyPreparationCenter(
-        authorityProvider: { _ in authorityBox.value },
+        authorityProvider: { id in authorityBox.value(for: id) },
         environmentResolver: { id in id == environmentID ? environment : nil },
         launchGeneration: { _ in generationBox.get() },
         operations: operations,
         runtimeComponentProbe: { _, _, _ in probeBox.get() },
+        targetProvider: targetProvider,
+        operationsResolver: operationsResolver,
+        targetPreparation: targetPreparation,
         appVersion: { "1.7.60" },
         persistenceRoot: persistenceRoot
     )
@@ -440,7 +474,7 @@ struct SkillDependencyPreparationTests {
     }
 
     @Test func newerSchemaFailsCompatibilityNotReadiness() async {
-        let harness = makeHarness(requirementsJSON: pipOnly().replacing("\"schemaVersion\":1", with: "\"schemaVersion\":2"))
+        let harness = makeHarness(requirementsJSON: pipOnly().replacing("\"schemaVersion\":1", with: "\"schemaVersion\":3"))
         let outcome = await harness.center.recordPlan(
             skillID: "dep-skill", environmentID: harness.environmentID, runID: UUID(),
             authority: harness.authorityBox.value
@@ -1376,6 +1410,424 @@ struct SkillDependencyPreparationTests {
         #expect(status!.contains("pip pypdf@5.4.0 = prefetched/verified"))
         #expect(status!.contains("pip requests@2.32.4 = prefetched/verified"))
         #expect(status!.contains("transitive closure member of pypdf"))
+    }
+
+    // MARK: - Actual target facts (injected; no legacy riscv64 fallback)
+
+    private func targetProfileJSON(architectures: [String], requirementKind: String = "pip") -> String {
+        let requirement: String
+        switch requirementKind {
+        case "apt":
+            requirement = #"{"kind":"apt","name":"hello","version":"2.10-3","purpose":"Smoke.","required":true}"#
+        case "runtimeComponent":
+            requirement = #"{"kind":"runtimeComponent","componentDescriptorPath":"references/engine-dependency.json","purpose":"Engine.","required":true}"#
+        default:
+            requirement = #"{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true}"#
+        }
+        return "{\"schemaVersion\":1,\"profiles\":[{\"id\":\"actual-target\",\"target\":{\"os\":\"linux\",\"architectures\":[\"" + architectures.joined(separator: "\",\"") + "\"]},\"requirements\":[" + requirement + "]}]}"
+    }
+
+    @Test func actualArm64TargetPlansAndPreparesItsOwnProfile() async throws {
+        let operations = FakeOperations()
+        let hostID = UUID()
+        let harness = makeHarness(
+            requirementsJSON: """
+            {"schemaVersion":1,"profiles":[{"id":"linux-arm64","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true},{"kind":"apt","name":"hello","version":"2.10-3","purpose":"Smoke.","required":true}]}]}
+            """,
+            operations: operations,
+            targetProvider: { environmentID, _ in
+                .remoteSSH(
+                    environmentID: environmentID, remoteHostID: hostID,
+                    remoteRootPath: "/workspace", operatingSystem: .linux,
+                    architecture: "aarch64", distribution: "debian", runtimeGeneration: "11"
+                )
+            },
+            operationsResolver: { _ in operations }
+        )
+        let runID = UUID()
+        let plan = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID,
+            authority: harness.authorityBox.value
+        )
+        guard case .recorded = plan else { Issue.record("arm64 target must plan: \(plan)"); return }
+        let outcome = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
+        )
+        guard case .ready(let annotation) = outcome else {
+            Issue.record("arm64 target must prepare: \(outcome)"); return
+        }
+        #expect(annotation.contains("pip:pypdf@5.4.0"))
+        #expect(annotation.contains("apt:hello@2.10-3"))
+        #expect(operations.counts.python == 1)
+        #expect(operations.counts.apt == 1)
+    }
+
+    @Test func riscvProfileNeverMutatesArm64ActualTarget() async {
+        let operations = FakeOperations()
+        let harness = makeHarness(
+            requirementsJSON: targetProfileJSON(architectures: ["riscv64"]),
+            operations: operations,
+            targetProvider: { environmentID, _ in
+                .linuxGuest(environmentID: environmentID, architecture: "aarch64", distribution: "debian")
+            }
+        )
+        let plan = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: UUID(),
+            authority: harness.authorityBox.value
+        )
+        guard case .rejected(let reason) = plan else {
+            Issue.record("riscv64-only profile must not plan on arm64: \(plan)"); return
+        }
+        #expect(reason.contains("architecture"))
+        let invoke = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: UUID(), cancellation: nil
+        )
+        guard case .refused = invoke else { Issue.record("no plan may survive"); return }
+        #expect(operations.counts.python == 0)
+    }
+
+    @Test func macOSActualTargetRefusesLinuxDependencyPlanWithoutHomebrewFallback() async {
+        let operations = FakeOperations()
+        let harness = makeHarness(
+            requirementsJSON: targetProfileJSON(architectures: ["any"]),
+            operations: operations,
+            targetProvider: { environmentID, _ in
+                .macBridge(environmentID: environmentID, architecture: "arm64")
+            },
+            operationsResolver: { _ in operations }
+        )
+        let plan = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: UUID(),
+            authority: harness.authorityBox.value
+        )
+        guard case .rejected(let reason) = plan else {
+            Issue.record("the Linux-only dependency schema must not plan on macOS: \(plan)"); return
+        }
+        #expect(reason.contains("macos"))
+        let invoke = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: UUID(), cancellation: nil
+        )
+        guard case .refused = invoke else { Issue.record("no plan may exist"); return }
+        #expect(operations.counts.python == 0 && operations.counts.apt == 0)
+    }
+
+    @Test func disconnectedActualTargetRefusesWithoutLegacyGuestFallback() async {
+        let operations = FakeOperations()
+        let hostID = UUID()
+        let harness = makeHarness(
+            requirementsJSON: targetProfileJSON(architectures: ["arm64"]),
+            operations: operations,
+            targetProvider: { environmentID, _ in
+                .remoteSSH(
+                    environmentID: environmentID, remoteHostID: hostID,
+                    remoteRootPath: "/workspace", operatingSystem: .linux,
+                    architecture: "arm64", distribution: "debian",
+                    runtimeGeneration: "4", isConnected: false
+                )
+            },
+            operationsResolver: { _ in operations }
+        )
+        let runID = UUID()
+        let plan = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID,
+            authority: harness.authorityBox.value
+        )
+        guard case .recorded = plan else {
+            Issue.record("a plan may be recorded while disconnected: \(plan)"); return
+        }
+        let outcome = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
+        )
+        guard case .refused(let reason) = outcome, reason == SkillDependencyReason.targetDisconnected else {
+            Issue.record("disconnected target must refuse without fallback: \(outcome)"); return
+        }
+        #expect(operations.counts.python == 0 && operations.counts.apt == 0)
+    }
+
+    @Test func targetChangeInvalidatesPlanAndNeverReusesForeignReceipt() async {
+        let operations = FakeOperations()
+        let box = TargetBox(nil)
+        let harness = makeHarness(
+            requirementsJSON: targetProfileJSON(architectures: ["any"]),
+            operations: operations,
+            targetProvider: { environmentID, _ in
+                box.get() ?? .linuxGuest(environmentID: environmentID, architecture: "arm64", distribution: "debian")
+            }
+        )
+        box.set(.linuxGuest(environmentID: harness.environmentID, architecture: "arm64", distribution: "debian"))
+        let runID = UUID()
+        _ = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID,
+            authority: harness.authorityBox.value
+        )
+        let first = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
+        )
+        guard case .ready = first else { Issue.record("first target must prepare: \(first)"); return }
+        #expect(operations.counts.python == 1)
+
+        box.set(.linuxGuest(environmentID: harness.environmentID, architecture: "x86_64", distribution: "debian"))
+        let stale = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
+        )
+        guard case .refused(let reason) = stale, reason == SkillDependencyReason.targetChanged else {
+            Issue.record("a changed target must refuse the stale plan: \(stale)"); return
+        }
+        #expect(operations.counts.python == 1)
+
+        _ = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID,
+            authority: harness.authorityBox.value
+        )
+        let second = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
+        )
+        guard case .ready(let annotation) = second else {
+            Issue.record("new target must re-verify: \(second)"); return
+        }
+        // The first target's receipt must not be reused on the new identity:
+        // a live re-verification runs and reports the already-present pin.
+        #expect(annotation.contains("already verified"))
+        #expect(operations.counts.python == 1)
+    }
+
+    @Test func appNativeTargetRefusesExternalDependencies() async {
+        let operations = FakeOperations()
+        let harness = makeHarness(
+            requirementsJSON: targetProfileJSON(architectures: ["any"]),
+            operations: operations,
+            targetProvider: { _, _ in .appNative() }
+        )
+        let plan = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: UUID(),
+            authority: harness.authorityBox.value
+        )
+        guard case .rejected(let reason) = plan, reason == SkillDependencyReason.targetUnsupported else {
+            Issue.record("App-native target must refuse external work: \(plan)"); return
+        }
+        #expect(operations.counts.python == 0)
+    }
+
+    @Test func riscvRuntimeComponentIsNotStagedOnArm64Target() async {
+        let operations = FakeOperations()
+        let harness = makeHarness(
+            requirementsJSON: targetProfileJSON(architectures: ["arm64"], requirementKind: "runtimeComponent"),
+            operations: operations,
+            targetProvider: { environmentID, _ in
+                .linuxGuest(environmentID: environmentID, architecture: "arm64", distribution: "debian")
+            }
+        )
+        let plan = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: UUID(),
+            authority: harness.authorityBox.value
+        )
+        guard case .rejected(let reason) = plan else {
+            Issue.record("foreign runtime component must not plan: \(plan)"); return
+        }
+        #expect(reason.contains("built for linux riscv64"))
+        #expect(operations.counts.python == 0 && operations.counts.apt == 0)
+    }
+
+    @Test func optionalAptOnNonDebianLinuxAnnotatesAndDoesNotRun() async throws {
+        let json = """
+        {"schemaVersion":1,"profiles":[{"id":"alpine","target":{"os":"linux","architectures":["any"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true},{"kind":"apt","name":"hello","version":"2.10-3","purpose":"Optional smoke.","required":false}]}]}
+        """
+        let operations = FakeOperations()
+        let harness = makeHarness(
+            requirementsJSON: json,
+            operations: operations,
+            targetProvider: { environmentID, _ in
+                .linuxGuest(environmentID: environmentID, architecture: "arm64", distribution: "alpine")
+            }
+        )
+        let runID = UUID()
+        _ = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID,
+            authority: harness.authorityBox.value
+        )
+        let outcome = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
+        )
+        guard case .ready(let annotation) = outcome else {
+            Issue.record("only the optional apt gap may annotate: \(outcome)"); return
+        }
+        #expect(annotation.contains("optional dependency apt:hello"))
+        #expect(operations.counts.python == 1)
+        #expect(operations.counts.apt == 0)
+    }
+
+    @Test func twoDependencySkillsInOneRunKeepIndependentPlans() async throws {
+        let harness = makeHarness(requirementsJSON: pipOnly())
+        let first = try #require(harness.authorityBox.value)
+        let second = SkillDependencyAuthority(
+            skillID: "dep-skill-2", packageVersion: first.packageVersion,
+            contentDigest: first.contentDigest, packageSHA256: first.packageSHA256,
+            catalogSHA256: first.catalogSHA256, reviewSHA256: first.reviewSHA256,
+            publicationCommit: first.publicationCommit, feedStatus: first.feedStatus,
+            reviewDecision: first.reviewDecision, feedSignatureKeyID: first.feedSignatureKeyID,
+            reviewKeyID: first.reviewKeyID, hubRepository: first.hubRepository,
+            declarationBytes: first.declarationBytes,
+            declarationSHA256: first.declarationSHA256, packageFiles: first.packageFiles
+        )
+        harness.authorityBox.set(second, for: second.skillID)
+        let runID = UUID()
+        _ = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID,
+            authority: first
+        )
+        _ = await harness.center.recordPlan(
+            skillID: "dep-skill-2", environmentID: harness.environmentID, runID: runID,
+            authority: second
+        )
+        let one = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
+        )
+        let two = await harness.center.invoke(
+            skillID: "dep-skill-2", environmentID: harness.environmentID, runID: runID, cancellation: nil
+        )
+        guard case .ready = one, case .ready = two else {
+            Issue.record("each dependency skill needs its own run plan: \(one) / \(two)"); return
+        }
+        #expect(harness.operations.counts.python == 1)
+    }
+
+    // MARK: - Native migration preparation (no tool-call grant)
+
+    @Test func prepareForMigrationVerifiesRequiredDepsWithoutToolGrant() async throws {
+        let operations = FakeOperations()
+        let harness = makeHarness(
+            requirementsJSON: """
+            {"schemaVersion":1,"profiles":[{"id":"linux-arm64","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true},{"kind":"apt","name":"hello","version":"2.10-3","purpose":"Smoke.","required":true}]}]}
+            """,
+            operations: operations,
+            targetProvider: { environmentID, _ in
+                .linuxGuest(environmentID: environmentID, architecture: "arm64", distribution: "debian")
+            }
+        )
+        let migrationID = UUID()
+        let outcome = await harness.center.prepareForMigration(
+            skillID: "dep-skill", environmentID: harness.environmentID,
+            migrationID: migrationID, cancellation: nil
+        )
+        guard case .verified(let annotation, let requirements) = outcome else {
+            Issue.record("migration preparation must verify declared deps: \(outcome)"); return
+        }
+        #expect(annotation.contains("pip:pypdf@5.4.0"))
+        #expect(annotation.contains("apt:hello@2.10-3"))
+        #expect(requirements.count == 2)
+        #expect(requirements.allSatisfy { $0.required && $0.state == .verified })
+        #expect(operations.counts.python == 1 && operations.counts.apt == 1)
+        // The migration token is not a lingering task plan: a later invoke
+        // under the same token has no plan to proceed on.
+        let invoked = await harness.center.invoke(
+            skillID: "dep-skill", environmentID: harness.environmentID,
+            runID: migrationID, cancellation: nil
+        )
+        guard case .refused(let reason) = invoked, reason == SkillDependencyReason.noRun else {
+            Issue.record("a migration id must not become an exec.shell run plan: \(invoked)"); return
+        }
+    }
+
+    @Test func prepareForMigrationRefusesUnreadyRequiredDependency() async throws {
+        let operations = FakeOperations()
+        let harness = makeHarness(
+            requirementsJSON: """
+            {"schemaVersion":1,"profiles":[{"id":"linux-arm64","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true}]}]}
+            """,
+            operations: operations,
+            targetProvider: { environmentID, _ in
+                .linuxGuest(environmentID: environmentID, architecture: "arm64", distribution: "debian")
+            }
+        )
+        operations.setPythonFailure("target installer refused")
+        let outcome = await harness.center.prepareForMigration(
+            skillID: "dep-skill", environmentID: harness.environmentID,
+            migrationID: UUID(), cancellation: nil
+        )
+        guard case .refused(let reason, let requirements) = outcome else {
+            Issue.record("a failed required dep must refuse migration: \(outcome)"); return
+        }
+        #expect(reason.contains("required dependency pip:pypdf"))
+        #expect(requirements.contains { $0.kind == "pip" && $0.required && $0.state == .refused })
+        #expect(operations.counts.python == 0)
+        #expect(harness.operations.pythonOwnedSnapshot.isEmpty)
+    }
+
+    @Test func prepareForMigrationUnavailableWithoutReviewedDeclaration() async throws {
+        let operations = FakeOperations()
+        let harness = makeHarness(
+            requirementsJSON: pipOnly(), operations: operations,
+            targetProvider: { environmentID, _ in
+                .linuxGuest(environmentID: environmentID, architecture: "arm64", distribution: "debian")
+            }
+        )
+        harness.authorityBox.set(nil)
+        let outcome = await harness.center.prepareForMigration(
+            skillID: "dep-skill", environmentID: harness.environmentID,
+            migrationID: UUID(), cancellation: nil
+        )
+        guard case .unavailable(let reason) = outcome, reason == SkillDependencyReason.noDeclaration else {
+            Issue.record("no reviewed declaration must not claim readiness: \(outcome)"); return
+        }
+        #expect(operations.counts.python == 0 && operations.counts.apt == 0)
+    }
+
+    @Test func prepareForMigrationUnavailableWhenTargetDisconnected() async throws {
+        let operations = FakeOperations()
+        let hostID = UUID()
+        let harness = makeHarness(
+            requirementsJSON: targetProfileJSON(architectures: ["arm64"]),
+            operations: operations,
+            targetProvider: { environmentID, _ in
+                .remoteSSH(
+                    environmentID: environmentID, remoteHostID: hostID,
+                    remoteRootPath: "/workspace", operatingSystem: .linux,
+                    architecture: "arm64", distribution: "debian",
+                    runtimeGeneration: "9", isConnected: false
+                )
+            },
+            operationsResolver: { _ in operations }
+        )
+        let outcome = await harness.center.prepareForMigration(
+            skillID: "dep-skill", environmentID: harness.environmentID,
+            migrationID: UUID(), cancellation: nil
+        )
+        guard case .unavailable(let reason) = outcome, reason == SkillDependencyReason.targetDisconnected else {
+            Issue.record("disconnected target must not prepare: \(outcome)"); return
+        }
+        #expect(operations.counts.python == 0 && operations.counts.apt == 0)
+    }
+
+    @Test func targetAwareCancelledWaiterJoinsWithoutCancellingAnotherTargetRun() async throws {
+        let operations = FakeOperations()
+        let gate = ContinuationGate()
+        operations.gate = gate
+        let target = SkillRuntimeTarget.linuxGuest(
+            environmentID: "actual-target", architecture: "arm64", distribution: "debian"
+        )
+        let harness = makeHarness(
+            requirementsJSON: targetProfileJSON(architectures: ["any"]),
+            operations: operations,
+            targetProvider: { _, _ in target }
+        )
+        let runID = UUID()
+        _ = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: runID,
+            authority: harness.authorityBox.value
+        )
+        let waiter = Task {
+            await harness.center.invoke(
+                skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
+            )
+        }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        waiter.cancel()
+        let outcome = await waiter.value
+        guard case .refused(let reason) = outcome, reason == SkillDependencyReason.cancelled else {
+            Issue.record("cancelled target-aware waiter returns honestly: \(outcome)"); return
+        }
+        #expect(operations.counts.python == 0)
+        gate.release()
     }
 }
 

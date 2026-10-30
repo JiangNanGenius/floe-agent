@@ -56,7 +56,7 @@ public actor DatabaseManager {
     /// constant still read 53; v55 restores the alignment invariant.
     /// v56 adds durable task-bound user questions; v57 adds the trusted
     /// conversation origin used by scheduled-task presentation.
-    public static let currentSchemaVersion = 57
+    public static let currentSchemaVersion = 58
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
@@ -132,6 +132,7 @@ public actor DatabaseManager {
         V55ConversationPinning.register(into: &migrator)
         V56UserQuestions.register(into: &migrator)
         V57SchedulePresentation.register(into: &migrator)
+        V58TaskExecutionBindings.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

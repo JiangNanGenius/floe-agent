@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 2,
+  "profiles": [
+    {
+      "id": "mac-host",
+      "target": {
+        "os": "macos",
+        "architectures": [
+          "arm64",
+          "x86_64"
+        ]
+      },
+      "requirements": [
+        {
+          "kind": "pip",
+          "name": "pypdf",
+          "version": "5.4.0",
+          "purpose": "Read and merge PDF pages on the Mac bridge.",
+          "required": true,
+          "lockfile": "references/requirements.lock.txt"
+        },
+        {
+          "kind": "npm",
+          "name": "typescript",
+          "version": "5.9.3",
+          "purpose": "Type-check the generated helper before running it.",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

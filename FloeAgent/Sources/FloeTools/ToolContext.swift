@@ -82,10 +82,13 @@ public struct RuntimeNestedApprovalHandle: Sendable {
 
 /// Per-execution context handed to every tool.
 public struct ToolContext: Sendable {
+    /// Set by the registered runner, never decoded from model arguments.
+    public var executionToolName: String? = nil
     public var runID: UUID    /// Container/environment the run executes in. Tools that install or
     /// execute packages (exec.shell, apt, pip, npm) resolve their writable
     /// layer from this identifier; nil means the default project container.
     public var environmentID: String?
+    public var executionBindingGeneration: Int64?
     public var conversationID: UUID?
     public var environment: ToolEnvironment?
     /// Durable provider call identifier. Remote/durable tools use it as an
@@ -201,6 +204,7 @@ public struct ToolContext: Sendable {
         cancellation: CancellationToken,
         childBudget: ChildBudgetContext? = nil,
         environmentID: String? = nil,
+        executionBindingGeneration: Int64? = nil,
         conversationID: UUID? = nil,
         environment: ToolEnvironment? = nil,
         childExecution: ChildExecutionHandoff? = nil,
@@ -215,6 +219,7 @@ public struct ToolContext: Sendable {
     ) {
         self.runID = runID
         self.environmentID = environmentID
+        self.executionBindingGeneration = executionBindingGeneration
         self.conversationID = conversationID
         self.environment = environment
         self.toolCallID = toolCallID

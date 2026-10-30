@@ -1641,12 +1641,35 @@ final class ThreadDetailViewModel: ObservableObject {
         await center.cancel(runID: runID)
     }
 
+    /// Compact inline status for the selected live run (context compression)
+    /// or a recoverable tool settlement. It is a status line, never a modal,
+    /// and the spinner is reserved for real compaction work.
     @Published private(set) var compactionStatus: String?
     @Published private(set) var isCompacting = false
+
+    private enum InlineStatusSource: Equatable {
+        case none
+        case compression
+        case outcome
+        case manual
+    }
+
+    /// Last typed compression snapshot applied for the observed live run.
+    /// Kept so an identical re-read is a no-op and cannot overwrite a newer
+    /// settlement note with stale wording.
+    private var liveCompression: ContextCompressionSnapshot?
+    /// Newest call-correlated outcome note already projected, if any.
+    private var liveOutcomeCallID: String?
+    private var inlineStatusSource: InlineStatusSource = .none
+    /// Fence for typed live feedback. It advances whenever the observed live
+    /// task is replaced or stopped, so a snapshot read that completes after
+    /// the switch is discarded instead of overwriting the new run's status.
+    private var liveFeedbackGeneration: UInt64 = 0
 
     func requestManualCompaction() {
         guard !isCompacting else { return }
         isCompacting = true
+        inlineStatusSource = .manual
         compactionStatus = FloeL10n.l("chat.thread_detail_view_model.compacting_context")
         Task {
             defer { isCompacting = false }
@@ -1655,6 +1678,219 @@ final class ThreadDetailViewModel: ObservableObject {
             } catch {
                 compactionStatus = FloeL10n.l("chat.thread_detail_view_model.compaction_did_not_finish", error.localizedDescription)
             }
+        }
+    }
+
+    // MARK: - Typed live feedback (context compression / tool settlement)
+
+    /// Projects one real compression snapshot. Sizing is deliberately a
+    /// non-spinning, non-chattering phase; compacting/overflow may spin;
+    /// compacted/failed/schema-reduced keep their exact wording. An identical
+    /// re-read is a no-op so a later event cannot overwrite a newer note with
+    /// stale compaction text.
+    private func applyLiveCompression(_ snapshot: ContextCompressionSnapshot?) {
+        guard let snapshot else { return }
+        guard snapshot != liveCompression else { return }
+        liveCompression = snapshot
+        guard let display = Self.compressionDisplay(snapshot) else {
+            // A fast idle/sizing pass is not compaction. Never show a spinner
+            // for it, and never replace a real compacted/failed result.
+            if inlineStatusSource == .compression, isCompacting {
+                compactionStatus = nil
+                inlineStatusSource = .none
+            }
+            return
+        }
+        compactionStatus = display.text
+        isCompacting = display.spins
+        inlineStatusSource = .compression
+    }
+
+    /// The one mapping from a real phase to visible copy. `nil` means the
+    /// phase is deliberately quiet (idle/sizing) and has no spinner.
+    private static func compressionDisplay(
+        _ snapshot: ContextCompressionSnapshot
+    ) -> (text: String, spins: Bool)? {
+        switch snapshot.phase {
+        case .idle, .sizing:
+            return nil
+        case .compacting:
+            return (FloeL10n.l("chat.thread_detail_view_model.auto_compacting_context"), true)
+        case .compacted:
+            return (compactedStatusText(snapshot), false)
+        case .failed:
+            return (
+                ChatBilingualCatalog.localized(
+                    key: "chat.thread_detail_view_model.context_compaction_failed_preserved",
+                    en: "Context compaction failed; the original messages and tool evidence were preserved.",
+                    zh: "上下文压缩失败，原始消息与工具证据均已保留。"
+                ),
+                false
+            )
+        case .overflowRecovery:
+            return (
+                ChatBilingualCatalog.localized(
+                    key: "chat.thread_detail_view_model.context_overflow_recovery",
+                    en: "The model reported a context overflow; compacting once and retrying.",
+                    zh: "模型报告上下文溢出，正在压缩一次并重试。"
+                ),
+                true
+            )
+        case .schemasReduced:
+            return (
+                ChatBilingualCatalog.localized(
+                    key: "chat.thread_detail_view_model.tool_schemas_reduced",
+                    en: "Tool definitions were reduced to fit this model's context window.",
+                    zh: "已精简工具定义以适配此模型的上下文窗口。"
+                ),
+                false
+            )
+        }
+    }
+
+    private static func compactedStatusText(_ snapshot: ContextCompressionSnapshot) -> String {
+        guard let before = snapshot.beforeTokens, let after = snapshot.afterTokens else {
+            return ChatBilingualCatalog.localized(
+                key: "chat.thread_detail_view_model.context_compacted",
+                en: "Context compacted.",
+                zh: "上下文已压缩。"
+            )
+        }
+        return FloeL10n.l(
+            "chat.thread_detail_view_model.context_compacted_about_tokens",
+            before,
+            after
+        )
+    }
+
+    /// Projects one settlement class for its exact call. Only outcomes that
+    /// help the user understand a wait/recoverable/partial state are shown;
+    /// completed, failed and cancelled already have their own truthful card
+    /// and must never be restated as success here.
+    private func applyToolOutcome(_ classification: ToolOutcomeClassification?) {
+        guard let classification else { return }
+        guard classification.callID != liveOutcomeCallID || inlineStatusSource != .outcome else {
+            return
+        }
+        guard let note = Self.toolOutcomeNote(classification) else {
+            // A silent class for a DIFFERENT call must not erase a real wait
+            // note produced by another call in the same parallel batch. Only
+            // the same call being reclassified can retire its own note.
+            if inlineStatusSource == .outcome, liveOutcomeCallID == classification.callID {
+                liveOutcomeCallID = nil
+                compactionStatus = nil
+                inlineStatusSource = .none
+            }
+            return
+        }
+        liveOutcomeCallID = classification.callID
+        compactionStatus = note
+        isCompacting = false
+        inlineStatusSource = .outcome
+    }
+
+    private static func toolOutcomeNote(_ classification: ToolOutcomeClassification) -> String? {
+        switch classification.kind {
+        case .waitingForResource:
+            return ChatBilingualCatalog.localized(
+                key: "chat.thread_detail_view_model.tool_outcome_waiting_for_resource",
+                en: "Background work is still running; other tools remain available.",
+                zh: "后台作业仍在运行，其他工具仍可使用。"
+            )
+        case .waitingForUser:
+            return ChatBilingualCatalog.localized(
+                key: "chat.thread_detail_view_model.tool_outcome_waiting_for_user",
+                en: "A call is waiting for your action before it can continue.",
+                zh: "有调用等待你处理后才能继续。"
+            )
+        case .denied:
+            return ChatBilingualCatalog.localized(
+                key: "chat.thread_detail_view_model.tool_outcome_denied",
+                en: "A call was not authorized; other tools remain available.",
+                zh: "有调用未获授权，其他工具仍可使用。"
+            )
+        case .recoverableDesign:
+            return ChatBilingualCatalog.localized(
+                key: "chat.thread_detail_view_model.tool_outcome_recoverable_design",
+                en: "A call needs a corrected target or arguments before it can be retried.",
+                zh: "有调用需要修正目标或参数后才能重试。"
+            )
+        case .partial:
+            return ChatBilingualCatalog.localized(
+                key: "chat.thread_detail_view_model.tool_outcome_partial",
+                en: "A call produced partial evidence; the retained result is still available.",
+                zh: "有调用只产生了部分证据，已保留的结果仍可查看。"
+            )
+        case .noProgress:
+            return ChatBilingualCatalog.localized(
+                key: "chat.thread_detail_view_model.tool_outcome_no_progress",
+                en: "The unchanged approach stopped making progress; a different approach is needed.",
+                zh: "重复方式未取得进展，需要换一种方式。"
+            )
+        case .completed, .failed, .cancelled:
+            return nil
+        }
+    }
+
+    private func clearLiveOutcomeNote() {
+        guard inlineStatusSource == .outcome else { return }
+        liveOutcomeCallID = nil
+        // Restore the last real compaction result instead of discarding a
+        // preserved failure/compacted status with the transient note.
+        if let snapshot = liveCompression, let display = Self.compressionDisplay(snapshot) {
+            compactionStatus = display.text
+            isCompacting = display.spins
+            inlineStatusSource = .compression
+        } else {
+            compactionStatus = nil
+            isCompacting = false
+            inlineStatusSource = .none
+        }
+    }
+
+    /// A snapshot read is only applied when it still belongs to the live task
+    /// the caller started. A late read from a replaced run fails this fence.
+    private func refreshLiveCompression(
+        service: ConversationRunService,
+        runID: UUID,
+        generation: UInt64
+    ) async {
+        let snapshot = await service.snapshot()
+        guard !Task.isCancelled,
+              generation == liveFeedbackGeneration,
+              selectedRunID == runID else { return }
+        applyLiveCompression(snapshot.contextCompression)
+    }
+
+    /// Correlates the classified call exactly; a parallel batch may settle
+    /// several calls before their result events are published.
+    private func applyLatestToolOutcome(
+        callID: String,
+        service: ConversationRunService,
+        runID: UUID,
+        generation: UInt64
+    ) async {
+        let snapshot = await service.snapshot()
+        guard !Task.isCancelled,
+              generation == liveFeedbackGeneration,
+              selectedRunID == runID,
+              let classification = snapshot.toolOutcome(callID: callID) else { return }
+        applyToolOutcome(classification)
+    }
+
+    /// Older runtimes publish compaction only through liveness/state. Keep the
+    /// honest historical wording for that case; the typed path above owns
+    /// every phase a current runtime reports.
+    private func applyLegacyCompactionState(_ stateName: String) {
+        if liveCompression == nil, stateName == "compacting" {
+            compactionStatus = FloeL10n.l("chat.thread_detail_view_model.auto_compacting_context")
+            isCompacting = true
+            inlineStatusSource = .compression
+            return
+        }
+        if stateName != "compacting", isCompacting, inlineStatusSource == .compression {
+            compactionStatus = FloeL10n.l("chat.thread_detail_view_model.the_compaction_check_finished_without_replacing")
+            isCompacting = false
         }
     }
 
@@ -2001,7 +2237,22 @@ final class ThreadDetailViewModel: ObservableObject {
 
     private func startLiveUpdates() {
         liveEventTask?.cancel()
+        // A new observed task owns the inline feedback. Advancing the fence
+        // makes any in-flight snapshot read from the previous task ineligible,
+        // so a late old-run read can never overwrite this run's status.
+        liveFeedbackGeneration &+= 1
+        let feedbackGeneration = liveFeedbackGeneration
         observedServiceRunID = nil
+        liveCompression = nil
+        liveOutcomeCallID = nil
+        // A manual compaction belongs to the conversation, not to the live
+        // run being observed. Keep its in-flight indicator; every other
+        // source is replaced by this generation.
+        if inlineStatusSource != .manual || !isCompacting {
+            inlineStatusSource = .none
+            compactionStatus = nil
+            isCompacting = false
+        }
         liveStreamedText = ""
         guard let run = selectedRun else { return }
         liveStateName = run.state
@@ -2031,7 +2282,11 @@ final class ThreadDetailViewModel: ObservableObject {
             // and stream consumption. The animator still owns display cadence.
             let stream = service.events()
             let snapshot = await service.snapshot()
-            guard self.selectedRunID == run.id else { return }
+            guard self.selectedRunID == run.id,
+                  feedbackGeneration == self.liveFeedbackGeneration else { return }
+            // Reattach with the runtime's own typed projection instead of
+            // inferring a phase from the state name.
+            self.applyLiveCompression(snapshot.contextCompression)
             var answerTarget = snapshot.streamedText
             self.animator.update(target: answerTarget)
             var reasoningTarget = snapshot.reasoningText
@@ -2040,12 +2295,18 @@ final class ThreadDetailViewModel: ObservableObject {
             self.liveStateName = snapshot.stateName
             self.isRunning = !snapshot.isTerminal
             if snapshot.isTerminal {
-                await self.finishLiveRun(runID: run.id, center: center)
+                await self.finishLiveRun(runID: run.id, center: center, generation: feedbackGeneration)
                 return
             }
 
-            for await event in stream {
-                guard !Task.isCancelled, self.selectedRunID == run.id else { break }
+            liveEvents: for await event in stream {
+                // Same-run re-subscription is legitimate (a service can be
+                // created after launch), so run identity alone is not enough:
+                // an event delivered to the replaced task must stop at the
+                // generation fence.
+                guard !Task.isCancelled,
+                      self.selectedRunID == run.id,
+                      feedbackGeneration == self.liveFeedbackGeneration else { break liveEvents }
                 switch event {
                 case .answerDelta(let delta):
                     // The reasoning segment ended the instant the answer
@@ -2074,6 +2335,9 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.hasProviderActivity = true
                 case .toolLifecycle(.requested):
                     if self.liveStateName == "preparingToolCall" { self.liveStateName = "streamingModel" }
+                    // A new call starts: the previous settlement note is no
+                    // longer the current truth.
+                    self.clearLiveOutcomeNote()
                     // Tool boundary: the answer segment is durable now. Clear
                     // both live buffers so their persisted rows — not a
                     // duplicate live reasoning block — take over.
@@ -2094,13 +2358,20 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.hasProviderActivity = false
                 case .stateChanged(let state):
                     self.liveStateName = state.rawValue
-                    if state == .compacting { self.compactionStatus = FloeL10n.l("chat.thread_detail_view_model.auto_compacting_context") }
-                    else if self.compactionStatus == FloeL10n.l("chat.thread_detail_view_model.auto_compacting_context") {
-                        self.compactionStatus = FloeL10n.l("chat.thread_detail_view_model.the_compaction_check_finished_without_replacing")
-                    }
                     self.isRunning = ![.completed, .cancelled, .failed, .interrupted].contains(state)
+                    await self.refreshLiveCompression(
+                        service: service, runID: run.id, generation: feedbackGeneration)
+                    guard !Task.isCancelled,
+                          self.selectedRunID == run.id,
+                          feedbackGeneration == self.liveFeedbackGeneration else { break liveEvents }
+                    self.applyLegacyCompactionState(state.rawValue)
                 case .contextCompacted(let record):
+                    // The record is committed and already durable; show its
+                    // exact numbers immediately. The typed `.compacted`
+                    // snapshot follows on the next state read.
                     self.compactionStatus = FloeL10n.l("chat.thread_detail_view_model.context_compacted_about_tokens", record.beforeEstimatedTokens, record.afterEstimatedTokens)
+                    self.isCompacting = false
+                    self.inlineStatusSource = .compression
                 case .livenessChanged(let snapshot):
                     if snapshot.phase == .preparingToolCall {
                         self.liveStateName = "preparingToolCall"
@@ -2108,9 +2379,35 @@ final class ThreadDetailViewModel: ObservableObject {
                         self.liveStateName = "streamingModel"
                     }
                     if snapshot.phase == .compacting {
-                        self.compactionStatus = FloeL10n.l("chat.thread_detail_view_model.auto_compacting_context")
                         self.liveStateName = "compacting"
+                        await self.refreshLiveCompression(
+                            service: service, runID: run.id, generation: feedbackGeneration)
+                        guard !Task.isCancelled,
+                              self.selectedRunID == run.id,
+                              feedbackGeneration == self.liveFeedbackGeneration else { break liveEvents }
+                        // The typed `.compacting` callback can trail the
+                        // liveness signal by one actor hop. Until it arrives,
+                        // keep the old honest wording instead of a silent gap.
+                        if self.liveCompression?.phase != .compacting,
+                           self.liveCompression?.phase != .overflowRecovery {
+                            self.compactionStatus = FloeL10n.l("chat.thread_detail_view_model.auto_compacting_context")
+                            self.isCompacting = true
+                            self.inlineStatusSource = .compression
+                        }
                     }
+                case .providerAttemptChanged:
+                    self.hasProviderActivity = true
+                    await self.refreshLiveCompression(
+                        service: service, runID: run.id, generation: feedbackGeneration)
+                case .toolLifecycle(.finished(let result)):
+                    // Classification settles before the result event is
+                    // published, so the exact call is available here.
+                    await self.applyLatestToolOutcome(
+                        callID: result.callID,
+                        service: service,
+                        runID: run.id,
+                        generation: feedbackGeneration
+                    )
                 case .approvalReviewChanged(let snapshot):
                     self.approvalReviewSummary = snapshot.isEvaluating
                         ? nil
@@ -2141,7 +2438,7 @@ final class ThreadDetailViewModel: ObservableObject {
                     }
                     self.hasProviderActivity = true
                 case .terminal:
-                    await self.finishLiveRun(runID: run.id, center: center)
+                    await self.finishLiveRun(runID: run.id, center: center, generation: feedbackGeneration)
                     return
                 default:
                     self.hasProviderActivity = true
@@ -2150,8 +2447,32 @@ final class ThreadDetailViewModel: ObservableObject {
         }
     }
 
-    private func finishLiveRun(runID: UUID, center: ConversationCenter) async {
+    private func finishLiveRun(runID: UUID, center: ConversationCenter, generation: UInt64) async {
+        guard generation == liveFeedbackGeneration, selectedRunID == runID else { return }
         isRunning = false
+        // A settlement note describes an intermediate call, not a finished
+        // run. Keep a real compacted/failed outcome, but never leave an
+        // in-progress compaction spinner or a mid-run wait note behind.
+        liveOutcomeCallID = nil
+        let compactionEndedText = ChatBilingualCatalog.localized(
+            key: "chat.thread_detail_view_model.compaction_ended_with_run",
+            en: "The run ended before context compaction finished.",
+            zh: "任务结束前上下文压缩尚未完成。"
+        )
+        if inlineStatusSource == .outcome {
+            // Restore the last real compaction result if one existed; a
+            // settlement note must not erase a preserved history outcome.
+            if let snapshot = liveCompression, let display = Self.compressionDisplay(snapshot) {
+                compactionStatus = display.spins ? compactionEndedText : display.text
+                inlineStatusSource = .compression
+            } else {
+                compactionStatus = nil
+                inlineStatusSource = .none
+            }
+        } else if isCompacting, inlineStatusSource == .compression {
+            compactionStatus = compactionEndedText
+        }
+        isCompacting = false
         isDraining = true
         await animator.drain(maximumDuration: .milliseconds(750))
         await reasoningAnimator.drain(maximumDuration: .milliseconds(500))
@@ -2159,6 +2480,8 @@ final class ThreadDetailViewModel: ObservableObject {
         // Refresh persisted state even if the selection moved on during the
         // drain. A finished run must never strand the UI in a non-terminal
         // "thinking" state merely because historical runs were not prefetched.
+        // Only the run-specific `liveStateName` below stays fenced by identity;
+        // the message/run/event merges are conversation-wide and idempotent.
         guard !Task.isCancelled else { return }
         if let page = try? await center.conversationStore(for: conversationID).messagePage(
             conversationID: conversationID, before: nil, limit: 20
@@ -2180,6 +2503,12 @@ final class ThreadDetailViewModel: ObservableObject {
     func stopLiveUpdates() {
         liveEventTask?.cancel()
         liveEventTask = nil
+        liveFeedbackGeneration &+= 1
+        liveCompression = nil
+        liveOutcomeCallID = nil
+        inlineStatusSource = .none
+        compactionStatus = nil
+        isCompacting = false
         observedServiceRunID = nil
         sessionEventTask?.cancel()
         sessionEventTask = nil
