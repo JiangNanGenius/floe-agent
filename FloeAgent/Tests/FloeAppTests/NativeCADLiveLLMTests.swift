@@ -2517,6 +2517,9 @@ private final class NativeCADContextCompactionSession {
     private let alphaInstruction: String
     private let betaFact: String
     private let latestCode: String
+    /// Exact bytes written to the owned fixture. The retained capture is the
+    /// workspace.readFile envelope line plus these bytes.
+    private let fixtureByteCount = 12_288
 
     private var workspace: WorkspaceRecord?
     private var workspaceRootURL: URL?
@@ -2536,6 +2539,12 @@ private final class NativeCADContextCompactionSession {
         optIn: NativeCADLiveOptIn
     ) {
         let token = UUID().uuidString.lowercased()
+        // Each retention marker carries its own opaque UUID. A shared suffix
+        // would let a later summary "retain" alpha by reconstructing it from
+        // beta or instruction text instead of preserving the original value.
+        let alphaToken = UUID().uuidString.lowercased()
+        let instructionToken = UUID().uuidString.lowercased()
+        let betaToken = UUID().uuidString.lowercased()
         self.environment = environment
         self.center = center
         self.route = route
@@ -2558,9 +2567,9 @@ private final class NativeCADContextCompactionSession {
         self.searchToken = search
         self.hiddenToken = hidden
         self.expectedPage = String(block.prefix(160))
-        self.alphaFact = "EARLY-FACT-ALPHA-\(token)"
-        self.alphaInstruction = "EARLY-INSTRUCTION-\(token)"
-        self.betaFact = "EARLY-FACT-BETA-\(token)"
+        self.alphaFact = "EARLY-FACT-ALPHA-\(alphaToken)"
+        self.alphaInstruction = "EARLY-INSTRUCTION-\(instructionToken)"
+        self.betaFact = "EARLY-FACT-BETA-\(betaToken)"
         self.latestCode = "LATEST-GOAL-\(token)"
     }
 
@@ -2691,10 +2700,10 @@ private final class NativeCADContextCompactionSession {
         let root = try XCTUnwrap(workspaceRootURL, "The owned task workspace root was not resolved.")
         var bytes: [UInt8] = []
         let padding = Array("synthetic context-compaction file padding line; inert test data\n".utf8)
-        while bytes.count < 12_288 {
+        while bytes.count < fixtureByteCount {
             bytes.append(contentsOf: padding)
         }
-        bytes.removeLast(bytes.count - 12_288)
+        bytes.removeLast(bytes.count - fixtureByteCount)
         let pageBytes = Array(expectedPage.utf8)
         guard pageBytes.count == 160 else {
             throw NativeCADLiveError.invalidContextWindow(0)
@@ -2902,10 +2911,16 @@ private final class NativeCADContextCompactionSession {
             firstResult.summary.contains("truncated=false"),
             "The 12 KiB read was unexpectedly truncated; a complete read is required when the window permits it."
         )
-        XCTAssertTrue(
-            firstResult.summary.contains(expectedPage),
-            "The real workspace read did not contain the complete middle block."
-        )
+        // The run-event summary is a bounded UI excerpt (4 KiB), not the
+        // retained capture. The exact page bytes are asserted below from the
+        // tools.readResult capture instead of weakening the read to fit the
+        // excerpt.
+        let firstLine = firstResult.summary.split(
+            separator: "\n",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        ).first.map(String.init) ?? ""
+        let expectedCaptureBytes = firstLine.utf8.count + 1 + fixtureByteCount
 
         let queryCalls = requests.values.filter { call in
             call.tool == "tools.readResult"
@@ -2938,6 +2953,23 @@ private final class NativeCADContextCompactionSession {
             pageResult.sequence,
             firstResult.sequence,
             "The retained-capture page was not fetched after the real workspace read."
+        )
+        XCTAssertTrue(
+            pageResult.summary.contains("callID=\(firstRead.callID)"),
+            "The retained capture page did not identify the real workspace read."
+        )
+        XCTAssertTrue(
+            pageResult.summary.contains("capture=complete"),
+            "The retained capture was not reported complete."
+        )
+        XCTAssertTrue(
+            pageResult.summary.contains("totalBytes=\(expectedCaptureBytes)"),
+            "The retained capture did not preserve the exact full read bytes; "
+                + "the run-event summary is only a bounded UI excerpt."
+        )
+        XCTAssertTrue(
+            pageResult.summary.contains("returnedBytes=160"),
+            "The paged result did not return the exact 160-byte page."
         )
         XCTAssertTrue(
             pageResult.summary.contains(expectedPage),
@@ -3187,7 +3219,7 @@ private final class NativeCADContextCompactionSession {
         lines.append("configured_context_tokens=\(route.model.limits.contextTokens)")
         lines.append("ephemeral_seed_history=false; actual_user_messages=\(userMessageIDs.count)")
         lines.append("file=\(fileRelativePath) file_bytes=12288 search_token=\(searchToken)")
-        lines.append("failure=\(failureDescription.map { String($0.prefix(1_000)) } ?? "none observed on the success path")")
+        lines.append("failure=\(failureDescription.map { String($0.prefix(1_000)) } ?? "No thrown error recorded; XCTest assertions determine outcome")")
         let totals = await ledger.totals()
         lines.append("ledger_totals=\(totals.description)")
         for (index, runID) in runIDs.enumerated() {

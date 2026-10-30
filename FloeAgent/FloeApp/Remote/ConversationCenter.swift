@@ -1240,23 +1240,40 @@ final class ConversationCenter: ObservableObject {
         }
         let adapter = providerAdapter(for: provider)
         let credentials = resolveCredentials(for: provider)
-        return HybridContextEngine(summarizer: ModelContextSummarizer { prompt in
-            let request = ProviderStreamRequest(
-                provider: provider,
-                model: model,
-                messages: [(role: "user", content: prompt)],
-                toolSchemas: [],
-                reasoningPolicy: .disabled
-            )
-            var text = ""
-            for try await event in adapter.stream(request: request, credentials: credentials) {
-                if case .textDelta(let delta) = event {
-                    text += delta.text
-                    if text.utf8.count > 32_000 { break }
+        let summaryOutputReserve = CompactionSummarizerBudget.outputReserveTokens(
+            contextTokens: model.limits.contextTokens,
+            configuredMaxOutputTokens: model.limits.configuredMaxOutputTokens
+        )
+        // The summarizer request must not advertise a larger output cap than
+        // the window budget reserved for it. Use a local, non-persisted model
+        // copy for that one request; the main chat model settings are unchanged.
+        var summaryModel = model
+        summaryModel.limits.maxOutputTokens = max(1, summaryOutputReserve)
+        let resolvedSummaryModel = summaryModel
+        let summarizer = ModelContextSummarizer(
+            complete: { prompt in
+                let request = ProviderStreamRequest(
+                    provider: provider,
+                    model: resolvedSummaryModel,
+                    messages: [(role: "user", content: prompt)],
+                    toolSchemas: [],
+                    reasoningPolicy: .disabled
+                )
+                var text = ""
+                for try await event in adapter.stream(request: request, credentials: credentials) {
+                    if case .textDelta(let delta) = event {
+                        text += delta.text
+                        if text.utf8.count > 32_000 { break }
+                    }
                 }
-            }
-            return text
-        })
+                return text
+            },
+            maximumInputCharacters: CompactionSummarizerBudget.maximumTranscriptBytes(
+                contextTokens: model.limits.contextTokens,
+                configuredMaxOutputTokens: summaryOutputReserve
+            )
+        )
+        return HybridContextEngine(summarizer: summarizer)
     }
 
     /// The local-model adapter for one logical run: binding the run id lets the

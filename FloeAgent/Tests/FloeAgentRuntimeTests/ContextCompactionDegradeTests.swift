@@ -146,4 +146,257 @@ struct ContextCompactionDegradeTests {
             #expect(error.localizedDescription.contains("protected recent messages"))
         }
     }
+
+
+    // MARK: Transcript budget retention (private follow-up regression)
+
+    @Test("Summarizer budget follows the actual window without overflow")
+    func summarizerBudgetInvariant() {
+        let estimator = ContextTokenEstimator()
+        let cases: [(context: Int, output: Int?)] = [
+            (4_096, 2_048),
+            (8_192, nil),
+            (32_768, nil),
+            (65_536, nil),
+            (65_536, 32_768),
+            (1_024, nil)
+        ]
+        for item in cases {
+            let output = CompactionSummarizerBudget.outputReserveTokens(
+                contextTokens: item.context,
+                configuredMaxOutputTokens: item.output
+            )
+            let bytes = CompactionSummarizerBudget.maximumTranscriptBytes(
+                contextTokens: item.context,
+                configuredMaxOutputTokens: item.output
+            )
+            if bytes == 0 {
+                #expect(
+                    output + CompactionSummarizerBudget.promptAllowanceTokens
+                        >= item.context,
+                    "zero budget must mean prompt + output already fill the window"
+                )
+                continue
+            }
+            let input = estimator.estimate(String(repeating: "x", count: bytes))
+            #expect(
+                input + output + CompactionSummarizerBudget.promptAllowanceTokens
+                    <= item.context,
+                "prompt + transcript + output exceeded the actual window"
+            )
+            #expect(input > 0)
+        }
+        // An explicit 4K output cap is honored; it must not be inflated to a
+        // 24K summary reserve.
+        #expect(CompactionSummarizerBudget.maximumTranscriptBytes(
+            contextTokens: 4_096,
+            configuredMaxOutputTokens: 2_048
+        ) == 3_070)
+        // A 64K window with a 32K output cap still sends the 90,515-byte old
+        // message whole.
+        #expect(CompactionSummarizerBudget.maximumTranscriptBytes(
+            contextTokens: 65_536,
+            configuredMaxOutputTokens: 32_768
+        ) >= 90_515)
+        // A 1K window cannot fit the prompt, output and input together.
+        #expect(CompactionSummarizerBudget.maximumTranscriptBytes(
+            contextTokens: 1_024,
+            configuredMaxOutputTokens: nil
+        ) == 0)
+    }
+
+    @Test("Zero summarizer budget skips the paid completion and uses deterministic")
+    func zeroSummarizerBudgetSkipsPaidCompletion() async throws {
+        let fact = "ZERO-BUDGET-FACT-AFTER-600=omega-9"
+        let content = String(repeating: "a", count: 900) + " " + fact + " "
+            + String(repeating: "b", count: 300)
+        let summarizer = ModelContextSummarizer(
+            complete: { _ in
+                "PAID-COMPLETION-RAN " + String(repeating: "x", count: 200)
+            },
+            maximumInputCharacters: 0
+        )
+        let summary = try await summarizer.summarize(
+            messages: [ConversationMessage(role: "user", content: content)],
+            maximumCharacters: 2_000
+        )
+        #expect(!summary.contains("PAID-COMPLETION-RAN"))
+        #expect(summary.contains("Structured continuation state"))
+        #expect(summary.contains(fact))
+    }
+
+    @Test("Estimator byte budget avoids overflow on untrusted metadata")
+    func estimatorByteBudgetOverflow() {
+        let estimator = ContextTokenEstimator()
+        #expect(estimator.maximumByteBudget(forTokens: Int.max) == Int.max)
+        #expect(estimator.maximumByteBudget(forTokens: Int.max / 3 + 1) == Int.max)
+        #expect(CompactionSummarizerBudget.maximumTranscriptBytes(
+            contextTokens: Int.max,
+            configuredMaxOutputTokens: nil
+        ) == Int.max)
+    }
+
+    @Test("Estimator byte budget matches its token estimate")
+    func estimatorByteBudgetMatchesEstimate() {
+        let estimator = ContextTokenEstimator()
+        for tokens in [1, 100, 1_024] {
+            let bytes = estimator.maximumByteBudget(forTokens: tokens)
+            #expect(estimator.estimate(String(repeating: "x", count: bytes)) <= tokens)
+        }
+    }
+
+    @Test("Transcript keeps facts after the legacy 600-character cut")
+    func transcriptKeepsFactAfterLegacyCut() {
+        let fact = "RETENTION-FACT-AFTER-600=alpha-905"
+        let tail = "TAIL-DECISION=delta-905"
+        let content = String(repeating: "a", count: 900) + " " + fact + " "
+            + String(repeating: "b", count: 3_000) + " " + tail
+        let transcript = ModelContextSummarizer.renderTranscript(
+            messages: [ConversationMessage(role: "user", content: content)],
+            budget: 2_400
+        )
+        #expect(transcript.utf8.count <= 2_400)
+        #expect(transcript.contains(fact))
+        #expect(transcript.contains(tail))
+        #expect(transcript.contains("bytes omitted"))
+    }
+
+    @Test("Transcript sends every candidate complete when the global budget fits")
+    func transcriptSendsCompleteCandidatesWhenTheyFit() {
+        let messages = (0..<4).map {
+            ConversationMessage(
+                role: $0.isMultiple(of: 2) ? "user" : "assistant",
+                content: "turn-\($0) exact-value-\($0)"
+            )
+        }
+        let transcript = ModelContextSummarizer.renderTranscript(messages: messages, budget: 4_000)
+        for index in 0..<4 {
+            #expect(transcript.contains("exact-value-\(index)"))
+        }
+        #expect(!transcript.contains("bytes omitted"))
+        #expect(transcript.contains("[user]"))
+        #expect(transcript.contains("[assistant]"))
+    }
+
+    @Test("Transcript shares the global budget across messages and preserves both ends")
+    func transcriptSharesBudgetAcrossMessages() {
+        let firstHead = "FIRST-HEAD=keep-early"
+        let firstTail = "FIRST-TAIL=keep-late"
+        let thirdHead = "THIRD-HEAD=keep-early"
+        let thirdTail = "THIRD-TAIL=keep-late"
+        let messages = [
+            ConversationMessage(
+                role: "user",
+                content: firstHead + " " + String(repeating: "x", count: 8_000) + " " + firstTail
+            ),
+            ConversationMessage(role: "assistant", content: "SHORT-ACK=ACK-ONE"),
+            ConversationMessage(
+                role: "user",
+                content: thirdHead + " " + String(repeating: "y", count: 8_000) + " " + thirdTail
+            )
+        ]
+        let transcript = ModelContextSummarizer.renderTranscript(messages: messages, budget: 6_000)
+        #expect(transcript.utf8.count <= 6_000)
+        #expect(transcript.contains("[assistant] SHORT-ACK=ACK-ONE"))
+        #expect(transcript.contains(firstHead))
+        #expect(transcript.contains(firstTail))
+        #expect(transcript.contains(thirdHead))
+        #expect(transcript.contains(thirdTail))
+    }
+
+    @Test("Transcript budget is measured in UTF-8 bytes for CJK text")
+    func transcriptBudgetIsUTF8Bytes() {
+        let message = ConversationMessage(
+            role: "user",
+            content: String(repeating: "中文事实", count: 2_000)
+        )
+        let transcript = ModelContextSummarizer.renderTranscript(messages: [message], budget: 3_000)
+        #expect(transcript.utf8.count <= 3_000)
+        #expect(transcript.contains("中文事实"))
+        #expect(transcript.contains("bytes omitted"))
+    }
+
+    @Test("Deterministic fallback keeps a fact after the legacy 420-character cut")
+    func deterministicExcerptKeepsFactAfterLegacyCut() async throws {
+        let fact = "DETERMINISTIC-FACT=delta-905"
+        let content = String(repeating: "a", count: 900) + " " + fact + " "
+            + String(repeating: "b", count: 900)
+        let summary = try await DeterministicContextSummarizer().summarize(
+            messages: [ConversationMessage(role: "user", content: content)],
+            maximumCharacters: 2_000
+        )
+        #expect(summary.contains(fact))
+    }
+
+    @Test("Transcript preserves complete paragraph and code whitespace")
+    func transcriptPreservesCompleteWhitespace() {
+        let content = "objective line\n\n    let value = 1\n\tindented tail"
+        let transcript = ModelContextSummarizer.renderTranscript(
+            messages: [ConversationMessage(role: "user", content: content)],
+            budget: 1_000
+        )
+        #expect(transcript.contains(content))
+    }
+
+    @Test("Tiny shares are marked as omitted instead of looking complete")
+    func transcriptMarksTinyShares() {
+        let message = ConversationMessage(
+            role: "user",
+            content: String(repeating: "z", count: 4_000)
+        )
+        for budget in [32, 64, 128] {
+            let transcript = ModelContextSummarizer.renderTranscript(
+                messages: [message],
+                budget: budget
+            )
+            #expect(transcript.utf8.count <= budget)
+            #expect(transcript.contains("..."))
+        }
+    }
+
+    @Test("Deterministic record fits one global budget without dropping the tail section")
+    func deterministicRecordFitsGlobalBudget() async throws {
+        let messages = (0..<12).map { index in
+            ConversationMessage(
+                role: index.isMultiple(of: 2) ? "user" : "assistant",
+                content: "message-\(index) " + String(repeating: "context ", count: 60)
+                    + "tail-fact-\(index)"
+            )
+        }
+        let summary = try await DeterministicContextSummarizer().summarize(
+            messages: messages,
+            maximumCharacters: 3_000
+        )
+        #expect(summary.count <= 3_000)
+        #expect(summary.contains("tail-fact-11"))
+        #expect(summary.hasPrefix("# Structured continuation state"))
+    }
+
+    @Test("Actual ModelContextSummarizer completion failure retains a fact after 600")
+    func actualModelSummarizerCompletionFailureRetainsFactAfter600() async throws {
+        struct Probe: Error {}
+        let fact = "FALLBACK-FACT-AFTER-600=zeta-42"
+        let content = String(repeating: "a", count: 900) + " " + fact + " "
+            + String(repeating: "b", count: 300)
+        let summarizer = ModelContextSummarizer(complete: { _ in throw Probe() })
+        let summary = try await summarizer.summarize(
+            messages: [ConversationMessage(role: "user", content: content)],
+            maximumCharacters: 2_000
+        )
+        #expect(summary.contains("Structured continuation state"))
+        #expect(summary.contains(fact))
+    }
+
+    @Test("A degenerate model acknowledgement falls back to the deterministic record")
+    func degenerateModelSummaryFallsBack() async throws {
+        let fact = "FALLBACK-FACT=epsilon-42"
+        let messages = [ConversationMessage(
+            role: "user",
+            content: "Remember \(fact) for the rest of this task. Reply exactly: ACK."
+        )]
+        let summarizer = ModelContextSummarizer { _ in "ACK" }
+        let summary = try await summarizer.summarize(messages: messages, maximumCharacters: 2_000)
+        #expect(summary.contains("Structured continuation state"))
+        #expect(summary.contains(fact))
+    }
 }
