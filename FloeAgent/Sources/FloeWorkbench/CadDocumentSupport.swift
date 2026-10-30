@@ -893,6 +893,7 @@ public enum CadServiceOperationCatalog: Sendable {
                       arg("kind", "string", required: true, note: "fixed | coaxial | planarAlign | distance | angle"),
                       arg("instanceA", "uuid", required: true),
                       arg("instanceB", "uuid", note: "required for every kind except fixed"),
+                      arg("parentID", "uuid", note: "optional subassembly instance; both instances must be its direct children; omitted = root scope"),
                       arg("referenceA", "object", note: "assembly.reference reply for A: {point, direction, source_revision?, fence?, source?}"),
                       arg("referenceB", "object", note: "assembly.reference reply for B"),
                       arg("faceA", "object", note: "{index, query_token? | signature?} kernel face for A"),
@@ -1012,6 +1013,73 @@ public enum CadServiceOperationCatalog: Sendable {
                   summary: "Exact pairwise interference through the kernel (<= 32 pairs, runs off the main actor).",
                   arguments: [arg("toleranceMM", "number", note: "default 1e-6")],
                   examples: [#"{"toleranceMM":0.001}"#]),
+        Operation(kind: "assembly", action: "hierarchy", mutating: false,
+                  summary: "Nested subassembly/instance tree, local constraints, stable BOM identities "
+                    + "and structural integrity diagnostics. Never flattens or repairs the stored hierarchy.",
+                  arguments: [], examples: ["{}"]),
+        Operation(kind: "assembly", action: "references", mutating: false,
+                  summary: "External native part references with pinned source version/hash, staged geometry hash, "
+                    + "sharing counts, containing subassemblies and missing/update diagnosis. Cached geometry is reported, never dropped.",
+                  arguments: [], examples: ["{}"]),
+        Operation(kind: "assembly", action: "referenceDiagnostics", mutating: false,
+                  summary: "Alias of references: persisted external-reference health and missing-source diagnosis.",
+                  arguments: [], examples: ["{}"]),
+        Operation(kind: "assembly", action: "addSubassembly", mutating: true,
+                  summary: "Create an empty nested subassembly container at the root or inside another subassembly; "
+                    + "its local constraints and child IDs are preserved independently.",
+                  arguments: [
+                      arg("name", "string", note: "defaults to Subassembly; unique among all instances"),
+                      arg("parentID", "uuid", note: "optional existing subassembly instance; omitted = root"),
+                      arg("transform", "object", note: "local placement; default identity"),
+                  ],
+                  examples: [#"{"name":"Gearbox"}"#,
+                             #"{"name":"Stage 2","parentID":"<subassembly instance uuid>"}"#]),
+        Operation(kind: "assembly", action: "placePartReference", mutating: true,
+                  summary: "Place another shared occurrence of an already staged external part reference, "
+                    + "optionally inside a subassembly or as an independent copy with its own geometry/material.",
+                  arguments: [
+                      arg("referenceID", "uuid", required: true),
+                      arg("parentID", "uuid", note: "optional subassembly instance; omitted = root"),
+                      arg("name", "string"),
+                      arg("transform", "object"),
+                      arg("independentCopy", "boolean", note: "default false; true owns a duplicated staged body"),
+                  ],
+                  examples: [#"{"referenceID":"<reference uuid>","parentID":"<subassembly instance uuid>"}"#,
+                             #"{"referenceID":"<reference uuid>","independentCopy":true}"#]),
+        Operation(kind: "assembly", action: "moveInstance", mutating: true,
+                  summary: "Move an instance and its subtree under another subassembly or back to the root. "
+                    + "Cycles and out-of-scope constraints are refused; instance/constraint IDs never change.",
+                  arguments: [
+                      arg("id", "uuid", required: true),
+                      arg("parentID", "uuid", note: "null/omitted = root"),
+                  ],
+                  examples: [#"{"id":"<instance uuid>","parentID":"<subassembly instance uuid>"}"#,
+                             #"{"id":"<instance uuid>","parentID":null}"#]),
+        Operation(kind: "assembly", action: "removePartReference", mutating: true,
+                  summary: "Remove a part reference only when no instance uses it; the cached staged body is retained.",
+                  arguments: [arg("id", "uuid", required: true, note: "alias referenceID")],
+                  examples: [#"{"id":"<reference uuid>"}"#]),
+        Operation(kind: "assembly", action: "updatePartReference", mutating: true,
+                  summary: "Explicit metadata-only re-pin of an existing staged reference with source/staged hash "
+                    + "compare-and-swap. Geometry replacement is restricted to the native reference bridge.",
+                  arguments: [
+                      arg("referenceID", "uuid", required: true),
+                      arg("expectedSourceContentHash", "string", note: "CAS against the currently pinned source hash"),
+                      arg("expectedStagedGeometryHash", "string", note: "CAS against the currently pinned staged geometry hash"),
+                      arg("stagedBodyID", "uuid", note: "must equal the current staged body; cannot swap bodies"),
+                      arg("sourceContentHash", "string", required: true, note: "verified source content SHA-256"),
+                      arg("sourceRevision", "integer"),
+                      arg("sourceWriterVersion", "integer"),
+                      arg("sourceSchemaVersion", "integer"),
+                      arg("sourceDocumentName", "string"), arg("sourceBodyName", "string"),
+                      arg("clearMissing", "boolean", note: "true only after an explicit source check"),
+                  ],
+                  examples: [#"{"referenceID":"<reference uuid>","expectedSourceContentHash":"<old sha256>","sourceContentHash":"<verified sha256>","sourceRevision":3}"#]),
+        Operation(kind: "assembly", action: "makeIndependent", mutating: true,
+                  summary: "Convert one shared part instance into an independent copy in ONE undo step; "
+                    + "the instance ID and every constraint/BOM reference stay unchanged, while geometry/material become owned.",
+                  arguments: [arg("id", "uuid", required: true)],
+                  examples: [#"{"id":"<instance uuid>"}"#]),
     ]
 
     private static let scriptOperations: [Operation] = [

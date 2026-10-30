@@ -311,21 +311,25 @@ extension FloeCADDocument {
             let definitions = Dictionary(uniqueKeysWithValues: bodies.map { ($0.id, $0) })
             let sourceBodies = Dictionary(uniqueKeysWithValues: session.document.bodies.map { ($0.id.raw, $0) })
             var placedIDs = Set(bodies.map(\.id))
-            for instance in assembly.instances where !instance.isHidden {
-                let sourceID = instance.copiedBodyID ?? instance.bodyID
-                guard var placed = definitions[sourceID], let source = sourceBodies[sourceID],
-                      placedIDs.insert(instance.id).inserted else { continue }
-                // The transient preview adds a saved view's offset to the BASE
-                // placement read from the document; the stored instance
-                // transform is never rewritten and a removed/undone view
-                // resolves to nil (base placement).
-                let placement = explodedPreview?.transform(for: instance.id, in: assembly)
-                    ?? instance.transform
+            let viewID = explodedPreview?.resolvedViewID(in: assembly)
+            // Resolve the persisted instance tree (including nested
+            // subassemblies and staged external references). A container has
+            // no geometry of its own; its children are emitted with composed
+            // world placements. The transient preview's offset is applied at
+            // the level where it is authored, so moving a parent carries its
+            // subtree and the stored base transforms are never rewritten.
+            for occurrence in assembly.occurrences(viewID: viewID, includeHidden: false) {
+                guard occurrence.subassemblyID == nil,
+                      let sourceID = occurrence.effectiveBodyID,
+                      var placed = definitions[sourceID],
+                      let source = sourceBodies[sourceID],
+                      placedIDs.insert(occurrence.instance.id).inserted else { continue }
+                let placement = occurrence.explodedWorldTransform ?? occurrence.worldTransform
                 guard placement.isPlaceable else { continue }
                 let m = placement.placement3D().composed(onto: source.transform).matrix
-                placed.id = instance.id
+                placed.id = occurrence.instance.id
                 placed.sourceBodyID = sourceID
-                placed.name = instance.name
+                placed.name = occurrence.instance.name
                 placed.isHidden = false
                 placed.transform = [m.columns.0.x, m.columns.0.y, m.columns.0.z, m.columns.0.w,
                                     m.columns.1.x, m.columns.1.y, m.columns.1.z, m.columns.1.w,

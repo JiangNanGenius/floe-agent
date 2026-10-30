@@ -204,11 +204,16 @@ struct CadServiceOperationCatalogTests {
                                           "reference", "referenceCandidates", "explodedViews",
                                           "addExplodedView", "updateExplodedView", "removeExplodedView",
                                           "previewExplodedView", "resetExplodedView",
-                                          "report", "instances", "dof", "interference"]
+                                          "report", "instances", "dof", "interference",
+                                          "hierarchy", "references", "referenceDiagnostics",
+                                          "addSubassembly", "placePartReference", "moveInstance",
+                                          "removePartReference", "updatePartReference", "makeIndependent"]
     private static let assemblyMutating: Set<String> = ["addInstance", "addConstraint", "removeInstance",
                                                         "setTransform", "setVisible", "removeConstraint",
                                                         "suppressConstraint", "solve", "sourceUpdate", "clear",
-                                                        "addExplodedView", "updateExplodedView", "removeExplodedView"]
+                                                        "addExplodedView", "updateExplodedView", "removeExplodedView",
+                                                        "addSubassembly", "placePartReference", "moveInstance",
+                                                        "removePartReference", "updatePartReference", "makeIndependent"]
 
     @Test("table mirrors the engine routers and separates mutating from read-only")
     func tableIntegrity() throws {

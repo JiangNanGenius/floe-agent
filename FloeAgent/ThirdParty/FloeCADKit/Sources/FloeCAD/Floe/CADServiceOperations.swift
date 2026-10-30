@@ -49,6 +49,10 @@ public nonisolated enum CADServiceOperations {
         "addConstraint", "removeConstraint", "suppressConstraint",
         "solve", "sourceUpdate", "clear",
         "addExplodedView", "updateExplodedView", "removeExplodedView",
+        // E01/E02 additive hierarchy/reference actions. Each persists
+        // assemblyData or a staged body through ONE undoable command.
+        "addSubassembly", "placePartReference", "moveInstance",
+        "removePartReference", "updatePartReference", "makeIndependent",
     ]
 
     /// Mutating drawing actions. `pages`/`project`/`dimensions`/`export` are

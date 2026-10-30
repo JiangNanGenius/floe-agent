@@ -17,6 +17,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import UniformTypeIdentifiers
 import simd
 
 // MARK: - Report model
@@ -30,9 +31,33 @@ struct CADAssemblyReport {
         var stale: Bool
         var hidden: Bool
         var independentCopy: Bool
+        var isSubassembly: Bool
+        var childCount: Int
+        var parentID: String?
+        var path: [String]
+        var depth: Int
+        var referenceID: String?
+        var referenceStatus: String?
+        var referenceMissing: Bool
         var position: SIMD3<Double>
         var rotation: SIMD4<Double>
         var scale: SIMD3<Double>
+    }
+    struct Reference: Identifiable {
+        var id: String
+        var name: String
+        var status: String
+        var missing: Bool
+        var updateAvailable: Bool
+        var sourceRevision: Int
+        var sourceSchemaVersion: Int
+        var sourceHash: String
+        var stagedGeometryHash: String
+        var stagedBodyID: String
+        var sharedCount: Int
+        var independentCount: Int
+        var subassemblyNames: [String]
+        var cachedGeometry: Bool
     }
     struct Constraint: Identifiable {
         var id: String
@@ -57,6 +82,7 @@ struct CADAssemblyReport {
     var instances: [Instance] = []
     var constraints: [Constraint] = []
     var explodedViews: [ExplodedView] = []
+    var references: [Reference] = []
     var assemblyDOF = 0
     var relativeDOF = 0
     var globalRigidDOF = 0
@@ -92,6 +118,14 @@ struct CADAssemblyReport {
                 stale: row["stale"] as? Bool ?? false,
                 hidden: row["hidden"] as? Bool ?? false,
                 independentCopy: row["independentCopy"] as? Bool ?? false,
+                isSubassembly: row["isSubassembly"] as? Bool ?? false,
+                childCount: row["childCount"] as? Int ?? 0,
+                parentID: row["parentID"] as? String,
+                path: row["path"] as? [String] ?? [],
+                depth: row["depth"] as? Int ?? 0,
+                referenceID: row["referenceID"] as? String,
+                referenceStatus: row["referenceStatus"] as? String,
+                referenceMissing: row["referenceMissing"] as? Bool ?? false,
                 position: SIMD3(position.count == 3 ? position[0] : 0,
                                 position.count == 3 ? position[1] : 0,
                                 position.count == 3 ? position[2] : 0),
@@ -127,8 +161,29 @@ struct CADAssemblyReport {
                 entryCount: row["entryCount"] as? Int ?? 0,
                 invalidCount: (row["missingInstanceIDs"] as? [String])?.count ?? 0)
         }
+        references = (reply["references"] as? [[String: Any]] ?? []).map { row in
+            Reference(
+                id: row["id"] as? String ?? "",
+                name: row["name"] as? String ?? "—",
+                status: row["status"] as? String ?? "",
+                missing: row["missing"] as? Bool ?? false,
+                updateAvailable: row["updateAvailable"] as? Bool ?? false,
+                sourceRevision: row["sourceRevision"] as? Int ?? 0,
+                sourceSchemaVersion: row["sourceSchemaVersion"] as? Int ?? 0,
+                sourceHash: row["sourceContentHash"] as? String ?? "",
+                stagedGeometryHash: row["stagedGeometryHash"] as? String ?? "",
+                stagedBodyID: row["stagedBodyID"] as? String ?? "",
+                sharedCount: row["sharedInstanceCount"] as? Int ?? 0,
+                independentCount: row["independentCopyCount"] as? Int ?? 0,
+                subassemblyNames: (row["subassemblies"] as? [[String: Any]] ?? [])
+                    .compactMap { $0["name"] as? String },
+                cachedGeometry: row["cachedGeometryAvailable"] as? Bool ?? false)
+        }
         staleCount = instances.filter(\.stale).count
     }
+
+    var subassemblyCount: Int { instances.filter(\.isSubassembly).count }
+    var missingReferenceCount: Int { references.filter(\.missing).count }
 
     func instanceName(_ id: String) -> String {
         instances.first { $0.id == id }?.name ?? String(id.prefix(8))
@@ -161,6 +216,12 @@ struct CADAssemblyPanelView: View {
     @State private var editingInstance: CADAssemblyReport.Instance?
     @State private var showConstraintSheet = false
     @State private var showExplodedSheet = false
+    @State private var showReferenceAttach = false
+    @State private var showReferenceCheck = false
+    @State private var showReferenceUpdate = false
+    @State private var activeReference: CADAssemblyReport.Reference?
+    @State private var showSubassemblyPrompt = false
+    @State private var newSubassemblyName = ""
 
     private var selectedBodyID: UUID? {
         viewModel.selection.first?.raw
@@ -173,6 +234,18 @@ struct CADAssemblyPanelView: View {
                 PanelActionButton(title: FloeCADStrings.label("cad.workbench.assembly.place", "Place instance"),
                                   systemImage: "cube.transparent", disabled: busy) {
                     showPlaceSheet = true
+                }
+                PanelActionButton(title: FloeCADStrings.label("cad.workbench.assembly.referencePart",
+                                                              "Reference part"),
+                                  systemImage: "doc.badge.plus", disabled: busy) {
+                    showReferenceAttach = true
+                }
+                PanelActionButton(title: FloeCADStrings.label("cad.workbench.assembly.addSubassembly",
+                                                              "New subassembly"),
+                                  systemImage: "square.stack.3d.down.right", disabled: busy) {
+                    newSubassemblyName = FloeCADStrings.text("cad.workbench.assembly.subassemblyDefault",
+                                                             "Subassembly")
+                    showSubassemblyPrompt = true
                 }
                 PanelActionButton(title: FloeCADStrings.label("cad.workbench.assembly.addConstraint", "Add constraint"),
                                   systemImage: "link.badge.plus",
@@ -282,6 +355,83 @@ struct CADAssemblyPanelView: View {
                     if reply["ok"] as? Bool == true { refresh() }
                 })
         }
+        .fileImporter(isPresented: $showReferenceAttach,
+                      allowedContentTypes: [.item, .folder],
+                      allowsMultipleSelection: false) { result in
+            handleReferenceFile(result, action: .attach)
+        }
+        .fileImporter(isPresented: $showReferenceCheck,
+                      allowedContentTypes: [.item, .folder],
+                      allowsMultipleSelection: false) { result in
+            guard let reference = activeReference else { return }
+            handleReferenceFile(result, action: .check(reference))
+        }
+        .fileImporter(isPresented: $showReferenceUpdate,
+                      allowedContentTypes: [.item, .folder],
+                      allowsMultipleSelection: false) { result in
+            guard let reference = activeReference else { return }
+            handleReferenceFile(result, action: .update(reference))
+        }
+        .alert(FloeCADStrings.text("cad.workbench.assembly.newSubassemblyTitle", "New subassembly"),
+               isPresented: $showSubassemblyPrompt) {
+            TextField(FloeCADStrings.text("cad.workbench.assembly.subassemblyName",
+                                          "Subassembly name"), text: $newSubassemblyName)
+            Button(FloeCADStrings.text("cad.workbench.assembly.cancel", "Cancel"), role: .cancel) {}
+            Button(FloeCADStrings.text("cad.workbench.assembly.create", "Create")) {
+                createSubassembly()
+            }
+        } message: {
+            Text(FloeCADStrings.text("cad.workbench.assembly.newSubassemblyHint",
+                                     "Place parts inside it afterwards; the subassembly keeps its own local mates."))
+        }
+    }
+
+    private enum ReferenceFileAction {
+        case attach
+        case check(CADAssemblyReport.Reference)
+        case update(CADAssemblyReport.Reference)
+    }
+
+    private func handleReferenceFile(_ result: Result<[URL], Error>,
+                                     action: ReferenceFileAction) {
+        switch result {
+        case .failure(let error):
+            outcome = ["ok": false, "error": "file_unavailable",
+                       "message": error.localizedDescription]
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            switch action {
+            case .attach:
+                run { _ in
+                    await CADAssemblyReferenceBridge().attach(sourceURL: url, to: document)
+                }
+            case .check(let reference):
+                guard let id = UUID(uuidString: reference.id) else { return }
+                run { _ in
+                    await CADAssemblyReferenceBridge().check(referenceID: id,
+                                                             sourceURL: url,
+                                                             in: document)
+                }
+            case .update(let reference):
+                guard let id = UUID(uuidString: reference.id) else { return }
+                run { _ in
+                    await CADAssemblyReferenceBridge().update(
+                        referenceID: id,
+                        sourceURL: url,
+                        in: document,
+                        expectedSourceContentHash: reference.sourceHash,
+                        expectedStagedGeometryHash: reference.stagedGeometryHash)
+                }
+            }
+        }
+    }
+
+    private func createSubassembly() {
+        let name = newSubassemblyName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        run { service in
+            await service.handleAsync(action: "addSubassembly", args: ["name": name])
+        }
     }
 
     @ViewBuilder
@@ -310,8 +460,21 @@ struct CADAssemblyPanelView: View {
                                 if instance.hidden {
                                     PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.hidden", "hidden"))
                                 }
+                                if instance.isSubassembly {
+                                    PanelBadge(text: FloeCADStrings.format(
+                                        "cad.workbench.assembly.childCount", "%@ parts", instance.childCount))
+                                }
                                 if instance.independentCopy {
                                     PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.copy", "copy"))
+                                }
+                                if instance.referenceMissing {
+                                    PanelBadge(text: FloeCADStrings.text(
+                                        "cad.workbench.assembly.referenceMissing", "source missing"),
+                                               tint: .orange)
+                                } else if instance.referenceStatus == "updateAvailable" {
+                                    PanelBadge(text: FloeCADStrings.text(
+                                        "cad.workbench.assembly.referenceUpdate", "update available"),
+                                               tint: .blue)
                                 }
                                 if instance.stale {
                                     PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.stale", "stale"),
@@ -330,6 +493,7 @@ struct CADAssemblyPanelView: View {
                             .controlSize(.small))
                         .accessibilityIdentifier("CADAssemblyInstanceEdit-\(instance.id)")
                     }
+                    .padding(.leading, CGFloat(instance.depth) * 12)
                     .padding(.vertical, 2)
                     .accessibilityIdentifier("CADAssemblyInstance-\(instance.id)")
                     .contextMenu {
@@ -344,11 +508,112 @@ struct CADAssemblyPanelView: View {
                                : FloeCADStrings.text("cad.workbench.assembly.hide", "Hide")) {
                             setVisible(instance, hidden: !instance.hidden)
                         }
+                        if !instance.isSubassembly && !instance.independentCopy {
+                            Button(FloeCADStrings.text("cad.workbench.assembly.makeIndependent",
+                                                       "Make independent")) {
+                                makeIndependent(instance)
+                            }
+                        }
+                        if !availableParents(for: instance).isEmpty {
+                            Menu(FloeCADStrings.text("cad.workbench.assembly.moveInto",
+                                                     "Move into subassembly")) {
+                                ForEach(availableParents(for: instance), id: \.id) { parent in
+                                    Button(parent.name) {
+                                        moveInstance(instance, parentID: parent.id)
+                                    }
+                                }
+                            }
+                        }
+                        if instance.parentID != nil {
+                            Button(FloeCADStrings.text("cad.workbench.assembly.moveToTop",
+                                                       "Move to top level")) {
+                                moveToTopLevel(instance)
+                            }
+                        }
                         Button(role: .destructive) {
                             removeInstance(instance)
                         } label: {
                             Text(FloeCADStrings.text("cad.workbench.assembly.delete", "Delete instance"))
                         }
+                    }
+                }
+            }
+
+            if !report.references.isEmpty {
+                PanelSection(title: FloeCADStrings.text("cad.workbench.assembly.references",
+                                                        "External parts")) {
+                    ForEach(report.references) { reference in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(reference.name)
+                                    .font(.callout)
+                                Spacer(minLength: 4)
+                                if reference.missing {
+                                    PanelBadge(text: FloeCADStrings.text(
+                                        "cad.workbench.assembly.referenceMissing", "source missing"),
+                                               tint: .orange)
+                                } else if reference.updateAvailable {
+                                    PanelBadge(text: FloeCADStrings.text(
+                                        "cad.workbench.assembly.referenceUpdate", "update available"),
+                                               tint: .blue)
+                                }
+                                PanelBadge(text: FloeCADStrings.format(
+                                    "cad.workbench.assembly.referenceShares", "%@ shared",
+                                    reference.sharedCount))
+                                if reference.independentCount > 0 {
+                                    PanelBadge(text: FloeCADStrings.format(
+                                        "cad.workbench.assembly.referenceCopies", "%@ copies",
+                                        reference.independentCount))
+                                }
+                            }
+                            Text(FloeCADStrings.format(
+                                "cad.workbench.assembly.referenceVersion",
+                                "rev %@ · schema %@ · %@",
+                                reference.sourceRevision,
+                                reference.sourceSchemaVersion,
+                                String(reference.sourceHash.prefix(8))))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if !reference.subassemblyNames.isEmpty {
+                                Text(FloeCADStrings.text(
+                                    "cad.workbench.assembly.referenceInSubassemblies",
+                                    "Used in: ") + reference.subassemblyNames.joined(separator: ", "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if reference.missing {
+                                Text(FloeCADStrings.text(
+                                    "cad.workbench.assembly.referenceCachedHint",
+                                    "The cached geometry, mates and BOM row are preserved. "
+                                    + "Check or update with the source document to recover."))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            HStack(spacing: 8) {
+                                Button(FloeCADStrings.label(
+                                    "cad.workbench.assembly.referenceCheck", "Check source")) {
+                                    activeReference = reference
+                                    showReferenceCheck = true
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                Button(FloeCADStrings.label(
+                                    "cad.workbench.assembly.referenceUpdateApply", "Update source")) {
+                                    activeReference = reference
+                                    showReferenceUpdate = true
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                Button(FloeCADStrings.label(
+                                    "cad.workbench.assembly.placePartReference", "Place reference")) {
+                                    placeSharedReference(reference)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                        .accessibilityIdentifier("CADAssemblyReference-\(reference.id)")
                     }
                 }
             }
@@ -476,6 +741,33 @@ struct CADAssemblyPanelView: View {
                                    args: ["id": instance.id, "hidden": hidden]) }
     }
 
+    private func makeIndependent(_ instance: CADAssemblyReport.Instance) {
+        run { await $0.handleAsync(action: "makeIndependent", args: ["id": instance.id]) }
+    }
+
+    private func moveToTopLevel(_ instance: CADAssemblyReport.Instance) {
+        run { await $0.handleAsync(action: "moveInstance",
+                                   args: ["id": instance.id, "parentID": NSNull()]) }
+    }
+
+    private func placeSharedReference(_ reference: CADAssemblyReport.Reference) {
+        run { await $0.handleAsync(action: "placePartReference",
+                                   args: ["referenceID": reference.id]) }
+    }
+
+    private func moveInstance(_ instance: CADAssemblyReport.Instance, parentID: String) {
+        run { await $0.handleAsync(action: "moveInstance",
+                                   args: ["id": instance.id, "parentID": parentID]) }
+    }
+
+    private func availableParents(for instance: CADAssemblyReport.Instance)
+        -> [CADAssemblyReport.Instance] {
+        report.instances.filter { candidate in
+            guard candidate.isSubassembly, candidate.id != instance.id else { return false }
+            return !candidate.path.contains(instance.id)
+        }
+    }
+
     /// Selects an instance in the viewport highlight (runtime selection only).
     private func select(_ instance: CADAssemblyReport.Instance) {
         guard let uuid = UUID(uuidString: instance.id) else { return }
@@ -537,7 +829,13 @@ private struct CADAssemblyPlaceSheet: View {
     @State private var independentCopy = false
     @State private var errorText: String?
 
-    private var bodies: [CADPanelBodyOption] { document.panelBodyOptions }
+    private var bodies: [CADPanelBodyOption] {
+        // Staged external-reference bodies are internal definitions; they are
+        // placed only through `placePartReference`, never as an ordinary body.
+        let staged = Set((try? CADAssembly.decode(from: document.session.document.assemblyData))?
+            .partReferences.map(\.stagedBodyID) ?? [])
+        return document.panelBodyOptions.filter { !staged.contains($0.id) }
+    }
 
     private var positionValues: SIMD3<Double>? {
         guard let x = Double(positionX), let y = Double(positionY), let z = Double(positionZ),
@@ -1130,6 +1428,16 @@ private struct CADConstraintEditorSheet: View {
     private func add() {
         guard let instanceA else { return }
         var args: [String: Any] = ["kind": kind, "instanceA": instanceA]
+        if let rowA = report.instances.first(where: { $0.id == instanceA }) {
+            let rowB = needsB ? report.instances.first(where: { $0.id == instanceB }) : nil
+            if needsB {
+                if let parentA = rowA.parentID, let parentB = rowB?.parentID, parentA == parentB {
+                    args["parentID"] = parentA
+                }
+            } else if let parentA = rowA.parentID {
+                args["parentID"] = parentA
+            }
+        }
         if needsB { args["instanceB"] = instanceB }
         if let referenceA { args["referenceA"] = referenceA.payload }
         if needsB, let referenceB { args["referenceB"] = referenceB.payload }

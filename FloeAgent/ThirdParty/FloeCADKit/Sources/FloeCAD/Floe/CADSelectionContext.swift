@@ -385,16 +385,17 @@ public struct CADSelectionContext: Sendable, Equatable {
         var instanceRows: [Instance] = []
         if !instanceIDs.isEmpty {
             let assembly = (try? CADAssembly.decode(from: design.assemblyData)) ?? CADAssembly()
-            let live = assembly.instances.filter { instanceIDs.contains($0.id) }
+            let live = instanceIDs.compactMap { assembly.instance($0) }
             if live.count > maximumInstances { truncated = true }
             instanceRows = live.prefix(maximumInstances).map { instance in
-                Instance(id: instance.id.uuidString,
-                         name: instance.name,
-                         bodyID: (instance.copiedBodyID ?? instance.bodyID).uuidString,
-                         position: [instance.transform.position.x,
-                                    instance.transform.position.y,
-                                    instance.transform.position.z],
-                         hidden: instance.isHidden)
+                let placement = assembly.worldTransform(for: instance.id) ?? instance.transform
+                return Instance(id: instance.id.uuidString,
+                                name: instance.name,
+                                bodyID: (instance.copiedBodyID ?? instance.bodyID).uuidString,
+                                position: [placement.position.x,
+                                           placement.position.y,
+                                           placement.position.z],
+                                hidden: instance.isHidden)
             }
         }
 

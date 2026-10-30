@@ -63,6 +63,14 @@ public final class CADAssemblyService {
                         + "call handleAsync(action:args:) instead.")
         case "sourceUpdate": return sourceUpdateAction(args)
         case "clear": return clearAction()
+        case "hierarchy": return hierarchyAction()
+        case "references", "referenceDiagnostics": return referencesAction()
+        case "addSubassembly": return addSubassemblyAction(args)
+        case "placePartReference": return placePartReferenceAction(args)
+        case "moveInstance": return moveInstanceAction(args)
+        case "removePartReference": return removePartReferenceAction(args)
+        case "updatePartReference": return updatePartReferenceAction(args)
+        case "makeIndependent": return makeIndependentAction(args)
         case "reference": return referenceAction(args)
         case "referenceCandidates": return referenceCandidatesAction(args)
         case "explodedViews": return explodedViewsAction()
@@ -155,7 +163,9 @@ public final class CADAssemblyService {
             return fail("bad_tolerance", "toleranceMM must be a finite, non-negative number of mm.")
         }
 
-        let instances = assembly.instances
+        let instances = assembly.occurrences(includeHidden: true).filter {
+            $0.isDrawablePart
+        }
         let pairCount = instances.count * (instances.count - 1) / 2
         let maxPairs = 32
         guard pairCount <= maxPairs else {
@@ -173,23 +183,29 @@ public final class CADAssemblyService {
             for j in (i + 1)..<instances.count {
                 let a = instances[i]
                 let b = instances[j]
-                guard let sourceA = body(for: effectiveBodyID(a)),
-                      let sourceB = body(for: effectiveBodyID(b)) else {
-                    if body(for: effectiveBodyID(a)) == nil { unresolved.insert(a.id.uuidString) }
-                    if body(for: effectiveBodyID(b)) == nil { unresolved.insert(b.id.uuidString) }
+                guard let bodyIDA = a.effectiveBodyID,
+                      let bodyIDB = b.effectiveBodyID,
+                      let sourceA = body(for: bodyIDA),
+                      let sourceB = body(for: bodyIDB) else {
+                    if a.effectiveBodyID.flatMap({ body(for: $0) }) == nil {
+                        unresolved.insert(a.instance.id.uuidString)
+                    }
+                    if b.effectiveBodyID.flatMap({ body(for: $0) }) == nil {
+                        unresolved.insert(b.instance.id.uuidString)
+                    }
                     continue
                 }
-                guard let worldA = placedBody(sourceA, transform: a.transform),
-                      let worldB = placedBody(sourceB, transform: b.transform),
+                guard let worldA = placedBody(sourceA, transform: a.worldTransform),
+                      let worldB = placedBody(sourceB, transform: b.worldTransform),
                       let boxA = MeasureKit.boundingBox(bodies: [worldA]),
                       let boxB = MeasureKit.boundingBox(bodies: [worldB]) else {
-                    unresolved.insert(a.id.uuidString)
-                    unresolved.insert(b.id.uuidString)
+                    unresolved.insert(a.instance.id.uuidString)
+                    unresolved.insert(b.instance.id.uuidString)
                     continue
                 }
                 guard aabbOverlap(boxA, boxB, tolerance: tolerance) else { continue }
 
-                let pair: [String] = [a.id.uuidString, b.id.uuidString]
+                let pair: [String] = [a.instance.id.uuidString, b.instance.id.uuidString]
                 if let brepA = worldA.brep, let brepB = worldB.brep,
                    let dataA = OCCTKernel.serialize(brepA),
                    let dataB = OCCTKernel.serialize(brepB) {
@@ -291,15 +307,57 @@ public final class CADAssemblyService {
             let dryRun = CADAssemblySolver.solve(assembly, modelScale: modelScaleFor(assembly))
             let redundant = Set(dof.redundant.map(\.uuidString))
 
+            let occurrences = assembly.occurrences(includeHidden: true)
+            var localDOF: [UUID: Int] = [:]
+            for occurrence in occurrences where occurrence.instance.isSubassembly {
+                let container = occurrence.instance
+                let local = CADAssembly(instances: container.children,
+                                        constraints: container.constraints)
+                let localResult = CADAssemblySolver.degreesOfFreedom(local)
+                for (id, value) in localResult.perInstance { localDOF[id] = value }
+            }
             var instanceEntries: [[String: Any]] = []
             var stale: [String] = []
-            for instance in assembly.instances {
+            var staleReferences: [String] = []
+            for occurrence in occurrences {
+                let instance = occurrence.instance
                 var entry = instancePayload(instance)
-                let body = body(for: effectiveBodyID(instance))
-                let isStale = body == nil || instance.sourceRevision != body?.meshRevision
-                entry["stale"] = isStale
-                entry["dof"] = dof.perInstance[instance.id] ?? 0
-                if isStale { stale.append(instance.id.uuidString) }
+                if let parentID = occurrence.parentInstanceID {
+                    entry["parentID"] = parentID.uuidString
+                } else {
+                    entry["parentID"] = NSNull()
+                }
+                entry["path"] = occurrence.path.map(\.uuidString)
+                entry["depth"] = occurrence.depth
+                entry["visible"] = occurrence.isVisible
+                if let effectiveBodyID = occurrence.effectiveBodyID {
+                    entry["effectiveBodyID"] = effectiveBodyID.uuidString
+                } else {
+                    entry["effectiveBodyID"] = NSNull()
+                }
+                entry["bomIdentity"] = occurrence.bomIdentity.uuidString
+                entry["dof"] = localDOF[instance.id] ?? dof.perInstance[instance.id] ?? 0
+                if instance.isSubassembly {
+                    entry["kind"] = "subassembly"
+                    entry["stale"] = false
+                } else if let referenceID = instance.sourceReferenceID,
+                          let reference = assembly.partReference(referenceID),
+                          !instance.isIndependentCopy {
+                    let status = referenceInstanceStatus(instance, reference: reference)
+                    entry["kind"] = "reference"
+                    entry["referenceStatus"] = status.code
+                    entry["referenceMissing"] = status.missing
+                    entry["stale"] = status.stale
+                    if let reason = status.reason { entry["referenceMessage"] = reason }
+                    if status.stale { stale.append(instance.id.uuidString) }
+                    if status.missing { staleReferences.append(referenceID.uuidString) }
+                } else {
+                    let body = body(for: effectiveBodyID(instance))
+                    let isStale = body == nil || instance.sourceRevision != body?.meshRevision
+                    entry["kind"] = instance.isIndependentCopy ? "independentCopy" : "part"
+                    entry["stale"] = isStale
+                    if isStale { stale.append(instance.id.uuidString) }
+                }
                 instanceEntries.append(entry)
             }
 
@@ -312,6 +370,8 @@ public final class CADAssemblyService {
                     "suppressed": constraint.isSuppressed,
                     "valid": CADAssemblySolver.constraintIsResolvable(constraint, in: index),
                     "redundant": redundant.contains(constraint.id.uuidString),
+                    "scope": "root",
+                    "parentID": NSNull(),
                 ]
                 if let instanceB = constraint.instanceB {
                     entry["instanceB"] = instanceB.uuidString
@@ -325,6 +385,40 @@ public final class CADAssemblyService {
                     entry["staleReferenceBodies"] = revisionState.staleBodies
                 }
                 constraintEntries.append(entry)
+            }
+            var invalidNested: [String] = []
+            for occurrence in occurrences where occurrence.instance.isSubassembly {
+                let container = occurrence.instance
+                let local = CADAssembly(instances: container.children,
+                                        constraints: container.constraints)
+                let localIndex = CADAssemblySolver.resolvableIndex(local)
+                for constraint in container.constraints {
+                    let valid = CADAssemblySolver.constraintIsResolvable(constraint, in: localIndex)
+                    var entry: [String: Any] = [
+                        "id": constraint.id.uuidString,
+                        "kind": constraint.kind.rawValue,
+                        "instanceA": constraint.instanceA.uuidString,
+                        "suppressed": constraint.isSuppressed,
+                        "valid": valid,
+                        "redundant": false,
+                        "scope": "subassembly",
+                        "parentID": container.id.uuidString,
+                        "path": occurrence.path.map(\.uuidString),
+                    ]
+                    if let instanceB = constraint.instanceB {
+                        entry["instanceB"] = instanceB.uuidString
+                    }
+                    if let value = constraint.value { entry["value"] = value }
+                    let revisionState = constraintRevisionState(constraint, assembly: assembly)
+                    entry["staleReference"] = revisionState.stale
+                    if let a = constraint.sourceRevisionA { entry["sourceRevisionA"] = a }
+                    if let b = constraint.sourceRevisionB { entry["sourceRevisionB"] = b }
+                    if !revisionState.staleBodies.isEmpty {
+                        entry["staleReferenceBodies"] = revisionState.staleBodies
+                    }
+                    if !valid { invalidNested.append(constraint.id.uuidString) }
+                    constraintEntries.append(entry)
+                }
             }
 
             let explodedRows = assembly.explodedViews.map { view -> [String: Any] in
@@ -353,11 +447,19 @@ public final class CADAssemblyService {
                 previewPayload = ["active": false]
             }
 
+            let issues = assembly.integrityIssues(
+                documentBodyIDs: Set(document.session.document.bodies.map { $0.id.raw }))
+
             return [
                 "ok": true,
                 "dofModel": "kinematic-rank",
                 "instanceCount": assembly.instances.count,
+                "totalInstanceCount": occurrences.count,
+                "subassemblyCount": occurrences.filter { $0.subassemblyID != nil }.count,
+                "referenceCount": assembly.partReferences.count,
+                "references": referencesPayload(assembly),
                 "constraintCount": assembly.constraints.count,
+                "totalConstraintCount": constraintEntries.count,
                 "instances": instanceEntries,
                 "constraints": constraintEntries,
                 "explodedViewCount": assembly.explodedViews.count,
@@ -375,12 +477,15 @@ public final class CADAssemblyService {
                 "fullyConstrained": dof.fullyConstrained,
                 "unconstrainedInstances": dof.unconstrained.map(\.uuidString),
                 "invalidRefs": invalidAll,
+                "invalidNestedRefs": invalidNested,
                 "redundantConstraints": dof.redundant.map(\.uuidString),
                 "conflicting": dryRun.conflicting.map(\.uuidString),
                 "conflicts": dryRun.conflicting.map(\.uuidString),
                 "solved": dryRun.solved,
                 "staleInstances": stale,
                 "staleSourceBodies": stale,
+                "staleReferences": Array(Set(staleReferences)).sorted(),
+                "integrity": issues.map(integrityPayload),
             ]
         }
     }
@@ -390,10 +495,30 @@ public final class CADAssemblyService {
         case .failure(let error):
             return fail(error.code, error.message)
         case .success(let assembly):
+            let occurrences = assembly.occurrences(includeHidden: true)
+            let rows = occurrences.map { occurrence -> [String: Any] in
+                var payload = instancePayload(occurrence.instance)
+                if let parentID = occurrence.parentInstanceID {
+                    payload["parentID"] = parentID.uuidString
+                } else {
+                    payload["parentID"] = NSNull()
+                }
+                payload["path"] = occurrence.path.map(\.uuidString)
+                payload["depth"] = occurrence.depth
+                payload["bomIdentity"] = occurrence.bomIdentity.uuidString
+                if let effectiveBodyID = occurrence.effectiveBodyID {
+                    payload["effectiveBodyID"] = effectiveBodyID.uuidString
+                } else {
+                    payload["effectiveBodyID"] = NSNull()
+                }
+                return payload
+            }
             return [
                 "ok": true,
-                "count": assembly.instances.count,
-                "instances": assembly.instances.map { instancePayload($0) },
+                "count": occurrences.count,
+                "rootCount": assembly.instances.count,
+                "referenceCount": assembly.partReferences.count,
+                "instances": rows,
             ]
         }
     }
@@ -445,8 +570,20 @@ public final class CADAssemblyService {
         case .success(let parsed): transform = parsed ?? .identity
         }
 
+        var parentID: UUID?
+        if let raw = args["parentID"] ?? args["parentInstanceID"], !(raw is NSNull) {
+            guard let parsed = uuidValue(raw) else {
+                return fail("bad_parent_id", "parentID must be a subassembly instance UUID string.")
+            }
+            guard let parent = updated.instance(parsed), parent.isSubassembly else {
+                return fail("unknown_subassembly", "parentID must reference an existing subassembly instance.")
+            }
+            parentID = parsed
+        }
+
         let independentCopy = boolValue(args["independentCopy"]) ?? false
         var copiedBodyID: UUID?
+        var copyBody: Body?
         if independentCopy {
             var scratch = document.session.document
             var copy = Body(
@@ -464,11 +601,11 @@ public final class CADAssemblyService {
             copy.material = sourceBody.material
             copy.materialFaceBindings = sourceBody.materialFaceBindings
             copy.isHidden = sourceBody.isHidden
-            document.session.perform(AddBodyCommand(body: copy, title: "Assembly Copy \(sourceBody.name)"))
+            copyBody = copy
             copiedBodyID = copy.id.raw
         }
 
-        let placedBody = body(for: copiedBodyID ?? bodyUUID) ?? sourceBody
+        let placedBody = copyBody ?? body(for: bodyUUID) ?? sourceBody
         let providedName = (args["name"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let baseName = (providedName?.isEmpty == false) ? providedName! : placedBody.name
@@ -481,12 +618,33 @@ public final class CADAssemblyService {
             copiedBodyID: copiedBodyID,
             sourceRevision: placedBody.meshRevision
         )
-        updated.instances.append(instance)
-        if let failure = persist(updated) { return failure }
+        guard updated.appendInstance(instance, parentID: parentID) else {
+            return fail("placement_failed",
+                        "The instance could not be placed under the requested subassembly.")
+        }
+        if let copyBody {
+            do {
+                let before = document.session.document.assemblyData
+                let after = try updated.encoded()
+                document.session.perform(CompositeCommand(
+                    title: "Assembly Copy \(sourceBody.name)",
+                    commands: [
+                        AddBodyCommand(body: copyBody),
+                        SetAssemblyDataCommand(before: before, after: after),
+                    ]))
+            } catch {
+                return fail("encode_failed",
+                            "The assembly could not be encoded: \(error.localizedDescription)")
+            }
+        } else if let failure = persist(updated) {
+            return failure
+        }
 
         var payload = instancePayload(instance)
         payload["ok"] = true
         payload["mutated"] = true
+        payload["path"] = updated.instancePath(instance.id)?.map(\.uuidString) ?? []
+        if let parentID { payload["parentID"] = parentID.uuidString }
         return payload
     }
 
@@ -501,26 +659,34 @@ public final class CADAssemblyService {
         guard let id = uuidValue(args["id"]) else {
             return fail("bad_instance_id", "id must be an instance UUID string.")
         }
-        guard updated.instances.contains(where: { $0.id == id }) else {
+        guard let removedInstance = updated.instance(id) else {
             return fail("unknown_instance", "No assembly instance with that id.")
         }
-        let removed = updated.instances.first { $0.id == id }
-        updated.instances.removeAll { $0.id == id }
-        let dropped = updated.constraints
-            .filter { $0.instanceA == id || $0.instanceB == id }
+        let removedIDs = Set(subtreeIDs(removedInstance))
+        let removedBodyIDs = removedIDs.compactMap { updated.instance($0)?.copiedBodyID }
+        let removedConstraintIDs = updated.constraints
+            .filter { removedIDs.contains($0.instanceA)
+                || ($0.instanceB.map { removedIDs.contains($0) } ?? false) }
             .map(\.id.uuidString)
-        updated.constraints.removeAll { $0.instanceA == id || $0.instanceB == id }
-        // Exploded-view entries are display state: drop the removed instance's
+        updated.constraints.removeAll { constraint in
+            removedIDs.contains(constraint.instanceA)
+                || (constraint.instanceB.map { removedIDs.contains($0) } ?? false)
+        }
+        var nestedRemovedConstraintIDs: [String] = []
+        removeConstraints(referencing: removedIDs, in: &updated.instances,
+                          removedIDs: &nestedRemovedConstraintIDs)
+        _ = updated.removeSubtree(id)
+        // Exploded-view entries are display state: drop the removed subtree's
         // entries so a later preview cannot point at a dead placement. The
         // named view itself is retained.
         var droppedExplodedEntries: [String] = []
         for index in updated.explodedViews.indices {
-            let removed = updated.explodedViews[index].entries
-                .filter { $0.instanceID == id }
+            let removedEntries = updated.explodedViews[index].entries
+                .filter { removedIDs.contains($0.instanceID) }
                 .map(\.id.uuidString)
-            droppedExplodedEntries.append(contentsOf: removed)
-            updated.explodedViews[index].entries.removeAll { $0.instanceID == id }
-            if !removed.isEmpty {
+            droppedExplodedEntries.append(contentsOf: removedEntries)
+            updated.explodedViews[index].entries.removeAll { removedIDs.contains($0.instanceID) }
+            if !removedEntries.isEmpty {
                 updated.explodedViews[index].updatedAt = Date()
             }
         }
@@ -534,11 +700,16 @@ public final class CADAssemblyService {
             "ok": true,
             "mutated": true,
             "removedInstance": id.uuidString,
-            "removedConstraintIDs": dropped,
+            "removedInstanceIDs": removedIDs.sorted { $0.uuidString < $1.uuidString }
+                .map(\.uuidString),
+            "removedConstraintIDs": removedConstraintIDs + nestedRemovedConstraintIDs,
             "removedExplodedEntryIDs": droppedExplodedEntries,
         ]
-        if let copied = removed?.copiedBodyID {
+        if let copied = removedInstance.copiedBodyID {
             payload["orphanedBodyID"] = copied.uuidString
+        }
+        if !removedBodyIDs.isEmpty {
+            payload["orphanedBodyIDs"] = removedBodyIDs.map(\.uuidString)
         }
         return payload
     }
@@ -554,7 +725,7 @@ public final class CADAssemblyService {
         guard let id = uuidValue(args["id"]) else {
             return fail("bad_instance_id", "id must be an instance UUID string.")
         }
-        guard let index = updated.instances.firstIndex(where: { $0.id == id }) else {
+        guard updated.instance(id) != nil else {
             return fail("unknown_instance", "No assembly instance with that id.")
         }
         let transform: CADTransform
@@ -566,9 +737,14 @@ public final class CADAssemblyService {
             }
             transform = parsed
         }
-        updated.instances[index].transform = transform
+        updated.updateInstance(id) { $0.transform = transform }
         if let failure = persist(updated) { return failure }
-        return ["ok": true, "mutated": true, "instance": instancePayload(updated.instances[index])]
+        guard let instance = updated.instance(id) else {
+            return fail("unknown_instance", "The instance disappeared while updating it.")
+        }
+        return ["ok": true, "mutated": true,
+                "instance": instancePayload(instance),
+                "path": updated.instancePath(id)?.map(\.uuidString) ?? []]
     }
 
     private func setVisibleAction(_ args: [String: Any]) -> [String: Any] {
@@ -582,15 +758,20 @@ public final class CADAssemblyService {
         guard let id = uuidValue(args["id"]) else {
             return fail("bad_instance_id", "id must be an instance UUID string.")
         }
-        guard let index = updated.instances.firstIndex(where: { $0.id == id }) else {
+        guard updated.instance(id) != nil else {
             return fail("unknown_instance", "No assembly instance with that id.")
         }
         guard let hidden = boolValue(args["hidden"]) else {
             return fail("bad_hidden", "hidden must be a boolean.")
         }
-        updated.instances[index].isHidden = hidden
+        updated.updateInstance(id) { $0.isHidden = hidden }
         if let failure = persist(updated) { return failure }
-        return ["ok": true, "mutated": true, "instance": instancePayload(updated.instances[index])]
+        guard let instance = updated.instance(id) else {
+            return fail("unknown_instance", "The instance disappeared while updating it.")
+        }
+        return ["ok": true, "mutated": true,
+                "instance": instancePayload(instance),
+                "path": updated.instancePath(id)?.map(\.uuidString) ?? []]
     }
 
     // MARK: - Constraint actions
@@ -608,16 +789,47 @@ public final class CADAssemblyService {
             return fail("unknown_constraint_kind",
                         "kind must be fixed, coaxial, planarAlign, distance or angle.")
         }
+        var parentID: UUID?
+        if let raw = args["parentID"] ?? args["parentInstanceID"], !(raw is NSNull) {
+            guard let parsed = uuidValue(raw) else {
+                return fail("bad_parent_id", "parentID must be a subassembly instance UUID string.")
+            }
+            guard let container = updated.instance(parsed), container.isSubassembly else {
+                return fail("unknown_subassembly", "parentID must reference an existing subassembly instance.")
+            }
+            parentID = parsed
+        }
+        let scopeChildren: Set<UUID>? = parentID.flatMap { id in
+            updated.instance(id).map { Set($0.children.map(\.id)) }
+        }
         guard let instanceA = uuidValue(args["instanceA"]),
-              updated.instances.contains(where: { $0.id == instanceA }) else {
+              updated.instance(instanceA) != nil else {
             return fail("unknown_instance", "instanceA must reference an assembly instance.")
+        }
+        if let scopeChildren, !scopeChildren.contains(instanceA) {
+            return fail("nested_constraint_scope",
+                        "A subassembly constraint must reference one of its direct children.")
+        }
+        if scopeChildren == nil, !updated.instances.contains(where: { $0.id == instanceA }) {
+            return fail("nested_constraint_scope",
+                        "A root constraint cannot reference a nested instance; "
+                        + "add the constraint inside its owning subassembly.")
         }
 
         var instanceB: UUID?
         if let raw = args["instanceB"], !(raw is NSNull) {
             guard let parsed = uuidValue(raw),
-                  updated.instances.contains(where: { $0.id == parsed }) else {
+                  updated.instance(parsed) != nil else {
                 return fail("unknown_instance", "instanceB must reference an assembly instance.")
+            }
+            if let scopeChildren, !scopeChildren.contains(parsed) {
+                return fail("nested_constraint_scope",
+                            "A subassembly constraint must reference one of its direct children.")
+            }
+            if scopeChildren == nil, !updated.instances.contains(where: { $0.id == parsed }) {
+                return fail("nested_constraint_scope",
+                            "A root constraint cannot reference a nested instance; "
+                            + "add the constraint inside its owning subassembly.")
             }
             instanceB = parsed
         }
@@ -630,8 +842,10 @@ public final class CADAssemblyService {
         // instead of being applied to a changed part. `referenceX` supplies a
         // point+direction already resolved by `reference`; `faceX`/`edgeX`
         // resolve a kernel face/edge with the same query-token proof.
-        let instanceAValue = updated.instances.first { $0.id == instanceA }!
-        let instanceBValue = instanceB.flatMap { id in updated.instances.first { $0.id == id } }
+        guard let instanceAValue = updated.instance(instanceA) else {
+            return fail("unknown_instance", "instanceA must reference an assembly instance.")
+        }
+        let instanceBValue = instanceB.flatMap { updated.instance($0) }
         var referenceA: CADAssemblyReference?
         if let resolved = parseInlineReference(args: args, key: "referenceA",
                                                faceKey: "faceA", edgeKey: "edgeA",
@@ -775,12 +989,20 @@ public final class CADAssemblyService {
             sourceRevisionA: sourceRevisionA,
             sourceRevisionB: sourceRevisionB
         )
-        updated.constraints.append(constraint)
+        if let parentID {
+            guard updated.updateInstance(parentID, { $0.constraints.append(constraint) }) else {
+                return fail("unknown_subassembly", "The owning subassembly disappeared while adding the constraint.")
+            }
+        } else {
+            updated.constraints.append(constraint)
+        }
         if let failure = persist(updated) { return failure }
 
         var payload = constraintPayload(constraint)
         payload["ok"] = true
         payload["mutated"] = true
+        payload["scope"] = parentID == nil ? "root" : "subassembly"
+        if let parentID { payload["parentID"] = parentID.uuidString }
         if let referenceA { payload["referenceA"] = referenceA.payload }
         if let referenceB { payload["referenceB"] = referenceB.payload }
         return payload
@@ -797,12 +1019,25 @@ public final class CADAssemblyService {
         guard let id = uuidValue(args["id"]) else {
             return fail("bad_constraint_id", "id must be a constraint UUID string.")
         }
-        guard updated.constraints.contains(where: { $0.id == id }) else {
+        guard let located = updated.constraintsWithScope().first(where: { $0.constraint.id == id }) else {
             return fail("unknown_constraint", "No assembly constraint with that id.")
         }
-        updated.constraints.removeAll { $0.id == id }
+        if let parentID = located.parentID {
+            updated.updateInstance(parentID) { container in
+                container.constraints.removeAll { $0.id == id }
+            }
+        } else {
+            updated.constraints.removeAll { $0.id == id }
+        }
         if let failure = persist(updated) { return failure }
-        return ["ok": true, "mutated": true, "removedConstraint": id.uuidString]
+        var payload: [String: Any] = ["ok": true, "mutated": true, "removedConstraint": id.uuidString]
+        if let parentID = located.parentID {
+            payload["parentID"] = parentID.uuidString
+            payload["scope"] = "subassembly"
+        } else {
+            payload["scope"] = "root"
+        }
+        return payload
     }
 
     private func suppressConstraintAction(_ args: [String: Any]) -> [String: Any] {
@@ -816,16 +1051,34 @@ public final class CADAssemblyService {
         guard let id = uuidValue(args["id"]) else {
             return fail("bad_constraint_id", "id must be a constraint UUID string.")
         }
-        guard let index = updated.constraints.firstIndex(where: { $0.id == id }) else {
+        guard let located = updated.constraintsWithScope().first(where: { $0.constraint.id == id }) else {
             return fail("unknown_constraint", "No assembly constraint with that id.")
         }
         guard let suppressed = boolValue(args["suppressed"]) else {
             return fail("bad_suppressed", "suppressed must be a boolean.")
         }
-        updated.constraints[index].isSuppressed = suppressed
+        if let parentID = located.parentID {
+            updated.updateInstance(parentID) { container in
+                if let index = container.constraints.firstIndex(where: { $0.id == id }) {
+                    container.constraints[index].isSuppressed = suppressed
+                }
+            }
+        } else if let index = updated.constraints.firstIndex(where: { $0.id == id }) {
+            updated.constraints[index].isSuppressed = suppressed
+        }
         if let failure = persist(updated) { return failure }
-        return ["ok": true, "mutated": true,
-                "constraint": constraintPayload(updated.constraints[index])]
+        guard let current = updated.constraint(id) else {
+            return fail("unknown_constraint", "The constraint disappeared while updating it.")
+        }
+        var payload: [String: Any] = ["ok": true, "mutated": true,
+                                      "constraint": constraintPayload(current)]
+        if let parentID = located.parentID {
+            payload["parentID"] = parentID.uuidString
+            payload["scope"] = "subassembly"
+        } else {
+            payload["scope"] = "root"
+        }
+        return payload
     }
 
     // MARK: - Live reference picking
@@ -846,6 +1099,10 @@ public final class CADAssemblyService {
         }
         guard let instance = assembly.instance(instanceID) else {
             return fail("unknown_instance", "No assembly instance with that id.")
+        }
+        guard !instance.isSubassembly else {
+            return fail("subassembly_reference_unsupported",
+                        "Pick a reference on a part inside the subassembly, not on the container.")
         }
         guard let source = body(for: effectiveBodyID(instance)) else {
             return fail("unknown_body", "The instance's source body no longer resolves.")
@@ -916,6 +1173,10 @@ public final class CADAssemblyService {
         }
         guard let instance = assembly.instance(instanceID) else {
             return fail("unknown_instance", "No assembly instance with that id.")
+        }
+        guard !instance.isSubassembly else {
+            return fail("subassembly_reference_unsupported",
+                        "Pick a reference on a part inside the subassembly, not on the container.")
         }
         guard let source = body(for: effectiveBodyID(instance)) else {
             return fail("unknown_body", "The instance's source body no longer resolves.")
@@ -1594,14 +1855,22 @@ public final class CADAssemblyService {
         CADExplodedViewPreview.current(for: document.session)?.reconcile(with: assembly)
         let rows = assembly.explodedViews.map { view -> [String: Any] in
             var row = explodedViewPayload(view, assembly: assembly)
-            row["offsets"] = assembly.instances.map { instance in
+            row["offsets"] = assembly.occurrences(includeHidden: true).map { occurrence in
+                let instance = occurrence.instance
                 let offset = view.offset(for: instance.id)
-                return [
+                var entry: [String: Any] = [
                     "instanceID": instance.id.uuidString,
                     "name": instance.name,
                     "offset": vectorPayload(offset),
                     "distanceMM": simd_length(offset),
+                    "path": occurrence.path.map(\.uuidString),
+                    "depth": occurrence.depth,
+                    "baseTransform": transformPayload(instance.transform),
                 ]
+                if let parentID = occurrence.parentInstanceID {
+                    entry["parentID"] = parentID.uuidString
+                }
+                return entry
             }
             return row
         }
@@ -1735,13 +2004,20 @@ public final class CADAssemblyService {
                                       "reset": true, "previewActive": false,
                                       "wasPreviewing": wasActive]
         payload["explodedPreview"] = ["active": false]
-        payload["instances"] = assembly.instances.map { instance in
-            [
+        payload["instances"] = assembly.occurrences(includeHidden: true).map { occurrence in
+            let instance = occurrence.instance
+            var row: [String: Any] = [
                 "instanceID": instance.id.uuidString,
                 "name": instance.name,
                 "transform": transformPayload(instance.transform),
+                "path": occurrence.path.map(\.uuidString),
+                "depth": occurrence.depth,
                 "offset": [0.0, 0.0, 0.0],
             ]
+            if let parentID = occurrence.parentInstanceID {
+                row["parentID"] = parentID.uuidString
+            }
+            return row
         }
         return payload
     }
@@ -1750,20 +2026,25 @@ public final class CADAssemblyService {
                                         assembly: CADAssembly) -> [String: Any] {
         var rows: [[String: Any]] = []
         var invalid: [String] = []
-        for instance in assembly.instances {
-            guard let exploded = assembly.explodedTransform(for: instance.id, viewID: view.id) else {
-                invalid.append(instance.id.uuidString)
-                continue
-            }
-            let offset = view.offset(for: instance.id)
-            rows.append([
+        for occurrence in assembly.occurrences(viewID: view.id, includeHidden: true) {
+            let instance = occurrence.instance
+            let base = occurrence.worldTransform
+            let exploded = occurrence.explodedWorldTransform ?? base
+            let offset = exploded.position - base.position
+            var row: [String: Any] = [
                 "instanceID": instance.id.uuidString,
                 "name": instance.name,
                 "offset": vectorPayload(offset),
                 "distanceMM": simd_length(offset),
-                "baseTransform": transformPayload(instance.transform),
+                "baseTransform": transformPayload(base),
                 "transform": transformPayload(exploded),
-            ])
+                "path": occurrence.path.map(\.uuidString),
+                "depth": occurrence.depth,
+            ]
+            if let parentID = occurrence.parentInstanceID {
+                row["parentID"] = parentID.uuidString
+            }
+            rows.append(row)
         }
         var payload = explodedViewPayload(view, assembly: assembly)
         payload["ok"] = true
@@ -1940,13 +2221,45 @@ public final class CADAssemblyService {
         case .failure(let error): return fail(error.code, error.message)
         case .success(let loaded): assembly = loaded
         }
-        // The solver is pure and runs on a value copy; it NEVER mutates the
-        // persisted assembly. A failed solve (unresolved references or
-        // contradictory constraints) must leave the stored model — revision,
-        // undo stack and every placement — untouched and return structured
-        // diagnostics plus the uncommitted candidate as a PREVIEW, rather than
-        // persisting "as close as it got" placements.
-        let result = CADAssemblySolver.solve(assembly, modelScale: modelScaleFor(assembly))
+        // The solver is pure and runs on value copies; it NEVER mutates the
+        // persisted assembly. Nested subassemblies are solved first in their
+        // own local frame (their constraints target direct children), and any
+        // failure aborts the whole action without persisting a partial result.
+        var updated = assembly
+        var nestedRows: [[String: Any]] = []
+        for occurrence in assembly.occurrences(includeHidden: true) {
+            let container = occurrence.instance
+            guard container.isSubassembly else { continue }
+            let local = CADAssembly(instances: container.children,
+                                    constraints: container.constraints)
+            let localResult = CADAssemblySolver.solve(local,
+                                                      modelScale: modelScaleFor(local))
+            guard localResult.solved else {
+                return [
+                    "ok": false,
+                    "error": "constraint_failed",
+                    "mutated": false,
+                    "solved": false,
+                    "scope": "subassembly",
+                    "parentID": container.id.uuidString,
+                    "message": "Subassembly '\(container.name)' could not be solved; "
+                        + "the assembly was left unchanged.",
+                    "conflicting": localResult.conflicting.map(\.uuidString),
+                    "invalidRefs": localResult.invalidReferences.map(\.uuidString),
+                    "previewInstances": localResult.updatedInstances.map(instancePayload),
+                ]
+            }
+            updated.updateInstance(container.id) { $0.children = localResult.updatedInstances }
+            nestedRows.append([
+                "parentID": container.id.uuidString,
+                "name": container.name,
+                "path": occurrence.path.map(\.uuidString),
+                "solved": true,
+                "updatedInstanceIDs": localResult.updatedInstances.map { $0.id.uuidString },
+            ])
+        }
+
+        let result = CADAssemblySolver.solve(updated, modelScale: modelScaleFor(updated))
         guard result.solved else {
             let invalid = Set(result.invalidReferences.map(\.uuidString))
             let conflicts = Set(result.conflicting.map(\.uuidString))
@@ -1955,6 +2268,7 @@ public final class CADAssemblyService {
                 "error": "constraint_failed",
                 "mutated": false,
                 "solved": false,
+                "scope": "root",
                 "message": failureMessage(invalid: invalid, conflicts: conflicts),
                 "conflicting": result.conflicting.map(\.uuidString),
                 "invalidRefs": result.invalidReferences.map(\.uuidString),
@@ -1963,7 +2277,6 @@ public final class CADAssemblyService {
                 "previewInstances": result.updatedInstances.map(instancePayload),
             ]
         }
-        var updated = assembly
         updated.instances = result.updatedInstances
         if let failure = persist(updated) { return failure }
         let dof = CADAssemblySolver.degreesOfFreedom(updated)
@@ -1973,6 +2286,7 @@ public final class CADAssemblyService {
             "solved": true,
             "updatedInstances": result.updatedInstances.map { instancePayload($0) },
             "updatedInstanceIDs": result.updatedInstances.map(\.id.uuidString),
+            "nestedSolved": nestedRows,
             "invalidRefs": [],
             "conflicting": [],
             "assemblyDOF": dof.relative,
@@ -2032,10 +2346,30 @@ public final class CADAssemblyService {
             return payload
         }
 
-        for index in updated.instances.indices {
-            let instance = updated.instances[index]
+        // Local body-backed instances re-pin to their current body revision.
+        // External references are NEVER re-pinned from local state: only the
+        // App-owned bridge may change a source pin/geometry after verifying a
+        // user-authorized source. A missing source therefore stays missing
+        // and keeps its cached display body.
+        var refreshedReferences = 0
+        for occurrence in updated.occurrences(includeHidden: true) {
+            let instance = occurrence.instance
+            guard !instance.isSubassembly else { continue }
             guard let source = body(for: effectiveBodyID(instance)) else { continue }
-            updated.instances[index].sourceRevision = source.meshRevision
+            if instance.isIndependentCopy || instance.sourceReferenceID == nil {
+                updated.updateInstance(instance.id) { $0.sourceRevision = source.meshRevision }
+            } else if let referenceID = instance.sourceReferenceID,
+                      let reference = updated.partReference(referenceID) {
+                if reference.stagedRevision != source.meshRevision {
+                    refreshedReferences += 1
+                }
+                updated.partReferences = updated.partReferences.map { item in
+                    guard item.id == referenceID else { return item }
+                    var copy = item
+                    copy.stagedRevision = source.meshRevision
+                    return copy
+                }
+            }
         }
         let result = CADAssemblySolver.solve(updated, modelScale: modelScaleFor(updated))
         // Same rule as `solve`: a failed re-solve (contradictory or now-invalid
@@ -2063,6 +2397,7 @@ public final class CADAssemblyService {
         payload["ok"] = true
         payload["mutated"] = true
         payload["solved"] = true
+        payload["refreshedReferenceStages"] = refreshedReferences
         payload["conflicting"] = []
         payload["invalidRefs"] = []
         return payload
@@ -2071,20 +2406,846 @@ public final class CADAssemblyService {
     private func staleReport(_ assembly: CADAssembly) -> [String: Any] {
         var rows: [[String: Any]] = []
         var stale: [String] = []
-        for instance in assembly.instances {
-            let source = body(for: effectiveBodyID(instance))
-            let isStale = source == nil || instance.sourceRevision != source?.meshRevision
+        var missingReferences: [String] = []
+        for occurrence in assembly.occurrences(includeHidden: true) {
+            let instance = occurrence.instance
             var row: [String: Any] = [
                 "id": instance.id.uuidString,
-                "bodyID": effectiveBodyID(instance).uuidString,
-                "stale": isStale,
+                "name": instance.name,
+                "path": occurrence.path.map(\.uuidString),
+                "depth": occurrence.depth,
+                "bomIdentity": occurrence.bomIdentity.uuidString,
             ]
+            if let parentID = occurrence.parentInstanceID {
+                row["parentID"] = parentID.uuidString
+            }
+            if instance.isSubassembly {
+                row["kind"] = "subassembly"
+                row["stale"] = false
+                rows.append(row)
+                continue
+            }
+            if let referenceID = instance.sourceReferenceID,
+               let reference = assembly.partReference(referenceID),
+               !instance.isIndependentCopy {
+                let status = referenceInstanceStatus(instance, reference: reference)
+                row["bodyID"] = reference.stagedBodyID.uuidString
+                row["kind"] = "reference"
+                row["referenceID"] = referenceID.uuidString
+                row["referenceStatus"] = status.code
+                row["missing"] = status.missing
+                row["stale"] = status.stale
+                row["sourceRevision"] = reference.sourceRevision
+                row["sourceContentHash"] = reference.sourceContentHash
+                row["stagedGeometryHash"] = reference.stagedGeometryHash
+                row["recordedRevision"] = reference.stagedRevision
+                if let reason = status.reason { row["message"] = reason }
+                if status.missing { missingReferences.append(referenceID.uuidString) }
+                if status.stale { stale.append(instance.id.uuidString) }
+                rows.append(row)
+                continue
+            }
+            let source = body(for: effectiveBodyID(instance))
+            let isStale = source == nil || instance.sourceRevision != source?.meshRevision
+            row["bodyID"] = effectiveBodyID(instance).uuidString
+            row["kind"] = instance.isIndependentCopy ? "independentCopy" : "part"
+            row["stale"] = isStale
             if let recorded = instance.sourceRevision { row["recordedRevision"] = recorded }
             if let source { row["currentRevision"] = source.meshRevision }
             rows.append(row)
             if isStale { stale.append(instance.id.uuidString) }
         }
-        return ["stale": stale, "staleCount": stale.count, "instances": rows]
+        return [
+            "stale": stale,
+            "staleCount": stale.count,
+            "staleReferences": Array(Set(missingReferences)).sorted(),
+            "missingReferences": Array(Set(missingReferences)).sorted(),
+            "references": referencesPayload(assembly),
+            "instances": rows,
+        ]
+    }
+
+
+    // MARK: - Hierarchy and external references
+
+    private func hierarchyAction() -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        let occurrences = assembly.occurrences(includeHidden: true)
+
+        func node(_ instance: CADAssemblyInstance,
+                  parentID: UUID?,
+                  path: [UUID],
+                  pathNames: [String],
+                  depth: Int) -> [String: Any] {
+            var row = instancePayload(instance)
+            row["kind"] = instance.isSubassembly
+                ? "subassembly" : (instance.sourceReferenceID != nil
+                    ? "reference" : (instance.isIndependentCopy ? "independentCopy" : "part"))
+            row["path"] = path.map(\.uuidString)
+            row["pathNames"] = pathNames
+            row["depth"] = depth
+            if let parentID { row["parentID"] = parentID.uuidString }
+            row["bomIdentity"] = occurrenceBomIdentity(instance).uuidString
+            row["children"] = instance.children.map { child in
+                node(child, parentID: instance.id,
+                     path: path + [child.id],
+                     pathNames: pathNames + [child.name],
+                     depth: depth + 1)
+            }
+            row["constraints"] = instance.constraints.map { constraint -> [String: Any] in
+                var payload = constraintPayload(constraint)
+                payload["scope"] = "subassembly"
+                payload["parentID"] = instance.id.uuidString
+                return payload
+            }
+            if let referenceID = instance.sourceReferenceID,
+               let reference = assembly.partReference(referenceID) {
+                row["reference"] = referencePayload(reference)
+            }
+            return row
+        }
+
+        return [
+            "ok": true,
+            "mutated": false,
+            "rootCount": assembly.instances.count,
+            "totalCount": occurrences.count,
+            "subassemblyCount": occurrences.filter { $0.subassemblyID != nil }.count,
+            "referenceCount": assembly.partReferences.count,
+            "maxDepth": occurrences.map(\.depth).max() ?? 0,
+            "tree": assembly.instances.map { instance in
+                node(instance, parentID: nil, path: [instance.id],
+                     pathNames: [instance.name], depth: 0)
+            },
+            "rootConstraints": assembly.constraints.map { constraint -> [String: Any] in
+                var payload = constraintPayload(constraint)
+                payload["scope"] = "root"
+                return payload
+            },
+            "integrity": assembly.integrityIssues(
+                documentBodyIDs: Set(document.session.document.bodies.map { $0.id.raw }))
+                .map(integrityPayload),
+        ]
+    }
+
+    private func referencesAction() -> [String: Any] {
+        switch loadAssembly() {
+        case .failure(let error):
+            return fail(error.code, error.message)
+        case .success(let assembly):
+            let rows = referencesPayload(assembly)
+            let missing = rows.filter { ($0["missing"] as? Bool) == true }
+            let updates = rows.filter { ($0["updateAvailable"] as? Bool) == true }
+            return [
+                "ok": true,
+                "mutated": false,
+                "count": rows.count,
+                "missingCount": missing.count,
+                "updateAvailableCount": updates.count,
+                "references": rows,
+                "integrity": assembly.integrityIssues(
+                    documentBodyIDs: Set(document.session.document.bodies.map { $0.id.raw }))
+                    .map(integrityPayload),
+            ]
+        }
+    }
+
+    private func addSubassemblyAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        var updated = assembly
+        var parentID: UUID?
+        if let raw = args["parentID"] ?? args["parentInstanceID"], !(raw is NSNull) {
+            guard let parsed = uuidValue(raw) else {
+                return fail("bad_parent_id", "parentID must be a subassembly instance UUID string.")
+            }
+            guard let parent = updated.instance(parsed), parent.isSubassembly else {
+                return fail("unknown_subassembly", "parentID must reference an existing subassembly instance.")
+            }
+            parentID = parsed
+        }
+        let transform: CADTransform
+        switch parseTransform(args["transform"]) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let parsed): transform = parsed ?? .identity
+        }
+        let requested = (args["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseName = (requested?.isEmpty == false) ? requested! : "Subassembly"
+        let subassemblyID = UUID()
+        let container = CADAssemblyInstance(
+            id: UUID(),
+            name: uniqueInstanceName(base: baseName, in: updated),
+            bodyID: subassemblyID,
+            transform: transform,
+            subassemblyID: subassemblyID)
+        guard updated.appendInstance(container, parentID: parentID) else {
+            return fail("placement_failed", "The subassembly could not be placed under the requested parent.")
+        }
+        if let failure = persist(updated) { return failure }
+        var payload = instancePayload(container)
+        payload["ok"] = true
+        payload["mutated"] = true
+        payload["subassemblyID"] = subassemblyID.uuidString
+        payload["path"] = updated.instancePath(container.id)?.map(\.uuidString) ?? []
+        return payload
+    }
+
+    private func placePartReferenceAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        var updated = assembly
+        guard let referenceID = uuidValue(args["referenceID"]) else {
+            return fail("bad_reference_id", "referenceID must be a part-reference UUID string.")
+        }
+        guard let reference = updated.partReference(referenceID) else {
+            return fail("unknown_reference", "No part reference with that id.")
+        }
+        guard let staged = body(for: reference.stagedBodyID) else {
+            return fail("missing_staged_body",
+                        "The reference's cached staged body is missing; its geometry cannot be placed.")
+        }
+        var parentID: UUID?
+        if let raw = args["parentID"] ?? args["parentInstanceID"], !(raw is NSNull) {
+            guard let parsed = uuidValue(raw) else {
+                return fail("bad_parent_id", "parentID must be a subassembly instance UUID string.")
+            }
+            guard let parent = updated.instance(parsed), parent.isSubassembly else {
+                return fail("unknown_subassembly", "parentID must reference an existing subassembly instance.")
+            }
+            parentID = parsed
+        }
+        let transform: CADTransform
+        switch parseTransform(args["transform"]) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let parsed): transform = parsed ?? .identity
+        }
+        let requested = (args["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseName = (requested?.isEmpty == false) ? requested! : reference.name
+        let independent = boolValue(args["independentCopy"]) ?? false
+        let instance = CADAssemblyInstance(
+            id: UUID(),
+            name: uniqueInstanceName(base: baseName, in: updated),
+            bodyID: reference.stagedBodyID,
+            transform: transform,
+            isIndependentCopy: independent,
+            sourceRevision: staged.meshRevision,
+            sourceReferenceID: referenceID)
+        if independent {
+            let copy = independentCopyTemplate(of: staged, in: document)
+            let beforeAssembly = document.session.document.assemblyData
+            var placed = instance
+            placed.copiedBodyID = copy.id.raw
+            let command = CADAssemblyStagedBodyCommand(
+                title: "Reference Copy \(reference.name)",
+                beforeAssembly: beforeAssembly,
+                beforeBody: nil,
+                bodyTemplate: copy,
+                mutate: { assembly, revision in
+                    var value = placed
+                    value.sourceRevision = revision
+                    _ = assembly.appendInstance(value, parentID: parentID)
+                })
+            document.session.perform(command)
+            guard let current = currentAssemblyValue() else {
+                return fail("encode_failed", "The assembly could not be read back after the copy was created.")
+            }
+            guard let stored = current.instance(instance.id) else {
+                return fail("placement_failed", "The independent copy was not persisted.")
+            }
+            var payload = instancePayload(stored)
+            payload["ok"] = true
+            payload["mutated"] = true
+            payload["referenceID"] = referenceID.uuidString
+            payload["path"] = current.instancePath(stored.id)?.map(\.uuidString) ?? []
+            return payload
+        }
+        guard updated.appendInstance(instance, parentID: parentID) else {
+            return fail("placement_failed", "The reference could not be placed under the requested parent.")
+        }
+        if let failure = persist(updated) { return failure }
+        var payload = instancePayload(instance)
+        payload["ok"] = true
+        payload["mutated"] = true
+        payload["referenceID"] = referenceID.uuidString
+        payload["path"] = updated.instancePath(instance.id)?.map(\.uuidString) ?? []
+        return payload
+    }
+
+    private func moveInstanceAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        var updated = assembly
+        guard let id = uuidValue(args["id"]) else {
+            return fail("bad_instance_id", "id must be an instance UUID string.")
+        }
+        guard let moving = updated.instance(id) else {
+            return fail("unknown_instance", "No assembly instance with that id.")
+        }
+        var parentID: UUID?
+        if let raw = args["parentID"] ?? args["parentInstanceID"], !(raw is NSNull) {
+            guard let parsed = uuidValue(raw) else {
+                return fail("bad_parent_id", "parentID must be a subassembly instance UUID string.")
+            }
+            guard parsed != id else {
+                return fail("cycle", "An instance cannot be placed inside itself.")
+            }
+            guard let parent = updated.instance(parsed), parent.isSubassembly else {
+                return fail("unknown_subassembly", "parentID must reference an existing subassembly instance.")
+            }
+            guard !updated.isAncestor(id, of: parsed) else {
+                return fail("cycle",
+                            "A subassembly cannot be moved inside one of its own descendants.")
+            }
+            parentID = parsed
+        }
+        let movedIDs = Set(subtreeIDs(moving))
+        if let scopeProblem = constraintScopeProblem(movingIDs: movedIDs,
+                                                     toParent: parentID,
+                                                     assembly: updated) {
+            return fail("constraint_scope", scopeProblem)
+        }
+        guard updated.moveInstance(id, toParent: parentID) else {
+            return fail("move_failed", "The instance could not be moved.")
+        }
+        if let failure = persist(updated) { return failure }
+        guard let stored = updated.instance(id) else {
+            return fail("unknown_instance", "The instance disappeared while moving it.")
+        }
+        var payload = instancePayload(stored)
+        payload["ok"] = true
+        payload["mutated"] = true
+        payload["path"] = updated.instancePath(id)?.map(\.uuidString) ?? []
+        payload["frame"] = "local"
+        return payload
+    }
+
+    private func removePartReferenceAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        var updated = assembly
+        guard let referenceID = uuidValue(args["id"]) ?? uuidValue(args["referenceID"]) else {
+            return fail("bad_reference_id", "id must be a part-reference UUID string.")
+        }
+        guard let reference = updated.partReference(referenceID) else {
+            return fail("unknown_reference", "No part reference with that id.")
+        }
+        let usage = updated.occurrences(includeHidden: true)
+            .filter { $0.instance.sourceReferenceID == referenceID }
+            .map { $0.instance.id.uuidString }
+        guard usage.isEmpty else {
+            return fail("reference_in_use",
+                        "The reference is still placed by \(usage.count) instance(s); "
+                        + "remove those placements first. Cached geometry was retained.")
+        }
+        updated.partReferences.removeAll { $0.id == referenceID }
+        if let failure = persist(updated) { return failure }
+        return [
+            "ok": true,
+            "mutated": true,
+            "removedReference": referenceID.uuidString,
+            "retainedStagedBodyID": reference.stagedBodyID.uuidString,
+        ]
+    }
+
+    /// Metadata-only explicit re-pin. Geometry replacement is deliberately
+    /// restricted to the App-owned bridge; this action can re-pin version/hash
+    /// facts for an already staged body but cannot swap in an unrelated body.
+    private func updatePartReferenceAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        var updated = assembly
+        guard let referenceID = uuidValue(args["referenceID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_reference_id", "referenceID must be a part-reference UUID string.")
+        }
+        guard let reference = updated.partReference(referenceID) else {
+            return fail("unknown_reference", "No part reference with that id.")
+        }
+        if let expected = args["expectedSourceContentHash"] as? String,
+           expected != reference.sourceContentHash {
+            return fail("stale_reference",
+                        "The reference is pinned to a different source revision.")
+        }
+        if let expected = args["expectedStagedGeometryHash"] as? String,
+           expected != reference.stagedGeometryHash {
+            return fail("stale_reference",
+                        "The staged geometry no longer matches the expected revision.")
+        }
+        if let raw = args["stagedBodyID"], !(raw is NSNull) {
+            guard let stagedID = uuidValue(raw), stagedID == reference.stagedBodyID else {
+                return fail("staged_body_mismatch",
+                            "A metadata update cannot replace the staged body; use the native reference bridge.")
+            }
+        }
+        guard let staged = body(for: reference.stagedBodyID) else {
+            return fail("missing_staged_body",
+                        "The cached staged body is missing; the reference was left unchanged.")
+        }
+        guard let sourceHash = args["sourceContentHash"] as? String,
+              !sourceHash.isEmpty else {
+            return fail("missing_source_hash",
+                        "sourceContentHash is required for an explicit reference update.")
+        }
+        let geometryHash = CADAssemblyGeometryDigest.digest(of: staged)
+        if let supplied = args["stagedGeometryHash"] as? String, supplied != geometryHash {
+            return fail("staged_body_mismatch",
+                        "The supplied staged geometry hash does not match the cached body.")
+        }
+        guard geometryHash == reference.stagedGeometryHash else {
+            return fail("staged_body_mismatch",
+                        "The cached staged geometry changed; reload the reference before re-pinning it.")
+        }
+        var candidate = reference
+        candidate.sourceContentHash = sourceHash
+        if let value = intValue(args["sourceRevision"]) { candidate.sourceRevision = value }
+        if let value = intValue(args["sourceWriterVersion"]) {
+            candidate.sourceWriterVersion = value
+        }
+        if let value = intValue(args["sourceSchemaVersion"]) {
+            candidate.sourceSchemaVersion = value
+        }
+        if let value = args["sourceDocumentName"] as? String, !value.isEmpty {
+            candidate.sourceDocumentName = value
+        }
+        if let value = args["sourceBodyName"] as? String, !value.isEmpty {
+            candidate.sourceBodyName = value
+        }
+        if boolValue(args["clearMissing"]) ?? false {
+            candidate.missingReason = nil
+        }
+        candidate.stagedGeometryHash = geometryHash
+        candidate.pinnedAt = Date()
+        candidate.availableSourceRevision = nil
+        candidate.availableSourceContentHash = nil
+        candidate.availableWriterVersion = nil
+        candidate.availableSchemaVersion = nil
+        guard candidate != reference else {
+            return ["ok": true, "mutated": false, "upToDate": true,
+                    "reference": referencePayload(reference)]
+        }
+        guard let index = updated.partReferences.firstIndex(where: { $0.id == referenceID }) else {
+            return fail("unknown_reference", "No part reference with that id.")
+        }
+        updated.partReferences[index] = candidate
+        if let failure = persist(updated) { return failure }
+        return [
+            "ok": true,
+            "mutated": true,
+            "reference": referencePayload(candidate),
+            "affectedSharedInstanceIDs": updated.occurrences(includeHidden: true)
+                .filter { $0.instance.sourceReferenceID == referenceID && !$0.instance.isIndependentCopy }
+                .map { $0.instance.id.uuidString },
+        ]
+    }
+
+    private func makeIndependentAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        guard let id = uuidValue(args["id"]) ?? uuidValue(args["instanceID"]) else {
+            return fail("bad_instance_id", "id must be an instance UUID string.")
+        }
+        guard let instance = assembly.instance(id) else {
+            return fail("unknown_instance", "No assembly instance with that id.")
+        }
+        guard !instance.isSubassembly else {
+            return fail("subassembly_copy_unsupported",
+                        "A subassembly placement is already shared; make its child parts independent instead.")
+        }
+        guard !instance.isIndependentCopy else {
+            return ["ok": true, "mutated": false, "alreadyIndependent": true,
+                    "instance": instancePayload(instance)]
+        }
+        guard let source = body(for: effectiveBodyID(instance)) else {
+            return fail("unknown_body", "The instance's source body no longer resolves.")
+        }
+        let copy = independentCopyTemplate(of: source, in: document)
+        let beforeAssembly = document.session.document.assemblyData
+        let command = CADAssemblyStagedBodyCommand(
+            title: "Make Independent \(instance.name)",
+            beforeAssembly: beforeAssembly,
+            beforeBody: nil,
+            bodyTemplate: copy,
+            mutate: { assembly, revision in
+                assembly.updateInstance(id) { target in
+                    target.copiedBodyID = copy.id.raw
+                    target.isIndependentCopy = true
+                    target.sourceRevision = revision
+                }
+            })
+        document.session.perform(command)
+        guard let current = currentAssemblyValue(), let stored = current.instance(id) else {
+            return fail("encode_failed", "The independent copy could not be read back.")
+        }
+        var payload = instancePayload(stored)
+        payload["ok"] = true
+        payload["mutated"] = true
+        payload["copiedBodyID"] = copy.id.raw.uuidString
+        return payload
+    }
+
+    // MARK: - Reference bridge commit helpers
+
+    /// Commit a newly staged external reference and its first shared
+    /// placement as ONE undoable step. Called only by
+    /// `CADAssemblyReferenceBridge` after it verified a user-authorized
+    /// source document.
+    func attachStagedReference(reference: CADPartReference,
+                               stagedBody: Body,
+                               instanceName: String?,
+                               transform: CADTransform) -> [String: Any] {
+        guard !document.isReadOnly else {
+            return fail("document_read_only", "This document is read-only; the reference was not added.")
+        }
+        let assembly: CADAssembly
+        do {
+            assembly = try CADAssembly.decode(from: document.session.document.assemblyData)
+        } catch {
+            return fail("corrupt_assembly", "The stored assembly JSON could not be read; it was left untouched.")
+        }
+        guard stagedBody.id.raw == reference.stagedBodyID else {
+            return fail("staged_body_mismatch", "The staged body identity does not match the reference pin.")
+        }
+        guard assembly.partReference(reference.id) == nil else {
+            return fail("duplicate_reference", "A part reference with that identity already exists.")
+        }
+        guard assembly.instance(reference.stagedBodyID) == nil else {
+            return fail("staged_body_mismatch", "The staged body identity collides with an instance.")
+        }
+        let baseName = instanceName
+            ?? normalizedName(reference.name)
+            ?? reference.name
+        let instance = CADAssemblyInstance(
+            id: UUID(),
+            name: uniqueInstanceName(base: baseName, in: assembly),
+            bodyID: reference.stagedBodyID,
+            transform: transform,
+            sourceRevision: nil,
+            sourceReferenceID: reference.id)
+        let beforeAssembly = document.session.document.assemblyData
+        let command = CADAssemblyStagedBodyCommand(
+            title: "Reference \(reference.name)",
+            beforeAssembly: beforeAssembly,
+            beforeBody: nil,
+            bodyTemplate: stagedBody,
+            mutate: { assembly, revision in
+                var pinned = reference
+                pinned.stagedRevision = revision
+                assembly.partReferences.append(pinned)
+                var placed = instance
+                placed.sourceRevision = revision
+                _ = assembly.appendInstance(placed, parentID: nil)
+            })
+        document.session.perform(command)
+        guard let current = currentAssemblyValue() else {
+            return fail("encode_failed", "The assembly could not be read back after adding the reference.")
+        }
+        guard let stored = current.instance(instance.id),
+              let pinned = current.partReference(reference.id) else {
+            return fail("reference_commit_failed", "The reference was not persisted.")
+        }
+        var payload = instancePayload(stored)
+        payload["ok"] = true
+        payload["mutated"] = true
+        payload["referenceID"] = reference.id.uuidString
+        payload["reference"] = referencePayload(pinned)
+        payload["path"] = current.instancePath(stored.id)?.map(\.uuidString) ?? []
+        return payload
+    }
+
+    /// Replace a staged body and re-pin its reference as ONE undoable step.
+    /// Shared instances (at any nesting depth, including several
+    /// subassemblies) keep their IDs and see the new body; independent copies
+    /// are never touched because their effective body is `copiedBodyID`.
+    func applyStagedReferenceUpdate(updatedReference: CADPartReference,
+                                    stagedBody: Body,
+                                    expectedStagedGeometryHash: String,
+                                    expectedSourceContentHash: String) -> [String: Any] {
+        guard !document.isReadOnly else {
+            return fail("document_read_only", "This document is read-only; the reference was not updated.")
+        }
+        let assembly: CADAssembly
+        do {
+            assembly = try CADAssembly.decode(from: document.session.document.assemblyData)
+        } catch {
+            return fail("corrupt_assembly", "The stored assembly JSON could not be read; it was left untouched.")
+        }
+        guard let current = assembly.partReference(updatedReference.id) else {
+            return fail("unknown_reference", "No part reference with that id.")
+        }
+        guard expectedSourceContentHash == current.sourceContentHash else {
+            return fail("stale_reference", "The source pin changed while preparing the update.")
+        }
+        guard expectedStagedGeometryHash == current.stagedGeometryHash else {
+            return fail("stale_reference", "The staged geometry changed while preparing the update.")
+        }
+        guard updatedReference.sourceDocumentID == current.sourceDocumentID,
+              updatedReference.sourceBodyID == current.sourceBodyID,
+              updatedReference.stagedBodyID == current.stagedBodyID else {
+            return fail("staged_body_mismatch",
+                        "A reference update cannot change the source/body identity; attach a new reference instead.")
+        }
+        guard stagedBody.id.raw == current.stagedBodyID,
+              let existing = body(for: current.stagedBodyID) else {
+            return fail("missing_staged_body", "The cached staged body is missing.")
+        }
+        guard CADAssemblyGeometryDigest.digest(of: existing) == current.stagedGeometryHash else {
+            return fail("stale_reference", "The cached staged geometry changed; reload the reference.")
+        }
+        let independentIDs = assembly.occurrences(includeHidden: true)
+            .filter { $0.instance.sourceReferenceID == current.id && $0.instance.isIndependentCopy }
+            .map { $0.instance.id.uuidString }
+        let beforeAssembly = document.session.document.assemblyData
+        let command = CADAssemblyStagedBodyCommand(
+            title: "Update Reference \(current.name)",
+            beforeAssembly: beforeAssembly,
+            beforeBody: existing,
+            bodyTemplate: stagedBody,
+            mutate: { assembly, revision in
+                var pinned = updatedReference
+                pinned.stagedRevision = revision
+                if let index = assembly.partReferences.firstIndex(where: { $0.id == current.id }) {
+                    assembly.partReferences[index] = pinned
+                }
+                for occurrence in assembly.occurrences(includeHidden: true) {
+                    guard occurrence.instance.sourceReferenceID == current.id,
+                          !occurrence.instance.isIndependentCopy else { continue }
+                    assembly.updateInstance(occurrence.instance.id) { target in
+                        target.sourceRevision = revision
+                        target.bodyID = pinned.stagedBodyID
+                    }
+                }
+            })
+        document.session.perform(command)
+        guard let latest = currentAssemblyValue(),
+              let pinned = latest.partReference(current.id) else {
+            return fail("encode_failed", "The reference could not be read back after the update.")
+        }
+        let sharedIDs = latest.occurrences(includeHidden: true)
+            .filter { $0.instance.sourceReferenceID == current.id && !$0.instance.isIndependentCopy }
+            .map { $0.instance.id.uuidString }
+        return [
+            "ok": true,
+            "mutated": true,
+            "referenceID": current.id.uuidString,
+            "reference": referencePayload(pinned),
+            "affectedSharedInstanceIDs": sharedIDs,
+            "untouchedIndependentCopyIDs": independentIDs,
+            "stagedBodyID": pinned.stagedBodyID.uuidString,
+        ]
+    }
+
+    // MARK: - Reference payload helpers
+
+    private func normalizedName(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func referencesPayload(_ assembly: CADAssembly) -> [[String: Any]] {
+        assembly.partReferences.map { reference in
+            var payload = referencePayload(reference)
+            let staged = body(for: reference.stagedBodyID)
+            let geometryHash = staged.map { CADAssemblyGeometryDigest.digest(of: $0) }
+            let geometryChanged = geometryHash != nil && geometryHash != reference.stagedGeometryHash
+            let shared = assembly.occurrences(includeHidden: true).filter {
+                $0.instance.sourceReferenceID == reference.id && !$0.instance.isIndependentCopy
+            }
+            let copies = assembly.occurrences(includeHidden: true).filter {
+                $0.instance.sourceReferenceID == reference.id && $0.instance.isIndependentCopy
+            }
+            var containers: [(UUID, String)] = []
+            var seenContainers = Set<UUID>()
+            for occurrence in shared {
+                for ancestorID in occurrence.path.dropLast() {
+                    guard let ancestor = assembly.instance(ancestorID),
+                          ancestor.isSubassembly,
+                          seenContainers.insert(ancestorID).inserted else { continue }
+                    containers.append((ancestorID, ancestor.name))
+                }
+            }
+            let missing = staged == nil || reference.missingReason != nil
+            let status: String
+            if missing {
+                status = "missing"
+            } else if reference.hasAvailableUpdate {
+                status = "updateAvailable"
+            } else if geometryChanged {
+                status = "stagedGeometryChanged"
+            } else {
+                status = "resolved"
+            }
+            payload["status"] = status
+            payload["missing"] = missing
+            payload["updateAvailable"] = reference.hasAvailableUpdate
+            payload["geometryChanged"] = geometryChanged
+            payload["cachedGeometryAvailable"] = staged.map { !$0.render.positions.isEmpty } ?? false
+            payload["sharedInstanceCount"] = shared.count
+            payload["independentCopyCount"] = copies.count
+            payload["sharedInstanceIDs"] = shared.map { $0.instance.id.uuidString }
+            payload["independentCopyIDs"] = copies.map { $0.instance.id.uuidString }
+            payload["subassemblies"] = containers.map { container -> [String: Any] in
+                ["id": container.0.uuidString, "name": container.1]
+            }
+            payload["instancePaths"] = shared.map { $0.path.map(\.uuidString) }
+            payload["bomIdentity"] = reference.id.uuidString
+            payload["bomBodyID"] = reference.stagedBodyID.uuidString
+            return payload
+        }
+    }
+
+    private func referencePayload(_ reference: CADPartReference) -> [String: Any] {
+        var payload: [String: Any] = [
+            "id": reference.id.uuidString,
+            "name": reference.name,
+            "kind": reference.kind.rawValue,
+            "sourceDocumentID": reference.sourceDocumentID.uuidString,
+            "sourceBodyID": reference.sourceBodyID.uuidString,
+            "sourceDocumentName": reference.sourceDocumentName,
+            "sourceBodyName": reference.sourceBodyName,
+            "sourceWriterVersion": reference.sourceWriterVersion,
+            "sourceSchemaVersion": reference.sourceSchemaVersion,
+            "sourceRevision": reference.sourceRevision,
+            "sourceContentHash": reference.sourceContentHash,
+            "stagedBodyID": reference.stagedBodyID.uuidString,
+            "stagedGeometryHash": reference.stagedGeometryHash,
+            "stagedRevision": reference.stagedRevision,
+            "pinnedAt": reference.pinnedAt.timeIntervalSince1970,
+            "updateAvailable": reference.hasAvailableUpdate,
+        ]
+        if let value = reference.availableSourceRevision { payload["availableSourceRevision"] = value }
+        if let value = reference.availableSourceContentHash { payload["availableSourceContentHash"] = value }
+        if let value = reference.availableWriterVersion { payload["availableWriterVersion"] = value }
+        if let value = reference.availableSchemaVersion { payload["availableSchemaVersion"] = value }
+        if let value = reference.lastCheckedAt { payload["lastCheckedAt"] = value.timeIntervalSince1970 }
+        if let value = reference.missingReason { payload["missingReason"] = value }
+        return payload
+    }
+
+    private func integrityPayload(_ issue: CADAssemblyIntegrityIssue) -> [String: Any] {
+        var payload: [String: Any] = ["id": issue.id.uuidString, "kind": issue.kind,
+                                      "message": issue.message]
+        if let instanceID = issue.instanceID { payload["instanceID"] = instanceID.uuidString }
+        if let referenceID = issue.referenceID { payload["referenceID"] = referenceID.uuidString }
+        return payload
+    }
+
+    private func referenceInstanceStatus(_ instance: CADAssemblyInstance,
+                                         reference: CADPartReference)
+    -> (code: String, missing: Bool, stale: Bool, reason: String?) {
+        if instance.isIndependentCopy {
+            return (code: "independentCopy", missing: false, stale: false, reason: nil)
+        }
+        guard let staged = body(for: effectiveBodyID(instance)) else {
+            return (code: "missing", missing: true, stale: true,
+                    reason: reference.missingReason ?? "The cached staged body is missing.")
+        }
+        if reference.missingReason != nil {
+            return (code: "missing", missing: true, stale: true, reason: reference.missingReason)
+        }
+        if CADAssemblyGeometryDigest.digest(of: staged) != reference.stagedGeometryHash {
+            return (code: "stagedGeometryChanged", missing: false, stale: true,
+                    reason: "The cached staged geometry no longer matches the pinned source.")
+        }
+        if reference.hasAvailableUpdate {
+            return (code: "updateAvailable", missing: false, stale: false,
+                    reason: "A newer source revision was detected; apply an explicit update.")
+        }
+        return (code: "resolved", missing: false, stale: false, reason: nil)
+    }
+
+    private func occurrenceBomIdentity(_ instance: CADAssemblyInstance) -> UUID {
+        instance.bomIdentity
+    }
+
+    private func currentAssemblyValue() -> CADAssembly? {
+        try? CADAssembly.decode(from: document.session.document.assemblyData)
+    }
+
+    private func subtreeIDs(_ instance: CADAssemblyInstance) -> [UUID] {
+        var result: [UUID] = [instance.id]
+        for child in instance.children {
+            result.append(contentsOf: subtreeIDs(child))
+        }
+        return result
+    }
+
+    private func removeConstraints(referencing ids: Set<UUID>,
+                                   in list: inout [CADAssemblyInstance],
+                                   removedIDs: inout [String]) {
+        for index in list.indices {
+            let removed = list[index].constraints.filter { constraint in
+                ids.contains(constraint.instanceA)
+                    || (constraint.instanceB.map { ids.contains($0) } ?? false)
+            }.map(\.id.uuidString)
+            if !removed.isEmpty {
+                removedIDs.append(contentsOf: removed)
+                list[index].constraints.removeAll { constraint in
+                    ids.contains(constraint.instanceA)
+                        || (constraint.instanceB.map { ids.contains($0) } ?? false)
+                }
+            }
+            removeConstraints(referencing: ids, in: &list[index].children,
+                              removedIDs: &removedIDs)
+        }
+    }
+
+    private func constraintScopeProblem(movingIDs: Set<UUID>,
+                                        toParent parentID: UUID?,
+                                        assembly: CADAssembly) -> String? {
+        if parentID != nil {
+            for constraint in assembly.constraints where
+                movingIDs.contains(constraint.instanceA)
+                || (constraint.instanceB.map { movingIDs.contains($0) } ?? false) {
+                return "A root constraint references the moved instance; remove or re-scope it first."
+            }
+        }
+        for occurrence in assembly.occurrences(includeHidden: true) {
+            let container = occurrence.instance
+            guard container.isSubassembly, !movingIDs.contains(container.id) else { continue }
+            for constraint in container.constraints where
+                movingIDs.contains(constraint.instanceA)
+                || (constraint.instanceB.map { movingIDs.contains($0) } ?? false) {
+                return "A constraint in subassembly '\(container.name)' references the moved instance; "
+                    + "remove or re-scope it first."
+            }
+        }
+        return nil
+    }
+
+    private func independentCopyTemplate(of body: Body, in document: FloeCADDocument) -> Body {
+        var copy = Body(id: BodyID(),
+                        name: document.session.document.uniqueBodyName(base: body.name + " Copy"),
+                        transform: body.transform,
+                        primitive: body.primitive,
+                        render: body.render,
+                        revision: 0)
+        copy.euclid = body.euclid
+        copy.brep = body.brep
+        copy.material = body.material
+        copy.materialFaceBindings = body.materialFaceBindings
+        copy.isHidden = body.isHidden
+        return copy
     }
 
     // MARK: - Clear
@@ -2184,7 +3345,7 @@ public final class CADAssemblyService {
     }
 
     private func uniqueInstanceName(base: String, in assembly: CADAssembly) -> String {
-        let existing = Set(assembly.instances.map(\.name))
+        let existing = Set(assembly.occurrences(includeHidden: true).map { $0.instance.name })
         if !existing.contains(base) { return base }
         var n = 2
         while existing.contains("\(base) \(n)") { n += 1 }
@@ -2208,8 +3369,22 @@ public final class CADAssemblyService {
         if let sourceRevision = instance.sourceRevision {
             payload["sourceRevision"] = sourceRevision
         }
-        let resolved = body(for: effectiveBodyID(instance))
-        payload["resolved"] = resolved != nil
+        if let sourceReferenceID = instance.sourceReferenceID {
+            payload["referenceID"] = sourceReferenceID.uuidString
+        }
+        if let subassemblyID = instance.subassemblyID {
+            payload["subassemblyID"] = subassemblyID.uuidString
+        }
+        payload["isSubassembly"] = instance.isSubassembly
+        payload["childCount"] = instance.children.count
+        payload["bomIdentity"] = instance.bomIdentity.uuidString
+        if let resolvedBodyID = instance.resolvedBodyID {
+            payload["effectiveBodyID"] = resolvedBodyID.uuidString
+        } else {
+            payload["effectiveBodyID"] = NSNull()
+        }
+        let resolved = instance.isSubassembly ? nil : body(for: effectiveBodyID(instance))
+        payload["resolved"] = instance.isSubassembly || resolved != nil
         if let resolved { payload["currentRevision"] = resolved.meshRevision }
         return payload
     }

@@ -827,21 +827,22 @@ final class EditorViewModel {
         if let data = session.document.assemblyData,
            let assembly = try? CADAssembly.decode(from: data) {
             let preview = CADExplodedViewPreview.current(for: session)
-            for instance in assembly.instances where !instance.isHidden {
-                let effectiveID = instance.copiedBodyID ?? instance.bodyID
-                guard let source = session.document.bodies.first(where: { $0.id.raw == effectiveID }) else {
+            let viewID = preview?.resolvedViewID(in: assembly)
+            for occurrence in assembly.occurrences(viewID: viewID, includeHidden: false) {
+                guard occurrence.subassemblyID == nil,
+                      let effectiveID = occurrence.effectiveBodyID,
+                      let source = session.document.bodies.first(where: { $0.id.raw == effectiveID }) else {
                     continue
                 }
-                let placement = preview?.transform(for: instance.id, in: assembly)
-                    ?? instance.transform
+                let placement = occurrence.explodedWorldTransform ?? occurrence.worldTransform
                 guard placement.isPlaceable else { continue }
                 let world = placement.placement3D().composed(onto: source.transform)
                 var state = SelectionStateNone.rawValue
-                if selectedAssemblyInstances.contains(instance.id) {
+                if occurrence.path.contains(where: { selectedAssemblyInstances.contains($0) }) {
                     state = SelectionStateSelected.rawValue
                 }
                 scene.bodies.append(BodyDrawable(
-                    id: BodyID(raw: instance.id),
+                    id: BodyID(raw: occurrence.instance.id),
                     renderMesh: source.render,
                     edges: source.edges,
                     meshRevision: source.meshRevision,
@@ -850,7 +851,7 @@ final class EditorViewModel {
                     selectionState: state,
                     material: renderMaterial(for: source),
                     faceMaterials: faceRenderGroups(for: source),
-                    assemblyInstanceID: instance.id))
+                    assemblyInstanceID: occurrence.instance.id))
             }
         }
 
@@ -16219,8 +16220,8 @@ final class EditorViewModel {
         let body = bodyID.flatMap { session.document.body(with: $0) }
         if let instanceID {
             guard let body, let assembly = try? CADAssembly.decode(from: session.document.assemblyData),
-                  assembly.instances.contains(where: { $0.id == instanceID && !$0.isHidden
-                      && ($0.copiedBodyID ?? $0.bodyID) == body.id.raw }) else { return false }
+                  let live = assembly.instance(instanceID), !live.isHidden, !live.isSubassembly,
+                  (live.copiedBodyID ?? live.bodyID) == body.id.raw else { return false }
         } else if bodyID != nil {
             guard let body, !body.isHidden,
                   faceTriangles.allSatisfy({ $0 >= 0 && $0 < body.render.triangleCount }) else { return false }

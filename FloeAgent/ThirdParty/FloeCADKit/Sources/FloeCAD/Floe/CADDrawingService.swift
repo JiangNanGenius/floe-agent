@@ -383,7 +383,8 @@ public final class CADDrawingService {
         case .failure(let error): return fail(error.code, error.message)
         case .success(let loaded): set = loaded
         }
-        guard let assembly = loadAssemblyValue(), !assembly.instances.isEmpty else {
+        guard let assembly = loadAssemblyValue(),
+              assembly.occurrences(includeHidden: true).contains(where: { $0.isDrawablePart }) else {
             return fail("empty_assembly", "Place assembly instances before creating an assembly drawing sheet.")
         }
         var bodyIDs: [UUID] = []
@@ -537,8 +538,13 @@ public final class CADDrawingService {
         }
         var groups: [(bodyID: UUID, instances: [CADAssemblyInstance])] = []
         var indexByBody: [UUID: Int] = [:]
-        for instance in assembly.instances where !instance.isHidden {
-            let bodyID = effectiveBodyID(instance)
+        // Nested subassembly leaves participate in the BOM exactly like flat
+        // instances. The staged body ID of a shared external reference is
+        // stable across an explicit source update, so the existing entry id /
+        // item number / instance ids are retained by `oldByBody` below.
+        for occurrence in assembly.occurrences(includeHidden: false) {
+            guard occurrence.isDrawablePart, let bodyID = occurrence.effectiveBodyID else { continue }
+            let instance = occurrence.instance
             guard filter.isEmpty || filter.contains(bodyID) else { continue }
             if let existing = indexByBody[bodyID] {
                 groups[existing].instances.append(instance)
@@ -1495,43 +1501,42 @@ public final class CADDrawingService {
 
         let filter = Set(page.sourceBodyIDs)
         let maxInstances = 64
-        var instances = assembly.instances.filter { !$0.isHidden }
+        var occurrences = assembly.occurrences(viewID: view?.id, includeHidden: false)
+            .filter { $0.isDrawablePart }
         if !filter.isEmpty {
-            instances = instances.filter { filter.contains($0.copiedBodyID ?? $0.bodyID) }
-            let used = Set(instances.map { $0.copiedBodyID ?? $0.bodyID })
+            occurrences = occurrences.filter { occurrence in
+                occurrence.effectiveBodyID.map(filter.contains) ?? false
+            }
+            let used = Set(occurrences.compactMap { $0.effectiveBodyID })
             let unused = filter.subtracting(used)
             if !unused.isEmpty {
                 result.notes.append("\(unused.count) source body id(s) have no visible assembly instance.")
             }
         }
-        if instances.count > maxInstances {
-            instances = Array(instances.prefix(maxInstances))
+        if occurrences.count > maxInstances {
+            occurrences = Array(occurrences.prefix(maxInstances))
             result.notes.append("Projection is bounded to \(maxInstances) assembly instances; "
                                 + "later instances were omitted.")
         }
-        if instances.isEmpty {
+        if occurrences.isEmpty {
             result.notes.append("No visible assembly instance matches this page's source bodies.")
         }
 
-        for instance in instances {
-            let sourceID = instance.copiedBodyID ?? instance.bodyID
+        for occurrence in occurrences {
+            guard let sourceID = occurrence.effectiveBodyID else { continue }
+            let instance = occurrence.instance
             guard let source = body(for: sourceID) else {
                 result.missingBodies.append(sourceID)
                 result.missingInstances.append(instance.id)
                 continue
             }
-            guard instance.transform.isPlaceable else {
+            let placement = occurrence.explodedWorldTransform ?? occurrence.worldTransform
+            guard placement.isPlaceable else {
                 result.missingInstances.append(instance.id)
                 result.notes.append("Instance \(instance.name) has a non-placeable transform and was omitted.")
                 continue
             }
-            var world = instance.transform.placement3D().composed(onto: source.transform)
-            if let view {
-                let offset = view.offset(for: instance.id)
-                if offset != .zero {
-                    world = Transform3D(translation: offset).composed(onto: world)
-                }
-            }
+            let world = placement.placement3D().composed(onto: source.transform)
             var placed = Body(id: BodyID(raw: instance.id),
                               name: instance.name,
                               transform: world,
@@ -2169,16 +2174,13 @@ public final class CADDrawingService {
     private func instanceWorldTransform(instance: CADAssemblyInstance,
                                         source: Body,
                                         page: CADDrawingPage) -> Transform3D? {
-        guard instance.transform.isPlaceable else { return nil }
-        var world = instance.transform.placement3D().composed(onto: source.transform)
-        if let id = page.explodedViewID,
-           let view = loadAssemblyValue()?.explodedView(id) {
-            let offset = view.offset(for: instance.id)
-            if offset != .zero {
-                world = Transform3D(translation: offset).composed(onto: world)
-            }
+        guard let assembly = loadAssemblyValue(),
+              let occurrence = assembly.occurrence(instance.id, viewID: page.explodedViewID) else {
+            return nil
         }
-        return world
+        let placement = occurrence.explodedWorldTransform ?? occurrence.worldTransform
+        guard placement.isPlaceable else { return nil }
+        return placement.placement3D().composed(onto: source.transform)
     }
 
     private func inverseApply(_ point: SIMD3<Double>, _ transform: Transform3D) -> SIMD3<Double>? {

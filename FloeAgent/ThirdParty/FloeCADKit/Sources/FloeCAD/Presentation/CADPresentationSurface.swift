@@ -621,7 +621,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         }
         if !state.instanceIDs.isEmpty,
            let assembly = try? CADAssembly.decode(from: document.session.document.assemblyData) {
-            let names = assembly.instances.filter { state.instanceIDs.contains($0.id) }.map(\.name)
+            let names = state.instanceIDs.compactMap { assembly.instance($0)?.name }
             handle?.markSelection(names.prefix(3).joined(separator: ", "))
         } else {
             let target = CADMaterialTargetResolver.resolve(document: document)

@@ -27,12 +27,25 @@ nonisolated enum CADDocumentFormatError: Error, LocalizedError, Equatable, Senda
 }
 
 nonisolated enum CADDocumentFormat {
-    static let supportedVersion = 3
+    static let supportedVersion = 4
     static let legacyVersion = 1
     static let associativeVersion = 2
     /// First format that can store a typed mechanical hole. Ordinary format
     /// 1/2 documents keep their existing floor; only a REAL hole raises it.
     static let holeVersion = 3
+    /// First format that can store durable external part references and the
+    /// nested subassembly instance tree. These are NON-additive for an older
+    /// writer: JSON decoding tolerates unknown keys, but a format-3 writer
+    /// would drop the hierarchy/reference semantics on its next save. A real
+    /// nested/reference document therefore raises the package manifest to 4,
+    /// which every older build opens read-only. Ordinary flat documents keep
+    /// their format-1/2/3 floor.
+    ///
+    /// Merge note for M13: if its feature also needs a non-additive floor,
+    /// add its own feature constant/check to `requiredFormat` and `assess`
+    /// below, and let `supportedVersion` be the maximum. Do not treat codable
+    /// tolerance as compatibility; do not lower this floor when merging.
+    static let nestedAssemblyVersion = 4
     static var opaqueReadOnlyMessage: String {
         FloeCADStrings.text("cad.document.readOnlyAssociation", "This document uses newer features. Update the app to edit it.")
     }
@@ -51,14 +64,31 @@ nonisolated enum CADDocumentFormat {
     }
 
     static func requiredFormat(document: DesignDocument) -> Int {
+        var required = legacyVersion
+        if assemblyRequiresNestedFormat(document.assemblyData) {
+            required = max(required, nestedAssemblyVersion)
+        }
         if document.features.nodes.contains(where: {
             if case .hole = $0.kind { return true }
             return false
         }) {
-            return holeVersion
+            required = max(required, holeVersion)
         }
-        return document.planes.contains(where: { $0.definition != nil })
-            || document.sketches.contains(where: { $0.support != nil }) ? associativeVersion : legacyVersion
+        if document.planes.contains(where: { $0.definition != nil })
+            || document.sketches.contains(where: { $0.support != nil }) {
+            required = max(required, associativeVersion)
+        }
+        return required
+    }
+
+    /// Best-effort inspection of the persisted assembly record. A malformed
+    /// record is treated as a future/non-additive document (format 4) rather
+    /// than allowing an older writer to overwrite it; the service still owns
+    /// its recoverable corrupt-assembly diagnostics.
+    static func assemblyRequiresNestedFormat(_ data: Data?) -> Bool {
+        guard let data, !data.isEmpty else { return false }
+        guard let assembly = try? CADAssembly.decode(from: data) else { return true }
+        return assembly.requiresNestedFormat
     }
 
     /// Existing save diffs preserve unreadable legacy rows, but a new
@@ -103,8 +133,12 @@ nonisolated enum CADDocumentFormat {
     /// Legacy undecodable rows with no identifiable association keep the
     /// existing unreadable-row preservation contract.
     static func assess(planes: [CADBlobRecord], sketches: [CADBlobRecord],
-                       features: [CADFeatureRecord] = []) throws -> Assessment {
+                       features: [CADFeatureRecord] = [],
+                       assembly: Data? = nil) throws -> Assessment {
         var result = Assessment()
+        if assemblyRequiresNestedFormat(assembly) {
+            result.requiredVersion = max(result.requiredVersion, nestedAssemblyVersion)
+        }
         for row in planes {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
                   let definition = object["definition"], !(definition is NSNull) else { continue }
@@ -186,7 +220,7 @@ nonisolated enum CADDocumentFormat {
 
     static func assess(_ record: CADDocumentRecord) throws -> Assessment {
         try assess(planes: record.planes, sketches: record.sketches,
-                   features: record.features)
+                   features: record.features, assembly: record.assembly)
     }
 
     static func validateWrite(_ payload: CADWritePayload, storedSchema: Int? = nil) throws {

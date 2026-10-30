@@ -132,9 +132,10 @@ enum CADPresentationSelection {
                   let body = document.session.document.body(with: BodyID(raw: pick.bodyID)),
                   body.meshRevision == pick.meshRevision else { return false }
             if let instanceID = pick.instanceID {
-                guard instanceID == drawn.id, let assembly = try? CADAssembly.decode(from: document.session.document.assemblyData),
-                      assembly.instances.contains(where: { $0.id == instanceID && !$0.isHidden
-                          && ($0.copiedBodyID ?? $0.bodyID) == pick.bodyID }) else { return false }
+                guard instanceID == drawn.id,
+                      let assembly = try? CADAssembly.decode(from: document.session.document.assemblyData),
+                      let live = assembly.instance(instanceID), !live.isHidden, !live.isSubassembly,
+                      (live.copiedBodyID ?? live.bodyID) == pick.bodyID else { return false }
             } else {
                 guard drawn.id == pick.bodyID, !body.isHidden,
                       pick.triangles.allSatisfy({ $0 >= 0 && $0 < body.render.triangleCount }) else { return false }
@@ -153,14 +154,18 @@ enum CADPresentationSelection {
               let assembly = try? CADAssembly.decode(from: document.session.document.assemblyData) else {
             return CADMaterialTargetResolver.resolve(viewModel: model)
         }
-        let instances = assembly.instances.filter { model.selectedAssemblyInstances.contains($0.id) && !$0.isHidden }
-        let sourceIDs = Set(instances.map { $0.copiedBodyID ?? $0.bodyID })
+        let allOccurrences = assembly.occurrences(includeHidden: true)
+        let instances = allOccurrences.filter { occurrence in
+            guard occurrence.isDrawablePart, occurrence.isVisible else { return false }
+            return occurrence.path.contains(where: { model.selectedAssemblyInstances.contains($0) })
+        }
+        let sourceIDs = Set(instances.compactMap { $0.effectiveBodyID })
         let bodies = document.session.document.bodies.filter { sourceIDs.contains($0.id.raw) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         let shared = instances.contains { selected in
-            let source = selected.copiedBodyID ?? selected.bodyID
-            return selected.copiedBodyID == nil
-                || assembly.instances.filter { ($0.copiedBodyID ?? $0.bodyID) == source }.count > 1
+            guard let source = selected.effectiveBodyID else { return false }
+            return selected.instance.isIndependentCopy == false
+                && allOccurrences.filter { $0.effectiveBodyID == source }.count > 1
         }
         return CADMaterialTarget(bodyIDs: bodies.map(\.id.raw), faceBodyID: nil, faceIndex: nil,
             bodyNames: bodies.map(\.name), isFaceTarget: false,

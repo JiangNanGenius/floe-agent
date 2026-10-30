@@ -139,8 +139,13 @@ final class CADAssociativeFormatTests: XCTestCase {
         let url = url()
         let document = try await FloeCADDocument.create(at: url, name: "Plain")
         documents.append(document)
-        XCTAssertEqual(Project.currentFormatVersion, 3)
-        XCTAssertEqual(FileCADDocumentStore.currentSchemaVersion, 3)
+        // The writer now advertises format 4 for non-additive nested
+        // assembly/reference semantics; this plain document still writes
+        // format 1 because its persisted content requires no newer floor.
+        XCTAssertEqual(Project.currentFormatVersion, CADDocumentFormat.supportedVersion)
+        XCTAssertEqual(FileCADDocumentStore.currentSchemaVersion, CADDocumentFormat.supportedVersion)
+        XCTAssertGreaterThanOrEqual(CADDocumentFormat.supportedVersion,
+                                    CADDocumentFormat.nestedAssemblyVersion)
         XCTAssertEqual(try CADAssociativeFormatFixture.manifest(url).schemaVersion, 1)
         document.project.name = "Metadata only"
         let metadata = await document.save()

@@ -52,6 +52,10 @@ struct OrdinaryDocumentActionProfileTests {
             #expect(role("cad.document", #"{"action":"\#(action)","path":"part.dwg"}"#) == .readOnly,
                     "cad \(action) is read-only")
         }
+        #expect(role("cad.document", #"{"action":"reference","path":"part.floecad","reference_action":"check","source_path":"parts/gear.floecad"}"#) == .readOnly)
+        #expect(role("cad.document", #"{"action":"reference","path":"part.floecad","reference_action":"inspect","source_path":"parts/gear.floecad"}"#) == .readOnly)
+        #expect(role("cad.document", #"{"action":"reference","path":"part.floecad","reference_action":"attach","source_path":"parts/gear.floecad"}"#) == nil)
+        #expect(role("cad.document", #"{"action":"reference","path":"part.floecad","reference_action":"update","reference_id":"11111111-1111-1111-1111-111111111111","source_path":"parts/gear.floecad"}"#) == nil)
         #expect(role("cad.document", #"{"action":"propose","path":"part.dwg"}"#) == .draftOnly)
         #expect(role("cad.document", #"{"action":"three_d_propose","path":"part.floecad"}"#) == .draftOnly)
         // Task-state mutation, payload-dependent mutation and every write
@@ -95,7 +99,7 @@ struct OrdinaryDocumentActionProfileTests {
         for operation in ["create", "update", "remove", "apply", "applyFaces", "mapping", "textures", "libraryImport", "undo", "redo", "unknown"] {
             #expect(try payloadRole("material", operation) == nil)
         }
-        for operation in ["report", "instances", "dof", "interference", "reference", "referenceCandidates", "explodedViews", "previewExplodedView", "resetExplodedView"] {
+        for operation in ["report", "instances", "dof", "interference", "reference", "referenceCandidates", "explodedViews", "previewExplodedView", "resetExplodedView", "hierarchy", "references", "referenceDiagnostics"] {
             #expect(try payloadRole("three_d_assembly", operation) == .readOnly)
         }
         for operation in ["pages", "project", "dimensions", "export"] {

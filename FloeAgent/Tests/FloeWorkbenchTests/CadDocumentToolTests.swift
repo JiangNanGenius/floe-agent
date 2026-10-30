@@ -77,6 +77,17 @@ actor FakeCadHost: CadDocumentHost {
         return threeDReply
     }
 
+    var referenceRequests: [String] = []
+    var referenceReply: String = #"{"ok":true,"mutated":false,"referenceID":"11111111-1111-1111-1111-111111111111"}"#
+
+    func setReferenceReply(_ reply: String) { referenceReply = reply }
+
+    func reference(documentID: String, requestJSON: String,
+                   access: CadDocumentAccess) async throws -> String {
+        referenceRequests.append(requestJSON)
+        return referenceReply
+    }
+
     func capabilities(access: CadDocumentAccess) async throws -> String {
         #"{"version":2,"operations":["addLine","trim"]}"#
     }
@@ -2199,5 +2210,63 @@ struct CadOriginalSceneObservationTests {
         #expect(output.artifacts.isEmpty)
         #expect(output.summary.contains("\"nodeOffset\":200"))
         #expect(output.summary.contains(source))
+    }
+}
+
+// MARK: - App-owned native part reference action
+
+@Suite("cad.document native reference action")
+struct CadDocumentReferenceActionTests {
+    func makeContext() -> ToolContext {
+        ToolContext(runID: UUID(), toolCallID: "call-reference-1", scope: .local,
+                    workspaceRootURL: URL(fileURLWithPath: "/tmp/workspace"),
+                    cancellation: CancellationToken(), environmentID: "env-1",
+                    conversationID: UUID())
+    }
+
+    func decode(_ json: String) throws -> CadDocumentArguments {
+        try JSONDecoder().decode(CadDocumentArguments.self, from: Data(json.utf8))
+    }
+
+    func execute(_ tool: CadDocumentTool, _ json: String) async throws -> ToolExecutionOutput {
+        let args = try decode(json)
+        try tool.validate(args)
+        return try await tool.execute(args, context: makeContext())
+    }
+
+    @Test("native reference requires a .floecad workspace source and routes the four actions to the host")
+    func nativeReferenceRoutesThroughGuardedHost() async throws {
+        let host = FakeCadHost()
+        await host.setReferenceReply(#"{"ok":true,"mutated":false,"referenceID":"11111111-1111-1111-1111-111111111111","source_path":"parts/gear.floecad"}"#)
+        let tool = CadDocumentTool(host: host)
+
+        let output = try await execute(tool, #"{"action":"reference","path":"target.floecad","reference_action":"attach","source_path":"parts/gear.floecad"}"#)
+        #expect(output.summary.contains("\"ok\":true"))
+        var requests = await host.referenceRequests
+        #expect(requests.count == 1)
+        let attach = try #require(JSONSerialization.jsonObject(with: Data(requests[0].utf8)) as? [String: Any])
+        #expect(attach["kind"] as? String == "reference")
+        let attachPayload = try #require(attach["payload"] as? [String: Any])
+        #expect(attachPayload["action"] as? String == "attach")
+        #expect(attachPayload["path"] as? String == "parts/gear.floecad")
+
+        _ = try await execute(tool, #"{"action":"reference","path":"target.floecad","reference_action":"check","source_path":"parts/gear.floecad","reference_id":"22222222-2222-2222-2222-222222222222"}"#)
+        requests = await host.referenceRequests
+        let check = try #require(JSONSerialization.jsonObject(with: Data(requests.last!.utf8)) as? [String: Any])
+        let checkPayload = try #require(check["payload"] as? [String: Any])
+        #expect(checkPayload["action"] as? String == "check")
+        #expect(checkPayload["reference_id"] as? String == "22222222-2222-2222-2222-222222222222")
+
+        // A model path is only a path request: a non-native source is refused
+        // before the host, and update requires the durable reference id plus a
+        // real 64-hex CAS value.
+        do {
+            try tool.validate(try decode(#"{"action":"reference","path":"target.floecad","reference_action":"attach","source_path":"parts/gear.step"}"#))
+            Issue.record("a STEP source must not be accepted as an E01 native reference")
+        } catch is FloeError {}
+        do {
+            try tool.validate(try decode(#"{"action":"reference","path":"target.floecad","reference_action":"update","source_path":"parts/gear.floecad","reference_id":"22222222-2222-2222-2222-222222222222","expected_source_sha256":"deadbeef"}"#))
+            Issue.record("update requires reference_id and a 64-hex CAS hash")
+        } catch is FloeError {}
     }
 }

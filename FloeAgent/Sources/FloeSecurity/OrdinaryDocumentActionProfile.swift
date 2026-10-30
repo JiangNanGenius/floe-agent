@@ -105,6 +105,14 @@ public enum OrdinaryDocumentActionProfile {
             return mediaProjectActions[actionValue("action", in: arguments) ?? ""]
         case "cad.document":
             let action = actionValue("action", in: arguments) ?? ""
+            if action == "reference" {
+                let operation = actionValue("reference_action", in: arguments)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+                // Source inspection/check are pure reads. attach/update are
+                // ordinary authorized CAD edits (owner/task/workspace guard
+                // still applies); they stay on the write policy path.
+                return ["inspect", "check"].contains(operation) ? .readOnly : nil
+            }
             if action == "material" || action == "parameters" || action == "animation" {
                 guard let payload = cadPayload(in: arguments),
                       let operation = payload["action"] as? String else { return nil }
@@ -133,7 +141,8 @@ public enum OrdinaryDocumentActionProfile {
                 let operation = String(parts.last ?? "")
                 let reads: Set<String> = action == "three_d_assembly"
                     ? ["report", "instances", "dof", "interference", "reference", "referenceCandidates",
-                       "explodedViews", "previewExplodedView", "resetExplodedView"]
+                       "explodedViews", "previewExplodedView", "resetExplodedView",
+                       "hierarchy", "references", "referenceDiagnostics"]
                     : ["pages", "project", "dimensions", "export"]
                 // Preview/reset affect only display state, not the stored CAD
                 // model. Persistent service changes still use propose/apply.

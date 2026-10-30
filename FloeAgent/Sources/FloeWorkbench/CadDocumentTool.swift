@@ -425,6 +425,13 @@ public protocol CadDocumentHost: Sendable {
     /// `grant_id` bound to the proposal and base revision/SHA.
     func threeDAction(documentID: String, requestJSON: String,
                       access: CadDocumentAccess) async throws -> String
+    /// App-owned external native part reference loop. The host resolves
+    /// `source_path` through the SAME task-workspace/asset guard used by
+    /// import; a model path is never treated as a grant. `check`/`inspect`
+    /// are read-only; `attach`/`update` commit through one undoable reference
+    /// command plus the normal CAS save. No per-edit UI grant is created.
+    func reference(documentID: String, requestJSON: String,
+                   access: CadDocumentAccess) async throws -> String
     /// Applies an already-authorized NATIVE `.floecad` proposal through the
     /// RUNTIME-APPROVED CALL path (no interactive UI grant). The caller
     /// consumed the single-use runtime authority for this exact `cad.document`
@@ -482,6 +489,10 @@ public extension CadDocumentHost {
     func threeDAction(documentID: String, requestJSON: String,
                       access: CadDocumentAccess) async throws -> String {
         throw FloeError.notFound("native_cad_kernel")
+    }
+    func reference(documentID: String, requestJSON: String,
+                   access: CadDocumentAccess) async throws -> String {
+        throw FloeError.notFound("native_cad_reference")
     }
     func createNativePackage(relativePath: String, name: String,
                              access: CadDocumentAccess) async throws -> CadNativePackageReceipt {
@@ -644,6 +655,10 @@ public enum CadDocumentAction: String, Decodable, Sendable, CaseIterable {
     /// never consulted.
     case material, parameters, capture, animation
     case observe
+    /// App-owned external native part reference (attach/check/update/inspect)
+    /// for an already-authorized workspace `.floecad` source. Direct ordinary
+    /// CAD edit; source access is resolved by the host, never by a model path.
+    case reference
     /// Durable native-task status and cancellation (long rebuild/export/mesh
     /// jobs). `status` lists or reports one task; `cancel` requires task_id.
     case status, cancel
@@ -692,9 +707,19 @@ public struct CadDocumentArguments: Decodable, Sendable {
     public var payload: String?
     /// Durable native task id (status/cancel).
     public var taskID: String?
-    /// `import`: workspace-relative path of the source STEP/STP/IGES/IGS/
-    /// STL/OBJ/GLB/glTF file added to the existing native package.
+    /// `import`/`reference`: workspace-relative path of the source file.
+    /// For `reference` this must be a native `.floecad` package; the host
+    /// resolves it through the task workspace guard, never as a raw grant.
     public var sourcePath: String?
+    /// `reference`: attach | check | update | inspect. Required.
+    public var referenceAction: String?
+    /// `reference`: durable reference id for check/update.
+    public var referenceID: String?
+    /// `reference`: optional CAS values serialized from a prior reply/query.
+    public var expectedSourceSHA256: String?
+    public var expectedStagedSHA256: String?
+    /// `reference`: stable source body UUID for a multi-body source document.
+    public var sourceBodyID: String?
     /// `import`: explicit source format; defaults to the source path
     /// extension. One of step/stp/iges/igs/stl/obj/glb/gltf.
     public var format: String?
@@ -721,6 +746,11 @@ public struct CadDocumentArguments: Decodable, Sendable {
         case taskID = "task_id"
         case entityType = "entity_type"
         case sourcePath = "source_path"
+        case referenceAction = "reference_action"
+        case referenceID = "reference_id"
+        case expectedSourceSHA256 = "expected_source_sha256"
+        case expectedStagedSHA256 = "expected_staged_sha256"
+        case sourceBodyID = "source_body_id"
         case format = "format"
         case unitScale = "unit_scale"
         case name = "name"
@@ -760,6 +790,11 @@ public struct CadDocumentArguments: Decodable, Sendable {
         payload = try container.decodeIfPresent(String.self, forKey: .payload)
         taskID = try container.decodeIfPresent(String.self, forKey: .taskID)
         sourcePath = try container.decodeIfPresent(String.self, forKey: .sourcePath)
+        referenceAction = try container.decodeIfPresent(String.self, forKey: .referenceAction)
+        referenceID = try container.decodeIfPresent(String.self, forKey: .referenceID)
+        expectedSourceSHA256 = try container.decodeIfPresent(String.self, forKey: .expectedSourceSHA256)
+        expectedStagedSHA256 = try container.decodeIfPresent(String.self, forKey: .expectedStagedSHA256)
+        sourceBodyID = try container.decodeIfPresent(String.self, forKey: .sourceBodyID)
         format = try container.decodeIfPresent(String.self, forKey: .format)
         unitScale = try container.decodeIfPresent(Double.self, forKey: .unitScale)
         name = try container.decodeIfPresent(String.self, forKey: .name)
@@ -798,7 +833,12 @@ public struct CadDocumentTool: AgentTool {
     STEP/STP, IGES/IGS, STL, OBJ, GLB or glTF file: it drafts a proposal on a \
     throwaway copy and returns a preview. STEP gives exact editable solids; \
     IGES solids are exact while shells/faces stay render-only; STL/OBJ/GLB \
-    are render meshes with no parametric history. Propose binds an exact \
+    are render meshes with no parametric history. Use action "reference" to \
+    attach/check/update/inspect an external native `.floecad` part from the \
+    authorized task workspace: source_path is a path request resolved by the \
+    host guard (never a model grant); attach/update are ordinary committed CAD \
+    edits with source/staged hash CAS, while inspect/check are read-only. \
+    Propose binds an exact \
     document revision and SHA-256 and returns a preview without writing. \
     Apply commits ONE atomic undoable transaction for the exact proposal the \
     approved call names: a `grant_id` selects the human-reviewed CAD UI path, \
@@ -870,10 +910,15 @@ public struct CadDocumentTool: AgentTool {
       "additionalProperties": false,
       "required": ["action"],
       "properties": {
-        "action": { "type": "string", "enum": ["capabilities", "create", "read", "query", "locate", "measure", "check", "propose", "import", "preview", "apply", "save", "export", "status", "cancel", "material", "parameters", "capture", "observe", "animation", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
+        "action": { "type": "string", "enum": ["capabilities", "create", "read", "query", "locate", "measure", "check", "propose", "import", "reference", "preview", "apply", "save", "export", "status", "cancel", "material", "parameters", "capture", "observe", "animation", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
         "path": { "type": "string", "description": "Document path relative to the task workspace (an allowed absolute workspace path is accepted too). Required for every action except capabilities without a path. observe reads an original GLB/glTF scene without conversion; A .floecad extension routes to the native 3D kernel; .dwg/.dxf route to the 2D engine. For 'create' it is the new package location inside the task workspace (a missing parent directory is created inside the guarded workspace; a path outside it is refused; the file need not exist); for 'import' it is the EXISTING .floecad package that receives the geometry. Never write a .floecad directory, manifest.json or zip yourself: use create." },
         "name": { "type": "string", "maxLength": 120, "description": "create: human-readable display name stored in the new native document. Letters and digits of ANY language (Chinese, Japanese, Cyrillic, ...), spaces and -_(). are accepted; it must not contain '/', '\\\\', control/invisible characters or a '..' path segment and must be at most 120 characters, otherwise the call is refused with a bilingual explanation. When omitted the display name defaults to the file stem. The FILE keeps the stem of 'path' and is uniquified, so the display name and the file name stay separate. import: optional name for the imported body(ies)." },
-        "source_path": { "type": "string", "description": "import only: workspace-relative path of the source file to add to the existing .floecad package. Supported extensions: .step/.stp (exact solids), .iges/.igs (solids + render-only surfaces), .stl/.obj/.glb/.gltf (meshes). The file is read through the workspace guard (symlink-safe, size-bounded) and is never modified. DWG/DXF go through the 2D engine instead." },
+        "source_path": { "type": "string", "description": "import/reference: workspace-relative path resolved by the host through the task workspace guard. import supports .step/.stp, .iges/.igs, .stl/.obj/.glb/.gltf. reference requires an existing native .floecad package; the source is opened only by the App-owned bridge and is never granted by this string alone. DWG/DXF go through the 2D engine instead." },
+        "reference_action": { "type": "string", "enum": ["attach", "check", "update", "inspect"], "description": "reference only: attach stages a new external native part and creates its first shared occurrence; check diagnoses source/version/hash state without mutation; update explicitly re-stages the SAME source body with source/staged hash CAS; inspect lists the source document's bodies so a multi-body source can be chosen with source_body_id." },
+        "reference_id": { "type": "string", "format": "uuid", "description": "reference check/update: durable reference id from an attach reply or assembly references query." },
+        "expected_source_sha256": { "type": "string", "description": "reference update CAS: the currently pinned source content SHA-256 (from references query)." },
+        "expected_staged_sha256": { "type": "string", "description": "reference update CAS: the currently pinned staged geometry SHA-256." },
+        "source_body_id": { "type": "string", "format": "uuid", "description": "reference attach: stable source body UUID for a multi-body source; inspect returns the body ids. Omitted only when the source has exactly one body." },
         "format": { "type": "string", "enum": ["step", "stp", "iges", "igs", "stl", "obj", "glb", "gltf"], "description": "import only: explicit source format; defaults to the source_path extension. A JSON .gltf imports only when its buffers/images are embedded data URIs; external .bin/texture references are reported unsupported by the tool. A self-contained .glb always works." },
         "unit_scale": { "type": "number", "exclusiveMinimum": 0, "description": "import only: optional millimetres-per-file-unit scale for unitless meshes (STL/OBJ). Ignored for STEP/IGES and declared-unit glTF." },
         "summary": { "type": "string", "maxLength": 2000, "description": "Concise summary of the proposed document change (propose/import)." },
@@ -1082,6 +1127,51 @@ public struct CadDocumentTool: AgentTool {
             }
             if let scale = args.unitScale, !(scale.isFinite && scale > 0) {
                 throw FloeError.validationFailed("unit_scale must be a positive finite number")
+            }
+        case .reference:
+            guard native else {
+                throw FloeError.validationFailed(
+                    "reference targets a native .floecad document; DWG/DXF are not reference targets")
+            }
+            guard let rawAction = args.referenceAction?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  ["attach", "check", "update", "inspect"].contains(rawAction.lowercased()) else {
+                throw FloeError.validationFailed(
+                    "reference requires reference_action attach|check|update|inspect")
+            }
+            guard let source = args.sourcePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !source.isEmpty, source.count <= 1024, !source.contains("\0") else {
+                throw FloeError.validationFailed(
+                    "reference requires source_path (a workspace .floecad package)")
+            }
+            guard (source as NSString).pathExtension.lowercased() == "floecad" else {
+                throw FloeError.validationFailed(
+                    "reference accepts a native .floecad source package, not another CAD format")
+            }
+            let action = rawAction.lowercased()
+            if action == "check" || action == "update" {
+                guard let raw = args.referenceID,
+                      UUID(uuidString: raw) != nil else {
+                    throw FloeError.validationFailed(
+                        "reference \(action) requires reference_id (a UUID from attach/references)")
+                }
+            }
+            if let raw = args.sourceBodyID, !raw.isEmpty, UUID(uuidString: raw) == nil {
+                throw FloeError.validationFailed("source_body_id must be a UUID")
+            }
+            for (label, value) in [("expected_source_sha256", args.expectedSourceSHA256),
+                                   ("expected_staged_sha256", args.expectedStagedSHA256)] {
+                guard let value, !value.isEmpty else { continue }
+                let hex = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit }) else {
+                    throw FloeError.validationFailed("\(label) must be a 64-character SHA-256 hex string")
+                }
+            }
+            if let name = args.name {
+                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, trimmed.count <= 120, !trimmed.contains("\0") else {
+                    throw FloeError.validationFailed(
+                        "reference name must be 1...120 characters with no NUL")
+                }
             }
         case .read, .save, .export:
             if let raw = args.pageID {
@@ -1655,6 +1745,17 @@ public struct CadDocumentTool: AgentTool {
         if let payload = args.payload { object["payload"] = payload }
         if let taskID = args.taskID { object["task_id"] = taskID }
         if let sourcePath = args.sourcePath { object["source_path"] = sourcePath }
+        if let referenceAction = args.referenceAction {
+            object["reference_action"] = referenceAction
+        }
+        if let referenceID = args.referenceID { object["reference_id"] = referenceID }
+        if let expected = args.expectedSourceSHA256 {
+            object["expected_source_sha256"] = expected
+        }
+        if let expected = args.expectedStagedSHA256 {
+            object["expected_staged_sha256"] = expected
+        }
+        if let body = args.sourceBodyID { object["source_body_id"] = body }
         if let format = args.format { object["format"] = format }
         if let unitScale = args.unitScale { object["unit_scale"] = unitScale }
         if let name = args.name { object["name"] = name }
@@ -1983,6 +2084,34 @@ public struct CadDocumentTool: AgentTool {
             let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                     access: access)
             return completeOutput("cad.document import proposal: \(reply)", 24_000)
+
+        case .reference:
+            // The SOURCE path is resolved by the host through the same task
+            // workspace guard as import; the model supplies a path request,
+            // not a grant. attach/update are ordinary authorized CAD edits
+            // committed with CAS; check/inspect are read-only.
+            let source = args.sourcePath!.trimmingCharacters(in: .whitespacesAndNewlines)
+            let action = args.referenceAction!
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            var payload: [String: Any] = ["action": action, "path": source]
+            if let id = args.referenceID { payload["reference_id"] = id }
+            if let expected = args.expectedSourceSHA256 {
+                payload["expected_source_sha256"] = expected.lowercased()
+            }
+            if let expected = args.expectedStagedSHA256 {
+                payload["expected_staged_sha256"] = expected.lowercased()
+            }
+            if let body = args.sourceBodyID, !body.isEmpty {
+                payload["source_body_id"] = body
+            }
+            if let name = args.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !name.isEmpty {
+                payload["name"] = name
+            }
+            let request = try jsonString(["kind": "reference", "payload": payload])
+            let reply = try await host.reference(documentID: args.path!, requestJSON: request,
+                                                 access: access)
+            return completeOutput("cad.document reference: \(reply)", 24_000)
 
         case .read:
             if native {

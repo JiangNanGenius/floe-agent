@@ -776,6 +776,159 @@ actor CadDocumentCenter: CadDocumentHost {
     /// proposal. Nothing changes until the user confirms in the CAD UI and a
     /// later apply carries that single-use grant. The source file itself is
     /// never modified.
+    /// App-owned external native part reference loop for `cad.document
+    /// action=reference`. The source is resolved through the SAME guarded task
+    /// workspace as import; a model-supplied path is a path request, never a
+    /// grant. Only a native `.floecad` package is accepted. Read-only
+    /// check/inspect never saves; attach/update commit one undoable bridge
+    /// command and the normal CAS save. A failed save is rolled back with the
+    /// same single undo, so memory and disk never disagree.
+    func reference(documentID: String, requestJSON: String,
+                   access: CadDocumentAccess) async throws -> String {
+        let resolved = try await resolveNativeAware(documentID: documentID, access: access)
+        let targetURL = try resolved.service.guardResolver.resolve(resolved.id)
+        guard targetURL.pathExtension.lowercased() == "floecad" else {
+            throw FloeError.validationFailed("reference targets a native .floecad package")
+        }
+        guard let data = requestJSON.data(using: .utf8),
+              let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let payload = request["payload"] as? [String: Any] else {
+            throw FloeError.validationFailed("reference requires a payload object")
+        }
+        guard let rawAction = payload["action"] as? String else {
+            throw FloeError.validationFailed(
+                "reference requires action attach|check|update|inspect")
+        }
+        let action = rawAction.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["attach", "check", "update", "inspect"].contains(action) else {
+            throw FloeError.validationFailed(
+                "reference action must be attach|check|update|inspect")
+        }
+        guard let input = payload["path"] as? String,
+              !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FloeError.validationFailed(
+                "reference requires source_path (a workspace .floecad package)")
+        }
+        var sourceRelative = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sourceRelative.hasPrefix("/") {
+            let rootPrefix = resolved.root.path + "/"
+            guard sourceRelative.hasPrefix(rootPrefix) else {
+                throw FloeError.validationFailed(
+                    "The reference source must be inside the task workspace.")
+            }
+            sourceRelative = String(sourceRelative.dropFirst(rootPrefix.count))
+        }
+        guard (sourceRelative as NSString).pathExtension.lowercased() == "floecad" else {
+            throw FloeError.validationFailed(
+                "reference accepts a native .floecad source package, not another CAD format.")
+        }
+        let sourceURL = try resolved.service.guardResolver.resolve(sourceRelative)
+        let packageCanonical = Self.canonicalDocumentPath(targetURL)
+        let sourceCanonical = Self.canonicalDocumentPath(sourceURL)
+        guard sourceCanonical != packageCanonical else {
+            throw FloeError.validationFailed(
+                "A document cannot reference itself. Choose a different source package.")
+        }
+        // A missing/unreadable source is NOT rejected here: `check` must be
+        // able to return its diagnosis while cached display geometry, mates
+        // and BOM rows stay intact. The bridge verifies the package identity
+        // and returns structured source_missing/source_unreadable for
+        // attach/update; all paths still passed the workspace guard above.
+        let referenceID: UUID?
+        if action == "check" || action == "update" {
+            guard let raw = payload["reference_id"] as? String,
+                  let parsed = UUID(uuidString: raw) else {
+                throw FloeError.validationFailed("reference check/update requires reference_id")
+            }
+            referenceID = parsed
+        } else {
+            referenceID = nil
+        }
+        let sourceBodyID: UUID?
+        if let raw = payload["source_body_id"] as? String, !raw.isEmpty {
+            guard let parsed = UUID(uuidString: raw) else {
+                throw FloeError.validationFailed("source_body_id must be a UUID")
+            }
+            sourceBodyID = parsed
+        } else {
+            sourceBodyID = nil
+        }
+        let name = (payload["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = await Self.performReferenceAction(
+            targetURL: targetURL, sourceURL: sourceURL, sourceRelative: sourceRelative,
+            action: action, referenceID: referenceID,
+            expectedSourceSHA256: payload["expected_source_sha256"] as? String,
+            expectedStagedSHA256: payload["expected_staged_sha256"] as? String,
+            sourceBodyID: sourceBodyID,
+            name: (name?.isEmpty == false) ? name : nil)
+        return Self.encodeNativeJSON(result)
+    }
+
+    @MainActor
+    private static func performReferenceAction(
+        targetURL: URL, sourceURL: URL, sourceRelative: String,
+        action: String, referenceID: UUID?,
+        expectedSourceSHA256: String?, expectedStagedSHA256: String?,
+        sourceBodyID: UUID?, name: String?) async -> [String: Any] {
+        let document: FloeCADDocument
+        do {
+            document = try await FloeCAD3DBridge.shared.openDocument(at: targetURL)
+        } catch {
+            return ["ok": false, "mutated": false, "error": "document_unavailable",
+                    "message": "The target CAD document could not be opened: \(error.localizedDescription)"]
+        }
+        let bridge = CADAssemblyReferenceBridge()
+        let reply: [String: Any]
+        switch action {
+        case "inspect":
+            reply = await bridge.inspectSource(at: sourceURL)
+        case "check":
+            guard let referenceID else {
+                return ["ok": false, "mutated": false, "error": "missing_reference_id",
+                        "message": "check requires reference_id"]
+            }
+            reply = await bridge.check(referenceID: referenceID, sourceURL: sourceURL,
+                                       in: document)
+        case "attach":
+            reply = await bridge.attach(sourceURL: sourceURL, to: document,
+                                        name: name, sourceBodyID: sourceBodyID,
+                                        expectedSourceContentHash: expectedSourceSHA256)
+        case "update":
+            guard let referenceID else {
+                return ["ok": false, "mutated": false, "error": "missing_reference_id",
+                        "message": "update requires reference_id"]
+            }
+            reply = await bridge.update(
+                referenceID: referenceID, sourceURL: sourceURL, in: document,
+                expectedSourceContentHash: expectedSourceSHA256,
+                expectedStagedGeometryHash: expectedStagedSHA256)
+        default:
+            return ["ok": false, "mutated": false, "error": "unknown_reference_action",
+                    "message": "reference action must be attach|check|update|inspect"]
+        }
+        var enriched = reply
+        enriched["source_path"] = sourceRelative
+        guard action == "attach" || action == "update",
+              (reply["ok"] as? Bool) == true else {
+            return enriched
+        }
+        let save = await document.save()
+        if !save.succeeded {
+            // The bridge mutation is one undo step. A refused CAS/IO commit
+            // must not leave an in-memory reference that never reached disk.
+            document.revertLastUncommittedCommand()
+            enriched["ok"] = false
+            enriched["mutated"] = false
+            enriched["error"] = "reference_commit_failed"
+            enriched["message"] = "The reference was not committed: \(save.error ?? "save failed")"
+            return enriched
+        }
+        enriched["revision"] = save.revision
+        enriched["content_sha256"] = save.contentSHA256
+        enriched["committed"] = true
+        return enriched
+    }
+
     private func nativeImportProposal(resolved: Resolved, documentURL: URL,
                                       request: [String: Any], access: CadDocumentAccess,
                                       canonicalTarget: String) async throws -> String {

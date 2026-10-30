@@ -203,6 +203,16 @@ public final class FloeCADDocument {
         markClosed()
     }
 
+    /// Revert the most recent in-memory document command after a failed host
+    /// commit. This is the narrow recovery seam for mutations (for example an
+    /// App-owned part-reference attach/update) that were authored as ONE
+    /// undoable command and then could not be saved by CAS/IO. Normal
+    /// UI/AI undo/redo continues to use the existing view-model/service stack;
+    /// this method does not touch the saved package.
+    public func revertLastUncommittedCommand() {
+        session.undo()
+    }
+
     /// True once this document was released (`close()`/`markClosed()`).
     /// A released document must never be written again: the editor's
     /// asynchronous close flush can still fire after a successful Cancel
