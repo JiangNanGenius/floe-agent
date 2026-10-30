@@ -137,18 +137,52 @@ class TerminalImeProxy(
 
     val view: View get() = editText
 
-    fun showKeyboard() {
-        editText.isFocusableInTouchMode = true
-        editText.requestFocus()
+    /** Whether THIS proxy currently owns a keyboard-show request. A later
+     * hide/dispose clears it, so a stale posted request cannot steal focus. */
+    private var keyboardRequested = false
+
+    private val focusRunnable = Runnable {
+        if (!keyboardRequested) return@Runnable
+        if (!editText.isAttachedToWindow) return@Runnable
+        // The first request can run before the Compose AndroidView is
+        // attached/focusable (the terminal pane is opened while the composer
+        // still owns the IME). Re-assert focus after attachment instead of
+        // assuming the synchronous requestFocus() worked.
+        if (!editText.isFocused) editText.requestFocus()
+        if (!editText.isFocused) return@Runnable
         val manager = editText.context.getSystemService(Context.INPUT_METHOD_SERVICE)
             as? InputMethodManager
         manager?.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
     }
 
+    fun showKeyboard() {
+        keyboardRequested = true
+        editText.isFocusable = true
+        editText.isFocusableInTouchMode = true
+        setShowSoftInputOnFocus(true)
+        editText.requestFocus()
+        editText.removeCallbacks(focusRunnable)
+        editText.post(focusRunnable)
+    }
+
     fun hideKeyboard() {
+        keyboardRequested = false
+        editText.removeCallbacks(focusRunnable)
         val manager = editText.context.getSystemService(Context.INPUT_METHOD_SERVICE)
             as? InputMethodManager
         manager?.hideSoftInputFromWindow(editText.windowToken, 0)
+    }
+
+    /** Pane/engine teardown fence: a focus request posted by this proxy must
+     * never run against a later tab, conversation or detached AndroidView. */
+    fun dispose() {
+        keyboardRequested = false
+        editText.removeCallbacks(focusRunnable)
+    }
+
+    private fun setShowSoftInputOnFocus(enabled: Boolean) {
+        // TextView exposes this as a setter-only method (no Kotlin property).
+        editText.setShowSoftInputOnFocus(enabled)
     }
 
     /** keyCode whose hardware DOWN the terminal actually owned (0 = none),

@@ -113,6 +113,13 @@ fun G04TerminalView(
     }
     val renderer = remember(textSizePx) { TerminalRenderer(textSizePx, Typeface.MONOSPACE) }
 
+    // The pane auto-opens the keyboard ONCE when it first becomes visible.
+    // Hiding the IME with Back does not set keyboardVisible=false, so a plain
+    // effect on (keyboardVisible, engine) used to re-show the IME on every tab
+    // selection / engine change and steal focus from a newly selected tab or
+    // the composer. The explicit tap on the PTY surface is the retry path.
+    var keyboardAutoRequested by remember { mutableStateOf(false) }
+
     val imeProxy = remember(engine, transport) {
         TerminalImeProxy(context, object : TerminalImeProxy.TerminalImeSink {
             override fun commitText(text: String) {
@@ -156,6 +163,13 @@ fun G04TerminalView(
         onDispose { engine.ui = previous }
     }
 
+    // A pending focus/show posted by THIS proxy must not run after the pane
+    // (or its AndroidView) has been disposed. Removing the callback here also
+    // fences a late IME request when the user switches tab or conversation.
+    DisposableEffect(imeProxy) {
+        onDispose { imeProxy.dispose() }
+    }
+
     // Cursor blink pacing (upstream shouldCursorBeVisible semantics).
     LaunchedEffect(engine) {
         engine.setCursorBlinkingEnabled(true)
@@ -184,9 +198,18 @@ fun G04TerminalView(
         revision += 1
     }
 
-    // Soft keyboard follow the pane's toggle.
-    LaunchedEffect(settings.keyboardVisible, engine) {
-        if (settings.keyboardVisible) imeProxy.showKeyboard() else imeProxy.hideKeyboard()
+    // Soft keyboard follows the pane's toggle. The first visible terminal
+    // requests it exactly once; a later tab/engine does not re-request it.
+    // Turning the setting off cancels any pending request and re-arms the
+    // next explicit on.
+    LaunchedEffect(settings.keyboardVisible) {
+        if (!settings.keyboardVisible) {
+            keyboardAutoRequested = false
+            imeProxy.hideKeyboard()
+        } else if (!keyboardAutoRequested) {
+            keyboardAutoRequested = true
+            imeProxy.showKeyboard()
+        }
     }
 
     val cellWidth = renderer.fontWidth
