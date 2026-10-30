@@ -2,7 +2,7 @@
   <img src="docs/images/floe-agent-icon.png" width="88" alt="Floe Agent 应用图标">
   <h1>Floe Agent</h1>
   <p><strong>你的模型，你的文件，你的电脑。</strong></p>
-  <p>Floe Agent 是面向 iOS 和 Android 的开源设备端 AI 智能体工作空间，以 iPad 体验为先，同时原生支持 iPhone。把 AI 任务、手记、Office 文档、创作、开发、语音对话与技能放进同一处——设备端 Linux 环境可直接运行代码、软件包与网页服务，支持的本地模型可在设备端完成推理，云端 AI 使用你自己准备的 API Key（BYOK）。</p>
+  <p>Floe Agent 是以 iPad 为先、为 iOS / iPadOS 深度优化的开源 AI 智能体工作空间，原生支持 iPhone，并提供独立 Android Alpha 版本。把 AI 任务、手记、Office 文档、创作、开发、语音对话与技能放进同一处——设备端 Linux 环境可直接运行代码、软件包与网页服务，支持的本地模型可在设备端完成推理，云端 AI 使用你自己准备的 API Key（BYOK）。</p>
   <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/">官网</a> · <a href="docs/USER_GUIDE.zh-CN.md">使用手册</a> · <a href="docs/README.md">文档中心</a></p>
 </div>
 
@@ -15,7 +15,7 @@
 
 ## 开始使用
 
-从[官网](https://www.floe-agent.com/#download)选择安装方式；各渠道的版本、地区和资格分别以[当前状态](docs/CURRENT_STATUS.md)及安装页面为准。
+从[官网](https://www.floe-agent.com/#download)选择安装方式；各渠道的版本、地区和资格分别以[当前状态](docs/CURRENT_STATUS.md)及安装页面为准。也可查看 [iOS AI Agent 与 iPad 工作空间介绍](https://www.floe-agent.com/ios-ai-agent)。
 
 <p align="center">
   <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/badge-add-to-feather.png" alt="添加到 Feather" height="52"></a>

@@ -2,7 +2,7 @@
   <img src="docs/images/floe-agent-icon.png" width="88" alt="Floe Agent app icon">
   <h1>Floe Agent</h1>
   <p><strong>Your models. Your files. Your machines.</strong></p>
-  <p>Floe Agent is an open-source on-device AI agent workspace designed for iOS and Android — iPad-first, with native iPhone support. Bring AI tasks, Notes, Office documents, creative tools, development, voice conversations and skills together — with a real Linux environment on your device that runs code, packages and services, supported local models for on-device inference, and cloud AI using your own API keys (BYOK).</p>
+  <p>Floe Agent is an open-source, iPad-first iOS AI Agent optimized for iOS and iPadOS, with native iPhone support and a separate Android alpha. Bring AI tasks, Notes, Office documents, creative tools, development, voice conversations and skills together — with a real Linux environment on your device that runs code, packages and services, supported local models for on-device inference, and cloud AI using your own API keys (BYOK).</p>
   <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://www.floe-agent.com/">Website</a> · <a href="docs/USER_GUIDE.md">User manual</a> · <a href="docs/README.md">Documentation</a></p>
 </div>
 
@@ -15,7 +15,7 @@
 
 ## Get started
 
-Choose an installation channel on the [website](https://www.floe-agent.com/#download). Check [current status](docs/CURRENT_STATUS.md) and the installation page for each channel’s version, region and eligibility.
+Choose an installation channel on the [website](https://www.floe-agent.com/#download). Explore the [iOS AI Agent workspace for iPad and iPhone](https://www.floe-agent.com/en/ios-ai-agent). Check [current status](docs/CURRENT_STATUS.md) and the installation page for each channel’s version, region and eligibility.
 
 <p align="center">
   <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/badge-add-to-feather.png" alt="Add to Feather" height="52"></a>
