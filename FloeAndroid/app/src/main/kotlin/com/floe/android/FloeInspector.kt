@@ -11,12 +11,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
-import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -84,32 +82,11 @@ fun FloeInspectorPane(
     // and the sidebar's bottom controls. The surface keeps painting edge to
     // edge (background before the padding); only content/hit areas are lifted,
     // so nothing is double-padded and the gesture pill never overlaps a row.
-    //
-    // Terminal exception (tablet IME evidence 2026-10-31): the Activity uses
-    // adjustResize and edge-to-edge, so the platform already shrinks the
-    // detail row to the area above the keyboard (the inspector column was
-    // observed at 728px of a 1600px window). safeDrawing also contains the
-    // IME inset, so applying it here subtracted the same keyboard a SECOND
-    // time inside the already-shrunk column; the terminal's flexible PTY
-    // surface then collapsed while its fixed chrome stayed. The terminal owns
-    // a real, keyboard-shrunk viewport, so it reserves only the navigation
-    // bar (the same 64px bottom region the 2026-10-25 fix protected). If the
-    // keyboard floats instead of resizing, the viewport stays visible above
-    // it and the pane does not reserve a second IME band.
-    val bottomInset =
-        if (route.content == InspectorContent.TERMINAL) {
-            // Keep the bottom safe area (navigation bar, any bottom cutout)
-            // but remove the IME band that the Activity's adjustResize has
-            // already applied to the window.
-            WindowInsets.safeDrawing.exclude(WindowInsets.ime)
-        } else {
-            WindowInsets.safeDrawing
-        }
     Column(
         modifier
             .fillMaxSize()
             .background(colors.readingSurface)
-            .windowInsetsPadding(bottomInset.only(WindowInsetsSides.Bottom)),
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)),
     ) {
         // Workspace Files owns its single-row header (title + New + More +
         // close) so the compact command controls share the existing toolbar
