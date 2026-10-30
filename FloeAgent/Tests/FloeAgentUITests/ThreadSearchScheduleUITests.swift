@@ -193,6 +193,13 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         find?.tap()
 
         let field = app.textFields["thread.find.field"].firstMatch
+        // Reuse the linked-schedule test's native-menu recovery: a lost
+        // synthesized tap leaves the actual menu row presented. Only then
+        // activate that row once more; never bypass the real find UI.
+        if !field.waitForExistence(timeout: 3),
+           let find, find.exists {
+            find.tap()
+        }
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         field.tap()
         field.typeText("历史")
