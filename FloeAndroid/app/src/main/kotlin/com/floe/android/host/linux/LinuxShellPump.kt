@@ -367,7 +367,27 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 val sessionID = payload.getString("sessionID")
                 val owner = work.values.firstOrNull { it.sessionID == sessionID }
                 checkNotNull(owner) { "live file read addresses no owned session" }
-                complete(claim, 0, owner.exchange(operation, payload))
+                // Files are queued RuntimeKernel execute() receipts, unlike
+                // shell.poll's synchronous memory snapshot. Decode the REAL
+                // completed result through the SAME request.status receipt
+                // path the other controls use; the Core live-file mailbox
+                // accepts only a completed ok/retry/refused result and would
+                // classify a forwarded queued control receipt as malformed.
+                // The wait is READ-ONLY and bounded: a timeout is a typed
+                // retry and NEVER cancels or closes the addressed terminal.
+                val first = owner.exchange(operation, payload)
+                val response = awaitLiveFileReceipt(
+                    first = first,
+                    poll = { requestID ->
+                        owner.exchange("request.status", JSONObject().put("requestID", requestID))
+                    },
+                    onWaiting = {
+                        check(epoch.get() == acceptedEpoch &&
+                            LinuxShellNative.isLive(claim) == 1 &&
+                            !admissionClosed.get()) { "live file receipt fenced" }
+                    },
+                )
+                complete(claim, 0, response)
                 return
             }
             if (operation == "workspace.exportStatus") {
@@ -1231,6 +1251,59 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
     companion object {
         internal val ENVIRONMENT_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 
+        /** Core live-file reads use the SAME bounded request budget as their
+         *  mailbox call (8 s). The pump's own wait is deliberately no longer:
+         *  it is a READ-ONLY control receipt and a late answer is harmless,
+         *  while a timeout must NEVER stop or close the addressed terminal. */
+        internal const val LIVE_FILE_RECEIPT_BUDGET_MILLIS = 8_000L
+
+        /** Resolve a live-file kernel receipt to its REAL completed result.
+         *  The immediate reply for these operations is a queued/running
+         *  control receipt; forwarding it to the Core live-file mailbox would
+         *  be classified as a malformed reply even though the engine request
+         *  is valid. On timeout the typed retry answer is returned without
+         *  touching any session, lease or terminal. */
+        internal suspend fun awaitLiveFileReceipt(
+            first: JSONObject,
+            poll: suspend (String) -> JSONObject,
+            budgetMillis: Long = LIVE_FILE_RECEIPT_BUDGET_MILLIS,
+            onWaiting: suspend () -> Unit = {},
+        ): JSONObject = withTimeoutOrNull(budgetMillis) {
+            awaitControlReceipt(first, poll, onWaiting)
+        } ?: JSONObject().put("state", "retry").put("code", "awaitBudgetExpired")
+
+        /** The ONE receipt resolver shared by shell controls and live-file
+         *  reads: queued/running receipts are polled by their exact requestID
+         *  until the kernel's completed result or a typed failure. */
+        internal suspend fun awaitControlReceipt(
+            first: JSONObject,
+            poll: suspend (String) -> JSONObject,
+            onWaiting: suspend () -> Unit = {},
+            onFailed: (JSONObject) -> Unit = {},
+        ): JSONObject {
+            when (first.optString("state")) {
+                "completed" -> return first.getJSONObject("result")
+                "failed", "unknown" -> {
+                    onFailed(first)
+                    error("Runtime operation failed")
+                }
+                "queued", "running" -> Unit
+                else -> return first // progress may contain a historical requestID
+            }
+            val id = first.getString("requestID")
+            while (true) {
+                val value = poll(id)
+                when (value.getString("state")) {
+                    "completed" -> return value.getJSONObject("result")
+                    "failed", "unknown" -> {
+                        onFailed(value)
+                        error("Runtime operation did not settle successfully")
+                    }
+                }
+                onWaiting(); delay(100)
+            }
+        }
+
         /** G05-R3 RUN-LESS first use: the trusted INTERNAL host operation an
          *  EXPLICIT human terminal action submits through the ORIGINAL
          *  `LinuxShellMailbox` when its task's workspace facts do not exist
@@ -1646,34 +1719,23 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         return JSONObject().put("epoch", acceptedEpoch).put("state", "unconfirmed")
     }
 
-    private suspend fun awaitReceipt(owned: OwnedSession, first: JSONObject, onWaiting: suspend () -> Unit = {}): JSONObject {
-        when (first.optString("state")) {
-            "completed" -> return first.getJSONObject("result")
-            "failed", "unknown" -> {
-                // Capture BEFORE the throw (no-op unless the terminal is a
-                // REAL failed receipt bound to this exact control request),
-                // so the failed-start claim can later carry the original
-                // bounded evidence after the real drain and grant close.
-                owned.recordStartFailure(first)
-                error("Runtime operation failed")
-            }
-            "queued", "running" -> Unit
-            else -> return first // progress may contain a historical requestID
-        }
-        val id = first.getString("requestID")
-        while (true) {
+    private suspend fun awaitReceipt(
+        owned: OwnedSession,
+        first: JSONObject,
+        onWaiting: suspend () -> Unit = {},
+    ): JSONObject = awaitControlReceipt(
+        first = first,
+        poll = { id ->
             owned.latency.noteReceiptPoll()
-            val value = owned.exchange("request.status", JSONObject().put("requestID", id))
-            when (value.getString("state")) {
-                "completed" -> return value.getJSONObject("result")
-                "failed", "unknown" -> {
-                    owned.recordStartFailure(value)
-                    error("Runtime operation did not settle successfully")
-                }
-            }
-            onWaiting(); delay(100)
-        }
-    }
+            owned.exchange("request.status", JSONObject().put("requestID", id))
+        },
+        onWaiting = onWaiting,
+        // Capture BEFORE the throw (no-op unless the terminal is a REAL
+        // failed receipt bound to this exact control request), so the
+        // failed-start claim can later carry the original bounded evidence
+        // after the real drain and grant close.
+        onFailed = { owned.recordStartFailure(it) },
+    )
 
     private fun complete(claim: Long, status: Int, value: JSONObject) {
         LinuxShellNative.complete(claim, status, value.toString().toByteArray(Charsets.UTF_8))

@@ -256,6 +256,27 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         }
     }
 
+    /// The live role whose lease makes `role` inadmissible RIGHT NOW, or nil
+    /// when `role` can start. This is a pure snapshot of the same role pool
+    /// `hasCapacity(for:)` admits from: an interactive lease NEVER blocks the
+    /// dedicated Agent/run execution role, while an Agent/run lease blocks
+    /// both execution roles and cannot be freed by closing a terminal. Used by
+    /// admission messaging to avoid reporting a TTY conflict for an execution
+    /// slot a TTY does not own. It mints, stops and releases nothing.
+    public func capacityBlockingRole(for role: LinuxShellLeaseRole) -> LinuxShellLeaseRole? {
+        guard !hasCapacity(for: role) else { return nil }
+        switch role {
+        case .interactive:
+            return .interactive
+        case .agent, .run:
+            // The execution pool is shared by exactly these two roles; the
+            // 3-slot total leaves no other way to make it inadmissible. The
+            // fallback keeps an inconsistent snapshot from being read as a
+            // phantom interactive owner.
+            return slotHolders.values.first(where: { $0 == .agent || $0 == .run }) ?? role
+        }
+    }
+
     static func capacity(for role: LinuxShellLeaseRole) -> Int {
         switch role {
         case .interactive: return 2

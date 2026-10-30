@@ -1160,16 +1160,26 @@ public actor G04TerminalStore {
             return record.purpose.isInteractive && record.alive
         }
         guard !liveInteractive.isEmpty else { return nil }
-        // Both reads are the backend's own truth: `ownedSessions()` lists the
-        // leases whose REAL release is not proven yet, and `isEngineSlotBusy()`
-        // is the single-slot gate itself. Requiring both means a session the
-        // engine already released (or a gate freed by a generation fence) is
-        // never presented as a live conflict.
+        // Role-aware execution truth (G07.3A approved pool: TWO interactive
+        // tabs + ONE shared Agent/run execution slot). An interactive lease
+        // never makes the Agent role inadmissible, so two live tabs must not
+        // present a conflict while the dedicated execution slot is free.
+        // Conversely, when a live Agent/run lease holds that execution slot,
+        // closing this conversation's terminal cannot free it: that case
+        // stays on the ORIGINAL backend `.notStarted` serialization path and
+        // must not offer a terminal handoff. The backend answers which live
+        // role actually blocks admission; no capacity or lease is fabricated.
+        let executionBlocker = await components.backend
+            .capacityBlockingRole(for: .agent)
         let ownedKeys = await components.backend.ownedSessions().map(\.sessionKey)
-        let slotBusy = !(await components.backend.hasCapacity(for: .interactive))
-        // Ownership is re-proven AFTER those two suspensions and immediately
+        // Only an interactive lease that REALLY makes the Agent role
+        // inadmissible is a terminal handoff. Under the approved separated
+        // pool this is never `.interactive`; an Agent/run blocker is returned
+        // as its own role and a TTY close cannot free it.
+        let slotBusy = executionBlocker == .interactive
+        // Ownership is re-proven AFTER those suspensions and immediately
         // before the fact is published: this actor can be retired, or the Root
-        // generation replaced, while either read is in flight — and the
+        // generation replaced, while any read is in flight — and the
         // composition registry's own register/retire runs outside its mailbox
         // lock, so the registry epoch alone is not this store's ownership
         // proof. A moved-on generation publishes nothing (fail closed).
