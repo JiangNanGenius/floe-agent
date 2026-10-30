@@ -433,7 +433,7 @@
 		5E34E38D357FC7D0DB638C8F /* ProviderCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6652F35183416B49C921CCA4 /* ProviderCatalogTests.swift */; };
 		5E947BB83381A4621C72C7F6 /* HomeChatVoiceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */; };
 		5EC3F62807E3D0C3C3F7B6FE /* NativeCADProposalPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FBBFB79DB51477FDE11C7BE /* NativeCADProposalPersistenceTests.swift */; };
-		5EDCD8D8D160D26433CD1F0A /* FloeTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = D466398D967D7D83BEC38FA7 /* FloeTestSupport */; };
+		5EDCD8D8D160D26433CD1F0A /* Euclid in Frameworks */ = {isa = PBXBuildFile; productRef = 52705C45757158BFC726EE10 /* Euclid */; };
 		5F42850C1FFFDB2200E2A550 /* ShareProviderIntakePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91045A35615EE2C46746BEEC /* ShareProviderIntakePolicyTests.swift */; };
 		5F61A0D732C845042BFC4507 /* SharedDocumentsFileProviderBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE8D5C6B0891D36E55E8AF0 /* SharedDocumentsFileProviderBridge.swift */; };
 		5F7840F49827B094F2E4E771 /* CanvasAgentTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63EB5024B1FD6F3B9E73BBBF /* CanvasAgentTools.swift */; };
@@ -734,6 +734,7 @@
 		A1730325CB40AA74E22D3C28 /* FloeSecurity in Frameworks */ = {isa = PBXBuildFile; productRef = 87B8E278FC454AFE6AF6C9E9 /* FloeSecurity */; };
 		A17ADD3D19EA9A87C6368B24 /* InternalPromptsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 752ED1B458BB9A1D3E198D11 /* InternalPromptsSettingsView.swift */; };
 		A27631E6A0AAC082CE7C93CE /* FinalAnswerSpeech.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DA47896CB3CB6F16C203FFF /* FinalAnswerSpeech.swift */; };
+		A2B3EF36B1DAB450B85DE1AE /* FloeTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = D466398D967D7D83BEC38FA7 /* FloeTestSupport */; };
 		A2E2E469EF602717C5DE7A3D /* CADPresentationSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1FBE3C7D159412E64C0938B /* CADPresentationSelectionTests.swift */; };
 		A31CF323870E084DE7FD07C1 /* VoicePlaybackIntentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E8BB21F6B7808FED99BF9BE /* VoicePlaybackIntentTests.swift */; };
 		A3C4906062D2A18ED2C2BA99 /* CADDatumServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50FF3E9C8038BE2C4010E73 /* CADDatumServiceTests.swift */; };
@@ -2367,7 +2368,8 @@
 				6DB79CA87203E4D06C35252B /* FloeMacBridgeProtocol in Frameworks */,
 				15B44FA2338F7B0D1F4B42B1 /* FloeCAD in Frameworks */,
 				24DF49E4C14D985C10963356 /* ZIPFoundation in Frameworks */,
-				5EDCD8D8D160D26433CD1F0A /* FloeTestSupport in Frameworks */,
+				5EDCD8D8D160D26433CD1F0A /* Euclid in Frameworks */,
+				A2B3EF36B1DAB450B85DE1AE /* FloeTestSupport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -4466,6 +4468,7 @@
 				99CF95D2679519E77A5AF953 /* FloeMacBridgeProtocol */,
 				39EF0222F8FE90E296F33C0D /* FloeCAD */,
 				1056BCC717D138D80173BA80 /* ZIPFoundation */,
+				52705C45757158BFC726EE10 /* Euclid */,
 				D466398D967D7D83BEC38FA7 /* FloeTestSupport */,
 			);
 			productName = FloeAppTests;
@@ -4597,6 +4600,7 @@
 			mainGroup = 803D098B2BC01A91E2C0353D;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				B338DFA97AA7377F37C3EEEB /* XCRemoteSwiftPackageReference "Euclid" */,
 				9098A8EFD52D6CAF3DD83F20 /* XCRemoteSwiftPackageReference "WhisperKit" */,
 				2E5F1BA7D33A3E4B65F98CD4 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 				22A88FCEEDE1E3AC97A571ED /* XCLocalSwiftPackageReference "." */,
@@ -6574,6 +6578,14 @@
 				revision = 1e2a163736dfa5a198e637ae44c114e1c6d5cc2d;
 			};
 		};
+		B338DFA97AA7377F37C3EEEB /* XCRemoteSwiftPackageReference "Euclid" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/nicklockwood/Euclid.git";
+			requirement = {
+				kind = revision;
+				revision = a123b1cbbb5b7aab49a8b57e12783f7bd39f0cac;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -6610,6 +6622,11 @@
 		42F46C3ACBB2BE695D007080 /* FloeSyncCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FloeSyncCore;
+		};
+		52705C45757158BFC726EE10 /* Euclid */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B338DFA97AA7377F37C3EEEB /* XCRemoteSwiftPackageReference "Euclid" */;
+			productName = Euclid;
 		};
 		59DBBD5C35D97EBB383798F6 /* FloeExecution */ = {
 			isa = XCSwiftPackageProductDependency;

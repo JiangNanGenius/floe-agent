@@ -41,6 +41,11 @@ packages:
     # graph, sketch solver, Metal viewport and the workbench editor, vendored
     # from OpenShape3D (MIT) with Floe's document/session adaptations.
     path: ThirdParty/FloeCADKit
+  Euclid:
+    # Existing FloeCADKit 0.9.6 pin. Native regression tests access Euclid
+    # types directly, so the test bundle must link this product itself.
+    url: https://github.com/nicklockwood/Euclid.git
+    revision: a123b1cbbb5b7aab49a8b57e12783f7bd39f0cac
   ZIPFoundation:
     # Already resolved through FloeAgentPackages at exactly this revision
     # (Package.resolved: 0.9.20 / 22787ffb59de99e5dc1fbfe80b19c97a904ad48d).
@@ -1275,6 +1280,8 @@ targets:
         product: FloeCAD
       - package: ZIPFoundation
         product: ZIPFoundation
+      - package: Euclid
+        product: Euclid
       - package: FloeAgentPackages
         product: FloeTestSupport
     settings:
