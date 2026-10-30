@@ -39,8 +39,12 @@
 // See the private handoff for the exact schema. The file contains policy
 // metadata only (optional provider/model UUID pins, an explicit acceptance of
 // the ordinary App run context, and token/cost/time ceilings). It NEVER
-// contains an API key. The test does not read, print, copy or persist a
-// credential: it asks the App's own `ConversationCenter.resolveCredentials`
+// contains an API key. An optional owned-route.json contains only test
+// provider metadata. If the coordinator explicitly forwards a test-runner
+// credential, the owned-route helper puts it in a random non-syncing App
+// Keychain account, removes its own provider/account after the run and never
+// changes an existing provider or default. Otherwise it asks the App's own
+// `ConversationCenter.resolveCredentials`
 // whether the selected provider has a usable key and then hands the run to the
 // same production `ConversationCenter.runService` the UI uses. A missing file,
 // missing cheap/tool-capable cloud model, missing App credential or missing
@@ -118,6 +122,7 @@ import FloeTools
 import FloeWorkbench
 import FloeAgentRuntime
 import FloeEnvironments
+import FloeSecurity
 import FloeCAD
 @testable import FloeApp
 
@@ -135,22 +140,102 @@ final class NativeCADLiveLLMTests: XCTestCase {
         let environment = try await appQualificationEnvironment()
         let center = environment.conversationCenter
 
-        let route = try NativeCADLiveRoute.select(optIn: optIn, center: center)
-        try NativeCADLivePreflight.requireNativeCADCapabilities()
-
-        let session = NativeCADLiveSession(
-            environment: environment,
-            center: center,
-            route: route,
-            optIn: optIn
-        )
+        // Optional coordinator-owned route: non-secret metadata plus an
+        // explicitly forwarded test-runner credential. The App still stores
+        // and resolves the credential through its ordinary Keychain service.
+        let installed = try await NativeCADLiveOwnedRoute.installIfRequested(environment: environment)
         do {
-            try await session.runAll()
-        } catch {
+            let route = try NativeCADLiveRoute.select(optIn: optIn, center: center)
+            try NativeCADLivePreflight.requireNativeCADCapabilities()
+            let session = NativeCADLiveSession(
+                environment: environment, center: center, route: route, optIn: optIn)
+            do { try await session.runAll() }
+            catch { await session.cleanup(); throw error }
             await session.cleanup()
+        } catch {
+            try await installed?.remove(environment: environment)
             throw error
         }
-        await session.cleanup()
+        try await installed?.remove(environment: environment)
+    }
+}
+
+/// A qualification-only configuration, isolated from existing providers and
+/// defaults. No API key is accepted in the metadata file or attachment output.
+@MainActor
+private struct NativeCADLiveOwnedRoute {
+    struct Metadata: Decodable {
+        var providerID: UUID
+        var modelID: UUID
+        var baseURL: URL
+        var remoteModelID: String
+        var contextTokens: Int
+        var maxOutputTokens: Int
+        var supportsVision: Bool?
+    }
+    static let providerID = UUID(uuidString: "A3060000-0000-4000-8000-000000000001")!
+    static let modelID = UUID(uuidString: "A3060000-0000-4000-8000-000000000002")!
+    let provider: ProviderProfile
+    let account: String
+
+    static func installIfRequested(environment: AppEnvironment) async throws -> Self? {
+        guard let key = ProcessInfo.processInfo.environment["FLOE_NATIVE_CAD_LIVE_KEY"],
+              !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(NativeCADLiveOptIn.directoryName)
+        let metadata = try JSONDecoder().decode(Metadata.self,
+            from: Data(contentsOf: root.appendingPathComponent("owned-route.json")))
+        guard metadata.providerID == providerID, metadata.modelID == modelID,
+              metadata.baseURL.scheme == "https", metadata.baseURL.host != nil,
+              metadata.baseURL.user == nil, metadata.baseURL.password == nil,
+              metadata.baseURL.query == nil,
+              (16_384...1_000_000).contains(metadata.contextTokens),
+              (1_024...32_768).contains(metadata.maxOutputTokens),
+              !metadata.remoteModelID.isEmpty else {
+            throw FloeError.validationFailed("Invalid owned qualification route metadata")
+        }
+        let existing = try await environment.configurationStore.provider(id: providerID)
+        guard existing == nil else {
+            throw FloeError.validationFailed("Owned qualification provider already exists; inspect and clean its recorded state before retrying")
+        }
+        let account = "native-cad-qualification." + UUID().uuidString
+        let keychain = KeychainStore(service: "org.floeagent.ios.secrets", synchronizable: false)
+        let provider = ProviderProfile(id: providerID, kind: .openAI,
+            wireProtocol: .openAIChatCompletions, baseURL: metadata.baseURL,
+            displayName: "Native CAD qualification",
+            secretRef: SecretReference(keychainAccount: account, synchronizable: false),
+            toolNameCompatibility: true)
+        let owned = Self(provider: provider, account: account)
+        try keychain.store(account: account, secret: Data(key.utf8))
+        do {
+            try await environment.configurationStore.saveProvider(provider)
+            try await environment.configurationStore.saveModel(ModelProfile(
+                id: modelID, providerID: providerID, remoteModelID: metadata.remoteModelID,
+                displayName: "Native CAD qualification",
+                limits: ModelLimits(contextTokens: metadata.contextTokens,
+                    maxOutputTokens: metadata.maxOutputTokens),
+                capabilities: metadata.supportsVision == true ? [.text, .tools, .vision] : [.text, .tools],
+                useSurfaces: [.chatAgent], reasoningEffort: .automatic, isHiddenFromPrimaryPicker: true))
+            await environment.conversationCenter.reload()
+            return owned
+        } catch {
+            try? await owned.remove(environment: environment)
+            throw error
+        }
+    }
+
+    func remove(environment: AppEnvironment) async throws {
+        if let current = try await environment.configurationStore.provider(id: provider.id) {
+            guard current.baseURL == provider.baseURL,
+                  current.displayName == provider.displayName,
+                  current.secretRef?.keychainAccount == account else {
+                throw FloeError.validationFailed("Qualification provider ownership changed; configuration preserved")
+            }
+            try await environment.configurationStore.deleteProvider(id: provider.id)
+        }
+        try KeychainStore(service: "org.floeagent.ios.secrets", synchronizable: false)
+            .delete(account: account)
+        await environment.conversationCenter.reload()
     }
 }
 
