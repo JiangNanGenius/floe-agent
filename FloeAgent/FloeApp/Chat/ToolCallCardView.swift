@@ -12,6 +12,7 @@ import SwiftUI
 import CryptoKit
 import FloeCore
 import FloeModels
+import FloeTools
 
 /// Presentation model for one tool call card. `status` accepts the
 /// producer's raw vocabulary (`ok` / `failed` / `pending`) plus the
@@ -169,11 +170,11 @@ struct ToolCallCardView: View {
     }
 
     private var imageArtifacts: [ToolArtifactReference] {
-        artifacts.filter { $0.mimeType == "image/png" || $0.mimeType == "image/jpeg" }
+        artifacts.filter { ProviderImageEvidencePolicy.canonicalMIMEType($0.mimeType) != nil }
     }
 
     private var richArtifacts: [ToolArtifactReference] {
-        artifacts.filter { $0.mimeType != "image/png" && $0.mimeType != "image/jpeg" }
+        artifacts.filter { ProviderImageEvidencePolicy.canonicalMIMEType($0.mimeType) == nil }
     }
 
     private var statusIcon: String {
@@ -269,7 +270,7 @@ private struct ArtifactImageView: View {
                     .controlSize(.small)
             }
         }
-        .task(id: artifact.id) { loadVerifiedImage() }
+        .task(id: artifact.id) { await loadVerifiedImage() }
         .fullScreenCover(isPresented: $showingFullScreen) {
             if let image, let fileURL {
                 FullScreenArtifactImage(image: image, fileURL: fileURL)
@@ -278,40 +279,24 @@ private struct ArtifactImageView: View {
         .onChange(of: artifact.id) { _, _ in showingFullScreen = false }
     }
 
-    private func loadVerifiedImage() {
-        guard artifact.byteCount > 0,
-              artifact.byteCount <= 12 * 1_024 * 1_024,
-              !artifact.relativePath.hasPrefix("/"),
-              !artifact.relativePath.split(separator: "/").contains(".."),
-              artifact.relativePath.hasPrefix("GeneratedImages/") ||
-                artifact.relativePath.hasPrefix("BrowserArtifacts/") ||
-                artifact.relativePath.hasPrefix("VNCArtifacts/"),
-              let support = FileManager.default.urls(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask
-              ).first else {
-            failed = true
-            return
-        }
-        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
-            .standardizedFileURL
-        let candidate = root.appendingPathComponent(artifact.relativePath)
-            .standardizedFileURL
-        let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        guard candidate.path.hasPrefix(prefix),
-              let data = try? Data(floeContentsOf: candidate, options: [.mappedIfSafe]),
-              data.count == artifact.byteCount else {
-            failed = true
-            return
-        }
-        let digest = SHA256.hash(data: data)
-            .map { String(format: "%02x", $0) }.joined()
-        guard digest == artifact.sha256.lowercased(), let decoded = UIImage(data: data) else {
+    private func loadVerifiedImage() async {
+        failed = false
+        image = nil
+        fileURL = nil
+        let reference = artifact
+        let loaded = await Task.detached(priority: .userInitiated) {
+            guard let support = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                        in: .userDomainMask).first else { return nil as VerifiedToolImageArtifact? }
+            return try? VerifiedToolImageArtifact.load(reference,
+                root: support.appendingPathComponent("FloeAgent", isDirectory: true))
+        }.value
+        guard !Task.isCancelled else { return }
+        guard let loaded, let decoded = UIImage(data: loaded.data) else {
             failed = true
             return
         }
         image = decoded
-        fileURL = candidate
+        fileURL = loaded.fileURL
     }
 }
 

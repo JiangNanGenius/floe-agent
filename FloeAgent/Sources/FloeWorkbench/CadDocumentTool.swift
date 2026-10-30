@@ -2519,6 +2519,10 @@ public struct CadDocumentTool: AgentTool {
     /// captures of the same revision are idempotent.
     static func writeViewportArtifact(_ capture: CadViewportCapture,
                                       context: ToolContext) throws -> ToolArtifactReference {
+        guard FloeDigest.sha256Hex(capture.pngData) == capture.sha256.lowercased(),
+              ProviderImageEvidencePolicy.sniffedMIME(capture.pngData) == "image/png" else {
+            throw FloeError.validationFailed("The viewport image does not match its capture receipt.")
+        }
         guard capture.pngData.count <= 16 * 1024 * 1024 else {
             throw FloeError.validationFailed("The viewport PNG exceeds the 16 MiB artifact bound.")
         }
@@ -2533,15 +2537,18 @@ public struct CadDocumentTool: AgentTool {
                                                 withIntermediateDirectories: true)
         let fileName = "\(capture.sha256).png"
         let url = directory.appendingPathComponent(fileName, isDirectory: false)
-        if !FileManager.default.fileExists(atPath: url.path) {
-            try capture.pngData.write(to: url, options: .atomic)
-        }
-        return ToolArtifactReference(
+        let artifact = ToolArtifactReference(
             id: UUID(),
             relativePath: "\(relativeDirectory)/\(fileName)",
             mimeType: "image/png",
             byteCount: capture.pngData.count,
             sha256: capture.sha256)
+        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+        if (try? VerifiedToolImageArtifact.load(artifact, root: root)) == nil {
+            try capture.pngData.write(to: url, options: .atomic)
+        }
+        _ = try VerifiedToolImageArtifact.load(artifact, root: root)
+        return artifact
     }
 
     /// Parse the animation capture payload into the host contract. The engine
@@ -2579,6 +2586,11 @@ public struct CadDocumentTool: AgentTool {
     /// image SHA so repeated captures of one frame are idempotent.
     static func writeAnimationArtifact(_ capture: CadAnimationCapture,
                                        context: ToolContext) throws -> ToolArtifactReference {
+        guard FloeDigest.sha256Hex(capture.imageData) == capture.sha256.lowercased(),
+              ProviderImageEvidencePolicy.sniffedMIME(capture.imageData)
+                == ProviderImageEvidencePolicy.canonicalMIMEType(capture.mimeType) else {
+            throw FloeError.validationFailed("The animation image does not match its capture receipt.")
+        }
         guard capture.imageData.count <= 16 * 1024 * 1024 else {
             throw FloeError.validationFailed(
                 "The animation frame exceeds the 16 MiB artifact bound.")
@@ -2595,15 +2607,18 @@ public struct CadDocumentTool: AgentTool {
         let ext = capture.mimeType == "image/jpeg" ? "jpg" : "png"
         let fileName = "\(capture.sha256).\(ext)"
         let url = directory.appendingPathComponent(fileName, isDirectory: false)
-        if !FileManager.default.fileExists(atPath: url.path) {
-            try capture.imageData.write(to: url, options: .atomic)
-        }
-        return ToolArtifactReference(
+        let artifact = ToolArtifactReference(
             id: UUID(),
             relativePath: "\(relativeDirectory)/\(fileName)",
             mimeType: capture.mimeType,
             byteCount: capture.imageData.count,
             sha256: capture.sha256)
+        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+        if (try? VerifiedToolImageArtifact.load(artifact, root: root)) == nil {
+            try capture.imageData.write(to: url, options: .atomic)
+        }
+        _ = try VerifiedToolImageArtifact.load(artifact, root: root)
+        return artifact
     }
 
     static func defaultAnimationExportPath(for path: String) -> String {

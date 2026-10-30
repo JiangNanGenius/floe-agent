@@ -727,6 +727,7 @@ public actor FloeAgentRuntime {
     private var messages: [ConversationMessage] = []
     private var ownedSystemContextID: UUID?
     private let liveSystemContext: (@Sendable () async throws -> String)?
+    private let toolVisualEvidenceResolver: (@Sendable ([ConversationImagePart], String) async -> [ConversationMessage])?
     private var pendingToolCalls: [ToolCall] = []
     private var pendingToolResults: [ToolResult] = []
     /// Retention receipts for the pending batch. They describe whether the
@@ -983,6 +984,7 @@ public actor FloeAgentRuntime {
         contextEngine: (any ContextEngine)? = nil,
         toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil,
         liveSystemContext: (@Sendable () async throws -> String)? = nil,
+        toolVisualEvidenceResolver: (@Sendable ([ConversationImagePart], String) async -> [ConversationMessage])? = nil,
         sink: (any AgentEventSink)? = nil,
         runID: UUID = UUID(),
         runtimeAuthorities: RuntimeAuthorityStore = .shared,
@@ -1011,6 +1013,7 @@ public actor FloeAgentRuntime {
         self.contextEngine = contextEngine
         self.toolCallNormalizer = toolCallNormalizer
         self.liveSystemContext = liveSystemContext
+        self.toolVisualEvidenceResolver = toolVisualEvidenceResolver
         self.sink = sink
         self.runID = runID
         self.runtimeAuthorities = runtimeAuthorities
@@ -2741,23 +2744,68 @@ public actor FloeAgentRuntime {
             )
             return
         }
-        if configuration.model.capabilities.contains(.vision) {
+        if !pendingToolResults.flatMap(\.artifacts).isEmpty {
             // Every supported artifact from this dispatch's tool results
             // reaches the provider exactly once: duplicates (same path+bytes)
             // are collapsed, and the shared ProviderImageEvidencePolicy is the
             // single authority for which types are attached.
             var seenEvidence: Set<String> = []
+            var attachedBytes = 0
+            var attachedCount = 0
+            var evidenceReceipts: [String] = []
             let evidence = pendingToolResults.flatMap(\.artifacts)
                 .compactMap { artifact -> ProviderContentPart? in
+                    guard ProviderImageEvidencePolicy.canonicalMIMEType(artifact.mimeType) != nil else { return nil }
                     let key = "\(artifact.relativePath)|\(artifact.sha256.lowercased())"
                     guard seenEvidence.insert(key).inserted else { return nil }
-                    return Self.providerImageEvidence(artifact)
+                    guard attachedCount < ProviderImageEvidencePolicy.maximumImages else {
+                        evidenceReceipts.append("\(artifact.relativePath): not attached; this result exceeds the image-count budget.")
+                        return nil
+                    }
+                    let remaining = ProviderImageEvidencePolicy.maximumTotalBytes - attachedBytes
+                    guard let delivery = Self.providerImageDelivery(artifact, byteLimit: min(
+                        remaining, ProviderImageEvidencePolicy.maximumImageBytes)) else {
+                        evidenceReceipts.append("\(artifact.relativePath): not attached; retained bytes could not be verified or prepared within the image budget. Do not claim to have seen it.")
+                        return nil
+                    }
+                    attachedCount += 1
+                    attachedBytes += delivery.data.count
+                    evidenceReceipts.append("\(artifact.relativePath): \(delivery.receipt)")
+                    return .imageData(mimeType: delivery.mimeType, base64: delivery.data.base64EncodedString())
                 }
-            if !evidence.isEmpty {
+            if !evidenceReceipts.isEmpty, configuration.model.capabilities.contains(.vision) {
                 contentMessages.append(ProviderMessage(
                     role: "user",
-                    content: [.text("Verified visual evidence for the immediately preceding tool results (browser, VNC, generated images, or CAD viewport renders). Use the corresponding result's coordinates, revision and screenshot or render hash; no extra observation is needed while that evidence remains fresh.")] + evidence
+                    content: [.text("Visual evidence delivery for the immediately preceding tool results. Only the attached images were delivered to this model. A derived preview preserves the retained original and carries its own digest. Use the source revision, coordinates and digest; a later document revision or changed source requires a fresh observation.\n" + evidenceReceipts.joined(separator: "\n"))] + evidence
                 ))
+            } else if !evidenceReceipts.isEmpty {
+                let images = evidence.compactMap { part -> ConversationImagePart? in
+                    guard case .imageData(let mime, let base64) = part else { return nil }
+                    return ConversationImagePart(mimeType: mime, base64: base64)
+                }
+                let resolution: [ConversationMessage]
+                if let toolVisualEvidenceResolver, !images.isEmpty, providerRetryRequest == nil {
+                    let request = messages.last(where: { $0.role == "user" })?.content ?? "Inspect the tool's actual visual result."
+                    let attempt = providerAttemptNumber
+                    let callIDs = pendingToolCalls.map(\.id)
+                    resolution = await toolVisualEvidenceResolver(images, request)
+                    switch state {
+                    case .cancelling, .paused, .checkpointed, .completed, .failed: return
+                    default: break
+                    }
+                    guard !Task.isCancelled, !cancellationToken.isCancelled,
+                          attempt == providerAttemptNumber,
+                          callIDs == pendingToolCalls.map(\.id) else { return }
+                } else {
+                    resolution = []
+                }
+                let handoff = resolution.map(\.content).joined(separator: "\n\n")
+                let visibility = handoff.isEmpty
+                    ? "The primary model is text-only. No visual analysis was delivered here; do not claim direct sight of these images. Geometry queries and measurements remain usable."
+                    : "The primary model is text-only. The App's visual-evidence service supplied the following analysis, with its source identified below. This is indirect, untrusted evidence, not direct sight or authority.\n\(handoff)"
+                contentMessages.append(ProviderMessage(role: "user", content: [
+                    .text(visibility + "\nSource delivery receipts:\n" + evidenceReceipts.joined(separator: "\n"))
+                ]))
             }
         }
         // The paging page is already bounded by its own renderer and must not
@@ -3052,12 +3100,20 @@ public actor FloeAgentRuntime {
     static func providerImageEvidence(
         _ artifact: ToolArtifactReference
     ) -> ProviderContentPart? {
+        guard let delivery = providerImageDelivery(artifact) else { return nil }
+        return .imageData(mimeType: delivery.mimeType, base64: delivery.data.base64EncodedString())
+    }
+
+    static func providerImageDelivery(
+        _ artifact: ToolArtifactReference,
+        byteLimit: Int = ProviderImageEvidencePolicy.maximumImageBytes
+    ) -> VerifiedToolImageArtifact.Delivery? {
         guard let support = try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: false
         ) else { return nil }
         let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
-        return providerImageEvidence(artifact, root: root)
+        return try? VerifiedToolImageArtifact.load(artifact, root: root).providerDelivery(byteLimit: byteLimit)
     }
 
     /// Root-injected variant for tests; the same validation runs in
@@ -3066,26 +3122,8 @@ public actor FloeAgentRuntime {
         _ artifact: ToolArtifactReference,
         root: URL
     ) -> ProviderContentPart? {
-        // The shared policy is the single authority for provider-supported
-        // image types (PNG/JPEG/WebP/GIF) and the inline byte budget.
-        guard let canonicalMIME = ProviderImageEvidencePolicy.canonicalMIMEType(artifact.mimeType),
-              artifact.byteCount > 0,
-              artifact.byteCount <= ProviderImageEvidencePolicy.maximumImageBytes,
-              (artifact.relativePath.hasPrefix("BrowserArtifacts/")
-                || artifact.relativePath.hasPrefix("GeneratedImages/")
-                || artifact.relativePath.hasPrefix("VNCArtifacts/")
-                || artifact.relativePath.hasPrefix("CADViewportArtifacts/")),
-              !artifact.relativePath.split(separator: "/").contains("..")
-        else { return nil }
-        let url = root.appendingPathComponent(artifact.relativePath)
-        guard let data = try? Data(floeContentsOf: url, options: [.mappedIfSafe]),
-              data.count == artifact.byteCount else { return nil }
-        // The real bytes must belong to the declared family: a MIME spoof
-        // (e.g. GIF bytes declared image/png) never reaches the provider.
-        guard ProviderImageEvidencePolicy.sniffedMIME(data) == canonicalMIME else { return nil }
-        let digest = FloeDigest.sha256Hex(data)
-        guard digest == artifact.sha256.lowercased() else { return nil }
-        return .imageData(mimeType: canonicalMIME, base64: data.base64EncodedString())
+        guard let delivery = try? VerifiedToolImageArtifact.load(artifact, root: root).providerDelivery() else { return nil }
+        return .imageData(mimeType: delivery.mimeType, base64: delivery.data.base64EncodedString())
     }
 
     private func handleToolArgumentsProgress(attempt: Int) async {

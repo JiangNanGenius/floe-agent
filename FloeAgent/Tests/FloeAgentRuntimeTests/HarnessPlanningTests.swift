@@ -169,7 +169,9 @@ struct HarnessPlanningTests {
             ConversationMessage(role: "assistant", content: "Inspected Sources/Runtime.swift"),
             ConversationMessage(role: "tool", content: "build failed: missing symbol HarnessState"),
             ConversationMessage(role: "user", content: "Correction: keep the existing API and fix the root cause")
-        ]
+        ] + (0..<12).map {
+            ConversationMessage(role: "assistant", content: "Recent continuation evidence \($0)")
+        }
 
         let summary = try await DeterministicContextSummarizer().summarize(
             messages: messages,
@@ -182,6 +184,14 @@ struct HarnessPlanningTests {
         #expect(summary.contains("Correction: keep the existing API"))
         #expect(summary.contains("Tool evidence, outcomes, and failures"))
         #expect(summary.contains("missing symbol HarnessState"))
+        // Messages already in the immediate tail must not be repeated under
+        // another heading. Older corrections and failures still have their
+        // own sections; every complete message fits this fixture's budget.
+        for message in messages {
+            #expect(summary.contains(message.content))
+            #expect(summary.components(separatedBy: message.id.uuidString).count == 2)
+        }
+        #expect(summary.count <= 8_000)
     }
 
     @Test("activation ledger is bounded, deduplicated, and framed as data")

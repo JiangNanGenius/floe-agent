@@ -1156,8 +1156,8 @@ final class ThreadDetailViewModel: ObservableObject {
             .union(selectedRunID.map { [$0] } ?? [])
         // Decision notices are projected from the same revision as the
         // timeline: a validated automatic tool decision becomes an annotation
-        // on its tool step (standalone row suppressed), while an
-        // uncorrelated/manual decision keeps its concise standalone row.
+        // on its tool step (standalone row suppressed even before the step's
+        // event page loads), while a manual decision keeps its concise row.
         // Correlation is restricted to the runs this projection actually
         // renders, so a notice can never be suppressed by an event whose step
         // is not on screen.
@@ -1179,8 +1179,7 @@ final class ThreadDetailViewModel: ObservableObject {
             liveReasoningText: liveReasoningText,
             pendingApprovals: pendingApprovals,
             earlierEventRunIDs: earlierEventRunIDs,
-            suppressedDecisionNoticeIDs: Set(
-                notices.filter { $0.automaticCallID != nil }.map(\.id))
+            suppressedDecisionNoticeIDs: ProposalDecisionPresentation.standaloneSuppressionIDs(in: notices)
         )
         cachedTimelineKey = key
         cachedTimelineIDs = cachedTimeline.map(\.id)

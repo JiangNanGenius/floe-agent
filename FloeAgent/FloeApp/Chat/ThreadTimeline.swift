@@ -118,9 +118,9 @@ enum ChatBilingualCatalog {
 /// proposal (the persisted apply receipt carries the proposal id and the
 /// `runtime-authority` mode, which disambiguates propose vs apply when both
 /// are present), so it renders inside that step instead of as a separate chat
-/// bubble. Body/text deduplication is deliberately NOT used: two applies on
-/// different proposals are two legitimate records, and a `user` decision
-/// always keeps its own concise row.
+/// bubble. Automatic records stay in the durable transcript and their tool
+/// details even when the matching step has not been loaded yet. A `user`
+/// decision always keeps its own concise row; assistant prose is untouched.
 enum ProposalDecisionPresentation {
 
     struct Notice: Identifiable, Equatable {
@@ -147,6 +147,13 @@ enum ProposalDecisionPresentation {
         }
     }
 
+    /// Event pages load independently of the conversation's durable messages.
+    /// Waiting for a matching loaded call made automatic receipts accumulate
+    /// as "Changes applied" bubbles during long CAD runs and history paging.
+    static func standaloneSuppressionIDs(in notices: [Notice]) -> Set<UUID> {
+        Set(notices.filter { $0.origin == .toolAutomatic }.map(\.id))
+    }
+
     /// One validated notice for a durable message, or nil for every other row.
     static func trustedNotice(for message: PersistedMessage) -> Notice? {
         guard let event = ProposalDecisionNoticeProjection.trustedEvent(in: message) else {
@@ -170,8 +177,8 @@ enum ProposalDecisionPresentation {
     }
 
     /// All validated decision notices of the conversation, correlated with the
-    /// loaded events (correlation is additive: an uncorrelated notice keeps a
-    /// concise standalone row and is never hidden).
+    /// loaded events. Correlation adds the tool annotation; automatic notices
+    /// do not become standalone chat replies while their event page is absent.
     static func notices(
         messages: [PersistedMessage],
         events: [RunEventRecord]

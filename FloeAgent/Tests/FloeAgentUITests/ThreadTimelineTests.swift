@@ -1671,6 +1671,26 @@ struct ThreadTimelineTests {
                 .first { $0.id == automaticNotice.id })
         #expect(proposeOnly.automaticCallID == "call-propose")
 
+        // A long run can page the apply step out of the loaded event window.
+        // Its automatic durable notice must not reappear as another reply.
+        // Manual decisions still remain visible; no transcript row is deleted.
+        let unloaded = ProposalDecisionPresentation.notices(messages: messages, events: [])
+        let suppressedWhileUnloaded = ProposalDecisionPresentation.standaloneSuppressionIDs(in: unloaded)
+        #expect(suppressedWhileUnloaded.contains(automaticNotice.id))
+        #expect(!suppressedWhileUnloaded.contains(manualNotice.id))
+        let unloadedItems = ThreadTimelineBuilder.buildConversation(
+            messages: messages, runs: [], eventsByRun: [:], liveRunID: nil,
+            isRunning: false, liveStreamedText: "", liveReasoningText: "",
+            pendingApprovals: [], suppressedDecisionNoticeIDs: suppressedWhileUnloaded)
+        #expect(!unloadedItems.contains {
+            if case .assistantMessage(_, let id) = $0 { return id == automaticNotice.id.uuidString }
+            return false
+        })
+        #expect(unloadedItems.contains {
+            if case .assistantMessage(_, let id) = $0 { return id == manualNotice.id.uuidString }
+            return false
+        })
+
         // The projected notice no longer repeats as a standalone row; the
         // durable message bytes themselves are untouched (asserted above).
         let suppressedItems = ThreadTimelineBuilder.buildConversation(

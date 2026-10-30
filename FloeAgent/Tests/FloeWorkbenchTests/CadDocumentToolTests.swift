@@ -242,7 +242,9 @@ actor FakeCadHost: CadDocumentHost {
                                request: CadAnimationCaptureRequest,
                                access: CadDocumentAccess) async throws -> CadAnimationCapture {
         animationCaptureRequests.append(request)
-        let data = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        let data = Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )!
         return CadAnimationCapture(
             imageData: data, mimeType: "image/png",
             width: request.width, height: request.height,
@@ -1619,7 +1621,7 @@ extension FakeCadHost {
             pngData: png, width: width, height: height,
             revision: expectedRevision ?? revision, changeCount: 9,
             contentSHA256: String(repeating: "a", count: 64),
-            sha256: String(repeating: "e", count: 64),
+            sha256: FloeDigest.sha256Hex(png),
             renderer: "engineering", note: "actual test viewport")
     }
 }
@@ -1887,12 +1889,11 @@ struct CadNativeEditToolTests {
         """, context: context)
         let artifact = try #require(output.artifacts.first)
         #expect(artifact.mimeType == "image/png")
-        #expect(artifact.sha256 == String(repeating: "e", count: 64))
         #expect(artifact.byteCount > 0)
         #expect(output.summary.contains("\"revision\":4"))
         #expect(output.summary.contains("\"renderer\":\"engineering\""))
         #expect(output.summary.contains("\"content_sha256\":\"\(String(repeating: "a", count: 64))\""))
-        #expect(output.summary.contains("\"image_sha256\":\"\(String(repeating: "e", count: 64))\""))
+        #expect(output.summary.contains("\"image_sha256\":\"\(artifact.sha256)\""))
         #expect(output.summary.contains("vision"))
 
         let support = try FileManager.default.url(
@@ -1901,6 +1902,10 @@ struct CadNativeEditToolTests {
         let url = support.appendingPathComponent("FloeAgent")
             .appendingPathComponent(artifact.relativePath)
         #expect(FileManager.default.fileExists(atPath: url.path))
+        let persisted = try Data(contentsOf: url)
+        #expect(artifact.sha256 == FloeDigest.sha256Hex(persisted))
+        #expect(artifact.byteCount == persisted.count)
+        _ = try VerifiedToolImageArtifact.load(artifact, root: support.appendingPathComponent("FloeAgent"))
         try? FileManager.default.removeItem(
             at: support.appendingPathComponent("FloeAgent")
                 .appendingPathComponent("CADViewportArtifacts/\(context.runID.uuidString)"))

@@ -345,6 +345,7 @@ public actor ConversationRunService {
         checkpointStore: (any CheckpointStore)? = nil,
         contextEngine: (any ContextEngine)? = HybridContextEngine(),
         toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil,
+        toolVisualEvidenceResolver: (@Sendable ([ConversationImagePart], String) async -> [ConversationMessage])? = nil,
         intelligenceStore: SQLiteIntelligenceStore? = nil,
         discoveryStore: SQLiteConversationDiscoveryStore? = nil,
         conversationStore: any ConversationStore,
@@ -418,6 +419,7 @@ public actor ConversationRunService {
             contextEngine: contextEngine,
             toolCallNormalizer: toolCallNormalizer,
             liveSystemContext: refreshContext,
+            toolVisualEvidenceResolver: toolVisualEvidenceResolver,
             sink: forwarder,
             runID: runID
         )
