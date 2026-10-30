@@ -229,22 +229,19 @@ final class BodyGPUResources {
         }
     }
 
-    /// Projected or authored UVs for one appearance. Projection uses the shared
-    /// core `MaterialUVProjector` and physical millimetres from the existing
-    /// positions; it never mutates the mesh. Image row orientation is handled
-    /// by the shader (a per-map V flip), so all maps share one UV set.
+    /// Effective UVs for one appearance. The shared core rule is used for every
+    /// renderer: an explicit projection wins even when the mesh has authored
+    /// UVs; otherwise those authored UVs are passed through unchanged. This
+    /// generates a per-range buffer only; the mesh is never mutated. Image row
+    /// orientation stays a per-map shader flag, so maps with opposite vertical
+    /// origins share one UV set correctly.
     static func projectedTexcoords(mesh: RenderMesh,
                                    material: BodyMaterial?) -> [SIMD2<Float>]? {
-        if let authored = mesh.texcoords, authored.count == mesh.positions.count {
-            return authored
-        }
-        guard let mapping = material?.uvMapping, mapping.source != .mesh else {
-            return nil
-        }
-        return MaterialUVProjector.project(positions: mesh.positions,
-                                           normals: mesh.normals,
-                                           indices: mesh.indices,
-                                           mapping: mapping)
+        MaterialUVProjector.effectiveUVs(meshTexcoords: mesh.texcoords,
+                                         positions: mesh.positions,
+                                         normals: mesh.normals,
+                                         indices: mesh.indices,
+                                         mapping: material?.uvMapping)
     }
 
     private static func makeTexcoordBuffer(mesh: RenderMesh,

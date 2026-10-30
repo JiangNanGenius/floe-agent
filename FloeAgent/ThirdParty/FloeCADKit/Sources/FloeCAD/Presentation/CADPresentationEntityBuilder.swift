@@ -288,6 +288,14 @@ final class CADPresentationEntityBuilder {
         descriptor.primitives = .triangles(indices)
         if let uvs, uvs.count == body.positions.count {
             descriptor.textureCoordinates = MeshBuffers.TextureCoordinates(uvs)
+            if body.normals.count == body.positions.count {
+                let tangents = CADPresentationResourceCache.tangents(
+                    positions: body.positions, normals: body.normals,
+                    uvs: uvs, indices: indices)
+                if tangents.count == body.positions.count {
+                    descriptor.tangents = MeshBuffers.Tangents(tangents)
+                }
+            }
         }
         do {
             let resource = try await MeshResource(from: [descriptor])
@@ -325,6 +333,14 @@ final class CADPresentationEntityBuilder {
         descriptor.primitives = .triangles(indices)
         if let uvs, uvs.count == body.positions.count {
             descriptor.textureCoordinates = MeshBuffers.TextureCoordinates(uvs)
+            if body.normals.count == body.positions.count {
+                let tangents = CADPresentationResourceCache.tangents(
+                    positions: body.positions, normals: body.normals,
+                    uvs: uvs, indices: indices)
+                if tangents.count == body.positions.count {
+                    descriptor.tangents = MeshBuffers.Tangents(tangents)
+                }
+            }
         }
         do {
             let resource = try await MeshResource(from: [descriptor])
@@ -337,6 +353,7 @@ final class CADPresentationEntityBuilder {
             return nil
         }
     }
+
 
     // MARK: Material preview
 
@@ -353,10 +370,12 @@ final class CADPresentationEntityBuilder {
         var imagesByID: [String: CADPresentationImage] = [:]
         for image in resolved.images { imagesByID[image.id] = image }
         var issues: [CADPresentationIssue] = []
-        let effectiveUVs = hasUVs || resolved.material.usesProjectedUVs
+        // Preview replaces the material on an already-built entity, so only
+        // the entity's actual UV buffer counts. A mapping edit becomes visible
+        // after Apply rebuilds the entity with its new sampling UVs.
         return await pbrMaterial(for: resolved.material,
                                  images: imagesByID,
-                                 hasUVs: effectiveUVs,
+                                 hasUVs: hasUVs,
                                  bodyID: bodyID,
                                  bodyName: bodyName,
                                  issues: &issues)
@@ -426,7 +445,12 @@ final class CADPresentationEntityBuilder {
                       semantic: TextureResource.Semantic) async -> PhysicallyBasedMaterial.Texture? {
             guard let reference = descriptor.texture(for: slot),
                   let image = images[reference.imageID] else { return nil }
-            guard let texture = await cache.texture(for: image, semantic: semantic) else {
+            // Each map is normalized with its own declared origin. This is the
+            // only place Present turns row order into sampling data, so two
+            // maps with opposite origins never share one V flip.
+            guard let texture = await cache.texture(
+                for: image, semantic: semantic,
+                orientation: reference.orientation) else {
                 return nil
             }
             return PhysicallyBasedMaterial.Texture(texture)

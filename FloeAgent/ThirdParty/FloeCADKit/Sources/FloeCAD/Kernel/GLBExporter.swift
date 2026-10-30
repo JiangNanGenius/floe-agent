@@ -160,29 +160,26 @@ nonisolated enum GLBExporter {
             return index
         }
 
-        /// UVs for one primitive. An explicit non-mesh mapping WINS (the
-        /// caller asked for a projection); otherwise mesh UVs are used. A
-        /// textured material with neither gets a deterministic box projection
-        /// so the exported map is sampleable without changing geometry.
+        /// UVs for one primitive. This uses the same core source rule as Edit
+        /// and Present: an explicit non-mesh mapping WINS even when the mesh
+        /// has authored UVs; otherwise mesh UVs are used. A textured material
+        /// with neither gets a deterministic export-only box projection so the
+        /// map is sampleable without changing geometry.
         func uvAccessor(for body: Body, material: BodyMaterialSpec?) -> Int? {
-            let uvs: [SIMD2<Float>]?
-            if let mapping = material?.uvMapping, mapping.source != .mesh {
-                uvs = MaterialUVProjector.project(positions: body.render.positions,
-                                                  normals: body.render.normals,
-                                                  indices: body.render.indices,
-                                                  mapping: mapping)
-            } else if let meshUVs = body.render.texcoords,
-                      meshUVs.count == body.render.positions.count {
-                uvs = meshUVs
-            } else if material?.hasAnyTexture == true {
+            var uvs = MaterialUVProjector.effectiveUVs(
+                meshTexcoords: body.render.texcoords,
+                positions: body.render.positions,
+                normals: body.render.normals,
+                indices: body.render.indices,
+                mapping: material?.uvMapping)
+            if uvs == nil, material?.hasAnyTexture == true,
+               (material?.uvMapping?.source ?? .mesh) == .mesh {
                 uvs = MaterialUVProjector.project(
                     positions: body.render.positions,
                     normals: body.render.normals,
                     indices: body.render.indices,
                     mapping: CADMaterialUVMapping(source: .boxProjection, axis: .y,
                                                   scaleMM: SIMD2(100, 100)))
-            } else {
-                uvs = nil
             }
             guard let uvs, uvs.count == body.render.positions.count else { return nil }
             let view = appendView(packed(uvs), to: &bin, views: &bufferViews,
@@ -647,12 +644,13 @@ nonisolated enum GLBExporter {
         var strength: Double
     }
 
-    /// The typed description for one slot, if the material carries one. The
-    /// bytes stay authoritative; this only supplies colour space/orientation.
+    /// The typed description for one slot, but only while it still matches the
+    /// bytes. The bytes stay authoritative; this only supplies colour
+    /// space/orientation, per map.
     private static func textureMetadata(slot: MaterialTextureSlot,
                                         in spec: BodyMaterialSpec)
         -> CADMaterialTextureMetadata? {
-        spec.textureMetadata?.first { $0.slot == slot }
+        spec.verifiedTextureMetadata(for: slot)
     }
 
     /// Engineering and Present both multiply emissive RGB by the strength

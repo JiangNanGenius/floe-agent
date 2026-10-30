@@ -880,7 +880,6 @@ extension CADPresentationIssueKind {
         case .emptyBody, .malformedTransform: return "cube.transparent"
         case .corruptMaterial, .missingTexture, .imageDecodeFailed: return "photo.badge.exclamationmark"
         case .missingMeshUV: return "square.on.square.dashed"
-        case .mixedTextureOrientation: return "arrow.up.arrow.down"
         case .faceMaterialDisplayUnsupported, .unresolvedFaceBindings:
             return "square.stack.3d.up.slash"
         }
@@ -905,9 +904,6 @@ extension CADPresentationIssue {
         case .missingMeshUV:
             return FloeCADStrings.text("cad.present.issue.uv",
                                        "Textures need a UV mapping for this body.")
-        case .mixedTextureOrientation:
-            return FloeCADStrings.text("cad.present.issue.orientation",
-                                       "Texture maps use different vertical orientations.")
         case .faceMaterialDisplayUnsupported:
             return FloeCADStrings.format("cad.present.issue.faces",
                                          "%d face material(s) couldn't be matched to this body and aren't shown individually.",

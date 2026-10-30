@@ -112,22 +112,26 @@ nonisolated struct CADPresentationMaterial: Equatable, Sendable {
     }
 
     var isTransparent: Bool { opacity < 0.999 }
-
-    /// The UVs must be flipped when the encoded image's first row is its
-    /// bottom row (Metal/RealityKit sample v=0 at the image top).
-    var flipsV: Bool {
-        guard let reference = texture(for: .baseColor) ?? textures.first else { return false }
-        return reference.orientation == .bottomLeft
-    }
-
-    /// True when any authored image relies on a projection instead of the
-    /// mesh's own UV set. The snapshot carries already-projected UVs for the
-    /// body-level material; face-level materials cannot use them yet (see
-    /// `CADPresentationIssue.faceMaterialDisplayUnsupported`).
-    var usesProjectedUVs: Bool { uvMapping.source != .mesh }
 }
 
 // MARK: - Mesh / body
+
+/// Content identity for one UV array. Mapping edits do not bump the mesh
+/// revision (geometry is unchanged), so the mesh resource cache and the stage
+/// build key must include the actual sampling coordinates or Present would
+/// keep an old UV buffer for a new projection.
+nonisolated enum CADPresentationUVKey {
+    static func stableKey(_ uvs: [SIMD2<Float>]?) -> String {
+        guard let uvs, !uvs.isEmpty else { return "uv:none" }
+        var hasher = Hasher()
+        hasher.combine(uvs.count)
+        for uv in uvs {
+            hasher.combine(uv.x)
+            hasher.combine(uv.y)
+        }
+        return "uv-\(hasher.finalize())"
+    }
+}
 
 nonisolated struct CADPresentationMesh: Equatable, Sendable {
     var positions: [SIMD3<Float>]
@@ -150,7 +154,7 @@ nonisolated struct CADPresentationMesh: Equatable, Sendable {
         hasher.combine(positions.count)
         hasher.combine(normals.count)
         hasher.combine(indices.count)
-        hasher.combine(uvs?.count ?? -1)
+        hasher.combine(CADPresentationUVKey.stableKey(uvs))
         if let first = indices.first { hasher.combine(first) }
         if let last = indices.last { hasher.combine(last) }
         if let first = positions.first { hasher.combine(first.x); hasher.combine(first.y); hasher.combine(first.z) }
@@ -174,9 +178,17 @@ nonisolated struct CADPresentationFaceGroup: Equatable, Sendable {
     /// Never derived or guessed here.
     var indices: [UInt32]
     var material: CADPresentationMaterial
-    /// UVs actually sampled by this face (snapshot render UVs when available,
-    /// otherwise a per-face projection for a face-level mapping).
+    /// UVs actually sampled by this face. This is the face material's own
+    /// effective set (explicit projection when chosen, otherwise authored mesh
+    /// UVs); it is never the body's projection borrowed for a different face.
     var uvs: [SIMD2<Float>]?
+
+    /// Render identity of this override. Face materials are not part of
+    /// `body.material.stableKey`, so the stage build key must include this or a
+    /// face-only mapping/material edit would reuse the old entity.
+    var stableKey: String {
+        "face-\(faceIndex)-\(material.stableKey)-\(CADPresentationUVKey.stableKey(uvs))"
+    }
 }
 
 nonisolated struct CADPresentationBody: Equatable, Sendable, Identifiable {
@@ -261,7 +273,6 @@ nonisolated enum CADPresentationIssueKind: String, Sendable {
     case corruptMaterial
     case missingTexture
     case missingMeshUV
-    case mixedTextureOrientation
     case faceMaterialDisplayUnsupported
     case unresolvedFaceBindings
     case imageDecodeFailed
@@ -303,6 +314,16 @@ nonisolated struct CADPresentationScene: Equatable, Sendable {
         ]
         for body in bodies {
             parts.append("\(body.id.uuidString):\(body.sourceBodyID?.uuidString ?? "-"):\(body.mesh.cacheKey):\(body.material.stableKey):\(body.transform.stableKey)")
+            parts.append("faces:\(body.faceMaterials.count):\(body.unresolvedFaceCount)")
+            // Face-level appearances and their sampling UVs are independent of
+            // the body material. Without them a face-only edit keeps the old
+            // stage because the body key is unchanged.
+            for faceMaterial in body.faceMaterials {
+                parts.append("fm-\(faceMaterial.faceIndex)-\(faceMaterial.material.stableKey)")
+            }
+            for group in body.faceGroups {
+                parts.append(group.stableKey)
+            }
         }
         return parts.joined(separator: "|")
     }

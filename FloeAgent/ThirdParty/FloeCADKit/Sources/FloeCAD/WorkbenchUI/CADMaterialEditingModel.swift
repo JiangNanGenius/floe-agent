@@ -396,9 +396,26 @@ final class CADMaterialDraftModel {
         self.personalStore = personalStore
         var initial = CADMaterialDefinition(
             name: FloeCADStrings.text("cad.material.defaultName", "Material"))
-        if let existing = document.session.document.bodies
+        if let faceBodyID = target.faceBodyID,
+           let body = document.session.document.bodies.first(where: {
+               $0.id.raw == faceBodyID
+           }) {
+            // A face target starts from that face's saved snapshot, not the
+            // body appearance: opening the inspector must not silently discard
+            // a per-face mapping or a textured normal map.
+            if let faceIndex = target.faceIndex,
+               let binding = CADFaceMaterialResolver.resolve(
+                   body.materialFaceBindings, in: body)
+                   .first(where: { $0.resolvedIndex == faceIndex })?.binding {
+                initial = CADMaterialDefinition(spec: binding.material)
+            } else if let existing = body.material, existing != .default {
+                initial = CADMaterialDefinition(spec: existing)
+            }
+        } else if let existing = document.session.document.bodies
             .first(where: { target.bodyIDs.contains($0.id.raw) })?.material,
-           existing.materialName != nil {
+                  existing != .default {
+            // Texture-only imported appearances have no materialName; the
+            // previous name-only test silently dropped every map on edit.
             initial = CADMaterialDefinition(spec: existing)
         }
         self.draft = initial

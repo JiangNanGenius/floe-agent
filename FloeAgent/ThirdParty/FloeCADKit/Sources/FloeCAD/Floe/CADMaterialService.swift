@@ -26,6 +26,16 @@ public final class CADMaterialService {
         "libraryImport", "libraryList", "undo", "redo",
     ]
 
+    /// Applied appearances are complete copies, not live library links. This
+    /// is reported explicitly so an Agent/user can tell a copy from a linked
+    /// material; library edits reach existing bodies only through an explicit
+    /// `apply_to_applied: true` request.
+    public static let linkSemantics = "independent_copy"
+    public static let linkSemanticsNote =
+        "Applied body and face appearances are complete snapshots. "
+        + "Editing or deleting a library entry does not change them unless "
+        + "apply_to_applied is explicitly true."
+
     private let document: FloeCADDocument
 
     public init(document: FloeCADDocument) {
@@ -108,6 +118,8 @@ public final class CADMaterialService {
         return Self.ok([
             "action": "list",
             "library_schema_version": library.schemaVersion,
+            "link_semantics": Self.linkSemantics,
+            "link_semantics_note": Self.linkSemanticsNote,
             "count": rows.count,
             "materials": rows,
             "revision": document.revision,
@@ -125,6 +137,7 @@ public final class CADMaterialService {
         var row = entry.summaryJSON
         let bodyRefs = appliedBodyReferences(for: entry.id)
         row["bodies"] = bodyRefs
+        row["link_semantics"] = Self.linkSemantics
         return Self.ok(["action": "read", "material": row,
                         "revision": document.revision,
                         "change_count": document.session.changeCount])
@@ -496,7 +509,10 @@ public final class CADMaterialService {
         library.upsert(definition)
         var updatedBodies: [String] = []
         var appearance: SetMaterialAppearanceCommand?
-        if Self.bool(args["apply_to_applied"]) ?? true {
+        // Copy semantics: editing the library is not a live link. Reapplying
+        // to bodies is an explicit batch operation so a library tweak cannot
+        // silently repaint unrelated models.
+        if Self.bool(args["apply_to_applied"]) == true {
             let spec = definition.bodyMaterialSpec()
             var snapshots: [BodyID: SetMaterialAppearanceCommand.Snapshot] = [:]
             for body in document.session.document.bodies {
@@ -562,7 +578,9 @@ public final class CADMaterialService {
         library.upsert(definition)
         var updatedBodies: [String] = []
         var appearance: SetMaterialAppearanceCommand?
-        if Self.bool(args["apply_to_applied"]) ?? true {
+        // Same explicit-copy rule as mapping: a texture/library edit alone
+        // never changes an applied body snapshot.
+        if Self.bool(args["apply_to_applied"]) == true {
             let spec = definition.bodyMaterialSpec()
             var snapshots: [BodyID: SetMaterialAppearanceCommand.Snapshot] = [:]
             for body in document.session.document.bodies {
@@ -971,6 +989,7 @@ public final class CADMaterialService {
         var reply = extra
         reply["action"] = action
         reply["mutated"] = true
+        reply["link_semantics"] = Self.linkSemantics
         if let material { reply["material"] = material.summaryJSON }
         reply["body_ids"] = bodyIDs.map(\.uuidString)
         reply["revision"] = document.revision

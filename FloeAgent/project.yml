@@ -1219,6 +1219,7 @@ targets:
       - path: Tests/FloeToolsTests/VerifiedToolImageArtifactTests.swift
       - path: Tests/FloeWorkbenchTests/CadDocumentToolTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialCoreTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialUVConsistencyTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHoleWorkflowTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchEditTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyHierarchyReferenceTests.swift

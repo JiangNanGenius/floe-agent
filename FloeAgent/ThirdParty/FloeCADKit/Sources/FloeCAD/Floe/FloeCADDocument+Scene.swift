@@ -22,8 +22,9 @@ nonisolated struct CADSceneMeshResource: Sendable, Equatable {
     var indices: [UInt32]
     /// Mesh-authored UVs (nil when the source mesh has none).
     var texcoords: [SIMD2<Float>]?
-    /// UVs a renderer should actually sample: mesh UVs when present, else the
-    /// material's deterministic projection. Never mutates the mesh.
+    /// UVs a renderer should actually sample: an explicit material projection
+    /// when chosen (even if the mesh has authored UVs), otherwise the mesh's
+    /// own UVs. Never mutates the mesh.
     var renderTexcoords: [SIMD2<Float>]?
     var meshRevision: UInt64
     var boundsMin: SIMD3<Float>

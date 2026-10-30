@@ -69,7 +69,10 @@ nonisolated enum CADPresentationMaterialResolver {
                 continue
             }
             let digest = CADMaterialTexture.digest(data)
-            let typed = metadata.first { $0.slot == slot }
+            // A metadata record is used only while it still matches the exact
+            // bytes; a stale label must not decide this map's colour space or
+            // vertical origin.
+            let typed = clean.verifiedTextureMetadata(for: slot)
             let colorSpace = typed?.colorSpace
                 ?? (slot == .baseColor || slot == .emissive ? .srgb : .linear)
             let orientation = typed?.orientation ?? .topLeft
@@ -97,15 +100,6 @@ nonisolated enum CADPresentationMaterialResolver {
                     bodyID: bodyID,
                     bodyName: bodyName,
                     detail: "The assigned textures need UVs but this body has none and the material uses the mesh UV source. Choose a planar or box mapping."))
-            }
-            let orientations = Set(textures.map(\.orientation))
-            if orientations.count > 1 {
-                issues.append(CADPresentationIssue(
-                    id: "uv-orientation-\(bodyID?.uuidString ?? "scene")",
-                    kind: .mixedTextureOrientation,
-                    bodyID: bodyID,
-                    bodyName: bodyName,
-                    detail: "Texture maps use different vertical orientations; the colour map's orientation is applied to the shared UV set."))
             }
         }
 
@@ -171,78 +165,74 @@ enum CADPresentationSceneBuilder {
             }
             triangleBudget -= mesh.indices.count / 3
 
-            // The snapshot already resolves projected UVs for the body-level
-            // material; fall back to the mesh's own set when no texture asks
-            // for a projection.
-            var uvs = mesh.renderTexcoords ?? mesh.texcoords
+            // One shared UV-source rule for every renderer: an explicit
+            // projection wins even when the mesh carries authored UVs; a nil or
+            // `.mesh` mapping preserves those authored UVs. Per-map image
+            // orientation is applied at texture sampling, never by rotating
+            // this shared UV set.
             let hasMeshUVs = mesh.texcoords?.isEmpty == false
-            var resolved = CADPresentationMaterialResolver.resolve(
+            let bodyUsesProjection = body.material?.usesProjectedUVs ?? false
+            let uvs = MaterialUVProjector.effectiveUVs(
+                meshTexcoords: mesh.texcoords,
+                positions: mesh.positions,
+                normals: mesh.normals,
+                indices: mesh.indices,
+                mapping: body.material?.uvMapping)
+                ?? (bodyUsesProjection ? nil : mesh.renderTexcoords)
+            let resolved = CADPresentationMaterialResolver.resolve(
                 spec: body.material,
                 bodyID: body.id,
                 bodyName: body.name,
                 hasMeshUVs: hasMeshUVs,
-                hasProjectedUVs: mesh.renderTexcoords != nil)
-            if uvs == nil, let mapping = body.material?.uvMapping,
-               mapping.source != .mesh, body.material?.hasAnyTexture == true {
-                // The contract's snapshot already projects for the body; this
-                // is a defensive recomputation for older callers and uses the
-                // exact same projector (never a second geometry path).
-                uvs = MaterialUVProjector.project(
-                    positions: mesh.positions,
-                    normals: mesh.normals,
-                    indices: mesh.indices,
-                    mapping: mapping)
-            }
-            if let flipped = uvs, resolved.material.flipsV {
-                uvs = flipped.map { SIMD2($0.x, 1 - $0.y) }
-            }
+                hasProjectedUVs: uvs != nil)
             for issue in resolved.issues {
                 issues.append(issue)
             }
 
-            // Face-level snapshots are applied in the document. The
-            // authoritative triangle ranges come from the snapshot
-            // (`CADSceneFaceMaterial.triangleIndices`); nil means there is no
-            // trustworthy range, so nothing is guessed and the face is listed
-            // as unresolved below.
-            let faceMaterials = body.faceMaterials.map {
-                CADPresentationFaceMaterial(
-                    faceIndex: $0.faceIndex,
-                    material: CADPresentationMaterialResolver.resolve(
-                        spec: $0.material,
-                        bodyID: body.id,
-                        bodyName: body.name,
-                        hasMeshUVs: hasMeshUVs,
-                        hasProjectedUVs: false).material)
-            }
+            // Face-level snapshots are applied in the document. Each face uses
+            // its OWN mapping for UVs (including the no-authored-UV case and
+            // the explicit-projection-over-authored-UV case), and its own
+            // resolved images. The authoritative triangle ranges come from the
+            // snapshot (`CADSceneFaceMaterial.triangleIndices`); nil means
+            // there is no trustworthy range, so nothing is guessed.
+            var faceMaterials: [CADPresentationFaceMaterial] = []
             var faceGroups: [CADPresentationFaceGroup] = []
             var faceGroupsWithoutRange = 0
             for source in body.faceMaterials {
+                let groupUVs = MaterialUVProjector.effectiveUVs(
+                    meshTexcoords: mesh.texcoords,
+                    positions: mesh.positions,
+                    normals: mesh.normals,
+                    indices: mesh.indices,
+                    mapping: source.material.uvMapping)
+                let faceResolved = CADPresentationMaterialResolver.resolve(
+                    spec: source.material,
+                    bodyID: body.id,
+                    bodyName: body.name,
+                    hasMeshUVs: hasMeshUVs,
+                    hasProjectedUVs: groupUVs != nil)
+                // A face map may not exist on the body material. Carry its
+                // bytes into the ONE scene image table or the renderer would
+                // silently skip that face's texture.
+                for image in faceResolved.images {
+                    imagesByID[image.id] = image
+                }
+                let knownIssueIDs = Set(issues.map(\.id))
+                issues.append(contentsOf: faceResolved.issues.filter {
+                    !knownIssueIDs.contains($0.id)
+                })
+                faceMaterials.append(CADPresentationFaceMaterial(
+                    faceIndex: source.faceIndex,
+                    material: faceResolved.material))
                 guard let indices = source.triangleIndices,
                       !indices.isEmpty, indices.count % 3 == 0 else {
                     faceGroupsWithoutRange += 1
                     continue
                 }
-                guard let descriptor = faceMaterials.first(
-                    where: { $0.faceIndex == source.faceIndex }) else { continue }
-                // Snapshot renderTexcoords are the authoritative shared UVs.
-                // Only a face-level projection (when the snapshot has no UVs)
-                // is generated here, and it never changes the mesh.
-                var groupUVs = mesh.renderTexcoords ?? mesh.texcoords
-                if groupUVs == nil,
-                   let mapping = source.material.uvMapping,
-                   mapping.source != .mesh {
-                    groupUVs = MaterialUVProjector.project(
-                        positions: mesh.positions, normals: mesh.normals,
-                        indices: mesh.indices, mapping: mapping)
-                }
-                if let current = groupUVs, descriptor.material.flipsV {
-                    groupUVs = current.map { SIMD2($0.x, 1 - $0.y) }
-                }
                 faceGroups.append(CADPresentationFaceGroup(
                     faceIndex: source.faceIndex,
                     indices: indices,
-                    material: descriptor.material,
+                    material: faceResolved.material,
                     uvs: groupUVs))
             }
             if faceGroupsWithoutRange > 0 {

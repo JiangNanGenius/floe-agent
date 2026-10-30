@@ -269,18 +269,17 @@ nonisolated enum USDZExporter {
     private static func finite(_ v: SIMD3<Float>) -> Bool { v.x.isFinite && v.y.isFinite && v.z.isFinite }
 
     private static func textureCoordinates(_ body: Body, material: BodyMaterialSpec) throws -> [SIMD2<Float>]? {
-        let uvs: [SIMD2<Float>]?
-        if let mapping = material.uvMapping, mapping.source != .mesh {
-            uvs = MaterialUVProjector.project(positions: body.render.positions, normals: body.render.normals,
-                                              indices: body.render.indices, mapping: mapping)
-        } else {
-            if let map = material.uvMapping,
-               map.rotationDegrees != 0 || map.offset != .zero || map.flipU || map.flipV {
-                throw ExportIssue(code: "unsupportedMeshUVTransform",
-                                  message: "Mesh UV transforms need an explicit material mapping adapter.")
-            }
-            uvs = MaterialUVProjector.renderUVs(for: body, material: material)
+        if let map = material.uvMapping, map.source == .mesh,
+           map.rotationDegrees != 0 || map.offset != .zero || map.flipU || map.flipV {
+            throw ExportIssue(code: "unsupportedMeshUVTransform",
+                              message: "Mesh UV transforms need an explicit material mapping adapter.")
         }
+        let uvs = MaterialUVProjector.effectiveUVs(
+            meshTexcoords: body.render.texcoords,
+            positions: body.render.positions,
+            normals: body.render.normals,
+            indices: body.render.indices,
+            mapping: material.uvMapping)
         if let uvs {
             guard uvs.count == body.render.positions.count,
                   uvs.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {

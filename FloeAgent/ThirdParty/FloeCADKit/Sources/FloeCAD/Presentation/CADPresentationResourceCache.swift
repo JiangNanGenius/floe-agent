@@ -73,16 +73,20 @@ final class CADPresentationResourceCache {
 
     // MARK: Textures
 
-    /// Decode + upload one encoded image for the requested semantic. A failed
+    /// Decode + upload one encoded image for the requested semantic and
+    /// declared vertical origin. Orientation is part of the cache key because
+    /// the same bytes can legitimately be used by two slots with opposite
+    /// declared origins (for example a colour map and a normal map). A failed
     /// decode is remembered (never retried on every frame) and reported to the
     /// caller as nil; it never becomes a fabricated placeholder texture.
     func texture(for image: CADPresentationImage,
-                 semantic: TextureResource.Semantic) async -> TextureResource? {
+                 semantic: TextureResource.Semantic,
+                 orientation: MaterialTextureOrientation) async -> TextureResource? {
         guard !Task.isCancelled, !isDisposed else { return nil }
-        let key = "\(image.id)-\(semanticName(semantic))"
+        let key = "\(image.id)-\(semanticName(semantic))-\(orientation.rawValue)"
         if let cached = textures[key] { return cached }
         guard !failedImages.contains(key) else { return nil }
-        guard let cgImage = decode(image) else {
+        guard let cgImage = decode(image, orientation: orientation) else {
             failedImages.insert(key)
             return nil
         }
@@ -104,8 +108,14 @@ final class CADPresentationResourceCache {
         }
     }
 
+    /// The original source image IDs that could not be represented. Failure
+    /// keys also carry semantic/orientation, so report the shared image once
+    /// rather than inventing one issue per sample.
     func decodeFailureIDs() -> Set<String> {
-        failedImages
+        Set(failedImages.compactMap { key in
+            key.split(separator: "-", maxSplits: 1,
+                      omittingEmptySubsequences: false).first.map(String.init)
+        })
     }
 
     func environment(for environment: CADPresentationEnvironment) async -> EnvironmentResource? {
@@ -144,14 +154,61 @@ final class CADPresentationResourceCache {
 
     // MARK: Internals
 
-    private func decode(_ image: CADPresentationImage) -> CGImage? {
-        if let cached = imageCache[image.id] { return cached }
+    /// Decode the source image once, then cache a normalized top-left copy per
+    /// declared orientation. The same bytes therefore remain usable by a
+    /// top-left colour map and an opposite-origin normal map without sharing
+    /// one sampling direction.
+    private func decode(_ image: CADPresentationImage,
+                        orientation: MaterialTextureOrientation) -> CGImage? {
+        let key = "\(image.id)-\(orientation.rawValue)"
+        if let cached = imageCache[key] { return cached }
         guard let source = CGImageSourceCreateWithData(image.bytes as CFData, nil),
               let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             return nil
         }
-        imageCache[image.id] = cgImage
-        return cgImage
+        let normalized: CGImage
+        switch orientation {
+        case .topLeft:
+            normalized = cgImage
+        case .bottomLeft:
+            guard let flipped = Self.verticallyFlipped(cgImage) else { return nil }
+            normalized = flipped
+        }
+        imageCache[key] = normalized
+        return normalized
+    }
+
+    /// Normalize a bottom-up authored map to the top-left row order that
+    /// RealityKit samples at v=0. This is a per-image transform; it never
+    /// touches mesh UVs, so the colour and normal maps can point in opposite
+    /// directions while still sampling the same surface points.
+    nonisolated static func verticallyFlipped(_ image: CGImage) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0,
+              width <= CADImagePackingLimits.maximumDimension,
+              height <= CADImagePackingLimits.maximumDimension,
+              width * height <= CADImagePackingLimits.maximumPixelCount,
+              width * height * 4 <= CADImagePackingLimits.maximumDecodedBytes else {
+            return nil
+        }
+        let colorSpace = image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+        func makeContext(_ space: CGColorSpace) -> CGContext? {
+            CGContext(data: nil, width: width, height: height,
+                      bitsPerComponent: 8, bytesPerRow: width * 4,
+                      space: space,
+                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        }
+        guard let context = makeContext(colorSpace)
+                ?? makeContext(CGColorSpaceCreateDeviceRGB()) else { return nil }
+        context.interpolationQuality = .none
+        // Quartz draws images with their first row at the top of the
+        // destination. Flipping the user-space Y axis before drawing produces
+        // a new top-left image whose first row is the old bottom row.
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
     }
 
     private func semanticName(_ semantic: TextureResource.Semantic) -> String {
@@ -193,11 +250,13 @@ final class CADPresentationResourceCache {
     }
 
     /// Per-vertex tangents for normal mapping. Deterministic, bounded and
-    /// derived from the render buffer — it does not change the mesh.
-    private static func tangents(positions: [SIMD3<Float>],
-                                 normals: [SIMD3<Float>],
-                                 uvs: [SIMD2<Float>],
-                                 indices: [UInt32]) -> [SIMD3<Float>] {
+    /// derived from the render buffer — it does not change the mesh. Internal
+    /// so the focused regression test can assert a known UV-sign expectation
+    /// without launching a render surface.
+    nonisolated static func tangents(positions: [SIMD3<Float>],
+                                     normals: [SIMD3<Float>],
+                                     uvs: [SIMD2<Float>],
+                                     indices: [UInt32]) -> [SIMD3<Float>] {
         guard positions.count == normals.count, positions.count == uvs.count else { return [] }
         var accumulated = [SIMD3<Float>](repeating: .zero, count: positions.count)
         var triangle = 0

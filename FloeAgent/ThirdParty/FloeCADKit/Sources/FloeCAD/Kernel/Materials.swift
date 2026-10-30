@@ -104,6 +104,40 @@ nonisolated struct BodyMaterialSpec: Codable, Equatable, Sendable {
         baseColorTexture != nil || roughnessTexture != nil || metallicTexture != nil
             || normalTexture != nil || emissiveTexture != nil || opacityTexture != nil
     }
+
+    /// The typed metadata for `slot`, but only when it still describes the
+    /// exact bytes above. A stale record (byte count or digest mismatch) is
+    /// ignored rather than re-labelling current pixels with an older map's
+    /// colour space/orientation.
+    func verifiedTextureMetadata(for slot: MaterialTextureSlot)
+        -> CADMaterialTextureMetadata? {
+        guard let data = textureData(for: slot), !data.isEmpty,
+              let metadata = textureMetadata?.first(where: { $0.slot == slot }),
+              metadata.verifiedDigest(for: data) != nil else { return nil }
+        return metadata
+    }
+
+    /// Per-map vertical origin. This is deliberately NOT one orientation for
+    /// the whole material: a colour map and a normal map can be authored in
+    /// opposite directions and are corrected independently by every renderer.
+    func textureOrientation(for slot: MaterialTextureSlot)
+        -> MaterialTextureOrientation {
+        verifiedTextureMetadata(for: slot)?.orientation ?? .topLeft
+    }
+
+    /// Per-map colour-space declaration, with the canonical slot default when
+    /// the record is absent or no longer matches the bytes.
+    func textureColorSpace(for slot: MaterialTextureSlot)
+        -> MaterialTextureColorSpace {
+        verifiedTextureMetadata(for: slot)?.colorSpace
+            ?? ((slot == .baseColor || slot == .emissive) ? .srgb : .linear)
+    }
+
+    /// True only when an explicit projection was chosen. A nil mapping keeps
+    /// the mesh's authored UVs exactly (the historical default).
+    var usesProjectedUVs: Bool {
+        (uvMapping?.source ?? .mesh) != .mesh
+    }
 }
 
 /// A named entry in the (small, growing) preset library.

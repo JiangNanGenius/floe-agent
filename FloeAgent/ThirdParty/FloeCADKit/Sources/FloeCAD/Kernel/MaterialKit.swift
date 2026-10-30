@@ -348,7 +348,16 @@ nonisolated struct CADMaterialDefinition: Codable, Equatable, Sendable, Identifi
         func append(_ slot: MaterialTextureSlot, _ data: Data?) {
             guard let data, !data.isEmpty,
                   MaterialImageSniffer.mimeType(of: data) != nil else { return }
-            textures.append(CADMaterialTexture(slot: slot, bytes: data))
+            // Snapshot -> library must preserve each map's own declared
+            // orientation/colour space. Dropping this here used to reset a
+            // bottom-up normal map to topLeft the next time the library entry
+            // was applied.
+            let metadata = clean.verifiedTextureMetadata(for: slot)
+            textures.append(CADMaterialTexture(
+                slot: slot,
+                colorSpace: metadata?.colorSpace,
+                orientation: metadata?.orientation ?? .topLeft,
+                bytes: data))
         }
         append(.baseColor, clean.baseColorTexture)
         append(.roughness, clean.roughnessTexture)
@@ -367,7 +376,6 @@ nonisolated struct CADMaterialDefinition: Codable, Equatable, Sendable, Identifi
                   emissiveStrength: clean.emissiveStrength ?? 0,
                   textures: textures,
                   uvMapping: clean.uvMapping ?? .mesh)
-        self.uvMapping = clean.uvMapping ?? .mesh
     }
 
     /// JSON-facing metadata (never includes image bytes).
@@ -714,18 +722,37 @@ nonisolated enum MaterialUVProjector {
         return uvs
     }
 
-    /// Render UVs for one body + appearance: the mesh's own set when present,
-    /// otherwise the material mapping. Never mutates `body`.
-    static func renderUVs(for body: Body, material: BodyMaterialSpec?) -> [SIMD2<Float>]? {
-        if let texcoords = body.render.texcoords, !texcoords.isEmpty {
-            return texcoords
+    /// The one UV-source decision shared by the engineering viewport, Present
+    /// and the exporters.
+    ///
+    /// An explicit non-mesh mapping WINS even when the mesh carries authored
+    /// UVs: choosing planar/box projection and a scale is an intentional
+    /// per-appearance override, not a fallback. A nil or `.mesh` mapping keeps
+    /// the mesh's own UVs exactly (the historical default). Resolution from
+    /// millimetres happens here on a copy; the mesh is never rewritten.
+    static func effectiveUVs(meshTexcoords: [SIMD2<Float>]?,
+                             positions: [SIMD3<Float>],
+                             normals: [SIMD3<Float>],
+                             indices: [UInt32],
+                             mapping: CADMaterialUVMapping?) -> [SIMD2<Float>]? {
+        if let mapping, mapping.source != .mesh {
+            return project(positions: positions, normals: normals,
+                           indices: indices, mapping: mapping)
         }
-        guard let material, material.hasAnyTexture,
-              let mapping = material.uvMapping, mapping.source != .mesh else { return nil }
-        return project(positions: body.render.positions,
-                       normals: body.render.normals,
-                       indices: body.render.indices,
-                       mapping: mapping)
+        guard let meshTexcoords, !meshTexcoords.isEmpty,
+              meshTexcoords.count == positions.count else { return nil }
+        return meshTexcoords
+    }
+
+    /// Render UVs for one body + appearance. Explicit projection has
+    /// precedence even when the mesh also carries authored UVs; otherwise the
+    /// mesh's own set is returned unchanged. Never mutates `body`.
+    static func renderUVs(for body: Body, material: BodyMaterialSpec?) -> [SIMD2<Float>]? {
+        effectiveUVs(meshTexcoords: body.render.texcoords,
+                     positions: body.render.positions,
+                     normals: body.render.normals,
+                     indices: body.render.indices,
+                     mapping: material?.uvMapping)
     }
 
     private static func planeCoordinates(_ p: SIMD3<Float>,

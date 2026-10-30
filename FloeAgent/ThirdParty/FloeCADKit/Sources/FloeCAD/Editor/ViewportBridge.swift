@@ -175,7 +175,7 @@ extension BodyMaterial {
     init(spec: BodyMaterialSpec, meshHasTexcoords: Bool, revision: UInt64) {
         let clean = spec.clamped
         let mapping = clean.uvMapping
-        let canProject = (mapping?.source ?? .mesh) != .mesh
+        let canProject = clean.usesProjectedUVs
         let canSample = meshHasTexcoords || canProject
 
         var maps: [BodyMaterialMap] = []
@@ -190,7 +190,7 @@ extension BodyMaterial {
                 unavailable.append(slot)
                 continue
             }
-            let metadata = clean.textureMetadata?.first { $0.slot == slot }
+            let metadata = clean.verifiedTextureMetadata(for: slot)
             maps.append(BodyMaterialMap(
                 slot: slot,
                 data: data,
