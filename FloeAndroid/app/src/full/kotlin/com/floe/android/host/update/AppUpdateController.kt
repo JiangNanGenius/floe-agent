@@ -97,6 +97,10 @@ internal class AppUpdateController private constructor(
                 else -> DownloadFailure.APK_IDENTITY
             }
         },
+        // Restore-only: an exact, hash-verified target that is already the
+        // installed app was consumed by a completed install. It must not be
+        // re-admitted as a new update after the versionCode has become equal.
+        settledTarget = { apk -> reader.isInstalledArtifact(apk) },
         deltaBaseProvider = installedBaseProvider,
     )
     private val installer = AppUpdateInstaller(
@@ -121,8 +125,12 @@ internal class AppUpdateController private constructor(
         if (attached) return
         attached = true
         scope.launch(Dispatchers.IO) {
-            downloader.reconcile()
+            // The installed package is the truth after a self-update. Adopt a
+            // settled install FIRST: it retires the exact consumed download
+            // record before the downloader could restore that completed target
+            // and reject it as "not a newer version" against the new build.
             installer.reconcile()
+            downloader.reconcile()
         }
         scope.launch {
             combine(
