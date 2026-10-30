@@ -120,9 +120,9 @@ final class G07NetworkDiagnosticsTests: XCTestCase {
         XCTAssertTrue(mailbox.bind(epoch: 13))
         let request = try NetworkToolRequest.tcpProbe(
             host: "example.com", port: 443, timeoutMs: 1_000, operationID: operationID)
+        let owner = G07NetworkOwner(taskID: taskID, runID: runID, epoch: 13)
         async let reply = mailbox.submit(
-            request: request,
-            owner: G07NetworkOwner(taskID: taskID, runID: runID, epoch: 13),
+            request: request, owner: owner,
             cancellation: CancellationToken())
         try await Task.sleep(nanoseconds: 20_000_000)
         let claim = mailbox.nextClaim(timeoutMillis: 100)
@@ -143,9 +143,9 @@ final class G07NetworkDiagnosticsTests: XCTestCase {
         let mailbox = G07NetworkHostMailbox()
         XCTAssertTrue(mailbox.bind(epoch: 14))
         let request = try NetworkToolRequest.status(operationID: operationID)
+        let owner = G07NetworkOwner(taskID: taskID, runID: runID, epoch: 14)
         async let reply = mailbox.submit(
-            request: request,
-            owner: G07NetworkOwner(taskID: taskID, runID: runID, epoch: 14),
+            request: request, owner: owner,
             cancellation: CancellationToken())
         try await Task.sleep(nanoseconds: 20_000_000)
         let claim = mailbox.nextClaim(timeoutMillis: 100)
@@ -200,11 +200,12 @@ final class G07NetworkDiagnosticsTests: XCTestCase {
     func testStatsNeverCarryTargetsOrIdentities() async throws {
         let mailbox = G07NetworkHostMailbox()
         XCTAssertTrue(mailbox.bind(epoch: 18))
+        let request = try NetworkToolRequest.dnsLookup(
+            host: "very-secret-host.example", recordType: nil, timeoutMs: nil,
+            operationID: operationID)
+        let owner = G07NetworkOwner(taskID: taskID, runID: runID, epoch: 18)
         async let reply = mailbox.submit(
-            request: try NetworkToolRequest.dnsLookup(
-                host: "very-secret-host.example", recordType: nil, timeoutMs: nil,
-                operationID: operationID),
-            owner: G07NetworkOwner(taskID: taskID, runID: runID, epoch: 18),
+            request: request, owner: owner,
             cancellation: CancellationToken())
         try await Task.sleep(nanoseconds: 20_000_000)
         let claim = mailbox.nextClaim(timeoutMillis: 100)
