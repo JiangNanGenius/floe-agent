@@ -136,6 +136,7 @@ import ImageIO
 import FloeCore
 import FloeModels
 import FloePersistence
+import GRDB
 import FloeProviders
 import FloeTools
 import FloeWorkbench
@@ -979,6 +980,7 @@ private enum NativeCADLivePreflight {
 
 private enum NativeCADLiveError: Error, Sendable, CustomStringConvertible {
     case toolUnavailable(String)
+    case invalidContextWindow(Int)
     case timedOut(UUID)
     case budgetExceeded(String)
     case runIncomplete(state: String, detail: String)
@@ -992,6 +994,8 @@ private enum NativeCADLiveError: Error, Sendable, CustomStringConvertible {
         switch self {
         case .toolUnavailable(let detail):
             return "Native CAD tool unavailable: \(detail)"
+        case .invalidContextWindow(let tokens):
+            return "The model context window must be exactly 65,536 tokens for the compaction acceptance; found \(tokens)."
         case .timedOut(let runID):
             return "Live native CAD turn \(runID.uuidString) exceeded its wall-clock deadline and was cancelled."
         case .budgetExceeded(let detail):
@@ -2411,6 +2415,881 @@ private enum NativeCADLivePixels {
             uniqueColorBuckets: buckets.count,
             nonBackgroundFraction: Double(nonBackground) / Double(samples)
         )
+    }
+}
+
+// MARK: - Real App context-compaction acceptance (test-only, no production path)
+
+/// Four ACTUAL ordinary user messages go through the normal
+/// `RunLaunchStore` + `ConversationRunService` path with the exact 65,536-token
+/// model window already written by the private owned-route metadata. Three
+/// bounded synthetic data messages make the App's own `HybridContextEngine`
+/// compact naturally; the final follow-up must recall the early exact facts
+/// from the durable continuation record and then use a real workspace read.
+/// The read is small enough to arrive complete; a separate `tools.readResult`
+/// call verifies the exact indexed capture. This test does not claim that
+/// truncation/compaction was necessary for that tool output.
+@MainActor
+final class NativeCADContextCompactionLiveTests: XCTestCase {
+
+    func testRealModelCompactsAt64KContextAndRetainsEarlyFactsThenReadsExactCapture() async throws {
+        let optIn = try NativeCADLiveOptIn.load()
+        executionTimeAllowance = optIn.executionTimeAllowance
+        continueAfterFailure = true
+
+        let environment = try await appQualificationEnvironment()
+        let center = environment.conversationCenter
+        let installed = try await NativeCADLiveOwnedRoute.installIfRequested(environment: environment)
+        do {
+            let route = try await NativeCADLiveRoute.select(optIn: optIn, center: center)
+            guard optIn.prepaidBudgetBasis,
+                  NativeCADLivePrepaidRoute.matches(provider: route.provider, model: route.model) else {
+                throw XCTSkip(
+                    "Context-compaction acceptance skipped: it requires the reviewed exact "
+                        + "prepaid Agent Plan route and both explicit zero increments; no "
+                        + "paid fallback is used here. A skip is not live evidence."
+                )
+            }
+            guard route.model.limits.contextTokens == 65_536 else {
+                XCTFail(
+                    "The owned route must configure the actual model context at exactly "
+                        + "65,536 tokens for this acceptance; found "
+                        + "\(route.model.limits.contextTokens)."
+                )
+                throw NativeCADLiveError.invalidContextWindow(route.model.limits.contextTokens)
+            }
+            let session = NativeCADContextCompactionSession(
+                environment: environment, center: center, route: route, optIn: optIn)
+            do {
+                try await session.run()
+            } catch {
+                session.recordFailure(error)
+                await session.cleanup()
+                throw error
+            }
+            await session.cleanup()
+        } catch {
+            try await installed?.remove(environment: environment)
+            throw error
+        }
+        try await installed?.remove(environment: environment)
+    }
+}
+
+private struct NativeCADLiveCompactionRow: Sendable {
+    var id: UUID
+    var sourceMessageIDs: [UUID]
+    var summary: String
+    var beforeTokens: Int
+    var afterTokens: Int
+}
+
+private struct NativeCADLiveToolCall {
+    var callID: String
+    var tool: String
+    var arguments: [String: Any]
+    var requestSequence: Int
+}
+
+private struct NativeCADLiveToolResult {
+    var callID: String
+    var tool: String
+    var status: String
+    var summary: String
+    var sequence: Int
+}
+
+@MainActor
+private final class NativeCADContextCompactionSession {
+    private let environment: AppEnvironment
+    private let center: ConversationCenter
+    private let route: NativeCADLiveRoute
+    private let optIn: NativeCADLiveOptIn
+    private let ledger: NativeCADLiveLedger
+
+    private let conversationID = UUID()
+    private let title: String
+    private let fileRelativePath: String
+    private let searchToken: String
+    private let hiddenToken: String
+    private let expectedPage: String
+    private let alphaFact: String
+    private let alphaInstruction: String
+    private let betaFact: String
+    private let latestCode: String
+
+    private var workspace: WorkspaceRecord?
+    private var workspaceRootURL: URL?
+    private var runIDs: [UUID] = []
+    private var userMessageIDs: [UUID] = []
+    private var userGoals: [String] = []
+    private var services: [ConversationRunService] = []
+    private var cleanupStarted = false
+    private var conversationCreated = false
+    private var bridgeFinalMessageID: UUID?
+    private var failureDescription: String?
+
+    init(
+        environment: AppEnvironment,
+        center: ConversationCenter,
+        route: NativeCADLiveRoute,
+        optIn: NativeCADLiveOptIn
+    ) {
+        let token = UUID().uuidString.lowercased()
+        self.environment = environment
+        self.center = center
+        self.route = route
+        self.optIn = optIn
+        self.ledger = NativeCADLiveLedger(
+            pricing: route.pricing,
+            maxCost: optIn.maxCost,
+            maxInputTokens: optIn.maxInputTokens,
+            maxOutputTokens: optIn.maxOutputTokens,
+            maxTotalTokens: optIn.maxTotalTokens
+        )
+        let search = "COMPACTION-SEARCH-\(token)"
+        let hidden = "PAGED-HIDDEN-\(token.uppercased())"
+        var block = "\(search)|\(hidden)|"
+        if block.utf8.count < 160 {
+            block += String(repeating: "X", count: 160 - block.utf8.count)
+        }
+        self.title = "Context compaction live acceptance \(String(token.prefix(6)))"
+        self.fileRelativePath = "compaction-acceptance-\(String(token.prefix(8))).txt"
+        self.searchToken = search
+        self.hiddenToken = hidden
+        self.expectedPage = String(block.prefix(160))
+        self.alphaFact = "EARLY-FACT-ALPHA-\(token)"
+        self.alphaInstruction = "EARLY-INSTRUCTION-\(token)"
+        self.betaFact = "EARLY-FACT-BETA-\(token)"
+        self.latestCode = "LATEST-GOAL-\(token)"
+    }
+
+    func run() async throws {
+        try await createOwnedConversation()
+        try await createFixtureFile()
+
+        // The first two user messages are actual durable user rows. Their
+        // synthetic blocks are bounded test data, not a substitute history.
+        let first = try await turn(goal: firstTurnGoal(), allowedTools: [], label: "turn1")
+        try await assertAcknowledged(
+            runID: first.runID,
+            events: first.events,
+            required: ["ACK-ALPHA"],
+            label: "turn1"
+        )
+
+        let second = try await turn(goal: secondTurnGoal(), allowedTools: [], label: "turn2")
+        let secondCompactions = try await compactionRows(runID: second.runID)
+        XCTAssertFalse(
+            secondCompactions.isEmpty,
+            "The second actual user message did not trigger the App's natural context compaction at the configured 65,536-token window."
+        )
+        if let row = secondCompactions.first {
+            XCTAssertTrue(
+                row.sourceMessageIDs.contains(userMessageIDs[0]),
+                "The first actual user message was not a durable compaction source."
+            )
+            XCTAssertFalse(
+                row.sourceMessageIDs.contains(userMessageIDs[1]),
+                "The latest actual user message must stay protected, not be compacted."
+            )
+            XCTAssertTrue(
+                row.summary.contains(alphaFact),
+                "The App semantic continuation record did not retain the exact early alpha fact."
+            )
+            XCTAssertGreaterThan(row.beforeTokens, row.afterTokens)
+        }
+        try await assertAcknowledged(
+            runID: second.runID,
+            events: second.events,
+            required: [alphaFact, betaFact],
+            label: "turn2"
+        )
+
+        // A fourth actual user message keeps the recent protected tail free
+        // of the exact early facts. The next compaction must therefore carry
+        // them in the durable continuation record, not in a retained reply.
+        let bridge = try await turn(goal: bridgeGoal(), allowedTools: [], label: "bridge")
+        try await assertAcknowledged(
+            runID: bridge.runID,
+            events: bridge.events,
+            required: ["ACK-BRIDGE"],
+            label: "bridge"
+        )
+        bridgeFinalMessageID = finalMessageID(events: bridge.events)
+        XCTAssertNotNil(bridgeFinalMessageID, "The bridge turn has no durable final assistant message ID.")
+        let bridgeText = try await finalAssistantText(runID: bridge.runID, events: bridge.events)
+        XCTAssertFalse(
+            bridgeText.contains(alphaFact)
+                || bridgeText.contains(betaFact)
+                || bridgeText.contains(alphaInstruction),
+            "The bridge answer repeated early facts; the recent-tail retention proof would be ambiguous."
+        )
+
+        let third = try await turn(
+            goal: followUpGoal(),
+            allowedTools: ["workspace.readFile"],
+            label: "turn3"
+        )
+        let thirdCompactions = try await compactionRows(runID: third.runID)
+        XCTAssertFalse(
+            thirdCompactions.isEmpty,
+            "The follow-up run did not perform App-orchestrated compaction before its real provider request."
+        )
+        if let row = thirdCompactions.first {
+            XCTAssertTrue(row.sourceMessageIDs.contains(userMessageIDs[0]))
+            XCTAssertTrue(row.sourceMessageIDs.contains(userMessageIDs[1]))
+            XCTAssertFalse(row.sourceMessageIDs.contains(userMessageIDs[3]))
+            XCTAssertTrue(row.summary.contains(alphaFact), "The continuation record lost the early alpha fact.")
+            XCTAssertTrue(row.summary.contains(betaFact), "The continuation record lost the early beta fact.")
+            XCTAssertTrue(
+                row.summary.contains(alphaInstruction),
+                "The continuation record lost the exact early instruction token."
+            )
+            if let bridgeFinalMessageID = bridgeFinalMessageID {
+                XCTAssertFalse(
+                    row.sourceMessageIDs.contains(bridgeFinalMessageID),
+                    "The recent bridge answer was compacted instead of retained as recent context."
+                )
+            }
+            XCTAssertGreaterThan(row.beforeTokens, row.afterTokens)
+        }
+
+        try await assertToolPaging(runID: third.runID, events: third.events)
+        try await assertHistoryRowsPreserved()
+        try await assertFinalReply(runID: third.runID, events: third.events)
+        try await assertCheckpointEvidence(runID: third.runID, rows: thirdCompactions)
+
+        let totals = await ledger.totals()
+        XCTAssertTrue(totals.hasUsage, "The real runs produced no durable token usage.")
+        XCTAssertFalse(totals.exceeds, "The actual run usage exceeded the opt-in ceiling: \(totals.description)")
+    }
+
+    // MARK: Actual ordinary turns
+
+    private func createOwnedConversation() async throws {
+        let now = Date()
+        try await environment.conversationStore.saveConversation(ConversationRecord(
+            id: conversationID,
+            title: title,
+            createdAt: now,
+            updatedAt: now
+        ))
+        conversationCreated = true
+        let workspace = try await SQLiteWorkspaceStore(database: environment.database)
+            .ensureWorkspace(conversationID: conversationID, title: title)
+        let root = try NativeCADLivePaths.workspaceRoot(
+            for: workspace,
+            conversationID: conversationID
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        self.workspace = workspace
+        self.workspaceRootURL = root
+    }
+
+    private func createFixtureFile() async throws {
+        let root = try XCTUnwrap(workspaceRootURL, "The owned task workspace root was not resolved.")
+        var bytes: [UInt8] = []
+        let padding = Array("synthetic context-compaction file padding line; inert test data\n".utf8)
+        while bytes.count < 12_288 {
+            bytes.append(contentsOf: padding)
+        }
+        bytes.removeLast(bytes.count - 12_288)
+        let pageBytes = Array(expectedPage.utf8)
+        guard pageBytes.count == 160 else {
+            throw NativeCADLiveError.invalidContextWindow(0)
+        }
+        bytes.replaceSubrange(4_000..<4_160, with: pageBytes)
+        try Data(bytes).write(to: root.appendingPathComponent(fileRelativePath), options: .atomic)
+    }
+
+    private func turn(
+        goal: String,
+        allowedTools: Set<String>,
+        label: String
+    ) async throws -> (runID: UUID, events: [RunEventRecord]) {
+        guard let workspace else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "noWorkspace",
+                detail: "The owned workspace was not created before \(label)."
+            )
+        }
+        try await setAllowedTools(allowedTools)
+        let runID = UUID()
+        let prepared = try await environment.runLaunchStore.prepare(RunLaunchRequest(
+            conversationID: conversationID,
+            runID: runID,
+            goal: goal,
+            workspaceID: workspace.id,
+            conversationMode: "chat",
+            initialPolicy: DraftTaskPolicy(approvalMode: .automatic),
+            providerID: route.provider.id,
+            modelID: route.model.id,
+            providerName: route.provider.displayName ?? route.provider.kind.rawValue,
+            modelName: route.model.displayName
+        ))
+        let history = try await ConversationHistoryAssembler(store: environment.conversationStore)
+            .build(conversationID: conversationID)
+            .filter { $0.id != prepared.userMessage.id }
+        let service = try await center.runService(
+            for: conversationID,
+            provider: route.provider,
+            model: route.model,
+            runID: runID,
+            executionMode: .agent,
+            runSurface: .ordinary,
+            workspaceID: prepared.workspace.id,
+            memoryQuery: "",
+            conversationHistory: history,
+            automaticReasoningEffortIngress: .continuation
+        )
+        services.append(service)
+        runIDs.append(runID)
+        userMessageIDs.append(prepared.userMessage.id)
+        userGoals.append(goal)
+        try await execute(service: service, runID: runID, goal: goal)
+        let events = try await environment.runStore.events(runID: runID)
+        return (runID, events)
+    }
+
+    private func setAllowedTools(_ names: Set<String>) async throws {
+        try await SQLiteWorkspaceStore(database: environment.database).saveTaskPolicy(TaskPolicy(
+            conversationID: conversationID,
+            approvalMode: TaskApprovalMode.automatic.rawValue,
+            allowedToolNames: names,
+            filePaths: [],
+            networkAllowed: false,
+            browserControlAllowed: false,
+            uploadAllowed: false,
+            credentialsAllowed: false,
+            remoteExecutionAllowed: false,
+            recoveryPolicy: .safePoint,
+            notificationPolicy: .stages
+        ))
+    }
+
+    private func execute(service: ConversationRunService, runID: UUID, goal: String) async throws {
+        let runStore = environment.runStore
+        let ledger = self.ledger
+        let stop = NativeCADLiveStopSignal()
+        let timeoutMilliseconds = Int64(optIn.perRunTimeoutSeconds * 1000)
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await service.startPrepared(goal: goal)
+                }
+                group.addTask {
+                    try await Task.sleep(for: .milliseconds(timeoutMilliseconds))
+                    await stop.set(.timedOut(runID))
+                    await service.cancel()
+                    throw NativeCADLiveError.timedOut(runID)
+                }
+                group.addTask {
+                    while !Task.isCancelled {
+                        try await Task.sleep(for: .milliseconds(2_000))
+                        let records = (try? await runStore.usage(runID: runID)) ?? []
+                        let totals = await ledger.update(runID: runID, records: records)
+                        if totals.exceeds {
+                            let message = totals.description
+                            await stop.set(.budgetExceeded(message))
+                            await service.cancel()
+                            throw NativeCADLiveError.budgetExceeded(message)
+                        }
+                    }
+                }
+                do {
+                    try await group.next()
+                    group.cancelAll()
+                } catch {
+                    group.cancelAll()
+                    throw error
+                }
+            }
+
+            try await stop.throwIfStopped()
+
+            var snapshot = await service.snapshot()
+            for _ in 0..<50 where !snapshot.isTerminal {
+                try? await Task.sleep(for: .milliseconds(100))
+                snapshot = await service.snapshot()
+            }
+            guard snapshot.isTerminal else {
+                await service.cancel()
+                throw NativeCADLiveError.runIncomplete(
+                    state: snapshot.stateName,
+                    detail: "The run never reached a terminal state."
+                )
+            }
+            guard snapshot.stateName == "completed" else {
+                throw NativeCADLiveError.runIncomplete(
+                    state: snapshot.stateName,
+                    detail: "The run did not complete; acceptance never retries a failed model turn."
+                )
+            }
+            guard snapshot.pendingApproval == nil else {
+                throw NativeCADLiveError.runIncomplete(
+                    state: snapshot.stateName,
+                    detail: "A call remained awaiting interactive approval; the owned policy is automatic."
+                )
+            }
+
+            let records = (try? await runStore.usage(runID: runID)) ?? []
+            let totals = await ledger.update(runID: runID, records: records)
+            guard totals.hasUsage else { throw NativeCADLiveError.missingUsage }
+            guard !totals.exceeds else {
+                throw NativeCADLiveError.budgetExceeded(totals.description)
+            }
+        } catch {
+            await service.cancel()
+            throw error
+        }
+    }
+
+    // MARK: Assertions
+
+    private func assertAcknowledged(
+        runID: UUID,
+        events: [RunEventRecord],
+        required: [String],
+        label: String
+    ) async throws {
+        let realToolCalls = events.filter { event in
+            guard event.kind == .toolRequest,
+                  let payload = NativeCADLiveJSON.object(event.payloadJSON),
+                  let tool = payload["tool"] as? String else { return false }
+            return tool == "workspace.readFile" || tool == "tools.readResult"
+        }
+        XCTAssertTrue(
+            realToolCalls.isEmpty,
+            "\(label) unexpectedly entered the tool phase; the first two turns are actual data-delivery messages only."
+        )
+        let text = try await finalAssistantText(runID: runID, events: events)
+        for value in required {
+            XCTAssertTrue(
+                text.contains(value),
+                "\(label) final answer did not retain \(value). Prefix: \(String(text.prefix(500)))"
+            )
+        }
+    }
+
+    private func assertToolPaging(runID: UUID, events: [RunEventRecord]) async throws {
+        let (requests, results) = toolEvents(events)
+        let reads = requests.values.filter { call in
+            call.tool == "workspace.readFile"
+                && (call.arguments["path"] as? String) == fileRelativePath
+        }
+        guard let firstRead = reads.first(where: {
+            (NativeCADLiveJSON.int($0.arguments["offset"]) ?? 0) == 0
+        }) else {
+            XCTFail("The follow-up did not issue the actual workspace read at offset 0.")
+            throw NativeCADLiveError.runIncomplete(
+                state: "missingToolRead",
+                detail: "One workspace.readFile call was required."
+            )
+        }
+        guard let firstResult = results[firstRead.callID],
+              firstResult.status == "ok" else {
+            XCTFail("The required workspace read did not return a successful tool result.")
+            throw NativeCADLiveError.runIncomplete(
+                state: "failedToolRead",
+                detail: "The workspace read must succeed."
+            )
+        }
+        // The file is 12 KiB and the configured window retains it complete.
+        // A complete read is PASS; this assertion does not claim that the
+        // runtime had to truncate it.
+        XCTAssertTrue(
+            firstResult.summary.contains("truncated=false"),
+            "The 12 KiB read was unexpectedly truncated; a complete read is required when the window permits it."
+        )
+        XCTAssertTrue(
+            firstResult.summary.contains(expectedPage),
+            "The real workspace read did not contain the complete middle block."
+        )
+
+        let queryCalls = requests.values.filter { call in
+            call.tool == "tools.readResult"
+                && (call.arguments["query"] as? String) == searchToken
+        }
+        guard let queryCall = queryCalls.first,
+              let queryResult = results[queryCall.callID],
+              queryResult.status == "ok",
+              let matchOffset = matchOffset(in: queryResult.summary) else {
+            XCTFail("The follow-up did not search the retained capture for the exact unique token.")
+            throw NativeCADLiveError.runIncomplete(
+                state: "missingPagingQuery",
+                detail: "tools.readResult query did not return a match offset."
+            )
+        }
+
+        let pageCalls = requests.values.filter { call in
+            call.tool == "tools.readResult"
+                && NativeCADLiveJSON.int(call.arguments["offset"]) == matchOffset
+        }
+        guard let pageCall = pageCalls.first(where: { results[$0.callID]?.status == "ok" }),
+              let pageResult = results[pageCall.callID] else {
+            XCTFail("The follow-up did not read the exact retained page after compaction.")
+            throw NativeCADLiveError.runIncomplete(
+                state: "missingPagingRead",
+                detail: "tools.readResult page did not succeed."
+            )
+        }
+        XCTAssertGreaterThan(
+            pageResult.sequence,
+            firstResult.sequence,
+            "The retained-capture page was not fetched after the real workspace read."
+        )
+        XCTAssertTrue(
+            pageResult.summary.contains(expectedPage),
+            "The paged result did not contain the exact retained 160-byte block; the capture was not byte-complete."
+        )
+        XCTAssertTrue(
+            pageResult.summary.contains(hiddenToken),
+            "The paged result omitted the unique token from the middle of the read."
+        )
+        XCTAssertFalse(events.contains { $0.kind == .approval })
+    }
+
+    private func assertHistoryRowsPreserved() async throws {
+        let persisted = try await environment.conversationStore.messages(conversationID: conversationID)
+        XCTAssertGreaterThanOrEqual(persisted.count, userMessageIDs.count + 2)
+        for (index, messageID) in userMessageIDs.enumerated() {
+            guard let row = persisted.first(where: { $0.id == messageID }) else {
+                XCTFail("Actual user message \(index) disappeared after compaction.")
+                continue
+            }
+            XCTAssertEqual(row.role, "user")
+            XCTAssertTrue(
+                row.content == userGoals[index],
+                "Actual user message \(index) did not preserve its exact durable bytes."
+            )
+            XCTAssertEqual(row.runID, Optional(runIDs[index]))
+        }
+    }
+
+    private func assertFinalReply(runID: UUID, events: [RunEventRecord]) async throws {
+        let text = try await finalAssistantText(runID: runID, events: events)
+        XCTAssertTrue(text.contains(alphaFact), "Final reply lost the early alpha fact.")
+        XCTAssertTrue(text.contains(betaFact), "Final reply lost the early beta fact.")
+        XCTAssertTrue(text.contains(alphaInstruction), "Final reply lost the exact early instruction token.")
+        XCTAssertTrue(text.contains(latestCode), "Final reply lost the latest follow-up goal token.")
+        XCTAssertTrue(text.contains("PAGED-MARKER"), "Final reply did not label the paged bytes.")
+        XCTAssertTrue(
+            text.contains(hiddenToken),
+            "Final reply did not contain the unique token verified through the retained capture."
+        )
+    }
+
+    private func assertCheckpointEvidence(
+        runID: UUID,
+        rows: [NativeCADLiveCompactionRow]
+    ) async throws {
+        guard let checkpoint = try await environment.checkpointStore.load(runID: runID) else {
+            XCTFail("The run has no durable checkpoint.")
+            return
+        }
+        guard let compaction = checkpoint.contextCompaction else {
+            XCTFail("The durable checkpoint has no contextCompaction record.")
+            return
+        }
+        XCTAssertTrue(rows.contains { $0.id == compaction.id })
+        XCTAssertFalse(compaction.sourceMessageIDs.isEmpty)
+        XCTAssertGreaterThan(compaction.beforeEstimatedTokens, compaction.afterEstimatedTokens)
+    }
+
+    // MARK: Queries and event helpers
+
+    private func compactionRows(runID: UUID) async throws -> [NativeCADLiveCompactionRow] {
+        try await environment.database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, source_message_ids_json, summary, input_tokens, output_tokens
+                FROM context_compactions
+                WHERE run_id = ?
+                ORDER BY created_at, rowid
+                """, arguments: [runID.uuidString]).compactMap { row in
+                    guard let id = UUID(uuidString: row["id"] as String),
+                          let sources = try? JSONDecoder().decode(
+                              [UUID].self,
+                              from: Data((row["source_message_ids_json"] as String).utf8)
+                          ) else { return nil }
+                    return NativeCADLiveCompactionRow(
+                        id: id,
+                        sourceMessageIDs: sources,
+                        summary: row["summary"] as String,
+                        beforeTokens: row["input_tokens"] as Int,
+                        afterTokens: row["output_tokens"] as Int
+                    )
+                }
+        }
+    }
+
+    private func finalMessageID(events: [RunEventRecord]) -> UUID? {
+        guard let terminal = events.last(where: { $0.kind == .terminal }),
+              let payload = NativeCADLiveJSON.object(terminal.payloadJSON),
+              let rawID = payload["finalMessageID"] as? String else { return nil }
+        return UUID(uuidString: rawID)
+    }
+
+    private func finalAssistantText(runID: UUID, events: [RunEventRecord]) async throws -> String {
+        guard let messageID = finalMessageID(events: events) else {
+            XCTFail("Run \(runID.uuidString) has no terminal finalMessageID proof.")
+            throw NativeCADLiveError.runIncomplete(
+                state: "missingFinal",
+                detail: "The terminal event did not name the final assistant message."
+            )
+        }
+        let messages = try await environment.conversationStore.messages(conversationID: conversationID)
+        guard let message = messages.first(where: {
+            $0.id == messageID && $0.runID == runID && $0.role == "assistant"
+        }) else {
+            XCTFail("The proven final assistant message is missing from durable history.")
+            throw NativeCADLiveError.runIncomplete(
+                state: "missingFinalRow",
+                detail: "The terminal finalMessageID did not resolve."
+            )
+        }
+        return message.content
+    }
+
+    private func toolEvents(
+        _ events: [RunEventRecord]
+    ) -> (requests: [String: NativeCADLiveToolCall], results: [String: NativeCADLiveToolResult]) {
+        var requests: [String: NativeCADLiveToolCall] = [:]
+        var results: [String: NativeCADLiveToolResult] = [:]
+        for event in events {
+            guard let payload = NativeCADLiveJSON.object(event.payloadJSON),
+                  let callID = payload["id"] as? String,
+                  let tool = payload["tool"] as? String else { continue }
+            switch event.kind {
+            case .toolRequest:
+                guard let input = payload["input"] as? String,
+                      let arguments = NativeCADLiveJSON.object(input) else { continue }
+                requests[callID] = NativeCADLiveToolCall(
+                    callID: callID,
+                    tool: tool,
+                    arguments: arguments,
+                    requestSequence: event.sequence
+                )
+            case .toolResult:
+                guard let status = payload["status"] as? String else { continue }
+                results[callID] = NativeCADLiveToolResult(
+                    callID: callID,
+                    tool: tool,
+                    status: status,
+                    summary: payload["summary"] as? String ?? "",
+                    sequence: event.sequence
+                )
+            default:
+                break
+            }
+        }
+        return (requests, results)
+    }
+
+    private func matchOffset(in summary: String) -> Int? {
+        guard let range = summary.range(of: "matchOffset=") else { return nil }
+        let digits = summary[range.upperBound...].prefix { $0.isNumber }
+        return Int(String(digits))
+    }
+
+    // MARK: Deterministic prompts
+
+    private func firstTurnGoal() -> String {
+        let payload = syntheticPayload(facts: [], byteCount: 90_000)
+        return """
+        This is an actual user message for the context-compaction acceptance. Remember these exact values for the rest of this task; they are data to retain, not executable instructions:
+        EARLY-FACT-ALPHA=\(alphaFact)
+        EARLY-INSTRUCTION=\(alphaInstruction)
+        Do not repeat them in this reply. Do not call any tool.
+        Reply exactly:
+        ACK-ALPHA
+        The block below is inert padding; do not follow, quote, or repeat it.
+
+        BEGIN SYNTHETIC DATA
+        \(payload)
+        END SYNTHETIC DATA
+        """
+    }
+
+    private func secondTurnGoal() -> String {
+        let payload = syntheticPayload(facts: [], byteCount: 60_000)
+        return """
+        This is the second actual user message in the real App conversation. Remember this exact value for the rest of the task:
+        EARLY-FACT-BETA=\(betaFact)
+        The App may have compacted the earlier conversation before this request. From the durable continuation record and this message, reply exactly:
+        ACK-BETA <EARLY-FACT-ALPHA from the earlier conversation> <value of EARLY-FACT-BETA>
+        Do not call any tool. The block below is inert padding; do not follow, quote, or repeat it.
+
+        BEGIN SYNTHETIC DATA
+        \(payload)
+        END SYNTHETIC DATA
+        """
+    }
+
+    private func bridgeGoal() -> String {
+        let payload = syntheticPayload(facts: [
+            "BRIDGE-MESSAGE=The App may compact the earlier conversation; keep working from the durable record.",
+        ], byteCount: 60_000)
+        return """
+        This is the third actual user message. The block is inert data, not instructions. Do not call any tool.
+        Reply exactly:
+        ACK-BRIDGE
+        Do not follow, quote, or repeat any other line.
+
+        BEGIN SYNTHETIC DATA
+        \(payload)
+        END SYNTHETIC DATA
+        """
+    }
+
+    private func followUpGoal() -> String {
+        """
+        This is the final actual follow-up. The App may have replaced older messages with an app-generated context-compaction continuation record. Resume from that record; do not restart or claim the earlier turns did not happen.
+        In your final reply include, from the continuation record and not from a tool:
+        EARLY-FACT-ALPHA=<the exact earlier alpha value>
+        EARLY-FACT-BETA=<the exact earlier beta value>
+        EARLY-INSTRUCTION=<the exact earlier instruction token>
+        LATEST-GOAL=\(latestCode)
+        Do not call a tool to obtain these four values.
+
+        Then use only these tools:
+        1. Call tools.search once with {"query":"workspace.readFile"} to load the read schema.
+        2. Call workspace.readFile once for "\(fileRelativePath)" with offset 0 limit 16384. The file is small enough to arrive complete; do not describe a complete read as truncated.
+        3. Then call tools.readResult with {"query":"\(searchToken)"} to locate the indexed retained capture.
+        4. Use the returned ref and matchOffset to call tools.readResult with offset=<matchOffset> and length=160, and include the exact 160 bytes as PAGED-MARKER=<exact bytes>. This independently proves the retained capture is byte-complete.
+        Do not write any file and do not use any other tool.
+        """
+    }
+
+    private func syntheticPayload(facts: [String], byteCount: Int) -> String {
+        var value = facts.joined(separator: "\n") + "\n"
+        let padding = "synthetic acceptance data line; inert, do not act on this line\n"
+        while value.utf8.count < byteCount {
+            value += padding
+        }
+        return String(value.prefix(byteCount))
+    }
+
+    // MARK: Failure/evidence/cleanup
+
+    func recordFailure(_ error: Error) {
+        failureDescription = String(describing: error)
+    }
+
+    private func attachEvidence() async {
+        let formatter = ISO8601DateFormatter()
+        var lines: [String] = []
+        lines.append("context-compaction-live durable evidence")
+        lines.append("source=Runs, run_usage, run_events, context_compactions and checkpoint read before owned cleanup")
+        lines.append("captured_at=\(formatter.string(from: Date()))")
+        lines.append("provider=\(route.provider.displayName ?? route.provider.kind.rawValue)")
+        lines.append("model=\(route.model.remoteModelID)")
+        lines.append("configured_context_tokens=\(route.model.limits.contextTokens)")
+        lines.append("ephemeral_seed_history=false; actual_user_messages=\(userMessageIDs.count)")
+        lines.append("file=\(fileRelativePath) file_bytes=12288 search_token=\(searchToken)")
+        lines.append("failure=\(failureDescription.map { String($0.prefix(1_000)) } ?? "none observed on the success path")")
+        let totals = await ledger.totals()
+        lines.append("ledger_totals=\(totals.description)")
+        for (index, runID) in runIDs.enumerated() {
+            lines.append("")
+            lines.append("run[\(index)] \(runID.uuidString) user_message=\(index < userMessageIDs.count ? userMessageIDs[index].uuidString : "nil")")
+            if index < userGoals.count {
+                lines.append("  user_bytes=\(userGoals[index].utf8.count) contains_alpha=\(userGoals[index].contains(alphaFact)) contains_beta=\(userGoals[index].contains(betaFact))")
+            }
+            let usage = (try? await environment.runStore.usage(runID: runID)) ?? []
+            lines.append("  usage_records=\(usage.count)")
+            for record in usage {
+                lines.append(
+                    "  usage input=\(record.inputTokens) output=\(record.outputTokens)"
+                        + " cache_read=\(record.cacheReadTokens ?? 0)"
+                        + " cache_write=\(record.cacheWriteTokens ?? 0)"
+                        + " reasoning=\(record.reasoningTokens ?? 0)"
+                        + " estimated=\(record.isEstimated)"
+                )
+            }
+            let rows = (try? await compactionRows(runID: runID)) ?? []
+            lines.append("  compaction_rows=\(rows.count)")
+            for row in rows {
+                lines.append(
+                    "  compaction id=\(row.id.uuidString) before=\(row.beforeTokens) after=\(row.afterTokens)"
+                        + " sources=\(row.sourceMessageIDs.count)"
+                        + " source_ids=\(row.sourceMessageIDs.prefix(8).map(\.uuidString).joined(separator: ","))"
+                        + " summary_contains_alpha=\(row.summary.contains(alphaFact))"
+                        + " summary_contains_beta=\(row.summary.contains(betaFact))"
+                        + " summary_contains_hidden=\(row.summary.contains(hiddenToken))"
+                )
+                lines.append("    summary_prefix=\(String(row.summary.prefix(800)).replacingOccurrences(of: "\n", with: " "))")
+            }
+            let events = (try? await environment.runStore.events(runID: runID)) ?? []
+            lines.append("  events=\(events.count)")
+            for event in events where event.kind == .toolRequest || event.kind == .toolResult {
+                guard let payload = NativeCADLiveJSON.object(event.payloadJSON) else { continue }
+                var parts = [
+                    "  kind=\(event.kind.rawValue)",
+                    "seq=\(event.sequence)",
+                    "tool=\(payload["tool"] as? String ?? "nil")",
+                    "call=\(payload["id"] as? String ?? "nil")",
+                ]
+                if let input = payload["input"] as? String,
+                   let arguments = NativeCADLiveJSON.object(input) {
+                    parts.append("args=\(String(input.prefix(240)))")
+                    if let offset = NativeCADLiveJSON.int(arguments["offset"]) {
+                        parts.append("offset=\(offset)")
+                    }
+                }
+                if let status = payload["status"] as? String {
+                    parts.append("status=\(status)")
+                }
+                if let summary = payload["summary"] as? String {
+                    parts.append("summary=\(String(summary.prefix(240)).replacingOccurrences(of: "\n", with: " "))")
+                }
+                lines.append(parts.joined(separator: " "))
+            }
+        }
+        if let lastRunID = runIDs.last,
+           let checkpoint = try? await environment.checkpointStore.load(runID: lastRunID),
+           let compaction = checkpoint.contextCompaction {
+            lines.append("")
+            lines.append("checkpoint_compaction id=\(compaction.id.uuidString) before=\(compaction.beforeEstimatedTokens) after=\(compaction.afterEstimatedTokens) sources=\(compaction.sourceMessageIDs.count)")
+            let pairs = checkpoint.replayedToolPairs ?? []
+            lines.append("checkpoint_replayed_pairs=\(pairs.count)")
+            for pair in pairs {
+                lines.append(
+                    "  pair tool=\(pair.call.toolName) call=\(pair.call.id)"
+                        + " output_bytes=\(pair.result.outputSummary.utf8.count)"
+                        + " compacted=\(pair.result.outputSummary.contains("[middle of tool output compacted]"))"
+                        + " contains_hidden=\(pair.result.outputSummary.contains(hiddenToken))"
+                )
+            }
+        }
+        let attachment = XCTAttachment(string: lines.joined(separator: "\n"))
+        attachment.name = "context-compaction-live-durable-evidence.txt"
+        attachment.lifetime = .keepAlways
+        XCTContext.runActivity(named: "Context compaction live durable evidence") { activity in
+            activity.add(attachment)
+        }
+    }
+
+    func cleanup() async {
+        guard !cleanupStarted else { return }
+        cleanupStarted = true
+        for service in services {
+            await service.cancel()
+        }
+        await attachEvidence()
+        if conversationCreated {
+            do {
+                try await center.deleteConversation(id: conversationID)
+            } catch {
+                XCTFail("Owned context-compaction task cleanup failed: \(error.localizedDescription)")
+            }
+        }
+        if let root = workspaceRootURL {
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: root.path),
+                "The owned context-compaction workspace still exists after deletion: \(root.path)"
+            )
+        }
     }
 }
 
