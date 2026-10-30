@@ -162,7 +162,9 @@ class NetworkWorkbenchSectionsTest {
             "network.futureProbe",
             observations = """{"statusCode":200,"finalUrl":"http://printer.local/"}""",
         )
-        assertEquals(listOf("observations.statusCode", "observations.finalUrl"), keys(ui.primaryFacts))
+        // Unknown methods keep every actual observation fact primary. The projection
+        // orders keys by stable JSON path, not by the platform JSON map's iteration.
+        assertEquals(listOf("observations.finalUrl", "observations.statusCode"), keys(ui.primaryFacts))
         assertTrue(ui.detailFacts.isEmpty())
         assertTrue(ui.connectionFacts.any { it.key == "network.typeName" })
     }
@@ -243,7 +245,9 @@ class NetworkWorkbenchSectionsTest {
             observations = """{"errorCode":"noActiveNetwork"}""",
         )
         assertTrue(ui.primaryFacts.isEmpty())
-        assertTrue(ui.detailFacts.isEmpty())
+        // A failed check has no measured answer; the actual raw error code stays
+        // visible only in Details (same contract as NetworkResultSectionsTest).
+        assertEquals(listOf("observations.errorCode"), keys(ui.detailFacts))
         assertTrue(ui.connectionFacts.any { it.key == "network.typeName" })
         assertFalse(ui.facts.any { it.value == "0" })
     }

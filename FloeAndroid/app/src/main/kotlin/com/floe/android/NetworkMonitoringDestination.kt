@@ -38,6 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.floe.android.feature.network.R as FeatureNetworkR
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -411,15 +412,15 @@ internal fun NetworkMonitoringDestination(
     ) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                FloeText(stringResource(R.string.network_monitor_title), style = Floe.typography.section)
+                FloeText(stringResource(FeatureNetworkR.string.network_monitor_title), style = Floe.typography.section)
                 FloeText(
-                    stringResource(R.string.network_phone_source),
+                    stringResource(FeatureNetworkR.string.network_phone_source),
                     style = Floe.typography.metadata,
                     color = Floe.colors.secondaryLabel,
                 )
-                FloeText(stringResource(R.string.network_monitor_intro), style = Floe.typography.body)
+                FloeText(stringResource(FeatureNetworkR.string.network_monitor_intro), style = Floe.typography.body)
                 FloeText(
-                    stringResource(R.string.network_monitor_scope),
+                    stringResource(FeatureNetworkR.string.network_monitor_scope),
                     style = Floe.typography.metadata,
                     color = Floe.colors.secondaryLabel,
                 )
@@ -503,13 +504,13 @@ private fun NotificationPermissionCard(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         FloeDivider()
-        FloeText(stringResource(R.string.network_monitor_notifications_title), style = Floe.typography.section)
+        FloeText(stringResource(FeatureNetworkR.string.network_monitor_notifications_title), style = Floe.typography.section)
         FloeText(
             stringResource(
                 if (gate == MonitorNotificationGate.REQUEST_PERMISSION) {
-                    R.string.network_monitor_notifications_required
+                    FeatureNetworkR.string.network_monitor_notifications_required
                 } else {
-                    R.string.network_monitor_notifications_off
+                    FeatureNetworkR.string.network_monitor_notifications_off
                 },
             ),
             style = Floe.typography.body,
@@ -517,9 +518,9 @@ private fun NotificationPermissionCard(
         FloeCapsuleButton(
             label = stringResource(
                 if (gate == MonitorNotificationGate.REQUEST_PERMISSION) {
-                    R.string.network_monitor_notifications_allow
+                    FeatureNetworkR.string.network_monitor_notifications_allow
                 } else {
-                    R.string.network_monitor_notifications_settings
+                    FeatureNetworkR.string.network_monitor_notifications_settings
                 },
             ),
             onClick = if (gate == MonitorNotificationGate.REQUEST_PERMISSION) onRequest else onSettings,
@@ -541,35 +542,35 @@ private fun MonitorConfigSection(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         FloeDivider()
-        FloeText(stringResource(R.string.network_monitor_config), style = Floe.typography.section)
+        FloeText(stringResource(FeatureNetworkR.string.network_monitor_config), style = Floe.typography.section)
         FloePlainFormField(
-            label = stringResource(R.string.network_monitor_duration),
+            label = stringResource(FeatureNetworkR.string.network_monitor_duration),
             value = form.durationMinutes,
             onValueChange = { onFormChange(form.copy(durationMinutes = it.take(3))) },
             isError = MonitorConfigProblem.DURATION in problems,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         )
         FloePlainFormField(
-            label = stringResource(R.string.network_monitor_interval),
+            label = stringResource(FeatureNetworkR.string.network_monitor_interval),
             value = form.intervalSeconds,
             onValueChange = { onFormChange(form.copy(intervalSeconds = it.take(4))) },
             isError = MonitorConfigProblem.INTERVAL in problems,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         )
-        FloeText(stringResource(R.string.network_monitor_checks), style = Floe.typography.bodyEmphasized)
+        FloeText(stringResource(FeatureNetworkR.string.network_monitor_checks), style = Floe.typography.bodyEmphasized)
         FloeCheckboxRow(
-            label = stringResource(R.string.network_monitor_probe_status),
+            label = stringResource(FeatureNetworkR.string.network_monitor_probe_status),
             checked = form.statusEnabled,
             onCheckedChange = { onFormChange(form.copy(statusEnabled = it)) },
         )
         FloeCheckboxRow(
-            label = stringResource(R.string.network_monitor_probe_ping),
+            label = stringResource(FeatureNetworkR.string.network_monitor_probe_ping),
             checked = form.pingEnabled,
             onCheckedChange = { onFormChange(form.copy(pingEnabled = it)) },
         )
         if (form.pingEnabled) {
             FloePlainFormField(
-                label = stringResource(R.string.network_monitor_host),
+                label = stringResource(FeatureNetworkR.string.network_monitor_host),
                 value = form.pingHost,
                 onValueChange = { onFormChange(form.copy(pingHost = it.take(253))) },
                 isError = MonitorConfigProblem.HOST in problems,
@@ -577,20 +578,20 @@ private fun MonitorConfigSection(
             )
         }
         FloeCheckboxRow(
-            label = stringResource(R.string.network_monitor_probe_tcp),
+            label = stringResource(FeatureNetworkR.string.network_monitor_probe_tcp),
             checked = form.tcpEnabled,
             onCheckedChange = { onFormChange(form.copy(tcpEnabled = it)) },
         )
         if (form.tcpEnabled) {
             FloePlainFormField(
-                label = stringResource(R.string.network_monitor_host),
+                label = stringResource(FeatureNetworkR.string.network_monitor_host),
                 value = form.tcpHost,
                 onValueChange = { onFormChange(form.copy(tcpHost = it.take(253))) },
                 isError = MonitorConfigProblem.HOST in problems,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             )
             FloePlainFormField(
-                label = stringResource(R.string.network_monitor_port),
+                label = stringResource(FeatureNetworkR.string.network_monitor_port),
                 value = form.tcpPort,
                 onValueChange = { onFormChange(form.copy(tcpPort = it.take(5))) },
                 isError = MonitorConfigProblem.PORT in problems,
@@ -598,7 +599,7 @@ private fun MonitorConfigSection(
             )
         }
         FloeText(
-            stringResource(R.string.network_monitor_limits),
+            stringResource(FeatureNetworkR.string.network_monitor_limits),
             style = Floe.typography.metadata,
             color = Floe.colors.secondaryLabel,
         )
@@ -606,7 +607,7 @@ private fun MonitorConfigSection(
         startNotice?.let { notice -> StartNoticeText(notice, onOpenNotificationSettings) }
         FloeCapsuleButton(
             label = stringResource(
-                if (starting) R.string.network_monitor_starting else R.string.network_monitor_start,
+                if (starting) FeatureNetworkR.string.network_monitor_starting else FeatureNetworkR.string.network_monitor_start,
             ),
             onClick = onStart,
             enabled = canStart,
@@ -628,27 +629,27 @@ private fun MonitorSessionSection(
         FloeDivider()
         FloeText(monitorPhaseTitle(state.phase), style = Floe.typography.section)
         FloeText(
-            stringResource(R.string.network_monitor_session_time, formatMonitorElapsed(elapsedSeconds)),
+            stringResource(FeatureNetworkR.string.network_monitor_session_time, formatMonitorElapsed(elapsedSeconds)),
             style = Floe.typography.body,
         )
         val dropped = state.droppedObservationCount.coerceIn(0L, state.observationCount)
         val retained = (state.observationCount - dropped).coerceAtLeast(0L)
         FloeText(
             stringResource(
-                R.string.network_monitor_count,
+                FeatureNetworkR.string.network_monitor_count,
                 state.observationCount.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
                 retained.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
             ),
             style = Floe.typography.body,
         )
         FloeText(
-            stringResource(R.string.network_monitor_buffer, NetworkMonitorLimits.MAX_OBSERVATIONS),
+            stringResource(FeatureNetworkR.string.network_monitor_buffer, NetworkMonitorLimits.MAX_OBSERVATIONS),
             style = Floe.typography.metadata,
             color = Floe.colors.secondaryLabel,
         )
         if (state.isActive) {
             FloeText(
-                stringResource(R.string.network_monitor_background_note),
+                stringResource(FeatureNetworkR.string.network_monitor_background_note),
                 style = Floe.typography.metadata,
                 color = Floe.colors.secondaryLabel,
             )
@@ -656,12 +657,12 @@ private fun MonitorSessionSection(
         if (state.isTerminal) {
             state.endReason?.let { reason ->
                 FloeText(
-                    stringResource(R.string.network_monitor_end_reason, monitorEndReasonText(reason)),
+                    stringResource(FeatureNetworkR.string.network_monitor_end_reason, monitorEndReasonText(reason)),
                     style = Floe.typography.body,
                 )
                 if (reason == NetworkMonitorEndReason.NOTIFICATION_PERMISSION_REVOKED) {
                     FloeCapsuleButton(
-                        label = stringResource(R.string.network_monitor_notifications_settings),
+                        label = stringResource(FeatureNetworkR.string.network_monitor_notifications_settings),
                         onClick = onOpenNotificationSettings,
                     )
                 }
@@ -670,16 +671,16 @@ private fun MonitorSessionSection(
         val last = state.lastObservation
         if (last == null) {
             FloeText(
-                stringResource(R.string.network_monitor_no_checks),
+                stringResource(FeatureNetworkR.string.network_monitor_no_checks),
                 style = Floe.typography.body,
                 color = Floe.colors.secondaryLabel,
             )
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                FloeText(stringResource(R.string.network_monitor_last_check), style = Floe.typography.bodyEmphasized)
+                FloeText(stringResource(FeatureNetworkR.string.network_monitor_last_check), style = Floe.typography.bodyEmphasized)
                 FloeText(
                     stringResource(
-                        R.string.network_monitor_check_line,
+                        FeatureNetworkR.string.network_monitor_check_line,
                         monitorMethodText(last.method),
                         monitorStatusText(last.status),
                     ),
@@ -687,7 +688,7 @@ private fun MonitorSessionSection(
                 )
                 FloeText(
                     stringResource(
-                        R.string.network_monitor_check_duration,
+                        FeatureNetworkR.string.network_monitor_check_duration,
                         ((last.finishedAtElapsedNanos - last.startedAtElapsedNanos) / 1_000_000L)
                             .coerceAtLeast(0L),
                     ),
@@ -697,8 +698,8 @@ private fun MonitorSessionSection(
                 last.actualNetwork.booleans["available"]?.let { available ->
                     FloeText(
                         stringResource(
-                            if (available) R.string.network_monitor_network_available
-                            else R.string.network_monitor_network_unavailable,
+                            if (available) FeatureNetworkR.string.network_monitor_network_available
+                            else FeatureNetworkR.string.network_monitor_network_unavailable,
                         ),
                         style = Floe.typography.metadata,
                         color = Floe.colors.secondaryLabel,
@@ -706,7 +707,7 @@ private fun MonitorSessionSection(
                 }
                 if (last.missingPermissions.isNotEmpty()) {
                     FloeText(
-                        stringResource(R.string.network_monitor_missing_permission),
+                        stringResource(FeatureNetworkR.string.network_monitor_missing_permission),
                         style = Floe.typography.metadata,
                         color = Floe.colors.secondaryLabel,
                     )
@@ -716,7 +717,7 @@ private fun MonitorSessionSection(
         if (state.isActive) {
             FloeCapsuleButton(
                 label = stringResource(
-                    if (stopping) R.string.network_monitor_stopping else R.string.network_monitor_stop,
+                    if (stopping) FeatureNetworkR.string.network_monitor_stopping else FeatureNetworkR.string.network_monitor_stop,
                 ),
                 onClick = onStop,
                 enabled = !stopping,
@@ -726,8 +727,8 @@ private fun MonitorSessionSection(
             FloeText(
                 stringResource(
                     when (issue) {
-                        MonitorStopIssue.ALREADY_ENDED -> R.string.network_monitor_stop_ended
-                        MonitorStopIssue.SLOW -> R.string.network_monitor_stop_slow
+                        MonitorStopIssue.ALREADY_ENDED -> FeatureNetworkR.string.network_monitor_stop_ended
+                        MonitorStopIssue.SLOW -> FeatureNetworkR.string.network_monitor_stop_slow
                     },
                 ),
                 style = Floe.typography.metadata,
@@ -754,32 +755,32 @@ private fun MonitorReportSection(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         FloeDivider()
-        FloeText(stringResource(R.string.network_monitor_report), style = Floe.typography.section)
-        FloeText(stringResource(R.string.network_monitor_report_hint), style = Floe.typography.body)
+        FloeText(stringResource(FeatureNetworkR.string.network_monitor_report), style = Floe.typography.section)
+        FloeText(stringResource(FeatureNetworkR.string.network_monitor_report_hint), style = Floe.typography.body)
         if (state.isActive) {
             FloeText(
-                stringResource(R.string.network_monitor_report_current_note),
+                stringResource(FeatureNetworkR.string.network_monitor_report_current_note),
                 style = Floe.typography.metadata,
                 color = Floe.colors.secondaryLabel,
             )
         }
         FloeCheckboxRow(
-            label = stringResource(R.string.network_monitor_report_detailed),
+            label = stringResource(FeatureNetworkR.string.network_monitor_report_detailed),
             checked = detailed,
             onCheckedChange = onDetailedChange,
         )
         FloeText(
             stringResource(
-                if (detailed) R.string.network_monitor_report_detailed_note
-                else R.string.network_monitor_report_redacted_note,
+                if (detailed) FeatureNetworkR.string.network_monitor_report_detailed_note
+                else FeatureNetworkR.string.network_monitor_report_redacted_note,
             ),
             style = Floe.typography.metadata,
             color = Floe.colors.secondaryLabel,
         )
         FloeCapsuleButton(
             label = stringResource(
-                if (creating) R.string.network_monitor_report_creating
-                else R.string.network_monitor_report_create,
+                if (creating) FeatureNetworkR.string.network_monitor_report_creating
+                else FeatureNetworkR.string.network_monitor_report_create,
             ),
             onClick = onCreate,
             enabled = !creating,
@@ -789,9 +790,9 @@ private fun MonitorReportSection(
             FloeText(
                 stringResource(
                     when (reason) {
-                        NetworkMonitorReportWriteFailure.SESSION_NOT_FOUND -> R.string.network_monitor_report_failed_session
-                        NetworkMonitorReportWriteFailure.REPORT_TOO_LARGE -> R.string.network_monitor_report_failed_large
-                        NetworkMonitorReportWriteFailure.WRITE_FAILED -> R.string.network_monitor_report_failed_write
+                        NetworkMonitorReportWriteFailure.SESSION_NOT_FOUND -> FeatureNetworkR.string.network_monitor_report_failed_session
+                        NetworkMonitorReportWriteFailure.REPORT_TOO_LARGE -> FeatureNetworkR.string.network_monitor_report_failed_large
+                        NetworkMonitorReportWriteFailure.WRITE_FAILED -> FeatureNetworkR.string.network_monitor_report_failed_write
                     },
                 ),
                 style = Floe.typography.metadata,
@@ -802,28 +803,28 @@ private fun MonitorReportSection(
             FloeDivider()
             FloeText(
                 stringResource(
-                    R.string.network_monitor_report_ready,
+                    FeatureNetworkR.string.network_monitor_report_ready,
                     stringResource(
-                        if (ready.detailed) R.string.network_monitor_report_mode_detailed
-                        else R.string.network_monitor_report_mode_redacted,
+                        if (ready.detailed) FeatureNetworkR.string.network_monitor_report_mode_detailed
+                        else FeatureNetworkR.string.network_monitor_report_mode_redacted,
                     ),
                 ),
                 style = Floe.typography.bodyEmphasized,
             )
             FloeText(
-                stringResource(R.string.network_monitor_report_storage),
+                stringResource(FeatureNetworkR.string.network_monitor_report_storage),
                 style = Floe.typography.metadata,
                 color = Floe.colors.secondaryLabel,
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 FloeCapsuleButton(
-                    label = stringResource(R.string.network_monitor_export_json),
+                    label = stringResource(FeatureNetworkR.string.network_monitor_export_json),
                     onClick = onExportJson,
                     enabled = !exporting,
                     modifier = Modifier.weight(1f),
                 )
                 FloeCapsuleButton(
-                    label = stringResource(R.string.network_monitor_export_markdown),
+                    label = stringResource(FeatureNetworkR.string.network_monitor_export_markdown),
                     onClick = onExportMarkdown,
                     enabled = !exporting,
                     modifier = Modifier.weight(1f),
@@ -831,7 +832,7 @@ private fun MonitorReportSection(
             }
             if (exporting) {
                 FloeCapsuleButton(
-                    label = stringResource(R.string.network_monitor_export_cancel),
+                    label = stringResource(FeatureNetworkR.string.network_monitor_export_cancel),
                     onClick = onCancelExport,
                 )
             }
@@ -845,26 +846,26 @@ private fun ExportStateText(state: ExportState) {
     when (state) {
         ExportState.Idle -> Unit
         ExportState.Exporting -> FloeText(
-            stringResource(R.string.network_monitor_exporting),
+            stringResource(FeatureNetworkR.string.network_monitor_exporting),
             style = Floe.typography.metadata,
             color = Floe.colors.secondaryLabel,
         )
         is ExportState.Exported -> FloeText(
-            stringResource(R.string.network_monitor_exported, state.bytes),
+            stringResource(FeatureNetworkR.string.network_monitor_exported, state.bytes),
             style = Floe.typography.body,
         )
         ExportState.Cancelled -> FloeText(
-            stringResource(R.string.network_monitor_export_cancelled),
+            stringResource(FeatureNetworkR.string.network_monitor_export_cancelled),
             style = Floe.typography.metadata,
             color = Floe.colors.secondaryLabel,
         )
         ExportState.Incomplete -> FloeText(
-            stringResource(R.string.network_monitor_export_incomplete),
+            stringResource(FeatureNetworkR.string.network_monitor_export_incomplete),
             style = Floe.typography.metadata,
             color = Floe.colors.secondaryLabel,
         )
         ExportState.Failed -> FloeText(
-            stringResource(R.string.network_monitor_export_failed),
+            stringResource(FeatureNetworkR.string.network_monitor_export_failed),
             style = Floe.typography.metadata,
             color = Floe.colors.destructive,
         )
@@ -876,11 +877,11 @@ private fun MonitorProblemText(problem: MonitorConfigProblem) {
     FloeText(
         stringResource(
             when (problem) {
-                MonitorConfigProblem.DURATION -> R.string.network_monitor_error_duration
-                MonitorConfigProblem.INTERVAL -> R.string.network_monitor_error_interval
-                MonitorConfigProblem.NO_PROBE -> R.string.network_monitor_error_probe
-                MonitorConfigProblem.HOST -> R.string.network_monitor_error_host
-                MonitorConfigProblem.PORT -> R.string.network_monitor_error_port
+                MonitorConfigProblem.DURATION -> FeatureNetworkR.string.network_monitor_error_duration
+                MonitorConfigProblem.INTERVAL -> FeatureNetworkR.string.network_monitor_error_interval
+                MonitorConfigProblem.NO_PROBE -> FeatureNetworkR.string.network_monitor_error_probe
+                MonitorConfigProblem.HOST -> FeatureNetworkR.string.network_monitor_error_host
+                MonitorConfigProblem.PORT -> FeatureNetworkR.string.network_monitor_error_port
             },
         ),
         style = Floe.typography.metadata,
@@ -891,13 +892,13 @@ private fun MonitorProblemText(problem: MonitorConfigProblem) {
 @Composable
 private fun StartNoticeText(notice: StartNotice, onOpenNotificationSettings: () -> Unit) {
     val message = when (notice) {
-        StartNotice.AlreadyActive -> stringResource(R.string.network_monitor_already_active)
+        StartNotice.AlreadyActive -> stringResource(FeatureNetworkR.string.network_monitor_already_active)
         is StartNotice.Failed -> stringResource(
             when (notice.reason) {
-                NetworkMonitorHostStartFailure.APP_NOT_FOREGROUND -> R.string.network_monitor_start_foreground
-                NetworkMonitorHostStartFailure.NOTIFICATIONS_DISABLED -> R.string.network_monitor_start_notifications
-                NetworkMonitorHostStartFailure.START_RESTRICTED -> R.string.network_monitor_start_restricted
-                NetworkMonitorHostStartFailure.START_FAILED -> R.string.network_monitor_start_failed
+                NetworkMonitorHostStartFailure.APP_NOT_FOREGROUND -> FeatureNetworkR.string.network_monitor_start_foreground
+                NetworkMonitorHostStartFailure.NOTIFICATIONS_DISABLED -> FeatureNetworkR.string.network_monitor_start_notifications
+                NetworkMonitorHostStartFailure.START_RESTRICTED -> FeatureNetworkR.string.network_monitor_start_restricted
+                NetworkMonitorHostStartFailure.START_FAILED -> FeatureNetworkR.string.network_monitor_start_failed
             },
         )
     }
@@ -910,7 +911,7 @@ private fun StartNoticeText(notice: StartNotice, onOpenNotificationSettings: () 
         notice.reason == NetworkMonitorHostStartFailure.NOTIFICATIONS_DISABLED
     ) {
         FloeCapsuleButton(
-            label = stringResource(R.string.network_monitor_notifications_settings),
+            label = stringResource(FeatureNetworkR.string.network_monitor_notifications_settings),
             onClick = onOpenNotificationSettings,
         )
     }
@@ -919,52 +920,52 @@ private fun StartNoticeText(notice: StartNotice, onOpenNotificationSettings: () 
 @Composable
 private fun monitorPhaseTitle(phase: NetworkMonitorPhase): String = stringResource(
     when (phase) {
-        NetworkMonitorPhase.IDLE -> R.string.network_waiting
-        NetworkMonitorPhase.RUNNING -> R.string.network_monitor_phase_running
-        NetworkMonitorPhase.STOPPING -> R.string.network_monitor_phase_stopping
-        NetworkMonitorPhase.COMPLETED -> R.string.network_monitor_phase_completed
-        NetworkMonitorPhase.FAILED -> R.string.network_monitor_phase_failed
+        NetworkMonitorPhase.IDLE -> FeatureNetworkR.string.network_waiting
+        NetworkMonitorPhase.RUNNING -> FeatureNetworkR.string.network_monitor_phase_running
+        NetworkMonitorPhase.STOPPING -> FeatureNetworkR.string.network_monitor_phase_stopping
+        NetworkMonitorPhase.COMPLETED -> FeatureNetworkR.string.network_monitor_phase_completed
+        NetworkMonitorPhase.FAILED -> FeatureNetworkR.string.network_monitor_phase_failed
     },
 )
 
 @Composable
 private fun monitorEndReasonText(reason: NetworkMonitorEndReason): String = stringResource(
     when (reason) {
-        NetworkMonitorEndReason.USER_STOP -> R.string.network_monitor_reason_user_stop
-        NetworkMonitorEndReason.FOREGROUND_START_FAILED -> R.string.network_monitor_reason_start_failed
-        NetworkMonitorEndReason.DURATION_REACHED -> R.string.network_monitor_reason_duration
-        NetworkMonitorEndReason.DATA_CAP_REACHED -> R.string.network_monitor_reason_data_cap
-        NetworkMonitorEndReason.NETWORK_CHANGED -> R.string.network_monitor_reason_network_changed
-        NetworkMonitorEndReason.NETWORK_IDENTITY_UNAVAILABLE -> R.string.network_monitor_reason_network_identity
-        NetworkMonitorEndReason.TIME_BUDGET_EXHAUSTED -> R.string.network_monitor_reason_time_budget
-        NetworkMonitorEndReason.TASK_REMOVED -> R.string.network_monitor_reason_task_removed
-        NetworkMonitorEndReason.NOTIFICATION_PERMISSION_REVOKED -> R.string.network_monitor_reason_notification
-        NetworkMonitorEndReason.SERVICE_DESTROYED -> R.string.network_monitor_reason_service_stopped
-        NetworkMonitorEndReason.EXECUTOR_FAILURE -> R.string.network_monitor_reason_probe_failed
+        NetworkMonitorEndReason.USER_STOP -> FeatureNetworkR.string.network_monitor_reason_user_stop
+        NetworkMonitorEndReason.FOREGROUND_START_FAILED -> FeatureNetworkR.string.network_monitor_reason_start_failed
+        NetworkMonitorEndReason.DURATION_REACHED -> FeatureNetworkR.string.network_monitor_reason_duration
+        NetworkMonitorEndReason.DATA_CAP_REACHED -> FeatureNetworkR.string.network_monitor_reason_data_cap
+        NetworkMonitorEndReason.NETWORK_CHANGED -> FeatureNetworkR.string.network_monitor_reason_network_changed
+        NetworkMonitorEndReason.NETWORK_IDENTITY_UNAVAILABLE -> FeatureNetworkR.string.network_monitor_reason_network_identity
+        NetworkMonitorEndReason.TIME_BUDGET_EXHAUSTED -> FeatureNetworkR.string.network_monitor_reason_time_budget
+        NetworkMonitorEndReason.TASK_REMOVED -> FeatureNetworkR.string.network_monitor_reason_task_removed
+        NetworkMonitorEndReason.NOTIFICATION_PERMISSION_REVOKED -> FeatureNetworkR.string.network_monitor_reason_notification
+        NetworkMonitorEndReason.SERVICE_DESTROYED -> FeatureNetworkR.string.network_monitor_reason_service_stopped
+        NetworkMonitorEndReason.EXECUTOR_FAILURE -> FeatureNetworkR.string.network_monitor_reason_probe_failed
     },
 )
 
 @Composable
 private fun monitorMethodText(method: String): String = stringResource(
     when (method) {
-        "network.status" -> R.string.network_monitor_probe_status
-        "network.ping" -> R.string.network_monitor_probe_ping
-        "network.tcpProbe" -> R.string.network_monitor_probe_tcp
-        else -> R.string.network_monitor_method_other
+        "network.status" -> FeatureNetworkR.string.network_monitor_probe_status
+        "network.ping" -> FeatureNetworkR.string.network_monitor_probe_ping
+        "network.tcpProbe" -> FeatureNetworkR.string.network_monitor_probe_tcp
+        else -> FeatureNetworkR.string.network_monitor_method_other
     },
 )
 
 @Composable
 private fun monitorStatusText(status: String): String = stringResource(
     when (status) {
-        "ok" -> R.string.network_status_ok
-        "partial" -> R.string.network_status_partial
-        "permissionRequired" -> R.string.network_status_permissionRequired
-        "unsupported" -> R.string.network_status_unsupported
-        "cancelled" -> R.string.network_status_cancelled
-        "timeout" -> R.string.network_status_timeout
-        "error" -> R.string.network_status_error
-        else -> R.string.network_status_unavailable
+        "ok" -> FeatureNetworkR.string.network_status_ok
+        "partial" -> FeatureNetworkR.string.network_status_partial
+        "permissionRequired" -> FeatureNetworkR.string.network_status_permissionRequired
+        "unsupported" -> FeatureNetworkR.string.network_status_unsupported
+        "cancelled" -> FeatureNetworkR.string.network_status_cancelled
+        "timeout" -> FeatureNetworkR.string.network_status_timeout
+        "error" -> FeatureNetworkR.string.network_status_error
+        else -> FeatureNetworkR.string.network_status_unavailable
     },
 )
 

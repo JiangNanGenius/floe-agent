@@ -324,7 +324,10 @@ internal object NetworkWorkbenchProjection {
             depth: Int = 0,
         ) {
             if (depth > 2 || target.size >= 96) return
-            obj.keys().asSequence().take(96).forEach { key ->
+            // Stable path order: the JVM unit-test JSON implementation does not
+            // preserve insertion order, so sort keys to keep the projected
+            // groups deterministic on both the test JVM and the device.
+            obj.keys().asSequence().sorted().take(96).forEach { key ->
                 if (key in setOf("accessPoints", "scanResults", "raw", "body", "payload")) return@forEach
                 val path = if (prefix.isEmpty()) key else "$prefix.$key"
                 when (val value = obj.opt(key)) {
@@ -333,7 +336,7 @@ internal object NetworkWorkbenchProjection {
                     is JSONArray -> {
                         val title = label(key, zh) ?: return@forEach
                         val rendered = (0 until minOf(value.length(), 24)).mapNotNull { i ->
-                            when (val row = value.opt(i)) { null, JSONObject.NULL -> null; is JSONObject -> row.keys().asSequence().take(8).mapNotNull { k -> label(k, zh)?.let { title -> "$title: ${row.opt(k)}" } }.joinToString(" · "); else -> row.toString() }
+                            when (val row = value.opt(i)) { null, JSONObject.NULL -> null; is JSONObject -> row.keys().asSequence().take(8).map { k -> "${label(k, zh) ?: k}: ${row.opt(k)}" }.joinToString(" · "); else -> row.toString() }
                         }.joinToString("\n")
                         if (rendered.isNotBlank()) target += NetworkFactUi(title, rendered.take(4096), path)
                     }
@@ -614,6 +617,7 @@ internal object NetworkWorkbenchProjection {
             "timeoutBudgetMs" to ("Timeout budget (ms)" to "超时预算（毫秒）"),
             "probeIntervalMs" to ("Probe interval (ms)" to "探测间隔（毫秒）"),
             "socketType" to ("Socket type" to "套接字类型"), "probes" to ("Probes" to "探测记录"),
+            "sequence" to ("Sequence" to "序号"), "replied" to ("Replied" to "已响应"),
             "contentType" to ("Content type" to "内容类型"),
             "stoppedReason" to ("Stopped reason" to "停止原因"),
             "bodyRead" to ("Body read" to "读取正文"),
