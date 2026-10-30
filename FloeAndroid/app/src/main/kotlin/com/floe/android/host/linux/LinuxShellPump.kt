@@ -107,6 +107,13 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         val stop = AtomicBoolean()
         private val tracedStopTargets = ConcurrentHashMap.newKeySet<Stage>()
         @Volatile var sessionID: String? = null
+        /** G07.3A: a workspace export retained after this session stopped
+         *  while another owned session still mounted the same workspace. The
+         *  grant/lease/connection are held ONLY until the runtime reports the
+         *  shared export settled (never by elapsed time, never fabricated). */
+        @Volatile var deferredWorkspaceKey: String? = null
+        @Volatile var deferredClosed = false
+        @Volatile var deferredOutcome: String? = null
 
         suspend fun exchange(operation: String, payload: JSONObject = JSONObject(), requestID: String = UUID.randomUUID().toString()): JSONObject {
             val connection = connectionLock.withLock {
@@ -133,21 +140,59 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
 
         suspend fun finish(proof: JSONObject) = settlementLock.withLock {
             settledProof?.let { return@withLock JSONObject(it) }
+            // G07.3A DEFERRED WORKSPACE EXPORT: the runtime proved this
+            // process's terminal, but another owned session still mounts the
+            // same guest workspace. Exporting now would race its live files,
+            // so the Core grant, the foreground lease and this ownership entry
+            // stay held until the LAST session's real export is reported. No
+            // timer, no forced close, no second pipeline.
+            val deferredKey = proof.optString("workspaceKey")
+                .takeIf {
+                    proof.optString("workspaceStatus") == "deferred" &&
+                        proof.optBoolean("workspaceOwner", true) &&
+                        it.isNotEmpty()
+                }
+            if (deferredKey != null) {
+                deferredWorkspaceKey = deferredKey
+                proof.put("workspaceKey", deferredKey)
+                synchronized(terminals) {
+                    terminals[controlID] = TerminalReceipt(nativeEpoch, runID, toolCallID, sessionID, proof.toString())
+                    while (terminals.size > 128) terminals.remove(terminals.keys.first())
+                }
+                settledProof = proof.toString()
+                scope.launch(Dispatchers.IO) { awaitDeferredExport(deferredKey) }
+                return@withLock JSONObject(proof.toString())
+            }
+            // The runtime's terminal page is the AUTHORITATIVE workspace
+            // outcome for THIS session: it is present for an owner that
+            // exported, a deferred owner, a participant whose shared export
+            // was serviced by the last global session, and the honest
+            // unknown/failure paths. The Core grant receipt is the proof for
+            // the OWNER's own export and supplies recovery evidence; it must
+            // not overwrite a participant/deferred runtime status with
+            // "unknown" (its grant never ran an export).
+            val runtimeStatus = proof.optString("workspaceStatus")
+                .takeIf { it.isNotEmpty() && it != "unknown" }
+            val runtimeRecoveryRef = proof.optString("workspaceRecoveryRef")
+                .takeIf { it.isNotEmpty() }
             // Drain Core file callbacks before publishing any terminal proof,
             // completing the native waiter, or releasing original Root work.
             val grant = workspaceGrant
             grant?.close()
             // Only an ACTUAL Core-owned export reply can prove saved files.
-            // Runtime result strings never qualify this boundary.
             val saved = grant?.exportReceipt()?.let { bytes -> runCatching { objectBytes(bytes) }.getOrNull() }
             proof.remove("workspaceStatus"); proof.remove("workspaceRecoveryRef")
             val recovery = saved?.optJSONObject("recovery")
             val sameSession = grant != null && recovery?.optString("sessionKey") == grant.sessionKey
-            val status = saved?.optString("result")?.takeIf {
+            val receiptStatus = saved?.optString("result")?.takeIf {
                 sameSession && saved?.optBoolean("ok") == true && it in setOf("synced", "conflict", "aborted")
-            } ?: "unknown"
+            }
+            val status = runtimeStatus ?: receiptStatus ?: "unknown"
             proof.put("workspaceStatus", status)
-            if (status != "synced" && grant != null) proof.put("workspaceRecoveryRef", grant.sessionKey)
+            if (status != "synced") {
+                val recoveryRef = runtimeRecoveryRef ?: grant?.sessionKey
+                if (recoveryRef != null) proof.put("workspaceRecoveryRef", recoveryRef)
+            }
             // Additive OPTIONAL recovery projection: the runtime's own import
             // facts (kept ONLY when the exact session/run identity matches)
             // merged with the ACTUAL Core-side EXPORT_FINISH reply when this
@@ -179,6 +224,47 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             JSONObject(proof.toString())
         }
 
+    }
+
+    /** Polls the runtime's REAL shared-export status, then closes the
+     *  retained grant/lease exactly once. A fenced/unavailable transport means
+     *  the export did NOT settle: the entry is still closed (ownership cannot
+     *  outlive the generation) and the outcome stays honestly non-synced. */
+    private suspend fun OwnedSession.awaitDeferredExport(key: String) {
+        var outcome = "unknown"
+        var consecutiveFailures = 0
+        while (true) {
+            val reply = runCatching {
+                exchange("workspace.exportStatus", JSONObject().put("workspaceKey", key))
+            }.getOrNull()
+            if (reply == null) {
+                // A fenced/absent transport can never prove the shared export;
+                // close the retained ownership honestly after a bounded
+                // failure run (a HEALTHY pending export is never timed out).
+                if (++consecutiveFailures >= 20) break
+                delay(500)
+                continue
+            }
+            consecutiveFailures = 0
+            val status = reply.optString("workspaceStatus").orEmpty()
+            if (status.isNotEmpty() && status != "pending" && status != "unknown") {
+                outcome = status
+                break
+            }
+            delay(500)
+        }
+        finishDeferred(outcome)
+    }
+
+    private suspend fun OwnedSession.finishDeferred(outcome: String) = settlementLock.withLock {
+        if (deferredClosed) return@withLock
+        deferredClosed = true
+        deferredOutcome = outcome
+        workspaceGrant?.close()
+        workspaceGrant = null
+        connectionLock.withLock { client?.close(); client = null }
+        lease.close()
+        work.remove(controlID, this)
     }
 
     /** Caller passes the ACTUAL accepted native epoch, off Main. No guessed generation. */
@@ -272,6 +358,27 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             if (operation == "shell.start") {
                 check(!admissionClosed.get())
                 startSession(claim, payload, acceptedEpoch); return
+            }
+            if (operation == "workspace.files.tree" || operation == "workspace.files.read") {
+                // G07.3A bounded READ-ONLY live guest snapshot. Routed over the
+                // OWNING session's authenticated connection (its lease permit
+                // and workspace grant) so the runtime can re-prove the exact
+                // session; nothing is exported, closed or written.
+                val sessionID = payload.getString("sessionID")
+                val owner = work.values.firstOrNull { it.sessionID == sessionID }
+                checkNotNull(owner) { "live file read addresses no owned session" }
+                complete(claim, 0, owner.exchange(operation, payload))
+                return
+            }
+            if (operation == "workspace.exportStatus") {
+                // Deferred shared-workspace export status: answered over the
+                // retained owner's authenticated connection. This never
+                // triggers an export; the last live session already owns it.
+                val key = payload.getString("workspaceKey")
+                val holder = work.values.firstOrNull { it.deferredWorkspaceKey == key }
+                checkNotNull(holder) { "no deferred export owns this workspace" }
+                complete(claim, 0, holder.exchange(operation, payload))
+                return
             }
             require(operation in setOf("shell.poll", "shell.input", "shell.resize", "shell.cancel"))
             val sessionID = payload.getString("sessionID")
@@ -1489,8 +1596,10 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
 
     private fun copyWorkspaceProof(target: JSONObject, proof: JSONObject) {
         target.remove("workspaceStatus"); target.remove("workspaceRecoveryRef")
-        target.remove("workspaceRecovery")
+        target.remove("workspaceRecovery"); target.remove("workspaceKey"); target.remove("workspaceOwner")
         target.put("workspaceStatus", proof.optString("workspaceStatus", "unknown"))
+        if (proof.has("workspaceKey")) target.put("workspaceKey", proof.getString("workspaceKey"))
+        if (proof.has("workspaceOwner")) target.put("workspaceOwner", proof.getBoolean("workspaceOwner"))
         if (proof.has("workspaceRecoveryRef")) target.put("workspaceRecoveryRef", proof.getString("workspaceRecoveryRef"))
         // The OPTIONAL merged recovery projection rides the same terminal
         // proof channel (never a second registry); absence is preserved.
@@ -1499,7 +1608,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
 
     private fun terminalProof(page: JSONObject): JSONObject = JSONObject().put("state", "released").also { proof ->
         for (key in listOf("sessionID", "cancelled", "stopReason", "exitCode", "termSig", "waitErrno",
-                           "workspaceStatus", "workspaceRecoveryRef", "workspaceRecovery")) {
+                           "workspaceStatus", "workspaceKey", "workspaceOwner",
+                           "workspaceRecoveryRef", "workspaceRecovery")) {
             if (page.has(key)) proof.put(key, page.get(key))
         }
     }

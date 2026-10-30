@@ -44,20 +44,19 @@ internal class LinuxRuntimeOperations(
     private val authority = LinuxAuthorityClient(context)
     private val supervisor: RuntimeWorkSupervisor
     private val census: ProcCensus
+    /** Bounded install/preparation cancellation lane (never a per-session stop). */
     private val cancelPreparation = AtomicBoolean()
     private val installID = AtomicReference<String?>()
-    // G03-R3 runtime-start repair: the EXACT pending shell.start wire request
-    // id currently executing inside start() on the owned control thread — the
-    // SAME id the kernel tracks as its pendingShellID (the pump dispatches
-    // shell.start with its own control UUID as the wire request id, and the
-    // session-less stop carries that identical UUID). Set in the execute()
-    // dispatch and cleared on return. A session-less stop is
-    // validated ONLY against this exact id (target-scoped; never a broad
-    // runtime cancel), so it can arm cancelPreparation while a start is still
-    // executing before any session id has ever surfaced.
-    private val pendingShellStartID = AtomicReference<String?>()
-    // R3 first-use preflight ownership (kernel admission already serializes
-    // this with install/shell work through hasOwnedWork()).
+    // G07.3A: EVERY in-flight shell.start wire request id (concurrent starts
+    // are admitted). A session-less stop is validated ONLY against one of
+    // these exact ids, so it can request cancellation of a preparation that
+    // has not surfaced a session yet and never touches unrelated work.
+    private val pendingShellStartIDs: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val cancelledStarts: MutableMap<String, AtomicBoolean> =
+        java.util.concurrent.ConcurrentHashMap()
+    // R3 first-use preflight ownership (kernel admission serializes install /
+    // preflight / first-start through the exclusive-work gate).
     private val activePreflightID = AtomicReference<String?>()
     private val preflightCancelled = AtomicBoolean()
     // The ACTUAL verified published-revision archive digest, set only after
@@ -65,36 +64,98 @@ internal class LinuxRuntimeOperations(
     // Never minted from a string; absent (null) means NOT installed-proof.
     @Volatile private var rootfsReceiptDigest: String? = null
     private val progress = AtomicReference(JSONObject().put("phase", "not_installed"))
-    private val pumpExecutor = java.util.concurrent.ThreadPoolExecutor(1, 1, 30,
-        java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.ArrayBlockingQueue(1)) {
+    /** The first-use preflight's own never-started lease (exclusive lane). */
+    private val preflightLease = AtomicReference<LinuxAuthorityClient.Lease?>()
+    /** Serializes the capacity snapshot with registration (no over-admission). */
+    private val admissionBudget = Any()
+    // G07.3A: one real PTY pump thread per admitted workload (max 3: two
+    // interactive + one shared execution). A single thread would serialize two
+    // live terminals and starve one session's output while the other blocks.
+    private val pumpExecutor = java.util.concurrent.ThreadPoolExecutor(3, 3, 30,
+        java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.ArrayBlockingQueue(16)) {
             Thread(it, "floe-linux-pty")
         }.apply { allowCoreThreadTimeOut(true) }
-    private val heldLease = AtomicReference<LinuxAuthorityClient.Lease?>()
+    /** Live environment leases keyed by the engine session/lease id. */
+    private val heldLeases = java.util.concurrent.ConcurrentHashMap<String, LinuxAuthorityClient.Lease>()
+    private val leaseRoles = java.util.concurrent.ConcurrentHashMap<String, WorkloadRole>()
+    /** Live workloads keyed by their engine lease id (== sessionID on the wire). */
+    private val running = java.util.concurrent.ConcurrentHashMap<String, Running>()
+    /** Bounded settled receipts for poll-after-terminal reads. */
+    private val completed = java.util.concurrent.ConcurrentHashMap<String, Running>()
+    /** projectID -> the ONE workspace owner lease still responsible for import/export. */
+    private val workspaceOwners = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /** projectID -> live participant lease ids sharing the owner's guest workspace. */
+    private val workspaceParticipants =
+        java.util.concurrent.ConcurrentHashMap<String, MutableSet<String>>()
+    /** projectID -> the deferred export obligation retained after the owner stops. */
+    private val deferredExports = java.util.concurrent.ConcurrentHashMap<String, DeferredExport>()
+    /** projectID -> the real export outcome (closed vocabulary) for status reads. */
+    private val exportStatuses = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
+    /**
+     * Serializes a workload START against a global workspace EXPORT. The
+     * ORIGINAL boundary is actual whole runtime-UID quiescence: while any
+     * sibling is live, exports defer; the last workload proves global
+     * quiescence and services every retained obligation. The gate guarantees
+     * no new process can appear between that proof and the exports.
+     */
+    private val workspaceGate = java.util.concurrent.locks.ReentrantLock()
     // G03-R3 cleanup lane receiver (job-7e9db10b801940c2). Constructed after
     // the supervisor; consumes ONLY the typed `runtimeWorkspaceCopies.clear`
-    // control and never runs during an admitted workload (the kernel executes
-    // it on the same single control thread; the receiver re-probes busy).
+    // control and never runs during an admitted workload.
     private val workspaceCleanup by lazy {
         RuntimeWorkspaceCleanup(context, authority, supervisor) {
-            installID.get() != null || heldLease.get() != null || running.get() != null
+            installID.get() != null || activePreflightID.get() != null ||
+                preflightLease.get() != null || heldLeases.isNotEmpty() || running.isNotEmpty() ||
+                deferredExports.isNotEmpty()
         }
     }
+    /** Live read-only guest file snapshots (bounded, identity-bound). */
+    private val liveFiles by lazy { LiveWorkspaceFiles() }
+    /** Validated first-use preparation receipts (rootfs/workspace generation). */
+    private val preparation = WorkspacePreparationReceipts(File(root, "Prepare"))
 
-    private class Running(val lease: LinuxAuthorityClient.Lease, val job: SupervisedPtyJob,
-                          val deadline: Long, val scratch: File,
-                          val workspace: RuntimeWorkspaceSession, val imported: WorkspaceImportReceipt,
-                          /** G07.1 terminal04: bounded runtime phase composition for
-                           *  THIS workload (diagnostic only; no admission effect). */
-                          val latency: LinuxRuntimePhaseTiming.Run) {
+    /**
+     * One admitted workload. [workspace] is non-null ONLY for the workspace
+     * owner; a participant mounts the owner's live guest workspace without an
+     * import or export of its own.
+     */
+    private class Running(
+        val lease: LinuxAuthorityClient.Lease,
+        val job: SupervisedPtyJob,
+        val deadline: Long,
+        val scratch: File,
+        val role: WorkloadRole,
+        val projectID: String,
+        val workspaceRoot: File,
+        val workspaceOwner: Boolean,
+        val workspace: RuntimeWorkspaceSession?,
+        val imported: WorkspaceImportReceipt?,
+        val startID: String,
+        /** G07.1 terminal04: bounded runtime phase composition for
+         *  THIS workload (diagnostic only; no admission effect). */
+        val latency: LinuxRuntimePhaseTiming.Run,
+    ) {
         val terminal = AtomicReference<WorkloadTerminal?>()
         val finished = AtomicBoolean()
+        val startCancelled = AtomicBoolean()
         @Volatile var authorityBound = false
         @Volatile var nativeReleaseFailed = false
         @Volatile var cleanupDeferred = false
         @Volatile var workspaceResult: JSONObject? = null
     }
-    private val running = AtomicReference<Running?>()
-    private val completed = AtomicReference<Running?>()
+
+    /** A workspace whose owner stopped while participants were still live. */
+    private class DeferredExport(
+        val projectID: String,
+        val environmentID: String,
+        val baseRevision: String,
+        val workspaceRoot: java.io.File,
+        val workspace: RuntimeWorkspaceSession,
+        val imported: WorkspaceImportReceipt,
+    ) {
+        val completed = AtomicBoolean()
+        val outcome = AtomicReference<JSONObject?>()
+    }
 
     init {
         // Validate the actual OS boundary before inspecting/stopping ANY process.
@@ -132,11 +193,20 @@ internal class LinuxRuntimeOperations(
         }
     }
 
-    override fun hasOwnedWork(): Boolean = installID.get() != null || heldLease.get() != null
-    override fun isExecuting(): Boolean = running.get() != null
+    override fun hasOwnedWork(): Boolean =
+        installID.get() != null || activePreflightID.get() != null ||
+            preflightLease.get() != null || heldLeases.isNotEmpty() ||
+            // A retained deferred export is real owned work even after its
+            // process/lease settled: no install/root teardown may pass it.
+            deferredExports.isNotEmpty()
+    /** Install/first-use preflight are still exclusive with every workload. */
+    override fun hasExclusiveWork(): Boolean =
+        installID.get() != null || activePreflightID.get() != null
+    override fun isExecuting(): Boolean = running.isNotEmpty()
     override fun snapshot(request: RuntimeWire.Request): JSONObject? = when (request.operation) {
         "install.status" -> { fields(request.payload, emptySet()); JSONObject(progress.get().toString()) }
         "shell.poll" -> poll(request.payload)
+        "workspace.exportStatus" -> exportStatus(request.payload)
         else -> null
     }
 
@@ -145,21 +215,25 @@ internal class LinuxRuntimeOperations(
         "install.status" -> { fields(request.payload, emptySet()); JSONObject(progress.get().toString()) }
         "environment.list" -> { fields(request.payload, emptySet()); configure(); authority.list() }
         "shell.start" -> {
-            // G03-R3 runtime-start repair: expose the EXACT in-flight start
-            // request id for session-less cancellation validation for the
-            // whole duration of start() (cleared on return, whether the
-            // session was Accepted, Abandoned or thrown).
-            pendingShellStartID.set(request.id)
+            // G07.3A: every in-flight start id is exposed for target-scoped
+            // session-less cancellation; concurrent starts never share one.
+            pendingShellStartIDs.add(request.id)
             try {
-                start(request.payload, checkNotNull(workspaceGrant), cancelled)
+                start(request, checkNotNull(workspaceGrant), cancelled)
             } finally {
-                pendingShellStartID.compareAndSet(request.id, null)
+                pendingShellStartIDs.remove(request.id)
             }
         }
         "workspace.preflight" -> preflight(request, checkNotNull(workspaceGrant), cancelled)
         "shell.poll" -> poll(request.payload)
         "shell.input" -> input(request.payload)
         "shell.resize" -> resize(request.payload)
+        // Bounded read-only guest file snapshot over the EXISTING runtime IPC.
+        // Identity-bound (live session + project + generation) and never an
+        // export path: nothing is written to Core, no terminal is closed and
+        // the writable-export quiescence rules are untouched.
+        "workspace.files.tree", "workspace.files.read" -> liveFiles(request)
+        "workspace.exportStatus" -> exportStatus(request.payload)
         // G03-R3: the scoped runtime-UID workspace-copy wipe. The receiver
         // returns a TYPED cleared/refused result (never throws for a refusal
         // — an honest retention keeps the Core obligation retryable).
@@ -169,7 +243,7 @@ internal class LinuxRuntimeOperations(
 
     private fun install(request: RuntimeWire.Request, cancelled: () -> Boolean): JSONObject {
         fields(request.payload, emptySet())
-        check(heldLease.get() == null)
+        check(heldLeases.isEmpty() && preflightLease.get() == null)
         recover()
         check(installID.compareAndSet(null, request.id))
         cancelPreparation.set(false)
@@ -218,27 +292,59 @@ internal class LinuxRuntimeOperations(
      *  serialization as shell/install; the helper itself can spawn nothing. */
     private fun preflight(request: RuntimeWire.Request, grant: android.os.IBinder,
                           cancelled: () -> Boolean): JSONObject {
+        check(running.isEmpty() && heldLeases.isEmpty() && installID.get() == null) { "preflightBusy" }
         check(activePreflightID.compareAndSet(null, request.id)) { "preflightBusy" }
         preflightCancelled.set(false)
         try {
             return RuntimeWorkspacePreflight.execute(
                 PreflightHarness(context, authority, supervisor, census,
                     ensureConfigured = { recover(); configure() },
-                    ownedPath = ::ownedPath, heldLease = heldLease, installID = installID),
+                    ownedPath = ::ownedPath, heldLease = preflightLease, installID = installID),
                 request.payload, grant) { cancelled() || preflightCancelled.get() }
         } finally { activePreflightID.compareAndSet(request.id, null) }
     }
 
-    private fun start(payload: JSONObject, workspaceGrant: android.os.IBinder, cancelled: () -> Boolean): JSONObject {
+    private fun start(request: RuntimeWire.Request, workspaceGrant: android.os.IBinder,
+                      cancelled: () -> Boolean): JSONObject {
+        val payload = request.payload
         RuntimeExecutionTrace.mark(Stage.OPS_START_ENTER)
         // G07.1 terminal04: the runtime half of this start's composition.
         val latency = LinuxRuntimePhaseTiming.begin()
-        fields(payload, setOf("projectID", "runID", "conversationID", "environmentID", "command", "cwd", "env", "rows", "columns", "timeoutSeconds", "stdinDelivery"))
-        check(heldLease.get() == null && installID.get() == null)
-        cancelPreparation.set(false)
-        RuntimeExecutionTrace.mark(Stage.OPS_RECOVER)
-        recover()
-        latency.mark(LinuxRuntimePhaseTiming.Phase.RECOVER)
+        fields(payload, setOf("projectID", "runID", "conversationID", "environmentID", "command", "cwd",
+            "env", "rows", "columns", "timeoutSeconds", "stdinDelivery", "leaseRole", "workspaceReuse"))
+        // G07.3A: a start may coexist with OTHER admitted workloads. The
+        // exclusive lanes (install / first-use preflight) still fence it; the
+        // destructive single-workload swap paths do not.
+        check(installID.get() == null && activePreflightID.get() == null) { "runtimeBusy" }
+        val role = WorkloadRole.fromWire(payload.optString("leaseRole", WorkloadRole.AGENT.wireName))
+            ?: throw IllegalArgumentException("leaseRole invalid")
+        synchronized(admissionBudget) {
+            val live = running.values.filter { !it.finished.get() }
+            require(live.count { it.role == role } < role.maximumConcurrent) {
+                "workloadCapacity:${role.wireName}"
+            }
+            if (role.isExecution) {
+                // Agent and run share the ONE execution slot.
+                require(live.count { it.role.isExecution } < 1) {
+                    "workloadCapacity:execution"
+                }
+            }
+            require(live.size < MAX_CONCURRENT_WORKLOADS) { "workloadCapacity:total" }
+        }
+        check(cancelledStarts.putIfAbsent(request.id, AtomicBoolean()) == null) { "duplicateStart" }
+        fun isCancelled(): Boolean = canceled(cancelled) || cancelledStarts[request.id]?.get() == true
+        val reuse = payload.optJSONObject("workspaceReuse")
+        val projectID = payload.getString("projectID")
+        val runID = payload.getString("runID")
+        // A full-UID recovery sweep is only safe when nothing is live. With a
+        // sibling workload already admitted, the supervisor's SCOPED admission
+        // proof is the gate (it excludes only other owned jobs and never kills
+        // an unattributable process while one is live).
+        if (running.isEmpty()) {
+            RuntimeExecutionTrace.mark(Stage.OPS_RECOVER)
+            recover()
+            latency.mark(LinuxRuntimePhaseTiming.Phase.RECOVER)
+        }
         RuntimeExecutionTrace.mark(Stage.OPS_CONFIGURE)
         configure()
         latency.mark(LinuxRuntimePhaseTiming.Phase.CONFIGURE)
@@ -265,48 +371,110 @@ internal class LinuxRuntimeOperations(
         require(rows in 1..512 && columns in 1..512)
         val seconds = payload.optDouble("timeoutSeconds", 600.0)
         require(seconds.isFinite() && seconds in 0.05..86_400.0)
-        // Stdin delivery is explicit and platform-owned: the peer-verified
-        // core host adapter (the same platform code path that already owns
-        // command/env/lease fields) sends "pipe" only for one-shot job runs
-        // and omits the field for interactive PTY input. The value set is
-        // closed and unknown values refuse the start, so no model or
-        // environment string can pick a descriptor mode or an execution
-        // path; "pipe" only re-describes THIS guest launch's stdin.
         val stdinDelivery = payload.optString("stdinDelivery", "pty")
         require(stdinDelivery in setOf("pty", "pipe")) { "stdinDelivery invalid" }
         RuntimeExecutionTrace.mark(Stage.OPS_ACQUIRE)
         val lease = authority.acquire(payload)
         latency.mark(LinuxRuntimePhaseTiming.Phase.ACQUIRE)
         RuntimeExecutionTrace.mark(Stage.OPS_ACQUIRED)
-        heldLease.set(lease)
+        heldLeases[lease.id] = lease
+        leaseRoles[lease.id] = role
         var child: Running? = null
         var preparedScratch: File? = null
         var preparedWorkspace: RuntimeWorkspaceSession? = null
         var safeToAbandon = true
+        var startedOwner = false
+        var registeredParticipant = false
         val terminal = AtomicReference<WorkloadTerminal?>()
         try {
+            // A start and a global export never overlap. The lock is released
+            // after this workload is registered (or the start fails).
+            workspaceGate.lock()
             val descriptor = lease.descriptor
             val writable = ownedPath(descriptor.getString("writableLayer"))
             val layers = descriptor.getJSONArray("orderedLayers")
             val ordered = (0 until layers.length()).map { ownedPath(layers.getString(it)) }
             RuntimeExecutionTrace.mark(Stage.OPS_MATERIALIZE)
-            LinuxRootfsMaterializer().prepare(LinuxRootfsMaterializer.Plan(lease.environmentID,
-                descriptor.getString("baseRevision"), writable, ordered)) { cancelPreparation.get() || cancelled() }
+            // Validated base-revision reuse: the ORIGINAL materializer returns
+            // `reused = true` only when the writable layer's own marker names
+            // this exact environment AND base revision. The marker is written
+            // after a complete, fsynced, atomic publication; a half-copied tree
+            // never carries it. No writable hardlink is ever created across
+            // tasks: the copier uses CREATE_NEW + full byte copies.
+            val prepareStart = SystemClock.elapsedRealtime()
+            val materialized = LinuxRootfsMaterializer().prepare(
+                LinuxRootfsMaterializer.Plan(lease.environmentID, descriptor.getString("baseRevision"),
+                    writable, ordered)) { isCancelled() }
+            val prepareMillis = SystemClock.elapsedRealtime() - prepareStart
             latency.mark(LinuxRuntimePhaseTiming.Phase.MATERIALIZE)
-            check(!cancelPreparation.get() && !cancelled())
+            check(!isCancelled())
             RuntimeExecutionTrace.mark(Stage.OPS_MATERIALIZED)
             val workspace = ownedPath(descriptor.getString("workspaceRoot"))
-            val workspaceSession = RuntimeWorkspaceSession(context, workspaceGrant,
-                payload.getString("projectID"), payload.getString("runID"), workspace)
-            preparedWorkspace = workspaceSession
-            RuntimeExecutionTrace.mark(Stage.OPS_IMPORT)
-            val imported = workspaceSession.importBeforeLaunch(WorkspaceCancelSignal {
-                cancelPreparation.get() || cancelled()
-            })
-            latency.mark(LinuxRuntimePhaseTiming.Phase.IMPORT)
-            RuntimeExecutionTrace.mark(Stage.OPS_IMPORTED)
-            check(imported.skippedCount == 0) { "Workspace snapshot contains unsupported entries" }
-            check(!cancelPreparation.get() && !cancelled())
+            // ONE workspace owner per project imports/exports; participant
+            // sessions must name a LIVE owner of the SAME project. A hint that
+            // cannot be validated is refused, never silently treated as an
+            // owner (which would re-import over live guest files).
+            val requestedShared = reuse?.optString("mode") == "shared"
+            val ownerLeaseID = workspaceOwners[projectID]
+            var sharedOwner: Running? = null
+            if (requestedShared) {
+                val expectedOwner = reuse?.optString("ownerSessionID")?.takeIf { it.isNotEmpty() }
+                sharedOwner = expectedOwner?.let { running[it] }
+                    ?.takeIf { !it.finished.get() && it.workspaceOwner && it.projectID == projectID }
+                // The owner may already have stopped while its deferred export
+                // is still retained; existing live participants keep the same
+                // guest workspace addressable.
+                // The owner may already have stopped while its deferred export
+                // is retained; the shared guest tree is still the live truth.
+                val deferredLive = deferredExports.containsKey(projectID)
+                require(sharedOwner != null || deferredLive) { "workspaceOwnerUnavailable" }
+            } else if (ownerLeaseID != null) {
+                sharedOwner = running[ownerLeaseID]
+                    ?.takeIf { !it.finished.get() && it.workspaceOwner && it.projectID == projectID }
+                if (sharedOwner == null && deferredExports.containsKey(projectID)) {
+                    // The owner stopped while participants remained: this session
+                    // joins the same deferred workspace, not a new import.
+                    sharedOwner = null
+                }
+            }
+            val isReuseParticipant = when {
+                requestedShared -> true
+                sharedOwner != null -> true
+                // A retained deferred export means the guest tree is still the
+                // live truth: a new session joins it (never a fresh import),
+                // even when the owner already stopped and no same-project
+                // participant remains. The last global session exports it.
+                else -> deferredExports.containsKey(projectID)
+            }
+            var workspaceSession: RuntimeWorkspaceSession? = null
+            var imported: WorkspaceImportReceipt? = null
+            var importMillis = 0L
+            var importedEntries = 0L
+            if (!isReuseParticipant) {
+                // An owner start begins a new live workspace epoch. Any
+                // earlier preparation receipt can no longer prove the guest
+                // tree is unchanged, so it is invalidated BEFORE the import.
+                preparation.invalidate(projectID)
+                // A previous generation's export status must not be served to
+                // this new live generation.
+                exportStatuses.remove(projectID)
+                val session = RuntimeWorkspaceSession(context, workspaceGrant, projectID, runID, workspace)
+                workspaceSession = session
+                preparedWorkspace = session
+                RuntimeExecutionTrace.mark(Stage.OPS_IMPORT)
+                val importStart = SystemClock.elapsedRealtime()
+                val receipt = session.importBeforeLaunch(WorkspaceCancelSignal { isCancelled() })
+                importMillis = SystemClock.elapsedRealtime() - importStart
+                latency.mark(LinuxRuntimePhaseTiming.Phase.IMPORT)
+                RuntimeExecutionTrace.mark(Stage.OPS_IMPORTED)
+                check(receipt.skippedCount == 0) { "Workspace snapshot contains unsupported entries" }
+                imported = receipt
+                importedEntries = (receipt.createdCount + receipt.replacedSyncedCount +
+                    receipt.preservedUnsyncedCount + receipt.unchangedCount).toLong()
+                check(!isCancelled())
+            } else {
+                latency.mark(LinuxRuntimePhaseTiming.Phase.IMPORT)
+            }
             val scratchParent = File(root, "Scratch").apply { check(mkdirs() || isDirectory) }
             check(scratchParent.canonicalFile == scratchParent)
             val scratch = File(scratchParent, lease.id)
@@ -328,11 +496,13 @@ internal class LinuxRuntimeOperations(
             latency.mark(LinuxRuntimePhaseTiming.Phase.SPEC)
             RuntimeExecutionTrace.mark(Stage.OPS_SPEC_READY)
             RuntimeExecutionTrace.mark(Stage.OPS_SPAWN)
-            when (val outcome = supervisor.start(spec, LeaseToken(lease.id, descriptor.getString("runID"))) { terminal.set(it) }) {
+            when (val outcome = supervisor.start(
+                spec, LeaseToken(lease.id, descriptor.getString("runID")),
+                onTerminal = { terminal.set(it) },
+                admission = WorkloadAdmission.concurrent,
+            )) {
                 is StartOutcome.Refused -> error("Linux process was not admitted")
                 is StartOutcome.Abandoned -> {
-                    // A real failed-spawn child must be proven stopped. No-child
-                    // transport failure alone is safe to retire unstarted.
                     safeToAbandon = outcome.terminal.quiescence == null || outcome.terminal.quiescence is Quiescence.Proven
                     error("Linux process launch failed")
                 }
@@ -340,10 +510,22 @@ internal class LinuxRuntimeOperations(
                     latency.mark(LinuxRuntimePhaseTiming.Phase.SPAWN)
                     RuntimeExecutionTrace.mark(Stage.OPS_SPAWN_ACCEPTED)
                     safeToAbandon = false
-                    child = Running(lease, outcome.job, SystemClock.elapsedRealtime() + (seconds * 1000).toLong(), scratch,
-                        workspaceSession, imported, latency)
-                    running.set(child)
-                    val owned = checkNotNull(child)
+                    val isOwner = !isReuseParticipant
+                    val owned = Running(lease, outcome.job, SystemClock.elapsedRealtime() + (seconds * 1000).toLong(),
+                        scratch, role, projectID, workspace, isOwner, workspaceSession, imported,
+                        request.id, latency)
+                    owned.startCancelled.set(isCancelled())
+                    cancelledStarts.remove(request.id)
+                    child = owned
+                    if (isOwner) {
+                        workspaceOwners[projectID] = lease.id
+                        startedOwner = true
+                    } else {
+                        workspaceParticipants.getOrPut(projectID) { java.util.concurrent.ConcurrentHashMap.newKeySet() }
+                            .add(lease.id)
+                        registeredParticipant = true
+                    }
+                    running[lease.id] = owned
                     synchronized(owned) {
                         authority.started(lease, outcome.job.rootBirth)
                         owned.authorityBound = true
@@ -354,7 +536,7 @@ internal class LinuxRuntimeOperations(
                         RuntimeExecutionTrace.mark(Stage.OPS_PUMP_ENTER)
                         try {
                             while (owned.job.stateNow != JobState.TERMINATED) {
-                                if (cancelPreparation.get() || cancelled()) owned.job.requestCancel("user-stop")
+                                if (isStartCancelled(owned) || canceled(cancelled)) owned.job.requestCancel("user-stop")
                                 else if (SystemClock.elapsedRealtime() >= owned.deadline) owned.job.requestCancel("timeout")
                                 val pumped = owned.job.pump()
                                 if (pumped is PumpOutcome.Blocked || pumped is PumpOutcome.QuiescePending || pumped is PumpOutcome.ReadFailed) break
@@ -367,44 +549,53 @@ internal class LinuxRuntimeOperations(
                             RuntimeExecutionTrace.mark(Stage.OPS_PUMP_EXCEPTION)
                             owned.nativeReleaseFailed = true
                         }
-                        // G03-R3 runtime-start repair — the drain-loop break
-                        // and a failed release attempt are no longer an
-                        // ownership dead end. Retry ONLY the designed proof
-                        // and release entries until the REAL release lands.
                         reconcileUntilReleased(owned, terminal)
                     }
                     return JSONObject().put("sessionID", lease.id).put("environmentID", lease.environmentID)
+                        .put("runtimeGeneration", RuntimeProcessIdentity.bootToken)
+                        .put("leaseRole", role.wireName)
+                        .put("workspaceOwner", isOwner)
+                        .put("prepareReused", materialized.reused)
+                        .put("prepareMillis", prepareMillis)
+                        .put("prepareCopiedBytes", materialized.copiedBytes)
+                        .put("importMillis", importMillis)
+                        .put("importedEntries", importedEntries)
                 }
             }
         } catch (failure: Exception) {
             RuntimeExecutionTrace.mark(Stage.OPS_START_EXCEPTION)
-            // Diagnostic only: a start that never reached a live workload has
-            // no terminal; name the honest state and the phases it did reach.
             latency.publish(
                 if (safeToAbandon) LinuxRuntimePhaseTiming.TERMINAL_FAILED
                 else LinuxRuntimePhaseTiming.TERMINAL_RETAINED)
             if (safeToAbandon) {
                 runCatching { preparedWorkspace?.close() }
-                RuntimeNetworkConfiguration.release() // real use ended before spawn
-                authority.abandonUnstarted(lease)
-                heldLease.compareAndSet(lease, null)
+                preparedScratch?.let { RuntimeNetworkConfiguration.release(it) }
+                runCatching { authority.abandonUnstarted(lease) }
+                heldLeases.remove(lease.id)
+                leaseRoles.remove(lease.id)
+                if (startedOwner) workspaceOwners.remove(projectID, lease.id)
+                if (registeredParticipant) {
+                    workspaceParticipants[projectID]?.remove(lease.id)
+                }
                 preparedScratch?.let { cleanupScratch(it, lease.id) }
-            }
-            else child?.let { owned ->
-                // If native binding failed after spawn, stop before attempting
-                // any hand-back. Unknown stop keeps the original lease held.
-                cancelPreparation.set(true)
+            } else child?.let { owned ->
+                owned.startCancelled.set(true)
                 val stopped = runCatching { owned.job.requestCancel("start-binding-failed") }.getOrNull()
                 if (stopped is CancelOutcome.Terminated) owned.terminal.set(stopped.terminal)
-                // The pump may never have been admitted. This control thread
-                // retains the same real child/lease until retryable proof and
-                // authority hand-back succeed; the independent stop lane is
-                // still available. Never replay the original command.
                 reconcileUntilReleased(owned, terminal)
             }
             throw failure
+        } finally {
+            cancelledStarts.remove(request.id)
+            if (workspaceGate.isHeldByCurrentThread) workspaceGate.unlock()
         }
     }
+
+    /** Per-session cancellation flag; a global stop uses the kernel's fence. */
+    private fun isStartCancelled(owned: Running): Boolean = owned.startCancelled.get()
+
+    /** A cancellation source that covers the global install/preflight flag. */
+    private fun canceled(cancelled: () -> Boolean): Boolean = cancelPreparation.get() || cancelled()
 
     /** Translate ORIGINAL authority paths into this complete guest snapshot.
      * Never inherit Core/Android process environment or guess a write layer. */
@@ -451,17 +642,68 @@ internal class LinuxRuntimeOperations(
                 authority.started(owned.lease, owned.job.rootBirth)
                 owned.authorityBound = true
             }
-            if (owned.workspaceResult == null) {
-                // The actual whole-UID stop proof above precedes file export.
-                // A Stop request does not discard partial user outputs; flush
-                // them while the same operation still owns its Core grant.
-                val outcome = try { owned.workspace.exportAfterQuiescence(WorkspaceCancelSignal {
-                    Thread.currentThread().isInterrupted
-                }) } catch (_: Exception) {
-                    WorkspaceExportOutcome.RecoverableFailure("exportUnknown", true, owned.imported.sessionKey)
+            // The ORIGINAL writable-export boundary is actual whole-runtime-UID
+            // quiescence. While ANY sibling owned workload is live, every
+            // owner close defers; the LAST global workload proves quiescence
+            // and services every retained obligation (all projects) with the
+            // exact owner's grant/import baseline. The gate keeps a new start
+            // out of the UID between that proof and those exports.
+            workspaceGate.lock()
+            try {
+                if (owned.workspaceResult == null) {
+                    val othersLive = running.entries.any {
+                        it.key != owned.lease.id && !it.value.finished.get()
+                    }
+                    if (othersLive) {
+                        if (owned.workspaceOwner) {
+                            deferredExports[owned.projectID] = DeferredExport(
+                                projectID = owned.projectID,
+                                environmentID = owned.lease.environmentID,
+                                baseRevision = owned.lease.descriptor.optString("baseRevision"),
+                                workspaceRoot = owned.workspaceRoot,
+                                workspace = checkNotNull(owned.workspace),
+                                imported = checkNotNull(owned.imported),
+                            )
+                            preparation.invalidate(owned.projectID)
+                        }
+                        owned.workspaceResult = deferredResult(owned.projectID)
+                    } else {
+                        // Remove self FIRST so the global proof sees no live
+                        // owned job; the whole-UID census then proves the exact
+                        // ORIGINAL export boundary (and may reap strays).
+                        running.remove(owned.lease.id, owned)
+                        val globalProof = supervisor.globalQuiescence("workspace-export")
+                        if (globalProof is Quiescence.Proven) {
+                            if (owned.workspaceOwner) {
+                                owned.workspaceResult = exportWorkspace(
+                                    projectID = owned.projectID,
+                                    environmentID = owned.lease.environmentID,
+                                    baseRevision = owned.lease.descriptor.optString("baseRevision"),
+                                    workspaceRoot = owned.workspaceRoot,
+                                    workspace = checkNotNull(owned.workspace),
+                                    imported = checkNotNull(owned.imported),
+                                )
+                            } else {
+                                owned.workspaceResult = deferredResult(owned.projectID)
+                            }
+                            serviceDeferredExports(owned)
+                        } else {
+                            // Never export without the real whole-UID proof.
+                            // There is no later workload to retry, so the
+                            // obligation is reported unknown and closed, never
+                            // a fake synced/deferred success.
+                            if (owned.workspaceOwner) {
+                                runCatching { owned.workspace?.close() }
+                                owned.workspaceResult = JSONObject()
+                                    .put("workspaceStatus", "unknown")
+                                    .put("workspaceKey", owned.projectID)
+                            }
+                            failDeferredExports(owned)
+                        }
+                    }
                 }
-                owned.workspaceResult = workspaceResult(outcome, owned.imported)
-                runCatching { owned.workspace.close() }
+            } finally {
+                workspaceGate.unlock()
             }
             owned.latency.mark(LinuxRuntimePhaseTiming.Phase.EXPORT)
             try {
@@ -472,28 +714,146 @@ internal class LinuxRuntimeOperations(
                 throw failure
             }
             owned.latency.mark(LinuxRuntimePhaseTiming.Phase.COMPLETE)
+            // The authority hand-back is real: release the supervisor's
+            // transient job entry (the deferred workspace obligation, if any,
+            // lives in `deferredExports`, not in the process table).
+            runCatching { supervisor.retireSettled(owned.job.lease) }
             // Native completion is authoritative. A later scratch-cleanup
             // failure must not turn a released lease into a fabricated live one.
             owned.nativeReleaseFailed = false
-            owned.finished.set(true); completed.set(owned)
-            heldLease.compareAndSet(owned.lease, null); running.compareAndSet(owned, null)
-            RuntimeNetworkConfiguration.release() // the owned session's real resolver use has ended
+            owned.finished.set(true)
+            completed[owned.lease.id] = owned
+            while (completed.size > 32) completed.keys.firstOrNull()?.let { completed.remove(it) }
+            running.remove(owned.lease.id, owned)
+            heldLeases.remove(owned.lease.id)
+            leaseRoles.remove(owned.lease.id)
+            if (owned.workspaceOwner) {
+                workspaceOwners.remove(owned.projectID, owned.lease.id)
+            } else {
+                workspaceParticipants[owned.projectID]?.remove(owned.lease.id)
+            }
+            // Keep the participant set entry while a deferred export still
+            // exists: the last participant is identified from it.
+            val participants = workspaceParticipants[owned.projectID]
+            if (participants != null && participants.isEmpty() && !deferredExports.containsKey(owned.projectID)) {
+                workspaceParticipants.remove(owned.projectID)
+            }
+            RuntimeNetworkConfiguration.release(owned.scratch) // this session's resolver use ended
             owned.cleanupDeferred = !cleanupScratch(owned.scratch, owned.lease.id)
             // G03-R3 first-start admission repair: notify the kernel that the
-            // REAL owned-work release landed — exactly the completion the stop
-            // executor's finally may have evaluated too early while this pump
-            // thread was still draining (candidate08: the leaked fence then
-            // refused the brand-new New task's first start). Lock order here
-            // is owned-monitor -> fence-monitor and strictly one-way; the
-            // fence re-checks the engine's OWN live ownership under its own
-            // monitor, so a failed or duplicate notification can never
-            // un-release the lease, admit work or bypass any stop.
+            // REAL owned-work release landed. The fence re-checks ownership,
+            // so a sibling still live keeps it raised.
             runCatching { onOwnedWorkReleased() }
             // Published exactly once, after the REAL release path succeeded.
             owned.latency.publish(
                 if (terminal is WorkloadTerminal.Cancelled) LinuxRuntimePhaseTiming.TERMINAL_CANCELLED
                 else LinuxRuntimePhaseTiming.TERMINAL_EXITED)
         }
+    }
+
+    private fun deferredResult(projectID: String): JSONObject =
+        JSONObject().put("workspaceStatus", "deferred").put("workspaceKey", projectID)
+
+    /**
+     * Exports ONE exact owner's workspace after the caller has proven the
+     * real whole-runtime-UID quiescence. Records the actual outcome/status and
+     * the validated preparation receipt; closes the Core grant session.
+     */
+    private fun exportWorkspace(
+        projectID: String,
+        environmentID: String,
+        baseRevision: String,
+        workspaceRoot: java.io.File,
+        workspace: RuntimeWorkspaceSession,
+        imported: WorkspaceImportReceipt,
+    ): JSONObject {
+        val outcome = try {
+            workspace.exportAfterQuiescence(WorkspaceCancelSignal {
+                Thread.currentThread().isInterrupted
+            })
+        } catch (_: Exception) {
+            WorkspaceExportOutcome.RecoverableFailure("exportUnknown", true, imported.sessionKey)
+        }
+        val result = workspaceResult(outcome, imported).put("workspaceKey", projectID)
+        runCatching { workspace.close() }
+        val status = result.optString("workspaceStatus")
+        if (status == "synced") {
+            preparation.record(projectID, environmentID, baseRevision, workspaceRoot, 0L, 0L)
+        } else {
+            preparation.invalidate(projectID)
+        }
+        exportStatuses[projectID] = result
+        return result
+    }
+
+    /** Services EVERY retained deferred export after global quiescence. */
+    private fun serviceDeferredExports(current: Running) {
+        for (deferred in deferredExports.values.toList()) {
+            val result = exportWorkspace(
+                projectID = deferred.projectID,
+                environmentID = deferred.environmentID,
+                baseRevision = deferred.baseRevision,
+                workspaceRoot = deferred.workspaceRoot,
+                workspace = deferred.workspace,
+                imported = deferred.imported,
+            )
+            if (deferred.projectID == current.projectID) current.workspaceResult = result
+            deferredExports.remove(deferred.projectID)
+        }
+    }
+
+    /** No whole-UID proof: every obligation is honestly unknown, never saved. */
+    private fun failDeferredExports(current: Running) {
+        for (deferred in deferredExports.values.toList()) {
+            val result = JSONObject().put("workspaceStatus", "unknown")
+                .put("workspaceKey", deferred.projectID)
+            runCatching { deferred.workspace.close() }
+            exportStatuses[deferred.projectID] = result
+            if (deferred.projectID == current.projectID) current.workspaceResult = result
+            deferredExports.remove(deferred.projectID)
+        }
+    }
+
+    /**
+     * Read-only live guest file snapshot over the EXISTING runtime IPC.
+     * Every identity clause is re-proven on THIS call: the addressed session
+     * must still be live, belong to the exact project and environment, and
+     * carry the caller's runtime-generation token. A stale/foreign address is
+     * refused before any path is touched. The root is the live session's own
+     * canonical workspace; no caller path selects it.
+     */
+    private fun liveFiles(request: RuntimeWire.Request): JSONObject {
+        val payload = request.payload
+        fields(payload, setOf("sessionID", "workspaceKey", "environmentID", "generation",
+            "relativePath", "maxEntries", "maxDepth", "recursive", "offset", "maxBytes"))
+        val sessionID = payload.getString("sessionID")
+        val owned = running[sessionID] ?: return liveFilesRefusal("staleSession")
+        if (payload.getString("workspaceKey") != owned.projectID) {
+            return liveFilesRefusal("pathOutOfScope")
+        }
+        if (payload.getString("environmentID") != owned.lease.environmentID) {
+            return liveFilesRefusal("environmentMismatch")
+        }
+        if (payload.getString("generation") != RuntimeProcessIdentity.bootToken) {
+            return liveFilesRefusal("staleGeneration")
+        }
+        if (owned.finished.get() || owned.terminal.get() != null) return liveFilesRefusal("staleSession")
+        return if (request.operation == "workspace.files.tree") {
+            liveFiles.tree(owned.workspaceRoot, payload)
+        } else {
+            liveFiles.read(owned.workspaceRoot, payload)
+        }
+    }
+
+    private fun liveFilesRefusal(code: String): JSONObject =
+        JSONObject().put("state", "refused").put("code", code)
+
+    /** Recompute the authoritative export outcome for status reads. */
+    private fun exportStatus(payload: JSONObject): JSONObject {
+        fields(payload, setOf("workspaceKey"))
+        val key = payload.getString("workspaceKey")
+        return exportStatuses[key]?.let { JSONObject(it.toString()) }
+            ?: JSONObject().put("workspaceStatus", if (deferredExports.containsKey(key)) "pending" else "unknown")
     }
 
     private fun workspaceResult(outcome: WorkspaceExportOutcome, receipt: WorkspaceImportReceipt): JSONObject {
@@ -519,8 +879,7 @@ internal class LinuxRuntimeOperations(
 
     private fun matching(payload: JSONObject): Running {
         val id = payload.getString("sessionID")
-        return running.get()?.takeIf { it.lease.id == id }
-            ?: completed.get()?.takeIf { it.lease.id == id } ?: error("Unknown Linux session")
+        return running[id] ?: completed[id] ?: error("Unknown Linux session")
     }
 
     private fun poll(payload: JSONObject): JSONObject {
@@ -538,7 +897,9 @@ internal class LinuxRuntimeOperations(
             .put("cancelled", owned.terminal.get() is WorkloadTerminal.Cancelled)
             .put("cleanupDeferred", owned.cleanupDeferred)
             .also { result -> owned.workspaceResult?.let { files ->
-                result.put("workspaceStatus", files.getString("workspaceStatus"))
+                result.put("workspaceStatus", files.optString("workspaceStatus", "unknown"))
+                if (files.has("workspaceKey")) result.put("workspaceKey", files.getString("workspaceKey"))
+                result.put("workspaceOwner", owned.workspaceOwner)
                 if (files.has("workspaceRecoveryRef")) result.put("workspaceRecoveryRef", files.getString("workspaceRecoveryRef"))
                 if (files.has("workspaceRecovery")) result.put("workspaceRecovery", files.getJSONObject("workspaceRecovery"))
             } }
@@ -556,7 +917,7 @@ internal class LinuxRuntimeOperations(
     private fun input(payload: JSONObject): JSONObject {
         fields(payload, setOf("sessionID", "inputBase64"))
         val owned = matching(payload)
-        if (running.get() !== owned) {
+        if (running[owned.lease.id] !== owned) {
             // G03-R3 fast-exit stdin contract: the trusted one-shot backend
             // ALWAYS commands exactly one trailing EMPTY shell.input EOF
             // page after the start reply (including nil stdin); a fast
@@ -580,7 +941,7 @@ internal class LinuxRuntimeOperations(
                     }
                 }
         }
-        check(running.get() === owned)
+        check(running[owned.lease.id] === owned)
         val encoded = payload.getString("inputBase64")
         require(encoded.length <= 22_000)
         val bytes = Base64.decode(encoded, Base64.NO_WRAP)
@@ -635,7 +996,7 @@ internal class LinuxRuntimeOperations(
     private fun resize(payload: JSONObject): JSONObject {
         fields(payload, setOf("sessionID", "rows", "columns"))
         val owned = matching(payload)
-        check(running.get() === owned)
+        check(running[owned.lease.id] === owned)
         val rows = payload.getInt("rows"); val columns = payload.getInt("columns")
         require(rows in 1..512 && columns in 1..512)
         return JSONObject().put("resized", owned.job.resize(rows, columns))
@@ -651,27 +1012,19 @@ internal class LinuxRuntimeOperations(
             fields(request.payload, setOf("requestID"))
             require(request.payload.getString("requestID") == activePreflightID.get())
         } else {
-            // G03-R3 runtime-start repair — exactly TWO target-scoped
-            // shell.cancel grammars, decided by ONE pure function:
-            //  * started session (unchanged primary path): the exact
-            //    {sessionID} equal to the held lease id;
-            //  * pending start (additive): the exact {requestID} equal to
-            //    this service's own in-flight shell.start wire id — the
-            //    same id RuntimeKernel already matched against its
-            //    pendingShellID before routing this urgent stop. The old
-            //    single-grammar check threw HERE (before stopOwnedWork's
-            //    cancelPreparation.set(true)) and the stopExecutor
-            //    swallowed it, so a user stop could never cancel a start
-            //    still running recover/materialize/import — candidate 05's
-            //    notification Stop retained ownership indefinitely.
-            // Any other shape or identity mismatch still refuses, and
-            // neither grammar ever touches unrelated work.
+            // Exactly TWO target-scoped shell.cancel grammars:
+            //  * started session: {sessionID} must name an ACTUAL live lease
+            //    (never another session's id, never a completed one);
+            //  * pending start: {requestID} must name this service's own
+            //    in-flight shell.start wire id.
+            // Any other shape or identity mismatch refuses. A stop for one
+            // session can never address another.
             val scope = shellCancelScope(
                 keys = request.payload.keys().asSequence().toSet(),
                 sessionID = request.payload.optString("sessionID").takeIf { it.isNotEmpty() },
                 requestID = request.payload.optString("requestID").takeIf { it.isNotEmpty() },
-                heldLeaseID = heldLease.get()?.id,
-                pendingStartID = pendingShellStartID.get(),
+                heldLeaseIDs = heldLeases.keys.toSet(),
+                pendingStartIDs = pendingShellStartIDs.toSet(),
             )
             require(scope != null) { "Cancellation does not address owned work" }
         }
@@ -689,26 +1042,42 @@ internal class LinuxRuntimeOperations(
             preflightCancelled.set(true)
             return
         }
-        cancelPreparation.set(true)
-        if (request?.operation == "install.cancel") return
-        val owned = running.get() ?: run {
-            // Preparation or failed-spawn ownership still counts as real work.
-            // A stop request only cancels its token; it never invents an exit.
-            heldLease.get()?.let { authority.cancel(it) }
+        if (request?.operation == "install.cancel") {
+            cancelPreparation.set(true)
             return
         }
-        authority.cancel(owned.lease)
-        val cancelled = supervisor.cancelActive(owned.job.lease, "user-stop")
-        if (cancelled is CancelOutcome.Terminated) { owned.terminal.set(cancelled.terminal); finish(owned) }
-        else if (cancelled is CancelOutcome.Rejected && owned.job.stateNow == JobState.TERMINATED) {
-            // G03-R3 runtime-start repair: the job already reached its REAL
-            // terminal but an earlier release attempt failed (the frozen
-            // native lease contract keeps a failed hand-back RETRYABLE, the
-            // entry retained). A user stop retries the actual release;
-            // finish() is idempotent and its export result stays cached.
-            // Nothing is fabricated and a still-failing release keeps every
-            // ownership exactly as claimed.
-            runCatching { finish(owned) }
+        val targetSession = request?.payload?.optString("sessionID")?.takeIf { it.isNotEmpty() }
+        val targetRequest = request?.payload?.optString("requestID")?.takeIf { it.isNotEmpty() }
+        if (targetRequest != null) {
+            // A start that has not surfaced a session id yet: request ITS
+            // cancellation only. The owning start thread observes the flag
+            // between materialize/import/spawn steps.
+            cancelledStarts[targetRequest]?.set(true)
+            return
+        }
+        val targets: List<Running> = if (targetSession != null) {
+            listOfNotNull(running[targetSession])
+        } else {
+            running.values.toList()
+        }
+        if (targets.isEmpty()) {
+            // Preparation or failed-spawn ownership still counts as real work.
+            // A stop request only cancels its token; it never invents an exit.
+            heldLeases.values.forEach { authority.cancel(it) }
+            return
+        }
+        for (owned in targets) {
+            owned.startCancelled.set(true)
+            authority.cancel(owned.lease)
+            val cancelled = supervisor.cancelActive(owned.job.lease, "user-stop")
+            if (cancelled is CancelOutcome.Terminated) {
+                owned.terminal.set(cancelled.terminal)
+                finish(owned)
+            } else if (cancelled is CancelOutcome.Rejected && owned.job.stateNow == JobState.TERMINATED) {
+                // The job already reached its REAL terminal but an earlier
+                // release attempt failed; retry only the designed completion.
+                runCatching { finish(owned) }
+            }
         }
     }
 
@@ -738,13 +1107,13 @@ internal class LinuxRuntimeOperations(
      */
     private fun reconcileUntilReleased(owned: Running,
                                        terminal: AtomicReference<WorkloadTerminal?>) {
-        while (!owned.finished.get() && (running.get() === owned || owned.terminal.get() != null)) {
+        while (!owned.finished.get() && (running[owned.lease.id] === owned || owned.terminal.get() != null)) {
             val action = nextReconcileAction(
                 state = owned.job.stateNow,
                 finished = owned.finished.get(),
                 terminalPresent = owned.terminal.get() != null || terminal.get() != null,
                 deadlinePassed = SystemClock.elapsedRealtime() >= owned.deadline,
-                stopRequested = cancelPreparation.get(),
+                stopRequested = owned.startCancelled.get(),
             )
             when (action) {
                 ReconcileAction.DONE -> return
@@ -806,6 +1175,9 @@ internal class LinuxRuntimeOperations(
     internal enum class ReconcileAction { DONE, REQUEST_STOP, ENFORCE_DEADLINE, SETTLE, RETRY_FINISH, WAIT }
 
     companion object {
+        /** Hard ceiling: 2 interactive + ONE shared Agent/run execution slot. */
+        const val MAX_CONCURRENT_WORKLOADS = 3
+
         /**
          * Pure shell.cancel scope decision (no Android, no org.json): a
          * non-null answer means the cancellation addresses EXACTLY this
@@ -819,15 +1191,30 @@ internal class LinuxRuntimeOperations(
             keys: Set<String>,
             sessionID: String?,
             requestID: String?,
-            heldLeaseID: String?,
-            pendingStartID: String?,
+            heldLeaseIDs: Collection<String>,
+            pendingStartIDs: Collection<String>,
         ): String? = when {
             keys == setOf("sessionID") ->
-                if (sessionID != null && sessionID == heldLeaseID) "session" else null
+                if (sessionID != null && heldLeaseIDs.contains(sessionID)) "session" else null
             keys == setOf("requestID") ->
-                if (requestID != null && requestID == pendingStartID) "pendingStart" else null
+                if (requestID != null && pendingStartIDs.contains(requestID)) "pendingStart" else null
             else -> null
         }
+
+        /** Legacy single-lease shape retained for the authored older tests. */
+        internal fun shellCancelScope(
+            keys: Set<String>,
+            sessionID: String?,
+            requestID: String?,
+            heldLeaseID: String?,
+            pendingStartID: String?,
+        ): String? = shellCancelScope(
+            keys = keys,
+            sessionID = sessionID,
+            requestID = requestID,
+            heldLeaseIDs = listOfNotNull(heldLeaseID),
+            pendingStartIDs = listOfNotNull(pendingStartID),
+        )
 
         /**
          * Pure next-step decision for the bounded owned release

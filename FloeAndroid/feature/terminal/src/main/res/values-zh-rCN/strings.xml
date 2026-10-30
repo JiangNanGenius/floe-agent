@@ -28,4 +28,10 @@
     <string name="terminal_back">返回</string>
     <string name="terminal_start_failed">终端未能启动。可展开详情查看原因。</string>
     <string name="terminal_input_refused">部分按键未能送达终端。可展开详情查看原因。</string>
+    <string name="terminal_tab_new">新建终端标签页</string>
+    <string name="terminal_tab_rename">重命名标签页</string>
+    <string name="terminal_tab_name">标签页名称</string>
+    <string name="terminal_tab_save">保存</string>
+    <string name="terminal_tab_close">关闭标签页</string>
+    <string name="terminal_tab_limit">最多同时运行两个终端标签页。请先关闭一个。</string>
 </resources>

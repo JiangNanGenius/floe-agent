@@ -46,13 +46,20 @@ internal class SharedPrefsUpdateStore(context: Context) : UpdateStore {
     override var pendingDownloadJson: String?
         get() = prefs.getString(KEY_PENDING_DOWNLOAD, null)
         set(value) {
-            prefs.edit().putString(KEY_PENDING_DOWNLOAD, value).apply()
+            // Synchronous: the download record is the resume source after a
+            // process death during a blocking transfer.
+            prefs.edit().putString(KEY_PENDING_DOWNLOAD, value).commit()
         }
 
     override var pendingInstallJson: String?
         get() = prefs.getString(KEY_PENDING_INSTALL, null)
         set(value) {
-            prefs.edit().putString(KEY_PENDING_INSTALL, value).apply()
+            // Synchronous on purpose: this record MUST be durable before
+            // PackageInstaller.Session#commit hands ownership to the system.
+            // An async apply() could be lost in the kill window that follows a
+            // self-install, leaving a committed session with no record (which
+            // startup reconcile would then abandon as an orphan).
+            prefs.edit().putString(KEY_PENDING_INSTALL, value).commit()
         }
 
     private companion object {
@@ -74,6 +81,17 @@ internal object UpdateConfig {
     const val AUTO_CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L
     /** Free space headroom required before staging an APK. */
     const val DISK_HEADROOM_BYTES = 64L * 1024L * 1024L
+
+    /**
+     * A delta is offered only when its patch is at most 80% of the full APK.
+     * The producer enforces the same bound; the client re-checks it from the
+     * release-bound manifest so a malformed release can never turn a "delta"
+     * into a disguised full download.
+     */
+    const val DELTA_ENABLED = true
+    const val DELTA_MAX_PATCH_PERCENT = 80
+    /** Extra allowance for the PackageInstaller's own copy at install time. */
+    const val INSTALL_HEADROOM_BYTES = 64L * 1024L * 1024L
     /** Bounded wait for owned work to settle before an explicit force install. */
     const val QUIESCENCE_WAIT_MS = 5L * 60L * 1000L
 }

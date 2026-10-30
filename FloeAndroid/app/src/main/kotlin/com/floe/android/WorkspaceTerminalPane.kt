@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -41,6 +42,7 @@ import com.floe.android.design.FloeCapsuleButton
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeInlineSwitch
 import com.floe.android.design.FloePageSheet
+import com.floe.android.design.FloePlainFormField
 import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.FloeText
 import com.floe.android.feature.terminal.G04TerminalView
@@ -50,6 +52,7 @@ import com.floe.android.host.TerminalInputIssue
 import com.floe.android.host.TerminalLanguageRuntimeState
 import com.floe.android.host.TerminalSessionPhase
 import com.floe.android.host.TerminalSessionSnapshot
+import com.floe.android.host.terminalsessions.TerminalTabView
 import kotlinx.coroutines.launch
 
 /**
@@ -81,6 +84,13 @@ internal fun WorkspaceTerminalPane(
     val clipboard = LocalClipboardManager.current
 
     var snapshot by remember(conversationID) { mutableStateOf<TerminalSessionSnapshot?>(null) }
+    // G07.3A tab strip: the pane renders the Application-owned tab registry;
+    // every chip is a REAL native session, dismissal is never a close.
+    var tabs by remember(conversationID) { mutableStateOf<List<TerminalTabView>>(emptyList()) }
+    var renameVisible by remember(controller, conversationID) { mutableStateOf(false) }
+    var renameText by remember(controller, conversationID) { mutableStateOf("") }
+    var renameTargetSession by remember(controller, conversationID) { mutableStateOf<String?>(null) }
+    var tabLimitNotice by remember(controller, conversationID) { mutableStateOf(false) }
     var keyboardVisible by remember { mutableStateOf(true) }
     var terminalCopyText by remember(controller, conversationID) { mutableStateOf<String?>(null) }
     var textSp by remember { mutableStateOf(13f) }
@@ -125,19 +135,22 @@ internal fun WorkspaceTerminalPane(
 
     // Pane-scoped observation ONLY (detaching never stops the session).
     DisposableEffect(controller, conversationID) {
-        if (controller == null) return@DisposableEffect onDispose { }
-        val unregisterSessions = controller.watchSessions(conversationID) { snapshot = it }
+        val host = controller ?: return@DisposableEffect onDispose { }
+        val unregisterSessions = host.watchSessions(conversationID) { legacy ->
+            if (host.currentTab(conversationID)?.sessionID == null) snapshot = legacy
+        }
+        val unregisterTabs = host.watchTabs(conversationID) { tabs = host.tabs(conversationID) }
         // Live server transitions keep the settings list honest while open;
         // detaching removes ONLY the listener.
-        val unregisterLanguage = controller.addLanguageStatusListener { status ->
+        val unregisterLanguage = host.addLanguageStatusListener { status ->
             if (status.conversationID == conversationID) {
                 runtimeStates = runtimeStates + (status.language to
                     TerminalLanguageRuntimeState(status.state, status.code))
             }
         }
         // Typed input refusals are a user-visible truth, not a log-only one.
-        val unregisterInputIssues = controller.watchInputIssues(conversationID) { inputIssue = it }
-        onDispose { unregisterSessions(); unregisterLanguage(); unregisterInputIssues() }
+        val unregisterInputIssues = host.watchInputIssues(conversationID) { inputIssue = it }
+        onDispose { unregisterSessions(); unregisterTabs(); unregisterLanguage(); unregisterInputIssues() }
     }
 
     // ACTUAL availability is re-read every time the sheet opens (bounded
@@ -194,9 +207,18 @@ internal fun WorkspaceTerminalPane(
             liveSession = current?.phase?.isLive() == true,
             mappingPending = workspaceMappingPending)
         when (gate) {
-            TerminalFirstUseGate.ATTACH_LIVE ->
-                // An existing live session is attached, never restarted.
-                host.attachOrOpen(conversationID, workspaceID = null, columns = 80, rows = 24)
+            TerminalFirstUseGate.ATTACH_LIVE -> {
+                // An existing live session is attached, never restarted. With
+                // tabs, attach the SELECTED native session (a second tab is a
+                // different PTY and must be attached by its own token).
+                val liveSelected = host.tabs(conversationID).firstOrNull { it.sessionID != null && it.isLive }
+                if (liveSelected?.sessionID != null) {
+                    host.attachTab(liveSelected.sessionID)
+                } else {
+                    host.attachOrOpen(conversationID, workspaceID = null, columns = 80, rows = 24)
+                }
+                host.tabs(conversationID)
+            }
             TerminalFirstUseGate.START, TerminalFirstUseGate.PREPARE_FIRST_USE -> {
                 val firstUse = gate == TerminalFirstUseGate.PREPARE_FIRST_USE
                 preparingWorkspace = firstUse
@@ -218,14 +240,24 @@ internal fun WorkspaceTerminalPane(
             }
             TerminalFirstUseGate.EXPLAIN -> Unit
         }
-        snapshot = host.currentSnapshot(conversationID) ?: snapshot
+        tabs = host.tabs(conversationID)
+        snapshot = host.currentTab(conversationID)?.sessionID?.let { host.snapshotFor(it) }
+            ?: host.currentSnapshot(conversationID) ?: snapshot
     }
 
-    val engine = remember(controller, conversationID) {
-        controller?.engineFor(conversationID)
+    val selectedTab = tabs.firstOrNull { it.selected } ?: tabs.lastOrNull()
+    val activeSessionID = selectedTab?.sessionID
+    // The selected tab's AUTHORITATIVE status wins; the legacy conversation
+    // projection is used only before any tab exists.
+    LaunchedEffect(activeSessionID, tabs) {
+        snapshot = activeSessionID?.let { controller?.snapshotFor(it) }
+            ?: controller?.currentSnapshot(conversationID)
     }
-    val transport = remember(controller, conversationID) {
-        controller?.transportFor(conversationID)
+    val engine = remember(controller, activeSessionID, conversationID) {
+        activeSessionID?.let { controller?.engineForTab(it) } ?: controller?.engineFor(conversationID)
+    }
+    val transport = remember(controller, activeSessionID, conversationID) {
+        activeSessionID?.let { controller?.transportForTab(it) } ?: controller?.transportFor(conversationID)
     }
 
     val statusText = when (snapshot?.phase) {
@@ -257,6 +289,106 @@ internal fun WorkspaceTerminalPane(
     }
 
     Column(modifier.fillMaxSize().background(colors.readingSurface)) {
+        // G07.3A tab strip. A chip is ONE real native PTY session; selecting a
+        // chip switches only the visible emulator/transport. Closing a chip is
+        // an explicit native close for that exact token; dismissing the pane
+        // never does either.
+        if (controller != null && (tabs.isNotEmpty() || terminalReady)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                tabs.forEach { tab ->
+                    val selected = tab.selected
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (selected) colors.accent else colors.fillTertiary)
+                            .clickable {
+                                tab.sessionID?.let { controller?.selectTab(conversationID, tab.tabID) }
+                                tab.sessionID?.let { snapshot = controller?.snapshotFor(it) }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                            .semantics {
+                                contentDescription = tab.title
+                            },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        FloeText(
+                            text = tab.title,
+                            style = Floe.typography.metadata,
+                            color = if (selected) Color.White else colors.label,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (tab.isLive) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(Color(0xFF34C759))
+                                    .width(6.dp).height(6.dp),
+                            )
+                        }
+                        if (tab.sessionID != null) {
+                            val closeLabel = stringResource(
+                                com.floe.android.feature.terminal.R.string.terminal_tab_close)
+                            Box(
+                                modifier = Modifier
+                                    .clickable {
+                                        val id = tab.sessionID ?: return@clickable
+                                        scope.launch { controller?.closeTab(id) }
+                                    }
+                                    .semantics { contentDescription = closeLabel }
+                                    .padding(horizontal = 2.dp),
+                            ) {
+                                FloeText("\u00d7",
+                                    style = Floe.typography.metadata,
+                                    color = if (selected) Color.White else colors.secondaryLabel)
+                            }
+                        }
+                    }
+                }
+                val newLabel = stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_new)
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(colors.fillTertiary)
+                        .clickable {
+                            scope.launch {
+                                val host = controller ?: return@launch
+                                val created = host.openTab(conversationID, null, 80, 24) { refusal ->
+                                    openFailure = refusal
+                                }
+                                if (created == null) {
+                                    tabLimitNotice = host.tabs(conversationID).size >= 2
+                                } else {
+                                    created.sessionID?.let { host.selectTab(conversationID, created.tabID) }
+                                    tabs = host.tabs(conversationID)
+                                    tabLimitNotice = false
+                                }
+                            }
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                        .semantics { contentDescription = newLabel },
+                ) {
+                    FloeText("+", style = Floe.typography.metadata, color = colors.label)
+                }
+            }
+            if (tabLimitNotice) {
+                FloeText(
+                    stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_limit),
+                    style = Floe.typography.metadata,
+                    color = colors.secondaryLabel,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                )
+            }
+            FloeDivider()
+        }
         // status strip
         Row(
             modifier = Modifier
@@ -461,8 +593,13 @@ internal fun WorkspaceTerminalPane(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_interrupt)) {
-                    // Truthful unavailability: no controller, no command.
-                    scope.launch { controller?.interrupt(conversationID) }
+                    // Truthful unavailability: no controller, no command. With
+                    // tabs, Ctrl-C goes to the SELECTED native session only.
+                    val id = activeSessionID
+                    scope.launch {
+                        if (id != null) controller?.interruptTab(id)
+                        else controller?.interrupt(conversationID)
+                    }
                 }
                 TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_paste)) {
                     val text = clipboard.getText()?.text
@@ -477,10 +614,22 @@ internal fun WorkspaceTerminalPane(
                 TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_settings)) {
                     settingsVisible = true
                 }
+                if (activeSessionID != null) {
+                    TerminalControlLabel(
+                        stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_rename)) {
+                        renameTargetSession = activeSessionID
+                        renameText = selectedTab?.title.orEmpty()
+                        renameVisible = true
+                    }
+                }
                 val live = snapshot?.phase?.isLive() == true
                 if (live) {
                     TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_close)) {
-                        scope.launch { controller?.closeSession(conversationID) }
+                        val id = activeSessionID
+                        scope.launch {
+                            if (id != null) controller?.closeTab(id)
+                            else controller?.closeSession(conversationID)
+                        }
                     }
                 } else if (snapshot != null && qualified) {
                     TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_reset)) {
@@ -503,14 +652,12 @@ internal fun WorkspaceTerminalPane(
                             // user can retry explicitly — never a forced
                             // retire, a second lease against a live one,
                             // or a silent relaunch after the timeout.
-                            val closed = host.closeSession(conversationID)
+                            val id = activeSessionID
+                            val closed = if (id != null) host.closeTab(id) else host.closeSession(conversationID)
                             val settled = if (closed is TerminalActionReply.Success) {
-                                host.awaitSessionSettled(conversationID, 20_000)
+                                if (id != null) host.awaitTabSettled(id, 20_000)
+                                else host.awaitSessionSettled(conversationID, 20_000)
                             } else {
-                                // The close never started (refused/timeout):
-                                // attachOrOpen below either attaches to
-                                // what is actually live or answers the
-                                // honest refusal itself.
                                 true
                             }
                             openFailure = null
@@ -519,10 +666,20 @@ internal fun WorkspaceTerminalPane(
                                 snapshot = null
                                 startDispatched = false
                             } else {
-                                val opened = host.attachOrOpen(conversationID, null, 80, 24,
-                                    onRefusal = { openFailure = it })
-                                snapshot = opened
-                                startDispatched = opened != null
+                                // Reset opens a FRESH tab (a new native PTY).
+                                if (id != null) {
+                                    val opened = host.openTab(conversationID, null, 80, 24,
+                                        onRefusal = { openFailure = it })
+                                    opened?.sessionID?.let { host.selectTab(conversationID, opened.tabID) }
+                                    snapshot = opened?.sessionID?.let { host.snapshotFor(it) }
+                                    startDispatched = opened != null
+                                    tabs = host.tabs(conversationID)
+                                } else {
+                                    val opened = host.attachOrOpen(conversationID, null, 80, 24,
+                                        onRefusal = { openFailure = it })
+                                    snapshot = opened
+                                    startDispatched = opened != null
+                                }
                             }
                         }
                     }
@@ -650,6 +807,43 @@ internal fun WorkspaceTerminalPane(
                     onOpenEnvironment?.invoke()
                 }
             }
+        }
+    }
+
+    // G07.3A tab rename: a LOCAL presentation label only. It never renames a
+    // native session, changes ownership or touches the durable task.
+    FloePageSheet(
+        visible = renameVisible,
+        onDismiss = { renameVisible = false },
+        widthFraction = 0.42f,
+        heightFraction = 0.32f,
+        placement = FloeSheetPlacement.CENTER,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            FloeText(
+                stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_rename),
+                style = Floe.typography.toolbarTitle, color = colors.label)
+            FloePlainFormField(
+                label = stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_name),
+                value = renameText,
+                onValueChange = { renameText = it.take(40) },
+                singleLine = true,
+            )
+            FloeCapsuleButton(
+                stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_save),
+                onClick = {
+                    val id = renameTargetSession
+                    val host = controller
+                    if (id != null && host != null) {
+                        host.renameTab(id, renameText)
+                        tabs = host.tabs(conversationID)
+                    }
+                    renameVisible = false
+                },
+            )
         }
     }
 }

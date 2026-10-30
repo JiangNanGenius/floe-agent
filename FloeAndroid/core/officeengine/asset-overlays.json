@@ -538,7 +538,7 @@
       "originalSha256": null,
       "reason": "Provide an explicitly opened, JavaScript-disabled notices/source entry with local license/notice links and immutable upstream source facts.",
       "source": "notices/index.html",
-      "sha256": "6df1ce8c03bae890362edfc28642efc7cd21598647c526da5dffb57f760800f2"
+      "sha256": "e71ae7b68da70fb4ab70c2d30d248477393c90af204b853c322983af907de9b2"
     },
     {
       "operation": "add",
@@ -546,7 +546,7 @@
       "originalSha256": null,
       "reason": "Machine-readable index of original notices, overlay operations, external pins, source access and unresolved items.",
       "source": "notices/source-index.json",
-      "sha256": "ff8c4f8b17aabc27f1b854420973fec1dc007ee1dfe035d55489b4f4629a6b82"
+      "sha256": "7c120a4dddd172187221f7039978bf2ec25243e618a29260c7b85f52bbc40fba"
     },
     {
       "operation": "replace",

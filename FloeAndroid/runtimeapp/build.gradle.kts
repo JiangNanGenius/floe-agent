@@ -478,4 +478,9 @@ dependencies {
     // provider/security/history modules and files do not enter this component.
     implementation(project(":core:linuxauthoritybridge"))
     testImplementation(libs.junit)
+    // G07.3A: the live guest-file regression exercises the REAL bounded
+    // reader/JSON contract on the JVM. Android's unit-test org.json is a
+    // throwing stub, so the focused test uses the small real implementation
+    // (test classpath only; production keeps the platform org.json).
+    testImplementation("org.json:json:20240303")
 }

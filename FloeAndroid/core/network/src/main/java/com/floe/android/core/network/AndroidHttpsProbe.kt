@@ -193,6 +193,9 @@ internal object AndroidHttpsProbe {
                             contentLength = head.headers["content-length"]?.toLongOrNull(),
                             headers = safeHeaders,
                             tlsProtocol = sessionInfo.protocol,
+                            certificateObservation = TlsCertificateObservation.capture(
+                                sessionInfo.peerCertificates, System.currentTimeMillis(),
+                            ),
                             dnsMs = dnsMs,
                             tcpConnectMs = tcpConnectMs,
                             tlsHandshakeMs = tlsHandshakeMs,
@@ -277,7 +280,7 @@ internal object AndroidHttpsProbe {
         )
         is SSLException -> HttpFetchException(
             ObservationStatus.ERROR,
-            "tlsFailure",
+            TlsFailureReason.code(failure),
             failure.javaClass.simpleName.take(64),
         )
         is SecurityException -> HttpFetchException(

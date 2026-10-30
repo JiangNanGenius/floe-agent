@@ -10,7 +10,7 @@
   },
   "noticePage": {
     "path": "notices/index.html",
-    "sha256": "6df1ce8c03bae890362edfc28642efc7cd21598647c526da5dffb57f760800f2",
+    "sha256": "e71ae7b68da70fb4ab70c2d30d248477393c90af204b853c322983af907de9b2",
     "language": "English and Simplified Chinese",
     "scripting": "None; local static page"
   },
@@ -598,7 +598,7 @@
         "path": "notices/index.html",
         "operation": "add",
         "originalSha256": null,
-        "newSha256": "6df1ce8c03bae890362edfc28642efc7cd21598647c526da5dffb57f760800f2"
+        "newSha256": "e71ae7b68da70fb4ab70c2d30d248477393c90af204b853c322983af907de9b2"
       },
       {
         "path": "share/theme_definitions/online/arrow-down.svg",
@@ -947,8 +947,8 @@
   },
   "floeCorrespondingSource": {
     "status": "release-source-links",
-    "tag": "android/v0.1.0-alpha.17",
-    "archiveUrl": "https://github.com/JiangNanGenius/floe-agent/releases/download/android/v0.1.0-alpha.17/floe-android-corresponding-source-0.1.0-alpha.17.tar.gz",
+    "tag": "android/v0.1.0-alpha.18",
+    "archiveUrl": "https://github.com/JiangNanGenius/floe-agent/releases/download/android/v0.1.0-alpha.18/floe-android-corresponding-source-0.1.0-alpha.18.tar.gz",
     "sourceRoot": "FloeAndroid/core/officeengine",
     "coveredSource": "Floe host/bridge sources, explicit overlays, overlay manifest and public staging tool in the matching source archive. Unmodified native core/frontend and external pins use immutable upstream links below.",
     "publicationVerification": "Publisher checks exact tag/source/archive identity and download access before declaring the Android release delivered. No native reproducible-build or third-party attestation claim."

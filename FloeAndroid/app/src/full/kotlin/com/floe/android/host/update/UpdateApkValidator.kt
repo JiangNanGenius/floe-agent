@@ -20,6 +20,7 @@ internal data class ApkIdentity(
     val minSdk: Int,
     val hasArm64Libraries: Boolean,
     val hasForeignAbiLibraries: Boolean,
+    val versionName: String = "",
 )
 
 internal enum class ApkRejection {
@@ -69,8 +70,23 @@ internal class ApkIdentityReader(private val context: Context) {
             minSdk = 0,
             hasArm64Libraries = true,
             hasForeignAbiLibraries = false,
+            versionName = info.versionName ?: "",
         )
     }.getOrNull()
+
+    /**
+     * The installed base APK file. A delta is only possible when this is a
+     * single readable APK whose exact bytes can be re-hashed; split installs
+     * have no single base artifact to bind.
+     */
+    fun installedApkFile(): File? = runCatching {
+        File(context.applicationInfo.sourceDir)
+    }.getOrNull()
+
+    fun hasSplitApks(): Boolean = runCatching {
+        !context.applicationInfo.splitSourceDirs.isNullOrEmpty() ||
+            !context.applicationInfo.splitNames.isNullOrEmpty()
+    }.getOrDefault(true)
 
     fun read(apk: File): ApkIdentity? = runCatching {
         @Suppress("DEPRECATION")
@@ -86,6 +102,7 @@ internal class ApkIdentityReader(private val context: Context) {
             minSdk = info.applicationInfo?.minSdkVersion ?: 0,
             hasArm64Libraries = abis.contains("arm64-v8a"),
             hasForeignAbiLibraries = abis.any { it != "arm64-v8a" },
+            versionName = info.versionName ?: "",
         )
     }.getOrNull()
 

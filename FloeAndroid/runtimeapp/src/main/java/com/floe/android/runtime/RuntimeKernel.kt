@@ -23,6 +23,8 @@ internal interface RuntimeOperations {
     fun validateCancellation(request: RuntimeWire.Request)
     fun stopOwnedWork(request: RuntimeWire.Request? = null)
     fun hasOwnedWork(): Boolean
+    /** Install / first-use preflight: still exclusive with every workload. */
+    fun hasExclusiveWork(): Boolean
 }
 
 /** Bounded transient IPC receipts, not the main App's durable BackgroundJobStore. */
@@ -44,7 +46,9 @@ class RuntimeKernel(context: Context) {
     // the read-only `status` metadata path merely READS the fence.
     private val fence = RuntimeStoppingFence { hasOwnedWork() }
     private val pendingInstallID = AtomicReference<String?>()
-    private val pendingShellID = AtomicReference<String?>()
+    // G07.3A: concurrent starts each have their own pending wire id; a
+    // session-less stop may address any ONE of them by exact id.
+    private val pendingShellIDs: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val pendingPreflightID = AtomicReference<String?>()
     // REAL engine PROCESS generation, measured identity — never an auth
     // token and never a random success flag: the kernel object is created
@@ -83,7 +87,7 @@ class RuntimeKernel(context: Context) {
                 // kernel genuinely runs a single-slot executor with the
                 // exclusive-start admission below. It is the engine's own real
                 // attestation; an idle check belongs to the host ingest.
-                .put("workloadContractVersion", if (executor.maximumPoolSize == 1) WORKLOAD_CONTRACT else "")
+                .put("workloadContractVersion", MULTI_WORKLOAD_CONTRACT)
             // G07.1 terminal04 (ADDITIVE, diagnostics only): this engine
             // process's OWN settled phase composition for its most recent
             // workload. Absent until a first terminal; stage names and
@@ -107,7 +111,7 @@ class RuntimeKernel(context: Context) {
             // Urgent stop is never queued behind a download/materialization.
             if (request.operation == "install.cancel" && pendingInstallID.get() == request.payload.optString("requestID")) {
                 require(request.payload.keys().asSequence().toSet() == setOf("requestID"))
-            } else if (request.operation == "shell.cancel" && pendingShellID.get() == request.payload.optString("requestID")) {
+            } else if (request.operation == "shell.cancel" && pendingShellIDs.contains(request.payload.optString("requestID"))) {
                 require(request.payload.keys().asSequence().toSet() == setOf("requestID"))
             } else if (request.operation == RuntimeWire.PREFLIGHT_CANCEL &&
                 pendingPreflightID.get() == request.payload.optString("requestID")
@@ -130,14 +134,17 @@ class RuntimeKernel(context: Context) {
         check(!fence.isStopping) { "Runtime is stopping" }
         synchronized(receipts) {
             receipts[request.id]?.let { return JSONObject(it.toString()) }
-            if (request.operation == "install.start" || request.operation == "shell.start" ||
-                request.operation == RuntimeWire.PREFLIGHT
-            ) {
-                // Exclusive single-workload admission: an unrelated busy
-                // workload A makes a NEW preflight REFUSE before any state
-                // is written; nothing about A is touched or cancelled.
+            if (request.operation == "install.start" || request.operation == RuntimeWire.PREFLIGHT) {
+                // Install / first-use preflight stay EXCLUSIVE: they rewrite or
+                // mirror shared state and must never race a live workload.
                 if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_ADMISSION_CHECK)
                 check(!hasOwnedWork()) { "Runtime already owns work" }
+            } else if (request.operation == "shell.start") {
+                // G07.3A: concurrent workloads are admitted by ROLE/CAPACITY in
+                // LinuxRuntimeOperations (2 interactive + ONE shared Agent/run), but
+                // never while an install or first-use preflight owns the UID.
+                if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_ADMISSION_CHECK)
+                check(operations?.hasExclusiveWork() != true) { "Runtime is preparing an exclusive lane" }
             }
             while (receipts.size >= 64) {
                 val evict = receipts.entries.firstOrNull { it.value.optString("state") in setOf("completed", "failed") }
@@ -147,7 +154,7 @@ class RuntimeKernel(context: Context) {
             receipts[request.id] = JSONObject().put("requestID", request.id).put("state", "queued")
             count.incrementAndGet() // reserve admission before another Binder call
             if (request.operation == "install.start") pendingInstallID.set(request.id)
-            if (request.operation == "shell.start") pendingShellID.set(request.id)
+            if (request.operation == "shell.start") pendingShellIDs.add(request.id)
             if (request.operation == RuntimeWire.PREFLIGHT) pendingPreflightID.set(request.id)
         }
         if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_QUEUED)
@@ -201,7 +208,7 @@ class RuntimeKernel(context: Context) {
                     update(request.id, failed)
                 } finally {
                     pendingInstallID.compareAndSet(request.id, null)
-                    pendingShellID.compareAndSet(request.id, null)
+                    pendingShellIDs.remove(request.id)
                     pendingPreflightID.compareAndSet(request.id, null)
                     count.decrementAndGet()
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_REQUEST_RETURNED)
@@ -211,7 +218,7 @@ class RuntimeKernel(context: Context) {
             }
         } catch (_: RejectedExecutionException) {
             pendingInstallID.compareAndSet(request.id, null)
-            pendingShellID.compareAndSet(request.id, null)
+            pendingShellIDs.remove(request.id)
             pendingPreflightID.compareAndSet(request.id, null)
             count.decrementAndGet()
             synchronized(receipts) { receipts.remove(request.id) }
@@ -251,6 +258,8 @@ class RuntimeKernel(context: Context) {
          *  the exclusive-start admission above). Ingested as a FACT only
          *  while the engine additionally reports itself idle. */
         const val WORKLOAD_CONTRACT = "floe-single-workload-v1"
+        /** G07.3A real concurrent contract (2 interactive + 1 shared execution). */
+        const val MULTI_WORKLOAD_CONTRACT = "floe-multi-workload-v2"
 
         /**
          * G03-R3 failed-start receipt handoff (job-150dee8e1ed14ba1): the

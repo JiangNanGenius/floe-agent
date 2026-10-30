@@ -10,6 +10,48 @@ import org.junit.Test
 
 class NetworkMonitorReportTest {
     @Test
+    fun diagnosticReportKeepsActualTlsFactsAndRedactsFingerprintByDefault() {
+        val fingerprint = "cd".repeat(32)
+        val raw = JSONObject().put("version", 1).put("source", "phone")
+            .put("operationID", UUID.randomUUID().toString()).put("method", "network.http")
+            .put("status", "ok").put("measuredAt", "2026-10-30T11:00:00Z")
+            .put("target", "https://private.example.test/?token=secret")
+            .put("network", JSONObject().put("available", true))
+            .put("observations", JSONObject().put("statusCode", 200).put("tls", JSONObject()
+                .put("protocol", "TLSv1.3").put("peerCertificates", JSONObject()
+                    .put("revocationChecked", false).put("certificates", org.json.JSONArray().put(JSONObject()
+                        .put("sha256", fingerprint).put("subject", "CN=hidden-certificate.example.test").put("notAfter", "2026-11-01T00:00:00Z")))))).toString()
+        val meta = NetworkMonitorDeviceMetadata("Android 13", "test")
+        val redacted = NetworkMonitorReportRenderer.renderDiagnostic(raw, false, meta)
+        val detailed = NetworkMonitorReportRenderer.renderDiagnostic(raw, true, meta)
+        assertFalse(redacted.json.contains(fingerprint))
+        assertFalse(redacted.markdown.contains("private.example.test"))
+        assertFalse(redacted.json.contains("hidden-certificate.example.test"))
+        assertTrue(detailed.json.contains("hidden-certificate.example.test"))
+        assertFalse(detailed.json.contains("token=secret"))
+        assertTrue(detailed.json.contains(fingerprint))
+        assertTrue(redacted.json.contains("TLSv1.3"))
+        assertEquals("floe.network-diagnostic-report.v1", JSONObject(redacted.json).getString("schema"))
+        assertFalse(JSONObject(redacted.json).has("session"))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun diagnosticReportRejectsNonPhoneOrUnboundInput() {
+        NetworkMonitorReportRenderer.renderDiagnostic("{}", false,
+            NetworkMonitorDeviceMetadata("Android 13", "test"))
+    }
+
+    @Test
+    fun certificateFingerprintIsAnOptInReportIdentifier() {
+        val key = "tls.peerCertificates.certificates.0.sha256"
+        val fingerprint = "ab".repeat(32)
+        assertEquals("[redacted-network-identifier]", NetworkMonitorRedactor.value(key, fingerprint, false))
+        assertEquals(fingerprint, NetworkMonitorRedactor.value(key, fingerprint, true))
+        assertEquals("SHA256withRSA", NetworkMonitorRedactor.value("tls.signatureAlgorithm", "SHA256withRSA", false))
+        assertEquals("2026-11-01T00:00:00Z", NetworkMonitorRedactor.value("tls.notAfter", "2026-11-01T00:00:00Z", false))
+    }
+
+    @Test
     fun defaultAndDetailedReportsBoundSensitiveDataWithoutDroppingFailures() {
         val operationID = UUID.randomUUID().toString()
         val raw = JSONObject()

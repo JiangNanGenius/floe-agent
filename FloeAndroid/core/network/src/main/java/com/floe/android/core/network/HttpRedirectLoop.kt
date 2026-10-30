@@ -18,6 +18,7 @@ internal data class HttpHop(
     val tlsHandshakeMs: Long? = null,
     val responseHeadersMs: Long? = null,
     val totalMs: Long? = null,
+    val certificateObservation: org.json.JSONObject? = null,
 )
 
 internal class HttpFetchException(

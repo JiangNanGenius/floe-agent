@@ -31,4 +31,10 @@
     <string name="terminal_back">Back</string>
     <string name="terminal_start_failed">Could not start the terminal. View details for the reason.</string>
     <string name="terminal_input_refused">Some keystrokes didn\'t reach the terminal. View details for the reason.</string>
+    <string name="terminal_tab_new">New terminal tab</string>
+    <string name="terminal_tab_rename">Rename tab</string>
+    <string name="terminal_tab_name">Tab name</string>
+    <string name="terminal_tab_save">Save</string>
+    <string name="terminal_tab_close">Close tab</string>
+    <string name="terminal_tab_limit">Two terminal tabs can run at once. Close one to open another.</string>
 </resources>

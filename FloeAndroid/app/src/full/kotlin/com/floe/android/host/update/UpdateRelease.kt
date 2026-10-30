@@ -22,6 +22,14 @@ internal data class AndroidRelease(
     val summary: String,
     val apk: ReleaseAsset,
     val checksums: ReleaseAsset,
+    /**
+     * Optional bounded `update-delta-v1.json` asset. Its presence alone grants
+     * nothing: [UpdateDeltaPolicy] still requires SHA256SUMS to bind both this
+     * manifest and its patch, and the manifest to bind the exact full-APK hash.
+     */
+    val delta: ReleaseAsset? = null,
+    /** Bounded name→asset map of this release (safe names and HTTPS URLs only). */
+    val assets: Map<String, ReleaseAsset> = emptyMap(),
 )
 
 /**
@@ -41,6 +49,8 @@ internal object AndroidReleaseFeed {
     const val MAX_APK_BYTES = 2L * 1024L * 1024L * 1024L
     const val MAX_CHECKSUMS_BYTES = 256L * 1024L
     private const val MAX_TAG_CHARS = 96
+    /** A release carries a handful of assets; never let a feed grow the map. */
+    private const val MAX_ASSETS = 24
 
     fun apkName(version: FloeVersion): String = "Floe-Android-$version-full-arm64-v8a.apk"
 
@@ -62,12 +72,26 @@ internal object AndroidReleaseFeed {
             val checksums = assets.firstOrNull {
                 it.name == CHECKSUMS_NAME && it.sizeBytes in 1..MAX_CHECKSUMS_BYTES
             } ?: continue
+            // Keep a small, safe name→asset map so a manifest can name its
+            // patch asset without ever trusting a URL taken from that manifest.
+            val byName = LinkedHashMap<String, ReleaseAsset>()
+            for (asset in assets) {
+                if (byName.size >= MAX_ASSETS) break
+                val allowedName = UpdateDeltaFormat.isSafeAssetName(asset.name) ||
+                    asset.name == CHECKSUMS_NAME ||
+                    asset.name == UpdateDeltaFormat.MANIFEST_ASSET
+                if (!allowedName) continue
+                byName.putIfAbsent(asset.name, asset)
+            }
             releases += AndroidRelease(
                 tag = tag,
                 version = version,
                 summary = ReleaseSummary.bounded(release.stringOrNull("body")),
                 apk = apk,
                 checksums = checksums,
+                delta = byName[UpdateDeltaFormat.MANIFEST_ASSET]
+                    ?.takeIf { it.sizeBytes in 1..UpdateDeltaFormat.MAX_MANIFEST_BYTES },
+                assets = byName,
             )
         }
         return releases.distinctBy { it.tag }

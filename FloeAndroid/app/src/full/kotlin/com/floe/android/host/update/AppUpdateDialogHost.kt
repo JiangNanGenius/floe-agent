@@ -35,10 +35,10 @@ import com.floe.android.design.FloeText
 
 /**
  * The single window for every self-update state: new version, download
- * progress, verification, install readiness, quiescence wait, permission
- * handoff, system confirmation and the terminal result. Nothing here starts
- * a check, download or install on recomposition; every action is a user click
- * routed to the Application-owned controller.
+ * progress, verification, delta reconstruction/fallback, install readiness,
+ * quiescence wait, permission handoff, system confirmation and the terminal
+ * result. Nothing here starts a check, download or install on recomposition;
+ * every action is a user click routed to the Application-owned controller.
  */
 @Composable
 internal fun AppUpdateDialogHost() {
@@ -83,10 +83,14 @@ internal fun AppUpdateDialogHost() {
                 when {
                     ui.install !is AppInstallState.Idle -> InstallContent(controller, ui, context)
                     ui.download is AppDownloadState.InProgress -> ProgressContent(controller, ui)
+                    ui.download is AppDownloadState.Applying -> BusyContent(
+                        text = stringResource(R.string.app_update_applying_delta),
+                    )
                     ui.download is AppDownloadState.Verifying -> BusyContent(
                         text = stringResource(R.string.app_update_verifying),
                     )
                     ui.download is AppDownloadState.Ready -> ReadyContent(controller, ui)
+                    ui.download is AppDownloadState.DeltaFallback -> DeltaFallbackContent(controller, ui)
                     ui.download is AppDownloadState.Paused ||
                         ui.download is AppDownloadState.Failed -> DownloadFailedContent(controller, ui)
                     ui.check is AppCheckState.UpdateAvailable -> NewVersionContent(controller, ui)
@@ -117,6 +121,13 @@ private fun NewVersionContent(controller: AppUpdateController, ui: AppUpdateUiSt
         )
         FloeText(summary, style = Floe.typography.metadata, color = Floe.colors.label)
     }
+    if (release.delta != null) {
+        FloeText(
+            stringResource(R.string.app_update_delta_offer),
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+        )
+    }
     FloeText(
         stringResource(R.string.app_update_system_note),
         style = Floe.typography.metadata,
@@ -139,7 +150,11 @@ private fun NewVersionContent(controller: AppUpdateController, ui: AppUpdateUiSt
 private fun ProgressContent(controller: AppUpdateController, ui: AppUpdateUiState) {
     val state = ui.download as AppDownloadState.InProgress
     FloeText(
-        stringResource(R.string.app_update_downloading, state.versionName),
+        if (state.mode == DownloadMode.DELTA) {
+            stringResource(R.string.app_update_delta_downloading, state.versionName)
+        } else {
+            stringResource(R.string.app_update_downloading, state.versionName)
+        },
         style = Floe.typography.body,
         color = Floe.colors.label,
     )
@@ -200,6 +215,13 @@ private fun ReadyContent(controller: AppUpdateController, ui: AppUpdateUiState) 
         style = Floe.typography.metadata,
         color = Floe.colors.secondaryLabel,
     )
+    if (state.mode == DownloadMode.DELTA) {
+        FloeText(
+            stringResource(R.string.app_update_delta_ready),
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+        )
+    }
     FloeText(
         stringResource(R.string.app_update_system_note),
         style = Floe.typography.metadata,
@@ -209,6 +231,39 @@ private fun ReadyContent(controller: AppUpdateController, ui: AppUpdateUiState) 
         FloeCapsuleAction(
             label = stringResource(R.string.app_update_install),
             onClick = { controller.installNow(force = false) },
+            tint = Floe.colors.accent,
+        )
+        FloeCapsuleAction(
+            label = stringResource(R.string.app_update_discard),
+            onClick = { controller.discardDownload() },
+        )
+    }
+}
+
+@Composable
+private fun DeltaFallbackContent(controller: AppUpdateController, ui: AppUpdateUiState) {
+    val fallback = ui.download as AppDownloadState.DeltaFallback
+    FloeText(
+        stringResource(R.string.app_update_delta_fallback_title),
+        style = Floe.typography.bodyEmphasized,
+        color = Floe.colors.label,
+    )
+    FloeText(
+        AppUpdateCopy.deltaFallback(fallback.reason),
+        style = Floe.typography.body,
+        color = Floe.colors.label,
+    )
+    if (fallback.fullBytes > 0L) {
+        FloeText(
+            stringResource(R.string.app_update_full_size, fallback.fullBytes / 1_048_576L),
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+        )
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        FloeCapsuleAction(
+            label = stringResource(R.string.app_update_download_full),
+            onClick = { controller.startFullDownload() },
             tint = Floe.colors.accent,
         )
         FloeCapsuleAction(
@@ -283,20 +338,50 @@ private fun InstallContent(controller: AppUpdateController, ui: AppUpdateUiState
         }
         is AppInstallState.NeedsPermission -> {
             FloeText(
-                stringResource(R.string.app_update_permission),
+                if (install.deniedOnce) {
+                    stringResource(R.string.app_update_permission_denied)
+                } else {
+                    stringResource(R.string.app_update_permission)
+                },
                 style = Floe.typography.body,
                 color = Floe.colors.label,
             )
             FloeText(
-                stringResource(R.string.app_update_permission_detail),
+                if (install.settingsUnavailable) {
+                    stringResource(R.string.app_update_permission_settings_unavailable)
+                } else {
+                    stringResource(R.string.app_update_permission_detail)
+                },
                 style = Floe.typography.metadata,
                 color = Floe.colors.secondaryLabel,
             )
-            FloeCapsuleAction(
-                label = stringResource(R.string.app_update_open_permission),
-                onClick = { launchSystemIntent(context, install.intent) },
-                tint = Floe.colors.accent,
+            // Android 13+ may hide "Allow from this source" behind restricted
+            // settings for a sideloaded install; the App-info route is the
+            // documented way to unlock it, so it is always offered here.
+            FloeText(
+                stringResource(R.string.app_update_permission_restricted),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
             )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FloeCapsuleAction(
+                    label = stringResource(R.string.app_update_open_permission),
+                    onClick = {
+                        if (!launchSystemIntent(context, install.intent)) {
+                            controller.onPermissionIntentUnavailable()
+                        }
+                    },
+                    tint = Floe.colors.accent,
+                )
+                FloeCapsuleAction(
+                    label = stringResource(R.string.app_update_open_app_info),
+                    onClick = {
+                        if (!launchSystemIntent(context, install.appInfoIntent)) {
+                            controller.onPermissionIntentUnavailable()
+                        }
+                    },
+                )
+            }
         }
         is AppInstallState.Confirming -> {
             FloeText(
@@ -308,7 +393,11 @@ private fun InstallContent(controller: AppUpdateController, ui: AppUpdateUiState
                 FloeCapsuleAction(
                     label = stringResource(R.string.app_update_confirm_now),
                     onClick = {
-                        controller.consumeSystemIntent()?.let { intent -> launchSystemIntent(context, intent) }
+                        controller.consumeSystemIntent()?.let { intent ->
+                            if (!launchSystemIntent(context, intent)) {
+                                controller.onConfirmationUnavailable()
+                            }
+                        }
                     },
                     tint = Floe.colors.accent,
                 )
@@ -361,13 +450,18 @@ private fun InstallContent(controller: AppUpdateController, ui: AppUpdateUiState
                         onClick = { controller.cancelPendingInstall() },
                         tint = Floe.colors.accent,
                     )
+                } else if (ui.download is AppDownloadState.Ready) {
+                    // The verified APK was deliberately kept: retry from the
+                    // same bytes instead of downloading hundreds of MB again.
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.app_update_retry_install),
+                        onClick = { controller.retryInstall() },
+                        tint = Floe.colors.accent,
+                    )
                 } else {
                     FloeCapsuleAction(
-                        label = stringResource(R.string.retry),
-                        onClick = {
-                            controller.dismissInstallFailure()
-                            controller.installNow(force = false)
-                        },
+                        label = stringResource(R.string.app_update_download_full),
+                        onClick = { controller.startFullDownload() },
                         tint = Floe.colors.accent,
                     )
                 }

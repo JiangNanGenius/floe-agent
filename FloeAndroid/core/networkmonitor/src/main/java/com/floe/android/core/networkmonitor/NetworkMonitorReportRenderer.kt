@@ -7,6 +7,56 @@ import org.json.JSONObject
 
 /** Serialization has no transport or resolver dependency; supplied observations are the only input. */
 object NetworkMonitorReportRenderer {
+    /** One completed measurement, with no invented monitoring session or wall-clock duration. */
+    fun renderDiagnostic(raw: String, detailed: Boolean, deviceMetadata: NetworkMonitorDeviceMetadata): NetworkMonitorReportDocument {
+        require(raw.toByteArray(Charsets.UTF_8).size <= NetworkMonitorLimits.MAX_RAW_RESULT_BYTES)
+        val source = JSONObject(raw)
+        require(source.optInt("version", -1) == 1 && source.optString("source") == "phone")
+        require(runCatching { java.util.UUID.fromString(source.getString("operationID")) }.isSuccess)
+        require(source.optString("method") in setOf("network.status", "network.wifiScan", "network.dnsLookup",
+            "network.ping", "network.tcpProbe", "network.http", "network.lanDiscover", "network.speedTest"))
+        require(source.optString("status") in setOf("ok", "error", "timeout", "cancelled", "permissionRequired",
+            "unsupported", "unavailable", "partial"))
+        require(runCatching { Instant.parse(source.getString("measuredAt")) }.isSuccess)
+        val connection = NetworkMonitorObservationParser.readFields(source.optJSONObject("network")).redacted(detailed)
+        val observations = NetworkMonitorObservationParser.readFields(source.optJSONObject("observations")).redacted(detailed)
+        val root = JSONObject().put("schema", "floe.network-diagnostic-report.v1")
+            .put("privacy", JSONObject().put("mode", if (detailed) "detailed" else "redacted"))
+            .put("device", JSONObject().put("osVersion", deviceMetadata.osVersion).put("appVersion", deviceMetadata.appVersion))
+            .put("operationID", source.getString("operationID"))
+            .put("method", source.getString("method")).put("status", source.getString("status"))
+            .put("measuredAt", source.getString("measuredAt"))
+            .put("target", source.optString("target").takeIf { it.isNotBlank() }?.let {
+                NetworkMonitorRedactor.value("target", it, detailed) })
+            .put("network", renderFields(connection)).put("observations", renderFields(observations))
+        val limitations = JSONArray()
+        source.optJSONArray("limitations")?.let { array ->
+            for (index in 0 until minOf(array.length(), 16)) {
+                val value = array.opt(index) as? String ?: continue
+                limitations.put(NetworkMonitorRedactor.value("message", value.take(300), detailed))
+            }
+        }
+        root.put("limitations", limitations)
+        val markdown = buildString {
+            appendLine("# Floe network diagnostic report")
+            appendLine()
+            appendLine("Privacy: " + if (detailed) "Detailed identifiers explicitly requested." else "Network identifiers redacted.")
+            appendLine("Measured at: " + source.getString("measuredAt"))
+            appendLine("Method: " + source.getString("method"))
+            appendLine("Status: " + source.getString("status"))
+            for ((title, fields) in listOf("Connection" to connection, "Observation" to observations)) {
+                appendLine(); appendLine("## $title"); appendLine()
+                appendLine("| Field | Value |"); appendLine("|---|---|")
+                fields.text.toSortedMap().forEach { (key, value) -> appendLine("| ${key.markdownCell()} | ${value.markdownCell()} |") }
+                fields.numbers.toSortedMap().forEach { (key, value) -> appendLine("| ${key.markdownCell()} | $value |") }
+                fields.booleans.toSortedMap().forEach { (key, value) -> appendLine("| ${key.markdownCell()} | $value |") }
+            }
+            appendLine(); appendLine("## Limitations"); appendLine()
+            for (index in 0 until limitations.length()) appendLine("- " + limitations.getString(index).markdownCell())
+        }
+        return NetworkMonitorReportDocument(root.toString(2), markdown)
+    }
+
     fun render(
         snapshot: NetworkMonitorSessionSnapshot,
         detailed: Boolean,

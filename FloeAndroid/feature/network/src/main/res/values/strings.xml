@@ -274,4 +274,10 @@
     <string name="network_monitor_report_current_note">The report includes checks completed up to the moment it is created.</string>
     <string name="network_monitor_export_cancel">Cancel export</string>
     <string name="network_monitor_background_note">Monitoring continues while Floe is in the background. Use the notification to stop it.</string>
+    <string name="network_certificate_title">Certificate</string>
+    <string name="network_certificate_valid_at_check">Valid at the time of this check</string>
+    <string name="network_certificate_invalid_at_check">Outside its validity period at the time of this check</string>
+    <string name="network_certificate_expires">Expires: %1$s</string>
+    <string name="network_certificate_metadata_note">The fingerprint and presented chain are in Details. Revocation was not checked.</string>
+    <string name="network_diagnostic_report_failed">The report could not be completed. Your measurement is unchanged.</string>
 </resources>

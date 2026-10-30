@@ -652,7 +652,8 @@ class G04TerminalHostControllerTest {
         val observed = mutableListOf<TerminalInputIssue?>()
         controller.watchInputIssues("c1") { observed.add(it) }
         // A typed refusal is a USER-VISIBLE truth, not a log-only one:
-        // unbind the generation and write.
+        // bind the live conversation, then unbind the generation and write.
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-1"
         root.epoch = null
         setFieldLong(controller, "boundEpoch", 0L)
         controller.transportFor("c1").write("a".toByteArray())
@@ -1464,4 +1465,69 @@ class G04TerminalHostControllerTest {
         assertEquals("no release proof after a cancelled caller",
             listOf("close:c1:tok-1"), events)
     }
+
+    // MARK: - G07.3A real independent tabs (authored)
+
+    @Test
+    fun twoTabsReceiveOnlyTheirOwnOutputAndTheirOwnStatus() {
+        val (controller, _) = boundController(Dispatchers.Unconfined)
+        val tokens = seedMap<String>(controller, "sessionTokens")
+        val owners = seedMap<String>(controller, "tokenConversations")
+        tokens["c1"] = "tok-a"
+        owners["tok-a"] = "c1"
+        owners["tok-b"] = "c1"
+
+        // Two REAL emulators owned by the service, one per native session.
+        val engineA = controller.engineForTab("tok-a")
+        val engineB = controller.engineForTab("tok-b")
+        controller.deliverTerminalOutput("tok-a", "AAA".toByteArray())
+        controller.deliverTerminalOutput("tok-b", "BBB".toByteArray())
+        assertTrue(engineA.visibleText(), engineA.visibleText().contains("AAA"))
+        assertFalse(engineB.visibleText(), engineB.visibleText().contains("AAA"))
+        assertTrue(engineA.visibleText(), engineB.visibleText().contains("BBB"))
+        assertFalse(engineA.visibleText(), engineA.visibleText().contains("BBB"))
+
+        // A terminalStatus for tab B must never overwrite the conversation's
+        // default-token projection (tab A). The tab projection is keyed by the
+        // exact native session.
+        val descriptor = """{"type":"terminalStatus","conversationID":"c1",
+            "sessionToken":"tok-b","phase":"running","purpose":"interactive"}"""
+            .trimIndent().toByteArray()
+        assertTrue(controller.handleEvent(0L, descriptor))
+        assertEquals("tok-b", controller.snapshotFor("tok-b")?.sessionToken)
+        assertEquals(TerminalSessionPhase.RUNNING, controller.snapshotFor("tok-b")?.phase)
+        assertNull("tab A's conversation projection must not show tab B",
+            controller.currentSnapshot("c1")?.takeIf { it.sessionToken == "tok-b" })
+    }
+
+    @Test
+    fun closingOneTabAddressesOnlyThatNativeSession() = runBlocking {
+        val closed = mutableListOf<Pair<String, String>>()
+        val root = LiveRoot(7L)
+        val controller = G04TerminalHostController(
+            CoroutineScope(Dispatchers.Unconfined),
+            outputDispatcher = Dispatchers.Unconfined,
+            inputDispatcher = Dispatchers.Unconfined,
+            closeSinkOverride = { conversationID, sessionToken ->
+                closed.add(conversationID to sessionToken)
+                TerminalActionReply.Success(buildJsonObject { })
+            },
+            currentNativeEpoch = { root.epoch })
+        setFieldLong(controller, "boundEpoch", 7L)
+        (G04TerminalHostController::class.java.getDeclaredField("stopped")
+            .apply { isAccessible = true }.get(controller)
+            as java.util.concurrent.atomic.AtomicBoolean).set(false)
+        val tokens = seedMap<String>(controller, "sessionTokens")
+        val owners = seedMap<String>(controller, "tokenConversations")
+        tokens["c1"] = "tok-a"
+        owners["tok-a"] = "c1"
+        owners["tok-b"] = "c1"
+        val reply = controller.closeTab("tok-b")
+        assertTrue(reply is TerminalActionReply.Success)
+        assertEquals("the close carries ONLY the tab's exact token", listOf("c1" to "tok-b"), closed)
+        assertEquals("tok-a", tokens["c1"])
+        assertEquals("c1", owners["tok-a"])
+        assertFalse("the closed tab's token is unbound", owners.containsKey("tok-b"))
+    }
+
 }

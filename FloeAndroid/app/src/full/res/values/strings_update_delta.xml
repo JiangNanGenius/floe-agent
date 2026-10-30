@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Full-channel (GitHub APK) updater copy added by the G07.3A updater
+     repair: verified delta downloads, actionable install-permission recovery
+     and typed install failures. Full source set only; never merged into Play. -->
+<resources>
+    <string name="app_update_applying_delta">Reassembling the verified update…</string>
+    <string name="app_update_delta_offer">A smaller patch can be used when your installed version matches this release.</string>
+    <string name="app_update_delta_downloading">Downloading the update patch for %1$s</string>
+    <string name="app_update_delta_ready">Prepared from a smaller downloaded patch</string>
+    <string name="app_update_delta_fallback_title">The smaller update could not be used</string>
+    <string name="app_update_delta_base_changed">The installed app changed, so the patch no longer applies. The patch was discarded.</string>
+    <string name="app_update_delta_patch_unavailable">The update patch could not be downloaded. The patch was discarded.</string>
+    <string name="app_update_delta_patch_corrupt">The update patch failed its integrity check and was discarded.</string>
+    <string name="app_update_delta_apply_failed">The update patch could not be applied. The partial file was discarded.</string>
+    <string name="app_update_delta_output_invalid">The reassembled update failed verification and was discarded.</string>
+    <string name="app_update_delta_disk">Not enough free space to apply the smaller update. Use the full update instead.</string>
+    <string name="app_update_full_size">Full download: %1$d MB</string>
+    <string name="app_update_download_full">Download full update</string>
+    <string name="app_update_permission_denied">Install permission is still off</string>
+    <string name="app_update_permission_settings_unavailable">This system settings page is not available here. Open App info instead.</string>
+    <string name="app_update_permission_restricted">If the switch is unavailable, open App info, tap the ⋮ menu, then Allow restricted settings.</string>
+    <string name="app_update_open_app_info">Open App info</string>
+    <string name="app_update_retry_install">Retry install</string>
+    <string name="app_update_install_blocked">A device policy blocked the installation</string>
+    <string name="app_update_install_incompatible">This update is not compatible with the installed app (signature, version or update ownership)</string>
+    <string name="app_update_install_invalid">The system rejected the update package</string>
+    <string name="app_update_install_storage">Not enough free space to install the update</string>
+    <string name="app_update_install_verification">The system could not verify the update</string>
+    <string name="app_update_install_conflict">The system reported an installation conflict</string>
+</resources>

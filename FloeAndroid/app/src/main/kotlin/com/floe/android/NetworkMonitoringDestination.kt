@@ -1186,7 +1186,7 @@ private sealed interface ExportState {
     data object Failed : ExportState
 }
 
-private sealed interface ExportOutcome {
+internal sealed interface ExportOutcome {
     data class Exported(val bytes: Long) : ExportOutcome
     data object Cancelled : ExportOutcome
     data object Incomplete : ExportOutcome
@@ -1198,7 +1198,7 @@ private sealed interface ExportOutcome {
  * chose. The private report pair is never modified. Success is returned only
  * after both streams close and every byte was written.
  */
-private suspend fun writeMonitorExport(
+internal suspend fun writeMonitorExport(
     context: Context,
     uri: Uri,
     file: File,

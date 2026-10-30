@@ -6,6 +6,9 @@ import com.floe.android.bridge.TerminalNative
 import com.floe.android.feature.terminal.G04TerminalEngine
 import com.floe.android.feature.terminal.TerminalEngineHost
 import com.floe.android.feature.terminal.TerminalTransport
+import com.floe.android.host.terminalsessions.TerminalTabLimits
+import com.floe.android.host.terminalsessions.TerminalTabRegistry
+import com.floe.android.host.terminalsessions.TerminalTabView
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -57,6 +60,13 @@ data class TerminalSessionSnapshot(
     val stopReason: String?,
     val faultCode: String?,
     val rolledOverBytes: Int,
+    // G07.3A measured preparation facts echoed by the engine (diagnostic):
+    // base-revision cache reuse and real materialize/import durations.
+    val prepareReused: Boolean = false,
+    val prepareMillis: Long = 0L,
+    val prepareCopiedBytes: Long = 0L,
+    val importMillis: Long = 0L,
+    val importedEntries: Long = 0L,
 )
 
 sealed class TerminalActionReply {
@@ -236,7 +246,21 @@ internal class G04TerminalHostController(
     /** requestID -> completion future for lspCompletion results. */
     private val completions = ConcurrentHashMap<String, CompletableDeferred<TerminalCompletionSnapshot?>>()
 
-    private val sessionTokens = ConcurrentHashMap<String, String>()          // conversationID -> token
+    private val sessionTokens = ConcurrentHashMap<String, String>()          // conversationID -> default token
+    /** G07.3A: token -> conversation for EVERY live tab (the default token is
+     *  one of these). Input/output/resize/stop fences bind to this exact map,
+     *  so a second tab can never be addressed through the first's binding. */
+    private val tokenConversations = ConcurrentHashMap<String, String>()
+    /** Pure presentation state: which native sessions the pane shows. */
+    private val tabRegistry = TerminalTabRegistry()
+    private val tabWatchers = ConcurrentHashMap<String, MutableSet<() -> Unit>>()
+    /** Per-TAB emulator, keyed by the native session id (not the conversation). */
+    private val tabEngines = ConcurrentHashMap<String, G04TerminalEngine>()
+    private val tabSnapshots = ConcurrentHashMap<String, TerminalSessionSnapshot>()
+    /** Pending opens that belong to the TAB layer rather than the legacy
+     *  default-attach lane. Keyed by the exact requestID submitted. */
+    private val pendingTabOpens = ConcurrentHashMap<String, PendingTabOpen>()
+    private data class PendingTabOpen(val conversationID: String, val epoch: Long)
     /** Registered run-open intents keyed by the EXACT requestID `runDraft`
      * submitted: the service-owned binding route for an accepted Run's
      * sessionToken (device evidence 2026-10-25: native answers the reply —
@@ -450,7 +474,7 @@ internal class G04TerminalHostController(
         } ?: false
         if (done) {
             synchronized(inputLanesLock) {
-                lanes.forEach { inputLanes.remove(it.conversationID, it) }
+                lanes.forEach { inputLanes.remove(it.sessionID, it) }
             }
         }
         return done
@@ -468,6 +492,12 @@ internal class G04TerminalHostController(
         // binding (the same honest local-waiter refusal the replies get).
         pendingRunOpens.clear()
         pendingInteractiveOpens.clear()
+        pendingTabOpens.clear()
+        tabRegistry.clear()
+        tabEngines.clear()
+        tabSnapshots.clear()
+        tokenConversations.clear()
+        tabWatchers.keys.toList().forEach { notifyTabs(it) }
         availability = availability.copy(bound = false, capabilitiesKnown = false)
     }
 
@@ -650,7 +680,7 @@ internal class G04TerminalHostController(
      * queue is still an ArrayDeque behind one monitor with a conflated
      * wake token, and every reservation is taken atomically before the
      * item becomes visible. */
-    private inner class TerminalInputLane(val conversationID: String) {
+    private inner class TerminalInputLane(val sessionID: String, val conversationID: String) {
         private val queue = ArrayDeque<PtyInputItem>()
         private val wake = Channel<Unit>(capacity = 1)
         private var closed = false
@@ -680,7 +710,8 @@ internal class G04TerminalHostController(
                         item.admittedEpoch != boundEpoch -> "inputGenerationStale"
                         currentNativeEpoch() != item.admittedEpoch -> "inputGenerationStale"
                         stopped.get() -> "hostUnbound"
-                        sessionTokens[conversationID] != item.sessionToken -> "inputTokenRetired"
+                        tokenConversations[item.sessionToken] != conversationID &&
+                            sessionTokens[conversationID] != item.sessionToken -> "inputTokenRetired"
                         else -> null
                     }
                     if (refusal != null) {
@@ -763,29 +794,49 @@ internal class G04TerminalHostController(
      * in order under its own fences. Every refusal is typed, recorded for
      * the pane and logged — never silent. */
     private fun enqueuePtyInput(conversationID: String, bytes: ByteArray) {
+        val token = sessionTokens[conversationID]
+        if (token == null) {
+            if (bytes.isNotEmpty()) reportInputIssue(conversationID, "sessionUnknown")
+            return
+        }
+        enqueuePtyInputForToken(token, bytes)
+    }
+
+    /** Ordered PTY input for ONE exact native tab. The lane is keyed by the
+     *  token (two tabs never share a queue), and every drain re-checks that
+     *  the token still belongs to this conversation under the same generation.
+     *  A stale/unknown token is reported truthfully to its own conversation and
+     *  never written to another session. */
+    private fun enqueuePtyInputForToken(sessionID: String, bytes: ByteArray) {
         if (bytes.isEmpty()) return
+        // Accepted bindings record BOTH directions. The legacy conversation
+        // projection is still a live binding for the selected token, exactly
+        // as [deliveryOwnershipLive] already accepts; an exact reverse lookup
+        // keeps input delivery consistent with output/status ownership.
+        val conversationID = tokenConversations[sessionID]
+            ?: sessionTokens.entries.firstOrNull { it.value == sessionID }?.key
+        if (conversationID == null) {
+            // Not bound to any live conversation: report against the most
+            // recent owner if known, otherwise drop with a bounded log.
+            inputIssueReporter("pty input refused code=sessionUnknown")
+            return
+        }
         val admittedEpoch = boundEpoch
         if (admittedEpoch == 0L || currentNativeEpoch() != admittedEpoch || stopped.get()) {
             reportInputIssue(conversationID, "hostUnbound")
             return
         }
-        val token = sessionTokens[conversationID]
-        if (token == null) {
-            reportInputIssue(conversationID, "sessionUnknown")
-            return
-        }
-        // Atomic creation, coordinated with stopAndJoin: the stopped
-        // re-check runs under the SAME lock the stop uses to snapshot and
-        // remove lanes, so no worker is created after a stop began.
         val lane = synchronized(inputLanesLock) {
             if (stopped.get()) null
-            else inputLanes.computeIfAbsent(conversationID) { TerminalInputLane(it) }
+            else inputLanes.computeIfAbsent(sessionID) {
+                TerminalInputLane(sessionID, conversationID)
+            }
         }
         if (lane == null) {
             reportInputIssue(conversationID, "hostUnbound")
             return
         }
-        lane.offer(token, bytes, admittedEpoch)?.let { refusal ->
+        lane.offer(sessionID, bytes, admittedEpoch)?.let { refusal ->
             reportInputIssue(conversationID, refusal)
         }
     }
@@ -812,6 +863,373 @@ internal class G04TerminalHostController(
                 }, timeoutMillis = 6_000)
             }
         }
+    }
+
+    /* ---------------- G07.3A terminal tabs (real independent sessions) ---------------- */
+
+    fun tabs(conversationID: String): List<TerminalTabView> = tabRegistry.tabsFor(conversationID)
+
+    fun currentTab(conversationID: String): TerminalTabView? = tabRegistry.current(conversationID)
+
+    fun snapshotFor(sessionID: String): TerminalSessionSnapshot? = tabSnapshots[sessionID]
+
+    /** Pane-scoped tab observation. Detaching removes ONLY this listener; it
+     *  never closes a session (view dismiss != close). */
+    fun watchTabs(conversationID: String, watcher: () -> Unit): () -> Unit {
+        val set = tabWatchers.getOrPut(conversationID) { java.util.concurrent.CopyOnWriteArraySet() }
+        set.add(watcher)
+        watcher()
+        return { set.remove(watcher); if (set.isEmpty()) tabWatchers.remove(conversationID) }
+    }
+
+    private fun notifyTabs(conversationID: String) {
+        tabWatchers[conversationID]?.forEach { it() }
+    }
+
+    private fun bindToken(conversationID: String, sessionToken: String) {
+        tokenConversations[sessionToken] = conversationID
+    }
+
+    private fun unbindToken(conversationID: String, sessionToken: String) {
+        tokenConversations.remove(sessionToken, conversationID)
+        tabSnapshots.remove(sessionToken)
+    }
+
+    /** Engine for ONE native tab. The emulator is service-owned and survives
+     *  pane reconstruction; two tabs never share screen state. */
+    fun engineForTab(sessionID: String, columns: Int = 80, rows: Int = 24): G04TerminalEngine =
+        tabEngines.getOrPut(sessionID) {
+            G04TerminalEngine(columns, rows, host = object : TerminalEngineHost {
+                override fun writeToPty(bytes: ByteArray) {
+                    enqueuePtyInputForToken(sessionID, bytes)
+                }
+                override fun log(level: String, message: String) {
+                    android.util.Log.println(logPriority(level), "FloeTerminal", message.take(2048))
+                }
+            })
+        }
+
+    /** Transport for ONE native tab: ordered writes + a resize that carries
+     *  the EXACT session token (never the conversation's current default). */
+    fun transportForTab(sessionID: String): TerminalTransport = object : TerminalTransport {
+        override fun write(bytes: ByteArray) {
+            enqueuePtyInputForToken(sessionID, bytes)
+        }
+
+        override fun resize(columns: Int, rows: Int) {
+            val conversationID = tokenConversations[sessionID] ?: return
+            scope.launch(Dispatchers.IO) {
+                submit(buildJsonObject {
+                    put("action", "terminalResize")
+                    put("sessionToken", sessionID)
+                    put("columns", columns); put("rows", rows)
+                    put("conversationID", conversationID)
+                    put("requestID", UUID.randomUUID().toString())
+                }, timeoutMillis = 6_000)
+            }
+        }
+    }
+
+    /**
+     * Explicit "new tab": dispatches a REAL `terminalOpen` for the same
+     * conversation. The Swift domain mints a second engine PTY session (its
+     * interactive cap is 2) and the backend marks it a same-workspace
+     * participant of the live owner, so no second import/export races the
+     * guest tree. Nothing is simulated: until the native reply arrives the tab
+     * is a pending reservation, and a refusal removes it.
+     */
+    suspend fun openTab(conversationID: String, workspaceID: String?,
+                        columns: Int, rows: Int,
+                        onRefusal: (TerminalActionReply) -> Unit = {}): TerminalTabView? {
+        val epoch = boundEpoch
+        if (epoch == 0L || stopped.get() || currentNativeEpoch() != epoch) return null
+        val requestID = UUID.randomUUID().toString()
+        val pending = tabRegistry.newTab(conversationID, requestID) ?: return null
+        notifyTabs(conversationID)
+        pendingTabOpens[requestID] = PendingTabOpen(conversationID, epoch)
+        val reply = submit(buildJsonObject {
+            put("action", "terminalOpen")
+            put("conversationID", conversationID)
+            workspaceID?.let { put("workspaceID", it) }
+            put("columns", columns); put("rows", rows); put("requestID", requestID)
+        }, timeoutMillis = 165_000)
+        if (boundEpoch != epoch || stopped.get() || currentNativeEpoch() != epoch) {
+            pendingTabOpens.remove(requestID)
+            tabRegistry.drop(requestID); notifyTabs(conversationID); return null
+        }
+        if (reply is TerminalActionReply.TimedOut) {
+            // The native open may still be in flight. Keep the pending tab
+            // and its exact request intent: a later terminalStatus carrying
+            // this requestID adopts the REAL session (no phantom success and
+            // no silent second session). A refusal/fence drops it instead.
+            return null
+        }
+        pendingTabOpens.remove(requestID)
+        if (reply is TerminalActionReply.Success) {
+            val token = reply.fields["sessionToken"]?.jsonPrimitive?.contentOrNull
+            if (token.isNullOrEmpty()) {
+                tabRegistry.drop(requestID); notifyTabs(conversationID)
+                onRefusal(TerminalActionReply.Refused("invalidReply", null)); return null
+            }
+            bindToken(conversationID, token)
+            tabRegistry.adopt(requestID, token)
+            if (sessionTokens[conversationID] == null) sessionTokens[conversationID] = token
+            engineEnsurerForTab(conversationID, token)
+            clearInputIssue(conversationID)
+            notifyTabs(conversationID)
+            return tabRegistry.find(token)
+        }
+        tabRegistry.drop(requestID)
+        notifyTabs(conversationID)
+        onRefusal(reply)
+        return null
+    }
+
+    private fun engineEnsurerForTab(conversationID: String, sessionID: String) {
+        if (!tabEngines.containsKey(sessionID)) {
+            tabEngines[sessionID] = G04TerminalEngine(80, 24, host = object : TerminalEngineHost {
+                override fun writeToPty(bytes: ByteArray) {
+                    enqueuePtyInputForToken(sessionID, bytes)
+                }
+                override fun log(level: String, message: String) {
+                    android.util.Log.println(logPriority(level), "FloeTerminal", message.take(2048))
+                }
+            })
+        }
+    }
+
+    /** Switch the pane's visible tab. Never attaches, restarts or stops. */
+    fun selectTab(conversationID: String, tabID: String): TerminalTabView? {
+        val selected = tabRegistry.select(conversationID, tabID) ?: return null
+        selected.sessionID?.let { sessionTokens[conversationID] = it }
+        notifyTabs(conversationID)
+        return selected
+    }
+
+    /** Local presentation label only; no native call, no durable state. */
+    fun renameTab(sessionID: String, title: String): TerminalTabView? {
+        val renamed = tabRegistry.rename(sessionID, title) ?: return null
+        notifyTabs(renamed.conversationID)
+        return renamed
+    }
+
+    /**
+     * Close EXACTLY one tab. The submitted close carries this token only; a
+     * rejection/timeout keeps the tab and the native handle for reconciliation
+     * (never removes a replacement, never stops the other tab).
+     */
+    suspend fun closeTab(sessionID: String): TerminalActionReply {
+        val conversationID = tokenConversations[sessionID]
+            ?: return TerminalActionReply.Refused("sessionUnknown", null)
+        val settled = tabSnapshots[sessionID]?.phase?.isLive() == false
+        val reply = if (settled) TerminalActionReply.Success(buildJsonObject { }) else closeSessionExact(conversationID, sessionID)
+        if (reply is TerminalActionReply.Success) {
+            tabRegistry.close(sessionID)
+            tabSnapshots.remove(sessionID)
+            tokenConversations.remove(sessionID, conversationID)
+            sessionTokens.remove(conversationID, sessionID)
+            tabRegistry.selectedSessionID(conversationID)
+                ?.let { sessionTokens.putIfAbsent(conversationID, it) }
+            notifyTabs(conversationID)
+        }
+        return reply
+    }
+
+    /** True once THIS tab's projected phase is settled (no native restart,
+     *  no fabricated stop; bounded and truthful on timeout). */
+    suspend fun awaitTabSettled(sessionID: String, timeoutMillis: Long): Boolean {
+        var waited = 0L
+        while (waited < timeoutMillis) {
+            val snapshot = tabSnapshots[sessionID]
+            if (snapshot == null || !snapshot.phase.isLive()) return true
+            delay(50)
+            waited += 50
+        }
+        val last = tabSnapshots[sessionID]
+        return last == null || !last.phase.isLive()
+    }
+
+    /* ---------------- G07.3A live read-only guest files (API_READY) ---------------- */
+
+    /** One bounded listing row. [kind] is the closed native vocabulary:
+     *  file | directory | symlink | other. Symlinks are listed, never
+     *  followed. */
+    data class LiveFileEntry(
+        val path: String,
+        val kind: String,
+        val size: Long,
+        val mtimeMillis: Long,
+    )
+
+    /** A complete, consistency-checked tree page for ONE live session. */
+    data class LiveFileTree(
+        val workspaceKey: String,
+        val sessionID: String,
+        val generation: String,
+        val listingToken: String,
+        val truncated: Boolean,
+        val entries: List<LiveFileEntry>,
+    )
+
+    /** A complete, consistency-checked content page. [digest] is SHA-256 of
+     *  exactly [content]; [truncated] means more bytes remain. */
+    data class LiveFilePage(
+        val workspaceKey: String,
+        val sessionID: String,
+        val generation: String,
+        val path: String,
+        val offset: Long,
+        /** Actual decoded byte count of [content] (0..24576). */
+        val bytes: Int,
+        val size: Long,
+        val mtimeMillis: Long,
+        val digest: String,
+        val consistencyToken: String,
+        val content: ByteArray,
+        val truncated: Boolean,
+    )
+
+    sealed interface LiveFilesReply {
+        data class Tree(val tree: LiveFileTree) : LiveFilesReply
+        data class Page(val page: LiveFilePage) : LiveFilesReply
+        /** [code] is a typed token (`retry:changedDuringRead`,
+         *  `refused:pathOutOfScope`, `staleLiveSession`, …). Never prose. */
+        data class Failed(val code: String, val reason: String?) : LiveFilesReply
+    }
+
+    /**
+     * Bounded READ-ONLY live snapshot of the workspace of ONE live session.
+     * Identity is re-proven by the native domain and again by the runtime
+     * (session/project/environment/generation); a settled tab answers
+     * `staleLiveSession`. This never closes the terminal, never runs an
+     * export and never writes Core files. Main's WorkspaceFilesPane may show
+     * this while a session is live and keep using the ordinary Core tree when
+     * it is not.
+     */
+    suspend fun readLiveFileTree(conversationID: String, sessionID: String,
+                                 relativePath: String = "",
+                                 maxEntries: Int = 200, maxDepth: Int = 3): LiveFilesReply {
+        if (tokenConversations[sessionID] != conversationID) {
+            return LiveFilesReply.Failed("staleLiveSession", null)
+        }
+        val reply = submit(buildJsonObject {
+            put("action", "terminalFilesTree")
+            put("conversationID", conversationID)
+            put("sessionToken", sessionID)
+            put("relativePath", relativePath.take(1024))
+            put("maxEntries", maxEntries.coerceIn(1, 512))
+            put("maxDepth", maxDepth.coerceIn(0, 8))
+            put("requestID", UUID.randomUUID().toString())
+        }, timeoutMillis = 12_000)
+        return when (reply) {
+            is TerminalActionReply.Success -> {
+                val entries = (reply.fields["entries"] as? JsonArray)?.mapNotNull { element ->
+                    val row = element as? JsonObject ?: return@mapNotNull null
+                    val path = row["path"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val kind = row["kind"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    LiveFileEntry(path, kind, row["size"]?.jsonPrimitive?.longOrNull ?: 0L,
+                        row["mtimeMillis"]?.jsonPrimitive?.longOrNull ?: 0L)
+                } ?: return LiveFilesReply.Failed("replyMalformed", null)
+                val generation = reply.fields["generation"]?.jsonPrimitive?.contentOrNull
+                    ?: return LiveFilesReply.Failed("replyMalformed", null)
+                val listingToken = reply.fields["listingToken"]?.jsonPrimitive?.contentOrNull
+                    ?: return LiveFilesReply.Failed("replyMalformed", null)
+                LiveFilesReply.Tree(LiveFileTree(
+                    workspaceKey = reply.fields["workspaceKey"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    sessionID = reply.fields["sessionToken"]?.jsonPrimitive?.contentOrNull ?: sessionID,
+                    generation = generation,
+                    listingToken = listingToken,
+                    truncated = reply.fields["truncated"]?.jsonPrimitive?.booleanOrNull ?: false,
+                    entries = entries))
+            }
+            is TerminalActionReply.Refused -> LiveFilesReply.Failed(reply.code, reply.reason)
+            TerminalActionReply.TimedOut -> LiveFilesReply.Failed("timedOut", null)
+        }
+    }
+
+    /**
+     * Bounded content page of ONE live-session file. A change during the read
+     * is `retry:*` (call [readLiveFilePage] again); it is never presented as a
+     * complete snapshot. Reads are capped at 24 KiB by the native transport
+     * (the runtime wire envelope stays far below 64 KiB).
+     */
+    suspend fun readLiveFilePage(conversationID: String, sessionID: String,
+                                 relativePath: String, offset: Long = 0L,
+                                 maxBytes: Int = 16 * 1024): LiveFilesReply {
+        if (tokenConversations[sessionID] != conversationID) {
+            return LiveFilesReply.Failed("staleLiveSession", null)
+        }
+        if (relativePath.isEmpty()) return LiveFilesReply.Failed("refused:pathOutOfScope", null)
+        val reply = submit(buildJsonObject {
+            put("action", "terminalFilesRead")
+            put("conversationID", conversationID)
+            put("sessionToken", sessionID)
+            put("relativePath", relativePath.take(1024))
+            put("offset", offset.coerceAtLeast(0L))
+            put("maxBytes", maxBytes.coerceIn(1, 24 * 1024))
+            put("requestID", UUID.randomUUID().toString())
+        }, timeoutMillis = 12_000)
+        return when (reply) {
+            is TerminalActionReply.Success -> {
+                val encoded = reply.fields["contentBase64"]?.jsonPrimitive?.contentOrNull
+                    ?: return LiveFilesReply.Failed("replyMalformed", null)
+                val content = runCatching { Base64.getDecoder().decode(encoded) }.getOrNull()
+                    ?: return LiveFilesReply.Failed("replyMalformed", null)
+                val generation = reply.fields["generation"]?.jsonPrimitive?.contentOrNull
+                    ?: return LiveFilesReply.Failed("replyMalformed", null)
+                val consistencyToken = reply.fields["consistencyToken"]?.jsonPrimitive?.contentOrNull
+                    ?: return LiveFilesReply.Failed("replyMalformed", null)
+                LiveFilesReply.Page(LiveFilePage(
+                    workspaceKey = reply.fields["workspaceKey"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    sessionID = reply.fields["sessionToken"]?.jsonPrimitive?.contentOrNull ?: sessionID,
+                    generation = generation,
+                    path = reply.fields["path"]?.jsonPrimitive?.contentOrNull ?: relativePath,
+                    offset = reply.fields["offset"]?.jsonPrimitive?.longOrNull ?: offset,
+                    bytes = reply.fields["bytes"]?.jsonPrimitive?.intOrNull ?: content.size,
+                    size = reply.fields["size"]?.jsonPrimitive?.longOrNull ?: 0L,
+                    mtimeMillis = reply.fields["mtimeMillis"]?.jsonPrimitive?.longOrNull ?: 0L,
+                    digest = reply.fields["digest"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    consistencyToken = consistencyToken,
+                    content = content,
+                    truncated = reply.fields["truncated"]?.jsonPrimitive?.booleanOrNull ?: false))
+            }
+            is TerminalActionReply.Refused -> LiveFilesReply.Failed(reply.code, reply.reason)
+            TerminalActionReply.TimedOut -> LiveFilesReply.Failed("timedOut", null)
+        }
+    }
+
+    /** Attach ONE tab (view re-entry). Never restarts or stops anything. */
+    suspend fun attachTab(sessionID: String): TerminalActionReply {
+        if (tokenConversations[sessionID] == null) {
+            return TerminalActionReply.Refused("sessionUnknown", null)
+        }
+        return submit(buildJsonObject {
+            put("action", "terminalAttach"); put("sessionToken", sessionID)
+            put("requestID", UUID.randomUUID().toString())
+        }, timeoutMillis = 10_000)
+    }
+
+    /** Ctrl-C on ONE tab: the same ordered ETX byte, never a cross-tab signal. */
+    suspend fun interruptTab(sessionID: String): TerminalActionReply {
+        if (tokenConversations[sessionID] == null) {
+            return TerminalActionReply.Refused("sessionUnknown", null)
+        }
+        return submit(buildJsonObject {
+            put("action", "terminalInterrupt"); put("sessionToken", sessionID)
+            put("requestID", UUID.randomUUID().toString())
+        }, timeoutMillis = 6_000)
+    }
+
+    /** Explicit control bytes for ONE tab. */
+    suspend fun sendRawTab(sessionID: String, bytes: ByteArray): TerminalActionReply {
+        if (tokenConversations[sessionID] == null) {
+            return TerminalActionReply.Refused("sessionUnknown", null)
+        }
+        return submit(buildJsonObject {
+            put("action", "terminalInput"); put("sessionToken", sessionID)
+            put("data", Base64.getEncoder().encodeToString(bytes))
+            put("requestID", UUID.randomUUID().toString())
+        }, timeoutMillis = 6_000)
     }
 
     /** Attaches the conversation's view to its service-owned session: an
@@ -856,6 +1274,7 @@ internal class G04TerminalHostController(
                 if (current == null || current == previousToken) {
                     sessionTokens[conversationID] = newToken
                 }
+                bindToken(conversationID, newToken)
                 if (sessionTokens[conversationID] != newToken) {
                     // A newer open/reset/stop moved this conversation's
                     // binding while this reply was in flight: the reply
@@ -866,6 +1285,14 @@ internal class G04TerminalHostController(
                 // A fresh session bound: the previous generation's typed
                 // input refusals no longer describe the live truth.
                 clearInputIssue(conversationID)
+                // First-entry compatibility: if no tab layer was used for this
+                // conversation yet, project the accepted session as its first
+                // tab (a second tab can then be opened on top of it).
+                if (tabRegistry.tabsFor(conversationID).isEmpty()) {
+                    val seed = "seed:" + newToken
+                    tabRegistry.newTab(conversationID, seed)?.let { tabRegistry.adopt(seed, newToken) }
+                    notifyTabs(conversationID)
+                }
                 // Seed the view state; the native terminalStatus event for
                 // this session arrives immediately and replaces it with the
                 // authoritative phase (never a silent fake "running").
@@ -908,6 +1335,11 @@ internal class G04TerminalHostController(
     }
 
     suspend fun closeSession(conversationID: String): TerminalActionReply {
+        // G07.3A: the pane's Close acts on the SELECTED tab, exactly like a
+        // tab strip; it never closes a different live session.
+        tabRegistry.selectedSessionID(conversationID)?.let { selected ->
+            if (tokenConversations[selected] == conversationID) return closeTab(selected)
+        }
         val token = sessionTokens[conversationID] ?: return TerminalActionReply.Refused("sessionUnknown", null)
         val reply = submit(buildJsonObject {
             put("action", "terminalClose")
@@ -1058,6 +1490,7 @@ internal class G04TerminalHostController(
         }
         if (reply is TerminalActionReply.Success) {
             sessionTokens.remove(conversationID, expectedToken)
+            unbindToken(conversationID, expectedToken)
             // The session truth moved on: stop surfacing its input refusals.
             clearInputIssue(conversationID)
         }
@@ -1119,11 +1552,23 @@ internal class G04TerminalHostController(
         if (payload.isEmpty()) return
         val admittedEpoch = boundEpoch
         if (admittedEpoch == 0L || currentNativeEpoch() != admittedEpoch) return
-        val conversationID = sessionTokens.entries.firstOrNull { it.value == sessionToken }?.key
+        // A non-default tab is bound ONLY by tokenConversations (sessionTokens
+        // holds the conversation's selected/default token). Resolve the actual
+        // owning conversation from the reverse binding first, then fall back to
+        // the legacy projection; a token bound to neither is still dropped.
+        val conversationID = tokenConversations[sessionToken]
+            ?: sessionTokens.entries.firstOrNull { it.value == sessionToken }?.key
             ?: return
+        // A CLOSED/FAILED authoritative phase retires the session; a page
+        // admitted after that truth is never fed or observed. Pages already
+        // admitted before the CLOSED status stay ordered on the dispatcher
+        // (the immediate-exit final page contract).
+        if (tabSnapshots[sessionToken]?.phase?.isLive() == false) return
         scope.launch(outputDispatcher) {
             if (!deliveryOwnershipLive(admittedEpoch, conversationID, sessionToken)) return@launch
-            engines[conversationID]?.feed(payload)
+            // A tab owns its own emulator; the legacy conversation engine is
+            // used only when no tab engine exists for this exact token.
+            tabEngines[sessionToken]?.let { it.feed(payload) } ?: engines[conversationID]?.feed(payload)
             val listeners = outputListeners[sessionToken]?.toList() ?: return@launch
             for (listener in listeners) {
                 if (!deliveryOwnershipLive(admittedEpoch, conversationID, sessionToken)) {
@@ -1153,7 +1598,9 @@ internal class G04TerminalHostController(
         conversationID: String,
         sessionToken: String,
     ): Boolean = boundEpoch == admittedEpoch && currentNativeEpoch() == admittedEpoch &&
-        !stopped.get() && sessionTokens[conversationID] == sessionToken
+        !stopped.get() &&
+        (tokenConversations[sessionToken] == conversationID ||
+            sessionTokens[conversationID] == sessionToken)
 
     /** Binds a native-committed Run sessionToken from an accepted,
      * REGISTERED run-open reply onto its owning conversation. This is the
@@ -1195,6 +1642,7 @@ internal class G04TerminalHostController(
             }
         }
         if (!claimed) return
+        bindToken(intent.conversationID, sessionToken)
         // The service-owned transcript buffer must exist at the binding
         // boundary itself: deliverTerminalOutput feeds engines[conversation],
         // and a Run accepted before any pane mounted would otherwise drop
@@ -1244,6 +1692,7 @@ internal class G04TerminalHostController(
             }
         }
         if (!claimed) return
+        bindToken(intent.conversationID, sessionToken)
         // The service-owned engine must exist at the binding boundary: the
         // first output page follows the reply in mailbox order and must reach
         // the real conversation engine even before any pane re-composition.
@@ -1500,6 +1949,25 @@ internal class G04TerminalHostController(
                 return true
             }
             "terminalStatus" -> {
+                // A slow/queued open whose submit waiter already timed out is
+                // recovered HERE, bound to the exact request intent and the
+                // live generation. No requestID match means no adoption.
+                descriptor["requestID"]?.jsonPrimitive?.contentOrNull?.let { requestID ->
+                    pendingTabOpens[requestID]?.let { intent ->
+                        val lateToken = descriptor["sessionToken"]?.jsonPrimitive?.contentOrNull
+                        if (!lateToken.isNullOrEmpty() && boundEpoch == intent.epoch &&
+                            currentNativeEpoch() == intent.epoch && !stopped.get() &&
+                            tokenConversations[lateToken] == null) {
+                            bindToken(intent.conversationID, lateToken)
+                            if (tabRegistry.adopt(requestID, lateToken) != null) {
+                                engineEnsurerForTab(intent.conversationID, lateToken)
+                                clearInputIssue(intent.conversationID)
+                                notifyTabs(intent.conversationID)
+                            }
+                            pendingTabOpens.remove(requestID)
+                        }
+                    }
+                }
                 val snapshot = TerminalSessionSnapshot(
                     conversationID = descriptor["conversationID"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                     sessionToken = descriptor["sessionToken"]?.jsonPrimitive?.contentOrNull.orEmpty(),
@@ -1511,10 +1979,26 @@ internal class G04TerminalHostController(
                     stopReason = descriptor["stopReason"]?.jsonPrimitive?.contentOrNull,
                     faultCode = descriptor["faultCode"]?.jsonPrimitive?.contentOrNull,
                     rolledOverBytes = descriptor["rolledOverBytes"]?.jsonPrimitive?.intOrNull ?: 0,
+                    prepareReused = descriptor["prepareReused"]?.jsonPrimitive?.booleanOrNull ?: false,
+                    prepareMillis = descriptor["prepareMillis"]?.jsonPrimitive?.longOrNull ?: 0L,
+                    prepareCopiedBytes = descriptor["prepareCopiedBytes"]?.jsonPrimitive?.longOrNull ?: 0L,
+                    importMillis = descriptor["importMillis"]?.jsonPrimitive?.longOrNull ?: 0L,
+                    importedEntries = descriptor["importedEntries"]?.jsonPrimitive?.longOrNull ?: 0L,
                 )
                 if (snapshot.sessionToken.isNotEmpty()) {
+                    tabSnapshots[snapshot.sessionToken] = snapshot
+                    tokenConversations[snapshot.sessionToken]?.let { conversation ->
+                        tabRegistry.updatePhase(snapshot.sessionToken, snapshot.phase.wireName())
+                        notifyTabs(conversation)
+                    }
                     if (snapshot.conversationID.isNotEmpty()) {
-                        snapshots[snapshot.conversationID] = snapshot
+                        // The legacy conversation key must never be overwritten
+                        // by a SECOND tab's status: only the current default
+                        // token (or a not-yet-bound one) projects there.
+                        val defaultToken = sessionTokens[snapshot.conversationID]
+                        if (defaultToken == null || defaultToken == snapshot.sessionToken) {
+                            snapshots[snapshot.conversationID] = snapshot
+                        }
                         // Native names this event with `UUID.uuidString`
                         // (canonical uppercase). The App route/holder key is
                         // the identity that owns [sessionTokens] and the
@@ -1527,8 +2011,8 @@ internal class G04TerminalHostController(
                         // live generation only; a different/absent binding is
                         // left alone.
                         val boundKeys = buildSet {
-                            sessionTokens.entries.forEach {
-                                if (it.value == snapshot.sessionToken) add(it.key)
+                            tokenConversations.entries.forEach {
+                                if (it.key == snapshot.sessionToken) add(it.value)
                             }
                             snapshots.entries.forEach {
                                 if (it.value.sessionToken == snapshot.sessionToken) add(it.key)
@@ -1610,6 +2094,25 @@ internal class G04TerminalHostController(
                 // uses the same rule: its accepted token is bound here,
                 // before the deferred open coroutine resumes, so native's
                 // first output/status events already see the pane binding.
+                pendingTabOpens.remove(requestID)?.let { intent ->
+                    // G07.3A: the accepted SECOND/next tab binds at the reply
+                    // event itself, exactly like the interactive lane, so
+                    // native's following output/status events already see the
+                    // exact token. A stale generation or a late reply never
+                    // adopts a session.
+                    if (ok && future != null && boundEpoch == intent.epoch &&
+                        currentNativeEpoch() == intent.epoch && !stopped.get()) {
+                        val token = descriptor["sessionToken"]?.jsonPrimitive?.contentOrNull
+                        if (!token.isNullOrEmpty()) {
+                            bindToken(intent.conversationID, token)
+                            if (tabRegistry.adopt(requestID, token) != null) {
+                                engineEnsurerForTab(intent.conversationID, token)
+                                clearInputIssue(intent.conversationID)
+                                notifyTabs(intent.conversationID)
+                            }
+                        }
+                    }
+                }
                 pendingInteractiveOpens.remove(requestID)?.let { intent ->
                     if (ok && future != null) {
                         bindInteractiveOpenReply(intent,
@@ -1789,6 +2292,17 @@ private fun String.toPhase(): TerminalSessionPhase? = when (this) {
 private fun TerminalSessionPhase.isLive(): Boolean =
     this == TerminalSessionPhase.RUNNING || this == TerminalSessionPhase.WAITING_OUTPUT ||
         this == TerminalSessionPhase.STARTING
+
+/** The tab registry's closed lowercase vocabulary (never a display label). */
+private fun TerminalSessionPhase.wireName(): String = when (this) {
+    TerminalSessionPhase.CLOSED -> "closed"
+    TerminalSessionPhase.STARTING -> "starting"
+    TerminalSessionPhase.RUNNING -> "running"
+    TerminalSessionPhase.WAITING_OUTPUT -> "waitingOutput"
+    TerminalSessionPhase.EXITED -> "exited"
+    TerminalSessionPhase.STOPPED -> "stopped"
+    TerminalSessionPhase.FAULT -> "fault"
+}
 
 private fun sha256Hex(bytes: ByteArray): String =
     java.security.MessageDigest.getInstance("SHA-256").digest(bytes)

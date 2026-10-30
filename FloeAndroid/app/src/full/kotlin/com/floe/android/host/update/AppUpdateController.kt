@@ -63,6 +63,29 @@ internal class AppUpdateController private constructor(
         currentVersion = currentVersion,
         nowMillis = System::currentTimeMillis,
     )
+    /**
+     * Installed-base facts for the delta path. The APK itself is read from
+     * `applicationInfo.sourceDir`; a split install or an unreadable base
+     * simply disables deltas (the full APK path is unaffected).
+     */
+    private val installedBaseProvider = InstalledBaseProvider {
+        val identity = reader.installed()
+        val apk = reader.installedApkFile()
+        if (identity == null || apk == null) {
+            null
+        } else {
+            InstalledBaseInfo(
+                apkFile = apk,
+                apkSizeBytes = apk.length(),
+                packageName = identity.packageName,
+                versionName = identity.versionName,
+                versionCode = identity.longVersionCode,
+                signerSha256 = identity.signerSha256,
+                hasSplitApks = reader.hasSplitApks() || !apk.isFile,
+                sdkInt = android.os.Build.VERSION.SDK_INT,
+            )
+        }
+    }
     private val downloader = UpdateDownloader(
         scope = scope,
         transport = HttpsDownloadTransport(),
@@ -74,6 +97,7 @@ internal class AppUpdateController private constructor(
                 else -> DownloadFailure.APK_IDENTITY
             }
         },
+        deltaBaseProvider = installedBaseProvider,
     )
     private val installer = AppUpdateInstaller(
         context = context,
@@ -134,7 +158,17 @@ internal class AppUpdateController private constructor(
     fun startDownload() {
         val available = checkController.state.value as? AppCheckState.UpdateAvailable ?: return
         startDownloadService()
-        downloader.start(available.release)
+        // The visible user tap is the consent for this transfer (metered or
+        // not); nothing in the updater downloads without such a tap.
+        downloader.start(available.release, allowDelta = true)
+        refresh()
+    }
+
+    /** Explicit fallback after a delta was refused or failed. */
+    fun startFullDownload() {
+        val available = checkController.state.value as? AppCheckState.UpdateAvailable ?: return
+        startDownloadService()
+        downloader.startFull(available.release)
         refresh()
     }
 
@@ -163,6 +197,31 @@ internal class AppUpdateController private constructor(
             sha256 = ready.sha256,
             force = force,
         )
+        refresh()
+    }
+
+    /**
+     * Retry a failed install from the SAME verified APK. Only offered when no
+     * owned pending session exists; a committed session must be resolved with
+     * "cancel install" first (never a silent duplicate submit).
+     */
+    fun retryInstall() {
+        val ready = downloader.state.value as? AppDownloadState.Ready ?: return
+        if (PendingInstall.fromJson(store.pendingInstallJson) != null) return
+        val file = downloader.readyFile() ?: return
+        installer.retryInstall(ready.versionName, file, ready.sha256)
+        refresh()
+    }
+
+    /** The unknown-sources page could not be launched on this build. */
+    fun onPermissionIntentUnavailable() {
+        installer.onPermissionIntentUnavailable()
+        refresh()
+    }
+
+    /** The system confirmation intent could not be launched. */
+    fun onConfirmationUnavailable() {
+        installer.onConfirmationUnavailable()
         refresh()
     }
 
@@ -396,7 +455,12 @@ class AppUpdateDownloadService : Service() {
                         text = getString(com.floe.android.R.string.app_update_verifying),
                         percent = null,
                     )
+                    is AppDownloadState.Applying -> publishStatus(
+                        text = getString(com.floe.android.R.string.app_update_applying_delta),
+                        percent = null,
+                    )
                     is AppDownloadState.Ready,
+                    is AppDownloadState.DeltaFallback,
                     is AppDownloadState.Paused,
                     is AppDownloadState.Failed,
                     is AppDownloadState.Idle -> {

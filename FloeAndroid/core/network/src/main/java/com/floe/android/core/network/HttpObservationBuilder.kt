@@ -50,7 +50,8 @@ internal object HttpObservationBuilder {
                 put("tls", JSONObject().apply {
                     last.tlsProtocol?.let { put("protocol", it) }
                     last.cipherSuite?.let { put("cipherSuite", it) }
-                    put("certificateChainAnalyzed", false)
+                    put("certificateChainAnalyzed", (last.certificateObservation?.optInt("inspectedCount", 0) ?: 0) > 0)
+                    last.certificateObservation?.let { put("peerCertificates", it) }
                     put("hostnameVerification", "platformDefault")
                     put("trust", "platformDefault")
                 })
@@ -76,7 +77,7 @@ internal object HttpObservationBuilder {
         limitations += "Only HTTPS is used in this batch; cleartext HTTP and non-HTTPS redirects are not followed."
         limitations += "The destination name is resolved once and the TCP socket is pinned to a verified address; the original hostname is still used for SNI and platform default hostname verification."
         limitations += "The diagnostic connects directly on the captured Network and does not use an app HTTP proxy."
-        limitations += "Certificate chain analysis is deferred; platform default trust verifies the TLS handshake."
+        limitations += "Certificate metadata is available only after platform trust and hostname verification succeed; no insecure retry, independent trust-path or revocation check is performed."
         limitations += "No cookies or Authorization headers are sent and no response body is read."
         if (chain.stoppedReason != null) {
             limitations += "The HTTPS diagnostic stopped with: ${chain.stoppedReason}."

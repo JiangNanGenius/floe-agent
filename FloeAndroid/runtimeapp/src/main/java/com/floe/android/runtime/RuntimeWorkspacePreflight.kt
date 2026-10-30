@@ -78,6 +78,9 @@ internal class PreflightHarness(
     val ownedPath: (String) -> File,
     val heldLease: AtomicReference<LinuxAuthorityClient.Lease?>,
     val installID: AtomicReference<String?>,
+    /** G07.3A validated preparation receipts (same process generation only). */
+    val preparation: WorkspacePreparationReceipts = WorkspacePreparationReceipts(
+        File(context.filesDir, "Prepare")),
 )
 
 internal object RuntimeWorkspacePreflight {
@@ -120,6 +123,26 @@ internal object RuntimeWorkspacePreflight {
             // its absolute authority path into this runtime's storage.
             val workspace = harness.ownedPath(descriptor.getString("workspaceRoot"))
             check(descriptor.optString("runID") == runID || !descriptor.has("runID")) { "leaseRunMismatch" }
+            // G07.3A: a previous successful preflight in THIS runtime process
+            // generation for the exact project/environment/base/workspace
+            // identity is a valid preparation proof. The lease was acquired
+            // (identity/liveness re-proven) and is abandoned below through the
+            // ORIGINAL never-started path with a post-release census; the
+            // expensive import/export is not repeated. A session start always
+            // invalidates the receipt, so this can never mask guest changes.
+            if (harness.preparation.reusable(projectID, lease.environmentID,
+                    descriptor.optString("baseRevision"), workspace)) {
+                harness.authority.abandonUnstarted(lease)
+                harness.heldLease.compareAndSet(lease, null)
+                val post = harness.census.snapshot()
+                if (!post.isCleanlyQuiescent) return aborted("quiescence_lost")
+                completed = true
+                return JSONObject().put("status", "ready").put("cached", true)
+                    .put("environmentID", lease.environmentID)
+                    .put("mirroredEntries", 0)
+                    .put("runtimePid", RuntimeProcessIdentity.pid)
+                    .put("runtimeBootToken", RuntimeProcessIdentity.bootToken)
+            }
             session = RuntimeWorkspaceSession(harness.context, grant, projectID, runID, workspace)
             val imported = session.importBeforeLaunch(WorkspaceCancelSignal { cancelled() })
             check(imported.skippedCount == 0) { "mirrorUnsupportedEntries" }
@@ -160,6 +183,8 @@ internal object RuntimeWorkspacePreflight {
                 post.scannedCount)
             val digest = sha256Hex(evidence)
             session.close()
+            harness.preparation.record(projectID, lease.environmentID,
+                descriptor.optString("baseRevision"), workspace, mirrored, 0L)
             completed = true
             return JSONObject().put("status", "ready")
                 .put("environmentID", lease.environmentID)
@@ -187,6 +212,10 @@ internal object RuntimeWorkspacePreflight {
             // recoverable in the Core-side journal until the original sweep
             // proves them stale. EOF/cancel is never treated as exit.
             if (!completed) {
+                // A failed/aborted preflight invalidates any earlier receipt:
+                // the next attempt must re-prove the workspace, never reuse a
+                // success that this attempt could not reproduce.
+                harness.preparation.invalidate(projectID)
                 runCatching { harness.authority.abandonUnstarted(lease) }
                     .onSuccess { harness.heldLease.compareAndSet(lease, null) }
                 runCatching { session?.close() }

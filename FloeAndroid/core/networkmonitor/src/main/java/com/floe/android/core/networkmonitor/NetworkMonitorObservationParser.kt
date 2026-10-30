@@ -131,7 +131,7 @@ object NetworkMonitorObservationParser {
         }.distinct()
     }
 
-    private fun readFields(root: JSONObject?): NetworkMonitorFields {
+    internal fun readFields(root: JSONObject?): NetworkMonitorFields {
         if (root == null) return NetworkMonitorFields()
         val text = linkedMapOf<String, String>()
         val numbers = linkedMapOf<String, Double>()
@@ -270,7 +270,10 @@ internal object NetworkMonitorRedactor {
 
     fun isCredentialKey(key: String): Boolean = credentialKey.containsMatchIn(key)
     fun isDeviceUniqueKey(key: String): Boolean = deviceUniqueKey.containsMatchIn(key)
-    fun isSensitiveKey(key: String): Boolean = sensitiveKey.containsMatchIn(key) || isDeviceUniqueKey(key)
+    fun isSensitiveKey(key: String): Boolean = sensitiveKey.containsMatchIn(key) || isDeviceUniqueKey(key) ||
+        (key.contains("certificates", ignoreCase = true) &&
+            (key.endsWith("sha256", ignoreCase = true) ||
+                Regex("(?i)(subject|issuer|alternativeNames)").containsMatchIn(key)))
 
     fun redactCredentials(value: String): String = assignedSecret.replace(bearer.replace(value, "[redacted-credential]")) {
         "${it.groupValues[1]}=[redacted]"
@@ -281,6 +284,8 @@ internal object NetworkMonitorRedactor {
         val withoutCredentials = redactCredentials(raw)
         if (detailed) return sanitizeUrlsWithoutSecrets(withoutCredentials)
         if (isSensitiveKey(key)) return "[redacted-network-identifier]"
+        // ISO timestamps contain colon groups, but are not IPv6 identifiers.
+        if (runCatching { Instant.parse(withoutCredentials) }.isSuccess) return withoutCredentials
         return redactSensitiveValues(withoutCredentials)
     }
 
