@@ -147,6 +147,23 @@ final class UserQuestionContractTests: XCTestCase {
             requestDigest: String(repeating: "b", count: 64)))
     }
 
+    func testAdvertisedToolSchemaIsValidAndMatchesDecodedQuestionArguments() throws {
+        let schema = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: Data(UserAskTool.parametersJSON.utf8)) as? [String: Any])
+        XCTAssertEqual(schema["type"] as? String, "object")
+        XCTAssertEqual(schema["required"] as? [String], ["questions"])
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        XCTAssertEqual(Set(properties.keys), Set(["waitPolicy", "timeoutSeconds", "questions"]))
+        let questions = try XCTUnwrap(properties["questions"] as? [String: Any])
+        let item = try XCTUnwrap(questions["items"] as? [String: Any])
+        XCTAssertEqual(item["required"] as? [String], ["question"])
+        let arguments = try JSONDecoder().decode(UserAskTool.Arguments.self, from: Data(
+            #"{"questions":[{"question":"Pick a color","options":[{"id":"blue","label":"Blue"}]},{"question":"Write a note"}]}"#.utf8))
+        try arguments.validate()
+        XCTAssertEqual(arguments.questions.count, 2)
+        XCTAssertEqual(arguments.waitPolicy, .required)
+    }
+
     func testToolIsMainRunOnlyAndGrantsNoAuthority() {
         XCTAssertEqual(UserAskTool.name, "user.ask")
         XCTAssertTrue(UserAskTool.riskLabels.isEmpty)
