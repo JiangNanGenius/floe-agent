@@ -708,14 +708,14 @@ struct ComposerFullEditorTests {
     @Test("The inline field and full editor share one undo history")
     func sharedUndoManagerAcrossSurfaces() {
         let shared = UndoManager()
-        let inline = HardwareReturnTextView()
+        let inline = HardwareReturnTextView.makeComposerTextView()
         inline.sharedUndoManager = shared
         let full = FullEditorUITextView()
         full.sharedUndoManager = shared
         #expect(inline.undoManager === shared)
         #expect(full.undoManager === shared)
         // Without an injected manager each view keeps UIKit's own.
-        #expect(HardwareReturnTextView().undoManager !== shared)
+        #expect(HardwareReturnTextView.makeComposerTextView().undoManager !== shared)
         #expect(FullEditorUITextView().undoManager !== shared)
     }
 
@@ -786,7 +786,7 @@ struct ComposerMeasurementHardeningTests {
     func overflowMutationIsDeferred() async {
         let field = ComposerReturnField(text: .constant(""), placeholder: "", onReturn: {})
         let coordinator = field.makeCoordinator()
-        let view = HardwareReturnTextView()
+        let view = HardwareReturnTextView.makeComposerTextView()
         view.isScrollEnabled = false
         coordinator.scheduleOverflowReport(true, textView: view, report: nil)
         #expect(!view.isScrollEnabled)
@@ -800,8 +800,8 @@ struct ComposerMeasurementHardeningTests {
     func overflowBurstUsesLatestView() async {
         let field = ComposerReturnField(text: .constant(""), placeholder: "", onReturn: {})
         let coordinator = field.makeCoordinator()
-        let firstView = HardwareReturnTextView()
-        let latestView = HardwareReturnTextView()
+        let firstView = HardwareReturnTextView.makeComposerTextView()
+        let latestView = HardwareReturnTextView.makeComposerTextView()
         firstView.isScrollEnabled = false
         latestView.isScrollEnabled = true
         var reports: [Bool] = []
@@ -858,7 +858,7 @@ struct ComposerMeasurementHardeningTests {
     /// touch its container, scroll flag or layout manager.
     @Test("Detached measurement never mutates the live view")
     func detachedMeasurementIsSideEffectFree() {
-        let view = HardwareReturnTextView()
+        let view = HardwareReturnTextView.makeComposerTextView()
         view.text = String(repeating: "中文长文本与English mix，无空格长串aaaaaaaaaaaaaaaa。\n", count: 60)
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 44)
         view.layoutIfNeeded()
@@ -937,7 +937,7 @@ struct ComposerMeasurementHardeningTests {
     /// same width, so the height contract is unchanged by the hardening.
     @Test("Detached measurement matches the live used-rect height")
     func detachedMatchesLiveHeight() {
-        let view = HardwareReturnTextView()
+        let view = HardwareReturnTextView.makeComposerTextView()
         view.text = String(repeating: "中文与English混排的长草稿，这一行会换行。\n", count: 40)
         let width: CGFloat = 300
         view.textContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)

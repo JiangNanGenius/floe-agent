@@ -107,7 +107,7 @@ struct ComposerOverflowRegressionTests {
             onReturn: {}
         )
         let coordinator = field.makeCoordinator()
-        let view = HardwareReturnTextView()
+        let view = HardwareReturnTextView.makeComposerTextView()
         field.configure(view: view, coordinator: coordinator)
         view.frame = CGRect(x: 0, y: 0, width: width, height: 44)
         view.setNeedsLayout()
@@ -136,7 +136,7 @@ struct ComposerOverflowRegressionTests {
             onReturn: {}
         )
         let coordinator = field.makeCoordinator()
-        let view = HardwareReturnTextView()
+        let view = HardwareReturnTextView.makeComposerTextView()
         field.configure(view: view, coordinator: coordinator)
         return Fixture(field: field, view: view, coordinator: coordinator)
     }
@@ -325,7 +325,7 @@ struct ComposerOverflowRegressionTests {
             onOverflowChange: { scrolling.append($0) }, onReturn: {}
         )
         let coordinator = field.makeCoordinator()
-        let view = HardwareReturnTextView()
+        let view = HardwareReturnTextView.makeComposerTextView()
         field.configure(view: view, coordinator: coordinator)
         view.frame = CGRect(x: 0, y: 0, width: 500, height: 100)
         view.setNeedsLayout()
@@ -894,7 +894,7 @@ struct ComposerOverflowRegressionTests {
             onReturn: {}
         )
         let coordinator = field.makeCoordinator()
-        let view = HardwareReturnTextView()
+        let view = HardwareReturnTextView.makeComposerTextView()
         field.configure(view: view, coordinator: coordinator)
         // The launchpad field is full-row and stacked at the canonical
         // iPad width; 380 is the measured slot width from the failing run.
@@ -919,11 +919,23 @@ struct ComposerOverflowRegressionTests {
         view.frame.size.height = verdict.height
         view.setNeedsLayout()
         view.layoutIfNeeded()
+        // Inspect the actual UITextInput geometry BEFORE requesting a
+        // layoutManager (which would otherwise silently change TextKit).
+        let firstCaret = view.caretRect(for: view.beginningOfDocument)
+        let lastCaret = view.caretRect(for: view.endOfDocument)
+        #expect(!firstCaret.isEmpty && !lastCaret.isEmpty)
+        #expect(lastCaret.minY > firstCaret.minY + (view.font?.lineHeight ?? 17) * 0.5,
+                "the end caret must really be on the second row")
+        #expect(lastCaret.maxY <= view.bounds.maxY + 0.5,
+                "the current insertion point must be visible in the grown field")
         let glyphs = view.layoutManager.glyphRange(for: view.textContainer)
         var lastLineBottom: CGFloat = 0
+        var paintedLines = 0
         view.layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, usedRect, _, _, _ in
+            paintedLines += 1
             lastLineBottom = max(lastLineBottom, usedRect.maxY)
         }
+        #expect(paintedLines == 2, "both rows must be laid out, not just fit the height")
         #expect(lastLineBottom <= view.textContainer.size.height + 0.001,
                 "the second row must sit inside the field's visible text area")
     }

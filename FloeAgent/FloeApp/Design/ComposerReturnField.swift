@@ -54,6 +54,16 @@ import FloeCore
 /// other Return (plain, Shift+, during IME composition) keeps its default
 /// newline behavior.
 final class HardwareReturnTextView: UITextView {
+    /// Match the live editor to the TextKit layout used for its measured
+    /// height. Default UITextView uses TextKit 2; reading layoutManager in a
+    /// test silently switches that view to TextKit 1 and can hide a live
+    /// height-change/caret rendering regression. Select the backing engine
+    /// once, before text or a selection exists, rather than falling back
+    /// during an edit.
+    static func makeComposerTextView() -> HardwareReturnTextView {
+        HardwareReturnTextView(usingTextLayoutManager: false)
+    }
+
     /// Placeholder shown while the field is empty; a subview so it tracks
     /// the text container's origin and insets.
     let placeholderLabel = UILabel()
@@ -273,7 +283,7 @@ struct ComposerReturnField: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> HardwareReturnTextView {
-        let view = HardwareReturnTextView()
+        let view = HardwareReturnTextView.makeComposerTextView()
         configure(view: view, coordinator: context.coordinator)
         return view
     }

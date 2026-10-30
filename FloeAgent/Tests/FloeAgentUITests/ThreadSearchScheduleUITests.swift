@@ -161,8 +161,13 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         // before typing this run's draft.
         let existingDraft = composer.value as? String ?? ""
         if !existingDraft.isEmpty {
-            composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue,
-                                     count: existingDraft.count))
+            // This field can be activated at its leading edge (UI3 and UI4
+            // both synthesized the tap at (325, 981) pt, ~5 pt inside the
+            // visible text view), so a restored draft starts with the caret
+            // at offset 0 and repeated Delete is a no-op. Select the whole
+            // existing draft through the real editor, then delete it.
+            app.typeKey("a", modifierFlags: .command)
+            composer.typeText(XCUIKeyboardKey.delete.rawValue)
         }
         XCTAssertEqual(composer.value as? String ?? "", "",
                        "the synthetic chat draft must be empty before typing")

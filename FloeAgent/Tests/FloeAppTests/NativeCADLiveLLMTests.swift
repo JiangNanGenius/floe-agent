@@ -160,7 +160,11 @@ final class NativeCADLiveLLMTests: XCTestCase {
             let session = NativeCADLiveSession(
                 environment: environment, center: center, route: route, optIn: optIn)
             do { try await session.runAll() }
-            catch { await session.cleanup(); throw error }
+            catch {
+                session.recordFailure(error)
+                await session.cleanup()
+                throw error
+            }
             await session.cleanup()
         } catch {
             try await installed?.remove(environment: environment)
@@ -180,8 +184,8 @@ private enum NativeCADLivePrepaidRoute {
     static let remoteModelID = "deepseek-v4-flash"
     static let maxInputTokens = 160_000
     static let maxOutputTokens = 8_000
-    static let maxPerRunSeconds: Double = 180
-    static let maxTotalSeconds: Double = 600
+    static let maxPerRunSeconds: Double = 900
+    static let maxTotalSeconds: Double = 2_700
 
     /// Exact profile shape created by `NativeCADLiveOwnedRoute` for the
     /// reserved IDs above. No opt-in pin alone can authorize another base or
@@ -437,8 +441,8 @@ private struct NativeCADLiveOptIn: Sendable {
             throw XCTSkip("Live native CAD acceptance skipped: maxOutputTokens must be 1...200,000. A skip is not live evidence.")
         }
         let perRun = raw.perRunTimeoutSeconds ?? 300
-        guard perRun.isFinite, (30...600).contains(perRun) else {
-            throw XCTSkip("Live native CAD acceptance skipped: perRunTimeoutSeconds must be 30...600. A skip is not live evidence.")
+        guard perRun.isFinite, (30...900).contains(perRun) else {
+            throw XCTSkip("Live native CAD acceptance skipped: perRunTimeoutSeconds must be 30...900. A skip is not live evidence.")
         }
         let total = raw.maxTotalSeconds ?? 1_500
         guard total.isFinite, (60...2_700).contains(total), total >= perRun else {
@@ -452,7 +456,7 @@ private struct NativeCADLiveOptIn: Sendable {
                   total <= NativeCADLivePrepaidRoute.maxTotalSeconds else {
                 throw XCTSkip(
                     "Live native CAD acceptance skipped: prepaidBudgetBasis may not exceed the "
-                        + "approved 160,000 input / 8,000 output / 180 s per turn / 600 s total "
+                        + "approved 160,000 input / 8,000 output / 900 s per turn / 2,700 s total "
                         + "budget. A skip is not live evidence."
                 )
             }
@@ -890,6 +894,7 @@ private final class NativeCADLiveSession {
     private var documentURL: URL?
     private var captureRelativePaths: [String] = []
     private var cleanupStarted = false
+    private var failureDescription: String?
 
     init(
         environment: AppEnvironment,
@@ -1438,6 +1443,157 @@ private final class NativeCADLiveSession {
         }
     }
 
+    // MARK: Durable failure evidence, attached before owned cleanup deletes it
+
+    func recordFailure(_ error: Error) {
+        if failureDescription == nil {
+            failureDescription = String(describing: error)
+        }
+    }
+
+    /// Reads the exact durable usage and tool lifecycle rows for every owned
+    /// run and attaches a bounded, prompt-free text copy. Cleanup deletes the
+    /// conversation/run rows, so this must run first on every exit path.
+    private func attachDurableEvidence() async {
+        let runStore = environment.runStore
+        let formatter = ISO8601DateFormatter()
+        var lines: [String] = []
+        lines.append("native-cad-live durable evidence")
+        lines.append("source=run_usage and run_events read before owned cleanup")
+        lines.append("captured_at=\(formatter.string(from: Date()))")
+        if let failureDescription {
+            lines.append("failure=\(evidenceText(failureDescription))")
+        } else {
+            lines.append("failure=none observed on the success path")
+        }
+        let totals = await ledger.totals()
+        lines.append("ledger_totals=\(totals.description)")
+        lines.append("ledger_has_usage=\(totals.hasUsage)")
+        lines.append("run_count=\(runIDs.count)")
+
+        for (index, runID) in runIDs.enumerated() {
+            lines.append("")
+            lines.append("run[\(index)] \(runID.uuidString)")
+            let usageRows = try? await runStore.usage(runID: runID)
+            let usage = usageRows ?? []
+            lines.append("usage_records=\(usage.count)")
+            for (offset, record) in usage.enumerated() {
+                lines.append(
+                    "  usage[\(offset)] input_tokens=\(record.inputTokens)"
+                        + " output_tokens=\(record.outputTokens)"
+                        + " cache_read_tokens=\(intText(record.cacheReadTokens))"
+                        + " cache_miss_tokens=\(intText(record.cacheMissTokens))"
+                        + " cache_write_tokens=\(intText(record.cacheWriteTokens))"
+                        + " reasoning_tokens=\(intText(record.reasoningTokens))"
+                        + " estimated=\(record.isEstimated)"
+                        + " total_duration_ms=\(intText(record.totalDurationMs))"
+                        + " time_to_first_token_ms=\(intText(record.timeToFirstTokenMs))"
+                        + " tokens_per_second=\(doubleText(record.tokensPerSecond))"
+                        + " cost_estimate=\(record.costEstimate ?? "nil")"
+                        + " recorded_at=\(formatter.string(from: record.recordedAt))"
+                )
+            }
+            if let usageRows {
+                if usageRows.isEmpty {
+                    lines.append("  exact_usage_unavailable=no durable run_usage row existed before cleanup")
+                }
+            } else {
+                lines.append("  exact_usage_unavailable=run_usage could not be read before cleanup")
+            }
+
+            let eventRows = try? await runStore.events(runID: runID)
+            let events = eventRows ?? []
+            lines.append("events=\(events.count)")
+            if eventRows == nil {
+                lines.append("  tool_evidence_unavailable=run_events could not be read before cleanup")
+            }
+            for event in events {
+                switch event.kind {
+                case .toolRequest, .toolResult:
+                    if let line = toolEvidenceLine(event: event) {
+                        lines.append(line)
+                    }
+                case .error:
+                    if let payload = NativeCADLiveJSON.object(event.payloadJSON) {
+                        var parts = ["kind=error", "sequence=\(event.sequence)"]
+                        for key in ["kind", "message", "httpStatus", "recoverable"] {
+                            if let value = payload[key] as? String, !value.isEmpty {
+                                parts.append("\(key)=\(evidenceText(value))")
+                            }
+                        }
+                        lines.append("  " + parts.joined(separator: " "))
+                    }
+                default:
+                    break
+                }
+            }
+        }
+
+        let attachment = XCTAttachment(string: lines.joined(separator: "\n"))
+        attachment.name = "native-cad-live-durable-evidence.txt"
+        attachment.lifetime = .keepAlways
+        XCTContext.runActivity(named: "Native CAD live durable run evidence") { activity in
+            activity.add(attachment)
+        }
+    }
+
+    private func toolEvidenceLine(event: RunEventRecord) -> String? {
+        guard let payload = NativeCADLiveJSON.object(event.payloadJSON) else {
+            return "  kind=\(event.kind.rawValue) sequence=\(event.sequence) unreadable_payload"
+        }
+        var parts = [
+            "kind=\(event.kind.rawValue)",
+            "sequence=\(event.sequence)",
+        ]
+        if let id = payload["id"] as? String { parts.append("call_id=\(id)") }
+        if let tool = payload["tool"] as? String { parts.append("tool=\(tool)") }
+        if let status = payload["status"] as? String { parts.append("status=\(status)") }
+        if event.kind == .toolRequest,
+           let input = payload["input"] as? String,
+           let arguments = NativeCADLiveJSON.object(input) {
+            if let action = arguments["action"] as? String { parts.append("action=\(action)") }
+            if let op = arguments["op"] as? String { parts.append("op=\(op)") }
+            if let path = arguments["path"] as? String {
+                parts.append("path=\((path as NSString).lastPathComponent)")
+            }
+            if let summary = arguments["summary"] as? String {
+                parts.append("request_summary=\(evidenceText(summary))")
+            }
+        }
+        if let summary = payload["summary"] as? String {
+            parts.append("summary=\(evidenceText(summary))")
+        }
+        if let digest = payload["outputDigest"] as? String, !digest.isEmpty {
+            parts.append("output_digest=\(digest)")
+        }
+        for key in ["durationMs", "queuedMs"] {
+            if let value = payload[key] as? String { parts.append("\(key)=\(value)") }
+            else if let value = payload[key] as? Int { parts.append("\(key)=\(value)") }
+        }
+        for key in ["error", "errorCode"] {
+            if let value = payload[key] as? String, !value.isEmpty {
+                parts.append("\(key)=\(evidenceText(value))")
+            }
+        }
+        return "  " + parts.joined(separator: " ")
+    }
+
+    private func intText(_ value: Int?) -> String {
+        value.map { String($0) } ?? "nil"
+    }
+
+    private func doubleText(_ value: Double?) -> String {
+        value.map { String($0) } ?? "nil"
+    }
+
+    private func evidenceText(_ value: String, limit: Int = 6_000) -> String {
+        let singleLine = value
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        guard singleLine.count > limit else { return singleLine }
+        return String(singleLine.prefix(limit)) + "…[truncated]"
+    }
+
     // MARK: Small query helpers
 
     private func nativeRows(_ document: FloeCADDocument, scope: String) throws -> [[String: Any]] {
@@ -1537,6 +1693,10 @@ private final class NativeCADLiveSession {
         for service in services {
             await service.cancel()
         }
+
+        // The owning conversation and its runs/usage/events are deleted below.
+        // Attach the exact durable evidence first on every exit path.
+        await attachDurableEvidence()
 
         if let documentURL {
             for proposal in await environment.cadDocumentCenter.pendingNativeProposals(for: documentURL) {

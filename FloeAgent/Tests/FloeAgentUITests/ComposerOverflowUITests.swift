@@ -1,8 +1,34 @@
 import XCTest
 import UIKit
+import Vision
 
 @MainActor
 final class ComposerOverflowUITests: XCTestCase {
+    /// Read the visible field pixels, not its AX value or allocated height.
+    /// The previous regression passed both while painting only "one".
+    private func assertTwoRowsArePainted(
+        _ screenshot: XCUIScreenshot, field: XCUIElement, window: XCUIElement
+    ) throws {
+        let image = try XCTUnwrap(screenshot.image.cgImage)
+        let screen = window.frame
+        let scale = CGFloat(image.width) / screen.width
+        let frame = field.frame.offsetBy(dx: -screen.minX, dy: -screen.minY)
+        let crop = CGRect(x: frame.minX * scale, y: frame.minY * scale,
+                          width: frame.width * scale, height: frame.height * scale)
+            .integral.intersection(CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
+        let fieldImage = try XCTUnwrap(image.cropping(to: crop))
+        let request = VNRecognizeTextRequest()
+        request.recognitionLanguages = ["en-US"]
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        try VNImageRequestHandler(cgImage: fieldImage, options: [:]).perform([request])
+        let visible = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+            .joined(separator: " ").lowercased()
+        let words = Set(visible.split(whereSeparator: { !$0.isLetter }).map(String.init))
+        XCTAssertTrue(words.contains("one") && words.contains("two"),
+                      "The screenshot must paint both input rows; recognized: \(visible)")
+    }
+
     func testSoftWrappedDraftExpandsWithoutLosingText() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
@@ -142,10 +168,12 @@ final class ComposerOverflowUITests: XCTestCase {
                              "Two explicit lines must grow the field past its resting row")
         XCTAssertFalse(app.buttons["composer.expand"].exists,
                        "Two short visual lines do not need an expand control")
-        let twoLineShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        let twoLineScreen = XCUIScreen.main.screenshot()
+        let twoLineShot = XCTAttachment(screenshot: twoLineScreen)
         twoLineShot.name = "Home two-line viewport: both rows visible, no expand control"
         twoLineShot.lifetime = .keepAlways
         add(twoLineShot)
+        try assertTwoRowsArePainted(twoLineScreen, field: input, window: app.windows.firstMatch)
         input.typeText("\nthree")
         XCTAssertTrue(app.buttons["composer.expand"].waitForExistence(timeout: 10),
                       "The third visual line must expose the editor before scrolling")

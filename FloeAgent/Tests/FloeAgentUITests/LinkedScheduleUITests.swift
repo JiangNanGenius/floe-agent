@@ -55,7 +55,20 @@ final class LinkedScheduleUITests: XCTestCase {
         app.buttons["取消"].firstMatch.tap()
         XCTAssertTrue(capsule.waitForExistence(timeout: 10))
         app.buttons["thread.inspector.menu"].tap()
-        app.buttons["thread.find.menu"].tap()
+        let findRow = app.buttons["thread.find.menu"]
+        XCTAssertTrue(findRow.waitForExistence(timeout: 10))
+        findRow.tap()
+        // A synthesized tap at this SwiftUI menu row's exact centre can be
+        // lost while the menu stays presented (UI4: (624, 59) pt was the
+        // centre of the 224x38 row, yet the menu remained open and find
+        // never opened; the identical tap worked in UI3). A retry is only
+        // attempted while that menu is still on screen, which proves the
+        // first activation never reached the row; the real find field must
+        // still appear.
+        if !app.textFields["thread.find.field"].waitForExistence(timeout: 3),
+           findRow.exists {
+            findRow.tap()
+        }
         XCTAssertTrue(app.textFields["thread.find.field"].waitForExistence(timeout: 10))
         XCTAssertFalse(capsule.exists)
         app.buttons["thread.find.done"].tap()
