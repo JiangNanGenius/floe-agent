@@ -128,9 +128,14 @@ public enum ToolResultCaptureRead: Sendable, Equatable {
         public var capture: ToolResultCapture
         public var ref: String
         public var runID: UUID
+        /// Effective start of `text` in UTF-8 bytes. A requested offset that
+        /// lands inside a multi-byte character is rounded back to that
+        /// character's leading byte, so this is always a scalar boundary and
+        /// `endOffset - offset` equals `text.utf8.count`.
         public var offset: Int
-        /// Exclusive end of this page in UTF-8 bytes. `nextOffset` equals
-        /// `endOffset` when more bytes exist and is nil at the end.
+        /// Exclusive end of this page in UTF-8 bytes, always a scalar
+        /// boundary. `nextOffset` equals `endOffset` when more bytes exist and
+        /// is nil at the end.
         public var endOffset: Int
         public var text: String
         public var totalBytes: Int
@@ -566,7 +571,7 @@ public actor ToolResultCaptureStore {
                 excerpt: Self.excerpt(around: match.offset, in: text),
                 hasAdditionalMatches: Self.firstMatch(
                     of: needle,
-                    in: Self.utf8Window(text, offset: match.offset + max(1, match.length), maxBytes: size)
+                    in: Self.utf8Window(text, offset: match.offset + max(1, match.length), maxBytes: size).text
                 ) != nil
             ))
         }
@@ -615,22 +620,22 @@ public actor ToolResultCaptureStore {
         guard start < totalBytes || (start == 0 && totalBytes == 0) else {
             return .outOfRange(totalBytes: totalBytes, callID: capture.ref)
         }
-        let page = Self.utf8Window(capture.text, offset: start, maxBytes: maxBytes)
-        // An arbitrary offset inside a scalar (or a window smaller than its
-        // next scalar) cannot deliver bytes. Never return a non-advancing cursor.
-        guard !page.isEmpty || totalBytes == 0 else {
+        let window = Self.utf8Window(capture.text, offset: start, maxBytes: maxBytes)
+        // A start inside a scalar is rounded back to its leading byte and a
+        // window always contains at least one whole scalar, so this can only
+        // be empty for empty text. Never return a non-advancing cursor.
+        guard !window.text.isEmpty || totalBytes == 0 else {
             return .outOfRange(totalBytes: totalBytes, callID: capture.ref)
         }
-        let end = start + page.utf8.count
         return .page(.init(
             capture: capture,
             ref: capture.ref,
             runID: capture.runID,
-            offset: start,
-            endOffset: end,
-            text: page,
+            offset: window.startOffset,
+            endOffset: window.endOffset,
+            text: window.text,
             totalBytes: totalBytes,
-            nextOffset: end < totalBytes ? end : nil,
+            nextOffset: window.endOffset < totalBytes ? window.endOffset : nil,
             restoredFromDisk: fromDisk,
             evictedCopies: evicted
         ))
@@ -730,8 +735,8 @@ public actor ToolResultCaptureStore {
         let start = max(0, offset - radius)
         let prefix = start > 0 ? "…" : ""
         let window = utf8Window(text, offset: start, maxBytes: radius * 2)
-        let suffix = start + window.utf8.count < text.utf8.count ? "…" : ""
-        return prefix + window + suffix
+        let suffix = window.endOffset < text.utf8.count ? "…" : ""
+        return prefix + window.text + suffix
     }
 
     // MARK: - Task cleanup
@@ -1229,18 +1234,69 @@ public actor ToolResultCaptureStore {
         return ""
     }
 
-    /// The longest whole-scalar window starting at a UTF-8 byte offset.
-    static func utf8Window(_ text: String, offset: Int, maxBytes: Int) -> String {
+    /// One bounded, whole-scalar UTF-8 window. `startOffset` is the scalar
+    /// boundary at or before the requested byte position; `endOffset` is the
+    /// exclusive boundary after at least one whole character. A normal page
+    /// stays within `maxBytes`; only a limit smaller than the first character
+    /// returns that one character (at most three bytes over) so progress is
+    /// never lost. A character is never split.
+    struct UTF8Window: Sendable, Equatable {
+        var text: String
+        var startOffset: Int
+        var endOffset: Int
+    }
+
+    /// Longest whole-scalar window containing `offset`. An offset inside a
+    /// multi-byte character rounds back to that character's leading byte
+    /// (every requested byte is then included). The window takes at most
+    /// `maxBytes` from that boundary, trimming any trailing partial scalar;
+    /// only when `maxBytes` is smaller than the first character does it
+    /// return that one whole character. Callers report
+    /// `startOffset`/`endOffset`, never the raw requested offset, as the
+    /// delivered range.
+    static func utf8Window(_ text: String, offset: Int, maxBytes: Int) -> UTF8Window {
         let view = text.utf8
-        guard offset < view.count, maxBytes > 0 else { return "" }
-        let start = view.index(view.startIndex, offsetBy: offset)
-        let end = view.index(start, offsetBy: maxBytes, limitedBy: view.endIndex) ?? view.endIndex
-        var bytes = Array(view[start..<end])
-        while !bytes.isEmpty {
-            if let value = String(bytes: bytes, encoding: .utf8) { return value }
-            bytes.removeLast()
+        let total = view.count
+        let clamped = min(max(0, offset), total)
+        guard clamped < total, maxBytes > 0 else {
+            return UTF8Window(text: "", startOffset: clamped, endOffset: clamped)
         }
-        return ""
+        var start = clamped
+        // UTF-8 continuation bytes are 10xxxxxx; walk back to the lead byte.
+        while start > 0 {
+            let byte = view[view.index(view.startIndex, offsetBy: start)]
+            guard byte & 0xC0 == 0x80 else { break }
+            start -= 1
+        }
+        var end = maxBytes >= total - start ? total : start + maxBytes
+        // Trim a split trailing scalar. `end == total` is already a boundary.
+        while end > start, end < total,
+              view[view.index(view.startIndex, offsetBy: end)] & 0xC0 == 0x80 {
+            end -= 1
+        }
+        if end == start {
+            // The limit cuts inside the first character: return that whole
+            // character so the cursor always advances.
+            let lead = view[view.index(view.startIndex, offsetBy: start)]
+            end = min(total, start + utf8ScalarLength(lead))
+        }
+        let lower = view.index(view.startIndex, offsetBy: start)
+        let upper = view.index(view.startIndex, offsetBy: end)
+        return UTF8Window(
+            text: String(decoding: view[lower..<upper], as: UTF8.self),
+            startOffset: start,
+            endOffset: end
+        )
+    }
+
+    private static func utf8ScalarLength(_ lead: UInt8) -> Int {
+        switch lead {
+        case 0x00...0x7F: return 1
+        case 0xC0...0xDF: return 2
+        case 0xE0...0xEF: return 3
+        case 0xF0...0xF7: return 4
+        default: return 1
+        }
     }
 }
 

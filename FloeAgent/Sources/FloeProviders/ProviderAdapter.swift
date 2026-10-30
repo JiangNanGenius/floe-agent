@@ -12,6 +12,11 @@ import FloeModels
 /// Compat-mode tool name mapping shared by all three wire adapters.
 /// Some providers (DeepSeek, gateways) enforce ^[A-Za-z0-9_-]+$ function
 /// names, so dotted canonical names travel the wire as underscored spellings.
+/// Volcengine Ark's chat/Agent Plan routes enforce the same ASCII-only
+/// function-name grammar (Volcengine documents custom tool names as letters,
+/// digits, underscores and hyphens) and reject a dotted request whole with
+/// `InvalidParameter` / "function name is invalid" before the answer starts;
+/// the supplied screenshot shows `ark-code-latest` failing exactly that way.
 /// The official Moonshot/Kimi chat endpoints (api.kimi.com, api.moonshot.cn,
 /// api.moonshot.ai) are stricter still: any request carrying a name outside
 /// ^[A-Za-z][A-Za-z0-9_-]*$ is rejected whole, before the answer starts
@@ -48,14 +53,68 @@ public enum CompatToolNames {
     static let grammarStrictHosts: Set<String> =
         KimiCodeEndpointIdentity.apiHosts.union(["api.moonshot.cn", "api.moonshot.ai"])
 
+    /// Exact Volcengine Ark API roots. Ark's accepted tool-name grammar is
+    /// ASCII letters/digits/underscore/dash; dots are not legal. The Agent
+    /// Plan preset is stored as `.custom` (and a hand-entered compatible
+    /// profile is too), so the route — not the kind or a display name — is
+    /// the reliable identity. Only the documented API roots qualify: a
+    /// lookalike host, a nonstandard port, plain HTTP, a query/fragment or
+    /// another path never inherits Ark spelling. A proxy base URL is
+    /// intentionally not inferred; its owner keeps the existing explicit
+    /// `toolNameCompatibility` opt-in.
+    static let arkAPIHost = "ark.cn-beijing.volces.com"
+    /// PAYG Chat Completions root. The Agent Plan root is additionally
+    /// recognized through the existing `ProviderBillingEndpoint` identity.
+    static let arkPAYGRootPath = "/api/v3"
+
     public static func usesWireSafeNames(_ provider: ProviderProfile) -> Bool {
-        provider.traits().usesWireSafeToolNames || requiresLetterInitialNames(provider)
+        provider.traits().usesWireSafeToolNames || requiresDeterministicNames(provider)
     }
 
     /// True only for the exact normalized official Moonshot/Kimi chat hosts.
     public static func requiresLetterInitialNames(_ provider: ProviderProfile) -> Bool {
         guard let host = provider.baseURL.host?.lowercased() else { return false }
         return grammarStrictHosts.contains(host)
+    }
+
+    /// True only for an exact Volcengine Ark API root (`/api/v3` PAYG or
+    /// `/api/plan/v3` Agent Plan), independent of `ProviderKind`.
+    public static func requiresArkNames(_ provider: ProviderProfile) -> Bool {
+        let url = provider.baseURL
+        guard url.scheme?.lowercased() == "https",
+              url.port == nil || url.port == 443,
+              url.query == nil,
+              url.fragment == nil,
+              url.host?.lowercased() == arkAPIHost else { return false }
+        if ProviderBillingEndpoint.resolve(url) == .volcengineAgentPlan { return true }
+        var path = url.path.lowercased()
+        while path.hasSuffix("/") && path != "/" { path = String(path.dropLast()) }
+        return path == arkPAYGRootPath
+    }
+
+    /// Providers whose function-name contract needs the deterministic
+    /// per-request collision table (not just dot replacement) so every
+    /// outbound occurrence shares one injective spelling and the inbound
+    /// name recovers the canonical dotted name exactly.
+    public static func requiresDeterministicNames(_ provider: ProviderProfile) -> Bool {
+        requiresLetterInitialNames(provider) || requiresArkNames(provider)
+    }
+
+    /// One deterministic Ark-grammar hardening: after the compat
+    /// dot→underscore step, every scalar outside ASCII letters/digits/
+    /// underscore/dash becomes an underscore. Ark accepts a leading digit,
+    /// underscore or dash, so no letter prefix is invented. Reversal is exact
+    /// through the per-request `wireTable`, not through string arithmetic.
+    static func arkSpelling(_ canonicalName: String) -> String {
+        let compat = ToolNameSpelling.wire(canonicalName, safe: true)
+        let mapped = String(String.UnicodeScalarView(compat.unicodeScalars.map { scalar in
+            if ("a"..."z").contains(scalar) || ("A"..."Z").contains(scalar)
+                || ("0"..."9").contains(scalar) || scalar == "_" || scalar == "-" {
+                return scalar
+            }
+            return "_"
+        }))
+        return mapped.isEmpty ? "f_" : mapped
     }
 
     /// One deterministic Moonshot/Kimi-grammar hardening: after the compat
@@ -81,6 +140,7 @@ public enum CompatToolNames {
 
     public static func wireName(_ canonicalName: String, for provider: ProviderProfile) -> String {
         if requiresLetterInitialNames(provider) { return letterInitialSpelling(canonicalName) }
+        if requiresArkNames(provider) { return arkSpelling(canonicalName) }
         return ToolNameSpelling.wire(canonicalName, safe: usesWireSafeNames(provider))
     }
 
@@ -111,8 +171,8 @@ public enum CompatToolNames {
     }
 
     /// Deterministic canonical→wire table over the request's complete tool
-    /// universe (see `requestUniverse`). On grammar-strict providers two
-    /// canonical names that harden to the same spelling (e.g.
+    /// universe (see `requestUniverse`). On Kimi/Moonshot and Volcengine Ark
+    /// routes two canonical names that harden to the same spelling (e.g.
     /// `workspace.readFile` and `workspace_readFile`) get "_2"/"_3"… suffixes
     /// in sorted-canonical order, making the forward map injective so the
     /// reverse lookup recovers each canonical name exactly. The same table
@@ -120,12 +180,13 @@ public enum CompatToolNames {
     /// providers get an empty table and keep the legacy per-name spelling,
     /// byte-for-byte unchanged.
     public static func wireTable(for request: ProviderStreamRequest) -> [String: String] {
-        guard requiresLetterInitialNames(request.provider) else { return [:] }
+        let letterInitial = requiresLetterInitialNames(request.provider)
+        guard letterInitial || requiresArkNames(request.provider) else { return [:] }
         let universe = Set(requestUniverse(request)).sorted()
         var table: [String: String] = [:]
         var used = Set<String>()
         for canonical in universe {
-            let base = letterInitialSpelling(canonical)
+            let base = letterInitial ? letterInitialSpelling(canonical) : arkSpelling(canonical)
             var candidate = base
             var suffix = 2
             while used.contains(candidate) {
@@ -141,14 +202,14 @@ public enum CompatToolNames {
     /// Canonical (dotted) name for a model-emitted wire name. The universe is
     /// the run ceiling AND the schemas offered this turn — discovery tools
     /// (tools.list/tools.search) and the synthetic plan tool exist only in
-    /// toolSchemas. On grammar-strict providers the exact collision table is
-    /// consulted first (suffix-spelled names are unique by construction);
+    /// toolSchemas. On deterministic-name providers the exact collision table
+    /// is consulted first (suffix-spelled names are unique by construction);
     /// then the shared spelling rule folds dots/case. Unknown or ambiguous
     /// spellings pass through unchanged so the runtime's not-in-catalog
     /// denial stays honest.
     public static func canonicalName(_ wireName: String, request: ProviderStreamRequest) -> String {
         guard usesWireSafeNames(request.provider) else { return wireName }
-        if requiresLetterInitialNames(request.provider) {
+        if requiresDeterministicNames(request.provider) {
             let table = wireTable(for: request)
             if let canonical = table.first(where: { $0.value == wireName })?.key {
                 return canonical

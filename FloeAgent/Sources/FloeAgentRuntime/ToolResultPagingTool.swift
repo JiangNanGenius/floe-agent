@@ -1,12 +1,13 @@
 // FloeAgentRuntime — bounded, read-only paging over captured tool results.
 //
-// Provider-context compaction is not the same thing as execution-capture
-// truncation: compaction replaces old messages with a summary, while a tool
-// may itself have reported that its captured output was truncated. This tool
-// pages through the bytes the tool layer actually captured (post-redaction),
-// says which of the two situations applies, and never invents content when
-// nothing was retained. It is task-scoped: the store resolves ownership from
-// the runtime's trusted conversation, never from an argument.
+// This tool reports only facts it can observe: the retained capture, its
+// actual execution/retention truncation flags, durability and the exact byte
+// range delivered. It cannot observe provider-internal context compaction, so
+// it never asserts that compaction happened or that an unseen model-context
+// copy is an excerpt. A tool may itself have reported truncating its output;
+// that is a different, explicit capture fact. Pages never invent content when
+// nothing was retained. The tool is task-scoped: the store resolves ownership
+// from the runtime's trusted conversation, never from an argument.
 
 import Foundation
 import FloeCore
@@ -43,7 +44,7 @@ public struct ToolResultPagingTool: AgentTool {
 
     public static let name = "tools.readResult"
     public static let toolDescription =
-        "Read a bounded range of a tool result captured for this task, or search all retained results. Use it after context compaction hides part of an earlier output, or to page through a result the tool marked as truncated. Every result has a stable ref (also in the index); `ref` reads exactly that occurrence, while a bare callID resolves the current run first and then the same task's earlier run (useful after resume or from a delegated child). Omit both to list retained results for the whole task. `query` performs a literal search and returns refs plus match offsets. Reads never re-run the tool and never fabricate output for an evicted or unretained result. A page is returned byte-complete with nextOffset/endOffset so the caller can continue; paging pages are never summarized again."
+        "Read a bounded range of a tool result captured for this task, or search all retained results. Use it after context compaction hides part of an earlier output, or to page through a result the tool marked as truncated. Every result has a stable ref (also in the index); `ref` reads exactly that occurrence, while a bare callID resolves the current run first and then the same task's earlier run (useful after resume or from a delegated child). Omit both to list retained results for the whole task. `query` performs a literal search and returns refs plus match offsets. Reads never re-run the tool and never fabricate output for an evicted or unretained result. A page reports the retained capture, the exact UTF-8 byte range actually delivered and nextOffset/endOffset; a mid-character offset is rounded back to that character's leading byte. Paging pages are never summarized again. This tool cannot observe provider-internal compaction, so it makes no claim about what other context copies contain."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "ref":{"type":"string","description":"Stable capture ref (tr_...) from an earlier index page or result note."},
@@ -267,7 +268,15 @@ public struct ToolResultPagingTool: AgentTool {
                 ? "\nretentionNote=this store retained only the leading \(page.totalBytes) bytes of the captured output."
                 : ""
             let persistenceNote = Self.persistenceNote(page.capture.durability)
-            let contextNote = "\ncontextNote=any copy already in model context may be a compacted excerpt (provider context compaction); this page is the retained capture."
+            // Only report what this read actually observed. An earlier copy
+            // in the conversation may or may not have been excerpted, and
+            // provider-internal compaction is not observable here.
+            let requestedOffsetNote = page.offset != offset
+                ? "\noffsetNote=requested offset \(offset) is inside a UTF-8 character; this page starts at the character boundary \(page.offset) so no character is split."
+                : ""
+            let windowNote = page.text.utf8.count > maxBytes
+                ? "\nwindowNote=this page includes one complete UTF-8 character crossing the requested \(maxBytes)-byte window; no bytes were dropped."
+                : ""
             let displayCallID = Self.displayMetadata(
                 page.capture.callID,
                 characters: Self.displayCallIDCharacters,
@@ -284,7 +293,8 @@ public struct ToolResultPagingTool: AgentTool {
             header += " capture=\(Self.captureState(page.capture.executionReportedTruncation, page.capture.retentionTruncated))"
             header += " provenance=\(provenance) persistence=\(Self.persistenceState(page.capture.durability))"
             return Self.output(
-                header + evictionNote + truncatedNote + retentionNote + persistenceNote + contextNote
+                header + evictionNote + truncatedNote + retentionNote + persistenceNote
+                    + requestedOffsetNote + windowNote
                     + "\n--- output ---\n" + page.text,
                 exitStatus: 0
             )

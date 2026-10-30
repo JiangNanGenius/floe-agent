@@ -24,7 +24,7 @@ struct ToolDiscoveryHardeningTests {
         )
     }
 
-    @Test("Schema budget eviction is announced instead of silently dropping tools")
+    @Test("Schema budget defers complete definitions under a genuinely insufficient request budget")
     func schemaEvictionIsAnnounced() async throws {
         let adapter = MockAdapter()
         let executor = MockExecutor()
@@ -51,8 +51,19 @@ struct ToolDiscoveryHardeningTests {
             [.completed(.init(stopReason: .endTurn))]
         ]
         let provider = TestFixtures.localhostProvider()
+        // The prior fixture used the 128k default, where both 20-tool groups
+        // fit; Build306 correctly offers all of them instead of inventing a
+        // fixed 23 KB eviction. Force a real insufficient window so this test
+        // still exercises honest deferral, not a stale budget constant.
+        let smallWindowModel = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "small-window-schema-test",
+            displayName: "Small Window",
+            limits: .init(contextTokens: 16_000, maxOutputTokens: 1_024),
+            capabilities: [.text, .tools]
+        )
         let runtime = FloeAgentRuntime(
-            configuration: .init(provider: provider, model: TestFixtures.testModel(providerID: provider.id)),
+            configuration: .init(provider: provider, model: smallWindowModel),
             adapter: adapter,
             policy: HumanApprovalPolicy(),
             executor: executor
@@ -61,13 +72,28 @@ struct ToolDiscoveryHardeningTests {
         try await runtime.start(goal: "hello there")
 
         let third = try #require(adapter.requests.dropFirst(2).first)
-        #expect(third.messages.contains {
+        let deferralNotice = try #require(third.messages.first {
             $0.role == "system"
-                && $0.content.contains("Schema budget unloaded")
-                && $0.content.contains("alpha.")
+                && $0.content.contains("were deferred so every offered schema stays complete")
         })
-        // The retained group stays visible as schemas.
-        #expect(third.toolSchemas.contains { $0.name.hasPrefix("beta.") })
+        #expect(deferralNotice.content.contains("alpha.t19"))
+        #expect(deferralNotice.content.contains("remain installed and callable"))
+        // The most recently loaded group stays visible as complete schemas;
+        // the earlier group is deferred, not silently sliced or dropped. A
+        // small remainder of alpha may fit after all beta definitions.
+        let offeredBeta = third.toolSchemas.filter { $0.name.hasPrefix("beta.") }
+        let offeredAlpha = third.toolSchemas.filter { $0.name.hasPrefix("alpha.") }
+        #expect(!offeredBeta.isEmpty)
+        #expect(offeredAlpha.count < 19, "alpha was not fully retained: the window is not actually insufficient")
+        #expect(offeredBeta.count + offeredAlpha.count < 38)
+        #expect((offeredBeta + offeredAlpha).allSatisfy { $0.parametersJSON == fatSchema })
+        // Every offered definition is still parseable JSON, never a cut
+        // schema that happens to end at the budget.
+        for schema in third.toolSchemas {
+            #expect((try? JSONSerialization.jsonObject(
+                with: Data(schema.parametersJSON.utf8)
+            )) != nil, "\(schema.name) has a cut schema")
+        }
     }
 
     @Test("Repeated identical catalog enumerations are warned then stopped across epochs")

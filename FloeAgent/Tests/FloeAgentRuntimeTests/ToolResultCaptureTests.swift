@@ -110,18 +110,35 @@ struct ToolResultCaptureTests {
         #expect(index.summary.contains("tool=mcp."))
     }
 
-    @Test("Offsets inside a UTF-8 scalar never return a stuck continuation")
-    func midScalarOffsetIsRejected() async {
+    @Test("Offsets inside a UTF-8 scalar round back to that character, never a stuck continuation")
+    func midScalarOffsetReturnsWholeCharacter() async {
         let store = ToolResultCaptureStore(durableRoot: nil)
         let task = UUID()
         let run = UUID()
         await store.capture(conversationID: task, runID: run, callID: "unicode",
                             toolName: "web.fetch", status: "ok", text: "中文", temporary: false)
-        guard case .outOfRange = await store.page(conversationID: task, runID: run,
+        // The old gate rejected this valid byte position as out-of-range; a
+        // continuation-byte start now rounds back to the character's lead byte
+        // and reports the effective range.
+        guard case .page(let first) = await store.page(conversationID: task, runID: run,
             callID: "unicode", offset: 1, maxBytes: 4) else {
-            Issue.record("an invalid scalar boundary must not yield a stuck page")
+            Issue.record("a valid byte offset inside a character must yield a page")
             return
         }
+        #expect(first.offset == 0)
+        #expect(first.text == "中")
+        #expect(first.endOffset == 3)
+        #expect(first.nextOffset == 3)
+        #expect(first.totalBytes == 6)
+        guard case .page(let second) = await store.page(conversationID: task, runID: run,
+            callID: "unicode", offset: first.nextOffset ?? 3, maxBytes: 4) else {
+            Issue.record("the page must advance to the trailing character")
+            return
+        }
+        #expect(second.offset == 3)
+        #expect(second.text == "文")
+        #expect(second.nextOffset == nil)
+        #expect(first.text + second.text == "中文")
     }
 
     @Test("retention caps are explicit, and eviction is reported")
@@ -264,7 +281,7 @@ struct ToolResultCaptureTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(task.uuidString).path))
     }
 
-    @Test("execution truncation and retention/compaction are reported distinctly")
+    @Test("execution truncation is reported without an unobservable compaction claim")
     func truncationProvenanceIsExplicit() async throws {
         let store = ToolResultCaptureStore(durableRoot: nil)
         let task = UUID()
@@ -283,7 +300,10 @@ struct ToolResultCaptureTests {
         let output = try await tool.execute(args, context: context)
         #expect(output.summary.contains("capture=executionOutputTruncated"))
         #expect(output.summary.contains("captureNote="))
-        #expect(output.summary.contains("contextNote="))
+        // The tool reports the observed execution-capture fact; it cannot
+        // observe provider-internal compaction and must not infer it.
+        #expect(!output.summary.contains("contextNote="))
+        #expect(!output.summary.contains("provider context compaction"))
         #expect(output.summary.contains("partial"))
         #expect(!output.summary.contains("retentionNote="))
         #expect(output.summary.contains("persistence=memory-only-no-durable-root"))

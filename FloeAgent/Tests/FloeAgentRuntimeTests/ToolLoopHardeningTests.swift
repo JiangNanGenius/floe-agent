@@ -129,7 +129,7 @@ private final class RegisteringAdapter: ProviderAdapter, @unchecked Sendable {
 @Suite("FloeAgentRuntime.ToolLoopHardening")
 struct ToolLoopHardeningTests {
 
-    @Test("A successful skill read activates exact executable tools on the next request")
+    @Test("A successful skill read activates exact tools and keeps the complete result re-readable")
     func readActivatesTools() async throws {
         let adapter = MockAdapter()
         adapter.script = [
@@ -138,15 +138,35 @@ struct ToolLoopHardeningTests {
         ]
         let registry = ToolRunnerRegistry()
         let read = ToolCatalog.Descriptor(name: "skill.read", toolDescription: "Read guide", parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: false)
+        // Large enough to exercise the old 2 KiB compaction path, but well
+        // inside the 128k test window: Build306 must deliver the complete
+        // result while it fits, not compact it unconditionally.
+        let payload = [["id": "guide",
+                        "markdown": String(repeating: "instructions ", count: 600),
+                        "requiredToolNames": ["document.pdf.inspect", "invented.tool"]]]
+        let payloadData = try JSONSerialization.data(withJSONObject: payload)
+        let payloadText = String(decoding: payloadData, as: UTF8.self)
         registry.register(AnyAgentTool(descriptor: read) { _, _ in
-            let json = try JSONSerialization.data(withJSONObject: [["id": "guide", "markdown": String(repeating: "instructions ", count: 600), "requiredToolNames": ["document.pdf.inspect", "invented.tool"]]])
-            return .init(summary: String(decoding: json, as: UTF8.self), fullOutputSHA256: "", maximumSummaryCharacters: 262_144)
+            .init(summary: payloadText, fullOutputSHA256: "", maximumSummaryCharacters: 262_144)
         })
         let inspect = ToolCatalog.Descriptor(name: "document.pdf.inspect", toolDescription: "Inspect PDF", parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: false)
         registry.register(AnyAgentTool(descriptor: inspect) { _, _ in .init(summary: "ok", fullOutputSHA256: "") })
         let provider = TestFixtures.localhostProvider()
-        let runtime = FloeAgentRuntime(configuration: .init(provider: provider, model: TestFixtures.testModel(providerID: provider.id)),
-            adapter: adapter, policy: HumanApprovalPolicy(), executor: CatalogToolExecutor(runners: registry))
+        let taskID = UUID()
+        let captureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-toolloop-capture-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: captureRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: captureRoot) }
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                conversationID: taskID,
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                toolResultCaptureRoot: captureRoot
+            ),
+            adapter: adapter, policy: HumanApprovalPolicy(),
+            executor: CatalogToolExecutor(runners: registry)
+        )
         try await runtime.start(goal: "Read the guide")
         let first = try #require(adapter.requests.first)
         let second = try #require(adapter.requests.dropFirst().first)
@@ -154,9 +174,30 @@ struct ToolLoopHardeningTests {
         #expect(second.toolSchemas.contains { $0.name == "document.pdf.inspect" })
         #expect(!second.toolSchemas.contains { $0.name == "invented.tool" })
         let visibleRead = try #require(second.toolResults.first?.output)
-        #expect(visibleRead.contains("[middle of tool output compacted]"))
-        #expect(visibleRead.contains("[tool output compacted; originalBytes="))
+        // Fits this window: the complete result reaches the provider and no
+        // stale middle/tail compaction marker is added.
+        #expect(visibleRead.contains(payloadText))
+        #expect(!visibleRead.contains("[middle of tool output compacted]"))
+        #expect(!visibleRead.contains("[tool output compacted; originalBytes="))
         #expect(visibleRead.contains("requiredToolNames"))
+
+        // The same post-redaction result is retained and byte-readable, so a
+        // later turn can recover it rather than repeating the skill read.
+        let store = ToolResultCaptureStore.shared(durableRoot: captureRoot)
+        guard case .page(let page) = await store.page(
+            conversationID: taskID,
+            runID: runtime.runID,
+            callID: "read_guide",
+            offset: 0,
+            maxBytes: 32_000
+        ) else {
+            Issue.record("the skill.read result must be retained for paging")
+            return
+        }
+        #expect(page.text.contains("requiredToolNames"))
+        #expect(page.text.contains("instructions"))
+        #expect(page.totalBytes >= payloadText.utf8.count)
+        #expect(page.nextOffset == nil)
     }
 
     @Test("provider tool descriptions include explicit prerequisite resolvers")

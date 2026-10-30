@@ -609,7 +609,7 @@ struct RequestContractTests {
         #expect(names == ["browser_clickPoint", "image_inspect"])
     }
 
-    @Test("Volcengine Ark uses native Chat Completions tool contracts")
+    @Test("Volcengine Ark uses ASCII-only wire names while canonical names round-trip")
     func arkNativeToolContract() throws {
         let providerID = UUID()
         let provider = ProviderProfile(
@@ -634,7 +634,14 @@ struct RequestContractTests {
 
         let object = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))
         let tools = try #require(object["tools"] as? [[String: Any]])
-        #expect((tools.first?["function"] as? [String: Any])?["name"] as? String == "workspace.listDirectory")
+        let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
+        // Ark's function-name contract is ASCII-only; the canonical dotted
+        // runtime name must never cross this wire and must round-trip exactly.
+        #expect(names == ["workspace_listDirectory"])
+        #expect(!names.contains { $0.contains(".") })
+        #expect(CompatToolNames.canonicalName("workspace_listDirectory", request: request)
+            == "workspace.listDirectory")
+        #expect(request.toolSchemas.map(\.name) == ["workspace.listDirectory"])
         #expect(object["model"] as? String == "ep-test")
     }
 
