@@ -305,11 +305,15 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
             return
         }
         snapshots[conversationID, default: Snapshot()].failure = nil
+        let acceptedLosses = checked.preview.optionalCapabilityLosses
+        let acceptedLossIDs = checked.preview.optionalCapabilityLossIDs
         let token = CancellationToken(); cancellations[conversationID] = token
         jobs[conversationID] = Task { [weak self] in
             guard let self else { return }
             defer { self.jobs[conversationID] = nil; self.cancellations[conversationID] = nil; self.objectWillChange.send() }
-            await self.performMigration(conversationID: conversationID, choice: choice, acceptedLosses: checked.preview.optionalCapabilityLosses, cancellation: token)
+            await self.performMigration(conversationID: conversationID, choice: choice,
+                acceptedLosses: acceptedLosses, acceptedLossIDs: acceptedLossIDs,
+                cancellation: token)
         }
     }
     /// Reconnection after the atomic commit never re-enters preparation.
@@ -322,7 +326,9 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
             do {
                 guard let value = try await self.store.activeMigration(conversationID: conversationID), value.phase == .committed else { return }
                 await self.performMigration(conversationID: conversationID,
-                    choice: Choice(id: "reconnect", name: "", kind: .linux), acceptedLosses: value.acceptedCapabilityLosses ?? [], cancellation: token)
+                    choice: Choice(id: "reconnect", name: "", kind: .linux),
+                    acceptedLosses: value.acceptedCapabilityLosses ?? [],
+                    acceptedLossIDs: [], cancellation: token)
             } catch { self.snapshots[conversationID, default: Snapshot()].failure = error.localizedDescription }
         }
     }
@@ -341,14 +347,17 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                         guard let self else { return }
                         defer { self.jobs[conversationID] = nil; self.cancellations[conversationID] = nil; self.objectWillChange.send() }
                         let choice = Choice(id: "cancel", name: "", kind: .linux)
-                        await self.performMigration(conversationID: conversationID, choice: choice, acceptedLosses: [], cancellation: token)
+                        await self.performMigration(conversationID: conversationID, choice: choice,
+                            acceptedLosses: [], acceptedLossIDs: [], cancellation: token)
                     }
                 }
             } catch { self.snapshots[conversationID, default: Snapshot()].failure = error.localizedDescription }
         }
     }
 
-    private func performMigration(conversationID: UUID, choice: Choice, acceptedLosses: [String], cancellation: CancellationToken) async {
+    private func performMigration(conversationID: UUID, choice: Choice,
+                                  acceptedLosses: [String], acceptedLossIDs: Set<String>,
+                                  cancellation: CancellationToken) async {
         var fencedSource: String?
         var migration: TaskEnvironmentMigration?
         do {
@@ -403,7 +412,8 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                     throw FloeError.notFound(copy("目标运行位置", "Destination environment"))
                 }
                 let preview = await environment.skillsCenter.migrationPreview(target: runtimeTarget, requiredSkillIDs: required)
-                guard preview.canProceed, Set(preview.optionalCapabilityLosses) == Set(acceptedLosses) else {
+                guard preview.canProceed,
+                      preview.acceptsCapabilityLosses(acceptedLosses, acceptedIDs: acceptedLossIDs) else {
                     throw FloeError.validationFailed(copy("可用技能或依赖发生变化，请重新检查目标位置。", "Available skills or dependencies changed. Check the destination again."))
                 }
                 let skillPins = Dictionary(uniqueKeysWithValues: try await environment.skillStore.all().filter { $0.status == "enabled" }.map { ($0.id, $0.rewrittenDigest) })
@@ -413,7 +423,8 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                     guard let toolEnvironment = targetLease.context.environment else { throw FloeError.notFound("Target environment") }
                     let staging = await environment.skillsCenter.stageMigrationSkillResources(migrationID: value.id,
                         target: runtimeTarget, toolEnvironment: toolEnvironment,
-                        resourceContext: SkillResourceContext(environmentID: value.target.environmentID, workspaceRootURL: lease.url, cancellation: cancellation))
+                        resourceContext: SkillResourceContext(environmentID: value.target.environmentID, workspaceRootURL: lease.url, cancellation: cancellation),
+                        acceptedLossIDs: acceptedLossIDs, requiredSkillIDs: required)
                     guard staging.failureReason == nil, staging.unavailableCount == 0, staging.skillDigests == skillPins else {
                         throw FloeError.validationFailed(copy("技能文件尚未准备好，请重试。", "Skill files are not ready. Try again."))
                     }

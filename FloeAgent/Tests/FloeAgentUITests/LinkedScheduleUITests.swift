@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 @MainActor
 final class LinkedScheduleUITests: XCTestCase {
@@ -17,10 +18,31 @@ final class LinkedScheduleUITests: XCTestCase {
             XCTAssertTrue(app.buttons["globalSearch.open"].waitForExistence(timeout: 30))
             app.terminate()
         }
+        // The reused simulator preserves many workspace groups above the
+        // Chats section, so chat rows stay lazy until realized. Scroll only
+        // the native sidebar list and tap the synthetic row's verified frame.
+        let sidebar = app.descendants(matching: .any)
+            .matching(identifier: "sidebar.list").firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 30))
         let row = app.descendants(matching: .any)
             .matching(identifier: "sidebar.conversation.A1D4A0F2-6F2E-4E7A-9C31-0B7C51E6A003").firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 30))
-        row.tap()
+        func rowIsVisible() -> Bool {
+            guard row.exists else { return false }
+            let frame = row.frame
+            let point = CGPoint(x: frame.midX, y: frame.midY)
+            return frame.width > 0 && frame.height > 0
+                && point.x.isFinite && point.y.isFinite
+                && sidebar.frame.contains(point) && app.windows.firstMatch.frame.contains(point)
+        }
+        for _ in 0..<20 where !rowIsVisible() { sidebar.swipeUp() }
+        for _ in 0..<20 where !rowIsVisible() { sidebar.swipeDown() }
+        XCTAssertTrue(rowIsVisible(),
+                      "the synthetic linked-schedule conversation must be reachable in the sidebar")
+        let screen = app.windows.firstMatch.frame
+        app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: row.frame.midX - screen.minX,
+                                 dy: row.frame.midY - screen.minY))
+            .tap()
         let capsule = app.buttons["thread.scheduleCapsule"]
         XCTAssertTrue(capsule.waitForExistence(timeout: 15))
         let attachment = XCTAttachment(screenshot: app.screenshot())

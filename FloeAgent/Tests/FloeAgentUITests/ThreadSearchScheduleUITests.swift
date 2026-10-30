@@ -2,9 +2,11 @@
 //
 // SYNTHETIC ONLY: the find test launches the existing DEBUG-only
 // TemporaryChatUITestFixture (a fixed saved conversation with two synthetic
-// messages, no paid model request). The schedule test creates a durable plan
-// through the real Home sheet and exercises skip/cancel, which never launch a
-// model task. No user data is read or written and no physical device is used.
+// messages, no paid model request). The schedule test navigates the real
+// sidebar Task Center, creates one fixed synthetic plan through the existing
+// schedule sheet, exercises skip/cancel (which never launch a model task), and
+// removes only that synthetic plan again. No user data is read or written and
+// no physical device is used.
 //
 // These tests are authored for the primary integration run. They depend on the
 // app's `-ui-testing` launch path and the existing fixture flag; they create no
@@ -20,7 +22,12 @@ final class ThreadSearchScheduleUITests: XCTestCase {
     private func launch(arguments: [String]) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments += ["-ui-testing"] + arguments
+        // Match the other native UI lanes: an explicit language, no global
+        // preference reset, and onboarding skipped only for this launch.
+        app.launchArguments += [
+            "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+            "-ui-testing", "--ui-test-skip-onboarding"
+        ] + arguments
         if UIDevice.current.userInterfaceIdiom == .pad {
             app.launchArguments.append("-ui-testing-ipad")
         }
@@ -42,19 +49,101 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         return nil
     }
 
-    private func openSavedSyntheticChat(_ app: XCUIApplication) {
-        let row = app.buttons["sidebar.conversation.\(savedConversationID)"]
-        if !row.waitForExistence(timeout: 10) {
-            // The sidebar may group rows as static text on some layouts.
-            let text = app.staticTexts["临时会话合成任务"]
-            XCTAssertTrue(text.waitForExistence(timeout: 10), "seeded conversation is missing")
-            text.tap()
-        } else {
-            row.tap()
+    /// The reused simulator preserves many workspace groups above the Chats
+    /// section. Chat rows are lazy until realized, so scroll only the native
+    /// sidebar list and tap the fixed synthetic row's verified frame.
+    private func revealSidebarRow(_ app: XCUIApplication,
+                                  identifier: String) -> Bool {
+        let sidebar = app.descendants(matching: .any)
+            .matching(identifier: "sidebar.list").firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 15), "sidebar list is missing")
+        let row = app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+        func isVisible() -> Bool {
+            guard row.exists else { return false }
+            let frame = row.frame
+            let point = CGPoint(x: frame.midX, y: frame.midY)
+            return frame.width > 0 && frame.height > 0
+                && point.x.isFinite && point.y.isFinite
+                && sidebar.frame.contains(point) && app.windows.firstMatch.frame.contains(point)
         }
+        for _ in 0..<20 where !isVisible() { sidebar.swipeUp() }
+        for _ in 0..<20 where !isVisible() { sidebar.swipeDown() }
+        guard isVisible() else { return false }
+        let screen = app.windows.firstMatch.frame
+        app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: row.frame.midX - screen.minX,
+                                 dy: row.frame.midY - screen.minY))
+            .tap()
+        return true
+    }
+
+    private func openSavedSyntheticChat(_ app: XCUIApplication) {
         XCTAssertTrue(
-            app.staticTexts["临时会话合成任务"].waitForExistence(timeout: 10),
+            revealSidebarRow(app, identifier: "sidebar.conversation.\(savedConversationID)"),
+            "seeded conversation is missing")
+        XCTAssertTrue(
+            app.navigationBars["临时会话合成任务"].waitForExistence(timeout: 10),
             "thread did not open")
+    }
+
+    /// The schedule add entry lives on the REAL Task Center overview, not on
+    /// the former launchpad duplicate. Navigate through the existing sidebar
+    /// entry and never restore another add button.
+    private func openTaskCenter(_ app: XCUIApplication) {
+        let sidebar = app.descendants(matching: .any)
+            .matching(identifier: "sidebar.list").firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 15), "sidebar list is missing")
+        let entry = app.descendants(matching: .any)
+            .matching(identifier: "sidebar.task_center").firstMatch
+        for _ in 0..<10 where !(entry.exists && entry.isHittable) { sidebar.swipeDown() }
+        XCTAssertTrue(entry.waitForExistence(timeout: 10), "Task Center entry is missing")
+        if entry.isHittable { entry.tap() } else {
+            let screen = app.windows.firstMatch.frame
+            app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: entry.frame.midX - screen.minX,
+                                     dy: entry.frame.midY - screen.minY))
+                .tap()
+        }
+        XCTAssertTrue(app.buttons["home.schedule.add"].waitForExistence(timeout: 15),
+                      "Task Center did not open")
+    }
+
+    /// Delete ONLY this test's synthetic plans (fixed title and the schedule
+    /// row identity). User rows are never pressed or removed.
+    @discardableResult
+    private func deleteSyntheticPlans(_ app: XCUIApplication) -> Bool {
+        if app.buttons["schedule.detail.menu"].waitForExistence(timeout: 2) {
+            let cancel = anyLabel(app, ["取消", "Cancel"])
+            cancel?.tap()
+            let gone = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "exists == false"),
+                object: app.buttons["schedule.detail.menu"])
+            _ = XCTWaiter.wait(for: [gone], timeout: 5)
+        }
+        if !app.buttons["home.schedule.add"].waitForExistence(timeout: 2) {
+            openTaskCenter(app)
+        }
+        var removed = false
+        for _ in 0..<4 {
+            let predicate = NSPredicate(
+                format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
+                "home.schedule.row.", "UI 合成计划")
+            let rows = app.buttons.matching(predicate)
+            for _ in 0..<12 where rows.count == 0 { app.swipeUp() }
+            if rows.count == 0 {
+                for _ in 0..<12 where rows.count == 0 { app.swipeDown() }
+            }
+            guard rows.count > 0 else { break }
+            let row = rows.element(boundBy: 0)
+            row.press(forDuration: 1.2)
+            guard let delete = anyLabel(app, ["删除安排", "Delete schedule"]) else { break }
+            delete.tap()
+            removed = true
+            let gone = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "exists == false"), object: row)
+            _ = XCTWaiter.wait(for: [gone], timeout: 10)
+        }
+        return removed
     }
 
     func testInChatFindCountsNavigatesAndPreservesDraft() {
@@ -104,6 +193,9 @@ final class ThreadSearchScheduleUITests: XCTestCase {
 
     func testScheduleDetailSkipAndCancelUseDurablePlan() {
         let app = launch(arguments: [])
+        var createdPlan = false
+        defer { if createdPlan { _ = deleteSyntheticPlans(app) } }
+        openTaskCenter(app)
         let add = app.buttons["home.schedule.add"]
         XCTAssertTrue(add.waitForExistence(timeout: 10))
         add.tap()
@@ -125,8 +217,10 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         let save = app.buttons["home.schedule.save"]
         XCTAssertTrue(save.waitForExistence(timeout: 5))
         save.tap()
+        createdPlan = true
 
         let row = app.staticTexts["UI 合成计划"].firstMatch
+        for _ in 0..<12 where !row.exists { app.swipeUp() }
         XCTAssertTrue(row.waitForExistence(timeout: 10), "created plan is not listed")
         row.tap()
 
@@ -153,6 +247,13 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         let paused = app.staticTexts["schedule.detail.state"].firstMatch
         XCTAssertTrue(paused.waitForExistence(timeout: 10))
         XCTAssertTrue(paused.label.contains("已暂停") || paused.label.contains("Paused"))
+
+        // Owned cleanup: remove ONLY this fixed synthetic plan. A failed
+        // assertion still reaches this point through defer.
+        XCTAssertTrue(deleteSyntheticPlans(app),
+                      "the synthetic plan must be removed from the real store")
+        XCTAssertFalse(app.staticTexts["UI 合成计划"].exists,
+                       "the synthetic plan must not remain listed")
     }
 
     func testUnlinkedChatHasNoSchedulePill() {

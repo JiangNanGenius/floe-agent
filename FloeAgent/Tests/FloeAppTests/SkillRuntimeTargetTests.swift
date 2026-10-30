@@ -562,6 +562,167 @@ struct SkillRuntimeTargetTests {
         #expect(!mac.canProceed)
     }
 
+    @Test @MainActor func migrationPreviewTreatsUnvalidatedUnrequiredSkillAsOptionalLoss() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let root = try makeMigrationTemporaryDirectory("invalid-preview-root")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let center = SkillsCenter(environment: environment, installationRoot: root)
+
+        let fixture = try PackageFixture.make(
+            id: "migration-invalid",
+            capabilities: ["execution.remote"], tools: ["exec.shell"],
+            scriptRuntime: .remote,
+            runtime: .init(os: ["linux"], architectures: ["arm64"]),
+            scripts: ["scripts/run.sh": "echo ok\n"]
+        )
+        defer { fixture.clean() }
+        let row = try await installFixture(fixture, in: root, environment: environment)
+        // Simulate an installed pinned package whose bytes no longer match the
+        // persisted digest, as observed for the dormant floe-office row.
+        let skillURL = root.appendingPathComponent(row.id).appendingPathComponent("SKILL.md")
+        let existing = try String(contentsOf: skillURL, encoding: .utf8)
+        try Data((existing + "\nStale installed copy.\n").utf8)
+            .write(to: skillURL, options: .atomic)
+
+        let target = SkillRuntimeTarget.linuxGuest(
+            environmentID: "linux", architecture: "arm64", distribution: "debian"
+        )
+        // No unfinished run actually requires this installed Skill: it must
+        // not block the whole move.
+        let preview = await center.migrationPreview(target: target, requiredSkillIDs: [])
+        #expect(preview.canProceed)
+        #expect(preview.blockingReasons.isEmpty)
+        #expect(preview.blockingIssues.isEmpty)
+        #expect(preview.requiresExplicitAcceptance)
+        #expect(preview.limitations.contains {
+            $0.skillID == row.id && $0.kind == .unvalidatablePackage
+        })
+        let loss = try #require(preview.optionalLosses.first { $0.skillID == row.id })
+        #expect(loss.kind == .unvalidatableSkill)
+        #expect(loss.name == row.name)
+        #expect(loss.diagnostic == SkillMigrationStagingReason.invalidPinnedPackage)
+        #expect(preview.optionalCapabilityLossIDs == [row.id])
+        #expect(preview.acceptsCapabilityLosses(
+            preview.optionalCapabilityLosses, acceptedIDs: preview.optionalCapabilityLossIDs))
+        #expect(!preview.acceptsCapabilityLosses(
+            preview.optionalCapabilityLosses, acceptedIDs: []),
+            "an accepted preview must not match an empty accepted-id set")
+        #expect(!preview.acceptsCapabilityLosses([], acceptedIDs: preview.optionalCapabilityLossIDs),
+            "changing only one half of the acceptance identity must fail")
+
+        // An actually required Skill with the same invalid bytes still blocks.
+        let required = await center.migrationPreview(
+            target: target, requiredSkillIDs: [row.id]
+        )
+        #expect(!required.canProceed)
+        #expect(required.optionalLosses.isEmpty)
+        #expect(required.blockingIssues.contains {
+            $0.kind == .unvalidatableRequiredSkill && $0.skillID == row.id
+        })
+        #expect(required.blockingReasons.contains {
+            $0.contains(row.id) && $0.contains(SkillMigrationStagingReason.invalidPinnedPackage)
+        })
+    }
+
+    @Test @MainActor func migrationStagingHonorsAcceptedLossIDsForUnvalidatedSkill() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let root = try makeMigrationTemporaryDirectory("invalid-staging-root")
+        let workspace = try makeMigrationTemporaryDirectory("invalid-staging-workspace")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: workspace)
+        }
+        let stager = SkillWorkspaceResourceStager(
+            externalTarget: { _, workspaceRoot in
+                SkillExternalStageTarget(
+                    workspaceRoot: workspaceRoot,
+                    executionRoot: "/workspace",
+                    publish: { _, _, _ in }
+                )
+            },
+            pathMappingProvider: { _ in nil }
+        )
+        let center = SkillsCenter(
+            environment: environment, installationRoot: root, resourceStager: stager
+        )
+        let text = try await center.createSkill(.init(
+            name: "Invalid Loss Text", description: "Text-only installed guide",
+            instructions: "Read this text guide only."
+        ))
+        let fixture = try PackageFixture.make(
+            id: "migration-invalid-stage",
+            capabilities: ["execution.remote"], tools: ["exec.shell"],
+            scriptRuntime: .remote,
+            runtime: .init(os: ["linux"], architectures: ["arm64"]),
+            scripts: ["scripts/run.sh": "echo ok\n"]
+        )
+        defer { fixture.clean() }
+        let row = try await installFixture(fixture, in: root, environment: environment)
+        let skillURL = root.appendingPathComponent(row.id).appendingPathComponent("SKILL.md")
+        let existing = try String(contentsOf: skillURL, encoding: .utf8)
+        try Data((existing + "\nStale installed copy.\n").utf8)
+            .write(to: skillURL, options: .atomic)
+
+        let toolEnvironment = ToolEnvironment(
+            id: "env-migrate", writableLayerURL: workspace,
+            layerURLs: [], variables: [:]
+        )
+        let context = SkillResourceContext(
+            environmentID: "env-migrate", workspaceRootURL: workspace,
+            cancellation: CancellationToken()
+        )
+        let target = SkillRuntimeTarget.linuxGuest(
+            environmentID: "env-migrate", architecture: "arm64", distribution: "debian"
+        )
+
+        let notAccepted = await center.stageMigrationSkillResources(
+            migrationID: UUID(), target: target,
+            toolEnvironment: toolEnvironment, resourceContext: context
+        )
+        #expect(notAccepted.failureReason == nil)
+        #expect(notAccepted.entries.first { $0.skillID == text.id }?.state == .staged)
+        let refused = try #require(notAccepted.entries.first { $0.skillID == row.id })
+        #expect(refused.state == .unavailable)
+        #expect(refused.reason == SkillMigrationStagingReason.invalidPinnedPackage)
+        #expect(notAccepted.unavailableCount == 1)
+
+        let accepted = await center.stageMigrationSkillResources(
+            migrationID: UUID(), target: target,
+            toolEnvironment: toolEnvironment, resourceContext: context,
+            acceptedLossIDs: [row.id]
+        )
+        #expect(accepted.failureReason == nil)
+        let skipped = try #require(accepted.entries.first { $0.skillID == row.id })
+        #expect(skipped.state == .skipped,
+                "accepted unverifiable bytes are skipped, never staged or executed")
+        #expect(skipped.reason == SkillMigrationStagingReason.acceptedUnvalidatedPackageLoss)
+        #expect(skipped.guestRoot == nil)
+        #expect(accepted.unavailableCount == 0)
+        #expect(accepted.skillDigests[row.id] == row.rewrittenDigest)
+
+        // A stale/wholly different acceptance does not match this id: the
+        // unverifiable package still blocks instead of being silently skipped.
+        let wrongAcceptance = await center.stageMigrationSkillResources(
+            migrationID: UUID(), target: target,
+            toolEnvironment: toolEnvironment, resourceContext: context,
+            acceptedLossIDs: ["some-other-skill"]
+        )
+        #expect(wrongAcceptance.unavailableCount == 1)
+        #expect(wrongAcceptance.entries.first { $0.skillID == row.id }?.state == .unavailable)
+
+        // Even when a caller supplies the id, a REQUIRED invalid Skill cannot
+        // be silently accepted during staging.
+        let required = await center.stageMigrationSkillResources(
+            migrationID: UUID(), target: target,
+            toolEnvironment: toolEnvironment, resourceContext: context,
+            acceptedLossIDs: [row.id], requiredSkillIDs: [row.id]
+        )
+        #expect(required.unavailableCount == 1)
+        #expect(required.entries.first { $0.skillID == row.id }?.state == .unavailable)
+    }
+
     @Test @MainActor func migrationStagingStagesCompatiblePinsAndReleaseIsOwnershipScoped() async throws {
         let environment = AppEnvironment.preview()
         try await environment.database.migrate()

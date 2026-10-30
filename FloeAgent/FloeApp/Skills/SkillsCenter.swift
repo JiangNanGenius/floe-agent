@@ -3607,18 +3607,76 @@ extension SkillsCenter: SkillDependencyInvocationGating {
 
 // MARK: - Native migration preview and compatible pinned resource staging
 
-/// One enabled installed Skill whose EXTERNAL portion cannot execute on the
-/// requested migration target. App-native/text guidance is never a
-/// capability loss: only the external script/dependency half is reported.
+/// One enabled installed Skill whose external portion cannot execute on the
+/// requested migration target, or whose installed pinned bytes can no longer
+/// be verified. App-native/text guidance on a VERIFIED package is never a
+/// capability loss: only the external script/dependency half is reported. An
+/// unverifiable package is an honest unavailable loss and is never executed.
 struct SkillMigrationSkillLimitation: Sendable, Equatable {
+    enum Kind: String, Sendable, Equatable {
+        /// The installed package verified, but its external half cannot run
+        /// on the requested target.
+        case externalCapability
+        /// The installed pinned package could not be read/validated. No
+        /// readiness is claimed and its bytes must not be executed.
+        case unvalidatablePackage
+    }
+
     let skillID: String
     let name: String
     let version: String
-    /// Model-safe external limitation messages. Never empty.
+    /// Model-safe limitation messages. Never empty.
     let reasons: [String]
     /// True only for an installed, enabled, digest-verified curated package
     /// whose reviewed declaration/authority validates in this build.
     let hasReviewedDependencyDeclaration: Bool
+    let kind: Kind
+}
+
+/// A skill-scoped or target-scoped reason that blocks the migration. The
+/// diagnostic stays suitable for a details view; `kind` lets the UI show the
+/// localized product name and an actionable message instead of a raw id.
+struct SkillMigrationBlockingIssue: Sendable, Equatable, Identifiable {
+    enum Kind: String, Sendable, Equatable {
+        case target
+        case inventory
+        case unvalidatableRequiredSkill
+        case authorization
+        case requiredDependency
+    }
+
+    let kind: Kind
+    let skillID: String?
+    let name: String?
+    let version: String?
+    let diagnostic: String
+
+    var id: String { "\(kind.rawValue):\(skillID ?? ""):\(diagnostic)" }
+}
+
+/// One explicit, user-facing optional loss. Only these losses participate in
+/// the acceptance gate and in staging's accepted-loss decision.
+struct SkillMigrationOptionalLoss: Sendable, Equatable, Identifiable {
+    enum Kind: String, Sendable, Equatable {
+        /// The installed pinned package could not be validated. The record is
+        /// retained, but no readiness is claimed and nothing is executed.
+        case unvalidatableSkill
+        /// The verified package's external half cannot run on this target.
+        case externalCapability
+        /// A reviewed optional dependency cannot be prepared on this target.
+        case optionalDependency
+    }
+
+    let kind: Kind
+    let skillID: String
+    let name: String
+    let version: String
+    /// Raw model-safe diagnostic; details only, never the normal body.
+    let diagnostic: String
+    /// Backward-compatible acceptance identity used by persisted migrations.
+    let legacyDescription: String
+
+    var id: String { "\(kind.rawValue):\(skillID):\(diagnostic)" }
 }
 
 /// One reviewed declared dependency relevant to the migration target. Derived
@@ -3651,32 +3709,62 @@ struct SkillMigrationPreview: Sendable, Equatable {
     let modelManagedSkillIDs: [String]
     /// Non-empty means the primary must not commit the migration.
     let blockingReasons: [String]
+    /// Structured blocking issues for localized UI copy. `blockingReasons`
+    /// remains the stable model-safe identity/diagnostic.
+    let blockingIssues: [SkillMigrationBlockingIssue]
 
-    /// User-facing optional losses. External capability loss plus optional
-    /// dependency gaps; App-native/text guidance never appears here.
-    var optionalCapabilityLosses: [String] {
-        var losses: [String] = []
+    /// User-facing optional losses. External capability loss, an unverifiable
+    /// installed package, plus optional dependency gaps; verified App-native/
+    /// text guidance never appears here.
+    var optionalLosses: [SkillMigrationOptionalLoss] {
+        var losses: [SkillMigrationOptionalLoss] = []
         for limitation in limitations {
-            losses.append(
-                "\(limitation.name) [\(limitation.skillID)]: "
+            losses.append(SkillMigrationOptionalLoss(
+                kind: limitation.kind == .unvalidatablePackage
+                    ? .unvalidatableSkill : .externalCapability,
+                skillID: limitation.skillID,
+                name: limitation.name,
+                version: limitation.version,
+                diagnostic: limitation.reasons.joined(separator: "; "),
+                legacyDescription: "\(limitation.name) [\(limitation.skillID)]: "
                     + limitation.reasons.joined(separator: "; ")
-            )
+            ))
         }
         for dependency in dependencies where !dependency.required && !dependency.targetSupported {
             let pin = dependency.version.map { " \($0)" } ?? ""
             let reason = dependency.reason.map { ": " + $0 } ?? ""
-            losses.append(
-                "\(dependency.skillName) [\(dependency.skillID)]: "
+            losses.append(SkillMigrationOptionalLoss(
+                kind: .optionalDependency,
+                skillID: dependency.skillID,
+                name: dependency.skillName,
+                version: dependency.version ?? "",
+                diagnostic: dependency.reason
+                    ?? "\(dependency.kind) \(dependency.name)\(pin) cannot be prepared on this target",
+                legacyDescription: "\(dependency.skillName) [\(dependency.skillID)]: "
                     + "\(dependency.kind) \(dependency.name)\(pin) cannot be prepared on this target\(reason)"
-            )
+            ))
         }
         return losses
     }
 
+    /// User-facing optional losses as stable strings. Persisted migrations use
+    /// this identity, so keep the historical format for compatibility.
+    var optionalCapabilityLosses: [String] { optionalLosses.map(\.legacyDescription) }
+
+    /// Stable skill ids covered by the optional losses. Staging only skips an
+    /// unverifiable package when the user explicitly accepted that id.
+    var optionalCapabilityLossIDs: Set<String> { Set(optionalLosses.map(\.skillID)) }
+
     /// True only when the UI must obtain explicit user acceptance for an
     /// optional loss. A blocking required gap is never "accepted".
-    var requiresExplicitAcceptance: Bool {
-        !limitations.isEmpty || dependencies.contains { !$0.required && !$0.targetSupported }
+    var requiresExplicitAcceptance: Bool { !optionalLosses.isEmpty }
+
+    /// The commit gate compares BOTH the persisted display identity and the
+    /// exact skill ids. A quietly changed preview therefore never matches an
+    /// old acceptance merely because a display string is unchanged.
+    func acceptsCapabilityLosses(_ acceptedLosses: [String], acceptedIDs: Set<String>) -> Bool {
+        Set(self.optionalCapabilityLosses) == Set(acceptedLosses)
+            && optionalCapabilityLossIDs == acceptedIDs
     }
 
     /// False blocks the migration; required dependency gaps are structural.
@@ -3750,6 +3838,7 @@ enum SkillMigrationStagingReason {
     static let environmentMismatch = "the provided tool environment does not match the migration resource context"
     static let inventoryUnavailable = "the installed Skill inventory could not be read"
     static let invalidPinnedPackage = "the installed pinned package could not be validated"
+    static let acceptedUnvalidatedPackageLoss = "the installed pinned package could not be validated; the accepted loss keeps its record without staging or executing unvalidated bytes"
     static let snapshotConflict = "the migration preparation snapshot root is unavailable or already owned by a non-migration task snapshot; nothing was staged or removed"
     static let pinnedSnapshotStale = "the installed package changed after this migration pinned its snapshot; release and re-stage the migration"
 }
@@ -3795,17 +3884,24 @@ extension SkillsCenter {
         var dependencies: [SkillMigrationDependency] = []
         var modelManaged = Set<String>()
         var blockingReasons: [String] = []
-        func appendBlocking(_ reason: String) {
+        var blockingIssues: [SkillMigrationBlockingIssue] = []
+        func appendBlocking(_ reason: String, _ issue: SkillMigrationBlockingIssue) {
             guard !blockingReasons.contains(reason) else { return }
             blockingReasons.append(reason)
+            blockingIssues.append(issue)
+        }
+        func appendTargetBlocking(_ reason: String) {
+            appendBlocking(reason, SkillMigrationBlockingIssue(
+                kind: .target, skillID: nil, name: nil, version: nil, diagnostic: reason
+            ))
         }
 
         if !target.isResolved {
-            appendBlocking(SkillDependencyReason.targetUnavailable)
+            appendTargetBlocking(SkillDependencyReason.targetUnavailable)
         } else if !target.hasExternalExecution {
-            appendBlocking(SkillDependencyReason.targetUnsupported)
+            appendTargetBlocking(SkillDependencyReason.targetUnsupported)
         } else if !target.isConnected {
-            appendBlocking(SkillDependencyReason.targetDisconnected)
+            appendTargetBlocking(SkillDependencyReason.targetDisconnected)
         }
 
         let requested: Set<String>? = skillIDs.map { Set($0) }
@@ -3813,18 +3909,47 @@ extension SkillsCenter {
         do {
             rows = try await environment.skillStore.all()
         } catch {
-            appendBlocking(SkillMigrationStagingReason.inventoryUnavailable)
+            appendBlocking(SkillMigrationStagingReason.inventoryUnavailable,
+                           SkillMigrationBlockingIssue(
+                               kind: .inventory, skillID: nil, name: nil, version: nil,
+                               diagnostic: SkillMigrationStagingReason.inventoryUnavailable))
             return SkillMigrationPreview(
                 target: target,
                 limitations: [],
                 dependencies: [],
                 modelManagedSkillIDs: [],
-                blockingReasons: blockingReasons
+                blockingReasons: blockingReasons,
+                blockingIssues: blockingIssues
             )
         }
         for row in rows where row.status == "enabled" && (requested?.contains(row.id) ?? true) {
+            // Only a Skill that this task ACTUALLY requires may block because
+            // its installed bytes cannot be validated. A dormant/unused
+            // enabled Skill is an honest optional unavailable loss with its
+            // record retained; it is never staged, executed or claimed ready.
+            // A nil required set keeps the conservative no-task-context
+            // behavior (no silent weakening for other callers).
+            let isRequired = requiredSkillIDs?.contains(row.id) ?? true
             guard let installedSnapshot = try? snapshot(for: row, runID: nil) else {
-                appendBlocking("\(row.id): \(SkillMigrationStagingReason.invalidPinnedPackage)")
+                if isRequired {
+                    let diagnostic = "\(row.id): \(SkillMigrationStagingReason.invalidPinnedPackage)"
+                    appendBlocking(diagnostic, SkillMigrationBlockingIssue(
+                        kind: .unvalidatableRequiredSkill,
+                        skillID: row.id,
+                        name: row.name,
+                        version: row.version,
+                        diagnostic: SkillMigrationStagingReason.invalidPinnedPackage
+                    ))
+                } else {
+                    limitations.append(SkillMigrationSkillLimitation(
+                        skillID: row.id,
+                        name: row.name,
+                        version: row.version,
+                        reasons: [SkillMigrationStagingReason.invalidPinnedPackage],
+                        hasReviewedDependencyDeclaration: false,
+                        kind: .unvalidatablePackage
+                    ))
+                }
                 continue
             }
             let package = installedSnapshot.package
@@ -3845,16 +3970,38 @@ extension SkillsCenter {
             do {
                 grants = try await environment.skillStore.allowedCapabilities(skillID: row.id)
             } catch {
-                if !reasons.isEmpty {
+                if isRequired {
+                    if !reasons.isEmpty {
+                        limitations.append(SkillMigrationSkillLimitation(
+                            skillID: row.id,
+                            name: row.name,
+                            version: package.manifest.version,
+                            reasons: reasons,
+                            hasReviewedDependencyDeclaration: false,
+                            kind: .externalCapability
+                        ))
+                    }
+                    let diagnostic = "\(row.id): \(SkillDependencyReason.authorizationUnavailable)"
+                    appendBlocking(diagnostic, SkillMigrationBlockingIssue(
+                        kind: .authorization,
+                        skillID: row.id,
+                        name: row.name,
+                        version: package.manifest.version,
+                        diagnostic: SkillDependencyReason.authorizationUnavailable
+                    ))
+                } else {
+                    // A dormant/unused Skill whose live grants cannot be
+                    // re-read is an explicit optional loss, not a reason to
+                    // block a migration this task does not depend on.
                     limitations.append(SkillMigrationSkillLimitation(
                         skillID: row.id,
                         name: row.name,
                         version: package.manifest.version,
-                        reasons: reasons,
-                        hasReviewedDependencyDeclaration: false
+                        reasons: reasons + [SkillDependencyReason.authorizationUnavailable],
+                        hasReviewedDependencyDeclaration: false,
+                        kind: .externalCapability
                     ))
                 }
-                appendBlocking("\(row.id): \(SkillDependencyReason.authorizationUnavailable)")
                 continue
             }
             let authority = Self.dependencyAuthority(
@@ -3869,7 +4016,8 @@ extension SkillsCenter {
                     name: row.name,
                     version: package.manifest.version,
                     reasons: reasons,
-                    hasReviewedDependencyDeclaration: declaration != nil
+                    hasReviewedDependencyDeclaration: declaration != nil,
+                    kind: .externalCapability
                 ))
             }
             guard let authority, let declaration else {
@@ -3898,12 +4046,17 @@ extension SkillsCenter {
                     }
                 }).sorted()
                 if !requiredPins.isEmpty, target.isResolved, target.hasExternalExecution {
-                    appendBlocking(
-                        "\(row.id): " + SkillDependencyReason.noMatchingTarget(
-                            os: target.profileOS ?? target.runtimeDescription,
-                            architectures: target.normalizedArchitectures
-                        ) + " (required: \(requiredPins.joined(separator: ", ")))"
-                    )
+                    let diagnostic = "\(row.id): " + SkillDependencyReason.noMatchingTarget(
+                        os: target.profileOS ?? target.runtimeDescription,
+                        architectures: target.normalizedArchitectures
+                    ) + " (required: \(requiredPins.joined(separator: ", ")))"
+                    appendBlocking(diagnostic, SkillMigrationBlockingIssue(
+                        kind: .requiredDependency,
+                        skillID: row.id,
+                        name: row.name,
+                        version: package.manifest.version,
+                        diagnostic: diagnostic
+                    ))
                 }
                 continue
             }
@@ -3924,7 +4077,14 @@ extension SkillsCenter {
                     )
                     if !dependencies.contains(dependency) { dependencies.append(dependency) }
                     if requirement.required, let refusal {
-                        appendBlocking("\(row.id): \(requirement.identityKey): \(refusal)")
+                        let diagnostic = "\(row.id): \(requirement.identityKey): \(refusal)"
+                        appendBlocking(diagnostic, SkillMigrationBlockingIssue(
+                            kind: .requiredDependency,
+                            skillID: row.id,
+                            name: row.name,
+                            version: package.manifest.version,
+                            diagnostic: diagnostic
+                        ))
                     }
                 }
             }
@@ -3941,7 +4101,8 @@ extension SkillsCenter {
             limitations: limitations,
             dependencies: dependencies,
             modelManagedSkillIDs: modelManaged.sorted(),
-            blockingReasons: blockingReasons
+            blockingReasons: blockingReasons,
+            blockingIssues: blockingIssues
         )
     }
 
@@ -3957,7 +4118,9 @@ extension SkillsCenter {
         target: SkillRuntimeTarget,
         toolEnvironment: ToolEnvironment,
         resourceContext: SkillResourceContext,
-        skillIDs: [String]? = nil
+        skillIDs: [String]? = nil,
+        acceptedLossIDs: Set<String> = [],
+        requiredSkillIDs: Set<String> = []
     ) async -> SkillMigrationResourceStaging {
         let fingerprint = target.identityFingerprint
         func refusal(_ reason: String) -> SkillMigrationResourceStaging {
@@ -4017,14 +4180,22 @@ extension SkillsCenter {
                 preparedMigrationSnapshot = true
             }
             guard let installedSnapshot = try? snapshot(for: row, runID: migrationID) else {
+                // A required unverifiable package always remains a staging
+                // failure. An unrequired one may be skipped ONLY when its
+                // exact id was explicitly accepted: no bytes are staged or
+                // executed, and the installed record is left untouched.
+                let accepted = acceptedLossIDs.contains(row.id)
+                    && !requiredSkillIDs.contains(row.id)
                 entries.append(SkillMigrationStagedResource(
                     skillID: row.id,
                     version: row.version,
                     digest: row.rewrittenDigest,
-                    state: .unavailable,
+                    state: accepted ? .skipped : .unavailable,
                     guestRoot: nil,
                     fileCount: nil,
-                    reason: SkillMigrationStagingReason.invalidPinnedPackage
+                    reason: accepted
+                        ? SkillMigrationStagingReason.acceptedUnvalidatedPackageLoss
+                        : SkillMigrationStagingReason.invalidPinnedPackage
                 ))
                 continue
             }

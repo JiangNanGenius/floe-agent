@@ -384,15 +384,8 @@ struct TaskExecutionEnvironmentView: View {
                       : "exclamationmark.triangle.fill")
                     .foregroundStyle(preview.canProceed ? FloeTheme.success : FloeTheme.destructive)
             }
-            if !preview.blockingReasons.isEmpty {
-                ForEach(Array(preview.blockingReasons.enumerated()), id: \.offset) { _, reason in
-                    Label {
-                        Text(reason).font(.subheadline)
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle")
-                            .foregroundStyle(FloeTheme.destructive)
-                    }
-                }
+            ForEach(preview.blockingIssues) { issue in
+                blockingIssueRow(issue)
             }
         } header: {
             Text(copy("检查结果", "Check results"))
@@ -413,15 +406,10 @@ struct TaskExecutionEnvironmentView: View {
             }
         }
 
-        if !preview.optionalCapabilityLosses.isEmpty {
+        if !preview.optionalLosses.isEmpty {
             Section {
-                ForEach(Array(preview.optionalCapabilityLosses.enumerated()), id: \.offset) { _, loss in
-                    Label {
-                        Text(loss).font(.subheadline)
-                    } icon: {
-                        Image(systemName: "minus.circle")
-                            .foregroundStyle(FloeTheme.pending)
-                    }
+                ForEach(preview.optionalLosses) { loss in
+                    optionalLossRow(loss)
                 }
                 if preview.requiresExplicitAcceptance {
                     Toggle(isOn: $acceptedLosses) {
@@ -431,11 +419,11 @@ struct TaskExecutionEnvironmentView: View {
                     .accessibilityIdentifier("task.environment.acceptLosses")
                 }
             } header: {
-                Text(copy("将失去的外部 Skill 能力",
-                          "External Skill capabilities that will be unavailable"))
+                Text(copy("迁移后不可用的 Skill 能力",
+                          "Skill capabilities unavailable after the move"))
             } footer: {
-                Text(copy("这些只是外部执行能力；浏览、文档与绘图继续在 Floe 中使用。",
-                          "These are external execution capabilities only; browsing, documents and design stay in Floe."))
+                Text(copy("这些 Skill 的外部步骤或未验证的安装不会运行；记录会保留，浏览、文档与绘图继续在 Floe 中使用。",
+                          "These Skills' external steps or unverified installs will not run. Their records are kept, and browsing, documents and design stay in Floe."))
             }
         }
     }
@@ -451,14 +439,137 @@ struct TaskExecutionEnvironmentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let reason = dependency.reason {
-                    Text(reason)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    DisclosureGroup(copy("详情", "Details")) {
+                        Text(reason)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .font(.caption)
                 }
             }
             Spacer(minLength: 0)
         }
-        .accessibilityElement(children: .combine)
+    }
+
+    /// A blocking issue uses the product name and an actionable line in the
+    /// body; the raw identifier and model-safe diagnostic stay in Details.
+    private func blockingIssueRow(_ issue: SkillMigrationBlockingIssue,
+                                  compact: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    if let name = issue.name, !name.isEmpty {
+                        Text(name)
+                            .font(compact ? .caption.weight(.semibold) : .subheadline.weight(.medium))
+                    }
+                    Text(blockingIssueMessage(issue))
+                        .font(compact ? .caption : .subheadline)
+                }
+            } icon: {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(FloeTheme.destructive)
+            }
+            migrationIssueDetails(
+                identifier: issue.skillID,
+                version: issue.version,
+                diagnostic: issue.diagnostic)
+        }
+    }
+
+    /// An optional loss is the same product-name + actionable copy pattern.
+    private func optionalLossRow(_ loss: SkillMigrationOptionalLoss,
+                                 compact: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(loss.name)
+                        .font(compact ? .caption.weight(.semibold) : .subheadline.weight(.medium))
+                    Text(optionalLossMessage(loss))
+                        .font(compact ? .caption : .subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: "minus.circle")
+                    .foregroundStyle(FloeTheme.pending)
+            }
+            migrationIssueDetails(
+                identifier: loss.skillID,
+                version: loss.version,
+                diagnostic: loss.diagnostic)
+        }
+    }
+
+    /// User-expandable technical details. Raw ids, versions and diagnostics
+    /// never lead the ordinary body copy.
+    private func migrationIssueDetails(identifier: String?,
+                                       version: String?,
+                                       diagnostic: String) -> some View {
+        DisclosureGroup(copy("详情", "Details")) {
+            VStack(alignment: .leading, spacing: 3) {
+                if let identifier, !identifier.isEmpty {
+                    Text(identifier)
+                        .font(.caption2.monospaced())
+                        .textSelection(.enabled)
+                }
+                if let version, !version.isEmpty {
+                    Text("v\(version)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                Text(diagnostic)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .font(.caption)
+    }
+
+    private func blockingIssueMessage(_ issue: SkillMigrationBlockingIssue) -> String {
+        switch issue.kind {
+        case .target:
+            if issue.diagnostic == SkillDependencyReason.targetUnavailable {
+                return copy("请先选择一个运行位置并完成连接。",
+                            "Choose an environment and connect it first.")
+            }
+            if issue.diagnostic == SkillDependencyReason.targetUnsupported {
+                return copy("这个位置不能运行外部命令，请选择其他位置。",
+                            "This location cannot run external commands. Choose another location.")
+            }
+            if issue.diagnostic == SkillDependencyReason.targetDisconnected {
+                return copy("这个位置尚未连接，请连接后重新检查。",
+                            "This location is not connected. Connect it and check again.")
+            }
+            return copy("这个位置暂时不可用，请重新连接后再检查。",
+                        "This location is unavailable. Reconnect and check again.")
+        case .inventory:
+            return copy("无法读取已安装的 Skill，请稍后重试。",
+                        "Installed Skills could not be read. Try again later.")
+        case .unvalidatableRequiredSkill:
+            return copy("这是此任务需要的 Skill，但安装内容无法验证，因此暂时不能继续。",
+                        "This Skill is required by this task, but its installed contents could not be verified, so the move cannot continue.")
+        case .authorization:
+            return copy("无法确认这个 Skill 的权限，请重新安装或检查权限后再试。",
+                        "This Skill's permissions could not be confirmed. Reinstall or check permissions first.")
+        case .requiredDependency:
+            return copy("这个 Skill 的必需依赖无法在此位置准备，请选择其他位置或更新依赖。",
+                        "This Skill's required dependency cannot be prepared here. Choose another location or update the dependency.")
+        }
+    }
+
+    private func optionalLossMessage(_ loss: SkillMigrationOptionalLoss) -> String {
+        switch loss.kind {
+        case .unvalidatableSkill:
+            return copy("安装内容无法验证。迁移后会保留记录，但不会运行未经验证的内容；可稍后重新安装。",
+                        "Its installed contents could not be verified. The record is kept, but unverified content will not run; reinstall it later.")
+        case .externalCapability:
+            return copy("外部步骤无法在新位置运行；Floe 内的文档、浏览与绘图仍可使用。",
+                        "Its external steps cannot run at the new location; documents, browsing and design in Floe still work.")
+        case .optionalDependency:
+            return copy("可选依赖无法在新位置准备；其他可用能力不受影响。",
+                        "An optional dependency cannot be prepared at the new location; other available capabilities are unaffected.")
+        }
     }
 
     // MARK: - Explicit move
@@ -605,10 +716,8 @@ struct TaskExecutionEnvironmentView: View {
                           : "exclamationmark.triangle.fill")
                         .foregroundStyle(preview.canProceed ? FloeTheme.success : FloeTheme.destructive)
                 }
-                ForEach(Array(preview.blockingReasons.enumerated()), id: \.offset) { _, reason in
-                    Text(reason)
-                        .font(.caption)
-                        .foregroundStyle(FloeTheme.destructive)
+                ForEach(preview.blockingIssues) { issue in
+                    blockingIssueRow(issue, compact: true)
                 }
                 if !preview.dependencies.isEmpty {
                     Text(copy("依赖与版本", "Dependencies and versions"))
@@ -623,14 +732,12 @@ struct TaskExecutionEnvironmentView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                if !preview.optionalCapabilityLosses.isEmpty {
-                    Text(copy("迁移后将不可用的外部能力：", "External capabilities unavailable after the move:"))
+                if !preview.optionalLosses.isEmpty {
+                    Text(copy("迁移后将不可用的 Skill 能力：", "Skill capabilities unavailable after the move:"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    ForEach(Array(preview.optionalCapabilityLosses.enumerated()), id: \.offset) { _, loss in
-                        Text(loss)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    ForEach(preview.optionalLosses) { loss in
+                        optionalLossRow(loss, compact: true)
                     }
                 }
                 if requiresRetryAcceptance(migration, preview) {
