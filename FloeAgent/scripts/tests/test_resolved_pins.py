@@ -134,22 +134,30 @@ class ResolvedPinsTests(unittest.TestCase):
             resolved_pins({"version": 3, "pins": [self.current["pins"][0]] * 2})
 
     def test_host_resolution_keeps_app_only_pin_in_distribution_inventory(self):
-        project = (Path(__file__).resolve().parents[2] / "project.yml").read_text()
+        project_root = Path(__file__).resolve().parents[2]
+        project = (project_root / "project.yml").read_text()
         app = application_pins(project)
+        local = application_local_pins(project, project_root)
         expected = resolved_pins(self.current)
         host = [p for p in expected if p["identity"] not in {p["identity"] for p in app}]
-        self.assertEqual(verify_resolution(host, expected, app), expected)
-        self.assertEqual(verify_resolution(expected, expected, app), expected)
+        inventory = {p["identity"]: p for p in local}
+        inventory.update({p["identity"]: p for p in expected})
+        expected_inventory = sorted(inventory.values(), key=lambda p: p["identity"])
+        self.assertEqual(verify_resolution(host, expected, app, local), expected_inventory)
+        self.assertEqual(verify_resolution(expected, expected, app, local), expected_inventory)
 
     def test_host_missing_or_changed_pin_and_app_drift_fail(self):
         expected = resolved_pins(self.current)
-        app = application_pins((Path(__file__).resolve().parents[2] / "project.yml").read_text())
+        project_root = Path(__file__).resolve().parents[2]
+        project = (project_root / "project.yml").read_text()
+        app = application_pins(project)
+        local = application_local_pins(project, project_root)
         host = [p for p in expected if p["identity"] not in {p["identity"] for p in app}]
         changed = [{**host[0], "state": {"revision": "0" * 40}}, *host[1:]]
         wrong_app = [{**app[0], "state": {"revision": "0" * 40}}]
         for current, application in ((host[1:], app), (changed, app), (host, wrong_app)):
             with self.subTest(current=current), self.assertRaises(ValueError):
-                verify_resolution(current, expected, application)
+                verify_resolution(current, expected, application, local)
 
     def test_mutable_application_declaration_fails(self):
         with self.assertRaises(ValueError):
@@ -296,6 +304,30 @@ class ApplicationLocalPinTests(unittest.TestCase):
                                          "version": "0.9.20"}}
         with self.assertRaises(ValueError):
             verify_resolution([], [host], [declared], [conflicting])
+
+    def test_new_direct_product_uses_the_reviewed_local_lock(self):
+        local = pin("euclid", "https://github.com/nicklockwood/Euclid.git",
+                    revision="b" * 40, version="0.9.6")
+        declared = {**local, "state": {"revision": "b" * 40}}
+        self.assertEqual(verify_resolution([], [], [declared], [local]), [local])
+        self.assertEqual(verify_resolution([local], [], [declared], [local]), [local])
+        # Xcode omits the display version for its new direct revision pin;
+        # the reviewed local lock still supplies the inventory's full state.
+        self.assertEqual(verify_resolution([declared], [], [declared], [local]), [local])
+
+    def test_local_authority_does_not_admit_unknown_or_changed_direct_pins(self):
+        local = pin("euclid", "https://github.com/nicklockwood/Euclid.git",
+                    revision="b" * 40, version="0.9.6")
+        declared = {**local, "state": {"revision": "b" * 40}}
+        with self.assertRaises(ValueError):
+            verify_resolution([], [], [declared], [])
+        for changed in (
+            {**declared, "identity": "other"},
+            {**declared, "location": "https://github.com/other/Euclid.git"},
+            {**declared, "state": {"revision": "c" * 40}},
+        ):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                verify_resolution([], [], [changed], [local])
 
     def test_unknown_missing_changed_branch_and_semver_pins_fail(self):
         host = pin("shared", "https://example.org/shared.git",

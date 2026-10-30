@@ -412,14 +412,17 @@ def verify_resolution(current, committed, app_only, app_local=None):
         if identity in app and not app_pin_matches(pin, app[identity]):
             raise ValueError(f"Application local pin conflicts with direct declaration: {identity}")
 
-    for identity, pin in app.items():
-        if not app_pin_matches(expected.get(identity), pin):
-            raise ValueError(f"Xcode app pin differs from committed lock: {identity}")
-
     # Local pins are an independent source only for identities the committed
     # host lock does not already carry; an existing pin is never replaced.
     for identity, pin in local.items():
         expected.setdefault(identity, pin)
+
+    # A product linked directly by an App target may already be locked only
+    # by a reviewed local package. Validate against that same authority after
+    # the host/local conflict checks above; do not require a duplicate host pin.
+    for identity, pin in app.items():
+        if not app_pin_matches(expected.get(identity), pin):
+            raise ValueError(f"Xcode app pin differs from committed lock: {identity}")
 
     for identity, pin in actual.items():
         expected_pin = expected.get(identity)
