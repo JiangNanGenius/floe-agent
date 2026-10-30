@@ -48,6 +48,7 @@ fun FloeDetailColumn(
     inspectorRoute: InspectorRoute?,
     onInspectorDismiss: () -> Unit,
     onOpenSettingsSection: (String) -> Unit,
+    onConversationBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     runtimeHost: RuntimeHost? = null,
     onConversationHolderBound: (String, com.floe.android.feature.conversation.ConversationFlowHolder) -> Unit = { _, _ -> },
@@ -107,6 +108,7 @@ fun FloeDetailColumn(
                 compact = compact,
                 runtimeHost = runtimeHost,
                 onHolderBound = onConversationHolderBound,
+                onBackToOrigin = onConversationBack,
             )
         }
     }
@@ -128,6 +130,7 @@ private fun ConversationDestination(
     compact: Boolean,
     runtimeHost: RuntimeHost?,
     onHolderBound: (String, com.floe.android.feature.conversation.ConversationFlowHolder) -> Unit,
+    onBackToOrigin: (() -> Unit)? = null,
 ) {
     val temporary = runtimeHost?.conversations?.activeTemporarySession()
         ?.takeIf { it.conversationId == conversationId }
@@ -166,7 +169,7 @@ private fun ConversationDestination(
     FloeConversationPaneHost(
         holder = holder,
         modifier = Modifier.fillMaxSize(),
-        onBack = if (compact) onOpenDrawer else null,
+        onBack = if (compact) (onBackToOrigin ?: onOpenDrawer) else null,
     )
 }
 

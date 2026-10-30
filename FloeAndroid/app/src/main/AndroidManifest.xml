@@ -56,6 +56,15 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+        <!-- G07.3A user-question notification reply. Exported=false: reached
+             only by the explicit PendingIntent the question notification
+             creates. The receiver carries identifiers/revisions only (never
+             question text or an answer preview) and asks the live host for
+             the same exact-once native settlement; without a live runtime it
+             posts a neutral open-app reminder and fabricates nothing. -->
+        <receiver
+            android:name="com.floe.android.host.questions.UserQuestionReplyReceiver"
+            android:exported="false" />
         <provider
             android:name="com.floe.android.notesplatform.NotesShareProvider"
             android:authorities="${applicationId}.notes.exports"

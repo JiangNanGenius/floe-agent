@@ -58,6 +58,10 @@ internal class TerminalTabRegistry {
 
     private val tabs = LinkedHashMap<String, Tab>() // tabID -> tab (insertion order = strip order)
     private val selected = HashMap<String, String>() // conversationID -> tabID
+    /** Conversations that have owned at least one REAL native tab. Closing
+     *  every tab is then an honest empty terminal, never a fall-back to the
+     *  pre-tab conversation singleton (which still names a removed session). */
+    private val nativeTabHistory = HashSet<String>()
 
     @Synchronized
     fun tabsFor(conversationID: String): List<TerminalTabView> {
@@ -132,6 +136,7 @@ internal class TerminalTabRegistry {
         // adoption for the old request must find no pending reservation.
         tab.pendingRequestID = null
         tabs[sessionID] = tab
+        nativeTabHistory.add(tab.conversationID)
         if (selected[tab.conversationID] == oldID) selected[tab.conversationID] = sessionID
         return find(sessionID)
     }
@@ -204,12 +209,21 @@ internal class TerminalTabRegistry {
     fun isEmpty(conversationID: String): Boolean =
         tabs.values.none { it.conversationID == conversationID }
 
+    /** True once this conversation has owned at least one REAL native tab.
+     *  A pending reservation that never adopted does not count. */
+    @Synchronized
+    fun hasNativeTabHistory(conversationID: String): Boolean =
+        nativeTabHistory.contains(conversationID)
+
     /** Root retirement: every tab is a closed projection; sessions settle
-     *  natively through the ordinary close/retire path, not here. */
+     *  natively through the ordinary close/retire path, not here. The tab-era
+     *  history is cleared with the retired generation, so a fresh Root may
+     *  use the first-start compatibility path again. */
     @Synchronized
     fun clear() {
         tabs.clear()
         selected.clear()
+        nativeTabHistory.clear()
     }
 
     private fun findPending(requestID: String): TerminalTabView? {

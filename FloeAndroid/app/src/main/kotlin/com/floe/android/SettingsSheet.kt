@@ -43,6 +43,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -178,7 +179,13 @@ fun SettingsSheet(
             val windowWidth = windowInfo.containerSize.width.coerceAtLeast(1)
             val windowHeight = windowInfo.containerSize.height.coerceAtLeast(1)
 
-            val wide = maxWidth >= FloeLayout.PersistentTwoColumnMinWidth
+            // iPad/tablet split uses the measured pane; a landscape phone must
+            // stay compact even when its momentary width exceeds 600dp. The
+            // device's smallest width is the stable phone/tablet boundary the
+            // rest of the shell already uses.
+            val smallestWidth = LocalConfiguration.current.smallestScreenWidthDp.toFloat()
+            val wide = maxWidth >= FloeLayout.PersistentTwoColumnMinWidth &&
+                !FloeLayout.usesCompactNavigation(maxWidth.value, smallestWidth)
             val active = runCatching { FloeSettingsSection.valueOf(section) }.getOrDefault(FloeSettingsSection.GENERAL)
             val categoryVisible = wide && !wideListCollapsed
             val hostGeometry = FloeSettingsHostGeometry(

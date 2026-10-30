@@ -108,6 +108,11 @@ public enum G02Readiness {
                 key(.conversationLifecycle, "conversation.archive"),
                 key(.conversationLifecycle, "conversation.delete"),
                 key(.conversationLifecycle, "conversation.messagePage"),
+                key(.conversationLifecycle, "conversation.messageSearch"),
+                key(.conversationLifecycle, "conversation.messageWindow"),
+                key(.conversationLifecycle, "question.pending"),
+                key(.conversationLifecycle, "question.answer"),
+                key(.conversationLifecycle, "question.cancel"),
             ]
         case .runDomain:
             return RunDomainHandlerPlan.bindings.map { $0.handlerKey }

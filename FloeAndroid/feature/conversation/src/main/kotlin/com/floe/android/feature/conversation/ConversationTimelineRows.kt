@@ -131,11 +131,14 @@ fun ConversationTimelineRow(
     row: TimelineRowUi,
     holder: ConversationFlowHolder,
     modifier: Modifier = Modifier,
+    searchHighlightQuery: String? = null,
 ) {
     when (row) {
         is TimelineRowUi.EarlierEvents -> EarlierEventsRow(row, holder, modifier)
-        is TimelineRowUi.UserMessage -> UserMessageRow(row.message, holder, modifier)
-        is TimelineRowUi.AssistantMessage -> AssistantRow(row, holder, modifier)
+        is TimelineRowUi.UserMessage ->
+            UserMessageRow(row.message, holder, modifier, searchHighlightQuery)
+        is TimelineRowUi.AssistantMessage ->
+            AssistantRow(row, holder, modifier, searchHighlightQuery)
         is TimelineRowUi.Event -> EventRow(row.event, holder, modifier)
         is TimelineRowUi.StepGroup -> StepGroupRow(row, holder, modifier)
         is TimelineRowUi.RunOutputGroup -> RunOutputGroupRow(row, holder, modifier)
@@ -179,7 +182,12 @@ fun ConversationTimelineRow(
 /** ⇄ MessageBubble(user) + UserMessageBubble: right-aligned bubble, verbatim
  * text (user input is NOT markdown-rendered), credential cards, chips. */
 @Composable
-private fun UserMessageRow(message: MessageUi, holder: ConversationFlowHolder, modifier: Modifier) {
+private fun UserMessageRow(
+    message: MessageUi,
+    holder: ConversationFlowHolder,
+    modifier: Modifier,
+    searchHighlightQuery: String? = null,
+) {
     val colors = Floe.colors
     val userRole = stringResource(R.string.role_user)
     Row(modifier = modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
@@ -201,7 +209,7 @@ private fun UserMessageRow(message: MessageUi, holder: ConversationFlowHolder, m
                 ) {
                     // ⇄ CredentialMessagePart.parse: credential placeholders
                     // render as secure-cards, never as raw token text.
-                    CredentialAwareUserText(message.text)
+                    CredentialAwareUserText(message.text, searchHighlightQuery)
                 }
             }
             AttachmentChipRow(
@@ -251,7 +259,10 @@ object CredentialTextParser {
 }
 
 @Composable
-private fun CredentialAwareUserText(text: String) {
+private fun CredentialAwareUserText(
+    text: String,
+    searchHighlightQuery: String? = null,
+) {
     val colors = Floe.colors
     val credentialCardCd = stringResource(R.string.secure_credentials_card)
     CredentialTextParser.parse(text).forEach { segment ->
@@ -281,13 +292,41 @@ private fun CredentialAwareUserText(text: String) {
             // long text wraps only against the row's available width (the 40dp
             // leading gutter of the enclosing row is the native
             // Spacer(minLength: 40)). Credential-card rendering unchanged.
-            FloeText(
-                segment.value,
-                style = Floe.typography.body,
-                color = colors.label,
+            androidx.compose.material3.Text(
+                text = highlightedVisibleText(segment.value, searchHighlightQuery),
+                style = Floe.typography.body.copy(color = colors.label),
             )
         }
     }
+}
+
+/** Highlight the exact visible segment string. Offsets come from the same
+ * folded matcher used for the native hit, so the highlighted characters are
+ * the ones the user actually reads (not raw Markdown syntax). */
+@Composable
+private fun highlightedVisibleText(
+    text: String,
+    querySource: String?,
+): androidx.compose.ui.text.AnnotatedString {
+    val builder = androidx.compose.ui.text.AnnotatedString.Builder()
+    builder.append(text)
+    val query = querySource?.takeIf { it.isNotBlank() }?.let(::ThreadSearchQuery)
+        ?: return builder.toAnnotatedString()
+    val length = text.length
+    for (range in ThreadSearchMatcher.ranges(text, query)) {
+        val start = range.first.coerceIn(0, length)
+        val end = (range.last + 1).coerceIn(start, length)
+        if (end > start) {
+            builder.addStyle(
+                androidx.compose.ui.text.SpanStyle(
+                    background = Floe.colors.pending.copy(alpha = 0.35f),
+                ),
+                start,
+                end,
+            )
+        }
+    }
+    return builder.toAnnotatedString()
 }
 
 /** ⇄ AttachmentChipRow: ONE reusable attachment surface (user trailing,
@@ -347,7 +386,12 @@ internal fun AttachmentChipRow(
  * Localized descriptions are hoisted in composable scope before any
  * semantics lambda (no stringResource inside non-composable blocks). */
 @Composable
-private fun AssistantRow(row: TimelineRowUi.AssistantMessage, holder: ConversationFlowHolder, modifier: Modifier) {
+private fun AssistantRow(
+    row: TimelineRowUi.AssistantMessage,
+    holder: ConversationFlowHolder,
+    modifier: Modifier,
+    searchHighlightQuery: String? = null,
+) {
     val copyLabel = stringResource(R.string.action_copy)
     val readAloudLabel = stringResource(R.string.action_read_aloud)
     val saveToNotesLabel = stringResource(R.string.action_save_to_notes)
@@ -369,6 +413,7 @@ private fun AssistantRow(row: TimelineRowUi.AssistantMessage, holder: Conversati
             onLinkOpen = { url -> holder.openMessageLink(url) },
             onCopyText = { text -> holder.copyMessage(text) },
             isStreaming = false,
+            highlightQuery = searchHighlightQuery,
         )
         AttachmentChipRow(
             chips = row.attachmentChips,

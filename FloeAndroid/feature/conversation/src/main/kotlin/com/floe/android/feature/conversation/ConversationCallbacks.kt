@@ -395,6 +395,22 @@ interface ConversationUiCallbacks {
      * True only when the host accepted the decision for that identity. */
     fun resolveApproval(request: ApprovalDecisionRequest): Boolean
 
+    /**
+     * The LIVE owned interactive-terminal capture for the historical
+     * single-slot handoff contract, or null.
+     *
+     * The App calls this ONLY for a card whose native `reason` is the exact
+     * typed conflict token, because that token is the trusted G04 probe's
+     * answer. Under the approved separated pool (TWO interactive tabs + ONE
+     * Agent/run execution slot) a live interactive terminal never blocks an
+     * Agent command, so a live TTY alone must never offer to end anything.
+     * The returned capture is re-fenced by the host (generation, captured
+     * handle, live status, exact session) before a single close is submitted.
+     * Hosts without a terminal owner keep the default null and their cards
+     * stay ordinary.
+     */
+    fun liveTerminalHandoffConsent(session: ConversationSessionToken): TerminalHandoffConsentUi? = null
+
     /* ---------------------------------- paging ------------------------------- */
 
     /** ⇄ loadEarlierMessages (bounded page; cursor owned by the host store). */
@@ -402,6 +418,58 @@ interface ConversationUiCallbacks {
 
     /** ⇄ loadEarlierEvents(runID:) via an explicit (runId, sequence) cursor. */
     fun loadEarlierEvents(session: ConversationSessionToken, cursor: EventCursor): Boolean
+
+    /* ------------------------------- thread search ----------------------------- */
+
+    /**
+     * Native current-task visible-message search. [epoch] is the holder's
+     * monotonic query generation; the host echoes it with the result so an
+     * out-of-order reply can never replace a newer query. The host answers
+     * only from the task's own durable user/assistant bodies (or the live
+     * temporary session's RAM messages); it never repurposes the global
+     * conversation-history search. Default refuses so a fixture host cannot
+     * pretend durable search exists.
+     */
+    fun requestThreadSearch(
+        session: ConversationSessionToken,
+        query: String,
+        epoch: Long,
+    ): Boolean = false
+
+    /**
+     * Reveal one exact hit. If the message is outside the loaded window the
+     * host performs the bounded `conversation.messageWindow` read and applies
+     * that window; [requestToken] fences a late reply after a newer query.
+     */
+    fun revealThreadSearchHit(
+        session: ConversationSessionToken,
+        messageId: String,
+        requestToken: Long,
+    ): Boolean = false
+
+    /* ----------------------------- user questions ------------------------------ */
+
+    /** Read the pending durable/RAM question(s) for this task. [requestId]
+     * null reads all pending requests. In-app UI works without notifications. */
+    fun requestPendingQuestion(
+        session: ConversationSessionToken,
+        requestId: String?,
+    ): Boolean = false
+
+    /** Submit an exact-once answer. Returns false when nothing was dispatched;
+     * the native receipt is the only settlement truth and arrives through the
+     * holder's projection callback. */
+    fun answerUserQuestion(
+        session: ConversationSessionToken,
+        request: UserQuestionAnswerRequestUi,
+    ): Boolean = false
+
+    /** Explicit cancel of one pending request (user Dismiss or a terminal
+     * fence). Never fabricates an answer. */
+    fun cancelUserQuestion(
+        session: ConversationSessionToken,
+        requestId: String,
+    ): Boolean = false
 
     /* -------------------------------- attachments ----------------------------- */
 

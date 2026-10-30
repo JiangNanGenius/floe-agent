@@ -362,4 +362,29 @@
     <string name="run_output_unavailable">File service unavailable</string>
     <string name="run_output_truncated">Some outputs may not be listed</string>
     <string name="run_output_refresh">Check again</string>
+    <!-- G07.3A current-thread visible search (⇄ ThreadSearchBar/ThreadSearchModel) -->
+    <string name="thread_search_placeholder">Find in chat</string>
+    <string name="thread_search_done">Done</string>
+    <string name="thread_search_previous">Previous match</string>
+    <string name="thread_search_next">Next match</string>
+    <string name="thread_search_no_matches">No matches</string>
+    <string name="thread_search_older_unavailable">This older message could not be loaded</string>
+    <string name="thread_search_includes_history">Includes older history</string>
+    <string name="thread_search_failed">Couldn’t search this chat</string>
+    <string name="thread_search_count">%1$d/%2$d</string>
+
+    <!-- G07.3A durable user questions (never an approval) -->
+    <string name="user_question_title">Floe needs your input</string>
+    <string name="user_question_send">Send answer</string>
+    <string name="user_question_cancel">Cancel question</string>
+    <string name="user_question_dismiss">Dismiss</string>
+    <string name="user_question_free_text_hint">Type your answer</string>
+    <string name="user_question_expires">Expires at %1$s</string>
+    <string name="user_question_error">The question changed or is no longer available. Try again.</string>
+    <string name="user_question_answered">Answer sent</string>
+    <string name="user_question_privacy">Your answer is shared with this task only.</string>
+    <string name="user_question_single">Choose one</string>
+    <string name="user_question_multiple">Choose one or more</string>
+    <string name="user_question_optional">Optional: Floe can keep working while you decide.</string>
+    <string name="user_question_waiting">Waiting for your answer</string>
 </resources>

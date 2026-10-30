@@ -506,6 +506,11 @@ public final class G02InstalledComposition: @unchecked Sendable {
             return nil
         }
         registerTaskChecklistTools(store: taskChecklist, registry: runComponents.registry)
+        // G07.3A user questions: install the durable/RAM coordinator for this
+        // exact epoch and register the main-run-only `user.ask` runner. The
+        // runner's availability closure reads this installation, so a
+        // retired graph never advertises a tool it cannot execute.
+        _ = UserQuestionHostAPI.shared.install(database: database, epoch: epoch)
         return installed
     }
 }

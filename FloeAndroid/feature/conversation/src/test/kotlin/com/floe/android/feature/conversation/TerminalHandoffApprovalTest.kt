@@ -263,6 +263,70 @@ class TerminalHandoffApprovalTest {
         assertNull(holder.terminalHandoffRefusal.value)
     }
 
+    /* ---------------- production card projection (BUG1) ---------------- */
+
+    @Test
+    fun aLiveTerminalAloneNeverOffersToEndItUnderTheSeparatedPool() {
+        // The retained device bug: an ordinary human-approval card (native
+        // reason = policy, not the typed G04 conflict) still showed "end this
+        // task's terminal and run" merely because a live TTY existed. The
+        // separated pool (2 interactive + 1 Agent/run) means a TTY is not a
+        // blocker, so the projection must stay ordinary and offer no action.
+        val projection = ApprovalGrantMapping.terminalHandoffProjection(
+            reason = "Human approval policy requires explicit user decision",
+            toolName = "exec.shell",
+            liveConsent = consent,
+        )
+        assertFalse(projection.showsConflictNote)
+        assertFalse(projection.allowsEndAndRun)
+        assertNull(projection.consent)
+    }
+
+    @Test
+    fun onlyTheTrustedConflictTokenWithALiveConsentOffersTheHandoff() {
+        val token = ApprovalGrantMapping.TERMINAL_HANDOFF_REASON_TOKEN
+        val live = ApprovalGrantMapping.terminalHandoffProjection(
+            reason = token, toolName = "exec.shell", liveConsent = consent)
+        assertTrue(live.showsConflictNote)
+        assertTrue(live.allowsEndAndRun)
+        assertEquals(consent, live.consent)
+
+        // The token is the trusted probe's answer, but a settled/absent
+        // terminal leaves nothing to end: no note, no destructive control,
+        // and the ordinary Allow remains available.
+        val settled = ApprovalGrantMapping.terminalHandoffProjection(
+            reason = token, toolName = "exec.shell", liveConsent = null)
+        assertFalse(settled.showsConflictNote)
+        assertFalse(settled.allowsEndAndRun)
+        assertNull(settled.consent)
+
+        // Tools that do not acquire the execution slot never show it either.
+        val nonSlotTool = ApprovalGrantMapping.terminalHandoffProjection(
+            reason = token, toolName = "shell.exchange", liveConsent = consent)
+        assertFalse(nonSlotTool.showsConflictNote)
+        assertFalse(nonSlotTool.allowsEndAndRun)
+
+        // An empty/foreign consent is not a capturable session.
+        val empty = ApprovalGrantMapping.terminalHandoffProjection(
+            reason = token, toolName = "shell.open",
+            liveConsent = TerminalHandoffConsentUi("", 7L))
+        assertFalse(empty.allowsEndAndRun)
+    }
+
+    @Test
+    fun theHolderReadsTheLiveConsentOnDemandAndForgetsItAfterRetirement() {
+        val host = RecordingHost()
+        host.liveTerminalConsent = consent
+        val holder = ConversationFlowHolder(host, "conv-1")
+        // An ordinary card never triggers a host read, so no consent can be
+        // manufactured by composition alone.
+        assertEquals(0, host.count("liveTerminalHandoffConsent"))
+        assertEquals(consent, holder.liveTerminalHandoffConsent())
+        assertEquals(1, host.count("liveTerminalHandoffConsent"))
+        holder.retireForNavigation()
+        assertNull("a retired holder never names a session", holder.liveTerminalHandoffConsent())
+    }
+
     /* ------------------------- pure mapping ------------------------- */
 
     @Test

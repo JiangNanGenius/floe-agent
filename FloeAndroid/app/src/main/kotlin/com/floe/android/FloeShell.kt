@@ -170,12 +170,21 @@ private fun FloeShellContent(
         Pair<String, com.floe.android.feature.conversation.ConversationFlowHolder>? by remember {
             mutableStateOf(null)
         }
+    // Phone chat Back returns to the surface the task was opened from (Home,
+    // Task Center or another workspace), not to the drawer and never to a
+    // fabricated blank chat. It lives in RAM like the route itself.
+    var conversationReturnTarget: SidebarSelection by remember {
+        mutableStateOf(SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW))
+    }
 
     /** The one visible-selection write for every commit path: the live
      * surface always updates; the persisted key follows ONLY for durable/
      * ordinary targets, so a live temporary id never reaches saved state. */
     fun commitVisibleSelection(next: SidebarSelection) {
         if (selection != next) application?.cancelNotesPasswordPrompt()
+        if (next is SidebarSelection.Conversation && selection !is SidebarSelection.Conversation) {
+            conversationReturnTarget = selection
+        }
         selection = next
         // The exact holder binding belongs to the PREVIOUS visible surface;
         // the conversation destination re-reports after composing the next.
@@ -640,6 +649,9 @@ private fun FloeShellContent(
                         settingsVisible = true
                     },
                     runtimeHost = runtimeHost,
+                    onConversationBack = {
+                        select(conversationReturnTarget)
+                    },
                     onConversationHolderBound = { boundId, boundHolder ->
                         visibleConversationBinding = boundId to boundHolder
                         runtimeHost?.conversations?.bindPrivacyVisibleHolder(boundHolder)

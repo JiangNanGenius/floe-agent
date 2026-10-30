@@ -2876,6 +2876,118 @@ public actor FacadeConversationDomain {
         ])
     }
 
+    // MARK: - current-thread visible-message search
+
+    /// In-thread find over ONE task's durable user/assistant message bodies.
+    ///
+    /// The exact same visible-text projection the UI renders is used before
+    /// matching, so Markdown syntax, hidden link targets, reasoning, tool
+    /// output and internal notices can never become a hit. The SQL predicate
+    /// runs that projection inside SQLite (case/diacritic/width folded and
+    /// whitespace-AND / quoted-phrase aware), so LIMIT counts real visible
+    /// hits rather than raw bytes. A live temporary session is searched in
+    /// its own RAM messages and never touches the durable tables.
+    public func messageSearch(
+        conversationID: UUID,
+        payload: SettingsDomainV1.JSONValue?
+    ) async throws -> ThreadSearchDomain.ThreadSearchReply {
+        let query = try ThreadSearchRequest.parse(payload)
+        if let route = await TemporaryLiveRouting.route(
+            epoch: context.hostEpoch, conversationID: conversationID) {
+            let messages: [PersistedMessage]
+            do {
+                messages = try await route.stores.conversations
+                    .messages(conversationID: conversationID)
+            } catch {
+                throw ConversationDomainError.persistenceUnavailable("temporaryReadFailed")
+            }
+            let hits = ThreadSearchDomain.search(
+                messages: messages,
+                conversationID: conversationID,
+                query: query)
+            try await TemporaryLiveRouting.requireStillLive(route, epoch: context.hostEpoch)
+            return ThreadSearchDomain.reply(
+                conversationID: conversationID, query: query, hits: hits,
+                isTemporary: true)
+        }
+
+        let parsedQuery = ThreadSearchQuery(raw: query.raw)
+        let hits: [ThreadSearchDomain.Hit] = try await database.reader { db in
+            try Task.checkCancellation()
+            db.add(function: ThreadSearchQuery.visibleMatchFunction)
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT m.id, m.role, m.content, m.created_at
+                    FROM messages m
+                    JOIN conversations c ON c.id = m.conversation_id
+                    WHERE m.conversation_id = ?
+                      AND c.is_searchable = 1 AND c.purpose = 'ordinary'
+                      AND m.role IN ('user', 'assistant')
+                      AND floe_thread_search_match(m.role, m.content, ?) = 1
+                    ORDER BY m.created_at ASC, m.id ASC
+                    LIMIT ?
+                    """,
+                arguments: [conversationID.uuidString, query.raw, query.limit]
+            )
+            return rows.compactMap { row -> ThreadSearchDomain.Hit? in
+                guard let idRaw: String = row["id"],
+                      let id = UUID(uuidString: idRaw),
+                      let role: String = row["role"],
+                      let content: String = row["content"],
+                      let createdAtRaw: String = row["created_at"] else { return nil }
+                let visible = ThreadSearchText.visibleText(role: role, content: content)
+                // The SQL predicate narrows rows with the SAME folded rule;
+                // this exact re-check keeps the returned hit's visible text
+                // identical to what the row renders.
+                guard parsedQuery.matches(visible) else { return nil }
+                guard let createdAt = try? ConversationWireDate.decodeStrict(
+                    createdAtRaw, field: "createdAt") else { return nil }
+                return ThreadSearchDomain.Hit(
+                    messageID: id,
+                    role: role,
+                    snippet: ThreadSearchText.snippet(in: visible, query: parsedQuery),
+                    createdAt: createdAt)
+            }
+        }
+        return ThreadSearchDomain.reply(
+            conversationID: conversationID, query: query, hits: hits,
+            isTemporary: false)
+    }
+
+    /// Bounded window around one exact durable/RAM message, used to reveal a
+    /// search hit outside the loaded page. Replacement (not merge) is the
+    /// App's decision; this reply is a normal typed message page so the same
+    /// oversize/content-handle rules apply.
+    public func messageWindow(
+        conversationID: UUID,
+        payload: SettingsDomainV1.JSONValue?
+    ) async throws -> ConversationMessagePageReply {
+        let request = try ThreadMessageWindowRequest.parse(payload)
+        if let route = await TemporaryLiveRouting.route(
+            epoch: context.hostEpoch, conversationID: conversationID) {
+            let all: [PersistedMessage]
+            do {
+                all = try await route.stores.conversations
+                    .messages(conversationID: conversationID)
+            } catch {
+                throw ConversationDomainError.persistenceUnavailable("temporaryReadFailed")
+            }
+            let reply = try await TemporaryConversationProjection.messageWindowReply(
+                messages: all, around: request.messageID,
+                before: request.before, after: request.after,
+                route: route, content: content)
+            try await TemporaryLiveRouting.requireStillLive(route, epoch: context.hostEpoch)
+            return reply
+        }
+        let page = try await conversationStore.messageWindow(
+            conversationID: conversationID,
+            around: request.messageID,
+            before: request.before,
+            after: request.after)
+        return try await projectMessagePage(page: page, conversationID: conversationID)
+    }
+
     // MARK: - conversation.get
 
     /// Honest snapshot projection (ConversationSessionSnapshot :704-718

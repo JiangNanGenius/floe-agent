@@ -360,4 +360,29 @@
     <string name="run_output_unavailable">文件服务不可用</string>
     <string name="run_output_truncated">部分输出可能未列出</string>
     <string name="run_output_refresh">重新检查</string>
+    <!-- G07.3A 当前对话可见内容查找（⇄ ThreadSearchBar/ThreadSearchModel） -->
+    <string name="thread_search_placeholder">在对话中查找</string>
+    <string name="thread_search_done">完成</string>
+    <string name="thread_search_previous">上一个匹配</string>
+    <string name="thread_search_next">下一个匹配</string>
+    <string name="thread_search_no_matches">没有匹配</string>
+    <string name="thread_search_older_unavailable">这条较早的消息暂时无法载入</string>
+    <string name="thread_search_includes_history">含较早历史</string>
+    <string name="thread_search_failed">无法搜索此对话</string>
+    <string name="thread_search_count">%1$d/%2$d</string>
+
+    <!-- G07.3A 持久化用户提问（不是权限批准） -->
+    <string name="user_question_title">Floe 需要你的输入</string>
+    <string name="user_question_send">发送回答</string>
+    <string name="user_question_cancel">取消提问</string>
+    <string name="user_question_dismiss">忽略</string>
+    <string name="user_question_free_text_hint">输入你的回答</string>
+    <string name="user_question_expires">%1$s 到期</string>
+    <string name="user_question_error">问题已变化或不再可用，请重试。</string>
+    <string name="user_question_answered">回答已发送</string>
+    <string name="user_question_privacy">你的回答只会用于当前任务。</string>
+    <string name="user_question_single">选择一项</string>
+    <string name="user_question_multiple">可多选</string>
+    <string name="user_question_optional">可选：你考虑时 Floe 可以继续其他工作。</string>
+    <string name="user_question_waiting">等待你的回答</string>
 </resources>

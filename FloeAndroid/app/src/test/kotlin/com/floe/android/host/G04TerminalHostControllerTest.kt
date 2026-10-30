@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import com.floe.android.host.terminalsessions.TerminalTabRegistry
+import com.floe.android.host.terminalsessions.terminalPaneTarget
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -1546,6 +1547,77 @@ class G04TerminalHostControllerTest {
         assertEquals("tok-a", tokens["c1"])
         assertEquals("c1", owners["tok-a"])
         assertFalse("the closed tab's token is unbound", owners.containsKey("tok-b"))
+    }
+
+    @Test
+    fun closingTheLastInteractiveTabDropsTheRemovedSessionProjection() = runBlocking {
+        val root = LiveRoot(7L)
+        val controller = G04TerminalHostController(
+            CoroutineScope(Dispatchers.Unconfined),
+            outputDispatcher = Dispatchers.Unconfined,
+            inputDispatcher = Dispatchers.Unconfined,
+            closeSinkOverride = { _, _ -> TerminalActionReply.Success(buildJsonObject { }) },
+            currentNativeEpoch = { root.epoch })
+        setFieldLong(controller, "boundEpoch", 7L)
+        (G04TerminalHostController::class.java.getDeclaredField("stopped")
+            .apply { isAccessible = true }.get(controller)
+            as java.util.concurrent.atomic.AtomicBoolean).set(false)
+        val registry = tabRegistry(controller)
+        registry.newTab("c1", "req-a")
+        registry.adopt("req-a", "tok-a")
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-a"
+        seedMap<String>(controller, "tokenConversations")["tok-a"] = "c1"
+        seedMap<TerminalInputIssue>(controller, "inputIssues")["c1"] =
+            TerminalInputIssue("c1", "removedSessionRefusal", 2)
+        // The device shape: the conversation key still projects the last
+        // status of the (now removed) interactive session.
+        seedMap<TerminalSessionSnapshot>(controller, "snapshots")["c1"] =
+            TerminalSessionSnapshot(
+                "c1", "tok-a", TerminalSessionPhase.FAULT, "interactive", "",
+                null, null, "invalidConfiguration__engine_reported_the_request_failed", 0)
+
+        val reply = controller.closeTab("tok-a")
+        assertTrue(reply is TerminalActionReply.Success)
+        assertTrue("the closed last tab must not stay addressable", controller.tabs("c1").isEmpty())
+        assertTrue("the conversation remains tab-era", controller.hasTabHistory("c1"))
+        assertNull("the removed session's projection must not survive as the pane fallback",
+            controller.currentSnapshot("c1"))
+        assertNull("its typed input refusal is not the empty pane's truth",
+            seedMap<TerminalInputIssue>(controller, "inputIssues")["c1"])
+        // The production target rule then shows the empty terminal, never the
+        // pre-tab legacy conversation singleton.
+        val target = terminalPaneTarget(controller.tabs("c1"), controller.hasTabHistory("c1"))
+        assertTrue(target.emptyAfterNativeTabs)
+        assertFalse(target.legacyConversation)
+        assertNull(target.sessionID)
+    }
+
+    @Test
+    fun closingTheLastInteractiveTabKeepsALiveRunProjection() = runBlocking {
+        val root = LiveRoot(7L)
+        val controller = G04TerminalHostController(
+            CoroutineScope(Dispatchers.Unconfined),
+            outputDispatcher = Dispatchers.Unconfined,
+            inputDispatcher = Dispatchers.Unconfined,
+            closeSinkOverride = { _, _ -> TerminalActionReply.Success(buildJsonObject { }) },
+            currentNativeEpoch = { root.epoch })
+        setFieldLong(controller, "boundEpoch", 7L)
+        (G04TerminalHostController::class.java.getDeclaredField("stopped")
+            .apply { isAccessible = true }.get(controller)
+            as java.util.concurrent.atomic.AtomicBoolean).set(false)
+        val registry = tabRegistry(controller)
+        registry.newTab("c1", "req-a")
+        registry.adopt("req-a", "tok-a")
+        seedMap<String>(controller, "sessionTokens")["c1"] = "tok-a"
+        seedMap<String>(controller, "tokenConversations")["tok-a"] = "c1"
+        val snapshots = seedMap<TerminalSessionSnapshot>(controller, "snapshots")
+        snapshots["c1"] = TerminalSessionSnapshot(
+            "c1", "tok-run", TerminalSessionPhase.RUNNING, "run", "run-1",
+            null, null, null, 0)
+
+        assertTrue(controller.closeTab("tok-a") is TerminalActionReply.Success)
+        assertEquals("a live Run session still owns the conversation projection",
+            "tok-run", controller.currentSnapshot("c1")?.sessionToken)
     }
 
     // MARK: - G07.3A pending/refused tab ownership (device regression)

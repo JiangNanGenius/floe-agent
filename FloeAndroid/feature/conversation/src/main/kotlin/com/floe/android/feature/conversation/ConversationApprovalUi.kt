@@ -59,21 +59,28 @@ fun ConversationApprovalRow(
 ) {
     val colors = Floe.colors
     // Owned Linux engine slot conflict (Main ruling 2026-10-28): the runtime
-    // escalated THIS exact call because this conversation's own live
-    // interactive terminal holds the single runtime-UID engine workload slot,
-    // so the proposed command cannot start until a human explicitly decides to
-    // end that terminal. The typed reason token is an opaque identifier and is
-    // NEVER rendered as prose — the card shows its own short localized copy.
+    // escalated THIS exact call because its trusted G04 probe found this
+    // conversation's own live interactive terminal really holding the
+    // dedicated execution slot. The typed reason token is an opaque identifier
+    // and is NEVER rendered as prose — the card shows its own short localized
+    // copy.
+    //
+    // A live TTY alone is NOT a conflict: under the approved separated pool
+    // (TWO interactive tabs + ONE Agent/run execution slot) it never blocks an
+    // Agent command. The App therefore asks the host for the live capture only
+    // when the trusted token is present, and requires that exact capture for
+    // the destructive control. No token ⇒ an ordinary card, unchanged.
     val reasonIsSlotConflict = ApprovalGrantMapping.terminalHandoffConflict(card.reason)
-    // The host's live truth, not a parse of the reason: the explicit action is
-    // offered only while a terminal this host really owns is still live, for a
-    // tool that really needs the slot, on this conversation's own card.
-    val liveSlotConflict = holder.terminalHandoffConflict.value?.takeIf {
-        it.sessionToken.isNotEmpty() &&
-            card.conversationId == holder.conversationId &&
-            ApprovalGrantMapping.acquiresLinuxEngineSlot(card.toolName)
-    }
-    val slotConflict = reasonIsSlotConflict || liveSlotConflict != null
+    val handoff = ApprovalGrantMapping.terminalHandoffProjection(
+        reason = card.reason,
+        toolName = card.toolName,
+        liveConsent = if (reasonIsSlotConflict && card.conversationId == holder.conversationId) {
+            holder.liveTerminalHandoffConsent()
+        } else {
+            null
+        },
+    )
+    val slotConflict = handoff.showsConflictNote
     val handoffRefusal = holder.terminalHandoffRefusal.value
         ?.takeIf { it.approvalKey == card.key }
     val gateStopped = ApprovalGrantMapping.isGateStopped(card.reason) && !reasonIsSlotConflict
@@ -115,14 +122,17 @@ fun ConversationApprovalRow(
     val endTerminalAndRun: (ApprovalCardUi) -> Unit = { c ->
         // Re-read the live identity at tap time: the consent names the session
         // that is live NOW, so the host can refuse a replacement instead of
-        // stopping a different terminal.
-        val consent = holder.terminalHandoffConflict.value
-        if (consent != null && consent.sessionToken.isNotEmpty()) {
+        // stopping a different terminal. The capture is never cached in the
+        // card and no consent is fabricated when the terminal already settled.
+        val consent = holder.liveTerminalHandoffConsent()
+        if (consent == null || consent.sessionToken.isEmpty()) {
+            // The terminal settled between the card being projected and this
+            // tap. Nothing is stopped, approved or dispatched; the card says
+            // so plainly and the ordinary Allow/Deny stays available.
+            holder.applyTerminalHandoffRefusal(holder.session, c.key, "staleCapture")
+        } else {
             holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE)
-            backendEndTerminalAndRun(
-                c,
-                TerminalHandoffConsentUi(consent.sessionToken, consent.nativeEpoch),
-            )
+            backendEndTerminalAndRun(c, consent)
         }
     }
     val borderTint = headerTint.copy(alpha = 0.6f)
@@ -260,7 +270,7 @@ fun ConversationApprovalRow(
             )
         }
 
-        if (liveSlotConflict != null) {
+        if (handoff.allowsEndAndRun) {
             // The wording states the effect plainly: this ENDS the task's
             // terminal and then runs the proposed command. It is never an
             // unconditional auto-stop and never implied by a policy or tier.

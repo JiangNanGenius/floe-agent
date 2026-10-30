@@ -533,6 +533,81 @@ public actor SQLiteConversationStore: ConversationStore {
         }
     }
 
+    /// Bounded, chronological window containing one exact message plus a
+    /// few of its neighbours. Used by the in-thread find bar to reveal a
+    /// durable hit outside the currently loaded page; never the whole
+    /// conversation. Parts are hydrated so the window renders exactly like a
+    /// normal page read. The target row is always included when it belongs to
+    /// the conversation.
+    public func messageWindow(
+        conversationID: UUID,
+        around messageID: UUID,
+        before: Int,
+        after: Int
+    ) async throws -> ConversationMessagePage {
+        let olderLimit = min(200, max(1, before))
+        let newerLimit = min(20, max(0, after))
+        return try await database.reader { db in
+            guard let target = try Row.fetchOne(
+                db,
+                sql: "SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?",
+                arguments: [messageID.uuidString, conversationID.uuidString]
+            ), let createdAtRaw: String = target["created_at"] else {
+                throw FloeError.notFound("messageNotFound")
+            }
+            let older = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM messages
+                    WHERE conversation_id = ?
+                      AND (created_at < ? OR (created_at = ? AND id <= ?))
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                arguments: [
+                    conversationID.uuidString, createdAtRaw, createdAtRaw,
+                    messageID.uuidString, olderLimit + 1,
+                ]
+            )
+            let newer = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM messages
+                    WHERE conversation_id = ?
+                      AND (created_at > ? OR (created_at = ? AND id > ?))
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                    """,
+                arguments: [
+                    conversationID.uuidString, createdAtRaw, createdAtRaw,
+                    messageID.uuidString, newerLimit,
+                ]
+            )
+            let rows = Array(older.reversed()) + newer
+            let messageIDs = try rows.map(Self.messageID(from:))
+            let partsByMessage = try Self.fetchParts(messageIDs: messageIDs, db: db)
+            let messages = try rows.map { row in
+                let id = try Self.messageID(from: row)
+                return PersistedMessage(
+                    id: id,
+                    conversationID: conversationID,
+                    role: row["role"],
+                    content: row["content"],
+                    createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
+                    parts: partsByMessage[id, default: []],
+                    runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:))
+                )
+            }
+            return ConversationMessagePage(
+                messages: messages,
+                earlierCursor: messages.first.map {
+                    ConversationMessageCursor(createdAt: $0.createdAt, messageID: $0.id)
+                },
+                hasEarlier: older.count > olderLimit
+            )
+        }
+    }
+
     public func parts(messageID: UUID) async throws -> [MessagePart] {
         try await database.reader { db in
             try Self.fetchParts(messageID: messageID, db: db)

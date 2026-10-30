@@ -724,6 +724,9 @@ let package = Package(
             // G06 notes suites run the REAL NotesStore + NotesEngine against
             // temporary roots on the host (no bootstrap/device dependency).
             "FloeNotes",
+            // G07.3A user-question contract tests exercise the real
+            // UserAskTool/UserQuestionCoordinator in the runtime target.
+            "FloeAgentRuntime",
         ], swiftSettings: strictSettings)
     ]
 )

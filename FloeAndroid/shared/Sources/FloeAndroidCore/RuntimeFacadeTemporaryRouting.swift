@@ -227,6 +227,21 @@ enum TemporaryConversationProjection {
             },
             hasEarlier: eligible.count > working.count)
 
+        return try await pageReply(
+            working: working, originalPage: originalPage,
+            route: route, content: content)
+    }
+
+    /// Shared bounded page builder for a temporary session window. [working]
+    /// must already be the exact page rows; [originalPage] carries the real
+    /// earlier cursor/hasEarlier semantics for that slice.
+    private static func pageReply(
+        working: [PersistedMessage],
+        originalPage: ConversationMessagePage,
+        route: TemporaryLiveRoute,
+        content: FacadeConversationContentAuthority
+    ) async throws -> ConversationMessagePageReply {
+        var working = working
         // Oversize rows go through the SAME generation-owned bounded reader
         // as the durable path, bound to this temporary conversation AND
         // incarnation. The bytes stay in RAM; the page carries a handle
@@ -291,5 +306,34 @@ enum TemporaryConversationProjection {
             }
             trimmed = true
         }
+    }
+
+    /// Bounded window around one exact RAM message. The slice is taken from
+    /// the session's own ordered messages; no durable row is read or written.
+    static func messageWindowReply(
+        messages: [PersistedMessage],
+        around messageID: UUID,
+        before: Int,
+        after: Int,
+        route: TemporaryLiveRoute,
+        content: FacadeConversationContentAuthority
+    ) async throws -> ConversationMessagePageReply {
+        guard let index = messages.firstIndex(where: { $0.id == messageID }) else {
+            throw ConversationDomainError.notFound
+        }
+        let olderLimit = min(200, max(1, before))
+        let newerLimit = min(20, max(0, after))
+        let lower = max(0, index - olderLimit)
+        let upper = min(messages.count, index + newerLimit + 1)
+        let working = Array(messages[lower..<upper])
+        let originalPage = ConversationMessagePage(
+            messages: working,
+            earlierCursor: working.first.map {
+                ConversationMessageCursor(createdAt: $0.createdAt, messageID: $0.id)
+            },
+            hasEarlier: lower > 0)
+        return try await pageReply(
+            working: working, originalPage: originalPage,
+            route: route, content: content)
     }
 }

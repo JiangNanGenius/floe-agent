@@ -477,4 +477,6 @@
     <string name="notes_copy_dismiss">Dismiss</string>
     <string name="workspace_terminal_sync_hint">Terminal file changes appear in Workspace Files when this session ends.</string>
     <string name="workspace_terminal_closed_hint">This session is closed. Reopen the terminal to start a new session.</string>
+    <string name="workspace_terminal_empty_title">No terminal tabs</string>
+    <string name="workspace_terminal_empty_hint">Open a new tab to start a terminal in this task.</string>
 </resources>

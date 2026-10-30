@@ -99,6 +99,9 @@ fun FloeConversationDestination(
     Column(modifier = modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
         ThreadTopBar(holder, onBack)
         FloeDivider()
+        if (holder.threadSearchVisible) {
+            ThreadSearchBar(holder)
+        }
 
         if (state == null) {
             // Honest first-frame loading state (⇄ ProgressView while the
@@ -129,6 +132,7 @@ fun FloeConversationDestination(
             ThreadCompactionStatus(holder)
             ThreadErrorBanner(holder)
             ThreadContinuationBar(holder)
+            UserQuestionWaitingBar(holder)
             if (state.isConversationMissing) {
                 ConversationMissingPlaceholder()
             } else {
@@ -148,6 +152,7 @@ fun FloeConversationDestination(
     TemporaryChatAboutSheet(holder)
     ChildRunDetailSheet(holder)
     UsageDetailsPopover(holder)
+    UserQuestionSheet(holder)
     // ⇄ ThreadComposerView `.sheet(isPresented: $isFullEditorPresented)`:
     // the expand destination over the SAME retained draft. Back/Done dismiss
     // only; the guarded send runs the holder's canonical send and closes the
@@ -177,6 +182,19 @@ private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) 
         actions = {
             if (state?.isTemporary == true) {
                 TemporaryChatBadgeMenu(holder)
+            }
+            if (state != null) {
+                val searchLabel = stringResource(R.string.thread_search_placeholder)
+                Box(
+                    modifier = Modifier
+                        .heightIn(min = FloeLayout.MinimumTarget)
+                        .widthIn(min = FloeLayout.MinimumTarget)
+                        .clickable { holder.beginThreadSearch() }
+                        .semantics { contentDescription = searchLabel },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    IconGlyph(FloeIcons.Magnifier, Floe.colors.label, 18.dp)
+                }
             }
             // Context usage ring (only when the window is known — never an
             // invented token count).
@@ -346,6 +364,7 @@ private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) 
 @Composable
 private fun ThreadTimeline(holder: ConversationFlowHolder, isWide: Boolean, modifier: Modifier = Modifier) {
     val state = holder.snapshot.value ?: return
+    val search = holder.threadSearch
     val listState = rememberLazyListState()
     // ⇄ latest-follow: scroll to the bottom when the user follows latest and
     // content/length ticks changed; an intentional scroll-away is respected
@@ -353,10 +372,30 @@ private fun ThreadTimeline(holder: ConversationFlowHolder, isWide: Boolean, modi
     val contentTick = remember(state.rows.map { it.id }, state.liveAssistantText.length, state.liveReasoningText.length, state.isRunning) {
         state.rows.size.toString() + ":" + state.liveAssistantText.length + ":" + state.liveReasoningText.length + ":" + state.isRunning
     }
-    LaunchedEffect(contentTick, state.hasLoaded) {
-        if (state.hasLoaded && holder.followState.followsLatest && state.rows.isNotEmpty()) {
+    LaunchedEffect(contentTick, state.hasLoaded, search.focusedMessageId) {
+        if (state.hasLoaded && holder.followState.followsLatest &&
+            search.focusedMessageId == null && state.rows.isNotEmpty()
+        ) {
             listState.scrollToItem(state.rows.lastIndex)
         }
+    }
+    // Search reveal: scroll ONLY to the selected hit. The token changes on a
+    // deliberate prev/next or after a bounded older-window load, so new rows
+    // arriving for other reasons never move the reader.
+    LaunchedEffect(
+        search.focusRowToken,
+        search.focusedMessageId,
+        state.rows,
+    ) {
+        val messageId = search.focusedMessageId ?: return@LaunchedEffect
+        val index = state.rows.indexOfFirst { row ->
+            when (row) {
+                is TimelineRowUi.UserMessage -> row.message.id == messageId
+                is TimelineRowUi.AssistantMessage -> row.attachedMessageId == messageId
+                else -> false
+            }
+        }
+        if (index >= 0) listState.scrollToItem(index)
     }
     // Feed the follow-state machine from the ACTUAL lazy-list geometry:
     // (cumulative offset, distance-to-bottom estimate, user drag flag). The
@@ -379,55 +418,71 @@ private fun ThreadTimeline(holder: ConversationFlowHolder, isWide: Boolean, modi
         }
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(
-            horizontal = if (isWide) 24.dp else 12.dp,
-            vertical = 12.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        items(state.rows, key = { it.id }) { row ->
-            // ⇄ ThreadDetailView.threadScroll (385-435): the LazyVStack fills
-            // the ENTIRE detail pane (alignment .leading + .padding()) with
-            // NO per-row reading cap — user bubbles align trailing and the
-            // assistant reads leading inside their own rows. The composer's
-            // centred 720dp chrome is a separate, separately reviewed G01
-            // geometry; no captured-iPad justification exists for capping
-            // timeline rows, so none is applied here.
-            Box(modifier = Modifier.fillMaxWidth()) {
-                ConversationTimelineRow(row = row, holder = holder)
+    // One weighted child owns the whole timeline region. The previous code
+    // passed the caller's weight modifier to BOTH the LazyColumn and the
+    // return-to-latest Box, so Compose split the remaining height between
+    // them and left a blank half-pane below the list (Samsung c02-model-*
+    // evidence: viewport 0..1115 with a blank gap after the keyboard closed).
+    Box(modifier = modifier.fillMaxWidth()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                horizontal = if (isWide) 24.dp else 12.dp,
+                vertical = 12.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            items(state.rows, key = { it.id }) { row ->
+                // ⇄ ThreadDetailView.threadScroll (385-435): the LazyVStack fills
+                // the ENTIRE detail pane (alignment .leading + .padding()) with
+                // NO per-row reading cap — user bubbles align trailing and the
+                // assistant reads leading inside their own rows. The composer's
+                // centred 720dp chrome is a separate, separately reviewed G01
+                // geometry; no captured-iPad justification exists for capping
+                // timeline rows, so none is applied here.
+                val messageId = when (row) {
+                    is TimelineRowUi.UserMessage -> row.message.id
+                    is TimelineRowUi.AssistantMessage -> row.attachedMessageId
+                    else -> null
+                }
+                val searchQuery = search.takeIf {
+                    messageId != null && it.focusedMessageId == messageId
+                }?.query
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    ConversationTimelineRow(
+                        row = row, holder = holder, searchHighlightQuery = searchQuery,
+                    )
+                }
+            }
+            if (state.usage != null) {
+                item(key = "usage-footer") { ThreadUsageFooter(state.usage) }
+            }
+            if (!state.isConversationMissing && state.rows.isEmpty() && state.hasLoaded) {
+                // ⇄ ContentUnavailableView(thread.empty): honest empty surface,
+                // never a fabricated history.
+                item(key = "thread-empty") {
+                    FloeUnavailableView(
+                        icon = FloeIcons.Bubble,
+                        title = stringResource(R.string.thread_empty_title),
+                        description = stringResource(R.string.thread_empty_hint),
+                    )
+                }
             }
         }
-        if (state.usage != null) {
-            item(key = "usage-footer") { ThreadUsageFooter(state.usage) }
-        }
-        if (!state.isConversationMissing && state.rows.isEmpty() && state.hasLoaded) {
-            // ⇄ ContentUnavailableView(thread.empty): honest empty surface,
-            // never a fabricated history.
-            item(key = "thread-empty") {
-                FloeUnavailableView(
-                    icon = FloeIcons.Bubble,
-                    title = stringResource(R.string.thread_empty_title),
-                    description = stringResource(R.string.thread_empty_hint),
-                )
-            }
-        }
-    }
 
-    // ⇄ return-to-latest floating button.
-    if (holder.showsReturnToLatest) {
-        Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.BottomEnd) {
+        // ⇄ return-to-latest floating button. It is an OVERLAY inside the one
+        // weighted timeline slot (iOS ZStack alignment .bottomTrailing), not a
+        // second weighted column child.
+        if (holder.showsReturnToLatest) {
             val jumpCd = stringResource(R.string.jump_to_latest)
             Box(
                 modifier = Modifier
+                    .align(Alignment.BottomEnd)
                     .padding(end = 14.dp, bottom = 12.dp)
                     .heightIn(min = FloeLayout.MinimumTarget)
                     .clickable {
                         holder.returnToLatest()
-                        // The follow LaunchedEffect performs the scroll when
-                        // the intent flips back to latest.
                     }
                     .semantics { contentDescription = jumpCd },
                 contentAlignment = Alignment.Center,
@@ -562,11 +617,16 @@ private fun PendingInputEditorSheet(holder: ConversationFlowHolder) {
     } else {
         null
     }
+    val phone = FloeLayout.usesCompactNavigation(
+        LocalConfiguration.current.screenWidthDp.toFloat(),
+        LocalConfiguration.current.smallestScreenWidthDp.toFloat(),
+    )
     FloePageSheet(
         visible = inputId != null,
         onDismiss = holder::closePendingInputEditor,
         heightFraction = 0.5f,
-        widthFraction = 0.9f,
+        widthFraction = if (phone) 1f else 0.9f,
+        placement = if (phone) com.floe.android.design.FloeSheetPlacement.BOTTOM else null,
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             val cancelLabel = stringResource(R.string.action_cancel)
@@ -635,8 +695,17 @@ private fun ChildRunDetailSheet(holder: ConversationFlowHolder) {
     FloePageSheet(
         visible = childRunId != null,
         onDismiss = holder::closeChildRun,
-        widthFraction = if ((LocalConfiguration.current.screenWidthDp.dp) >= FloeLayout.PersistentTwoColumnMinWidth) 0.7f else 1f,
+        widthFraction = if (FloeLayout.usesCompactNavigation(
+                LocalConfiguration.current.screenWidthDp.toFloat(),
+                LocalConfiguration.current.smallestScreenWidthDp.toFloat(),
+            )
+        ) 1f else 0.7f,
         heightFraction = 0.86f,
+        placement = if (FloeLayout.usesCompactNavigation(
+                LocalConfiguration.current.screenWidthDp.toFloat(),
+                LocalConfiguration.current.smallestScreenWidthDp.toFloat(),
+            )
+        ) com.floe.android.design.FloeSheetPlacement.BOTTOM else null,
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             val doneLabel = stringResource(R.string.action_done)

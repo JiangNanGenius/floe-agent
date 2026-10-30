@@ -154,6 +154,20 @@ class TerminalTabRegistryTest {
     }
 
     @Test
+    fun `closing the last tab keeps tab-era history without resurrecting a session`() {
+        val registry = TerminalTabRegistry()
+        registry.newTab("conv-1", "req-1").also { registry.adopt("req-1", "session-A") }
+        assertTrue(registry.hasNativeTabHistory("conv-1"))
+        registry.close("session-A")
+        assertTrue(registry.isEmpty("conv-1"))
+        assertNull(registry.selectedSessionID("conv-1"))
+        assertTrue("the conversation owned a real tab; it is now an empty terminal",
+            registry.hasNativeTabHistory("conv-1"))
+        assertFalse("another conversation never inherits the history",
+            registry.hasNativeTabHistory("conv-2"))
+    }
+
+    @Test
     fun `closing the last tab clears selection and never leaks to another conversation`() {
         val registry = TerminalTabRegistry()
         registry.newTab("conv-1", "req-1").also { registry.adopt("req-1", "session-A") }

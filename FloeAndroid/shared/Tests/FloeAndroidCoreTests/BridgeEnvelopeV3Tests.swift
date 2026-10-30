@@ -116,9 +116,9 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
         // batch). The 57 legacy + 27 settings + 3 goal-core tuples, the 55
         // configuration entries, the 19 labels and the mailbox bounds are
         // unchanged; there is NO child.create and no renamed/deleted identity.
-        XCTAssertEqual(rules.count, 90)
+        XCTAssertEqual(rules.count, 95)
         XCTAssertEqual(rules.filter { $0.scope == .applicationConfiguration }.count, 55)
-        XCTAssertEqual(rules.filter { $0.scope == .conversationLifecycle }.count, 16)
+        XCTAssertEqual(rules.filter { $0.scope == .conversationLifecycle }.count, 21)
         XCTAssertEqual(rules.filter { $0.scope == .launch }.count, 5)
         XCTAssertEqual(rules.filter { $0.scope == .taskExecution }.count, 14)
         // The third content.read entry shares (scope, command) with the
@@ -285,15 +285,22 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
             ("conversationLifecycle", nil, "workspace.read"),
             ("conversationLifecycle", nil, "workspace.write"),
             ("conversationLifecycle", nil, "workspace.activate"),
+            // G07.3A interaction batch (2026-10-30): current-thread visible
+            // search + durable user questions (append-only; no reorder/rename).
+            ("conversationLifecycle", nil, "conversation.messageSearch"),
+            ("conversationLifecycle", nil, "conversation.messageWindow"),
+            ("conversationLifecycle", nil, "question.pending"),
+            ("conversationLifecycle", nil, "question.answer"),
+            ("conversationLifecycle", nil, "question.cancel"),
         ]
-        XCTAssertEqual(goldenPairs.count, 90)
+        XCTAssertEqual(goldenPairs.count, 95)
         // The uniqueness key includes configurationScope: the third
         // content.read entry intentionally shares scope+command with the
         // conversations entry. The 57 legacy tuples remain unchanged.
         let goldenKeys = goldenPairs.map {
             "\($0.scope)|\($0.configurationScope ?? "")|\($0.command)"
         }
-        XCTAssertEqual(Set(goldenKeys).count, 90)
+        XCTAssertEqual(Set(goldenKeys).count, 95)
         XCTAssertEqual(Set(goldenPairs.prefix(57).map {
             "\($0.scope)|\($0.configurationScope ?? "")|\($0.command)"
         }).count, 57)
@@ -301,12 +308,12 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
         // workspace.read + workspace.write + workspace.activate (all three
         // are new distinct commands) => 89 (86+3); distinct COMMAND names are
         // 88 (85+3).
-        XCTAssertEqual(Set(goldenPairs.map { "\($0.scope)|\($0.command)" }).count, 89)
-        XCTAssertEqual(Set(goldenPairs.map { "\($0.command)" }).count, 88)
+        XCTAssertEqual(Set(goldenPairs.map { "\($0.scope)|\($0.command)" }).count, 94)
+        XCTAssertEqual(Set(goldenPairs.map { "\($0.command)" }).count, 93)
         XCTAssertEqual(Set(rules.map {
             "\($0.scope.rawValue)|\($0.configurationScope ?? "")|\($0.command)"
         }), Set(goldenKeys),
-                       "Swift matrix must equal the approved 90-entry golden matrix")
+                       "Swift matrix must equal the approved 95-entry golden matrix")
     }
 
     func testCredentialStatusStaysFailClosedInV3() throws {

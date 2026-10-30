@@ -551,6 +551,7 @@ public final class G02RuntimeComposition: @unchecked Sendable {
             RunDomainFacade.uninstall()
         }
         AttachmentStagingFacade.retire(epoch: epoch)
+        UserQuestionHostAPI.shared.retire(epoch: epoch)
 
         // 4. Drop the installed pointer and generation-scoped fences last,
         //    owning epoch only.

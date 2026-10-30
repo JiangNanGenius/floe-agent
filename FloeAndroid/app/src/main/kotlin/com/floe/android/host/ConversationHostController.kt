@@ -45,12 +45,14 @@ import com.floe.android.feature.conversation.TaskBulkOperationUi
 import com.floe.android.feature.conversation.TemporaryEndTargetUi
 import com.floe.android.feature.conversation.TemporaryKeepOutcomeUi
 import com.floe.android.feature.conversation.TemporarySessionRef
-import com.floe.android.feature.conversation.TerminalHandoffConflictUi
 import com.floe.android.feature.conversation.TerminalHandoffConsentUi
+import com.floe.android.feature.conversation.UserQuestionAnswerRequestUi
 import com.floe.android.feature.conversation.ThreadUiState
 import com.floe.android.feature.conversation.TimelineRowUi
 import com.floe.android.feature.providers.ProviderCredentialStateUi
 import com.floe.android.FloeApplication
+import com.floe.android.host.questions.UserQuestionHostController
+import com.floe.android.host.questions.UserQuestionSurface
 import com.floe.android.host.output.RunOutputHostService
 import com.floe.android.host.output.RunOutputListResult
 import com.floe.android.host.output.RunOutputOfficeSnapshotStager
@@ -106,6 +108,105 @@ class ConversationHostController internal constructor(
 
     /** History surface holder (Task Center / archive / management). */
     val historyHolder = ConversationHistoryHolder(this)
+
+    /**
+     * G07.3A durable questions + current-thread search. It uses the SAME
+     * command client, readiness admission and holder registry; its callbacks
+     * re-check the exact entry/session so a late reply can never mutate a
+     * rebound surface, another task or a retired temporary incarnation.
+     */
+    internal val userQuestions = UserQuestionHostController(
+        host,
+        object : UserQuestionSurface {
+            override fun publishSnapshot(
+                session: ConversationSessionToken,
+                snapshot: com.floe.android.feature.conversation.UserQuestionSnapshotUi?,
+            ) {
+                val entry = holders[session.conversationId] ?: return
+                if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
+                rememberUserQuestionSnapshot(session, snapshot)
+                entry.holder.applyUserQuestionSnapshot(session, snapshot)
+                com.floe.android.host.questions.UserQuestionNotifications.onSnapshot(
+                    context = host.appContext, session = session, snapshot = snapshot)
+            }
+
+            override fun publishReceipt(
+                session: ConversationSessionToken,
+                receipt: com.floe.android.feature.conversation.UserQuestionAnswerReceiptUi,
+            ) {
+                val entry = holders[session.conversationId] ?: return
+                if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
+                entry.holder.applyUserQuestionReceipt(receipt)
+                if (receipt.settled) {
+                    com.floe.android.host.questions.UserQuestionNotifications.cancel(
+                        host.appContext, session.conversationId)
+                }
+            }
+
+            override fun publishFailure(session: ConversationSessionToken, code: String?) {
+                val entry = holders[session.conversationId] ?: return
+                if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
+                entry.holder.applyUserQuestionFailure(code)
+            }
+
+            override fun publishSearchResult(
+                session: ConversationSessionToken,
+                generation: Long,
+                result: com.floe.android.feature.conversation.ThreadSearchResultUi,
+            ) {
+                val entry = holders[session.conversationId] ?: return
+                if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
+                entry.holder.applyThreadSearchResult(session, generation, result)
+            }
+
+            override fun publishSearchFailure(
+                session: ConversationSessionToken,
+                generation: Long,
+            ) {
+                val entry = holders[session.conversationId] ?: return
+                if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
+                entry.holder.applyThreadSearchFailure(session, generation)
+            }
+
+            override fun publishSearchFocus(
+                session: ConversationSessionToken,
+                token: Long,
+                messageId: String,
+            ) {
+                val entry = holders[session.conversationId] ?: return
+                if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
+                entry.holder.applyThreadSearchFocus(session, token, messageId)
+            }
+
+            override fun publishSearchRevealFailure(
+                session: ConversationSessionToken,
+                token: Long,
+            ) {
+                val entry = holders[session.conversationId] ?: return
+                if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
+                entry.holder.applyThreadSearchRevealFailure(session, token)
+            }
+        },
+        isCurrentSession = { session ->
+            val entry = holders[session.conversationId]
+            entry != null &&
+                ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)
+        },
+    )
+
+    /** One hop so the surface's initializer never references the property
+     *  being initialized (Kotlin recursive-type hazard); callbacks only run
+     *  after construction. */
+    private fun rememberUserQuestionSnapshot(
+        session: ConversationSessionToken,
+        snapshot: com.floe.android.feature.conversation.UserQuestionSnapshotUi?,
+    ) {
+        userQuestions.remember(session, snapshot)
+    }
+
+    init {
+        com.floe.android.host.questions.UserQuestionNotifications.install(userQuestions)
+    }
 
     /** Shell navigation requests (host → shell, observed by composition). */
     val navigationRequest = MutableStateFlow<SidebarSelection?>(null)
@@ -226,14 +327,6 @@ class ConversationHostController internal constructor(
     private val launchOutcomeListeners =
         ConcurrentHashMap<Long, (admitted: Boolean, reason: String?) -> Unit>()
     private val eventPumps = ConcurrentHashMap<String, EventPumpHandle>()
-
-    /** Per-surface unregister hook for the live owned-Linux-engine-slot
-     * conflict watch. Registering the watcher is the ONLY view-scoped
-     * resource here (the same pane-scoped idiom the terminal pane uses);
-     * detaching never touches a session. Keyed by conversation + session
-     * epoch so a rebound surface registers its own watch and a stale one is
-     * retired with its holder. */
-    private val terminalConflictWatches = ConcurrentHashMap<String, () -> Unit>()
 
     /** At most ONE explicit terminal→model handoff per conversation: a second
      * consent is refused instead of racing the same captured session, and the
@@ -855,9 +948,6 @@ class ConversationHostController internal constructor(
             if (temporaryNativeRootEpoch >= 0L) {
                 existing.holder.temporaryNativeRootEpoch = temporaryNativeRootEpoch
             }
-            // Idempotent: a re-resolved surface keeps its existing watch, and a
-            // rebound session (new epoch) registers its own.
-            ensureTerminalConflictWatch(existing)
             return existing.holder
         }
         val epoch = sessionEpochs.incrementAndGet()
@@ -889,10 +979,6 @@ class ConversationHostController internal constructor(
             builder = builder,
         )
         holders[conversationId] = created
-        // The live owned-slot conflict is HOST truth (the terminal owner's own
-        // predicate), not a field on a native run page, so this surface observes
-        // it directly and an approval card can offer the explicit decision.
-        ensureTerminalConflictWatch(created)
         // First-provider/model configuration must not depend on opening the
         // thread first: an admitted configuration surface refreshes the real
         // projection so the composer can send on the very first open.
@@ -911,6 +997,13 @@ class ConversationHostController internal constructor(
         holders.remove(conversationId)?.let { entry ->
             retireHolderResources(conversationId, entry)
         }
+        // Question/search facts are RAM-only per holder; drop them with the
+        // holder instead of retaining question text after task navigation.
+        userQuestions.forget(conversationId)
+        runCatching {
+            com.floe.android.host.questions.UserQuestionNotifications.cancel(
+                host.appContext, conversationId)
+        }
     }
 
     private fun retireHolderResources(
@@ -924,9 +1017,6 @@ class ConversationHostController internal constructor(
         // C09: holder retire ends observation for exactly this conversation
         // (identity-CAS: a replacement surface's watch is never touched).
         closeQueueSettleWatchesFor(conversationId)
-        // Same discipline for the owned-slot conflict watch: detaching is host
-        // resource ownership and never stops or closes a terminal session.
-        releaseTerminalConflictWatches(conversationId)
         queueSettleReconcilesInFlight.remove(conversationId)
         queueSettleRerunRequested.remove(conversationId)
         queueSettleConsumedCursors.keys.filter { it.startsWith("$conversationId/") }
@@ -1014,6 +1104,10 @@ class ConversationHostController internal constructor(
                         val projection = currentModels()
                         entry.builder.applyModels(projection.models, projection.needsProvider)
                         entry.holder.applyHostSnapshot(entry.builder.build())
+                        // Recover a durable question across relaunch: the
+                        // native store is the truth; a missing live
+                        // continuation never fabricates a restored wait.
+                        userQuestions.refresh(session, force = true)
                         loadMessagePage(session, entry)
                         resumeLiveRuns(session, entry, reply)
                         // D04: cards survive App reload from REAL stored
@@ -1110,6 +1204,10 @@ class ConversationHostController internal constructor(
                         val selectedHere = entry.builder.selectedRunId == runID
                         if (selectedHere) entry.builder.applySnapshotLiveText(page)
                         entry.holder.applyHostSnapshot(entry.builder.build())
+                        // Run snapshots are the canonical live read; a
+                        // question can appear while the tool call is still
+                        // executing. The controller throttles the read.
+                        userQuestions.refresh(entry.holder.session)
                         applied = queueOwner == null || page.pendingInputsTruncated == false
                         if (reconcileTerminal && page.isTerminal) {
                             // A terminal page is the durable close boundary for
@@ -1180,6 +1278,10 @@ class ConversationHostController internal constructor(
         if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return
         if (currentRunStreamGeneration(conversationId, runID) != streamGeneration) return
         if (entry.builder.selectedRunId != runID) return
+        // A question tool call blocks the run inside tool execution; the live
+        // hint is the earliest safe point to read the durable question. The
+        // controller throttles this to one bounded read per window.
+        userQuestions.refresh(entry.holder.session)
         val existing = liveSnapshotRefreshes[runID]
         val state = if (existing == null || existing.generation != streamGeneration) {
             LiveSnapshotRefreshState(streamGeneration).also {
@@ -2221,6 +2323,10 @@ class ConversationHostController internal constructor(
         entry.builder.applyRunEvent(frame)
         entry.holder.applyHostSnapshot(entry.builder.build())
         if (ConversationWire.isTerminalFrame(frame)) {
+            // A terminal run can no longer consume an answer: cancel the
+            // still-pending question owned by THIS run instead of leaving an
+            // actionable card that would silently settle nothing.
+            userQuestions.terminalFence(entry.holder.session, runID)
             // Durable close boundary: stop THIS run's pump and re-read the
             // committed user/assistant rows plus the authoritative snapshot.
             // A terminal for a run that is no longer selected updates that
@@ -3310,6 +3416,33 @@ class ConversationHostController internal constructor(
         holders[session.conversationId]?.builder?.selectedRunId
 
     /**
+     * On-demand capture for the historical single-slot handoff. It answers
+     * ONLY while this exact surface still owns the conversation and the
+     * terminal owner reports a live interactive session this host captured.
+     *
+     * It deliberately publishes no conflict by itself: under the approved
+     * separated pool (TWO interactive tabs + ONE Agent/run execution slot) a
+     * live TTY never blocks an Agent command, so the presence of a terminal
+     * is not evidence of a blocker. The runtime's trusted G04 probe remains
+     * the only source that decides a conflict (and carries its typed reason
+     * token on the approval card); this method merely names the live session
+     * when that token asks the human to end it. The actual close is still
+     * fenced and proven by [beginTerminalHandoffThenDispatch].
+     */
+    override fun liveTerminalHandoffConsent(
+        session: ConversationSessionToken,
+    ): TerminalHandoffConsentUi? {
+        val entry = holders[session.conversationId] ?: return null
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return null
+        if (!admitted()) return null
+        val capture = host.workspaceTerminal
+            ?.liveInteractiveTerminal(session.conversationId)
+            ?: return null
+        if (capture.sessionToken.isEmpty() || capture.nativeEpoch == 0L) return null
+        return TerminalHandoffConsentUi(capture.sessionToken, capture.nativeEpoch)
+    }
+
+    /**
      * `run.approval.resolve`: revision `approval.<callID>/<requestedAt>` and
      * payload `{callID,decision,reason?,expectedApprovalVersion}`. The grant
      * scope is NEVER chosen by the payload — native re-derives it from the
@@ -3463,48 +3596,6 @@ class ConversationHostController internal constructor(
             }
         }
         return true
-    }
-
-    /**
-     * Publishes the live owned-slot conflict fact into one surface so its
-     * approval cards can offer the explicit end-and-run decision. Registration
-     * is the only view-scoped resource; detaching (holder retirement) never
-     * touches a session. A surface without a terminal host simply never sees a
-     * conflict, so its cards stay exactly as before.
-     */
-    private fun ensureTerminalConflictWatch(entry: ConversationFlowHolderEntry) {
-        val terminal = host.workspaceTerminal ?: return
-        val surfaceSession = entry.holder.session
-        val conversationId = surfaceSession.conversationId
-        val key = "$conversationId@${surfaceSession.sessionEpoch}"
-        if (terminalConflictWatches.containsKey(key)) return
-        val detach = terminal.watchSessions(conversationId) {
-            // The snapshot is only a change signal: the AUTHORITATIVE answer
-            // comes from the terminal host's own predicate (live generation,
-            // own captured handle, LIVE interactive status, same session), so
-            // this never projects a `.run` session or a settled phase as a
-            // manual terminal.
-            entry.holder.applyTerminalHandoffConflict(
-                surfaceSession,
-                terminal.liveInteractiveTerminal(conversationId)?.let {
-                    TerminalHandoffConflictUi(it.sessionToken, it.nativeEpoch)
-                },
-            )
-        }
-        val previous = terminalConflictWatches.put(key, detach)
-        previous?.invoke()
-    }
-
-    /** Detaches exactly this conversation's conflict watches. Identity-CAS on
-     * the stored hook, so a replacement surface's watch is never removed. */
-    private fun releaseTerminalConflictWatches(conversationId: String) {
-        terminalConflictWatches.keys
-            .filter { it == conversationId || it.startsWith("$conversationId@") }
-            .forEach { key ->
-                terminalConflictWatches.remove(key)?.let { detach ->
-                    runCatching { detach() }
-                }
-            }
     }
 
     /**
@@ -5470,6 +5561,64 @@ class ConversationHostController internal constructor(
             correlationPrefix = "crename",
         ) { accepted, _ -> historyHolder.applyRenameOutcome(conversationId, requestToken, accepted) }
         return true
+    }
+
+    override fun requestThreadSearch(
+        session: ConversationSessionToken,
+        query: String,
+        epoch: Long,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return false
+        if (!conversationAdmitted()) return false
+        return userQuestions.search(session, query, epoch)
+    }
+
+    override fun revealThreadSearchHit(
+        session: ConversationSessionToken,
+        messageId: String,
+        requestToken: Long,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return false
+        return userQuestions.reveal(
+            session = session,
+            messageId = messageId,
+            token = requestToken,
+            entry = entry,
+            isCurrent = {
+                ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
+                    !entry.holder.retired
+            },
+        )
+    }
+
+    override fun requestPendingQuestion(
+        session: ConversationSessionToken,
+        requestId: String?,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return false
+        return userQuestions.refresh(session, requestId, force = true)
+    }
+
+    override fun answerUserQuestion(
+        session: ConversationSessionToken,
+        request: UserQuestionAnswerRequestUi,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return false
+        if (request.runId.isEmpty()) return false
+        return userQuestions.answer(session, request)
+    }
+
+    override fun cancelUserQuestion(
+        session: ConversationSessionToken,
+        requestId: String,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return false
+        return userQuestions.cancel(session, requestId)
     }
 
     override fun requestContentSearch(query: String, epoch: Long): Boolean {

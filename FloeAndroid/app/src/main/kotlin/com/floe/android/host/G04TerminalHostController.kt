@@ -871,6 +871,12 @@ internal class G04TerminalHostController(
 
     fun currentTab(conversationID: String): TerminalTabView? = tabRegistry.current(conversationID)
 
+    /** True once this conversation has owned a REAL native tab. The pane uses
+     *  it to distinguish the pre-tab first-start compatibility path (no tab
+     *  ever existed) from an honest empty terminal (every tab was closed). */
+    fun hasTabHistory(conversationID: String): Boolean =
+        tabRegistry.hasNativeTabHistory(conversationID)
+
     fun snapshotFor(sessionID: String): TerminalSessionSnapshot? = tabSnapshots[sessionID]
 
     /** Pane-scoped tab observation. Detaching removes ONLY this listener; it
@@ -1041,6 +1047,18 @@ internal class G04TerminalHostController(
             sessionTokens.remove(conversationID, sessionID)
             tabRegistry.selectedSessionID(conversationID)
                 ?.let { sessionTokens.putIfAbsent(conversationID, it) }
+            if (tabRegistry.isEmpty(conversationID)) {
+                // The last tab's session has settled. Its conversation-level
+                // projection is the REMOVED session, so it must not survive
+                // as the pane's legacy fallback (device: a closed last tab
+                // showed the previous screen plus a stale fault). A live RUN
+                // session may still own this key; its projection is kept.
+                val projected = snapshots[conversationID]
+                if (projected != null && projected.purpose != TERMINAL_PURPOSE_RUN) {
+                    snapshots.remove(conversationID, projected)
+                }
+                clearInputIssue(conversationID)
+            }
             notifyTabs(conversationID)
         }
         return reply
@@ -2320,6 +2338,11 @@ private const val InputLaneByteBudget = 262_144L
  * tagged "run" and is never a handoff candidate: only a manual terminal may
  * be offered for an explicit end-and-run decision. */
 private const val TERMINAL_PURPOSE_INTERACTIVE = "interactive"
+
+/** A language/run-draft session's own purpose tag. Its conversation-level
+ * projection can outlive an interactive tab and must not be cleared as if it
+ * were the removed manual terminal. */
+private const val TERMINAL_PURPOSE_RUN = "run"
 
 /** Coalescing cap for one queued PTY input frame (bytes). Consecutive
  * small admission frames from the same conversation/epoch/token merge at
