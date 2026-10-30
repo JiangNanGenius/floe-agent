@@ -7704,7 +7704,7 @@ final class EditorViewModel {
         // An absolute/ground sketch, or an unknown support, keeps +normal.
         var defaultReversed = false
         if let sketch = session.document.sketches.first(where: { $0.id == hit.sketchID }),
-           case let .construction(planeID)? = sketch.support,
+           case let .construction(planeID)? = sketch.support?.source,
            let construction = session.document.planes.first(where: { $0.id == planeID }),
            case let .offset(definition)? = construction.definition,
            simd_dot(definition.source.signature.normal, hit.plane.normal) > 0.999 {

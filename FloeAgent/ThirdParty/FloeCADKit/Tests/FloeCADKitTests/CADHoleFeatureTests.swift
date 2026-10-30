@@ -16,6 +16,7 @@
 import Foundation
 import XCTest
 import simd
+import OCCTShim
 @testable import FloeCAD
 
 @MainActor
