@@ -68,8 +68,9 @@ struct UserQuestionNotificationIntegrationTests {
         let completion = QuestionCompletionProbe()
         var opened = false
         let response = UserQuestionNotificationResponse(payload: try payload(), action: .text("上海"))
-        #expect(UserQuestionNotificationBridge.dispatch(response, answering: writer,
-            onOpen: { _ in opened = true }, completion: { completion.finish() }))
+        let handled = UserQuestionNotificationBridge.dispatch(response, answering: writer,
+            onOpen: { _ in opened = true }, completion: { completion.finish() })
+        #expect(handled)
         #expect(await waitUntil { await writer.started })
         #expect(completion.count == 0)
         #expect(opened == false)
@@ -88,9 +89,10 @@ struct UserQuestionNotificationIntegrationTests {
         let completion = QuestionCompletionProbe()
         let target = try payload()
         var opened: UserQuestionNotificationPayload?
-        #expect(UserQuestionNotificationBridge.dispatch(
+        let handled = UserQuestionNotificationBridge.dispatch(
             UserQuestionNotificationResponse(payload: target, action: .open), answering: writer,
-            onOpen: { opened = $0 }, completion: { completion.finish() }))
+            onOpen: { opened = $0 }, completion: { completion.finish() })
+        #expect(handled)
         #expect(await waitUntil { completion.count == 1 })
         #expect(opened == target)
         #expect(await writer.started == false)
