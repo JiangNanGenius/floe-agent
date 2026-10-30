@@ -204,6 +204,7 @@ final class StorageSuspensionCoordinator {
                     DatabaseManager.suspendConnections()
                     self.connectionsSuspended = true
                     await DatabaseManager.drainWriterQueues()
+                    await NotesRepository.shared.drainWriterForSuspension()
                 },
                 endAssertion: {
                     // An older drain must neither block a newer background

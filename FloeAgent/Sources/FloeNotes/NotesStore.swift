@@ -21,7 +21,12 @@ public actor NotesStore {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         resources = root.appendingPathComponent("Resources", isDirectory: true)
         try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
-        database = try DatabaseQueue(path: root.appendingPathComponent("notes.sqlite").path)
+        var configuration = Configuration()
+        // This independent Notes connection belongs to the App process too.
+        // Observe the same process-wide GRDB fence as the conversation store;
+        // otherwise it could keep a transaction alive after that store drains.
+        configuration.observesSuspensionNotifications = true
+        database = try DatabaseQueue(path: root.appendingPathComponent("notes.sqlite").path, configuration: configuration)
         var migrator = DatabaseMigrator()
         migrator.registerMigration("notes.v1") { db in
             try db.execute(sql: """
@@ -61,6 +66,13 @@ public actor NotesStore {
                 """)
         }
         try migrator.migrate(database)
+    }
+
+    /// Join the writer queue after the process suspension notification. GRDB
+    /// rejects new statements while suspended and unwinds the active statement
+    /// before this barrier returns. Do not open a missing Notes library here.
+    public func drainWriterForSuspension() async {
+        _ = try? await database.writeWithoutTransaction { (_: Database) in () }
     }
 
     public func notebooks() throws -> [Notebook] {

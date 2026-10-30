@@ -8,6 +8,10 @@ import FloePersistence
 actor NotesRepository {
     static let shared = NotesRepository()
     private var instance: NotesStore?
+
+    func drainWriterForSuspension() async {
+        await instance?.drainWriterForSuspension()
+    }
     func runtimeContext(conversationID: UUID) async throws -> String? {
         // Ordinary chats must not initialize a new Notes library as a side effect.
         if instance == nil {
