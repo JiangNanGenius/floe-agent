@@ -3555,7 +3555,12 @@ final class ConversationCenter: ObservableObject {
                 // A disconnected command target does not disable App-native
                 // search, documents, browser or CAD, and never selects a VM.
                 externalEnvironmentUnavailable = unavailable.localizedDescription
-                runExecutionEnvironmentID = nil
+                var trusted = try await environment.runStore.run(id: runID)?.executionBinding
+                if trusted == nil {
+                    trusted = try await TaskExecutionBindingStore(database: environment.database).binding(conversationID: conversationID)
+                }
+                runExecutionBinding = trusted
+                runExecutionEnvironmentID = trusted?.target.environmentID
             }
         } else {
             runExecutionEnvironmentID = nil
@@ -4009,7 +4014,7 @@ final class ConversationCenter: ObservableObject {
             currentUserImages: currentUserImages,
             runContext: ConversationRunService.RunContext(
                 workspaceName: canonicalWorkspace?.name,
-                executionTarget: runExecutionBinding.map { "\($0.target.backend.rawValue) (\($0.target.operatingSystem)/\($0.target.architecture)); App-native tools keep their App-owned services and paths" }
+                executionTarget: runExecutionBinding.map { "\($0.target.backend.rawValue) (\($0.target.operatingSystem)/\($0.target.architecture)); App-native tools keep their App-owned services and paths" + (externalEnvironmentUnavailable.map { "; Command target unavailable: " + $0 } ?? "") }
                     ?? externalEnvironmentUnavailable.map { "Selected command environment unavailable: \($0). App-native tools remain available. No fallback environment was started." }
                     ?? canonicalWorkspace?.activeTarget.kindName,
                 availableToolNames: allowedToolNames,

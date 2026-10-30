@@ -8,7 +8,10 @@ import FloeTools
 import FloeSkills
 import FloeAgentRuntime
 
-enum TaskTargetOperationFailure: Error { case outcomeUnknown(String) }
+enum TaskTargetOperationFailure: LocalizedError {
+    case outcomeUnknown(String)
+    var errorDescription: String? { switch self { case .outcomeUnknown(let message): message } }
+}
 
 extension AppEnvironment {
     func resolveSkillRuntimeTarget(environmentID: String, runID: UUID?) async -> SkillRuntimeTarget? {
@@ -72,9 +75,12 @@ extension AppEnvironment {
         try cancellation.throwIfCancelled()
         switch target.backend {
         case .linuxVM:
+            // Recover only this mirror’s interrupted local commit before inventory.
+            _ = try await taskWorkspaceMirror.recoverInterruptedTransaction(root: root, cancellation: cancellation)
             // /workspace is the existing task-owned host share, not a new copy of the guest disk.
             return try TaskWorkspaceMirror.files(root: root, cancellation: cancellation)
         case .macBridge:
+            _ = try await taskWorkspaceMirror.recoverInterruptedTransaction(root: root, cancellation: cancellation)
             // Before performs the existing three-way reconciliation and pulls
             // Mac-only changes. Pulling first would reject a local-only edit.
             _ = try await MacBridgeClient.shared.synchronizeBeforeExecution(root: root)
@@ -87,7 +93,7 @@ extension AppEnvironment {
 
     /// Returns with the source external executor fenced. The migration owner releases it.
     func waitForTaskEnvironmentSafePoint(conversationID: UUID, environmentID: String, cancellation: CancellationToken) async throws {
-        let jobs = SQLiteBackgroundJobStore(database: database)
+        let jobs = BackgroundJobStore(database: database)
         while true {
             try cancellation.throwIfCancelled(); try Task.checkCancellation()
             let runs = try await runStore.runs(conversationID: conversationID)
@@ -181,11 +187,22 @@ extension AppEnvironment {
         guard let root = try await environmentRegistry.workspaceRoot(for: target.id) else { throw FloeError.notFound("Task workspace") }
         let token = cancellation ?? CancellationToken()
         let lease = try await executionManagementLease(target.id, cancellation: token)
+        let operationID = UUID()
+        let owner = await environmentRegistry.record(id: target.id)?.ownerID.flatMap(UUID.init(uuidString:))
+        let migrationStore = TaskExecutionBindingStore(database: database)
+        do {
+            if let owner { _ = try await migrationStore.beginPreparationOperation(conversationID: owner, targetEnvironmentID: target.id, operationID: operationID) }
+        } catch { await lease.finish(); throw error }
         var context = lease.context
         context.workspaceRootURL = root
         let result = await localShellService.run(command: command, cwd: ".", environment: [:], stdin: nil,
             requestedTimeout: nil, maxOutputBytes: 128 * 1024, isBackground: false, context: context)
         await lease.finish()
+        switch result {
+        case .outcome(.exited), .outcome(.notStarted), .outcome(.cancelled):
+            if let owner { try await migrationStore.endPreparationOperation(conversationID: owner, targetEnvironmentID: target.id, operationID: operationID) }
+        default: break // Only a confirmed terminal outcome clears the intent.
+        }
         switch result {
         case .outcome(.exited(let code, let stdout, let stderr, let truncated, let stderrTruncated, _)):
             guard code == 0, !truncated, !stderrTruncated else {
@@ -197,7 +214,10 @@ extension AppEnvironment {
             if let record = await environmentRegistry.record(id: target.id), let owner = record.ownerID.flatMap(UUID.init(uuidString:)) {
                 try await TaskExecutionBindingStore(database: database).recordPreparationOutcomeUnknown(conversationID: owner, targetEnvironmentID: target.id)
             }
-            throw TaskTargetOperationFailure.outcomeUnknown(message)
+            _ = message // The shell service retains its detailed output receipt.
+            throw TaskTargetOperationFailure.outcomeUnknown(IDELanguageRunText.t(
+                "目标上的准备结果尚未确认，原运行位置未变。请取消迁移后检查目标状态。",
+                "Destination preparation has an unknown result. The original location is unchanged. Cancel the move and check the destination."))
         case .outcome(.cancelled): throw CancellationError()
         default: throw FloeError.validationFailed(IDELanguageRunText.t("目标未完成依赖准备。", "The target did not complete dependency preparation."))
         }

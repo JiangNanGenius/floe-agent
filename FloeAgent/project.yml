@@ -691,6 +691,7 @@ targets:
       - path: Tests/FloeAppTests/SkillRuntimeTargetTests.swift
       - path: Tests/FloeAppTests/TaskEnvironmentOwnershipTests.swift
       - path: Tests/FloeAppTests/TaskRemoteEnvironmentLiveTests.swift
+      - path: Tests/FloeAppTests/NativeCADLiveLLMTests.swift
       - path: Tests/FloeAppTests/TaskWorkspaceMirrorTests.swift
       - path: Tests/FloePersistenceTests/TaskExecutionBindingStoreTests.swift
       - path: Tests/FloeExecutionTests/RemoteEnvironmentShellBackendTests.swift

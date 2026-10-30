@@ -63,6 +63,7 @@ public struct TaskEnvironmentMigration: Codable, Sendable, Hashable, Identifiabl
     public var dependencyReceiptDigest: String?
     public var cancellationRequested: Bool?
     public var preparationOutcomeUnknown: Bool?
+    public var preparationOperationIDs: [UUID]?
     public var acceptedCapabilityLosses: [String]?
     public var requiredSkillIDs: [String]?
     public var failure: String?

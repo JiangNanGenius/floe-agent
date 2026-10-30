@@ -86,6 +86,7 @@ public struct TaskExecutionBindingStore: Sendable {
         guard migration.phase == .checking,
               migration.revision == 1,
               migration.cancellationRequested != true, migration.preparationOutcomeUnknown != true,
+              migration.preparationOperationIDs?.isEmpty != false,
               migration.manifestDigest == nil,
               migration.dependencyReceiptDigest == nil,
               migration.skillDigests == nil,
@@ -162,6 +163,7 @@ public struct TaskExecutionBindingStore: Sendable {
             } else {
                 next.cancellationRequested = previous.cancellationRequested
             }
+            next.preparationOperationIDs = previous.preparationOperationIDs
             next.preparationOutcomeUnknown = previous.preparationOutcomeUnknown == true || value.preparationOutcomeUnknown == true
                 ? true : previous.preparationOutcomeUnknown
             next.revision = expectedRevision + 1
@@ -180,6 +182,37 @@ public struct TaskExecutionBindingStore: Sendable {
                                   PersistenceCodec.encode(next.updatedAt), next.id.uuidString, expectedRevision])
             guard db.changesCount == 1 else { throw FloeError.validationFailed("The migration changed; refresh its status") }
             return next
+        }
+    }
+
+    /// Persist before native preparation crosses an executor boundary. A crash
+    /// leaves this intent unresolved, so recovery never blindly reinstalls.
+    @discardableResult
+    public func beginPreparationOperation(conversationID: UUID, targetEnvironmentID: String, operationID: UUID) async throws -> Bool {
+        try await changePreparationOperation(conversationID: conversationID, targetEnvironmentID: targetEnvironmentID, operationID: operationID, starting: true)
+    }
+
+    public func endPreparationOperation(conversationID: UUID, targetEnvironmentID: String, operationID: UUID) async throws {
+        _ = try await changePreparationOperation(conversationID: conversationID, targetEnvironmentID: targetEnvironmentID, operationID: operationID, starting: false)
+    }
+
+    private func changePreparationOperation(conversationID: UUID, targetEnvironmentID: String, operationID: UUID, starting: Bool) async throws -> Bool {
+        try await database.writer { db in
+            guard var value = try Self.decode(TaskEnvironmentMigration.self, String.fetchOne(db,
+                sql: "SELECT body_json FROM task_environment_migrations WHERE conversation_id=? AND phase NOT IN ('completed','cancelled','committed')",
+                arguments: [conversationID.uuidString])), value.target.environmentID == targetEnvironmentID else { return false }
+            guard value.revision < Int64.max else { throw FloeError.validationFailed("The migration cannot record another state change") }
+            var operations = Set(value.preparationOperationIDs ?? [])
+            if starting {
+                guard value.phase == .preparing, value.cancellationRequested != true, value.preparationOutcomeUnknown != true,
+                      operations.count < 32 else { throw FloeError.validationFailed("Preparation is paused; inspect its saved state before retrying") }
+                operations.insert(operationID)
+            } else { operations.remove(operationID) }
+            value.preparationOperationIDs = operations.sorted { $0.uuidString < $1.uuidString }
+            value.revision += 1; value.updatedAt = Date()
+            try db.execute(sql: "UPDATE task_environment_migrations SET revision=?,body_json=?,updated_at=? WHERE id=?",
+                arguments: [value.revision, try Self.encode(value), PersistenceCodec.encode(value.updatedAt), value.id.uuidString])
+            return true
         }
     }
 
@@ -238,7 +271,7 @@ public struct TaskExecutionBindingStore: Sendable {
                 throw FloeError.notFound("Migration")
             }
             if saved.phase.isCommitted { return saved }
-            guard saved.phase == .verified, saved.revision == value.revision, saved.preparationOutcomeUnknown != true,
+            guard saved.phase == .verified, saved.revision == value.revision, saved.preparationOutcomeUnknown != true, saved.preparationOperationIDs?.isEmpty != false,
                   Self.isSHA256Digest(saved.manifestDigest),
                   Self.isSHA256Digest(saved.dependencyReceiptDigest) else {
                 throw FloeError.validationFailed("The target has not been verified")

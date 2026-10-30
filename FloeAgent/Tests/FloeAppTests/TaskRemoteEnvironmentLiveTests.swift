@@ -33,8 +33,8 @@ final class TaskRemoteEnvironmentLiveTests: XCTestCase {
         let credential = KeychainStore(service: "org.floeagent.tests.ssh-qualification", synchronizable: false)
         let account = UUID().uuidString
         try credential.store(account: account, secret: Data(contentsOf: input.appendingPathComponent(fixture.keyFile)))
-        try FileManager.default.removeItem(at: input.appendingPathComponent(fixture.keyFile))
         defer { try? credential.delete(account: account) }
+        try FileManager.default.removeItem(at: input.appendingPathComponent(fixture.keyFile))
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
         let hostID = UUID()

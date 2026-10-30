@@ -2623,7 +2623,10 @@ final class SkillsCenter: ObservableObject {
         if let id { try SkillManageTool.validateID(id) }
         let target = await effectiveRuntimeTarget(runID: runID, resourceContext: resourceContext)
         let compatibilityContext = await appCompatibilityContext()
-        let isMacOriginalRun = runID.map { MacOriginalSkillsCenter.shared.isMacRun($0) } ?? false
+        // A resumed run may have migrated since its Mac-original snapshot
+        // was pinned. Historical membership never overrides the live target.
+        let isMacOriginalRun = target?.backend == .macBridge
+            && (runID.map { MacOriginalSkillsCenter.shared.isMacRun($0) } ?? false)
 
         let rows = try await environment.skillStore.all().filter { id == nil || $0.id == id }
         // Bundled native guides are normally already seeded into the store.

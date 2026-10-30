@@ -134,6 +134,8 @@ public actor ContainerPromote {
         let transaction = try EnvironmentFileTransaction(root: targetURL,
             paths: copies.map(\.path) + metadataPaths)
         do {
+            let metadataRoot = targetURL.appendingPathComponent(EnvironmentFileTransaction.directoryName, isDirectory: true)
+                .appendingPathComponent("promotion-metadata", isDirectory: true)
             for copy in copies { try transaction.copy(from: copy.source, to: copy.path, digest: copy.digest, mode: copy.mode) }
             for package in targetManifest.packages where names.contains(package.name) {
                 let entry = LayerPackageDatabase.StatusEntry(name: package.name, version: package.version,
@@ -141,14 +143,21 @@ public actor ContainerPromote {
                     license: package.license, source: package.source, layer: target,
                     requiresBase: package.requiresBase, installedFiles: package.files)
                 entries.removeAll { $0.name == package.name }; entries.append(entry)
-                try LayerPackageDatabase.writeInfoFiles(for: entry, at: targetURL)
+                try LayerPackageDatabase.writeInfoFiles(for: entry, at: metadataRoot)
             }
-            try LayerPackageDatabase.writeStatus(entries, at: targetURL)
+            try LayerPackageDatabase.writeStatus(entries, at: metadataRoot)
+            // Metadata must use the same receipted writer as package bytes; a
+            // failed promotion can then distinguish its writes from user edits.
+            for path in metadataPaths where path != LayerManifest.fileName {
+                let staged = try EnvironmentFileTransaction.location(path, root: metadataRoot)
+                try transaction.copy(from: staged, to: path,
+                    digest: FloeDigest.sha256Hex(ofFileAt: staged), mode: 0o644)
+            }
             try transaction.write(manifestData, to: LayerManifest.fileName)
             try transaction.commit()
         } catch {
             // Recovery keeps the journal if restoring any file fails.
-            try EnvironmentFileTransaction.recover(root: targetURL)
+            try transaction.rollback()
             throw error
         }
         return names

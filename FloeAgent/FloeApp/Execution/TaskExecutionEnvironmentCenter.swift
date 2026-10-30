@@ -103,6 +103,9 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
             try await validateChoicePolicy(choice, conversationID: conversationID)
             let target: SkillRuntimeTarget
             if let existing = try await store.activeMigration(conversationID: conversationID) {
+                guard existing.preparationOutcomeUnknown != true, existing.preparationOperationIDs?.isEmpty != false else {
+                    throw TaskExecutionAvailabilityError(message: copy("目标上的准备结果尚未确认，请先取消此迁移并检查目标状态。", "Destination preparation has an unknown result. Cancel this move and check the destination first."))
+                }
                 guard let resolved = await environment.resolveSkillRuntimeTarget(environmentID: existing.target.environmentID, runID: nil) else {
                     throw FloeError.notFound(copy("目标运行位置", "Destination environment"))
                 }
@@ -184,7 +187,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                 .filter { $0.kind == .session && $0.state == .active }
             if existing.count == 1 { target = try self.target(existing[0]) }
             else if existing.count > 1 {
-                throw FloeError.validationFailed(copy("此任务有多个旧运行位置，请在任务菜单中选择运行位置。", "This task has more than one saved environment. Choose its location in the task menu."))
+                throw TaskExecutionAvailabilityError(message: copy("此任务有多个旧运行位置，请在任务菜单中选择运行位置。", "This task has more than one saved environment. Choose its location in the task menu."))
             } else {
                 let preferred: Choice
                 if case .host(let id) = workspace?.activeTarget {
@@ -223,7 +226,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
         guard let record = await environment.environmentRegistry.record(id: target.environmentID),
               record.state == .active, !record.requiresRebuild,
               try self.sameIdentity(self.target(record), target) else {
-            throw FloeError.validationFailed(copy("原运行位置不可用，请重新连接或迁移任务。", "The saved environment is unavailable. Reconnect or move this task."))
+            throw TaskExecutionAvailabilityError(message: copy("原运行位置不可用，请重新连接或迁移任务。", "The saved environment is unavailable. Reconnect or move this task."))
         }
     }
 
@@ -259,7 +262,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
 
     private func validateChoicePolicy(_ choice: Choice, conversationID: UUID) async throws {
         if case .ssh = choice.kind,
-           try await SQLiteWorkspaceStore(database: environment.database).taskPolicy(conversationID: conversationID)?.remoteExecutionAllowed == false {
+           try await SQLiteWorkspaceStore(database: environment.database).taskPolicy(conversationID: conversationID).remoteExecutionAllowed == false {
             throw TaskExecutionAvailabilityError(message: copy("此任务已关闭远程执行，请先在权限中开启。", "Remote execution is disabled for this task. Enable it in permissions first."))
         }
     }
@@ -375,7 +378,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
             guard var value = migration else { return }
             if !value.phase.isCommitted {
                 if value.cancellationRequested == true { throw CancellationError() }
-                guard value.preparationOutcomeUnknown != true else {
+                guard value.preparationOutcomeUnknown != true, value.preparationOperationIDs?.isEmpty != false else {
                     throw FloeError.validationFailed(copy("目标上的准备结果尚未确认。请先取消此迁移，核对目标状态后再开始。", "Destination preparation has an unknown result. Cancel this move, check the destination, then start again."))
                 }
                 try cancellation.throwIfCancelled()
@@ -388,6 +391,11 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                 try cancellation.throwIfCancelled()
                 value.phase = .preparing; value = try await store.update(value, expectedRevision: value.revision)
                 migration = value; publish(value)
+                if value.source.target.backend == .remoteSSH {
+                    guard let sourceTarget = await environment.resolveSkillRuntimeTarget(environmentID: value.source.target.environmentID, runID: nil), sourceTarget.isConnected else {
+                        throw TaskExecutionAvailabilityError(message: copy("无法确认原运行位置，请重新连接后重试。", "The original environment could not be verified. Reconnect and try again."))
+                    }
+                }
                 try await environment.synchronizeExecutionTarget(value.source.target, root: lease.url, cancellation: cancellation)
                 try await environment.prepareExecutionTarget(value.target, cancellation: cancellation)
                 let required = try await environment.requiredMigrationSkills(conversationID: conversationID)
@@ -413,6 +421,14 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                         migrationID: value.id, skillIDs: required, cancellation: cancellation)
                     await targetLease.finish()
                 } catch { await targetLease.finish(); throw error }
+                // Native preparation records each dispatch/terminal outcome
+                // in the ledger. Join its latest revision before the CAS.
+                if let latest = try await store.activeMigration(conversationID: conversationID), latest.id == value.id {
+                    value.revision = latest.revision
+                    value.cancellationRequested = latest.cancellationRequested
+                    value.preparationOutcomeUnknown = latest.preparationOutcomeUnknown
+                    value.preparationOperationIDs = latest.preparationOperationIDs
+                } else { throw FloeError.validationFailed(copy("迁移状态已变化，请刷新。", "The move changed. Refresh to continue.")) }
                 value.requiredSkillIDs = required.sorted()
                 value.skillDigests = skillPins
                 let currentSkillPins = Dictionary(uniqueKeysWithValues: try await environment.skillStore.all().filter { $0.status == "enabled" }.map { ($0.id, $0.rewrittenDigest) })
@@ -444,7 +460,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                     if !value.phase.isCommitted {
                         if stopping {
                             value.cancellationRequested = true
-                            if value.preparationOutcomeUnknown == true {
+                            if value.preparationOutcomeUnknown == true || value.preparationOperationIDs?.isEmpty == false {
                                 // Preserve a possibly active install's files.
                                 // A new attempt gets a fresh owned directory.
                                 value.phase = .cancelled

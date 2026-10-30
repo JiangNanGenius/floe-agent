@@ -47,6 +47,34 @@ actor TaskWorkspaceMirror {
         case append(offset: Int64)
     }
 
+    /// Journals created by this mirror carry this owner. A generic or
+    /// unmarked transaction is never recovered or deleted by the mirror.
+    static let transactionOwner = "task-workspace-mirror"
+
+    /// Process-wide serialization for one local task root. Actor `busy` is
+    /// keyed by environment, so two environments (or a foreground run and a
+    /// migration) could otherwise overlay transactions on the same directory.
+    private actor RootGate {
+        static let shared = RootGate()
+        private var held: Set<String> = []
+
+        func acquire(_ key: String, _ cancellation: CancellationToken?) async throws {
+            while held.contains(key) {
+                // TaskCenter cancels through the token, not the job Task.
+                // Checking both lets one waiter stop without releasing or
+                // cancelling the owner of the root.
+                try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(30))
+            }
+            try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+            held.insert(key)
+        }
+
+        func release(_ key: String) {
+            held.remove(key)
+        }
+    }
+
     private let ssh: SSHCommandService
     private var busy: Set<String> = []
     private static let chunkSize: Int64 = 32 * 1024
@@ -57,7 +85,7 @@ actor TaskWorkspaceMirror {
     /// Local task-tree inventory. The root is resolved once so every returned
     /// path is relative to the exact directory that was scanned.
     static func files(root: URL, cancellation: CancellationToken? = nil) throws -> [TaskWorkspaceFile] {
-        let root = root.resolvingSymlinksInPath().standardizedFileURL
+        let root = canonicalRoot(root)
         guard root.path != "/" else { throw FloeError.validationFailed("The task workspace root is invalid") }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -206,7 +234,78 @@ actor TaskWorkspaceMirror {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
+    /// Recovers a journal left by this mirror after a process death. The call
+    /// is read-only when no journal exists. Foreign/unmarked, corrupt or active
+    /// transactions are preserved and reported; the mirror never force-commits
+    /// or deletes a transaction it does not own.
+    @discardableResult
+    static func recoverInterruptedFileTransaction(root: URL, cancellation: CancellationToken? = nil) throws -> Bool {
+        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+        let root = canonicalRoot(root)
+        guard root.path != "/" else { throw FloeError.validationFailed("The task workspace root is invalid") }
+        guard let pending = try EnvironmentFileTransaction.pendingTransaction(root: root) else { return false }
+        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+        if pending.isActive {
+            throw FloeError.validationFailed("Another file operation is still using this task workspace. Wait for it to finish.")
+        }
+        guard let owner = pending.owner, owner == transactionOwner else {
+            if pending.hasJournal {
+                throw FloeError.validationFailed("A different file transaction is pending in this task workspace. Resolve it before syncing files.")
+            }
+            // A committed mirror commit removes payload files, then the
+            // journal, then the owner marker. A crash in the final step can
+            // leave an empty reserved directory; it contains no transaction
+            // evidence, so reclaim it. A directory with any entry is preserved.
+            let directory = try EnvironmentFileTransaction.location(
+                EnvironmentFileTransaction.directoryName, root: root)
+            if (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.isEmpty == true {
+                try FileManager.default.removeItem(at: directory)
+                return true
+            }
+            throw FloeError.validationFailed("A file transaction without a recovery journal is present. Check this task's files before continuing.")
+        }
+        if pending.hasJournal, (pending.version ?? 1) < 2 {
+            throw FloeError.validationFailed("A legacy file transaction is present in this task workspace. Resolve it before syncing files.")
+        }
+        try cancellation?.throwIfCancelled(); try Task.checkCancellation()
+        return try EnvironmentFileTransaction.recover(root: root, cancellation: cancellation)
+    }
+
+    /// Async entry point for App callers that are about to read or write this
+    /// task root outside `synchronize` (for example a linuxVM migration). It
+    /// serializes with an in-flight mirror sync on the same root so recovery
+    /// cannot inspect a transaction another operation is still building.
+    @discardableResult
+    func recoverInterruptedTransaction(root: URL, cancellation: CancellationToken? = nil) async throws -> Bool {
+        let root = Self.canonicalRoot(root)
+        let key = root.path
+        try await Self.RootGate.shared.acquire(key, cancellation)
+        do {
+            let result = try Self.recoverInterruptedFileTransaction(root: root, cancellation: cancellation)
+            await Self.RootGate.shared.release(key)
+            return result
+        } catch {
+            await Self.RootGate.shared.release(key)
+            throw error
+        }
+    }
+
     func synchronize(target: SSHShellTarget, root: URL, cancellation: CancellationToken?, stateDirectory: URL? = nil) async throws -> [TaskWorkspaceFile] {
+        let root = Self.canonicalRoot(root)
+        let rootKey = root.path
+        try await Self.RootGate.shared.acquire(rootKey, cancellation)
+        do {
+            let result = try await synchronizeLocked(target: target, root: root,
+                cancellation: cancellation, stateDirectory: stateDirectory)
+            await Self.RootGate.shared.release(rootKey)
+            return result
+        } catch {
+            await Self.RootGate.shared.release(rootKey)
+            throw error
+        }
+    }
+
+    private func synchronizeLocked(target: SSHShellTarget, root: URL, cancellation: CancellationToken?, stateDirectory: URL?) async throws -> [TaskWorkspaceFile] {
         guard target.remoteTaskRoot != "/" else { throw FloeError.validationFailed("The remote task root is invalid") }
         while busy.contains(target.environmentID) {
             try cancellation?.throwIfCancelled(); try Task.checkCancellation()
@@ -222,6 +321,10 @@ actor TaskWorkspaceMirror {
         let targetKey = FloeDigest.shortSHA256(Data("\(target.hostID.uuidString)\n\(target.remoteTaskRoot)".utf8), length: 24)
         let stateRoot = stateDirectory ?? root.appendingPathComponent(".floe/remote-sync/\(target.environmentID)/\(targetKey)", isDirectory: true)
         try Self.ensureLocalDirectory(stateRoot)
+        // A process death during a previous commit must be repaired before any
+        // inventory or plan. The journal directory is excluded from `files`,
+        // so scanning first would silently ignore the half-installed state.
+        _ = try Self.recoverInterruptedFileTransaction(root: root, cancellation: cancellation)
         let baselineURL = stateRoot.appendingPathComponent("baseline.json")
         let baseline = try Self.readBaseline(baselineURL)
         try await ensureOwned(target, cancellation)
@@ -245,8 +348,8 @@ actor TaskWorkspaceMirror {
                 try await download(file, target: target, to: url, cancellation: cancellation)
                 staged[path] = url
             }
+            let transaction = try EnvironmentFileTransaction(root: root, paths: plan.downloads, owner: Self.transactionOwner)
             do {
-                let transaction = try EnvironmentFileTransaction(root: root, paths: plan.downloads)
                 for path in plan.downloads {
                     let url = try EnvironmentFileTransaction.location(path, root: root)
                     let current = try FileManager.default.fileExists(atPath: url.path) ? FloeDigest.sha256Hex(ofFileAt: url) : nil
@@ -264,7 +367,11 @@ actor TaskWorkspaceMirror {
                 for url in Set(staged.values) { try? FileManager.default.removeItem(at: url) }
                 staged.removeAll()
             } catch {
-                _ = try EnvironmentFileTransaction.recover(root: root)
+                // Roll back through the owning instance so the active-owner
+                // registry and journal identity are checked; the original
+                // transfer error remains the one the caller sees. A failed
+                // rollback leaves the journal and both file copies intact.
+                _ = try? transaction.rollback()
                 keepStaged = cancellation?.isCancelled != true && !(error is CancellationError)
                 throw error
             }
@@ -585,6 +692,10 @@ actor TaskWorkspaceMirror {
             throw FloeError.validationFailed("File transfer did not finish. Check the connection and available storage.")
         }
         return value.stdout
+    }
+
+    private static func canonicalRoot(_ root: URL) -> URL {
+        root.resolvingSymlinksInPath().standardizedFileURL
     }
 
     private static func relativePath(_ url: URL, root: URL) throws -> String {

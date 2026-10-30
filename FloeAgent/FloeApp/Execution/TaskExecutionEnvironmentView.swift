@@ -87,73 +87,94 @@ struct TaskExecutionEnvironmentView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                if let snapshot {
-                    currentSection(snapshot)
-                    if let migration = activeMigration {
-                        migrationSection(migration, snapshot: snapshot)
-                    } else if snapshot.binding == nil {
-                        if snapshot.legacyChoices.isEmpty {
-                            destinationSection(snapshot, initial: true)
-                            if let preview = visiblePreview {
-                                previewSections(preview, initial: true)
-                                startSection(preview, snapshot: snapshot, initial: true)
-                            }
-                        } else {
-                            legacySection(snapshot)
-                        }
-                    } else {
-                        destinationSection(snapshot, initial: false)
-                        if let preview = visiblePreview {
-                            previewSections(preview, initial: false)
-                            startSection(preview, snapshot: snapshot, initial: false)
-                        }
-                    }
-                    if let failure = snapshot.failure,
-                       failure != snapshot.migration?.failure {
-                        failureSection(failure)
+            checkingObservedForm
+        }
+    }
+
+    /// The form, its navigation chrome and each small group of snapshot
+    /// observations are separate typed sub-expressions. This keeps the sheet
+    /// identical on screen while avoiding one oversized `body` expression.
+    private var baseForm: some View {
+        Form {
+            formSections
+        }
+        .navigationTitle(copy("任务运行位置", "Task Environment"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button(copy("完成", "Done")) { dismiss() }
+                    .accessibilityIdentifier("task.environment.done")
+            }
+        }
+        .task { await refresh() }
+    }
+
+    @ViewBuilder
+    private var formSections: some View {
+        if let snapshot {
+            currentSection(snapshot)
+            if let migration = activeMigration {
+                migrationSection(migration, snapshot: snapshot)
+            } else if snapshot.binding == nil {
+                if snapshot.legacyChoices.isEmpty {
+                    destinationSection(snapshot, initial: true)
+                    if let preview = visiblePreview {
+                        previewSections(preview, initial: true)
+                        startSection(preview, snapshot: snapshot, initial: true)
                     }
                 } else {
-                    Section {
-                        HStack(spacing: 10) {
-                            ProgressView()
-                            Text(copy("正在读取任务运行位置…", "Reading this task's environment…"))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    legacySection(snapshot)
+                }
+            } else {
+                destinationSection(snapshot, initial: false)
+                if let preview = visiblePreview {
+                    previewSections(preview, initial: false)
+                    startSection(preview, snapshot: snapshot, initial: false)
                 }
             }
-            .navigationTitle(copy("任务运行位置", "Task Environment"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(copy("完成", "Done")) { dismiss() }
-                        .accessibilityIdentifier("task.environment.done")
+            if let failure = snapshot.failure,
+               failure != snapshot.migration?.failure {
+                failureSection(failure)
+            }
+        } else {
+            Section {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text(copy("正在读取任务运行位置…", "Reading this task's environment…"))
+                        .foregroundStyle(.secondary)
                 }
             }
-            .task { await refresh() }
-            .onChange(of: center.snapshots[conversationID]?.selectedChoiceID) { _, id in
+        }
+    }
+
+    private var selectionObservedForm: some View {
+        baseForm
+            .onChange(of: snapshot?.selectedChoiceID) { _, id in
                 guard let id else { return }
                 selectionID = id
-                if center.snapshots[conversationID]?.preview != nil {
+                if snapshot?.preview != nil {
                     checkedChoiceID = id
                 }
             }
-            .onChange(of: center.snapshots[conversationID]?.preview) { _, preview in
+            .onChange(of: snapshot?.preview) { _, preview in
                 // A new preflight replaces any previous acceptance.
                 if preview != nil { acceptedLosses = false }
             }
-            .onChange(of: center.snapshots[conversationID]?.migration?.revision) { _, _ in
+    }
+
+    private var migrationObservedForm: some View {
+        selectionObservedForm
+            .onChange(of: snapshot?.migration?.revision) { _, _ in
                 // A new migration failure/phase invalidates the check that
                 // preceded it; retry must inspect the target again.
                 freshCheckRevision = nil
                 startRequested = false
-                let phase = center.snapshots[conversationID]?.migration?.phase
+                let phase = snapshot?.migration?.phase
                 if phase == .completed || phase == .cancelled {
                     resetCheckedDestination()
                 }
             }
-            .onChange(of: center.snapshots[conversationID]?.migration?.id) { _, id in
+            .onChange(of: snapshot?.migration?.id) { _, id in
                 startRequested = false
                 if id == nil {
                     // A terminal migration no longer owns a previously checked
@@ -161,13 +182,21 @@ struct TaskExecutionEnvironmentView: View {
                     resetCheckedDestination()
                 }
             }
-            .onChange(of: center.snapshots[conversationID]?.binding?.target.environmentID) { _, _ in
+    }
+
+    private var environmentObservedForm: some View {
+        migrationObservedForm
+            .onChange(of: snapshot?.binding?.target.environmentID) { _, _ in
                 startRequested = false
             }
-            .onChange(of: center.snapshots[conversationID]?.failure) { _, _ in
+            .onChange(of: snapshot?.failure) { _, _ in
                 startRequested = false
             }
-            .onChange(of: center.snapshots[conversationID]?.checking) { _, checking in
+    }
+
+    private var checkingObservedForm: some View {
+        environmentObservedForm
+            .onChange(of: snapshot?.checking ?? false) { _, checking in
                 // The center ends a start/preparation attempt with a load;
                 // clear the pending state even if the operation failed before
                 // persisting a migration.
@@ -175,7 +204,6 @@ struct TaskExecutionEnvironmentView: View {
                     startRequested = false
                 }
             }
-        }
     }
 
     // MARK: - Current location

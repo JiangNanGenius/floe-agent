@@ -174,6 +174,11 @@ final class AppUserQuestionIntegration: ObservableObject, UserQuestionNotificati
         await notificationBridge.present(snapshot: fresh, question: question, canPresentAlert: true)
     }
 
+    // The bridge calls this Sendable requirement from a nonisolated task.
+    // Pinning the witness to the main actor keeps the storage admission
+    // fence, bootstrap join and AppEnvironment reads on the actor that owns
+    // them; the async call still crosses back with the persisted receipt.
+    @MainActor
     func submitNotificationAnswer(
         requestID: String, questionID: String, conversationID: UUID, runID: UUID,
         expectedRevision: Int, answer: UserQuestionAnswer

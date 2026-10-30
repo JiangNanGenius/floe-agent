@@ -93,4 +93,39 @@ struct TaskEnvironmentOwnershipTests {
         #expect(try await store.binding(conversationID: conversation)?.target.environmentID == "source")
     }
 
+    @Test func dispatchIntentSurvivesUntilEveryPreparationActuallyFinishes() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversation = UUID()
+        try await SQLiteConversationStore(database: database).saveConversation(.init(id: conversation,
+            title: "Preparation receipt", createdAt: Date(), updatedAt: Date()))
+        let store = TaskExecutionBindingStore(database: database)
+        let source = try await store.bindInitial(.init(conversationID: conversation,
+            target: .init(environmentID: "source", backend: .linuxVM, operatingSystem: "linux", architecture: "riscv64")))
+        var value = TaskEnvironmentMigration(source: source,
+            target: .init(environmentID: "target", backend: .remoteSSH, remoteHostID: UUID(),
+                remoteRootPath: "/home/floe/.floe/tasks/fixture", operatingSystem: "linux", architecture: "arm64"))
+        try await store.begin(value)
+        value.phase = .preparing
+        value = try await store.update(value, expectedRevision: value.revision)
+        let first = UUID(), second = UUID()
+        #expect(try await store.beginPreparationOperation(conversationID: conversation, targetEnvironmentID: "target", operationID: first))
+        #expect(try await store.beginPreparationOperation(conversationID: conversation, targetEnvironmentID: "target", operationID: second))
+        try await store.endPreparationOperation(conversationID: conversation, targetEnvironmentID: "target", operationID: first)
+        value = try #require(try await store.activeMigration(conversationID: conversation))
+        #expect(value.preparationOperationIDs == [second])
+        value.phase = .verified
+        value.manifestDigest = String(repeating: "a", count: 64)
+        value.dependencyReceiptDigest = String(repeating: "b", count: 64)
+        value.skillDigests = [:]
+        value = try await store.update(value, expectedRevision: value.revision)
+        await #expect(throws: (any Error).self) { _ = try await store.commit(value) }
+        #expect(try await store.binding(conversationID: conversation)?.target.environmentID == "source")
+        try await store.endPreparationOperation(conversationID: conversation, targetEnvironmentID: "target", operationID: second)
+        value = try #require(try await store.activeMigration(conversationID: conversation))
+        value = try await store.commit(value)
+        #expect(value.phase == .committed)
+        #expect(try await store.binding(conversationID: conversation)?.target.environmentID == "target")
+    }
+
 }
