@@ -296,6 +296,8 @@ struct DeterministicLocalApprovalPolicyTests {
         let tree = try makeTree(git: ("directory", "cad-project"))
         defer { tree.cleanup() }
         let target = tree.root.appendingPathComponent("part.floecad").path
+        let capabilities = try action("cad.document", #"{"action":"capabilities"}"#)
+        #expect(DeterministicLocalApprovalPolicy.isOrdinaryNativeCADWork(capabilities))
         for operation in ["create", "apply", "three_d_apply", "save", "import", "parameters", "material", "animation"] {
             let arguments = String(decoding: try JSONSerialization.data(withJSONObject: [
                 "action": operation, "path": "part.floecad",
@@ -315,6 +317,25 @@ struct DeterministicLocalApprovalPolicyTests {
             #expect(try await automatic.decide(proposed).permitsExecution)
             #expect(backend.actions.isEmpty)
         }
+    }
+
+    @Test("Canvas-relative CAD uses the trusted staged identity and old contexts remain decodable")
+    func nativeCADUsesResolvedStagedIdentity() throws {
+        let tree = try makeTree(git: ("directory", "canvas-stage"))
+        defer { tree.cleanup() }
+        let staged = tree.root.appendingPathComponent("CanvasDrafts/staged.floecad").path
+        var proposed = try action("cad.document",
+                                  #"{"action":"apply","path":"staged.floecad","proposal_id":"p"}"#,
+                                  targets: [staged], typedCovered: true,
+                                  workspace: tree.root.appendingPathComponent("TaskFiles").path)
+        #expect(!DeterministicLocalApprovalPolicy.isOrdinaryNativeCADWork(proposed))
+        proposed.trustedContext?.nativeCADDocumentPath = staged
+        #expect(DeterministicLocalApprovalPolicy.isOrdinaryNativeCADWork(proposed))
+        proposed.trustedContext?.nativeCADDocumentPath = tree.root.appendingPathComponent("other.floecad").path
+        #expect(!DeterministicLocalApprovalPolicy.isOrdinaryNativeCADWork(proposed))
+        let old = try JSONDecoder().decode(TrustedExecutionContext.self, from: Data(
+            #"{"environmentClass":"localNative","mutableTargetPaths":[],"hasUnresolvedExtent":false,"typedContractCovered":false}"#.utf8))
+        #expect(old.nativeCADDocumentPath == nil)
     }
 
     @Test("The 3D exception cannot authorize an unknown extent, another file or an external export")

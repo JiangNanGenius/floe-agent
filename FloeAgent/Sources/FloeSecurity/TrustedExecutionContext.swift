@@ -168,6 +168,11 @@ public struct TrustedExecutionContext: Sendable, Hashable, Codable {
     /// known. Used only by the guest-command tier as the bounding context.
     public var workspaceRootPath: String?
 
+    /// Canonical native CAD document identity from the runtime's typed
+    /// resolver, including a verified Canvas staged-document mapping. This
+    /// cannot be reconstructed from a relative path against the task root.
+    public var nativeCADDocumentPath: String?
+
     /// The context attached when nothing was resolved: every carve-out fails
     /// closed to the task's existing approval policy.
     public static let unresolved = TrustedExecutionContext()
@@ -177,13 +182,15 @@ public struct TrustedExecutionContext: Sendable, Hashable, Codable {
         mutableTargetPaths: [String] = [],
         hasUnresolvedExtent: Bool = false,
         typedContractCovered: Bool = false,
-        workspaceRootPath: String? = nil
+        workspaceRootPath: String? = nil,
+        nativeCADDocumentPath: String? = nil
     ) {
         self.environmentClass = environmentClass
         self.mutableTargetPaths = mutableTargetPaths
         self.hasUnresolvedExtent = hasUnresolvedExtent
         self.typedContractCovered = typedContractCovered
         self.workspaceRootPath = workspaceRootPath
+        self.nativeCADDocumentPath = nativeCADDocumentPath
     }
 
     /// True only when at least one MUTABLE target was pinned and EVERY pinned

@@ -2,9 +2,9 @@
 //
 // A delegated child holds the parent run's ACTUAL effective tool ceiling, but
 // it does NOT receive the whole catalog as frozen schemas: a full catalog
-// serializes to hundreds of kilobytes and cannot ride inside the child's
-// bounded 48 KiB frozen-schema allowance. Instead the child gets the same
-// progressive-discovery workflow the main run already uses:
+// serializes to hundreds of kilobytes and cannot ride inside one child
+// request. Instead the child gets the same progressive-discovery workflow the
+// main run already uses:
 //
 //   * a small stable seed (tools.list/tools.search, skills, checklists, the
 //     shell entry point and the child-only sibling tools),
@@ -12,7 +12,8 @@
 //     definitions into the child's own versioned discovery state,
 //   * `skill.read` results activating their declared `requiredToolNames` in
 //     the CHILD (never in the parent's audit-only bookkeeping),
-//   * admission/drop/eviction inside the real wire-byte schema budget.
+//   * admission/drop/eviction inside the ACTUAL model-window schema allowance
+//     computed by `SubagentRunner.schemaAllowanceBytes` (no fixed 48 KiB).
 //
 // Discovery is presentation, never authority: a loaded schema does not grant
 // anything and an unloaded schema does not forbid anything. Every call still
@@ -45,7 +46,9 @@ struct ChildToolDiscovery: Sendable {
 
     /// Runtime-virtual discovery tools. They are not in the executor catalog;
     /// the runtime handles them directly (in the child loop for a child).
-    static let discoveryToolNames: Set<String> = [ToolDiscovery.name, ToolDiscovery.listName]
+    static let discoveryToolNames: Set<String> = [
+        ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name
+    ]
 
     /// Frozen discovery universe: every descriptor this child may discover,
     /// already filtered by the parent's effective ceiling and boundary rules.
@@ -79,6 +82,7 @@ struct ChildToolDiscovery: Sendable {
         var byName = Dictionary(uniqueKeysWithValues: sorted.map { ($0.name, $0) })
         byName[ToolDiscovery.name] = ToolDiscovery.descriptor
         byName[ToolDiscovery.listName] = ToolDiscovery.listDescriptor
+        byName[ToolResultPagingTool.name] = ToolResultPagingTool.descriptor
         self.offeredByName = byName
         let presentSeed = seedNames.intersection(Set(byName.keys))
         self.pinned = presentSeed.sorted()
@@ -135,18 +139,35 @@ struct ChildToolDiscovery: Sendable {
         }
     }
 
-    /// Startup guard: the stable seed plus the name ceiling must fit, or the
-    /// child cannot open a valid request at all. Returns an explicit message
-    /// instead of dispatching an over-budget request.
-    func startupFailure(maxBytes: Int) -> String? {
-        let namesBytes = namesLedgerBytes()
-        let seedBytes = loaded.reduce(0) { total, name in
+    /// The stable seed plus the name ceiling must fit the model's actual
+    /// request schema allowance, or the child cannot open a valid request at
+    /// all. Returns an explicit message instead of dispatching an over-budget
+    /// request; no definition is ever cut. `startupFailure` is the first
+    /// request's name for the same check; later turns re-check it after a
+    /// history-driven refit so the required seed is never silently evicted.
+    /// The minimum immutable discovery payload: the name ceiling plus the
+    /// required pinned seed. Keeping this much room preserves the discovery
+    /// base even when a large task/pending batch is itself the real overflow.
+    var pinnedSeedWireBytes: Int {
+        namesLedgerBytes() + pinned.reduce(0) { total, name in
             guard let descriptor = offeredByName[name] else { return total }
             return total + Self.schemaWireBytes(descriptor)
         }
-        guard namesBytes + seedBytes > maxBytes else { return nil }
-        return "Subagent frozen tool schemas exceed the bounded schema allowance "
-            + "(\(namesBytes + seedBytes) > \(maxBytes) wire bytes) before the first request"
+    }
+
+    func pinnedSeedFailure(maxBytes: Int) -> String? {
+        let required = pinnedSeedWireBytes
+        guard required > maxBytes else { return nil }
+        return "Subagent frozen tool schemas cannot fit this model's actual request context "
+            + "(seed schemas + tool-name ceiling \(required) > "
+            + "\(maxBytes) wire bytes of the current schema allowance). "
+            + "No provider request was sent and no definition was cut; the parent task and "
+            + "its permissions are unchanged."
+    }
+
+    func startupFailure(maxBytes: Int) -> String? {
+        guard let failure = pinnedSeedFailure(maxBytes: maxBytes) else { return nil }
+        return failure + " (The failure occurred before the first request.)"
     }
 
     // MARK: Selection
@@ -387,8 +408,8 @@ struct ChildToolDiscovery: Sendable {
     /// remaining persisted names are intersected with the offered universe in
     /// their persisted order. The caller then runs one `load(_:maxBytes:)`
     /// pass (empty request) so the wire-byte budget is re-fitted under the
-    /// current parent's schema allowance — its eviction receipt reports every
-    /// further drop through the existing explicit-notice path.
+    /// current model's actual schema allowance — its eviction receipt reports
+    /// every further drop through the existing explicit-notice path.
     init(restoring snapshot: Snapshot, descriptors: [ToolCatalog.Descriptor], seedNames: Set<String>) {
         self.init(descriptors: descriptors, seedNames: seedNames)
         let available = Set(offeredByName.keys)

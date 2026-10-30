@@ -10,12 +10,14 @@
 //  * it retains only the string the tool layer already produced AFTER its own
 //    secret redaction and output sanitisation — it never re-reads raw logs,
 //    argv, environment or files;
-//  * ownership is the conversation (task) AND the run that produced the
-//    capture. A read is resolved from the runtime's trusted configuration and
-//    `ToolContext`, never from a model argument, and a capture for another
-//    task or another run of the same task is never returned. Within one run
-//    the newest settled capture for a call id is the explicit convenience
-//    contract; an older occurrence is not archived;
+//  * ownership is the conversation (task). A read is resolved from the
+//    runtime's trusted configuration and `ToolContext`, never from a model
+//    argument; a capture for another task is never returned. Within one task
+//    every capture has a deterministic `ref` derived from its run and call
+//    id, so an ordinary run, a delegated child and a later resumed run of the
+//    SAME task can all page evidence produced earlier (a child never gains
+//    access to another task's bytes). When a bare call id is used the current
+//    run's newest settlement wins, then the task's newest remaining capture;
 //  * retention is bounded in RAM and on disk by the SAME caps (per result,
 //    per task across every run, and in count). A result that exceeds the
 //    per-result cap keeps its leading bytes and is explicitly labelled
@@ -82,12 +84,54 @@ public struct ToolResultCapture: Sendable, Equatable {
     public var retentionTruncated: Bool
     public var capturedAt: Date
     public var durability: Durability
+
+    /// Deterministic, non-secret ownership reference for this capture. It is
+    /// derived from the trusted run and call identities (never from text), so
+    /// a compaction summary, a later turn, a resumed run or a delegated child
+    /// of the same task can name the exact bytes without inventing a lookup
+    /// key and without exposing output content.
+    public var ref: String {
+        ToolResultCaptureStore.reference(runID: runID, callID: callID)
+    }
+}
+
+/// Honest result of one retention attempt. `retained == false` means paging
+/// cannot recover these bytes later; the caller must say so instead of
+/// promising a readable copy.
+public struct ToolResultCaptureReceipt: Sendable, Equatable {
+    public enum Outcome: String, Sendable, Equatable {
+        case retained
+        /// No trusted conversation identity existed, so nothing was owned.
+        case noTaskBinding
+        /// The task was already deleted/fenced; retaining would resurrect it.
+        case taskFenced
+        /// The call id was empty or outside the addressable bounds.
+        case invalidCallID
+        /// The text could not be retained under the task byte/count bound.
+        case evictedImmediately
+    }
+
+    public var outcome: Outcome
+    public var ref: String
+    public var runID: UUID?
+    public var callID: String
+    public var totalBytes: Int
+    public var retainedBytes: Int
+    public var retentionTruncated: Bool
+    public var executionReportedTruncation: Bool
+    public var durability: ToolResultCapture.Durability?
+    public var retained: Bool { outcome == .retained }
 }
 
 public enum ToolResultCaptureRead: Sendable, Equatable {
     public struct Page: Sendable, Equatable {
         public var capture: ToolResultCapture
+        public var ref: String
+        public var runID: UUID
         public var offset: Int
+        /// Exclusive end of this page in UTF-8 bytes. `nextOffset` equals
+        /// `endOffset` when more bytes exist and is nil at the end.
+        public var endOffset: Int
         public var text: String
         public var totalBytes: Int
         public var nextOffset: Int?
@@ -98,13 +142,37 @@ public enum ToolResultCaptureRead: Sendable, Equatable {
         /// before this read (informational only).
         public var evictedCopies: Int
     }
+    public struct SearchHit: Sendable, Equatable {
+        public var ref: String
+        public var runID: UUID
+        public var callID: String
+        public var toolName: String
+        public var totalBytes: Int
+        /// UTF-8 byte offset of the first occurrence in the retained text.
+        public var matchOffset: Int
+        /// A bounded excerpt around the match (never the whole multi-MB body).
+        public var excerpt: String
+        /// More occurrences of this query exist in this capture.
+        public var hasAdditionalMatches: Bool
+    }
+    public struct SearchResult: Sendable, Equatable {
+        public var hits: [SearchHit]
+        public var searchedCaptures: Int
+        public var searchedBytes: Int
+        /// The search stopped at a bound before examining every retained
+        /// capture; the result is honest about being partial.
+        public var truncated: Bool
+    }
     case page(Page)
     case outOfRange(totalBytes: Int, callID: String)
-    /// Nothing retained for this call id in this run. `reason` is user-safe
-    /// and states whether the value is unknown, never captured, evicted or
-    /// belongs to a different run — the caller must not fabricate output.
+    /// Nothing retained for this ref/call id in this task. `reason` is
+    /// user-safe and states whether the value is unknown, never captured,
+    /// evicted or belongs to a different task — the caller must not
+    /// fabricate output.
     case missing(callID: String, reason: String)
     public struct Summary: Sendable, Equatable {
+        public var ref: String
+        public var runID: UUID
         public var callID: String
         public var toolName: String
         public var totalBytes: Int
@@ -114,6 +182,7 @@ public enum ToolResultCaptureRead: Sendable, Equatable {
         public var durability: ToolResultCapture.Durability
     }
     case index([Summary], evicted: Int)
+    case search(SearchResult)
 }
 
 /// Honest result of removing one task's captured results. Deliberately not a
@@ -144,7 +213,24 @@ public actor ToolResultCaptureStore {
             self.perTaskBytes = max(self.perResultBytes, perTaskBytes)
             self.perTaskResults = max(1, perTaskResults)
         }
-        public static let standard = Caps()
+        /// Ordinary durable conversations may capture a much larger full
+        /// result than a temporary/RAM-only one. The per-task quota is a hard
+        /// bound; a result exceeding the per-result cap is explicitly
+        /// truncated-by-retention, never silently claimed complete.
+        public static let durableStandard = Caps(
+            perResultBytes: 8 * 1024 * 1024,
+            perTaskBytes: 64 * 1024 * 1024,
+            perTaskResults: 64
+        )
+        /// Temporary conversations are RAM-only; keeping the smaller quota
+        /// makes the absence of a durable copy explicit instead of pretending
+        /// a multi-megabyte RAM copy is a durable artifact.
+        public static let memoryStandard = Caps(
+            perResultBytes: 2 * 1024 * 1024,
+            perTaskBytes: 16 * 1024 * 1024,
+            perTaskResults: 64
+        )
+        public static let standard = memoryStandard
     }
 
     private struct Retained {
@@ -172,6 +258,10 @@ public actor ToolResultCaptureStore {
     /// startup read.
     private let maximumScannedRecords = 512
     private let maximumReloadReads = 80
+    /// Restart reload is bounded by the SAME per-task quota as live
+    /// retention, so a large task can reopen its complete retained set without
+    /// exceeding the established memory bound.
+    private var maximumReloadBytes: Int { caps.perTaskBytes }
 
     /// - Parameter durableRoot: optional app-provided directory for durable
     ///   per-task capture files. nil keeps this process's captures in RAM
@@ -185,11 +275,19 @@ public actor ToolResultCaptureStore {
     /// the app's conversation-deletion lifecycle must resolve the same actor
     /// so RAM entries, the fence and the durable index cannot diverge. A nil
     /// root is a temporary/unpersisted store and is intentionally not shared.
-    public static func shared(durableRoot: URL?, caps: Caps = .standard) -> ToolResultCaptureStore {
+    public static func shared(
+        durableRoot: URL?,
+        caps: Caps? = nil
+    ) -> ToolResultCaptureStore {
+        // The app deletion lifecycle and every runtime must resolve the SAME
+        // actor. Resolve the quota from the actual fate of the store, so an
+        // app-side purge call cannot accidentally create the shared durable
+        // store with the smaller temporary/RAM quota.
+        let resolvedCaps = caps ?? (durableRoot == nil ? .memoryStandard : .durableStandard)
         guard let durableRoot else {
-            return ToolResultCaptureStore(durableRoot: nil, caps: caps)
+            return ToolResultCaptureStore(durableRoot: nil, caps: resolvedCaps)
         }
-        return sharedStoreRegistry.store(for: durableRoot, caps: caps)
+        return sharedStoreRegistry.store(for: durableRoot, caps: resolvedCaps)
     }
 
     private static let sharedStoreRegistry = ToolResultCaptureStoreRegistry()
@@ -197,9 +295,10 @@ public actor ToolResultCaptureStore {
     // MARK: - Capture
 
     /// Retains one already-redacted tool output. Never throws: retention is a
-    /// best-effort aid and its absence is reported at read time. The caps are
-    /// enforced before any durable write, so an already-evicted result is
-    /// never written.
+    /// best-effort aid and its absence is reported through the returned
+    /// receipt. The caps are enforced before any durable write, so an
+    /// already-evicted result is never written.
+    @discardableResult
     public func capture(
         conversationID: UUID?,
         runID: UUID,
@@ -209,17 +308,34 @@ public actor ToolResultCaptureStore {
         text: String,
         temporary: Bool,
         executionReportedTruncation: Bool = false
-    ) async {
-        guard let conversationID else { return }
-        guard !fencedConversations.contains(conversationID) else { return }
+    ) async -> ToolResultCaptureReceipt {
         let trimmedCall = callID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let totalBytes = text.utf8.count
+        let ref = Self.reference(runID: runID, callID: trimmedCall)
+        func rejected(_ outcome: ToolResultCaptureReceipt.Outcome) -> ToolResultCaptureReceipt {
+            .init(
+                outcome: outcome,
+                ref: ref,
+                runID: runID,
+                callID: trimmedCall,
+                totalBytes: totalBytes,
+                retainedBytes: 0,
+                retentionTruncated: false,
+                executionReportedTruncation: executionReportedTruncation,
+                durability: nil
+            )
+        }
+        guard let conversationID else { return rejected(.noTaskBinding) }
+        guard !fencedConversations.contains(conversationID) else { return rejected(.taskFenced) }
         // The paging tool refuses a call id beyond these bounds, so retaining
         // a longer one would only create an unreachable, larger record. Keep
         // the disk metadata envelope finite without changing any paged
         // identity (a callable id is stored exactly).
         guard !trimmedCall.isEmpty,
               trimmedCall.count <= Self.maximumCallIDCharacters,
-              trimmedCall.utf8.count <= Self.maximumCallIDBytes else { return }
+              trimmedCall.utf8.count <= Self.maximumCallIDBytes else {
+            return rejected(.invalidCallID)
+        }
         loadDurableTaskIfNeeded(conversationID)
         var stored = text
         var retentionTruncated = false
@@ -263,7 +379,17 @@ public actor ToolResultCaptureStore {
             )
         }
         if !dropped.isEmpty { evicted[conversationID, default: 0] += dropped.count }
+        // An outcome is only `retained` when the record survived the bounded
+        // index. A result evicted in the very same settlement is reported as
+        // unrecoverable instead of being advertised for later paging.
+        guard kept.contains(where: {
+            $0.capture.callID == trimmedCall && $0.capture.runID == runID && $0.sequence == sequence
+        }) else {
+            retained[conversationID] = kept
+            return rejected(.evictedImmediately)
+        }
         // Only persist a capture that actually survived the bounded index.
+        var finalDurability = intendedDurability
         if !temporary, durableRoot != nil, !fencedConversations.contains(conversationID),
            let index = kept.firstIndex(where: {
                $0.capture.callID == trimmedCall && $0.capture.runID == runID && $0.sequence == sequence
@@ -274,16 +400,73 @@ public actor ToolResultCaptureStore {
             } else {
                 final.capture.durability = .durableWriteFailed
             }
+            finalDurability = final.capture.durability
             kept[index] = final
         }
         retained[conversationID] = kept
+        return .init(
+            outcome: .retained,
+            ref: ref,
+            runID: runID,
+            callID: trimmedCall,
+            totalBytes: totalBytes,
+            retainedBytes: stored.utf8.count,
+            retentionTruncated: retentionTruncated,
+            executionReportedTruncation: executionReportedTruncation,
+            durability: finalDurability
+        )
     }
 
     // MARK: - Read
 
-    /// Bounded read of one captured result. `conversationID` and `runID` must
-    /// be the runtime's trusted identities; a capture belonging to another
-    /// task or another run is indistinguishable from a missing one.
+    /// Bounded read by the deterministic capture ref. The ref is resolved
+    /// inside this trusted task only; a ref belonging to another task is
+    /// indistinguishable from a missing one. Across runs of the same task the
+    /// ref is the explicit stable identity, which is what lets a resumed run
+    /// or a delegated child read evidence produced earlier.
+    public func page(
+        conversationID: UUID,
+        ref: String,
+        offset: Int,
+        maxBytes: Int
+    ) -> ToolResultCaptureRead {
+        let trimmed = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return .missing(callID: ref, reason: "no capture ref was supplied")
+        }
+        loadDurableTaskIfNeeded(conversationID)
+        let matches = (retained[conversationID] ?? []).filter { $0.capture.ref == trimmed }
+        if let newest = matches.max(by: { $0.sequence < $1.sequence }) {
+            return makePage(
+                capture: newest.capture,
+                fromDisk: newest.restoredFromDisk,
+                evicted: evicted[conversationID] ?? 0,
+                offset: offset,
+                maxBytes: maxBytes
+            )
+        }
+        guard !fencedConversations.contains(conversationID) else {
+            return .missing(callID: trimmed, reason: "this task was deleted; no captured result can be read")
+        }
+        if let restored = readDurablyByReference(conversationID: conversationID, ref: trimmed) {
+            return makePage(
+                capture: restored,
+                fromDisk: true,
+                evicted: evicted[conversationID] ?? 0,
+                offset: offset,
+                maxBytes: maxBytes
+            )
+        }
+        return .missing(callID: trimmed, reason: missingReason(
+            conversationID: conversationID,
+            exactRef: true
+        ))
+    }
+
+    /// Convenience lookup by call id within this task. The current run's newest
+    /// settlement wins; otherwise the task's newest remaining capture for that
+    /// call id is returned, with its run identity in the page. Callers that
+    /// need an exact historical occurrence must use `ref`.
     public func page(
         conversationID: UUID,
         runID: UUID,
@@ -296,74 +479,201 @@ public actor ToolResultCaptureStore {
             return .missing(callID: callID, reason: "no tool-call id was supplied")
         }
         loadDurableTaskIfNeeded(conversationID)
-        let matches = (retained[conversationID] ?? []).filter {
-            $0.capture.callID == trimmedCall && $0.capture.runID == runID
+        let matches = (retained[conversationID] ?? []).filter { $0.capture.callID == trimmedCall }
+        let currentRun = matches.filter { $0.capture.runID == runID }
+        if let newest = currentRun.max(by: { $0.sequence < $1.sequence }) {
+            return makePage(
+                capture: newest.capture,
+                fromDisk: newest.restoredFromDisk,
+                evicted: evicted[conversationID] ?? 0,
+                offset: offset,
+                maxBytes: maxBytes
+            )
         }
-        var capture: ToolResultCapture?
-        var fromDisk = false
-        if let newest = matches.max(by: { $0.sequence < $1.sequence }) {
-            capture = newest.capture
-            fromDisk = newest.restoredFromDisk
-        } else if !fencedConversations.contains(conversationID) {
-            capture = readDurably(conversationID: conversationID, runID: runID, callID: trimmedCall)
-            fromDisk = capture != nil
+        if let newestTaskCopy = matches.max(by: { $0.sequence < $1.sequence }) {
+            return makePage(
+                capture: newestTaskCopy.capture,
+                fromDisk: newestTaskCopy.restoredFromDisk,
+                evicted: evicted[conversationID] ?? 0,
+                offset: offset,
+                maxBytes: maxBytes
+            )
         }
-        guard let capture else {
-            let reason: String
-            let hasOtherRunCopy = (retained[conversationID] ?? []).contains {
-                $0.capture.callID == trimmedCall && $0.capture.runID != runID
+        guard !fencedConversations.contains(conversationID) else {
+            return .missing(callID: trimmedCall, reason: "this task was deleted; no captured result can be read")
+        }
+        if let restored = readDurablyForCall(conversationID: conversationID, runID: runID, callID: trimmedCall) {
+            return makePage(
+                capture: restored,
+                fromDisk: true,
+                evicted: evicted[conversationID] ?? 0,
+                offset: offset,
+                maxBytes: maxBytes
+            )
+        }
+        return .missing(callID: trimmedCall, reason: missingReason(
+            conversationID: conversationID,
+            exactRef: false
+        ))
+    }
+
+    /// Bounded literal search over this task's retained captures (newest
+    /// first). Searches the post-redaction retained text only, never a live
+    /// tool, and reports when a bound stopped the scan early. Match offsets
+    /// are UTF-8 byte offsets usable with `page`.
+    public func search(
+        conversationID: UUID,
+        query: String,
+        limit: Int = 10,
+        maximumCaptures: Int = 32,
+        maximumBytes: Int = 8 * 1024 * 1024
+    ) -> ToolResultCaptureRead {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else {
+            return .search(.init(hits: [], searchedCaptures: 0, searchedBytes: 0, truncated: false))
+        }
+        loadDurableTaskIfNeeded(conversationID)
+        let ordered = (retained[conversationID] ?? []).sorted { $0.sequence > $1.sequence }
+        var hits: [ToolResultCaptureRead.SearchHit] = []
+        var scannedBytes = 0
+        var scannedCaptures = 0
+        var truncated = false
+        for entry in ordered {
+            if hits.count >= max(1, min(50, limit)) {
+                truncated = true
+                break
             }
-            if hasOtherRunCopy {
-                reason = "no retained copy exists for this call id in the current run; captures from another run of this task are never paged"
-            } else if (evicted[conversationID] ?? 0) > 0 {
-                reason = "no retained copy exists in this run (older captures for this task were evicted under the retention bound); re-run only if repeating side effects is safe"
-            } else if durableRoot == nil {
-                reason = "no retained copy exists (this process does not persist tool results, so captures do not survive a restart); re-run only if repeating side effects is safe"
-            } else {
-                reason = "no retained copy exists for this call id in this run (it may not have been captured); re-run only if repeating side effects is safe"
+            if scannedCaptures >= max(1, maximumCaptures) {
+                truncated = true
+                break
             }
-            return .missing(callID: trimmedCall, reason: reason)
+            let text = entry.capture.text
+            let size = text.utf8.count
+            if scannedBytes + size > max(1, maximumBytes) {
+                truncated = true
+                break
+            }
+            scannedBytes += size
+            scannedCaptures += 1
+            guard let match = Self.firstMatch(of: needle, in: text) else { continue }
+            hits.append(.init(
+                ref: entry.capture.ref,
+                runID: entry.capture.runID,
+                callID: entry.capture.callID,
+                toolName: entry.capture.toolName,
+                totalBytes: size,
+                matchOffset: match.offset,
+                excerpt: Self.excerpt(around: match.offset, in: text),
+                hasAdditionalMatches: Self.firstMatch(
+                    of: needle,
+                    in: Self.utf8Window(text, offset: match.offset + max(1, match.length), maxBytes: size)
+                ) != nil
+            ))
         }
+        return .search(.init(
+            hits: hits,
+            searchedCaptures: scannedCaptures,
+            searchedBytes: scannedBytes,
+            truncated: truncated
+        ))
+    }
+
+    /// Full retained text for request selection (never a re-execution). The
+    /// runtime uses this to send the complete post-redaction output when the
+    /// actual model window allows it, instead of the short display summary.
+    /// Returns nil when nothing is retained; the caller must fall back to the
+    /// bounded summary and say so in truncation markers.
+    public func retainedText(conversationID: UUID, ref: String) -> String? {
+        retainedCapture(conversationID: conversationID, ref: ref)?.text
+    }
+
+    /// Full retained capture metadata for request selection and markers.
+    public func retainedCapture(conversationID: UUID, ref: String) -> ToolResultCapture? {
+        guard Self.isGeneratedReference(ref) else { return nil }
+        loadDurableTaskIfNeeded(conversationID)
+        if let newest = (retained[conversationID] ?? [])
+            .filter({ $0.capture.ref == ref })
+            .max(by: { $0.sequence < $1.sequence }) {
+            return newest.capture
+        }
+        guard !fencedConversations.contains(conversationID) else { return nil }
+        return readDurablyByReference(conversationID: conversationID, ref: ref)
+    }
+
+    private func makePage(
+        capture: ToolResultCapture,
+        fromDisk: Bool,
+        evicted: Int,
+        offset: Int,
+        maxBytes: Int
+    ) -> ToolResultCaptureRead {
         let totalBytes = capture.text.utf8.count
         guard maxBytes > 0 else {
-            return .outOfRange(totalBytes: totalBytes, callID: trimmedCall)
+            return .outOfRange(totalBytes: totalBytes, callID: capture.ref)
         }
         let start = max(0, offset)
         guard start < totalBytes || (start == 0 && totalBytes == 0) else {
-            return .outOfRange(totalBytes: totalBytes, callID: trimmedCall)
+            return .outOfRange(totalBytes: totalBytes, callID: capture.ref)
         }
         let page = Self.utf8Window(capture.text, offset: start, maxBytes: maxBytes)
         // An arbitrary offset inside a scalar (or a window smaller than its
         // next scalar) cannot deliver bytes. Never return a non-advancing cursor.
         guard !page.isEmpty || totalBytes == 0 else {
-            return .outOfRange(totalBytes: totalBytes, callID: trimmedCall)
+            return .outOfRange(totalBytes: totalBytes, callID: capture.ref)
         }
         let end = start + page.utf8.count
         return .page(.init(
             capture: capture,
+            ref: capture.ref,
+            runID: capture.runID,
             offset: start,
+            endOffset: end,
             text: page,
             totalBytes: totalBytes,
             nextOffset: end < totalBytes ? end : nil,
             restoredFromDisk: fromDisk,
-            evictedCopies: evicted[conversationID] ?? 0
+            evictedCopies: evicted
         ))
     }
 
-    /// Bounded index of what this run still retains, newest first. The same
-    /// conversation + run filter as `page` applies to reloaded records too.
+    private func missingReason(conversationID: UUID, exactRef: Bool) -> String {
+        if let evicted = evicted[conversationID], evicted > 0 {
+            return "no retained copy exists for this task (older captures were evicted under the retention bound); re-run only if repeating side effects is safe"
+        }
+        if durableRoot == nil {
+            return "no retained copy exists (this process does not persist tool results, so captures do not survive a restart); re-run only if repeating side effects is safe"
+        }
+        return exactRef
+            ? "no retained capture exists for this ref in this task (it may have been evicted or never captured); re-run only if repeating side effects is safe"
+            : "no retained copy exists for this call id in this task (it may not have been captured); re-run only if repeating side effects is safe"
+    }
+
+    /// Bounded index of what this run still retains, newest first.
     public func index(
         conversationID: UUID,
         runID: UUID,
         limit: Int = 20
     ) -> ToolResultCaptureRead {
+        taskIndex(conversationID: conversationID, runID: runID, limit: limit)
+    }
+
+    /// Bounded index across every run of this task (newest first). Used when
+    /// a resumed run or a child needs to discover earlier evidence; `runID`
+    /// narrows the result when supplied.
+    public func taskIndex(
+        conversationID: UUID,
+        runID: UUID? = nil,
+        limit: Int = 20
+    ) -> ToolResultCaptureRead {
         loadDurableTaskIfNeeded(conversationID)
         let entries = (retained[conversationID] ?? [])
-            .filter { $0.capture.runID == runID }
+            .filter { runID == nil || $0.capture.runID == runID }
             .sorted { $0.sequence > $1.sequence }
             .prefix(max(1, min(50, limit)))
         return .index(entries.map {
-            .init(callID: $0.capture.callID,
+            .init(ref: $0.capture.ref,
+                  runID: $0.capture.runID,
+                  callID: $0.capture.callID,
                   toolName: $0.capture.toolName,
                   totalBytes: $0.capture.text.utf8.count,
                   executionReportedTruncation: $0.capture.executionReportedTruncation,
@@ -371,6 +681,57 @@ public actor ToolResultCaptureStore {
                   capturedAt: $0.capture.capturedAt,
                   durability: $0.capture.durability)
         }, evicted: evicted[conversationID] ?? 0)
+    }
+
+    /// Deterministic reference derivation. Full SHA-256 over the trusted
+    /// run/call pair is also the durable file name; the ref keeps 24 hex
+    /// characters (96 bits) so a summary stays readable while collisions
+    /// remain negligible and are still resolved against the full identity.
+    public static func reference(runID: UUID, callID: String) -> String {
+        let digest = FloeDigest.sha256Hex(Data("\(runID.uuidString)\u{0}\(callID)".utf8))
+        return "tr_" + digest.prefix(24)
+    }
+
+    /// Validates that a ref has the exact generated shape (no free-form or
+    /// path-like input is ever used as a lookup key).
+    public static func isGeneratedReference(_ ref: String) -> Bool {
+        guard ref.count == 27, ref.hasPrefix("tr_") else { return false }
+        let hex = ref.dropFirst(3)
+        return hex.count == 24 && hex.allSatisfy {
+            ($0 >= "0" && $0 <= "9") || ($0 >= "a" && $0 <= "f")
+        }
+    }
+
+    static func firstMatch(of needle: String, in text: String) -> (offset: Int, length: Int)? {
+        guard !needle.isEmpty else { return nil }
+        let haystack = text.utf8
+        let needleBytes = Array(needle.utf8)
+        guard needleBytes.count <= haystack.count else { return nil }
+        var index = 0
+        let bytes = Array(haystack)
+        let last = bytes.count - needleBytes.count
+        while index <= last {
+            if bytes[index] == needleBytes[0] {
+                var matched = true
+                for offset in 1..<needleBytes.count where bytes[index + offset] != needleBytes[offset] {
+                    matched = false
+                    break
+                }
+                if matched { return (index, needleBytes.count) }
+            }
+            index += 1
+        }
+        return nil
+    }
+
+    /// Deterministic, bounded excerpt around one byte offset. Whole-scalar
+    /// boundaries only; never returns a head/tail summary of the whole body.
+    static func excerpt(around offset: Int, in text: String, radius: Int = 240) -> String {
+        let start = max(0, offset - radius)
+        let prefix = start > 0 ? "…" : ""
+        let window = utf8Window(text, offset: start, maxBytes: radius * 2)
+        let suffix = start + window.utf8.count < text.utf8.count ? "…" : ""
+        return prefix + window + suffix
     }
 
     // MARK: - Task cleanup
@@ -555,7 +916,7 @@ public actor ToolResultCaptureStore {
             return
         }
         let generated = names.filter(Self.isGeneratedRecordName).prefix(maximumScannedRecords)
-        var candidates: [(name: String, modified: TimeInterval)] = []
+        var candidates: [(name: String, modified: TimeInterval, bytes: Int)] = []
         candidates.reserveCapacity(generated.count)
         for name in generated {
             let url = directory.appendingPathComponent(name)
@@ -568,13 +929,19 @@ public actor ToolResultCaptureStore {
             #else
             let modified = 0.0
             #endif
-            candidates.append((name, modified))
+            candidates.append((name, modified, Int(info.st_size)))
         }
-        let selected = candidates
-            .sorted { left, right in
-                left.modified == right.modified ? left.name < right.name : left.modified > right.modified
-            }
-            .prefix(maximumReloadReads)
+        let orderedCandidates = candidates.sorted { left, right in
+            left.modified == right.modified ? left.name < right.name : left.modified > right.modified
+        }
+        var selected: [(name: String, modified: TimeInterval, bytes: Int)] = []
+        var reloadBytes = 0
+        for candidate in orderedCandidates {
+            guard selected.count < maximumReloadReads else { break }
+            guard reloadBytes + candidate.bytes <= maximumReloadBytes || selected.isEmpty else { break }
+            selected.append(candidate)
+            reloadBytes += candidate.bytes
+        }
         var loaded: [ToolResultCapture] = []
         loaded.reserveCapacity(selected.count)
         for candidate in selected {
@@ -686,7 +1053,11 @@ public actor ToolResultCaptureStore {
     /// still be the exact generated name and a plain regular file within the
     /// size bound; it is opened with O_NOFOLLOW so a symlink planted in the
     /// app-private root cannot redirect the read.
-    private func readDurably(conversationID: UUID, runID: UUID, callID: String) -> ToolResultCapture? {
+    private func readDurablyForCall(
+        conversationID: UUID,
+        runID: UUID,
+        callID: String
+    ) -> ToolResultCapture? {
         guard let root = durableRoot else { return nil }
         let directory = durableDirectory(root, conversationID: conversationID)
         let name = Self.durableFileName(runID: runID, callID: callID)
@@ -698,6 +1069,31 @@ public actor ToolResultCaptureStore {
             return nil
         }
         return capture
+    }
+
+    /// Resolves a ref that is no longer in RAM by scanning this task's own
+    /// bounded durable directory. Only generated file names are considered,
+    /// each read is O_NOFOLLOW and size-bounded, and the decoded identity must
+    /// reproduce the exact ref. When a ref was evicted from RAM this is the
+    /// durable fallback; a missing record stays missing.
+    private func readDurablyByReference(conversationID: UUID, ref: String) -> ToolResultCapture? {
+        guard Self.isGeneratedReference(ref), let root = durableRoot else { return nil }
+        let directory = durableDirectory(root, conversationID: conversationID)
+        var directoryInfo = stat()
+        guard lstat(directory.path, &directoryInfo) == 0,
+              (directoryInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else {
+            return nil
+        }
+        for name in names.filter(Self.isGeneratedRecordName).prefix(maximumScannedRecords) {
+            guard let capture = readDurableRecord(
+                at: directory.appendingPathComponent(name),
+                conversationID: conversationID,
+                expectedName: name
+            ), capture.ref == ref else { continue }
+            return capture
+        }
+        return nil
     }
 
     private func readDurableRecord(

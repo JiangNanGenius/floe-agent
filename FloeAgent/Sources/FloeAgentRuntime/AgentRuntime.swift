@@ -119,6 +119,18 @@ public protocol AgentEventSink: Sendable {
         result: ToolResult,
         at stamp: ToolTimingStamp
     ) async
+    /// Typed compression state for an inline UI (never a modal). Fired while
+    /// sizing, before/after compaction, on failure and on overflow recovery.
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didChangeContextCompression snapshot: ContextCompressionSnapshot
+    ) async
+    /// Typed settlement class for every tool result, distinguishing partial,
+    /// wait, permission, design and genuine no-progress outcomes.
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didClassifyToolOutcome classification: ToolOutcomeClassification
+    ) async
 }
 
 /// Boundary timestamp pair for per-call tool timing. `monotonic`
@@ -170,6 +182,14 @@ public extension AgentEventSink {
         didFinishToolCall call: ToolCall,
         result: ToolResult,
         at stamp: ToolTimingStamp
+    ) async {}
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didChangeContextCompression snapshot: ContextCompressionSnapshot
+    ) async {}
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didClassifyToolOutcome classification: ToolOutcomeClassification
     ) async {}
 }
 
@@ -319,7 +339,11 @@ public struct CatalogToolExecutor: ToolExecutor {
                 capturedOutput: output.capturedOutput ?? output.summary,
                 capturedOutputTruncated: output.capturedOutput == nil
                     ? output.summaryTruncated : output.capturedOutputTruncated,
-                outcomeUnknown: output.outcomeUnknown
+                // Typed per-result sensitivity flows ONLY to the immediate
+                // provider request. Never captured, audited, checkpointed,
+                // emitted or replayed; the redacted summary stays durable.
+                outcomeUnknown: output.outcomeUnknown,
+                ephemeralSensitiveOutput: output.ephemeralSensitiveOutput
             )
         } catch let error as ToolExecutionOutcomeUnknownError {
             let summary = "status=outcomeUnknown reference=\(error.reference)\n\(SecretRedactor.redact(error.message))\nReconnect and inspect the existing operation. Do not submit it again."
@@ -546,7 +570,6 @@ public actor FloeAgentRuntime {
         /// A closure (rather than stored state) keeps this durable truth in
         /// the persistence layer instead of a live in-memory shadow store.
         public var outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])?
-
         public init(
             conversationID: UUID = UUID(),
             provider: ProviderProfile,
@@ -692,6 +715,41 @@ public actor FloeAgentRuntime {
     private let liveSystemContext: (@Sendable () async throws -> String)?
     private var pendingToolCalls: [ToolCall] = []
     private var pendingToolResults: [ToolResult] = []
+    /// Retention receipts for the pending batch. They describe whether the
+    /// FULL post-redaction output is readable by `tools.readResult`; they are
+    /// transient (never checkpointed) and cleared once the batch's provider
+    /// request is assembled.
+    private var toolCaptureReceipts: [String: ToolResultCaptureReceipt] = [:]
+    /// One-shot model-visible sensitive results for the CURRENT provider
+    /// request. Populated at settlement (before the result is projected for
+    /// durability), consumed when the request is assembled, then cleared.
+    private var ephemeralSensitiveOutputs: [String: String] = [:]
+    /// Call ids whose provider-request body is sensitive. Used only to scrub
+    /// the durable dispatch snapshot; the live retry request keeps the bytes.
+    private var sensitiveOutputCallIDs: Set<String> = []
+    /// Results whose complete bytes are durable and can therefore be
+    /// rehydrated after a restart instead of being copied into checkpoints.
+    private var durableCaptureCallIDs: Set<String> = []
+    /// Calls restored from a checkpoint whose credential arguments were
+    /// scrubbed. They must never be auto-replayed; `repairInterruptedToolPairs`
+    /// reports them as requiring a rebuilt, re-authorized request.
+    private var sensitivePendingCallIDs: Set<String> = []
+    /// Actual schema token estimate charged by the last request, used by the
+    /// NEXT compaction budget so fixed schemas share the real window instead
+    /// of being ignored until overflow.
+    private var lastProviderSchemaTokenEstimate = 0
+    /// Last compression state published to the UI (no modal), for replay and
+    /// diagnostics.
+    private var contextCompressionStatus: ContextCompressionSnapshot?
+    /// Tool-argument progress: internal liveness is updated on the FIRST real
+    /// argument fragment, but the user-visible `.preparingToolCall` phase is
+    /// delayed until that fragment has persisted for 1.5s. Fast calls settle
+    /// before it and never show the phase. Cleared on completion, text,
+    /// cancel, pause, error or a new provider generation.
+    private var toolArgumentPhaseTask: Task<Void, Never>?
+    private var toolArgumentFirstFragmentAt: ContinuousClock.Instant?
+    private var toolArgumentPhasePublished = false
+    static let toolArgumentPhaseDelay: TimeInterval = 1.5
     /// Settled (call, result) pairs from every completed tool batch in this
     /// run, in settlement order. Each dispatch replays them as provider
     /// history (budget-trimmed at assembly; this record stays intact) so tool
@@ -915,8 +973,12 @@ public actor FloeAgentRuntime {
         // Every runtime that writes the same canonical durable root must
         // observe the same bounded index and the same deletion fence. A
         // temporary conversation deliberately gets its own nil-root store.
+        let captureRoot = configuration.temporaryReadOnly ? nil : configuration.toolResultCaptureRoot
         self.toolResultCaptures = ToolResultCaptureStore.shared(
-            durableRoot: configuration.temporaryReadOnly ? nil : configuration.toolResultCaptureRoot
+            durableRoot: captureRoot,
+            caps: captureRoot == nil
+                ? .memoryStandard
+                : .durableStandard
         )
         self.adapter = adapter
         self.policy = policy
@@ -1001,22 +1063,108 @@ public actor FloeAgentRuntime {
         await audit(toolCall: call, result: result, decision: "allow:tool-result-page")
         resultsByID[call.id] = result
     }
+    /// Child analogue of `settleToolResultPage`. The only task identity that
+    /// can resolve the store is the owning runtime's conversation; a child of
+    /// another task (or a forged context) is refused instead of widening the
+    /// read scope. A bare call id resolves the child's OWN capture namespace
+    /// first (`identity.childID`, stable across resume), so a sibling/parent
+    /// reusing the same provider call id is never preferred over the child's
+    /// own record.
+    private func settleChildToolResultPage(
+        _ call: ToolCall,
+        identity: ChildExecutionIdentity,
+        childContext: ToolContext
+    ) async -> ToolResult {
+        guard childContext.conversationID == nil
+                || childContext.conversationID == configuration.conversationID else {
+            let denied = ToolResult(
+                callID: call.id,
+                status: .denied,
+                outputSummary: "Denied: retained tool results are scoped to this task; a child of another task cannot read them.",
+                outputDigest: ""
+            )
+            await audit(toolCall: call, result: denied, decision: "deny:child-capture-scope")
+            return denied
+        }
+        do {
+            let arguments = try JSONDecoder().decode(
+                ToolResultPagingTool.Arguments.self,
+                from: call.argumentsJSON
+            )
+            let paging = ToolResultPagingTool(store: toolResultCaptures)
+            try paging.validate(arguments)
+            let execution = try await paging.execute(arguments, context: ToolContext(
+                // This child's stable capture namespace, never the parent run
+                // routing id. Same-task fallback still reaches a parent/earlier
+                // capture by bare call id when this child has none.
+                runID: identity.childID,
+                toolCallID: call.id,
+                cancellation: childContext.cancellation,
+                conversationID: configuration.conversationID
+            ))
+            let result = ToolResult(
+                callID: call.id,
+                status: (execution.exitStatus ?? 0) == 0 ? .ok : .failed,
+                outputSummary: execution.summary,
+                outputDigest: execution.fullOutputSHA256,
+                exitStatus: execution.exitStatus,
+                maximumSummaryCharacters: ToolResultPagingTool.maximumRenderedBytes
+            )
+            await audit(toolCall: call, result: result, decision: "allow:child-tool-result-page")
+            return result
+        } catch FloeError.cancelled {
+            return ToolResult(
+                callID: call.id,
+                status: .cancelled,
+                outputSummary: "Cancelled while reading the retained tool result.",
+                outputDigest: ""
+            )
+        } catch {
+            return ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: "Invalid tools.readResult request: \(error)",
+                outputDigest: ""
+            )
+        }
+    }
+
     // MARK: Captured tool-result retention (compaction paging)
 
-    /// Retains one settled result for read-only paging. Runtime metadata
-    /// tools are skipped (their output is a directory, not task evidence),
-    /// and the store enforces per-result, per-task and count bounds while
-    /// keeping a temporary conversation in RAM only.
-    private func retainCapturedResult(_ call: ToolCall, result: ToolResult) async {
-        guard call.toolName != ToolDiscovery.name,
-              call.toolName != ToolDiscovery.listName,
-              call.toolName != ToolResultPagingTool.name else { return }
-        let captureText = SecretRedactor.redact(
-            result.capturedOutput ?? result.outputSummary, secret: credentials.apiKey
-        )
-        await toolResultCaptures.capture(
+    /// Retains one settled result for read-only paging BEFORE any request
+    /// selection. Only a paging page itself is skipped (capturing it would
+    /// build an unbounded read-of-a-read chain); discovery and schema output is
+    /// task evidence too and stays retrievable. The store enforces
+    /// per-result, per-task and count bounds while keeping a temporary
+    /// conversation in RAM only.
+    ///
+    /// `captureNamespace` is the trusted ownership namespace of these bytes.
+    /// Main-run results use the run itself; a delegated child passes its
+    /// stable runtime-issued `childID`, so two siblings (or the parent) that
+    /// happen to reuse one provider call id can never overwrite or misattribute
+    /// each other's capture. `recordRootReceipt` is false for a child call: the
+    /// root batch receipt map is keyed by call id only and must not be polluted
+    /// by a child whose call id collides with a main-run call.
+    @discardableResult
+    private func retainCapturedResult(
+        _ call: ToolCall,
+        result: ToolResult,
+        captureNamespace: UUID? = nil,
+        recordRootReceipt: Bool = true,
+        sensitiveOverride: Bool = false
+    ) async -> ToolResultCaptureReceipt? {
+        guard call.toolName != ToolResultPagingTool.name else { return nil }
+        // A sensitive result is retained only as its already-redacted durable
+        // summary: the raw cookie/authorization value must never enter the
+        // capture store (and therefore never be paged later).
+        let isSensitive = sensitiveOverride || ephemeralSensitiveOutputs[call.id] != nil
+        let durableBody = isSensitive
+            ? result.outputSummary
+            : (result.capturedOutput ?? result.outputSummary)
+        let captureText = SecretRedactor.redact(durableBody, secret: credentials.apiKey)
+        let receipt = await toolResultCaptures.capture(
             conversationID: configuration.conversationID,
-            runID: runID,
+            runID: captureNamespace ?? runID,
             callID: call.id,
             toolName: call.toolName,
             status: result.status.rawValue,
@@ -1024,6 +1172,24 @@ public actor FloeAgentRuntime {
             temporary: configuration.temporaryReadOnly,
             executionReportedTruncation: result.capturedOutputTruncated
                 || Self.reportsExecutionCaptureTruncation(captureText)
+        )
+        if recordRootReceipt {
+            toolCaptureReceipts[call.id] = receipt
+        }
+        return receipt
+    }
+
+    /// Converts one real retention receipt into the safe, Codable metadata a
+    /// child result carries. Only a `retained` outcome exposes a ref, so a
+    /// failed/evicted attempt can never be advertised as pageable.
+    static func captureInfo(from receipt: ToolResultCaptureReceipt) -> ToolResultCaptureInfo {
+        ToolResultCaptureInfo(
+            ref: receipt.ref,
+            originalBytes: receipt.totalBytes,
+            retainedBytes: receipt.retainedBytes,
+            retentionTruncated: receipt.retentionTruncated,
+            executionReportedTruncation: receipt.executionReportedTruncation,
+            available: receipt.retained
         )
     }
 
@@ -1245,6 +1411,7 @@ public actor FloeAgentRuntime {
         default:
             break
         }
+        clearToolArgumentPhase()
         await transition(to: .cancelling)
         // 1. Stop the model stream (URLSessionTask cancel → SSE terminates).
         let activeRunTask = streamTask
@@ -1359,6 +1526,7 @@ public actor FloeAgentRuntime {
     /// streamingModel → paused. paused → streamingModel via `resumeFromPause`.
     public func pause() async {
         guard case .streamingModel = state else { return }
+        clearToolArgumentPhase()
         let timeoutAt = Date().addingTimeInterval(configuration.pauseTimeout)
         await transition(to: .paused(AgentState.PausedInfo(timeoutAt: timeoutAt)))
         streamTask?.cancel()
@@ -1483,9 +1651,10 @@ public actor FloeAgentRuntime {
                 )
             }
         }
+        sensitivePendingCallIDs = Set(checkpoint.sensitiveToolCallIDs ?? [])
         latestProviderDispatchRequest = checkpoint.providerDispatchRequest
         if let snapshot = checkpoint.providerDispatchRequest {
-            let restoredRequest = snapshot.request()
+            var restoredRequest = snapshot.request()
             // Presentation hints only; the next preparation intersects them
             // with current executable descriptors and current permission limits.
             discoveryPriority = restoredRequest.toolSchemas.map(\.name).filter { $0 != ToolDiscovery.name }
@@ -1498,6 +1667,11 @@ public actor FloeAgentRuntime {
             }
             latestProviderDispatchEnvelope = checkpoint.providerDispatchEnvelope
             restoredProviderDispatchEnvelope = checkpoint.providerDispatchEnvelope
+            // The checkpoint stores only a bounded recovery projection. The
+            // live model request may have carried complete results; rebuild
+            // those bytes from the trusted capture store instead of
+            // duplicating them in every checkpoint.
+            await rehydrateRestoredToolResults(&restoredRequest)
             providerRetryRequest = restoredRequest
         } else {
             // v4 and older checkpoints persisted only a digest. Rebuilding
@@ -1572,6 +1746,44 @@ public actor FloeAgentRuntime {
             }
             let result: ToolResult
             var outcomeUnknown = false
+            if sensitivePendingCallIDs.contains(call.id) {
+                // The durable checkpoint intentionally does not contain the
+                // Cookie/Authorization arguments this call was approved with.
+                // Replaying a redacted network request (or any side effect)
+                // would change its meaning, so the runtime fails it instead
+                // and requires a rebuilt, re-authorized request.
+                let neverDispatched = lifecycle?.phase == .recorded
+                    || lifecycle?.phase == .approved
+                if neverDispatched {
+                    result = ToolResult(
+                        callID: call.id,
+                        status: .failed,
+                        outputSummary: "The pending operation carried credential arguments that were intentionally removed from the durable checkpoint. It was NOT replayed and did not start. Re-issue it only with fresh, explicit user authorization and a rebuilt request.",
+                        outputDigest: ""
+                    )
+                } else {
+                    result = ToolResult(
+                        callID: call.id,
+                        status: .failed,
+                        outputSummary: "Execution was interrupted and its credential arguments were intentionally removed from the durable checkpoint, so the request was NOT replayed. Inspect current external state; if the read or action is still needed, rebuild the request with fresh, explicit user authorization.",
+                        outputDigest: ""
+                    )
+                    outcomeUnknown = isSideEffecting
+                }
+                sensitivePendingCallIDs.remove(call.id)
+                pendingToolResults.append(result)
+                pairedIDs.insert(call.id)
+                executionLedger.record(
+                    call: call,
+                    result: result,
+                    isSideEffecting: isSideEffecting,
+                    outcomeUnknown: outcomeUnknown,
+                    outcomeUnknownReason: outcomeUnknown
+                        ? .unattributed : .interruptedDispatch
+                )
+                setToolLifecycle(call: call, phase: .resultCommitted)
+                continue
+            }
             if let recovered = executionLedger.recoveredResult(
                 for: call,
                 isSideEffecting: isSideEffecting
@@ -1740,7 +1952,7 @@ public actor FloeAgentRuntime {
 
     /// The descriptors this run actually offers: plan-mode restriction,
     /// child-only removal, the model's auxiliary-vision pruning, the user's
-    /// effective name ceiling, the on-device curated ceiling and — for a
+    /// effective name ceiling, model capabilities and — for a
     /// temporary chat run — the read-only policy projection. Computed from
     /// immutable run configuration only, so it doubles as the frozen catalog
     /// identity children discover and dispatch against.
@@ -1754,6 +1966,10 @@ public actor FloeAgentRuntime {
         // Child-only sibling collaboration tools exist solely for delegated
         // children; the main run must never see them (discovery included).
         descriptors.removeAll { $0.executionBoundary == .childOnly }
+        // Retired language/installer aliases stay denied even though the
+        // local curated fence is gone; removal happens at the catalog
+        // boundary, not by a model-visible preference.
+        descriptors.removeAll { RetiredExecutionTools.contains($0.name) }
         if configuration.model.capabilities.contains(.vision) {
             // A multimodal model receives the current image bytes directly.
             // Do not offer auxiliary inspection/OCR escape hatches that make
@@ -1765,16 +1981,13 @@ public actor FloeAgentRuntime {
         if let allowed = configuration.allowedToolNames {
             descriptors.removeAll { !allowed.contains($0.name) }
         }
-        // On-device runs are bounded by the curated ceiling. Apply it to this
-        // run's catalog before any discovery so hidden tools (shell, code
-        // execution, Linux provisioning and environment lifecycle) can never
-        // be reintroduced through a discovery guess, tools.list/search or
-        // remembered state. Cloud runs keep their full catalog.
-        if configuration.provider.kind == .local {
-            descriptors.removeAll {
-                !LocalModelToolPolicy.curatedCeilingNames.contains($0.name)
-            }
-        }
+        // Local models use the SAME task-authorized catalog as cloud. The
+        // runtime no longer applies a second curated-name fence: browser.*,
+        // exec.shell and Linux/environment tools remain offered when the
+        // task's real ceiling, temporary/plan projection and configured
+        // model.tools allow them. Intent pins are presentation hints, never an
+        // authorization whitelist, and retired aliases stay denied by the
+        // existing catalog/ceiling checks.
         if configuration.temporaryReadOnly {
             // Presentation projection only: the base descriptors (and their
             // authorization identities) stay untouched for execution.
@@ -2064,7 +2277,8 @@ public actor FloeAgentRuntime {
             )
             let compressionPolicy = Self.contextCompressionPolicy(
                 configuration: configuration,
-                messages: messages
+                messages: messages,
+                measuredToolSchemaTokens: lastProviderSchemaTokenEstimate
             )
             logger.debug(
                 "contextBudgetConfigured run=\(runID.uuidString) mode=\(compressionPolicy.mode.rawValue) tier=\(compressionPolicy.tier.rawValue) window=\(compressionPolicy.budget.contextWindowTokens) availableInput=\(compressionPolicy.budget.availableInputTokens) reservedOutput=\(compressionPolicy.budget.reservedOutputTokens) toolSchemas=\(compressionPolicy.budget.toolSchemaTokens) images=\(compressionPolicy.budget.imageTokens) trigger=\(compressionPolicy.budget.triggerRatio) target=\(compressionPolicy.budget.targetRatio)"
@@ -2074,9 +2288,26 @@ public actor FloeAgentRuntime {
                 budget: compressionPolicy.budget,
                 protection: protection
             )
+            let estimatedNow = ContextTokenEstimator().estimate(messages)
+                + Self.replayEvidenceTokenEstimate(replayableToolHistory)
+            await publishContextCompression(ContextCompressionSnapshot(
+                phase: .sizing,
+                beforeTokens: estimatedNow,
+                availableInputTokens: compressionPolicy.budget.availableInputTokens,
+                toolSchemaTokens: compressionPolicy.budget.toolSchemaTokens
+            ))
             let wasForcedCompaction = forceCompactionOnNextTurn
-            if wasForcedCompaction || Double(ContextTokenEstimator().estimate(messages) + Self.replayEvidenceTokenEstimate(replayableToolHistory)) >= Double(compressionPolicy.budget.availableInputTokens) * compressionPolicy.budget.triggerRatio {
+            let needsCompaction = wasForcedCompaction
+                || Double(estimatedNow) >= Double(compressionPolicy.budget.availableInputTokens)
+                    * compressionPolicy.budget.triggerRatio
+            if needsCompaction {
                 await publishLiveness(phase: .compacting, message: "Compacting model context; original messages and tool evidence remain saved", isRecoverable: true)
+                await publishContextCompression(ContextCompressionSnapshot(
+                    phase: .compacting,
+                    beforeTokens: estimatedNow,
+                    availableInputTokens: compressionPolicy.budget.availableInputTokens,
+                    toolSchemaTokens: compressionPolicy.budget.toolSchemaTokens
+                ))
             }
             do {
                 let prepared: PreparedContext
@@ -2115,11 +2346,26 @@ public actor FloeAgentRuntime {
                         "contextCompacted run=\(runID.uuidString) mode=\(compressionPolicy.mode.rawValue) tier=\(compressionPolicy.tier.rawValue) before=\(compaction.beforeEstimatedTokens) after=\(compaction.afterEstimatedTokens) sources=\(compaction.sourceMessageIDs.count) emergency=\(prepared.isEmergencyCompaction)"
                     )
                     await sink?.agentRuntime(self, didCompact: compaction)
+                    await publishContextCompression(ContextCompressionSnapshot(
+                        phase: .compacted,
+                        beforeTokens: compaction.beforeEstimatedTokens,
+                        afterTokens: compaction.afterEstimatedTokens,
+                        availableInputTokens: compressionPolicy.budget.availableInputTokens,
+                        toolSchemaTokens: compressionPolicy.budget.toolSchemaTokens,
+                        compactedMessageCount: compaction.sourceMessageIDs.count
+                    ))
                 }
             } catch {
                 logger.warning(
                     "contextCompactionFailed run=\(runID.uuidString) forced=\(wasForcedCompaction) error=\(error.localizedDescription)"
                 )
+                await publishContextCompression(ContextCompressionSnapshot(
+                    phase: .failed,
+                    reason: "Context compaction failed; the original messages and tool evidence were preserved.",
+                    beforeTokens: estimatedNow,
+                    availableInputTokens: compressionPolicy.budget.availableInputTokens,
+                    toolSchemaTokens: compressionPolicy.budget.toolSchemaTokens
+                ))
                 forceCompactionOnNextTurn = false
                 if wasForcedCompaction {
                     await failRun(
@@ -2138,13 +2384,13 @@ public actor FloeAgentRuntime {
         let supportsTools = configuration.toolsEnabled
             && configuration.model.capabilities.contains(.tools)
             && !isFinalizingWithoutTools
-        // The run's real catalog identity: plan/ceiling/curation/projection
+        // The run's real catalog identity: plan/ceiling/capabilities/projection
         // applied once. This is FROZEN separately from the per-turn schema
         // subset; delegated children discover and dispatch against exactly
         // this set.
         var catalogDescriptors = runtimeVisibleCatalogDescriptors()
-        // On-device runs keep their curated discovery behavior; the frozen
-        // identity above already carries the curated ceiling.
+        // On-device intent pins affect schema presentation only; the frozen
+        // identity above is the task's authoritative capability set.
         let isLocalProvider = configuration.provider.kind == .local
         discoverableDescriptors = catalogDescriptors
         let userTask = messages.last(where: { $0.role == "user" })?.content ?? ""
@@ -2154,14 +2400,13 @@ public actor FloeAgentRuntime {
         // before (cloud semantics unchanged): a first-turn guess, the curated
         // pinned union, or names dropped by the ceiling must not look like a
         // prior discovery and trigger an eviction notice.
-        let hadPriorDiscovery = !discoveredToolNames.isEmpty
         if discoveredToolNames.isEmpty {
             let initial = ToolDiscovery.matches(query: userTask, descriptors: catalogDescriptors)
             discoveredToolNames.formUnion(initial.map(\.name))
             discoveryPriority = initial.map(\.name)
         }
-        // On-device runs: prune discovery/remembered state to the curated
-        // ceiling and to the descriptors this run actually offers (covers
+        // On-device runs: intersect discovery/remembered state with the
+        // descriptors this run actually offers (covers
         // persisted and checkpoint-restored state), then union the stable
         // pinned base present in the run without any tools.list round-trip.
         if isLocalProvider {
@@ -2185,10 +2430,13 @@ public actor FloeAgentRuntime {
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
         var pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
-        // Keep the stable local pinned schemas on the wire even under the
-        // 23-tool/23-KB presentation budget; the adapter still applies its
-        // per-window token/character budget, so this never overruns the
-        // model context.
+        // Keep the stable local pinned schemas in the candidate set. There is
+        // no fixed 23-tool/23-KB dispatch pre-filter any more: that budget
+        // could silently drop an explicitly loaded ~18 KB CAD definition
+        // behind optional core schemas even when the model window had ample
+        // room. The progressive candidate set is unchanged (core + discovered
+        // + recent groups), but admission is ordered by explicit load/pin and
+        // sized from the ACTUAL model request budget below.
         if isLocalProvider {
             pinned.formUnion(
                 catalogDescriptors.map(\.name).filter {
@@ -2196,16 +2444,88 @@ public actor FloeAgentRuntime {
                 }
             )
         }
-        let schemasLoadedBeforeBudget = discoveredToolNames
-        catalogDescriptors = ToolDiscovery.bounded(catalogDescriptors, priority: discoveryPriority, pinned: pinned)
-        let retainedAfterBudget = Set(catalogDescriptors.map(\.name))
-        let evictedSchemaNames = hadPriorDiscovery
-            ? schemasLoadedBeforeBudget.subtracting(retainedAfterBudget).sorted()
-            : []
-        discoveredToolNames = retainedAfterBudget
+        catalogDescriptors = ToolSchemaOfferPlanner.prioritized(
+            catalogDescriptors,
+            priority: discoveryPriority,
+            pinned: pinned,
+            coreNames: ToolDiscovery.coreNames
+        )
         catalogDescriptors.append(contentsOf: ToolDiscovery.runtimeDescriptors(
             publicWebOnly: configuration.temporaryReadOnly
         ))
+        // Complete-schema admission for THIS model window. The allowance is
+        // the real leftover request budget after system/history, images,
+        // replayed pairs, the output reservation and a pending-result reserve.
+        // No arbitrary 8 KiB ceiling: a requested complete definition is
+        // offered whole when the window can carry it; otherwise it is deferred
+        // honestly and history compaction has already had its chance.
+        var schemaDeferredNote: String?
+        if supportsTools {
+            let alwaysKeep: Set<String> = [
+                ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name
+            ]
+            let window = configuration.model.limits.contextTokens
+            let outputReserve = Self.contextOutputReservation(limits: configuration.model.limits)
+            let messageEstimate = ContextTokenEstimator().estimate(messages)
+                + Self.replayEvidenceTokenEstimate(replayableToolHistory)
+            let imageEstimate = messages.reduce(0) { $0 + $1.images.count * 1_600 }
+            // Leave a realistic share of the window for the pending tool
+            // result channel instead of spending nearly all of it on schemas.
+            let toolResultReserve = min(window / 3, max(1_024, window / 4))
+            let schemaBudget = ToolSchemaOfferPlanner.availableTokenBudget(
+                contextWindowTokens: window,
+                reservedOutputTokens: outputReserve,
+                messageTokens: messageEstimate,
+                imageTokens: imageEstimate,
+                replayTokens: 0,
+                toolResultReserveTokens: toolResultReserve
+            )
+            let plan = ToolSchemaOfferPlanner.plan(
+                descriptors: catalogDescriptors,
+                tokenBudget: schemaBudget,
+                alwaysKeep: alwaysKeep
+            )
+            // Charge the requested/loaded schemas even when this request had
+            // to defer one, so the next compaction budget sees the real
+            // pressure instead of assuming the loaded tool was free. Capped at
+            // half the window so an intrinsically impossible definition does
+            // not force endless compaction.
+            let requestedSchemaCost = catalogDescriptors
+                .filter { pinned.contains($0.name) || discoveryPriority.contains($0.name) }
+                .reduce(0) { $0 + ToolSchemaOfferPlanner.tokenCost($1) }
+            catalogDescriptors = plan.offered
+            lastProviderSchemaTokenEstimate = max(
+                plan.estimatedTokens,
+                min(requestedSchemaCost, max(0, window / 2))
+            )
+            let deferredNames = plan.deferred + plan.oversized
+            if !deferredNames.isEmpty {
+                let display = deferredNames
+                    .prefix(24)
+                    .map { CompatToolNames.wireName($0, for: configuration.provider) }
+                    .joined(separator: ", ")
+                schemaDeferredNote = "This model window carries \(plan.offered.count) complete tool definition(s); "
+                    + "\(deferredNames.count) more were deferred so every offered schema stays complete"
+                    + (deferredNames.count > 24 ? " (first 24: \(display))" : ": \(display)")
+                    + (plan.oversized.isEmpty
+                        ? "."
+                        : ". Definitions too large for this window's schema allowance are not offered rather than cut: "
+                            + plan.oversized.prefix(8).joined(separator: ", ") + ".")
+                    + " They remain installed and callable. A definition you explicitly loaded is retried on a later request with more room; load any other exact name with "
+                    + CompatToolNames.wireName(ToolDiscovery.name, for: configuration.provider)
+                    + " and it enters the next request as a complete schema."
+                logger.info(
+                    "toolSchemasAdmitted run=\(runID.uuidString) offered=\(plan.offered.count) deferred=\(plan.deferred.count) oversized=\(plan.oversized.count) tokens=\(plan.estimatedTokens) window=\(configuration.model.limits.contextTokens)"
+                )
+                await publishContextCompression(ContextCompressionSnapshot(
+                    phase: .schemasReduced,
+                    reason: "Tool schemas reduced to complete definitions that fit this model window.",
+                    toolSchemaTokens: plan.estimatedTokens
+                ))
+            }
+        } else {
+            lastProviderSchemaTokenEstimate = 0
+        }
         persistDiscoveryIfChanged()
         // Prerequisite wording belongs to the current user turn. Do not let a
         // historical SSH-before-VNC request constrain a later, unrelated turn.
@@ -2248,23 +2568,13 @@ public actor FloeAgentRuntime {
                 contentMessages[index].content.append(.text(note))
             }
         }
-        // Make schema-budget eviction visible. Silently dropping a schema makes
-        // models believe the capability vanished and re-enumerate the catalog.
-        if supportsTools, !evictedSchemaNames.isEmpty {
-            let note = "Schema budget unloaded these previously discovered tools for this request only: "
-                + evictedSchemaNames.map {
-                    CompatToolNames.wireName($0, for: configuration.provider)
-                }.joined(separator: ", ")
-                + ". They remain installed and callable, and results already obtained stay valid. Reload one schema by exact name with "
-                + CompatToolNames.wireName(ToolDiscovery.name, for: configuration.provider)
-                + "; do not re-enumerate the catalog with "
-                + CompatToolNames.wireName(ToolDiscovery.listName, for: configuration.provider) + "."
+        if supportsTools, let schemaDeferredNote {
             if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
-                legacyMessages[index].content += "\n\n" + note
-                contentMessages[index].content.append(.text(note))
+                legacyMessages[index].content += "\n\n" + schemaDeferredNote
+                contentMessages[index].content.append(.text(schemaDeferredNote))
             } else {
-                legacyMessages.insert((role: "system", content: note), at: 0)
-                contentMessages.insert(ProviderMessage(role: "system", content: [.text(note)]), at: 0)
+                legacyMessages.insert((role: "system", content: schemaDeferredNote), at: 0)
+                contentMessages.insert(ProviderMessage(role: "system", content: [.text(schemaDeferredNote)]), at: 0)
             }
         }
         // Local adapters build their own admitted tool metadata. Keep runtime
@@ -2372,50 +2682,19 @@ public actor FloeAgentRuntime {
                 ))
             }
         }
-        // The paging page is already bounded by its own renderer; the
-        // ordinary pending-result compaction must not shrink it further.
-        // Identity comes from the runtime's own pending calls, never from the
-        // result text or a model argument.
+        // The paging page is already bounded by its own renderer and must not
+        // be re-summarized. Identity comes from the runtime's own pending
+        // calls, never from the result text or a model argument.
         let pendingPagingCallIDs = Self.pagingCallIDs(in: pendingToolCalls)
-        let freshRequest = ProviderStreamRequest(
-            provider: configuration.provider,
-            model: configuration.model,
-            messages: legacyMessages,
-            contentMessages: contentMessages,
-            // The pending results cross the provider boundary in exactly one
-            // bounded form. Compacting here — before the dispatch envelope,
-            // the retry request, the checkpoint snapshot and the resumed
-            // rebuild — keeps all four byte-identical (the envelope digests
-            // reasoning content) and removes the unbounded post-tool payload
-            // peak for cloud bodies and on-device prefill alike. The marker
-            // keeps the original byte count and digest so the model can
-            // re-observe a truncated output with an explicit tool call.
-            //
-            // `tools.readResult` is the exception: its own output IS the
-            // bounded page the model explicitly asked for (<= 32 KiB plus a
-            // bounded header), so a second 2 KiB compaction would hide the
-            // bytes its `nextOffset` already advanced past. It is still
-            // bounded by the paging tool's own envelope.
-            toolResults: pendingToolResults.map { result in
-                let output = Self.modelVisibleToolResult(result)
-                let isPagingPage = pendingPagingCallIDs.contains(result.callID)
-                return (
-                    callID: result.callID,
-                    output: isPagingPage
-                        ? output
-                        : ToolReplayPlanner.compactResultSummary(output)
-                )
-            },
-            // Tool-call/result pairs are provider history, not permission to
-            // issue another tool. A forced tool-free finalization must hide
-            // schemas while still replaying the complete ordered pair.
-            pendingToolCalls: pendingToolCalls,
-            replayedToolPairs: replayedToolPairs,
-            // A bounded excerpt satisfies thinking-mode providers' non-empty
-            // reasoning requirement without checkpointing the whole trace.
-            pendingAssistantReasoning: pendingToolCalls.isEmpty
-                ? nil : ToolReplayPlanner.boundedReasoning(responseReasoning),
-            toolSchemas: supportsTools ? catalogDescriptors.map {
+        // Size the ACTUAL request sections (messages, complete schemas,
+        // replayed pairs, images, output reserve) and give every pending
+        // result as many bytes as really fit. Complete evidence is sent when
+        // it fits; otherwise the result carries an explicit head/tail excerpt
+        // with its stable capture ref. The per-turn ceiling exists only to
+        // bound the dispatch checkpoint's encoded size, not to cap ordinary
+        // results arbitrarily.
+        let toolSchemasForRequest: [ToolSchemaDescriptor] = supportsTools
+            ? catalogDescriptors.map {
                 ToolSchemaDescriptor(
                     name: $0.name,
                     description: Self.providerToolDescription($0),
@@ -2427,7 +2706,48 @@ public actor FloeAgentRuntime {
                     description: PlanSubmission.toolDescription,
                     parametersJSON: PlanSubmission.parametersJSON
                 )
-            ] : []) : [],
+            ] : [])
+            : []
+        let selectionInputs = await makeToolResultSelectionInputs(
+            pagingCallIDs: pendingPagingCallIDs
+        )
+        let requestSize = ProviderRequestSizer.measure(
+            messages: contentMessages,
+            schemas: toolSchemasForRequest,
+            replayedToolPairs: replayedToolPairs,
+            contextWindowTokens: configuration.model.limits.contextTokens,
+            reservedOutputTokens: Self.contextOutputReservation(limits: configuration.model.limits)
+        )
+        let selection = ToolResultPlanner.plan(
+            inputs: selectionInputs,
+            budgetBytes: min(
+                requestSize.toolResultBudgetBytes,
+                Self.maximumProviderToolResultBytes
+            )
+        )
+        lastProviderSchemaTokenEstimate = requestSize.schemaTokens
+        logger.info(
+            "toolResultSelection run=\(runID.uuidString) results=\(selection.items.count) complete=\(selection.items.filter(\.complete).count) excerpted=\(selection.items.filter(\.excerpted).count) pointerOnly=\(selection.items.filter(\.pointerOnly).count) requestedBytes=\(selection.requestedBytes) sentBytes=\(selection.sentBytes) budgetBytes=\(selection.budgetBytes) messageTokens=\(requestSize.messageTokens) schemaTokens=\(requestSize.schemaTokens) replayTokens=\(requestSize.replayTokens) availableToolTokens=\(requestSize.availableToolResultTokens)"
+        )
+        // Receipts describe this one batch; a later call id must not inherit
+        // stale retention provenance.
+        toolCaptureReceipts.removeAll(keepingCapacity: true)
+        let freshRequest = ProviderStreamRequest(
+            provider: configuration.provider,
+            model: configuration.model,
+            messages: legacyMessages,
+            contentMessages: contentMessages,
+            toolResults: selection.items.map { (callID: $0.callID, output: $0.output) },
+            // Tool-call/result pairs are provider history, not permission to
+            // issue another tool. A forced tool-free finalization must hide
+            // schemas while still replaying the complete ordered pair.
+            pendingToolCalls: pendingToolCalls,
+            replayedToolPairs: replayedToolPairs,
+            // A bounded excerpt satisfies thinking-mode providers' non-empty
+            // reasoning requirement without checkpointing the whole trace.
+            pendingAssistantReasoning: pendingToolCalls.isEmpty
+                ? nil : ToolReplayPlanner.boundedReasoning(responseReasoning),
+            toolSchemas: toolSchemasForRequest,
             // Compat-mode reverse name mapping must be total over the run's
             // capability ceiling — the same set tools.list enumerates —
             // because eviction notes legitimately invite calls to tools whose
@@ -2460,7 +2780,12 @@ public actor FloeAgentRuntime {
         }
         restoredProviderDispatchEnvelope = nil
         latestProviderDispatchEnvelope = dispatchEnvelope
-        latestProviderDispatchRequest = ProviderDispatchRequestSnapshot(request: request)
+        latestProviderDispatchRequest = Self.persistedDispatchSnapshot(
+            request: request,
+            runID: runID,
+            sensitiveCallIDs: sensitiveOutputCallIDs,
+            capturableCallIDs: durableCaptureCallIDs
+        )
         logger.info(
             "promptAssembly run=\(runID.uuidString) digest=\(Self.promptAssemblyDigest(messages: legacyMessages, descriptors: catalogDescriptors)) tools=\(request.toolSchemas.count) pendingCalls=\(request.pendingToolCalls.count) pendingResults=\(request.toolResults.count) mode=\(configuration.conversationMode.rawValue)"
         )
@@ -2517,6 +2842,7 @@ public actor FloeAgentRuntime {
         modelRequestStartedAt = Date()
         firstModelActivityAt = nil
         providerAttemptNumber += 1
+        clearToolArgumentPhase()
         providerReceivedFirstEvent = false
         providerLastEventWasReasoning = false
         providerLastEventWasToolArguments = false
@@ -2695,16 +3021,36 @@ public actor FloeAgentRuntime {
             providerReceivedFirstEvent = true
             await publishProviderAttempt(status: .firstEvent, reason: "Model is preparing tool arguments", error: nil)
         }
-        if providerToolProgressPublishedAt == nil
-            || providerLastProgressAt.timeIntervalSince(providerToolProgressPublishedAt ?? .distantPast) >= 1 {
+        // The watchdog/liveness timestamps above update on the FIRST real
+        // fragment. The user-visible phase waits for 1.5s of persistent
+        // fragments so a fast complete call never flashes it.
+        if toolArgumentFirstFragmentAt == nil {
+            toolArgumentFirstFragmentAt = ContinuousClock.now
+            scheduleToolArgumentPhase(attempt: attempt)
+        } else if toolArgumentPhasePublished,
+                  providerLastProgressAt.timeIntervalSince(providerToolProgressPublishedAt ?? .distantPast) >= 1 {
             providerToolProgressPublishedAt = providerLastProgressAt
-            await publishLiveness(phase: .preparingToolCall, message: "Model is preparing tool arguments", isRecoverable: true)
+            await publishLiveness(
+                phase: .preparingToolCall,
+                message: "Model is preparing tool arguments",
+                isRecoverable: true
+            )
         }
     }
 
     private func handleStreamEvent(_ rawEvent: AgentEvent) async {
         // Never mutate after leaving streamingModel (cancel race safety).
         guard case .streamingModel(var info) = state else { return }
+
+        // Any non-fragment outcome ends the pending argument phase. Text and
+        // reasoning mean the model moved on; completion/error means the
+        // generation is over. A later fragment series starts a new timer.
+        switch rawEvent {
+        case .textDelta, .reasoningSummary, .completed, .error:
+            clearToolArgumentPhase()
+        default:
+            break
+        }
 
         if livenessSnapshot.phase == .preparingToolCall {
             switch rawEvent {
@@ -2864,6 +3210,10 @@ public actor FloeAgentRuntime {
             ))
 
         case .toolRequest(let call):
+            // The complete call (or its malformed rejection) ends the delayed
+            // argument phase; a fast call never published it in the first
+            // place.
+            clearToolArgumentPhase()
             // A malformed call invalidates the entire provider response. Do
             // not stage later calls from that same response for execution.
             if malformedToolRepairRequested { return }
@@ -2939,6 +3289,10 @@ public actor FloeAgentRuntime {
                     return
                 }
                 contextOverflowRecoveryCount += 1
+                await publishContextCompression(ContextCompressionSnapshot(
+                    phase: .overflowRecovery,
+                    reason: "The provider reported a context overflow; one bounded compaction and retry are attempted."
+                ))
                 // streamingModel → compacting → one retry.
                 await transition(to: .compacting)
                 await compactHistory(force: true)
@@ -3322,7 +3676,10 @@ public actor FloeAgentRuntime {
             mutableTargetPaths: mutableTargets,
             hasUnresolvedExtent: resolution.hasUnresolvedExtent,
             typedContractCovered: resolution.contractCovered,
-            workspaceRootPath: workspaceRoot
+            workspaceRootPath: workspaceRoot,
+            nativeCADDocumentPath: call.toolName == "cad.document"
+                && resolution.contractCovered && !resolution.hasUnresolvedExtent
+                && mutableTargets.count == 1 ? mutableTargets.first : nil
         )
     }
 
@@ -4157,6 +4514,17 @@ public actor FloeAgentRuntime {
         // nested wrapper cannot substitute a newer/wider registry snapshot.
         var childContext = childContext
         childContext.professionalSearchAuthority = configuration.professionalSearchAuthority
+        // A delegated child of the SAME task may read the task's retained tool
+        // captures. This is runtime metadata over already-redacted evidence,
+        // not a new authority: the store still resolves ownership from the
+        // parent runtime's conversation, never from a child/model argument.
+        if call.toolName == ToolResultPagingTool.name {
+            return await settleChildToolResultPage(
+                call,
+                identity: identity,
+                childContext: childContext
+            )
+        }
         guard let descriptor = executor.descriptor(named: call.toolName) else {
             return await childDenied(
                 call,
@@ -4201,6 +4569,28 @@ public actor FloeAgentRuntime {
         switch resolution {
         case .approved(let grant):
             let result = await executeChildCall(call, grant: grant, identity: identity, childContext: childContext)
+            // Retain the child's full post-redaction result under the SAME
+            // task but the child's OWN stable namespace (`identity.childID`),
+            // so two siblings — or the parent — reusing one provider call id
+            // cannot overwrite each other. The childID survives a resume of
+            // the same child, keeping its refs resolvable.
+            let receipt = await retainCapturedResult(
+                call,
+                result: result,
+                captureNamespace: identity.childID,
+                recordRootReceipt: false,
+                sensitiveOverride: result.ephemeralSensitiveOutput?.isEmpty == false
+            )
+            // Return the REAL receipt metadata with the result. The child
+            // planner may only advertise pageability from this actual record;
+            // a missing/failed receipt stays honestly unpageable. A typed
+            // ephemeral sensitive body is never given receipt metadata (the
+            // store kept only its redacted summary, not the value).
+            var settled = result
+            let hasEphemeralSensitiveBody = !(result.ephemeralSensitiveOutput?.isEmpty ?? true)
+            if let receipt, !hasEphemeralSensitiveBody {
+                settled.captureInfo = Self.captureInfo(from: receipt)
+            }
             // The child's result settles in the CHILD's provider history, not
             // in the parent's batch. Mark this lifecycle boundary committed so
             // a later parent checkpoint never reports it as an orphaned open
@@ -4215,7 +4605,7 @@ public actor FloeAgentRuntime {
                 authorizationIdentity: descriptor.authorizationIdentity,
                 isSideEffecting: descriptor.isSideEffecting
             )
-            return result
+            return settled
         case .denied(let reason, let decision):
             return await childDenied(call, reason: reason, decision: decision)
         case .stopped(let reason):
@@ -4398,7 +4788,23 @@ public actor FloeAgentRuntime {
                     continue
                 }
                 let matches = ToolDiscovery.matches(queries: queries, descriptors: discoverableDescriptors)
-                let selected = ToolDiscovery.bounded(matches + discoverableDescriptors.filter { ["skill.read", "skill.search"].contains($0.name) && !matches.map(\.name).contains($0.name) }, priority: matches.map(\.name))
+                // Discovery loading is progressive by the candidate list,
+                // not by the old fixed 23 KB presentation cap: a large loaded
+                // definition (CAD ~18 KB) must enter the loaded set when the
+                // model window can carry it. The next dispatch still applies
+                // the actual request budget.
+                let presentationBudget = max(
+                    23_000,
+                    min(256_000, configuration.model.limits.contextTokens * 3 / 8)
+                )
+                let selected = ToolDiscovery.bounded(
+                    matches + discoverableDescriptors.filter {
+                        ["skill.read", "skill.search"].contains($0.name)
+                            && !matches.map(\.name).contains($0.name)
+                    },
+                    priority: matches.map(\.name),
+                    maxBytes: presentationBudget
+                )
                 let names = selected.map(\.name)
                 let alreadyInContext = discoveredToolNames
                 discoveredToolNames.formUnion(names)
@@ -4697,6 +5103,7 @@ public actor FloeAgentRuntime {
             }
             let executedIsSideEffecting = preDispatch?.isSideEffecting
                 ?? (settledDescriptor?.isSideEffecting == true)
+            var routeStopped = false
             if result.status == .needsUser {
                 needsUserResult = needsUserResult ?? result
             } else if !suppressedCallIDs.contains(call.id),
@@ -4706,12 +5113,40 @@ public actor FloeAgentRuntime {
                 isSideEffecting: executedIsSideEffecting,
                 stopLimit: configuration.unchangedToolOutcomeLimit
             ) {
+                routeStopped = guardrail.shouldStop
                 noProgressDetected = noProgressDetected || guardrail.shouldStop
                 result.outputSummary += "\n\nHarness warning: \(guardrail.message)"
             }
             if blockedNoProgressCallIDs.contains(call.id) {
+                routeStopped = true
                 noProgressDetected = true
             }
+            // The typed sensitive body is model-visible for exactly the next
+            // request. Move it to the transient map and strip it from the
+            // settled result BEFORE classification, audit, capture, events,
+            // replay and checkpoints; the redacted summary remains durable.
+            if let sensitive = result.ephemeralSensitiveOutput, !sensitive.isEmpty {
+                ephemeralSensitiveOutputs[call.id] = sensitive
+                sensitiveOutputCallIDs.insert(call.id)
+                // The typed value replaces the transient capture for this
+                // call; no second raw copy may ride the result into an event,
+                // audit or projection.
+                result.capturedOutput = nil
+                result.capturedOutputTruncated = false
+            }
+            result.ephemeralSensitiveOutput = nil
+            // Classify the settled call for the UI and for recovery policy.
+            // A first design error, a denied call, a user-action wait or a
+            // finite resource wait is NOT reported as a hidden budget
+            // exhaustion; only a genuine repeated no-progress route is.
+            await sink?.agentRuntime(
+                self,
+                didClassifyToolOutcome: ToolOutcomeClassifier.classify(
+                    call: call,
+                    result: result,
+                    noProgress: routeStopped
+                )
+            )
             pendingToolResults.append(result)
             executionLedger.record(
                 call: call,
@@ -4775,7 +5210,11 @@ public actor FloeAgentRuntime {
             }
             guard !existingReplayIDs.contains(item.call.id) else { continue }
             var storedResult = item.result.durableProjection()
-            let compactedSummary = ToolReplayPlanner.compactResultSummary(item.result.outputSummary)
+            // A paging page is already the model-requested bounded range; a
+            // second summary would make its own nextOffset header lie.
+            let compactedSummary = item.call.toolName == ToolResultPagingTool.name
+                ? item.result.outputSummary
+                : ToolReplayPlanner.compactResultSummary(item.result.outputSummary)
             if compactedSummary != item.result.outputSummary { compactedCount += 1 }
             storedResult.outputSummary = compactedSummary
             replayableToolHistory.append(ReplayedToolPair(
@@ -4935,8 +5374,211 @@ public actor FloeAgentRuntime {
     /// Providers still accept a string tool-result channel, so prepend one
     /// compact JSON envelope that preserves the runtime-authored bindings.
     /// The ordinary human summary follows unchanged for weak models.
-    private static func modelVisibleToolResult(_ result: ToolResult) -> String {
-        guard let provenance = result.provenance else { return result.outputSummary }
+    /// Durable copy of the dispatch request: sensitive result bodies are
+    /// replaced by an explicit omission marker, and every persisted tool-call
+    /// argument set is scrubbed of Cookie/Authorization values. The live
+    /// request (and its in-memory retry copy) is untouched.
+    private static func persistedDispatchSnapshot(
+        request: ProviderStreamRequest,
+        runID: UUID,
+        sensitiveCallIDs: Set<String>,
+        capturableCallIDs: Set<String>
+    ) -> ProviderDispatchRequestSnapshot {
+        var snapshot = ProviderDispatchRequestSnapshot(request: request)
+        let pagingIDs = Set(
+            request.pendingToolCalls
+                .filter { $0.toolName == ToolResultPagingTool.name }
+                .map(\.id)
+        )
+        var totalBytes = 0
+        snapshot.toolResults = snapshot.toolResults.map { item in
+            if sensitiveCallIDs.contains(item.callID) {
+                var copy = item
+                copy.output = "[ephemeral sensitive output omitted from durable recovery]"
+                return copy
+            }
+            let perResultCap = pagingIDs.contains(item.callID)
+                ? Self.maximumCheckpointPagingPageBytes
+                : Self.maximumCheckpointToolResultBytes
+            let bytes = item.output.utf8.count
+            guard bytes > perResultCap
+                    || totalBytes + bytes > Self.maximumCheckpointToolResultsTotalBytes else {
+                totalBytes += bytes
+                return item
+            }
+            var copy = item
+            if capturableCallIDs.contains(item.callID) {
+                let ref = ToolResultCaptureStore.reference(runID: runID, callID: item.callID)
+                copy.output = "[tool result persisted for recovery: \(bytes) bytes; complete captured output ref=\(ref) is rehydrated from the capture store on resume]"
+            } else if bytes > perResultCap {
+                copy.output = ToolResultCaptureStore.utf8Prefix(
+                    item.output,
+                    maxBytes: perResultCap - 256
+                ) + "\n[tool result excerpt persisted for recovery; no capture ref is available]"
+            } else {
+                copy.output = "[additional tool result omitted from this bounded recovery checkpoint; the live request carried it]"
+            }
+            totalBytes += copy.output.utf8.count
+            return copy
+        }
+        snapshot.pendingToolCalls = snapshot.pendingToolCalls.map(
+            ToolArgumentSanitizer.sanitizedForPersistence
+        )
+        if let pairs = snapshot.replayedToolPairs {
+            snapshot.replayedToolPairs = pairs.map { pair in
+                var copy = pair
+                copy.call = ToolArgumentSanitizer.sanitizedForPersistence(pair.call)
+                return copy
+            }
+        }
+        return snapshot
+    }
+
+    /// Per-turn ceiling for tool-result bodies in one provider request. The
+    /// durable dispatch checkpoint is bounded separately (8 KiB/result), so a
+    /// complete result can reach the model when the model window allows it
+    /// without duplicating its bytes in every checkpoint.
+    static let maximumProviderToolResultBytes = 8 * 1_024 * 1_024
+    /// Bounded fallback projection of one tool result in a dispatch
+    /// checkpoint. Complete bytes are rehydrated from the capture store on
+    /// resume; this is only what a store-less recovery can still show.
+    static let maximumCheckpointToolResultBytes = 16 * 1_024
+    static let maximumCheckpointPagingPageBytes = 48 * 1_024
+    static let maximumCheckpointToolResultsTotalBytes = 96 * 1_024
+
+    /// Builds the planner inputs for the pending batch from the runtime's own
+    /// batch identities and the trusted task store. The complete captured
+    /// text is preferred over the short display summary whenever retention
+    /// has it; a missing capture stays explicitly unpageable.
+    private func makeToolResultSelectionInputs(
+        pagingCallIDs: Set<String>
+    ) async -> [ToolResultSelectionInput] {
+        var inputs: [ToolResultSelectionInput] = []
+        inputs.reserveCapacity(pendingToolResults.count)
+        for result in pendingToolResults {
+            let toolName = pendingToolCalls.first(where: { $0.id == result.callID })?.toolName ?? ""
+            // A typed sensitive result is model-visible for THIS request only.
+            // It has no capture ref, is never indexed/paged, and is replaced by
+            // the explicit ephemeral notice instead of a recovery promise.
+            if let sensitive = ephemeralSensitiveOutputs[result.callID], !sensitive.isEmpty {
+                let notice = "Ephemeral sensitive tool output for this request only. It is not persisted, audited, captured or pageable; do not repeat it unless the user asks.\n"
+                inputs.append(ToolResultSelectionInput(
+                    callID: result.callID,
+                    toolName: toolName,
+                    text: notice + Self.modelVisibleToolResult(result, body: sensitive),
+                    ref: nil,
+                    totalBytes: sensitive.utf8.count,
+                    executionReportedTruncation: false,
+                    captureUnavailable: true,
+                    isPagingPage: false,
+                    isSensitive: true
+                ))
+                continue
+            }
+            let ref = ToolResultCaptureStore.reference(runID: runID, callID: result.callID)
+            let retained = await toolResultCaptures.retainedCapture(
+                conversationID: configuration.conversationID,
+                ref: ref
+            )
+            if retained?.durability == .durable {
+                durableCaptureCallIDs.insert(result.callID)
+            }
+            let body: String
+            if let retained {
+                body = retained.text
+            } else {
+                body = result.outputSummary
+            }
+            let visible = Self.modelVisibleToolResult(result, body: body)
+            inputs.append(ToolResultSelectionInput(
+                callID: result.callID,
+                toolName: toolName,
+                text: visible,
+                ref: retained == nil ? nil : ref,
+                totalBytes: retained?.text.utf8.count ?? result.outputSummary.utf8.count,
+                captureTruncated: retained?.retentionTruncated ?? false,
+                executionReportedTruncation: retained?.executionReportedTruncation
+                    ?? result.capturedOutputTruncated,
+                captureUnavailable: retained == nil,
+                isPagingPage: pagingCallIDs.contains(result.callID)
+            ))
+        }
+        // Consumed exactly once: the request object (and its in-memory retry
+        // copy) hold the bytes; no later checkpoint/event can read the map.
+        ephemeralSensitiveOutputs.removeAll(keepingCapacity: true)
+        return inputs
+    }
+
+    /// Rebuilds the exact model-visible result bodies for a resumed dispatch
+    /// from the trusted capture store, subject to the same real model-window
+    /// budget. A checkpoint stores only a bounded projection, so this is what
+    /// keeps a complete result available after recovery without encoding its
+    /// bytes twice per tool turn. Missing captures stay explicit; a recovery
+    /// marker is never presented as if the bytes were restored.
+    private func rehydrateRestoredToolResults(_ request: inout ProviderStreamRequest) async {
+        guard !request.toolResults.isEmpty else { return }
+        let pagingIDs = Self.pagingCallIDs(in: request.pendingToolCalls)
+        var inputs: [ToolResultSelectionInput] = []
+        inputs.reserveCapacity(request.toolResults.count)
+        for item in request.toolResults {
+            let toolName = request.pendingToolCalls
+                .first(where: { $0.id == item.callID })?.toolName ?? ""
+            if sensitivePendingCallIDs.contains(item.callID)
+                || sensitiveOutputCallIDs.contains(item.callID) {
+                inputs.append(ToolResultSelectionInput(
+                    callID: item.callID,
+                    toolName: toolName,
+                    text: item.output,
+                    ref: nil,
+                    totalBytes: item.output.utf8.count,
+                    captureUnavailable: true,
+                    isPagingPage: pagingIDs.contains(item.callID),
+                    isSensitive: true
+                ))
+                continue
+            }
+            let ref = ToolResultCaptureStore.reference(runID: runID, callID: item.callID)
+            let retained = await toolResultCaptures.retainedCapture(
+                conversationID: configuration.conversationID,
+                ref: ref
+            )
+            var body = retained?.text
+            if body == nil, item.output.hasPrefix("[tool result persisted for recovery:") {
+                body = "[complete captured tool output is no longer available after recovery; only this notice remains]"
+            }
+            let text = body ?? item.output
+            inputs.append(ToolResultSelectionInput(
+                callID: item.callID,
+                toolName: toolName,
+                text: text,
+                ref: retained == nil ? nil : ref,
+                totalBytes: retained?.text.utf8.count ?? text.utf8.count,
+                captureTruncated: retained?.retentionTruncated ?? false,
+                executionReportedTruncation: retained?.executionReportedTruncation ?? false,
+                captureUnavailable: retained == nil,
+                isPagingPage: pagingIDs.contains(item.callID)
+            ))
+        }
+        let size = ProviderRequestSizer.measure(
+            messages: request.contentMessages,
+            schemas: request.toolSchemas,
+            replayedToolPairs: request.replayedToolPairs,
+            contextWindowTokens: configuration.model.limits.contextTokens,
+            reservedOutputTokens: Self.contextOutputReservation(limits: configuration.model.limits)
+        )
+        let plan = ToolResultPlanner.plan(
+            inputs: inputs,
+            budgetBytes: min(size.toolResultBudgetBytes, Self.maximumProviderToolResultBytes)
+        )
+        request.toolResults = plan.items.map { (callID: $0.callID, output: $0.output) }
+    }
+
+    private static func modelVisibleToolResult(
+        _ result: ToolResult,
+        body: String? = nil
+    ) -> String {
+        let body = body ?? result.outputSummary
+        guard let provenance = result.provenance else { return body }
         let envelope: [String: Any] = [
             "trustedSourceID": provenance.sourceID,
             "toolName": provenance.toolName,
@@ -4951,7 +5593,7 @@ public actor FloeAgentRuntime {
               let data = try? JSONSerialization.data(
                   withJSONObject: envelope, options: [.sortedKeys]
               ) else { return result.outputSummary }
-        return String(decoding: data, as: UTF8.self) + "\n" + result.outputSummary
+        return String(decoding: data, as: UTF8.self) + "\n" + body
     }
 
     /// Bounded form of a pending result for the durable checkpoint. Only the
@@ -4995,9 +5637,11 @@ public actor FloeAgentRuntime {
         let pendingIDs = Set(pendingCalls.map(\.id))
         let candidates = history.filter { !pendingIDs.contains($0.call.id) }.map { pair in
             var result = pair.result.durableProjection()
-            result.outputSummary = ToolReplayPlanner.compactResultSummary(
-                modelVisibleToolResult(pair.result)
-            )
+            // Paging pages stay byte-exact in replay too: their own header
+            // promises nextOffset and a compacted excerpt would break it.
+            result.outputSummary = pair.call.toolName == ToolResultPagingTool.name
+                ? modelVisibleToolResult(pair.result)
+                : ToolReplayPlanner.compactResultSummary(modelVisibleToolResult(pair.result))
             return ReplayedToolPair(call: pair.call, result: result)
         }
         return ToolReplayPlanner.trimToBudget(candidates)
@@ -5415,6 +6059,51 @@ public actor FloeAgentRuntime {
         await sink?.agentRuntime(self, didChangeLiveness: livenessSnapshot)
     }
 
+    private func publishContextCompression(_ snapshot: ContextCompressionSnapshot) async {
+        contextCompressionStatus = snapshot
+        await sink?.agentRuntime(self, didChangeContextCompression: snapshot)
+    }
+
+    /// Cancels the delayed UI phase. Internal watchdog/progress timestamps are
+    /// deliberately left intact: they must reflect the real first fragment
+    /// immediately so a hung provider is still detected.
+    private func clearToolArgumentPhase() {
+        toolArgumentPhaseTask?.cancel()
+        toolArgumentPhaseTask = nil
+        toolArgumentFirstFragmentAt = nil
+        toolArgumentPhasePublished = false
+    }
+
+    /// Starts the one-shot 1.5s UI delay for the first real fragment of this
+    /// provider generation. A complete call (or any other terminal event)
+    /// cancels it before it fires, so fast calls never show the phase.
+    private func scheduleToolArgumentPhase(attempt: Int) {
+        toolArgumentPhaseTask?.cancel()
+        toolArgumentPhaseTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.toolArgumentPhaseDelay))
+            guard !Task.isCancelled else { return }
+            await self?.publishToolArgumentPhase(attempt: attempt)
+        }
+    }
+
+    private func publishToolArgumentPhase(attempt: Int) async {
+        guard attempt == providerAttemptNumber,
+              !providerRetryRequested,
+              case .streamingModel = state,
+              let startedAt = toolArgumentFirstFragmentAt,
+              !toolArgumentPhasePublished,
+              ContinuousClock.now - startedAt >= .seconds(Self.toolArgumentPhaseDelay) else {
+            return
+        }
+        toolArgumentPhasePublished = true
+        providerToolProgressPublishedAt = Date()
+        await publishLiveness(
+            phase: .preparingToolCall,
+            message: "Model is preparing tool arguments",
+            isRecoverable: true
+        )
+    }
+
     private func publishLivenessForState(_ state: AgentState) async {
         switch state {
         case .preparing:
@@ -5580,6 +6269,7 @@ public actor FloeAgentRuntime {
     }
 
     private func handleProviderFailure(_ error: AgentEvent.NormalizedError) async {
+        clearToolArgumentPhase()
         let safeProviderMessage = safeDiagnostic(error.providerMessage)
         let retryable: Bool = [.network, .server, .rateLimited].contains(error.kind)
         guard retryable else {
@@ -5687,6 +6377,7 @@ public actor FloeAgentRuntime {
     }
 
     private func completeRun(stopReason: AgentEvent.StopReason) async {
+        clearToolArgumentPhase()
         // A verification pass that answers with a bare confirmation should
         // not append "CONFIRM" onto the already-sealed draft answer.
         let isConfirmation = didVerifyFinalAnswer
@@ -5703,6 +6394,7 @@ public actor FloeAgentRuntime {
     }
 
     private func failRun(message: String, recoverable: Bool) async {
+        clearToolArgumentPhase()
         // The activation is over: revoke this run's outstanding operation
         // authorities so no token outlives the run state that justified it.
         // A resume mints fresh tokens at dispatch.
@@ -5803,7 +6495,8 @@ public actor FloeAgentRuntime {
                 messages: messages,
                 budget: Self.contextCompressionPolicy(
                     configuration: configuration,
-                    messages: messages
+                    messages: messages,
+                    measuredToolSchemaTokens: lastProviderSchemaTokenEstimate
                 ).budget,
                 protection: ContextProtection(
                     messageIDs: latestUserID.map { [$0] } ?? []
@@ -5884,8 +6577,27 @@ public actor FloeAgentRuntime {
         // byte-identical to what the dispatch envelope digested so a resumed
         // run rebuilds a matching request, and so the first post-tool
         // checkpoint never encodes a full multi-megabyte result twice.
-        let checkpointCalls = activeProviderPendingCalls.isEmpty
+        // A checkpoint is durable evidence: scrub Cookie/Authorization
+        // argument values from its copies while the live calls keep the exact
+        // bytes the user authorized. Sensitive result bodies were never put
+        // into the pending results (they live in the transient map and the
+        // sanitized dispatch snapshot).
+        let rawCheckpointCalls = activeProviderPendingCalls.isEmpty
             ? pendingToolCalls : activeProviderPendingCalls
+        let scrubbedCallIDs = rawCheckpointCalls
+            .filter {
+                ToolArgumentSanitizer.containsSensitiveValues(
+                    $0.argumentsJSON,
+                    toolName: $0.toolName
+                )
+            }
+            .map(\.id)
+        let checkpointCalls = rawCheckpointCalls
+            .map(ToolArgumentSanitizer.sanitizedForPersistence)
+        let sensitiveCallIDs = Array(
+            Set(scrubbedCallIDs).union(sensitivePendingCallIDs)
+                .union(sensitiveOutputCallIDs)
+        ).sorted()
         let checkpointPagingCallIDs = Self.pagingCallIDs(in: checkpointCalls)
         let checkpointPendingResults = (
             activeProviderPendingCalls.isEmpty ? pendingToolResults : activeProviderPendingResults
@@ -5903,8 +6615,7 @@ public actor FloeAgentRuntime {
             conversationID: configuration.conversationID,
             state: persistedState,
             messages: checkpointMessages,
-            pendingToolCalls: activeProviderPendingCalls.isEmpty
-                ? pendingToolCalls : activeProviderPendingCalls,
+            pendingToolCalls: checkpointCalls,
             pendingToolResults: checkpointPendingResults,
             approvals: grants,
             idempotencyKeys: executedIdempotencyKeys,
@@ -5920,8 +6631,13 @@ public actor FloeAgentRuntime {
             providerDispatchEnvelope: latestProviderDispatchEnvelope,
             providerDispatchRequest: latestProviderDispatchRequest,
             pendingAssistantReasoning: checkpointReasoning,
-            replayedToolPairs: replayableToolHistory,
-            ownedSystemContextID: ownedSystemContextID
+            replayedToolPairs: replayableToolHistory.map { pair in
+                var copy = pair
+                copy.call = ToolArgumentSanitizer.sanitizedForPersistence(pair.call)
+                return copy
+            },
+            ownedSystemContextID: ownedSystemContextID,
+            sensitiveToolCallIDs: sensitiveCallIDs.isEmpty ? nil : sensitiveCallIDs
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {
@@ -6099,6 +6815,9 @@ public actor FloeAgentRuntime {
     }
 
     private func clearCompletedProviderDispatch() {
+        ephemeralSensitiveOutputs.removeAll(keepingCapacity: true)
+        sensitiveOutputCallIDs.removeAll(keepingCapacity: true)
+        durableCaptureCallIDs.removeAll(keepingCapacity: true)
         latestProviderDispatchEnvelope = nil
         latestProviderDispatchRequest = nil
         restoredProviderDispatchEnvelope = nil
@@ -6285,32 +7004,33 @@ public actor FloeAgentRuntime {
 
     private static func contextCompressionPolicy(
         configuration: Configuration,
-        messages: [ConversationMessage]
+        messages: [ConversationMessage],
+        measuredToolSchemaTokens: Int = 0
     ) -> ContextCompressionPolicy {
         let reservedOutput = contextOutputReservation(limits: configuration.model.limits)
+        // The schema estimate is the ACTUAL last request's rendered schemas
+        // when available. It is part of the same fixed window as history, so
+        // ignoring it (the old cloud policy) made compaction shrink the wrong
+        // side and loop when schemas alone were over budget.
+        let schemaTokens = max(0, measuredToolSchemaTokens)
+        let imageTokens = messages.reduce(0) { $0 + $1.images.count * 1_600 }
         guard configuration.provider.kind == .local else {
             return .cloud(
                 contextWindowTokens: configuration.model.limits.contextTokens,
-                reservedOutputTokens: reservedOutput
+                reservedOutputTokens: reservedOutput,
+                toolSchemaTokens: schemaTokens,
+                imageTokens: imageTokens
             )
         }
         let toolSchemaTokens: Int
         if configuration.toolsEnabled && configuration.model.capabilities.contains(.tools) {
-            // Keep this estimate aligned with LocalProviderAdapter's actual
-            // schema budget (native schemas rendered by the chat template
-            // plus the bounded text directory). The largest tier admits at
-            // most ~4 800 characters of inventory schemas (~1 600 heuristic
-            // tokens) and a ~1 600-character directory; underestimating here
-            // overstates the usable window and strands small local models in
-            // a compact → overflow loop.
-            toolSchemaTokens = 2_000
+            // The local adapter's own curated schema budget is ~2 000 tokens;
+            // charge whichever is larger so a measured request is never
+            // under-counted on the next turn.
+            toolSchemaTokens = max(2_000, schemaTokens)
         } else {
             toolSchemaTokens = 0
         }
-        // Inline images are not represented in ConversationMessage.content,
-        // so account for them explicitly. This is deliberately conservative;
-        // provider-specific token usage will refine later turns.
-        let imageTokens = messages.reduce(0) { $0 + $1.images.count * 1_024 }
         return .local(
             contextWindowTokens: configuration.model.limits.contextTokens,
             reservedOutputTokens: reservedOutput,

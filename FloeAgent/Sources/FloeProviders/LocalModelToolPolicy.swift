@@ -1,40 +1,45 @@
 import Foundation
 
-/// Policy for tool capability offered to on-device (MLX) models.
+/// Presentation policy for the tools offered to on-device (MLX) models.
 ///
-/// On-device runs are limited to a **curated, concise ceiling**: web search,
-/// local file lookup and the approved CAD document tool. Shell access, code
-/// execution (local Python/JavaScript), Linux provisioning, complex
-/// environment lifecycle management, generic file editing and arbitrary
-/// configuration mutation are never offered — neither through the stable
-/// base set, nor through `tools.list`/`tools.search` discovery, nor persisted
-/// discovery state.
+/// Authorization does **not** live here, and this type is not a capability
+/// whitelist. The runtime's frozen catalog is the authority: the task's
+/// permission ceiling, plan/temporary projection, configured and enabled
+/// capabilities, the user's allowed names and the model's capabilities have
+/// already been applied. An MLX run therefore receives the same
+/// task-authorized tool set as a cloud run — Git, conversation/history,
+/// notes, shell/Linux environment, browser, web and CAD tools included — and
+/// the model chooses which tool (and which environment) to use. Nothing here
+/// filters, hides or grants a capability.
 ///
-/// `cad.document` is the one document-mutating capability in this ceiling.
-/// Its reads (read/query/locate/measure/check) are ordinary reads, while
-/// propose/apply stay bound to the existing CAD proposal, revision/SHA,
-/// undoable-transaction and approval/runtime-authority rules. This policy
-/// grants no new auth: it only stops the local-model ceiling from hiding the
-/// same CAD surface that ordinary task runs already receive.
+/// What remains is presentation, used by the local adapter's bounded schema
+/// admission:
+/// - `pinnedToolNames(for:)` / `pinnedAdmissionOrder(for:)`: a small base set
+///   kept loaded on a tool-capable local run without a discovery round-trip,
+///   plus `cad.document` only for explicit CAD/3D/modeling intent. Admission
+///   order is intent-specific: an explicit file-lookup request admits the
+///   read tools ahead of `web.search`, a live-web request admits `web.search`
+///   first, and a CAD turn admits the CAD schema first. The adapter's
+///   per-window token/character budget then drops schemas from the tail
+///   deterministically.
+/// - `requestsLiveWeb`/`requestsGenericSearch`/`requestsDirectFetch`/
+///   `requestsFileLookup`/`requestsCadWork`/`requestsWebSearch`: deterministic
+///   intent hints for the same presentation and repair selection.
 ///
-/// Two layers:
-/// - `pinnedToolNames(for:)` / `pinnedAdmissionOrder(for:)`: the small base
-///   set admitted on every tool-capable local run without a discovery
-///   round-trip, plus `cad.document` only for explicit CAD/3D/modeling
-///   intent. Admission order is intent-specific: an explicit file-lookup
-///   request admits the read tools ahead of `web.search`, a live-web request
-///   admits `web.search` first, and a CAD turn admits the CAD schema first.
-///   The adapter's per-window token/character budget then drops schemas from
-///   the tail deterministically.
-/// - `curatedCeilingNames`: every tool name a local run may ever load. The
-///   runtime filters both discovery and remembered (persisted/checkpoint)
-///   state through this same ceiling.
-///
-/// A name is admitted only when it is actually present in the run's
-/// registered, configured capability set: an unconfigured `web.search` is
+/// A pin is a hint, never a grant. A name is presented only when the run
+/// actually registered and configured it: an unconfigured `web.search` is
 /// simply absent — never replaced with a fabricated tool and never satisfied
-/// by forcing an unrelated file tool. Cloud providers are not gated by this
-/// policy and keep their existing dynamic discovery behaviour.
+/// by forcing an unrelated file tool. Authorized tools outside the pinned
+/// hint set stay reachable through the run's own catalog and ordinary
+/// discovery. Every call keeps its ordinary permission, approval,
+/// revision/ownership, cancellation and environment checks, and
+/// `cad.document` propose/apply stays bound to the existing CAD proposal,
+/// revision/SHA, undoable-transaction and approval/runtime-authority rules.
+///
+/// The one real adapter-level restriction is Apple Foundation Models: their
+/// native tool channel accepts only `apple.*` names, enforced by
+/// `LocalProviderAdapter`, not by this policy. Cloud providers are not gated
+/// by this policy and keep their existing dynamic discovery behaviour.
 ///
 /// There is deliberately no "settings" tool here: the app has no registered
 /// agent-facing settings-mutation capability (settings are native views), so
@@ -44,9 +49,14 @@ public enum LocalModelToolPolicy {
     /// the app has configured and validated.
     public static let webSearchToolName = "web.search"
 
-    /// Pinned base set: web search plus the read-only file lookup chain.
-    /// Exactly these names are kept loaded without a discovery call. This is
-    /// the always-on base; turn-aware local runs use `pinnedToolNames(for:)`.
+    /// Pinned presentation base: web search plus the read-only file lookup
+    /// chain. Exactly these names are kept loaded without a discovery call on
+    /// a tool-capable local run. This is the always-on hint set; turn-aware
+    /// runs use `pinnedToolNames(for:)`. Being listed here neither grants nor
+    /// limits authority — a name is offered only when the run's authorized
+    /// catalog actually contains it, and heavier authorized surfaces (Git,
+    /// notes, shell/Linux, browser, document editing) simply are not eagerly
+    /// loaded.
     public static let pinnedToolNames: Set<String> = [
         webSearchToolName,
         "workspace.readFile",
@@ -55,14 +65,16 @@ public enum LocalModelToolPolicy {
         "workspace.inspectFileMetadata"
     ]
 
-    /// The one CAD document tool exposed to local models. It is admitted by
-    /// explicit CAD/3D/modeling intent only, never on every turn.
+    /// The CAD document tool whose schema is pinned by explicit CAD/3D/
+    /// modeling intent only, never on every turn. Pinning is presentation
+    /// only; propose/apply keep their proposal, revision and approval checks.
     public static let cadToolName = "cad.document"
 
-    /// Pinned set for ONE turn. The stable base plus `cad.document` when the
-    /// user explicitly asks for CAD/3D/modeling work. Runtime local-run
-    /// filtering and pinned admission should use this variant so a generic
-    /// web/file turn never grows a CAD schema.
+    /// Pinned presentation set for ONE turn. The stable base plus
+    /// `cad.document` when the user explicitly asks for CAD/3D/modeling work.
+    /// Local pinned admission uses this variant so a generic web/file turn
+    /// never spends its tight schema budget on a CAD schema. It does not
+    /// change what the run is authorized to call.
     public static func pinnedToolNames(for text: String) -> Set<String> {
         var names = pinnedToolNames
         if requestsCadWork(text) { names.insert(cadToolName) }
@@ -91,7 +103,9 @@ public enum LocalModelToolPolicy {
     /// Pinned admission order for `text` (already lowercased). An explicit
     /// CAD/3D/modeling turn puts `cad.document` first; otherwise file lookup
     /// leads only when the turn names a file target and does not also name a
-    /// live-web target, and mixed/ordinary turns keep web first.
+    /// live-web target, and mixed/ordinary turns keep web first. Order is a
+    /// presentation hint for the adapter's budget; the caller admits a name
+    /// only when the run actually offers it.
     public static func pinnedAdmissionOrder(for text: String) -> [String] {
         let fileIntent = requestsFileLookup(text)
         let liveWebIntent = requestsLiveWeb(text)
@@ -105,30 +119,6 @@ public enum LocalModelToolPolicy {
         }
         return requestsCadWork(text) ? [cadToolName] + base : base
     }
-
-    /// Complete curated ceiling: every tool name a local model may ever be
-    /// offered, regardless of discovery or remembered state. Each name
-    /// corresponds to an existing canonical, registered tool:
-    /// discovery meta-tools (runtime), web retrieval (`FloeExecution`),
-    /// workspace read/lookup (`FloeWorkspace`) and the approved CAD document
-    /// tool (`FloeWorkbench`). Anything absent stays hidden — shell, code
-    /// execution, Linux provisioning, generic file editing and environment
-    /// lifecycle management in particular.
-    ///
-    /// `cad.document` remains subject to its own proposal/apply contract and
-    /// the ordinary approval/runtime-authority checks; inclusion here is not
-    /// an approval or a write bypass.
-    public static let curatedCeilingNames: Set<String> = [
-        // Discovery meta-tools (enumerate/load within the ceiling only).
-        "tools.list", "tools.search", "tools.readResult",
-        // Web retrieval — present only when a provider is actually configured.
-        "web.search", "web.searchAI", "web.fetch",
-        // Workspace read/lookup chain.
-        "workspace.readFile", "workspace.listDirectory", "workspace.searchFiles",
-        "workspace.inspectFileMetadata",
-        // Approved CAD document surface (proposal/apply authority unchanged).
-        cadToolName
-    ]
 
     /// Terms that name a **live web** target (excludes the generic words
     /// 搜索/search, which also describe local file lookup).

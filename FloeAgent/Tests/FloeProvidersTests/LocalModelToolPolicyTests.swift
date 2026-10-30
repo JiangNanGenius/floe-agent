@@ -1,8 +1,12 @@
-// FloeProvidersTests — Local-model curated tool admission.
+// FloeProvidersTests — Local-model tool presentation hints.
 //
-// The on-device ceiling is intentionally small. These tests pin the one
-// approved CAD addition and prove that generic file/web turns keep their
-// existing priority and never receive an unrelated CAD schema.
+// Authorization belongs to the runtime's frozen catalog; these tests pin the
+// intent-based presentation policy only. Pinned hints keep a small base set
+// available without a discovery round-trip and give the adapter a
+// deterministic admission order. A pin is never a grant, and a tool outside
+// the hint set is not hidden — the adapter's `admissibleToolNames` forwards
+// the runtime-supplied authorized set unchanged (covered in
+// FloeLocalModelsTests).
 
 import Foundation
 import Testing
@@ -11,17 +15,36 @@ import Testing
 @Suite("FloeProviders.LocalModelToolPolicy")
 struct LocalModelToolPolicyTests {
 
-    @Test("CAD is the only added document capability in the local ceiling")
-    func ceilingContainsCadOnly() {
-        let ceiling = LocalModelToolPolicy.curatedCeilingNames
-        #expect(ceiling.contains("cad.document"))
-        #expect(ceiling.contains("web.search"))
-        #expect(ceiling.contains("workspace.readFile"))
-        #expect(!ceiling.contains("workspace.writeFile"))
-        #expect(!ceiling.contains("exec.shell"))
-        #expect(!ceiling.contains("exec.localPython"))
-        #expect(!ceiling.contains("document.updateText"))
-        #expect(!ceiling.contains("image.svgDocument"))
+    @Test("Pinned hints are a small eager base, not an authorization ceiling")
+    func pinnedHintsAreNotACeiling() {
+        // Exactly the always-on presentation base: web search plus the
+        // read-only lookup chain. Nothing mutating is eagerly loaded.
+        #expect(LocalModelToolPolicy.pinnedToolNames == [
+            "web.search",
+            "workspace.readFile",
+            "workspace.listDirectory",
+            "workspace.searchFiles",
+            "workspace.inspectFileMetadata"
+        ])
+        for name in [
+            "workspace.writeFile", "document.updateText", "git.commit", "git.push",
+            "notes.edit", "notes.attachFile", "exec.shell", "exec.localPython",
+            "browser.navigate", "ssh.execute", "mail.send", "image.svgDocument"
+        ] {
+            // Not eagerly pinned is not the same as forbidden: an authorized
+            // name outside this base stays reachable through the run's own
+            // catalog and ordinary discovery.
+            #expect(!LocalModelToolPolicy.pinnedToolNames.contains(name), "\(name)")
+        }
+        // Every admission-order name is one of the turn's pinned hints; the
+        // order never invents an extra capability.
+        for text in ["读取工作区的文件", "搜索今天的新闻", "读取 cad 图纸文件", "online 查找 3d 模型"] {
+            let pins = LocalModelToolPolicy.pinnedToolNames(for: text)
+            #expect(
+                Set(LocalModelToolPolicy.pinnedAdmissionOrder(for: text)).isSubset(of: pins),
+                "\(text)"
+            )
+        }
     }
 
     @Test("CAD stays out of the always-pinned base set")

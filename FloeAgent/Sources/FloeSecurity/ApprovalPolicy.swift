@@ -107,7 +107,8 @@ public final class DynamicApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting,
 
 /// Policy 1: every side-effecting action waits for the user, EXCEPT the
 /// deterministic local carve-outs (ordinary document edits outside a Git
-/// worktree, routine commands in a resolved local Linux guest, and
+/// worktree, resolved native CAD document edits, routine commands in a
+/// resolved local Linux guest, and
 /// clearly read-only remote diagnostics) which execute without a per-edit
 /// review. The catastrophic gate still runs first and every other
 /// side-effecting action keeps the human card.
@@ -127,7 +128,8 @@ public struct HumanApprovalPolicy: ApprovalPolicy {
     }
 }
 
-/// Policy 2: a configured model returns allow / deny / escalate.
+/// Policy 2: a configured model returns allow / deny / escalate, except
+/// resolved native CAD document work which needs no additional review.
 /// The approval model receives the goal, structured action, scope, and
 /// deterministic risk labels. It has no tool channel and cannot rewrite
 /// the tool call. Any failure is fail-closed (escalate).

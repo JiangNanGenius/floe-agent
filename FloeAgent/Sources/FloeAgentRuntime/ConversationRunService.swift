@@ -1213,10 +1213,19 @@ public actor ConversationRunService {
             eventChannel.yield(.toolLifecycle(.requested(call)))
             toolNames[call.id] = call.toolName
             toolRequestedAt[call.id] = ContinuousClock.now
-            let input = SecretRedactor.redact(String(
-                decoding: call.argumentsJSON.prefix(32 * 1_024),
-                as: UTF8.self
-            ), secret: secretForRedaction)
+            // Explicit Cookie/Authorization argument values are scrubbed
+            // over the FULL argument data BEFORE the bounded event projection.
+            // Truncating raw JSON first could cut the value in half, leave an
+            // object unparsable, and make the fallback miss a nested cookie.
+            let fullySanitized = ToolArgumentSanitizer.redactedArgumentsJSON(
+                call.argumentsJSON,
+                toolName: call.toolName
+            )
+            let boundedInput = Data(fullySanitized.prefix(32 * 1_024))
+            let input = SecretRedactor.redact(
+                String(decoding: boundedInput, as: UTF8.self),
+                secret: secretForRedaction
+            )
             _ = await appendEventReliably(
                 runID: runID, kind: .toolRequest,
                 payloadJSON: Self.jsonPayload([

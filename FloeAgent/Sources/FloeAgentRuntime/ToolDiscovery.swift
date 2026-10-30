@@ -111,11 +111,12 @@ enum ToolDiscovery {
         guard !RetiredExecutionTools.contains(query.trimmingCharacters(in: .whitespacesAndNewlines)) else { return [] }
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return [] }
-        // Native-first arbitration over the tools this run actually offers.
-        // Media intent selects native media tools; it never expands into the
-        // Linux interpreter unless the user asked for a script or no native
-        // capability covers the task.
-        let routing = ToolRoutingPolicy.decision(forTask: query, offeredToolNames: descriptors.map(\.name))
+        // Capability discovery is truthful metadata, not route enforcement:
+        // the query matches offered definitions by name/alias/group/description
+        // and every matched definition stays discoverable. The runtime never
+        // suppresses the interpreter because a native tool exists, and never
+        // reorders results by a preferred backend; the model chooses from the
+        // offered capabilities.
         let synonyms = ToolAliasTable.synonyms
         var groups = Set(synonyms.compactMap { group, terms in
             terms.contains(where: query.contains) ? group : nil
@@ -159,14 +160,6 @@ enum ToolDiscovery {
         // A remote desktop chain needs its connection/configuration tools too.
         if groups.contains("vnc") { groups.formUnion(["executor", "hosts"]) }
         if groups.contains("executor") || groups.contains("terminal") { groups.insert("hosts") }
-        // A matched native capability keeps the emulated interpreter out of the
-        // automatic expansion; this suppresses only this expansion, so explicit
-        // names, loaded schemas and tools.search by exact name are unchanged.
-        // The gate is operation-aware: an offered native tool that does not
-        // match the requested operation never triggers it.
-        if routing.prefersNativeTools {
-            groups.subtract(ToolRoutingPolicy.interpreterGroups(among: descriptors.map(\.name)))
-        }
         if groups.isEmpty {
             // A word in one description does not justify loading every tool
             // in that namespace. Rank individual matches, deterministically.
@@ -177,27 +170,15 @@ enum ToolDiscovery {
                 if score > 0 { ranked.append((descriptor, score)) }
             }
             ranked.sort { left, right in
-                // For a media task the native tools lead the ranked matches;
-                // score and name keep the order deterministic.
-                if routing.intent == .nativeMedia {
-                    let leftNative = ToolRoutingPolicy.isNativeMediaTool(left.descriptor.name)
-                    let rightNative = ToolRoutingPolicy.isNativeMediaTool(right.descriptor.name)
-                    if leftNative != rightNative { return leftNative }
-                }
-                return left.score == right.score
+                // Score and name keep the order deterministic; backend is not
+                // a ranking criterion.
+                left.score == right.score
                     ? left.descriptor.name < right.descriptor.name
                     : left.score > right.score
             }
-            return capabilityGapFallback(ranked.prefix(8).map { $0.descriptor }, routing: routing, descriptors: descriptors)
+            return ranked.prefix(8).map { $0.descriptor }
         }
-        let selected = descriptors.filter { groups.contains(group($0.name)) }
-        guard routing.prefersNativeTools else {
-            return capabilityGapFallback(selected, routing: routing, descriptors: descriptors)
-        }
-        // Native media tools lead the curated set for a media task; other
-        // matched groups (office, workspace, http, …) stay available.
-        return selected.filter { ToolRoutingPolicy.isNativeMediaTool($0.name) }
-            + selected.filter { !ToolRoutingPolicy.isNativeMediaTool($0.name) }
+        return descriptors.filter { groups.contains(group($0.name)) }
     }
 
     /// Tools whose canonical name (or a known alias) is an EXACT token of one
@@ -246,38 +227,25 @@ enum ToolDiscovery {
         var used = 0
         for descriptor in descriptors {
             let name = wireSpelling(descriptor.name, wireSafe: wireSafeNames)
-            var section = "Complete schema for \(name) (callable now; also loaded for later requests):\n"
+            let section = "Complete schema for \(name) (callable now; also loaded for later requests):\n"
                 + descriptor.toolDescription + "\nparametersJSON: " + descriptor.parametersJSON
+            // A JSON Schema cut to fit is not a smaller schema: required
+            // fields, nested objects and enums can be lost and the model then
+            // emits arguments the executor must reject. Report an oversized
+            // definition instead of slicing it; the provider request carries
+            // the complete definition once the name is activated.
             if section.utf8.count > perToolBytes {
-                section = ToolResultCaptureStore.utf8Prefix(section, maxBytes: perToolBytes)
-                    + "\n[schema truncated for display at \(perToolBytes) bytes; call the tool with the documented arguments and the runtime will validate them]"
+                sections.append("The complete schema for \(name) is \(section.utf8.count) bytes, above this result's per-tool display envelope (\(perToolBytes) bytes). It was not sliced. It is loaded as a complete provider schema when offered; call it with its documented arguments and the runtime will validate them.")
+                continue
             }
             if used + section.utf8.count > totalBytes {
-                sections.append("More exact schemas were requested than this result can carry; search the remaining names one at a time.")
+                sections.append("More exact schemas were requested than this result can carry; search the remaining names one at a time. No schema below was cut.")
                 break
             }
             used += section.utf8.count
             sections.append(section)
         }
         return sections.joined(separator: "\n\n")
-    }
-
-    /// Primary guest entry points, used only for a media task no offered native
-    /// tool matches. The fallback is appended after any native candidates, is
-    /// derived strictly from the offered descriptors, and never invents a
-    /// disabled tool. When a native capability does match the operation this
-    /// returns `base` unchanged: the guest is then not part of the automatic
-    /// expansion at all.
-    private static func capabilityGapFallback(
-        _ base: [ToolCatalog.Descriptor],
-        routing: ToolRoutingPolicy.Decision,
-        descriptors: [ToolCatalog.Descriptor]
-    ) -> [ToolCatalog.Descriptor] {
-        guard routing.intent == .nativeMedia, !routing.prefersNativeTools else { return base }
-        let fallbackNames: Set<String> = ["exec.shell", "shell.open", "exec.localService"]
-        let existing = Set(base.map(\.name))
-        let fallback = descriptors.filter { fallbackNames.contains($0.name) && !existing.contains($0.name) }
-        return base + fallback
     }
 
     static func index(_ descriptors: [ToolCatalog.Descriptor], wireSafeNames: Bool = false) -> String {
@@ -326,24 +294,22 @@ enum ToolDiscovery {
             .sorted()
         if !nativeMediaNames.isEmpty {
             let examples = nativeMediaNames.prefix(6).map(n).joined(separator: ", ")
-            // Name only the interpreter entries that are actually offered.
-            let explicitInterpreters = ["exec.shell", "shell.open"]
+            let interpreterMentions = ["exec.shell", "shell.open"]
                 .filter { names.contains($0) }
                 .map(n)
-            let interpreterMentions = explicitInterpreters.isEmpty
-                ? interpreterNames.prefix(2).map(n)
-                : explicitInterpreters
-            let avoid = interpreterMentions.isEmpty
-                ? "a general-purpose script"
-                : interpreterMentions.joined(separator: " or ")
-            var line = "Native-first routing: \(examples) are app-native tools. They run on-device through Apple frameworks or through the app's configured model route — never through the emulated guest — and a Linux guest has no GPU passthrough. A paired Mac execution target uses its own native host capabilities, not the Linux guest. Prefer them over re-implementing the operation with \(avoid); a video/image/audio/PDF task is not owned by the Linux interpreter just because it is installed. Use the selected execution environment for media only when no offered native tool covers the requested operation or the user explicitly asked for a script or command-line tool."
+            var line = "Offered native media capabilities: \(examples). They run on-device through Apple frameworks or through the app's configured model route, not through the emulated guest; a Linux guest has no GPU passthrough. The choice of route belongs to the task and the model: offer these capabilities, state their real limits, and let the model choose. "
+            if interpreterMentions.isEmpty {
+                line += "No general interpreter is offered on this turn."
+            } else {
+                line += "The selected execution environment (\(interpreterMentions.joined(separator: ", "))) is also available within its real permissions and capabilities."
+            }
             if names.contains("media.capabilities") {
                 line += " Before promising a media operation, read \(n("media.capabilities")) to confirm the offered tool's operation is actually configured: a native tool name alone does not prove the requested operation is available."
             }
             lines.append(line)
         } else if !interpreterNames.isEmpty {
             let offered = interpreterNames.prefix(3).map(n).joined(separator: ", ")
-            lines.append("Media rule: no native image/video/audio/PDF/OCR tool is offered, so media work uses the selected execution environment (\(offered)) only within its real capability and must be reported as not configured when the user expects a native one.")
+            lines.append("No native image/video/audio/PDF/OCR tool is offered on this turn. Available execution entries: \(offered). Report a media capability as not configured when the user expects a native one; do not invent it.")
         }
         if names.contains("audio.synthesize") {
             lines.append("For file transcription or generated speech, use the configured audio tools. Call \(n("audio.services")) to read available local/cloud services and the assistant-only preference; never guess an unavailable service or change the ordinary read-aloud voice. Return the generated audio artifact or file receipt in the final response so the user can play or save it.")

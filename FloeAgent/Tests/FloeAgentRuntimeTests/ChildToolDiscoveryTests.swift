@@ -3,8 +3,9 @@
 // These tests exercise the ACTUAL child loop and, for the large-catalog case,
 // the real runtime dispatch chain: parent run → canonical delegate handoff →
 // child loop → canonical child dispatch → real tool. They reproduce the
-// production catalog size on the wire so the 254 KB > 48 KiB frozen-schema
-// regression can never return as a "child cannot start" abort.
+// production catalog size on the wire so the 254 KB catalog regression can
+// never return as a "child cannot start" abort. Admission is checked against
+// an explicit small model window, never the retired fixed 48 KiB constant.
 
 import Foundation
 import Testing
@@ -192,12 +193,18 @@ struct ChildToolDiscoveryTests {
             $0 + $1.toolDescription.utf8.count + $1.parametersJSON.utf8.count
         }
         // The regression premise: a production-size catalog serializes far
-        // above the child's explicit 48 KiB frozen-schema allowance.
+        // above this model's ACTUAL schema allowance, so a child cannot ever
+        // freeze the whole catalog.
+        let provider = TestFixtures.localhostProvider()
+        let model = smallContextModel(
+            providerID: provider.id, contextTokens: 64_000, maxOutputTokens: 8_192
+        )
         #expect(descriptors.count >= 239)
         #expect(serializedBytes > 254_288, "fixture catalog too small: \(serializedBytes)")
-        #expect(serializedBytes > SubagentRunner.maximumFrozenToolSchemaBytes)
+        #expect(serializedBytes > SubagentRunner.schemaAllowanceBytes(
+            model: model, messageLedgerBytes: 0
+        ))
 
-        let provider = TestFixtures.localhostProvider()
         let runID = UUID()
         let conversationID = UUID()
         let delegateCall = try TestFixtures.toolCall(
@@ -236,7 +243,7 @@ struct ChildToolDiscoveryTests {
         await runners.register(
             SubagentRunner(
                 provider: provider,
-                model: TestFixtures.testModel(providerID: provider.id),
+                model: model,
                 adapter: childAdapter,
                 credentials: ProviderCredentials(),
                 executor: executor
@@ -247,7 +254,7 @@ struct ChildToolDiscoveryTests {
             configuration: FloeAgentRuntime.Configuration(
                 conversationID: conversationID,
                 provider: provider,
-                model: TestFixtures.testModel(providerID: provider.id),
+                model: model,
                 workspaceRootURL: root
             ),
             adapter: parentAdapter,
@@ -262,12 +269,14 @@ struct ChildToolDiscoveryTests {
         // 1. The child ran all five turns: search → write → skill.read →
         //    guide-declared artifact → final answer.
         #expect(childAdapter.requests.count == 5)
-        // 2. Every child request stayed inside the explicit frozen-schema
+        // 2. Every child request stayed inside this model's real schema
         //    allowance and never carried the bulk catalog.
         for request in childAdapter.requests {
             #expect(
                 SubagentRunner.frozenSchemaWireBytes(of: request)
-                    <= SubagentRunner.maximumFrozenToolSchemaBytes,
+                    <= SubagentRunner.schemaAllowanceBytes(
+                        model: model, messageLedgerBytes: 0
+                    ),
                 "frozen schema ledger exceeded on a real request"
             )
             #expect(!request.toolSchemas.contains { $0.name.hasPrefix("bulk.capability") })
@@ -329,16 +338,33 @@ struct ChildToolDiscoveryTests {
 
     private func makeRunner(
         adapter: MockAdapter,
-        executor: any ToolExecutor
+        executor: any ToolExecutor,
+        provider: ProviderProfile = TestFixtures.localhostProvider(),
+        model: ModelProfile? = nil
     ) -> SubagentRunner {
-        let provider = TestFixtures.localhostProvider()
-        return SubagentRunner(
+        SubagentRunner(
             provider: provider,
-            model: TestFixtures.testModel(providerID: provider.id),
+            model: model ?? TestFixtures.testModel(providerID: provider.id),
             adapter: adapter,
             credentials: ProviderCredentials(),
             executor: executor
         )
+    }
+
+    /// A model whose REAL context window makes discovery admission actually
+    /// bite. Discovery tests must use an explicit small window instead of the
+    /// retired fixed 48 KiB schema constant.
+    private func smallContextModel(
+        providerID: UUID,
+        contextTokens: Int,
+        maxOutputTokens: Int
+    ) -> ModelProfile {
+        var profile = TestFixtures.testModel(providerID: providerID)
+        profile.limits = ModelLimits(
+            contextTokens: contextTokens,
+            maxOutputTokens: maxOutputTokens
+        )
+        return profile
     }
 
     private func plainContext() -> ToolContext {
@@ -347,14 +373,64 @@ struct ChildToolDiscoveryTests {
         return context
     }
 
+    @Test("child schema allowance scales with the actual model window and charged messages, not a fixed 48 KiB")
+    func schemaAllowanceScalesWithModelWindow() {
+        let provider = TestFixtures.localhostProvider()
+        let small = smallContextModel(
+            providerID: provider.id, contextTokens: 8_192, maxOutputTokens: 2_048
+        )
+        let large = smallContextModel(
+            providerID: provider.id, contextTokens: 1_000_000, maxOutputTokens: 8_192
+        )
+        let smallAllowance = SubagentRunner.schemaAllowanceBytes(
+            model: small, messageLedgerBytes: 2_000
+        )
+        let largeAllowance = SubagentRunner.schemaAllowanceBytes(
+            model: large, messageLedgerBytes: 2_000
+        )
+        #expect(smallAllowance < 48 * 1_024)
+        #expect(largeAllowance > 48 * 1_024)
+        #expect(largeAllowance > smallAllowance)
+        // Charging real messages and the pending batch reduces the actual
+        // allowance instead of leaving an unrelated fixed schema cap.
+        let crowded = SubagentRunner.schemaAllowanceBytes(
+            model: large, messageLedgerBytes: 200_000, pendingBatchLedgerBytes: 20_000
+        )
+        #expect(crowded < largeAllowance)
+    }
+
+    @Test("a large loaded definition is admitted whole under a large real model window")
+    func largeDefinitionAdmittedWholeUnderLargeWindow() {
+        let provider = TestFixtures.localhostProvider()
+        let large = smallContextModel(
+            providerID: provider.id, contextTokens: 1_000_000, maxOutputTokens: 8_192
+        )
+        var discovery = ChildToolDiscovery(
+            descriptors: [paddedDescriptor("test.largeDefinition", padding: 40_000)],
+            seedNames: []
+        )
+        let allowance = SubagentRunner.schemaAllowanceBytes(
+            model: large, messageLedgerBytes: 4_000
+        )
+        let receipt = discovery.load(["test.largeDefinition"], maxBytes: allowance)
+        #expect(receipt.admitted == ["test.largeDefinition"])
+        #expect(receipt.oversized.isEmpty)
+        #expect(discovery.schemas().first?.parametersJSON
+            == paddedDescriptor("test.largeDefinition", padding: 40_000).parametersJSON)
+    }
+
     @Test("many loaded definitions evict oldest-first, are surfaced and stay inside the schema budget")
     func manyLoadedDefinitionsEvictWithinBudget() async throws {
         let names = (0..<24).map { String(format: "test.bulk%02d", $0) }
         let adapter = MockAdapter()
         let executor = BulkExecutor(names: names, schemaPadding: 2_600)
-        // Two turns of ten exact-name searches each: the cumulative 48 KiB
-        // child budget cannot hold them all, so the oldest are evicted and the
+        // Two turns of ten exact-name searches each: this model's REAL schema
+        // allowance cannot hold them all, so the oldest are evicted and the
         // eviction is surfaced.
+        let provider = TestFixtures.localhostProvider()
+        let model = smallContextModel(
+            providerID: provider.id, contextTokens: 32_768, maxOutputTokens: 8_192
+        )
         func searchBatch(_ range: Range<Int>) -> [AgentEvent] {
             range.map { index in
                 let name = names[index]
@@ -369,15 +445,20 @@ struct ChildToolDiscoveryTests {
             searchBatch(10..<20),
             [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
         ]
-        let runner = makeRunner(adapter: adapter, executor: executor)
+        let runner = makeRunner(
+            adapter: adapter, executor: executor, provider: provider, model: model
+        )
         let outcome = try await runner.runStructured(exploreRequest(maxIterations: 6), context: plainContext())
         #expect(outcome.status == .completed)
 
-        // Every frozen request stays inside the explicit allowance.
+        // Every frozen request stays inside this model's actual schema
+        // allowance (no fixed 48 KiB ceiling).
         for request in adapter.requests {
             #expect(
                 SubagentRunner.frozenSchemaWireBytes(of: request)
-                    <= SubagentRunner.maximumFrozenToolSchemaBytes
+                    <= SubagentRunner.schemaAllowanceBytes(
+                        model: model, messageLedgerBytes: 0
+                    )
             )
         }
         // Loading more definitions than fit really evicted earlier ones, and
@@ -400,7 +481,9 @@ struct ChildToolDiscoveryTests {
         let finalBytes = final.toolSchemas.reduce(0) {
             $0 + $1.description.utf8.count + $1.parametersJSON.utf8.count
         }
-        #expect(finalBytes <= SubagentRunner.maximumFrozenToolSchemaBytes)
+        #expect(finalBytes <= SubagentRunner.schemaAllowanceBytes(
+            model: model, messageLedgerBytes: 0
+        ))
         #expect(final.toolSchemas.count < names.count)
     }
 
@@ -409,6 +492,10 @@ struct ChildToolDiscoveryTests {
         let names = (0..<20).map { String(format: "test.crowd%02d", $0) }
         let adapter = MockAdapter()
         let executor = BulkExecutor(names: names, schemaPadding: 2_600)
+        let provider = TestFixtures.localhostProvider()
+        let model = smallContextModel(
+            providerID: provider.id, contextTokens: 32_768, maxOutputTokens: 8_192
+        )
         let first = try TestFixtures.toolCall(id: "p-1", toolName: "test.crowd00")
         func searchBatch(_ range: Range<Int>) -> [AgentEvent] {
             range.map { index in
@@ -425,7 +512,9 @@ struct ChildToolDiscoveryTests {
             searchBatch(10..<20),
             [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
         ]
-        let runner = makeRunner(adapter: adapter, executor: executor)
+        let runner = makeRunner(
+            adapter: adapter, executor: executor, provider: provider, model: model
+        )
         let outcome = try await runner.runStructured(exploreRequest(maxIterations: 6), context: plainContext())
         #expect(outcome.status == .completed)
 
@@ -601,19 +690,23 @@ struct ChildToolDiscoveryTests {
         let names = ["test.echo", "test.write"]
         let adapter = MockAdapter()
         let executor = BulkExecutor(names: names, schemaPadding: 4_000)
+        let provider = TestFixtures.localhostProvider()
+        let model = TestFixtures.testModel(providerID: provider.id)
         let read = try TestFixtures.toolCall(id: "r-1", toolName: "test.echo", arguments: #"{"v":"x"}"#)
         adapter.script = [
             [.toolRequest(read)],
             [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
         ]
-        let runner = makeRunner(adapter: adapter, executor: executor)
+        let runner = makeRunner(
+            adapter: adapter, executor: executor, provider: provider, model: model
+        )
         let outcome = try await runner.runStructured(exploreRequest(), context: plainContext())
         #expect(outcome.status == .completed)
         let feedback = try #require(adapter.requests.last)
         let ledger = SubagentRunner.contextWireBytes(of: feedback)
-        let allowance = SubagentRunner.maximumRequestContextBytes
-            + SubagentRunner.maximumFrozenToolSchemaBytes
+        let allowance = SubagentRunner.requestContextByteCeiling(model: model)
             + SubagentRunner.wireEnvelopeAllowanceBytes
+        #expect(ledger <= SubagentRunner.requestContextByteCeiling(model: model))
         let refreshed = feedback.refreshingRuntimeClock()
         let bodies: [(String, Data)] = [
             ("chat", try ProviderWireEncoder.encode(OpenAIChatCompletionsAdapter().buildBody(from: refreshed))),

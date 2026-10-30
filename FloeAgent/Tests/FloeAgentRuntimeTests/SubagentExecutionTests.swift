@@ -35,15 +35,31 @@ struct SubagentExecutionTests {
     private func makeRunner(
         adapter: MockAdapter,
         executor: any ToolExecutor = MockExecutor(),
-        provider: ProviderProfile = TestFixtures.localhostProvider()
+        provider: ProviderProfile = TestFixtures.localhostProvider(),
+        model: ModelProfile? = nil
     ) -> SubagentRunner {
         SubagentRunner(
             provider: provider,
-            model: TestFixtures.testModel(providerID: provider.id),
+            model: model ?? TestFixtures.testModel(providerID: provider.id),
             adapter: adapter,
             credentials: ProviderCredentials(),
             executor: executor
         )
+    }
+
+    /// A model whose REAL context window is explicit, so request-budget tests
+    /// never fall back to a default window that hides the behavior.
+    private func model(
+        providerID: UUID,
+        contextTokens: Int,
+        maxOutputTokens: Int
+    ) -> ModelProfile {
+        var profile = TestFixtures.testModel(providerID: providerID)
+        profile.limits = ModelLimits(
+            contextTokens: contextTokens,
+            maxOutputTokens: maxOutputTokens
+        )
+        return profile
     }
 
     private func budgetContext() -> ChildBudgetContext {
@@ -258,6 +274,416 @@ struct SubagentExecutionTests {
             #expect(dispatchedContext.childExecution?.identity == identity)
             #expect(adapter.requests.last?.toolResults.first?.output == "dispatched")
         }
+    }
+
+    @Test("a legacy child without a retention receipt sends its admitted body but invents no pageable ref")
+    func childWireSendsAdmittedBodyWithoutInventingRetention() async throws {
+        let runID = UUID()
+        let bus = SubagentPeerBus()
+        let identity = ChildExecutionIdentity(parentRunID: runID, rootTaskID: UUID(), delegateCallID: "d")
+        let provider = TestFixtures.localhostProvider()
+        // 1M tokens easily carries 160 KiB; 16K tokens absolutely does not.
+        // Both are explicit real limits, never the legacy fixed 96 KiB cap.
+        let largeModel = model(
+            providerID: provider.id, contextTokens: 1_000_000, maxOutputTokens: 8_192
+        )
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 16_384, maxOutputTokens: 2_048
+        )
+        let call = try TestFixtures.toolCall(
+            id: "large-child-result", toolName: "test.echo", arguments: "{}"
+        )
+        let body = "HEAD-" + String(repeating: "Z", count: 160 * 1_024) + "-TAIL"
+
+        for (profile, expectFull) in [(largeModel, true), (smallModel, false)] {
+            let adapter = MockAdapter()
+            adapter.script = [
+                [.toolRequest(call)],
+                [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+            ]
+            let executor = MockExecutor()
+            executor.descriptors["test.echo"] = .init(
+                name: "test.echo", riskLabels: [], isSideEffecting: false
+            )
+            let dispatcher = RecordingDispatcher()
+            dispatcher.results[call.id] = ToolResult(
+                callID: call.id,
+                status: .ok,
+                outputSummary: "bounded child summary",
+                outputDigest: "d",
+                capturedOutput: body
+            )
+            let runner = makeRunner(
+                adapter: adapter, executor: executor, provider: provider, model: profile
+            )
+            let outcome = try await runner.runStructured(
+                SubagentRequest(task: "read", kind: .explore, runID: runID),
+                context: childContext(
+                    identity: identity, dispatcher: dispatcher, bus: bus,
+                    allowedToolNames: ["test.echo"]
+                )
+            )
+            #expect(outcome.status == .completed, "\(expectFull)")
+            let request = try #require(adapter.requests.last)
+            let wire = try #require(request.toolResults.first)
+            #expect(wire.callID == call.id)
+            // The ACTUAL outgoing request stays inside this model's real
+            // window (not a fixed constant) for both directions.
+            let ceiling = SubagentRunner.requestContextByteCeiling(model: profile)
+            #expect(SubagentRunner.contextWireBytes(of: request) <= ceiling)
+            if expectFull {
+                #expect(wire.output.utf8.count > 150 * 1_024)
+                #expect(wire.output == body)
+                #expect(!wire.output.contains("truncated for this request"))
+            } else {
+                #expect(wire.output.contains("truncated for this request"))
+                // No canonical dispatcher retained this body, so there is no
+                // real receipt and the child must not advertise one.
+                #expect(wire.output.contains("no capture ref is available"))
+                #expect(!wire.output.contains("ref=tr_"))
+                #expect(!wire.output.contains("complete retained output ref"))
+                #expect(wire.output.utf8.count < body.utf8.count)
+            }
+            // Selection never re-executes the tool to produce evidence.
+            #expect(dispatcher.calls.map(\.id) == [call.id])
+        }
+    }
+
+    @Test("the child wire advertises the ACTUAL retained receipt ref, which really pages the store")
+    func childWireUsesActualRetainedReceipt() async throws {
+        let runID = UUID()
+        let rootTaskID = UUID()
+        let bus = SubagentPeerBus()
+        let identity = ChildExecutionIdentity(
+            parentRunID: runID, rootTaskID: rootTaskID, delegateCallID: "d"
+        )
+        let provider = TestFixtures.localhostProvider()
+        // A 12K-token window (about 30 KB of wire) cannot carry this 60 KB
+        // body whole, so the planner must truly excerpt it.
+        let profile = model(
+            providerID: provider.id, contextTokens: 12_288, maxOutputTokens: 2_048
+        )
+        let call = try TestFixtures.toolCall(
+            id: "retained-child-result", toolName: "test.echo", arguments: "{}"
+        )
+        let body = "HEAD-" + String(repeating: "R", count: 60 * 1_024) + "-TAIL-RECEIPT"
+        // A REAL store record under the child's own namespace, never a
+        // guessed hash of the parent run id.
+        let store = ToolResultCaptureStore(durableRoot: nil)
+        let receipt = await store.capture(
+            conversationID: rootTaskID, runID: identity.childID,
+            callID: call.id, toolName: call.toolName, status: "ok",
+            text: body, temporary: false
+        )
+        #expect(receipt.retained)
+        #expect(receipt.ref == ToolResultCaptureStore.reference(
+            runID: identity.childID, callID: call.id
+        ))
+
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(call)],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors["test.echo"] = .init(
+            name: "test.echo", riskLabels: [], isSideEffecting: false
+        )
+        let dispatcher = RecordingDispatcher()
+        dispatcher.results[call.id] = ToolResult(
+            callID: call.id,
+            status: .ok,
+            outputSummary: "bounded child summary",
+            outputDigest: "d",
+            capturedOutput: body,
+            captureInfo: ToolResultCaptureInfo(
+                ref: receipt.ref,
+                originalBytes: receipt.totalBytes,
+                retainedBytes: receipt.retainedBytes,
+                retentionTruncated: receipt.retentionTruncated,
+                executionReportedTruncation: receipt.executionReportedTruncation,
+                available: receipt.retained
+            )
+        )
+        let runner = makeRunner(
+            adapter: adapter, executor: executor, provider: provider, model: profile
+        )
+        let outcome = try await runner.runStructured(
+            SubagentRequest(task: "read", kind: .explore, runID: runID),
+            context: childContext(
+                identity: identity, dispatcher: dispatcher, bus: bus,
+                allowedToolNames: ["test.echo"]
+            )
+        )
+        #expect(outcome.status == .completed)
+        let request = try #require(adapter.requests.last)
+        let wire = try #require(request.toolResults.first)
+        #expect(wire.output.contains("truncated for this request"))
+        #expect(wire.output.contains("ref=\(receipt.ref)"))
+        #expect(!wire.output.contains("NOT retained"))
+        // The advertised ref is backed by the real store bytes (the body was
+        // retained whole here), not merely a formatted string.
+        guard case .page(let page) = await store.page(
+            conversationID: rootTaskID, ref: receipt.ref, offset: 0,
+            maxBytes: ToolResultPagingTool.maximumPageBytes
+        ) else {
+            Issue.record("the advertised receipt ref must page the real store record")
+            return
+        }
+        #expect(page.totalBytes == body.utf8.count)
+        #expect(body.hasPrefix(page.text))
+        let tailOffset = body.utf8.count - 64
+        guard case .page(let tail) = await store.page(
+            conversationID: rootTaskID, ref: receipt.ref, offset: tailOffset,
+            maxBytes: 64
+        ) else {
+            Issue.record("the advertised receipt ref must page the retained tail")
+            return
+        }
+        #expect(tail.text == String(body.suffix(64)))
+        #expect(dispatcher.calls.map(\.id) == [call.id])
+    }
+
+    @Test("a retention-truncated child capture never sends or advertises the unretained tail")
+    func childWireClipsUnretainedTailAndReportsTruncation() async throws {
+        let runID = UUID()
+        let rootTaskID = UUID()
+        let bus = SubagentPeerBus()
+        let identity = ChildExecutionIdentity(
+            parentRunID: runID, rootTaskID: rootTaskID, delegateCallID: "d"
+        )
+        let provider = TestFixtures.localhostProvider()
+        // The clipped 4 KB prefix fits this large window, so the result is
+        // sent "complete": the truncation note must still be present.
+        let profile = model(
+            providerID: provider.id, contextTokens: 32_768, maxOutputTokens: 8_192
+        )
+        let call = try TestFixtures.toolCall(
+            id: "truncated-child-result", toolName: "test.echo", arguments: "{}"
+        )
+        let body = "HEAD-" + String(repeating: "T", count: 30_000) + "-UNRETAINED-TAIL"
+        let store = ToolResultCaptureStore(
+            durableRoot: nil,
+            caps: .init(perResultBytes: 4_096, perTaskBytes: 1_048_576, perTaskResults: 64)
+        )
+        let receipt = await store.capture(
+            conversationID: rootTaskID, runID: identity.childID,
+            callID: call.id, toolName: call.toolName, status: "ok",
+            text: body, temporary: false
+        )
+        #expect(receipt.retentionTruncated)
+        #expect(receipt.retainedBytes == 4_096)
+
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(call)],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors["test.echo"] = .init(
+            name: "test.echo", riskLabels: [], isSideEffecting: false
+        )
+        let dispatcher = RecordingDispatcher()
+        dispatcher.results[call.id] = ToolResult(
+            callID: call.id,
+            status: .ok,
+            outputSummary: "bounded child summary",
+            outputDigest: "d",
+            capturedOutput: body,
+            captureInfo: ToolResultCaptureInfo(
+                ref: receipt.ref,
+                originalBytes: receipt.totalBytes,
+                retainedBytes: receipt.retainedBytes,
+                retentionTruncated: receipt.retentionTruncated,
+                executionReportedTruncation: receipt.executionReportedTruncation,
+                available: receipt.retained
+            )
+        )
+        let runner = makeRunner(
+            adapter: adapter, executor: executor, provider: provider, model: profile
+        )
+        let outcome = try await runner.runStructured(
+            SubagentRequest(task: "read", kind: .explore, runID: runID),
+            context: childContext(
+                identity: identity, dispatcher: dispatcher, bus: bus,
+                allowedToolNames: ["test.echo"]
+            )
+        )
+        #expect(outcome.status == .completed)
+        let wire = try #require(adapter.requests.last?.toolResults.first)
+        #expect(wire.output.contains("retention truncated"))
+        #expect(wire.output.contains("ref=\(receipt.ref)"))
+        #expect(!wire.output.contains("UNRETAINED-TAIL"))
+        #expect(wire.output.utf8.count < body.utf8.count)
+        #expect(dispatcher.calls.map(\.id) == [call.id])
+    }
+
+    @Test("a tools.readResult page is pointer-only, never partially cut, when the small window cannot carry it")
+    func childPagingPageIsNeverPartiallyCut() async throws {
+        let runID = UUID()
+        let bus = SubagentPeerBus()
+        let identity = ChildExecutionIdentity(parentRunID: runID, rootTaskID: UUID(), delegateCallID: "d")
+        let provider = TestFixtures.localhostProvider()
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 6_144, maxOutputTokens: 2_048
+        )
+        let call = try TestFixtures.toolCall(
+            id: "child-page", toolName: ToolResultPagingTool.name, arguments: #"{"ref":"tr_x"}"#
+        )
+        let pageBody = String(repeating: "P", count: 30_000)
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(call)],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        let dispatcher = RecordingDispatcher()
+        dispatcher.results[call.id] = ToolResult(
+            callID: call.id, status: .ok,
+            outputSummary: pageBody, outputDigest: "d",
+            maximumSummaryCharacters: 262_144
+        )
+        let runner = makeRunner(
+            adapter: adapter, executor: executor, provider: provider, model: smallModel
+        )
+        let outcome = try await runner.runStructured(
+            SubagentRequest(task: "page", kind: .explore, runID: runID),
+            context: childContext(
+                identity: identity, dispatcher: dispatcher, bus: bus,
+                allowedToolNames: [ToolResultPagingTool.name]
+            )
+        )
+        #expect(outcome.status == .completed)
+        let request = try #require(adapter.requests.last)
+        let wire = try #require(request.toolResults.first?.output)
+        #expect(wire.contains("page not repeated in this request"))
+        #expect(!wire.contains(String(repeating: "P", count: 100)))
+        #expect(SubagentRunner.contextWireBytes(of: request)
+            <= SubagentRunner.requestContextByteCeiling(model: smallModel))
+        #expect(dispatcher.calls.map(\.id) == [call.id])
+    }
+
+    @Test("a small window counts complete schemas and the output reserve instead of assuming 96 KiB")
+    func smallWindowCountsSchemasAndOutputReserve() async throws {
+        let provider = TestFixtures.localhostProvider()
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 16_384, maxOutputTokens: 2_048
+        )
+        let schema = #"{"type":"object","properties":{"command":{"type":"string","description":""#
+            + String(repeating: "c", count: 4_000)
+            + #""}},"required":["command"],"additionalProperties":false}"#
+        let adapter = MockAdapter()
+        adapter.script = [[.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        executor.descriptors["exec.shell"] = .init(
+            name: "exec.shell",
+            toolDescription: "Run one command in the resolved Linux environment",
+            parametersJSON: schema,
+            riskLabels: [], isSideEffecting: true
+        )
+        let runner = makeRunner(
+            adapter: adapter, executor: executor, provider: provider, model: smallModel
+        )
+        let outcome = try await runner.runStructured(
+            SubagentRequest(task: "inspect", kind: .explore, runID: UUID()),
+            context: childContext(
+                identity: ChildExecutionIdentity(
+                    parentRunID: UUID(), rootTaskID: UUID(), delegateCallID: "d"
+                ),
+                dispatcher: RecordingDispatcher(),
+                bus: SubagentPeerBus(),
+                allowedToolNames: ["exec.shell"]
+            )
+        )
+        #expect(outcome.status == .completed)
+        let request = try #require(adapter.requests.first)
+        let ceiling = SubagentRunner.requestContextByteCeiling(model: smallModel)
+        // Concrete arithmetic: (16 384 - 2 048 - 256) * 3, not 96 KiB.
+        #expect(ceiling == (16_384 - 2_048 - 256) * 3)
+        #expect(SubagentRunner.outputReservationTokens(limits: smallModel.limits) == 2_048)
+        #expect(SubagentRunner.contextWireBytes(of: request) <= ceiling)
+        let shell = try #require(request.toolSchemas.first { $0.name == "exec.shell" })
+        // The exact complete definition is carried, never sliced.
+        #expect(shell.parametersJSON == schema)
+    }
+
+    @Test("a required frozen seed schema that cannot fit the real window fails truthfully before any request")
+    func frozenSeedSchemaOverflowIsTruthful() async throws {
+        let provider = TestFixtures.localhostProvider()
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 8_192, maxOutputTokens: 2_048
+        )
+        let adapter = MockAdapter()
+        let executor = MockExecutor()
+        // skill.read is part of the always-present seed; this pathological
+        // definition cannot fit the model's actual schema allowance, so the
+        // child must fail closed instead of cutting the definition or sending
+        // an over-budget request.
+        executor.descriptors["skill.read"] = .init(
+            name: "skill.read",
+            toolDescription: "Read a guide",
+            parametersJSON: #"{"type":"object","properties":{"id":{"type":"string","description":""#
+                + String(repeating: "s", count: 40_000)
+                + #""}},"additionalProperties":true}"#,
+            riskLabels: [], isSideEffecting: false
+        )
+        let runner = makeRunner(
+            adapter: adapter, executor: executor, provider: provider, model: smallModel
+        )
+        let outcome = try await runner.runStructured(
+            SubagentRequest(task: "inspect", kind: .explore, runID: UUID()),
+            context: childContext(
+                identity: ChildExecutionIdentity(
+                    parentRunID: UUID(), rootTaskID: UUID(), delegateCallID: "d"
+                ),
+                dispatcher: RecordingDispatcher(),
+                bus: SubagentPeerBus(),
+                allowedToolNames: ["skill.read"]
+            )
+        )
+        #expect(outcome.status == .toolError)
+        #expect(outcome.iterationsUsed == 0)
+        #expect(outcome.findings.contains("actual request context"))
+        #expect(outcome.findings.contains("No provider request was sent"))
+        #expect(adapter.requests.isEmpty)
+    }
+
+    @Test("child typed sensitive output is only in the immediate child provider request")
+    func childSensitiveOutputIsImmediateOnly() async throws {
+        let runID = UUID()
+        let bus = SubagentPeerBus()
+        let identity = ChildExecutionIdentity(parentRunID: runID, rootTaskID: UUID(), delegateCallID: "d")
+        let call = try TestFixtures.toolCall(id: "child-sensitive", toolName: "test.echo", arguments: "{}")
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(call)],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors["test.echo"] = .init(name: "test.echo", riskLabels: [], isSideEffecting: false)
+        let dispatcher = RecordingDispatcher()
+        dispatcher.results[call.id] = ToolResult(
+            callID: call.id,
+            status: .ok,
+            outputSummary: "Authorized cookie read; value withheld from durable output.",
+            outputDigest: "d",
+            ephemeralSensitiveOutput: "CHILD_MODEL_ONLY_SENTINEL"
+        )
+        let runner = makeRunner(adapter: adapter, executor: executor)
+        let outcome = try await runner.runStructured(
+            SubagentRequest(task: "read", kind: .explore, runID: runID),
+            context: childContext(
+                identity: identity, dispatcher: dispatcher, bus: bus,
+                allowedToolNames: ["test.echo"]
+            )
+        )
+        #expect(outcome.status == .completed)
+        let wire = try #require(adapter.requests.last?.toolResults.first?.output)
+        #expect(wire.contains("CHILD_MODEL_ONLY_SENTINEL"))
+        #expect(wire.contains("Ephemeral sensitive tool output"))
+        // The child's findings/outcome must not carry the typed secret.
+        #expect(!outcome.findings.contains("CHILD_MODEL_ONLY_SENTINEL"))
+        #expect(dispatcher.calls.map(\.id) == [call.id])
     }
 
     @Test("a dispatcher denial is preserved as a real denied result for every kind")

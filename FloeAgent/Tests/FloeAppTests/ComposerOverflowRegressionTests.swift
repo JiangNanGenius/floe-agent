@@ -366,6 +366,22 @@ struct ComposerOverflowRegressionTests {
         #expect(!layout(1).canExpand)
     }
 
+    @Test("A short keyboard viewport still offers the editor as soon as text is clipped")
+    func reducedViewportOffersExpansionBeforeThirdLine() {
+        let result = ComposerFieldLayout.verdict(
+            naturalTextHeight: 60,
+            lineHeight: 22,
+            verticalInsets: 16,
+            lineLimit: 1...3,
+            deviceLineCap: 6,
+            availableHeight: 120,
+            restingMinimumHeight: 44
+        )
+        #expect(result.height == 44)
+        #expect(result.scrolls)
+        #expect(result.canExpand, "Clipped second-line text must never lose access to the full editor")
+    }
+
     @Test("The shared layout rule keeps the line budget, one-third cap and row minimum")
     func layoutRuleMatchesBudgets() {
         func verdict(natural: CGFloat, deviceLineCap: Int, available: CGFloat?)

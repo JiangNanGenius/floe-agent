@@ -151,7 +151,8 @@ enum ComposerFieldLayout {
         return Verdict(
             height: min(max(naturalTextHeight, floor), cap),
             scrolls: naturalTextHeight > cap,
-            canExpand: naturalTextHeight > lineHeight * 2 + verticalInsets + 0.5
+            canExpand: naturalTextHeight > cap
+                || naturalTextHeight > lineHeight * 2 + verticalInsets + 0.5
         )
     }
 }

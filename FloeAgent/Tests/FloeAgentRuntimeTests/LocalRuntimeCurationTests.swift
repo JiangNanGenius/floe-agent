@@ -1,13 +1,10 @@
-// FloeAgentRuntimeTests — Build 236 curated local ceiling at runtime level.
+// FloeAgentRuntimeTests — local catalog now uses the REAL task authority.
 //
-// Focused deterministic tests that the on-device ceiling is enforced at the
-// runtime boundary (independent of the adapter prompt build):
-//   * a local query's catalog contains only curated descriptors and a
-//     discovery guess for a hidden tool never reintroduces it,
-//   * tools.search inside a local run cannot load hidden tools,
-//   * remembered (persisted) hidden tools stay hidden on a new local run,
-//   * a cloud run keeps its full catalog, including tools local hides,
-//   * the first turn never emits a schema-budget eviction notice.
+// Focused deterministic tests for the user-approved change: local models get
+// the same task-authorized tool catalog as cloud (no second curated-name
+// fence), while temporary read-only/plan/user ceilings still narrow it and
+// retired aliases stay denied. Intent pins are presentation hints, not an
+// authorization whitelist.
 //
 // Scripted adapter/executor only; no network, weights or real model.
 
@@ -78,12 +75,14 @@ struct LocalRuntimeCurationTests {
             let request = try #require(adapter.requests.first)
             let names = Set(request.toolSchemas.map(\.name))
             #expect(names.contains("cad.document") == !temporary)
-            #expect(!names.contains("exec.shell"))
+            // An ordinary local task may choose the interpreter when it is
+            // actually authorized; temporary read-only still excludes it.
+            #expect(names.contains("exec.shell") == !temporary)
         }
     }
 
-    @Test("A local run only presents curated descriptors even with hidden tools registered")
-    func localCatalogIsCurated() async throws {
+    @Test("A local run uses the task catalog, not a curated-name whitelist")
+    func localCatalogUsesTaskAuthority() async throws {
         let provider = makeProvider(local: true)
         let hidden = [
             "exec.shell", "exec.localPython",
@@ -106,13 +105,19 @@ struct LocalRuntimeCurationTests {
 
         let request = try #require(adapter.requests.first)
         let presented = Set(request.toolSchemas.map(\.name))
-        #expect(presented.isSubset(of: LocalModelToolPolicy.curatedCeilingNames))
-        #expect(presented.intersection(hidden).isEmpty)
+        // Core shell and the discovered web tool are both offered. A
+        // registered-but-unrequested write tool need not be dumped into the
+        // first presentation (progressive discovery is preserved).
+        #expect(presented.contains("exec.shell"))
         #expect(presented.contains("web.search"))
+        #expect(!presented.contains("workspace.createFile"))
+        #expect(!presented.isSubset(of: [
+            "web.search", "workspace.readFile", "workspace.listDirectory"
+        ]))
     }
 
-    @Test("A discovery guess for a hidden capability is never loaded on a local turn")
-    func hiddenDiscoveryGuessIsDropped() async throws {
+    @Test("A local shell request can select the authorized interpreter")
+    func localShellIsSelectable() async throws {
         let provider = makeProvider(local: true)
         let mockExecutor = executor(names: [
             "workspace.readFile", "exec.shell", "environment.prepareLinux"
@@ -132,9 +137,9 @@ struct LocalRuntimeCurationTests {
 
         let request = try #require(adapter.requests.first)
         let presented = Set(request.toolSchemas.map(\.name))
-        #expect(!presented.contains("exec.shell"))
+        #expect(presented.contains("exec.shell"))
+        // Environment lifecycle is not auto-dumped by a generic shell query.
         #expect(!presented.contains("environment.prepareLinux"))
-        #expect(presented.contains("workspace.readFile"))
     }
 
     @Test("Cloud catalogs keep tools the local ceiling hides")
@@ -158,15 +163,14 @@ struct LocalRuntimeCurationTests {
 
         let request = try #require(adapter.requests.first)
         let presented = Set(request.toolSchemas.map(\.name))
-        // Cloud keeps its dynamic discovery: exec.shell is a cloud core tool
-        // and the presented set is not limited to the curated ceiling — proof
-        // the local ceiling was not applied to cloud.
+        // Cloud keeps its dynamic discovery; local now follows the same
+        // task-authority rule rather than a second curated fence.
         #expect(presented.contains("exec.shell"))
-        #expect(!presented.isSubset(of: LocalModelToolPolicy.curatedCeilingNames))
+        #expect(presented.contains("web.search"))
     }
 
-    @Test("Remembered hidden tools stay hidden and pinned curated tools stay presented")
-    func rememberedStateIsCurated() async throws {
+    @Test("Remembered tools are restored under the same task authority")
+    func rememberedStateIsRestored() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
         let store = SQLiteConversationDiscoveryStore(database: database)
@@ -204,8 +208,10 @@ struct LocalRuntimeCurationTests {
 
         let request = try #require(adapter.requests.first)
         let presented = Set(request.toolSchemas.map(\.name))
-        #expect(!presented.contains("exec.shell"))
-        #expect(!presented.contains("environment.prepareLinux"))
+        // Persisted discovery is a presentation hint again, not a hidden
+        // authorization ceiling: the registered tools are restored.
+        #expect(presented.contains("exec.shell"))
+        #expect(presented.contains("environment.prepareLinux"))
         #expect(presented.contains("web.search"))
         #expect(presented.contains("workspace.readFile"))
     }

@@ -243,21 +243,47 @@ struct LocalSearchRepairRegressionTests {
 
     // MARK: - Fail-closed minimal repair
 
-    @Test("An oversized schema fails the minimal repair closed")
+    @Test("A schema beyond the old character cap is carried whole, or skipped when the actual window cannot fit it")
     @available(macOS 15.4, iOS 26.0, *)
-    func oversizedSchemaFailsClosed() throws {
+    func oversizedSchemaUsesActualWindow() throws {
         let padding = String(repeating: "a", count: 2_500)
-        let oversized = ToolSchemaDescriptor(
+        let raw = #"{"type":"object","properties":{"q":{"type":"string","description":"__PADDING__"}},"required":["q"]}"#
+            .replacingOccurrences(of: "__PADDING__", with: padding)
+        let large = ToolSchemaDescriptor(
             name: "web.search",
             description: "x",
-            parametersJSON: #"{"type":"object","properties":{"q":{"type":"string","description":""# + "\"\(padding)\"}}"
+            parametersJSON: raw
         )
-        let instructions = LocalProviderAdapter.PromptBuild.minimalRepairInstructions(
-            tool: oversized,
+        let instructions = try #require(LocalProviderAdapter.PromptBuild.minimalRepairInstructions(
+            tool: large,
             usesNativeToolSchemas: false,
             extraSafety: ""
+        ))
+        // The old 2 400-character cap must not silently drop or slice a
+        // complete definition. The whole schema is carried; the actual repair
+        // window decides whether the repair runs.
+        #expect(instructions.contains(raw))
+        #expect(instructions.contains(padding))
+        #expect(!instructions.contains("...[omitted]"))
+        #expect(LocalProviderAdapter.PromptBuild.repairFitsContext(
+            instructions: instructions, prompt: "搜索一下今天的新闻",
+            tool: large, usesNativeToolSchemas: false,
+            contextTokens: 8_192
+        ))
+        #expect(!LocalProviderAdapter.PromptBuild.repairFitsContext(
+            instructions: instructions, prompt: "搜索一下今天的新闻",
+            tool: large, usesNativeToolSchemas: false,
+            contextTokens: 512
+        ))
+        // A malformed schema still fails closed without attempting a repair.
+        let malformed = ToolSchemaDescriptor(
+            name: "web.search", description: "x", parametersJSON: "not json"
         )
-        #expect(instructions == nil, "an over-limit schema must skip the repair, not invite empty args")
+        #expect(LocalProviderAdapter.PromptBuild.minimalRepairInstructions(
+            tool: malformed,
+            usesNativeToolSchemas: false,
+            extraSafety: ""
+        ) == nil)
     }
 
     @Test("Authoritative safety rules are carried into the minimal repair")

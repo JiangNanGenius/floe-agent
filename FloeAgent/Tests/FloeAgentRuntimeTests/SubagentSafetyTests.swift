@@ -78,15 +78,31 @@ struct SubagentSafetyTests {
     private func makeRunner(
         adapter: MockAdapter,
         executor: any ToolExecutor = MockExecutor(),
-        provider: ProviderProfile = TestFixtures.localhostProvider()
+        provider: ProviderProfile = TestFixtures.localhostProvider(),
+        model: ModelProfile? = nil
     ) -> SubagentRunner {
         SubagentRunner(
             provider: provider,
-            model: TestFixtures.testModel(providerID: provider.id),
+            model: model ?? TestFixtures.testModel(providerID: provider.id),
             adapter: adapter,
             credentials: ProviderCredentials(),
             executor: executor
         )
+    }
+
+    /// Explicit real limits for the request-budget tests. A fixed 96 KiB
+    /// request / 48 KiB schema fixture no longer describes any actual model.
+    private func model(
+        providerID: UUID,
+        contextTokens: Int,
+        maxOutputTokens: Int
+    ) -> ModelProfile {
+        var profile = TestFixtures.testModel(providerID: providerID)
+        profile.limits = ModelLimits(
+            contextTokens: contextTokens,
+            maxOutputTokens: maxOutputTokens
+        )
+        return profile
     }
 
     private func budgetContext(
@@ -635,7 +651,7 @@ struct SubagentSafetyTests {
         // Compat-name mapping stays total over the run's ceiling even though
         // schemas are empty: the child's discovery universe plus the two
         // runtime-virtual discovery tools.
-        #expect(Set(wrapUp.allToolNames) == ["test.echo", "tools.search", "tools.list"])
+        #expect(Set(wrapUp.allToolNames) == ["test.echo", "tools.search", "tools.list", "tools.readResult"])
 
         // Render the archived pair through the REAL wire DTOs to prove
         // call/result pairing on every protocol (an orphan result is a
@@ -754,7 +770,7 @@ struct SubagentSafetyTests {
         #expect(turn4.pendingToolCalls.map(\.id) == ["read-b"])
         #expect(turn4.toolResults.map { $0.callID } == ["read-b"])
         #expect(turn4.pendingAssistantReasoning == "plan read B")
-        #expect(Set(turn4.allToolNames) == ["test.echo", "tools.search", "tools.list"])
+        #expect(Set(turn4.allToolNames) == ["test.echo", "tools.search", "tools.list", "tools.readResult"])
 
         // Render the final request's ENTIRE replayed context through the real
         // wire DTOs the adapters consume: search's and readA's content (their
@@ -802,11 +818,26 @@ struct SubagentSafetyTests {
     private final class OutputBoundExecutor: ToolExecutor, @unchecked Sendable {
         let output: String
         let status: ToolResult.Status
+        /// When true the full output is also supplied as the transient
+        /// capture, so the planner can send the complete admitted body when
+        /// the window allows it. It grants NO retention proof: without a
+        /// canonical dispatcher receipt the planner must not advertise a
+        /// pageable ref.
+        let captureOutput: Bool
         private let descriptors: [String: ToolCatalog.Descriptor]
+        private let executedStorage = AsyncLock<[String]>([])
 
-        init(toolNames: [String], output: String, status: ToolResult.Status = .ok) {
+        var executedCallIDs: [String] { executedStorage.withLock { $0 } }
+
+        init(
+            toolNames: [String],
+            output: String,
+            status: ToolResult.Status = .ok,
+            captureOutput: Bool = false
+        ) {
             self.output = output
             self.status = status
+            self.captureOutput = captureOutput
             self.descriptors = Dictionary(uniqueKeysWithValues: toolNames.map {
                 ($0, ToolCatalog.Descriptor(name: $0, riskLabels: [], isSideEffecting: false))
             })
@@ -819,27 +850,38 @@ struct SubagentSafetyTests {
         }
 
         func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
-            ToolResult(
+            executedStorage.withLock { $0.append(call.id) }
+            return ToolResult(
                 callID: call.id,
                 status: status,
                 outputSummary: output,
                 outputDigest: "d",
-                maximumSummaryCharacters: 96 * 1024
+                maximumSummaryCharacters: 96 * 1024,
+                capturedOutput: captureOutput ? output : nil
             )
         }
     }
 
     /// Encodes one captured request through all three REAL wire adapters and
     /// asserts both the composer ledger and the actual JSON body stay inside
-    /// the documented wire budgets. No count-only mock proof is used.
-    private func assertWireReadyBounds(_ request: ProviderStreamRequest) throws {
-        let contextBudget = SubagentRunner.maximumRequestContextBytes
-        let schemaBudget = SubagentRunner.maximumFrozenToolSchemaBytes
+    /// the ACTUAL model budget for THAT request (never a fixed 96/48 KiB pair).
+    /// No count-only mock proof is used.
+    private func assertWireReadyBounds(
+        _ request: ProviderStreamRequest,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) throws {
+        let contextBudget = SubagentRunner.requestContextByteCeiling(model: request.model)
+        let schemaBudget = SubagentRunner.schemaAllowanceBytes(
+            model: request.model, messageLedgerBytes: 0
+        )
         let ledger = SubagentRunner.contextWireBytes(of: request)
-        #expect(ledger <= contextBudget + schemaBudget)
-        #expect(SubagentRunner.frozenSchemaWireBytes(of: request) <= schemaBudget)
+        #expect(ledger <= contextBudget, sourceLocation: sourceLocation)
+        #expect(
+            SubagentRunner.frozenSchemaWireBytes(of: request) <= schemaBudget,
+            sourceLocation: sourceLocation
+        )
         let refreshed = request.refreshingRuntimeClock()
-        let allowance = contextBudget + schemaBudget + SubagentRunner.wireEnvelopeAllowanceBytes
+        let allowance = contextBudget + SubagentRunner.wireEnvelopeAllowanceBytes
         let bodies: [(String, Data)] = [
             ("chat", try ProviderWireEncoder.encode(OpenAIChatCompletionsAdapter().buildBody(from: refreshed))),
             ("anthropic", try ProviderWireEncoder.encode(AnthropicMessagesAdapter().buildBody(from: refreshed))),
@@ -848,13 +890,15 @@ struct SubagentSafetyTests {
         for (protocolName, body) in bodies {
             #expect(
                 body.count <= allowance,
-                "\(protocolName) body \(body.count) bytes exceeds the \(allowance)-byte envelope"
+                "\(protocolName) body \(body.count) bytes exceeds the \(allowance)-byte actual-context envelope",
+                sourceLocation: sourceLocation
             )
             // The ledger is a true upper bound: the real body may only exceed
             // it by the fixed per-request scaffolding allowance.
             #expect(
                 body.count <= ledger + SubagentRunner.wireEnvelopeAllowanceBytes,
-                "\(protocolName) body \(body.count) bytes exceeds ledger \(ledger) + allowance"
+                "\(protocolName) body \(body.count) bytes exceeds ledger \(ledger) + allowance",
+                sourceLocation: sourceLocation
             )
         }
     }
@@ -910,12 +954,18 @@ struct SubagentSafetyTests {
             .reasoningSummary(.init(text: String(repeating: "r", count: 40 * 1024))),
             .toolRequest(call)
         ]]
+        let provider = TestFixtures.localhostProvider()
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 16_384, maxOutputTokens: 2_048
+        )
         let runner = makeRunner(
             adapter: adapter,
             executor: OutputBoundExecutor(
                 toolNames: ["test.big"],
                 output: String(repeating: "x", count: 30 * 1024)
-            )
+            ),
+            provider: provider,
+            model: smallModel
         )
         var context = ToolContext(runID: UUID(), cancellation: CancellationToken())
         context.childBudget = budgetContext()
@@ -1018,8 +1068,9 @@ struct SubagentSafetyTests {
         try assertWireReadyBounds(feedback)
     }
 
-    @Test("an oversized parallel result batch fails explicitly with every read preserved")
-    func oversizedParallelBatchFailsExplicitly() async throws {
+    @Test("an oversized parallel result batch is excerpted truthfully, without inventing retention refs")
+    func oversizedParallelBatchIsExcerptedWithoutInventedRefs() async throws {
+        let runID = UUID()
         let adapter = MockAdapter()
         let calls = try (0..<12).map { index in
             try TestFixtures.toolCall(
@@ -1027,22 +1078,50 @@ struct SubagentSafetyTests {
                 arguments: #"{"n":"\#(index)"}"#
             )
         }
-        adapter.script = [calls.map { .toolRequest($0) }]
+        // 12 x 20 KiB = 240 KiB of real reads cannot fit one request on this
+        // explicit 32K-token model. This legacy fixture has NO canonical
+        // dispatcher and therefore NO retention receipt, so the planner sends
+        // an excerpt with no verified capture ref, and must not invent one.
+        adapter.script = [
+            calls.map { .toolRequest($0) },
+            [.textDelta(.init(text: "synthesized")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let provider = TestFixtures.localhostProvider()
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 32_768, maxOutputTokens: 8_192
+        )
+        let executor = OutputBoundExecutor(
+            toolNames: ["test.bulk"],
+            output: String(repeating: "z", count: 20 * 1024),
+            captureOutput: true
+        )
         let runner = makeRunner(
-            adapter: adapter,
-            executor: OutputBoundExecutor(
-                toolNames: ["test.bulk"],
-                output: String(repeating: "z", count: 20 * 1024)
-            )
+            adapter: adapter, executor: executor, provider: provider, model: smallModel
         )
         var context = ToolContext(runID: UUID(), cancellation: CancellationToken())
         context.childBudget = budgetContext()
-        let outcome = try await runner.runStructured(exploreRequest(maxIterations: 6), context: context)
-        #expect(outcome.status == .toolError)
+        let outcome = try await runner.runStructured(
+            exploreRequest(maxIterations: 6, runID: runID), context: context
+        )
+        #expect(outcome.status == .completed)
         #expect(outcome.iterationsUsed == 2)
         #expect(outcome.evidence.count == 12)
-        #expect(outcome.findings.contains("bounded request context"))
-        #expect(adapter.requests.count == 1)
+        // The model got a real completion turn after the batch, and exactly
+        // one execution produced each read (no replay/retry side effect).
+        #expect(adapter.requests.count == 2)
+        #expect(executor.executedCallIDs.count == 12)
+        #expect(Set(executor.executedCallIDs) == Set(calls.map(\.id)))
+        let feedback = try #require(adapter.requests.dropFirst().first)
+        #expect(feedback.pendingToolCalls.map(\.id) == calls.map(\.id))
+        #expect(feedback.toolResults.count == calls.count)
+        #expect(feedback.toolResults.map(\.callID) == calls.map(\.id))
+        for result in feedback.toolResults {
+            #expect(result.output.contains("truncated for this request"))
+            #expect(result.output.contains("no capture ref is available"))
+            #expect(!result.output.contains("ref=tr_"))
+            #expect(!result.output.contains("complete retained output ref"))
+        }
+        try assertWireReadyBounds(feedback)
     }
 
     @Test("accumulated assistant text is counted, dropped oldest-first and surfaced")
@@ -1057,15 +1136,22 @@ struct SubagentSafetyTests {
         } + [[.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]]
         let executor = MockExecutor()
         executor.descriptors["test.echo"] = .init(name: "test.echo", riskLabels: [], isSideEffecting: false)
-        let runner = makeRunner(adapter: adapter, executor: executor)
+        let provider = TestFixtures.localhostProvider()
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 40_960, maxOutputTokens: 8_192
+        )
+        let runner = makeRunner(
+            adapter: adapter, executor: executor, provider: provider, model: smallModel
+        )
         var context = ToolContext(runID: UUID(), cancellation: CancellationToken())
         context.childBudget = budgetContext()
         let outcome = try await runner.runStructured(exploreRequest(maxIterations: 6), context: context)
         #expect(outcome.status == .completed)
         let final = try #require(adapter.requests.last)
         let assistantTexts = final.messages.filter { $0.role == "assistant" }.map(\.content)
-        // ~100 KiB of assistant text cannot ride one request: the newest
-        // three survive, the oldest is dropped and explicitly reported.
+        // ~100 KiB of assistant text cannot ride this 40K-token model's one
+        // request: the newest three survive, the oldest is dropped and
+        // explicitly reported.
         #expect(assistantTexts.count == 3)
         #expect(assistantTexts.contains { $0.hasPrefix("turn-4-") })
         #expect(!assistantTexts.contains { $0.hasPrefix("turn-1-") })
@@ -1077,7 +1163,11 @@ struct SubagentSafetyTests {
     @Test("a base task input above the wire context fails explicitly before any dispatch")
     func oversizedTaskInputFailsExplicitly() async throws {
         let adapter = MockAdapter()
-        let runner = makeRunner(adapter: adapter)
+        let provider = TestFixtures.localhostProvider()
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 8_192, maxOutputTokens: 2_048
+        )
+        let runner = makeRunner(adapter: adapter, provider: provider, model: smallModel)
         var context = ToolContext(runID: UUID(), cancellation: CancellationToken())
         context.childBudget = budgetContext()
         let request = SubagentRequest(
@@ -1119,9 +1209,15 @@ struct SubagentSafetyTests {
             arguments: #"{"text":""# + slashes + #""}"#
         )
         adapter.script = [[.toolRequest(call)]]
+        let provider = TestFixtures.localhostProvider()
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 16_384, maxOutputTokens: 2_048
+        )
         let runner = makeRunner(
             adapter: adapter,
-            executor: OutputBoundExecutor(toolNames: ["test.slash"], output: "ok")
+            executor: OutputBoundExecutor(toolNames: ["test.slash"], output: "ok"),
+            provider: provider,
+            model: smallModel
         )
         var context = ToolContext(runID: UUID(), cancellation: CancellationToken())
         context.childBudget = budgetContext()
@@ -1142,12 +1238,18 @@ struct SubagentSafetyTests {
                 .toolRequest(call)
             ]
         }
+        let provider = TestFixtures.localhostProvider()
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 32_768, maxOutputTokens: 8_192
+        )
         let runner = makeRunner(
             adapter: adapter,
             executor: OutputBoundExecutor(
                 toolNames: ["test.echo"],
                 output: String(repeating: "o", count: 25 * 1024)
-            )
+            ),
+            provider: provider,
+            model: smallModel
         )
         var context = ToolContext(runID: UUID(), cancellation: CancellationToken())
         context.childBudget = budgetContext()
@@ -1160,7 +1262,7 @@ struct SubagentSafetyTests {
         #expect(wrapUp.toolSchemas.isEmpty)
         #expect(!wrapUp.replayedToolPairs.isEmpty)
         #expect(wrapUp.replayedToolPairs.allSatisfy { $0.call.id == $0.result.callID })
-        #expect(Set(wrapUp.allToolNames) == ["test.echo", "tools.search", "tools.list"])
+        #expect(Set(wrapUp.allToolNames) == ["test.echo", "tools.search", "tools.list", "tools.readResult"])
         for request in adapter.requests { try assertWireReadyBounds(request) }
         #expect(outcome.findings.contains("dropped from bounded replay history"))
         #expect(outcome.truncated)
@@ -1187,7 +1289,13 @@ struct SubagentSafetyTests {
             [.toolRequest(search)],
             [.textDelta(.init(text: "finished")), .completed(.init(stopReason: .endTurn))]
         ]
-        let runner = makeRunner(adapter: adapter, executor: executor)
+        let provider = TestFixtures.localhostProvider()
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 16_384, maxOutputTokens: 2_048
+        )
+        let runner = makeRunner(
+            adapter: adapter, executor: executor, provider: provider, model: smallModel
+        )
         var context = ToolContext(runID: UUID(), cancellation: CancellationToken())
         context.childBudget = budgetContext()
         let outcome = try await runner.runStructured(exploreRequest(maxIterations: 6), context: context)
@@ -1220,7 +1328,13 @@ struct SubagentSafetyTests {
             riskLabels: [],
             isSideEffecting: false
         )
-        let runner = makeRunner(adapter: adapter, executor: executor)
+        let provider = TestFixtures.localhostProvider()
+        let smallModel = model(
+            providerID: provider.id, contextTokens: 8_192, maxOutputTokens: 2_048
+        )
+        let runner = makeRunner(
+            adapter: adapter, executor: executor, provider: provider, model: smallModel
+        )
         var context = ToolContext(runID: UUID(), cancellation: CancellationToken())
         context.childBudget = budgetContext()
         let outcome = try await runner.runStructured(exploreRequest(maxIterations: 6), context: context)

@@ -16,6 +16,7 @@
 import Foundation
 import GRDB
 import FloeCore
+import FloeModels
 
 /// The durable child lifecycle. Mirrors `SubagentOutcome.Status` plus the
 /// registration/interruption states the store itself owns.
@@ -241,18 +242,23 @@ public struct ChildRunCheckpoint: Sendable, Equatable, Codable {
         public var outputSummary: String
         public var outputDigest: String
         public var exitStatus: Int32?
+        /// Safe reference metadata only; full output and browser secrets are
+        /// never checkpointed. Older checkpoints decode this as nil.
+        public var captureInfo: ToolResultCaptureInfo?
         public init(
             callID: String,
             status: String,
             outputSummary: String,
             outputDigest: String,
-            exitStatus: Int32? = nil
+            exitStatus: Int32? = nil,
+            captureInfo: ToolResultCaptureInfo? = nil
         ) {
             self.callID = callID
             self.status = status
             self.outputSummary = outputSummary
             self.outputDigest = outputDigest
             self.exitStatus = exitStatus
+            self.captureInfo = captureInfo
         }
     }
 

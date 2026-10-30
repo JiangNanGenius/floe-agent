@@ -299,6 +299,12 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// historical summary. Optional for checkpoints written by older builds.
     public var ownedSystemContextID: UUID?
 
+    /// Pending calls whose Cookie/Authorization arguments were scrubbed from
+    /// this durable record. They are NEVER automatically replayed after
+    /// recovery: the correct action is to rebuild the request with fresh
+    /// explicit authorization. Optional so older checkpoints decode.
+    public var sensitiveToolCallIDs: [String]?
+
     /// Current checkpoint file format.
     public static let currentFormatVersion = 5
     /// Current GRDB schema version.
@@ -330,7 +336,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         providerDispatchRequest: ProviderDispatchRequestSnapshot? = nil,
         pendingAssistantReasoning: String? = nil,
         replayedToolPairs: [ReplayedToolPair]? = nil,
-        ownedSystemContextID: UUID? = nil
+        ownedSystemContextID: UUID? = nil,
+        sensitiveToolCallIDs: [String]? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -358,6 +365,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.pendingAssistantReasoning = pendingAssistantReasoning
         self.replayedToolPairs = replayedToolPairs
         self.ownedSystemContextID = ownedSystemContextID
+        self.sensitiveToolCallIDs = sensitiveToolCallIDs
     }
 
     public func encoded() throws -> Data {

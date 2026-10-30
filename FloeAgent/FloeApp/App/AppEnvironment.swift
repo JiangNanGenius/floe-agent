@@ -1910,6 +1910,7 @@ final class AppEnvironment: ObservableObject {
         )
         // Browser automation.
         registerBrowserTools(center: browserCenter)
+        BrowserCookieProviderRegistry.shared.install(browserCenter)
         ToolCatalog.register(LinuxPortTool.self)
         ToolRunnerRegistry.shared.register(LinuxPortTool())
         registerMailTools()

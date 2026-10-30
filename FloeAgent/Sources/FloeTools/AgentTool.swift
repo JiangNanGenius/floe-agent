@@ -133,12 +133,15 @@ public struct ToolExecutionOutcomeUnknownError: Error, Sendable, LocalizedError 
     public var errorDescription: String? { message }
 }
 
-/// Bounded execution output; the digest covers the full pre-truncation bytes.
+/// Bounded UI summary with a transient full response; the digest covers all admitted bytes.
 public struct ToolExecutionOutput: Sendable {
     public var summary: String
     /// Optional already-sanitized capture for runtime paging, separate from
     /// the short display summary. Producers must never supply raw logs here.
     public var capturedOutput: String?
+    /// Explicitly authorized model-visible data for the immediate request only.
+    /// Never capture, audit, persist, replay or page these bytes.
+    public var ephemeralSensitiveOutput: String?
     public var capturedOutputTruncated: Bool
     public var summaryTruncated: Bool
     public var fullOutputSHA256: String
@@ -168,11 +171,20 @@ public struct ToolExecutionOutput: Sendable {
         maximumSummaryCharacters: Int = 4096,
         capturedOutput: String? = nil,
         capturedOutputTruncated: Bool = false,
-        outcomeUnknown: Bool = false
+        outcomeUnknown: Bool = false,
+        ephemeralSensitiveOutput: String? = nil
     ) {
-        self.summary = String(summary.prefix(min(262_144, max(0, maximumSummaryCharacters))))
-        self.summaryTruncated = self.summary != summary
+        let preview = String(summary.prefix(min(262_144, max(0, maximumSummaryCharacters))))
+        let shortened = preview != summary
+        self.summary = preview
+        self.summaryTruncated = shortened
+        // The summary is a bounded UI projection, not the authoritative
+        // model result. Keep the producer's admitted text transiently when
+        // this projection shortens it; the runtime redacts and retains it
+        // before request budgeting. Explicit captures remain authoritative.
         self.capturedOutput = capturedOutput
+            ?? (shortened ? summary : nil)
+        self.ephemeralSensitiveOutput = ephemeralSensitiveOutput
         self.capturedOutputTruncated = capturedOutputTruncated
         self.fullOutputSHA256 = fullOutputSHA256
         self.exitStatus = exitStatus
@@ -193,7 +205,8 @@ public struct ToolExecutionOutput: Sendable {
         maximumSummaryCharacters: Int = 4096,
         capturedOutput: String? = nil,
         capturedOutputTruncated: Bool = false,
-        outcomeUnknown: Bool = false
+        outcomeUnknown: Bool = false,
+        ephemeralSensitiveOutput: String? = nil
     ) {
         self.init(
             summary: summary,
@@ -205,7 +218,8 @@ public struct ToolExecutionOutput: Sendable {
             maximumSummaryCharacters: maximumSummaryCharacters,
             capturedOutput: capturedOutput,
             capturedOutputTruncated: capturedOutputTruncated,
-            outcomeUnknown: outcomeUnknown
+            outcomeUnknown: outcomeUnknown,
+            ephemeralSensitiveOutput: ephemeralSensitiveOutput
         )
     }
 }

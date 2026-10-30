@@ -13,7 +13,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, personalization, internalPrompts, providers, auxiliary, localModels, canvas, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sourceControl, sync, remote, usage, dataManagement, diagnostics, updates
+    case general, personalization, internalPrompts, providers, auxiliary, localModels, canvas, webSearch, browser, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sourceControl, sync, remote, usage, dataManagement, diagnostics, updates
 
     var id: String { rawValue }
 
@@ -29,6 +29,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .providers: "settings.section.providers"
         case .auxiliary: "settings.section.auxiliary"
         case .webSearch: "websearch.title"
+        case .browser: "browser.title"
         case .localModels: "localmodels.title"
         case .canvas: "settings.settings_root_view.canvas"
         case .permissions: "settings.section.permissions"
@@ -55,6 +56,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .providers: "antenna.radiowaves.left.and.right"
         case .auxiliary: "photo.badge.plus"
         case .webSearch: "magnifyingglass"
+        case .browser: "safari"
         case .localModels: "cpu"
         case .canvas: "scribble.variable"
         case .permissions: "checkmark.shield"
@@ -208,6 +210,17 @@ struct SettingsRootView: View {
             WebSearchSettingsView(
                 center: environment.webSearchSettingsCenter,
                 catalogOwner: environment.contentUpdateCenter
+            )
+        case .browser:
+            BrowserSettingsView(
+                browserCenter: environment.browserCenter,
+                providers: environment.conversationCenter.configuredProviders.map {
+                    ConversationCenter.browserRecipientIdentity(for: $0)
+                },
+                defaultProviderID: environment.conversationCenter.defaultProviderAndModel().map {
+                    ConversationCenter.browserRecipientIdentity(for: $0.0).id
+                },
+                onProviderSelected: { BrowserProviderTrustCoordinator.shared.setCurrentProvider($0) }
             )
         case .localModels:
             LocalModelsSettingsView(center: environment.localModelsCenter)

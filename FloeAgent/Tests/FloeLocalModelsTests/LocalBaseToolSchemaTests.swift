@@ -39,12 +39,12 @@ struct LocalBaseToolSchemaTests {
     ]
 
     @available(macOS 15.4, *)
-    private static func mlxModel(contextTokens: Int) -> ModelProfile {
+    private static func mlxModel(contextTokens: Int, outputTokens: Int) -> ModelProfile {
         ModelProfile(
             providerID: LocalProviderAdapter.providerProfile.id,
             remoteModelID: "qwen3.8-4b-distill-heretic-mlx-4bit",
             displayName: "Qwen local",
-            limits: .init(contextTokens: contextTokens, maxOutputTokens: 1_024),
+            limits: .init(contextTokens: contextTokens, maxOutputTokens: outputTokens),
             capabilities: [.text, .tools]
         )
     }
@@ -53,13 +53,14 @@ struct LocalBaseToolSchemaTests {
     private static func request(
         userText: String,
         contextTokens: Int = 8_192,
+        outputTokens: Int = 1_024,
         toolResults: [(callID: String, output: String)] = [],
         pendingToolCalls: [ToolCall] = [],
         replayedToolPairs: [ReplayedToolPair] = []
     ) -> ProviderStreamRequest {
         ProviderStreamRequest(
             provider: LocalProviderAdapter.providerProfile,
-            model: mlxModel(contextTokens: contextTokens),
+            model: mlxModel(contextTokens: contextTokens, outputTokens: outputTokens),
             messages: [
                 ("system", "You are Floe. Runtime envelope."),
                 ("user", userText)
@@ -114,7 +115,8 @@ struct LocalBaseToolSchemaTests {
         let build = LocalProviderAdapter.buildPrompt(
             for: Self.request(
                 userText: "搜索工作区里的文件，列出目录",
-                contextTokens: 2_048
+                contextTokens: 2_048,
+                outputTokens: 512
             )
         )
         let names = Set(build.selectedTools.map(\.name))

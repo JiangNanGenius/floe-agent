@@ -3291,6 +3291,16 @@ final class ConversationCenter: ObservableObject {
         )
     }
 
+    /// Consent belongs to a configured account and endpoint. An endpoint
+    /// edit requires a new grant; only its digest enters the consent store.
+    static func browserRecipientIdentity(for provider: ProviderProfile) -> BrowserProviderIdentity {
+        BrowserProviderIdentity(
+            id: provider.id.uuidString + "|" + FloeDigest.sha256Hex(Data(provider.baseURL.absoluteString.utf8)),
+            displayName: provider.displayName ?? provider.baseURL.host ?? provider.kind.rawValue,
+            isOfficial: false
+        )
+    }
+
     func runService(
         for conversationID: UUID,
         provider: ProviderProfile,
@@ -3410,6 +3420,8 @@ final class ConversationCenter: ObservableObject {
             ? conversationHistory
             : (try? await environment.intelligenceStore.applyingCompactions(conversationHistory, conversationID: conversationID)) ?? conversationHistory
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
+        let conversationRecord = try? await conversationStore.conversation(id: conversationID)
+        let isNotesAssistant = conversationRecord?.purpose == .notes
         // A temporary conversation never owns a durable workspace: skip the
         // lease, the ownership lookup and every workspace-side effect.
         let effectiveWorkspaceID: UUID? = isTemporary ? nil : workspaceID
@@ -3418,8 +3430,22 @@ final class ConversationCenter: ObservableObject {
             canonicalWorkspaceID = effectiveWorkspaceID
         } else if isTemporary {
             canonicalWorkspaceID = nil
+        } else if let existing = try await workspaceStore.workspaceID(conversationID: conversationID) {
+            canonicalWorkspaceID = existing
+        } else if runSurface == .ordinary, !isNotesAssistant {
+            // New or migrated ordinary chats need their canonical task root
+            // before any tool resolves a new file. Reuse the transactional
+            // ownership repair; opening Canvas is not an authority grant.
+            guard let conversationRecord else {
+                throw FloeError.notFound("conversation \(conversationID.uuidString)")
+            }
+            let workspace = try await workspaceStore.ensureWorkspace(
+                conversationID: conversationID,
+                title: conversationRecord.title
+            )
+            canonicalWorkspaceID = workspace.id
         } else {
-            canonicalWorkspaceID = try? await workspaceStore.workspaceID(conversationID: conversationID)
+            canonicalWorkspaceID = nil
         }
         // Resolve from persistence, not the UI cache. A private workspace is
         // created in the same transaction as the first run and may not have
@@ -3429,8 +3455,6 @@ final class ConversationCenter: ObservableObject {
         } else {
             nil
         }
-        let conversationRecord = try? await conversationStore.conversation(id: conversationID)
-        let isNotesAssistant = conversationRecord?.purpose == .notes
         // Notes assistant runs get their own confined scratch workspace, not a
         // project workspace lease: staged inputs and generated outputs live
         // only there, and the workspace ceiling plus the guest share list
@@ -3941,6 +3965,13 @@ final class ConversationCenter: ObservableObject {
                 expectedAttempt: authoring?.attempt?.token
             )
         }
+        // Bind browser-data consent to this actual run's immutable endpoint,
+        // never to a different conversation currently visible in Settings.
+        let browserRecipient = Self.browserRecipientIdentity(for: provider)
+        BrowserProviderTrustCoordinator.shared.bindProvider(
+            runID: runID, conversationID: conversationID, identity: browserRecipient
+        )
+        BrowserProviderTrustCoordinator.shared.setCurrentProvider(browserRecipient)
         return ConversationRunService(
             configuration: configuration,
             adapter: providerAdapter(for: provider, ownerRunID: runID),

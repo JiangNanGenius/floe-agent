@@ -542,7 +542,7 @@ struct LocalModelCatalogTests {
         #expect(build.selectedTools.map(\.name) == ["apple.location.current"])
     }
 
-    @Test("Constrained local context admits a small tool set")
+    @Test("Constrained local context admits a bounded schema set from the authorized catalog")
     @available(macOS 15.4, *)
     func constrainedLocalPromptLimitsSchemas() {
         let provider = LocalProviderAdapter.providerProfile
@@ -568,16 +568,21 @@ struct LocalModelCatalogTests {
             messages: [("user", "列出工作区目录里的所有文件")],
             toolSchemas: tools
         ))
-        // Only canonical read tools survive the ceiling; invented
-        // workspace.other names and extra schemas stay out.
-        #expect(build.selectedToolCount <= 4)
-        #expect(build.selectedTools.allSatisfy {
-            LocalModelToolPolicy.pinnedToolNames.contains($0.name)
-        })
+        // The adapter neither widens nor invents names: the authoritative
+        // directory is exactly the runtime-supplied set.
+        #expect(Set(build.fallbackTools.map(\.name)) == Set(tools.map(\.name)))
+        // The 2 048-token action budget admits three complete schemas. Pinned
+        // read-tool admission consumes it first, so the placeholder names are
+        // deferred as a budget outcome rather than excluded by a whitelist.
+        #expect(Set(build.selectedTools.map(\.name)) == [
+            "workspace.listDirectory",
+            "workspace.readFile",
+            "workspace.searchFiles"
+        ])
         #expect(build.text.count < 3_000)
     }
 
-    @Test("MLX JSON fallback accepts exact tools from its authoritative safe directory")
+    @Test("MLX JSON fallback accepts every runtime-authorized tool from its directory")
     @available(macOS 15.4, *)
     func localFallbackUsesAdmissibleDirectory() throws {
         let provider = LocalProviderAdapter.providerProfile
@@ -589,7 +594,7 @@ struct LocalModelCatalogTests {
             capabilities: [.text, .tools]
         )
         let tools = [
-            "exec.localPython", "git.status", "image.inspect", "memory.recall",
+            "exec.shell", "git.status", "image.inspect", "memory.recall",
             "web.search", "workspace.listDirectory", "workspace.readFile",
             "workspace.searchFiles", "workspace.inspectFileMetadata"
         ].map { ToolSchemaDescriptor(name: $0, description: "Candidate tool") }
@@ -601,14 +606,21 @@ struct LocalModelCatalogTests {
             messages: [("user", "帮我看看可用的工具有哪些")],
             toolSchemas: tools
         ))
-        // Hidden/non-canonical names never enter the fallback directory.
-        #expect(!build.fallbackTools.contains {
-            ["exec.localPython", "git.status", "image.inspect", "memory.recall"].contains($0.name)
-        })
+        // The whole authorized set stays in the fallback directory: the
+        // adapter no longer removes Git, shell or memory tools, and the
+        // inventory budget only bounds the eagerly rendered schemas.
+        #expect(Set(build.fallbackTools.map(\.name)) == Set(tools.map(\.name)))
+        #expect(Set(build.selectedTools.map(\.name)) == [
+            "web.search",
+            "workspace.listDirectory",
+            "workspace.readFile",
+            "workspace.searchFiles"
+        ])
         let selectedNames = Set(build.selectedTools.map(\.name))
         let omitted = try #require(build.fallbackTools.first {
             !selectedNames.contains($0.name)
         })
+        #expect(omitted.name == "exec.shell")
         let output = "{\"tool_call\":{\"name\":\"\(omitted.name)\",\"arguments\":{}}}"
         let parsed = try LocalProviderAdapter.fallbackToolCall(
             from: output,
@@ -616,11 +628,18 @@ struct LocalModelCatalogTests {
             selectedTools: build.fallbackTools
         )
         #expect(parsed?.toolName == omitted.name)
+        // A name the runtime did not authorize is still not callable.
+        let unauthorized = try LocalProviderAdapter.fallbackToolCall(
+            from: #"{"tool_call":{"name":"browser.navigate","arguments":{}}}"#,
+            modelRemoteID: model.remoteModelID,
+            selectedTools: build.fallbackTools
+        )
+        #expect(unauthorized == nil)
     }
 
-    @Test("MLX prompt hides PDF/OCR/browser/SSH tools and keeps the read chain")
+    @Test("MLX prompt supplies authorized PDF/OCR/browser/SSH schemas instead of hiding them")
     @available(macOS 15.4, *)
-    func localPromptSelectsRelevantTools() {
+    func localPromptSelectsRelevantTools() throws {
         let provider = LocalProviderAdapter.providerProfile
         let model = ModelProfile(
             providerID: provider.id,
@@ -647,16 +666,30 @@ struct LocalModelCatalogTests {
 
         let build = LocalProviderAdapter.buildPrompt(for: request)
 
-        // Only the canonical read tool survives; complex media/browser/SSH
-        // tools never enter the offered set.
-        #expect(build.selectedTools.map(\.name) == ["workspace.readFile"])
+        // Every runtime-authorized schema is supplied: the adapter no longer
+        // applies a second curated fence, so media/browser/SSH definitions
+        // reach the local model when the task authorized them.
+        #expect(Set(build.fallbackTools.map(\.name)) == Set(tools.map(\.name)))
+        #expect(build.fallbackTools.allSatisfy { !$0.parametersJSON.isEmpty })
+        // Intent selection keeps the document/OCR schemas in the rendered
+        // window for this PDF turn.
+        let selected = Set(build.selectedTools.map(\.name))
+        for name in ["workspace.readFile", "document.pdf.inspect", "document.pdf.render", "image.ocr"] {
+            #expect(selected.contains(name), "\(name)")
+        }
+        #expect(build.selectedToolCount <= 5)
+        // Browser and SSH schemas are named in the authoritative directory and
+        // remain callable through the documented JSON envelope even when the
+        // small format budget does not render their schema this turn.
+        #expect(build.systemInstructions.contains("browser.click"))
+        #expect(build.systemInstructions.contains("ssh.execute"))
+        let sshCall = try LocalProviderAdapter.fallbackToolCall(
+            from: #"{"tool_call":{"name":"ssh.execute","arguments":{"command":"uname -a"}}}"#,
+            modelRemoteID: model.remoteModelID,
+            selectedTools: build.fallbackTools
+        )
+        #expect(sshCall?.toolName == "ssh.execute")
         #expect(build.systemInstructions.contains("workspace.readFile"))
-        #expect(!build.systemInstructions.contains("document.pdf.inspect"))
-        #expect(!build.systemInstructions.contains("document.pdf.render"))
-        #expect(!build.systemInstructions.contains("image.ocr"))
-        #expect(!build.systemInstructions.contains("document.presentation.createInline"))
-        #expect(!build.systemInstructions.contains("browser.click"))
-        #expect(!build.systemInstructions.contains("- ssh.execute:"))
         #expect(!build.text.contains("OFFERED TOOLS"))
         #expect(build.text.count < 5_000)
     }
@@ -695,7 +728,7 @@ struct LocalModelCatalogTests {
         #expect(!build.text.contains("TOOL RESULT"))
     }
 
-    @Test("Local capability questions can see the authoritative tool directory")
+    @Test("Local capability questions see the complete authorized tool directory")
     @available(macOS 15.4, *)
     func localPromptExposesToolDirectory() {
         let provider = LocalProviderAdapter.providerProfile
@@ -722,34 +755,48 @@ struct LocalModelCatalogTests {
 
         let build = LocalProviderAdapter.buildPrompt(for: request)
 
-        // Only the canonical read tool is admitted; OCR/inspect/SSH/Apple
-        // tools are outside the curated ceiling.
-        #expect(build.selectedTools.map(\.name) == ["workspace.readFile"])
-        #expect(!build.systemInstructions.contains("image.ocr"))
-        #expect(!build.systemInstructions.contains("image.inspect"))
-        #expect(!build.systemInstructions.contains("ssh.execute"))
-        #expect(!build.systemInstructions.contains("apple.calendar.list"))
+        // The directory reports the authorized set, not a curated subset:
+        // OCR, SSH and Apple-owned names are visible to a non-Apple local
+        // model when the task authorized them.
+        #expect(Set(build.fallbackTools.map(\.name)) == Set(tools.map(\.name)))
+        #expect(Set(build.selectedTools.map(\.name)) == Set(tools.map(\.name)))
+        #expect(build.systemInstructions.contains("image.ocr"))
+        #expect(build.systemInstructions.contains("ssh.execute"))
+        #expect(build.systemInstructions.contains("apple.calendar.list"))
         #expect(build.systemInstructions.contains("AVAILABLE TOOL NAMES"))
         #expect(!build.text.contains("AVAILABLE TOOL NAMES"))
+        // Listing capabilities stays informational; it does not force a call.
+        #expect(!build.requiresToolCall)
         #expect(build.text.count < 5_000)
     }
 
-    @Test("App runtime and adapter share the text-only local tool boundary")
+    @Test("Adapter forwards the task-authorized set and never widens a reduced ceiling")
     @available(macOS 15.4, *)
     func localRuntimeToolBoundary() {
         let offered: Set<String> = [
             "workspace.readFile", "image.ocr", "image.inspect",
             "document.pdf.inspect", "document.pdf.render",
-            "browser.screenshot", "apple.location.current"
+            "browser.screenshot", "ssh.execute", "git.commit",
+            "conversation.search", "notes.edit", "exec.shell",
+            "apple.location.current"
         ]
 
         let mlx = LocalProviderAdapter.admissibleToolNames(
             from: offered,
             modelRemoteID: "qwen3.5-4b-mlx4"
         )
-        // Only the canonical read tool survives the curated ceiling.
-        #expect(mlx == ["workspace.readFile"])
+        // The runtime already applied the task ceiling; the adapter forwards
+        // exactly that set instead of a second curated whitelist.
+        #expect(mlx == offered)
 
+        // A narrowed user/task ceiling is never widened by the adapter.
+        let narrowed: Set<String> = ["workspace.readFile", "web.fetch"]
+        #expect(LocalProviderAdapter.admissibleToolNames(
+            from: narrowed,
+            modelRemoteID: "qwen3.5-4b-mlx4"
+        ) == narrowed)
+
+        // Apple Foundation Models keep their real native-channel restriction.
         let apple = LocalProviderAdapter.admissibleToolNames(
             from: offered,
             modelRemoteID: AppleFoundationModelIdentity.remoteModelID
@@ -757,9 +804,82 @@ struct LocalModelCatalogTests {
         #expect(apple == ["apple.location.current"])
     }
 
-    @Test("MLX Git requests get no Git tools — local and cloud-workspace intents")
+    @Test("Authorized Git, history, notes, shell, browser and CAD schemas reach MLX together")
     @available(macOS 15.4, *)
-    func localPromptHidesGitTools() {
+    func localPromptSuppliesAuthorizedCrossSurfaceTools() {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "qwen3.8-4b-heretic-mlx4",
+            displayName: "Synthetic local",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 512),
+            capabilities: [.text, .tools]
+        )
+        let names = [
+            "web.search", "workspace.readFile", "git.commit", "git.status",
+            "conversation.search", "notes.edit", "exec.shell",
+            "browser.navigate", "ssh.execute", "cad.document"
+        ]
+        let tools = names.map {
+            ToolSchemaDescriptor(name: $0, description: "Authorized capability")
+        }
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [
+                ("system", "Run context: synthetic authorized catalog."),
+                ("user", "先检查工作区和环境，再决定用什么工具。")
+            ],
+            toolSchemas: tools,
+            allToolNames: names
+        ))
+        // Nothing in the adapter removes an authorized surface, and nothing
+        // outside the runtime-supplied set is added.
+        #expect(Set(build.fallbackTools.map(\.name)) == Set(names))
+        for name in [
+            "git.commit", "conversation.search", "notes.edit",
+            "exec.shell", "browser.navigate", "cad.document"
+        ] {
+            #expect(build.systemInstructions.contains(name), "\(name)")
+        }
+        #expect(Set(build.selectedTools.map(\.name)).isSubset(of: Set(names)))
+        #expect(build.selectedToolCount <= 10)
+    }
+
+    @Test("Notes and shell intents select their authorized schemas")
+    @available(macOS 15.4, *)
+    func localPromptSelectsNotesAndShellTools() {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "qwen3.8-4b-heretic-mlx4",
+            displayName: "Synthetic local",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 512),
+            capabilities: [.text, .tools]
+        )
+        let names = ["notes.read", "notes.search", "notes.edit", "exec.shell", "workspace.readFile"]
+        let tools = names.map {
+            ToolSchemaDescriptor(name: $0, description: "Authorized capability")
+        }
+        let cases: [(text: String, expected: String)] = [
+            ("打开手记看看这篇笔记，准备修改", "notes.edit"),
+            ("运行一下 shell 命令看看目录", "exec.shell")
+        ]
+        for (text, expected) in cases {
+            let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+                provider: provider,
+                model: model,
+                messages: [("user", text)],
+                toolSchemas: tools
+            ))
+            #expect(Set(build.fallbackTools.map(\.name)) == Set(names), "\(text)")
+            #expect(build.selectedTools.contains { $0.name == expected }, "\(text)")
+        }
+    }
+
+    @Test("MLX Git requests receive the authorized Git and SSH schemas")
+    @available(macOS 15.4, *)
+    func localPromptSuppliesGitTools() {
         let provider = LocalProviderAdapter.providerProfile
         let model = ModelProfile(
             providerID: provider.id,
@@ -784,12 +904,18 @@ struct LocalModelCatalogTests {
             messages: [("user", "查看本地仓库状态，暂存并提交代码，然后推送 GitHub")],
             toolSchemas: tools
         ))
-        // No Git tool (read-only or mutating) is ever offered; the curated
-        // read tool is the only schema that survives.
-        #expect(local.selectedTools.map(\.name) == ["workspace.readFile"])
-        #expect(!local.systemInstructions.contains("git."))
-        #expect(!local.systemInstructions.contains("cloudWorkspace."))
-        #expect(!local.systemInstructions.contains("ssh.execute"))
+        // The task-authorized Git surface is actually offered now; intent
+        // selection admits the Git/GitHub schemas for this request.
+        #expect(Set(local.fallbackTools.map(\.name)) == Set(tools.map(\.name)))
+        let localNames = Set(local.selectedTools.map(\.name))
+        for name in ["git.status", "git.commit", "git.push", "github.repositories"] {
+            #expect(localNames.contains(name), "\(name)")
+        }
+        // SSH and cloud-workspace Git tools stay available in the
+        // authoritative directory even when this turn's budget does not
+        // render their schemas.
+        #expect(local.systemInstructions.contains("ssh.execute"))
+        #expect(local.systemInstructions.contains("cloudWorkspace.git.push"))
 
         let cloud = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
             provider: provider,
@@ -797,8 +923,10 @@ struct LocalModelCatalogTests {
             messages: [("user", "检查云工作区的文件并读取")],
             toolSchemas: tools
         ))
+        // The cloud-workspace file intent still selects the read tool, but the
+        // cloud Git tools are supplied (directory), not hidden.
         #expect(cloud.selectedTools.map(\.name) == ["workspace.readFile"])
-        #expect(!cloud.systemInstructions.contains("cloudWorkspace.git"))
+        #expect(cloud.systemInstructions.contains("cloudWorkspace.git.status"))
     }
 
     @Test("Local reasoning tags are separated from the visible answer")

@@ -145,25 +145,28 @@ public struct SubagentRunner: Sendable {
     /// never silently.
     static let maximumReplayedPairs = 48
 
-    /// Hard bound on the wire-ready conversation context of ONE child
-    /// provider request: base/task messages, accumulated assistant messages,
-    /// the current pending call/result/reasoning batch and the bounded replay
-    /// history. Measured in conservatively JSON-escaped bytes — the form that
-    /// actually crosses the wire — never raw character or UTF-8 counts:
-    /// `wireEscapedBytes` charges quote/backslash/slash and control bytes at
-    /// their encoded width, so a text-count approximation is never reported
-    /// as a wire bound.
-    static let maximumRequestContextBytes = 96 * 1024
+    /// The real bound of one child request is the model's actual context
+    /// window and output reservation (`requestContextByteCeiling(model:)`),
+    /// and schemas are admitted against the real leftover context
+    /// (`schemaAllowanceBytes(model:messageLedgerBytes:)`). A fixed 96 KiB /
+    /// 48 KiB pair was wrong in both directions: it hid complete evidence a
+    /// large model could afford and still overflowed a small model.
 
-    /// Explicit independent bound for the run-stable frozen tool schemas and
-    /// the tool-name ceiling. Schemas are never trimmed per request, so a
-    /// pathological catalog surfaces as an explicit harness guard instead of
-    /// becoming an unlimited loophole inside the context budget.
-    static let maximumFrozenToolSchemaBytes = 48 * 1024
+    /// Per-turn SERVICE MEMORY ceiling for tool-result bytes selected into
+    /// one child request. This matches the parent runtime's
+    /// `maximumProviderToolResultBytes` (8 MiB). It is a local copying/wire
+    /// ceiling, not a model-window claim, and it is deliberately separate
+    /// from the model context budget above.
+    static let maximumProviderToolResultBytes = 8 * 1_024 * 1_024
 
-    /// Per-result output cap. Applied before the FIRST feedback request (not
-    /// only when the pair later enters replay) with an explicit truncation
-    /// marker; the original digest and status stay intact.
+    /// Tokens held below the model window for provider-added request
+    /// scaffolding, matching `ProviderRequestSizer`'s default.
+    static let requestSafetyMarginTokens = 256
+
+    /// Per-result durable transcript/replay cap. This is a STORAGE and
+    /// checkpoint bound, not a per-request context bound: a complete captured
+    /// result may ride the child wire whole when the model window permits it,
+    /// while only this bounded projection is persisted/replayed.
     static let maximumResultBytes = 32 * 1024
 
     /// Fixed allowance for per-request JSON scaffolding that is not part of
@@ -668,10 +671,10 @@ public struct SubagentRunner: Sendable {
         // per-call approved) or under the fail-closed legacy read-only
         // ceiling. The kind never changes the permission set.
         let canonicalChild = context.childExecution?.dispatcher != nil
-        // The child discovers its own schemas progressively inside the same
-        // 48 KiB frozen-schema budget the request composer enforces. The full
-        // catalog is NEVER frozen onto the child wire: a large catalog (the
-        // production 239-tool catalog serializes far above the allowance)
+        // The child discovers its own schemas progressively inside this
+        // model's ACTUAL request schema allowance. The full catalog is NEVER
+        // frozen onto the child wire: a large catalog (the production
+        // 239-tool catalog serializes far above any small-window allowance)
         // would otherwise abort every child before its first request. On
         // resume the universe is re-derived from the CURRENT parent's
         // effective ceiling and the persisted child selection is intersected
@@ -699,10 +702,13 @@ public struct SubagentRunner: Sendable {
                 descriptors: offered,
                 seedNames: seedNames
             )
-            // Re-fit the restored selection inside the CURRENT parent's schema
-            // budget; every further drop rides the existing explicit
+            // Re-fit the restored selection inside this model's ACTUAL
+            // request context; every further drop rides the existing explicit
             // eviction-notice path into the first resumed request.
-            _ = restored.load([], maxBytes: Self.maximumFrozenToolSchemaBytes)
+            _ = restored.load([], maxBytes: Self.schemaAllowanceBytes(
+                model: model,
+                messageLedgerBytes: Self.requiredMessageLedgerBytes(messages)
+            ))
             discovery = restored
         } else {
             messages = [
@@ -718,9 +724,19 @@ public struct SubagentRunner: Sendable {
                 seedNames: seedNames
             )
         }
-        if let startupFailure = discovery.startupFailure(
-            maxBytes: Self.maximumFrozenToolSchemaBytes
-        ) {
+        let startupMessageBytes = Self.requiredMessageLedgerBytes(messages)
+        let startupCeiling = Self.requestContextByteCeiling(model: model)
+        // When the required base input itself exceeds the model window, let the
+        // request composer report THAT indivisible overflow (task input) rather
+        // than misattributing it to the tool seed. A seed that cannot fit a
+        // fitting base still fails here, before any iteration.
+        if startupMessageBytes <= startupCeiling,
+           let startupFailure = discovery.startupFailure(
+               maxBytes: Self.schemaAllowanceBytes(
+                   model: model,
+                   messageLedgerBytes: startupMessageBytes
+               )
+           ) {
             // Fail closed BEFORE reserving an iteration: the reported
             // iterationsUsed is the real zero (fresh) or the real restored
             // spent total (resume), never a fabricated one.
@@ -820,7 +836,15 @@ public struct SubagentRunner: Sendable {
                 context: context,
                 discovery: &discovery,
                 activeSkillIDs: context.activeSkillIDs.union(childActiveSkillIDs),
-                childCancellation: childCancellation
+                childCancellation: childCancellation,
+                maxSchemaBytes: Self.schemaAllowanceBytes(
+                    model: model,
+                    messageLedgerBytes: Self.requiredMessageLedgerBytes(messages),
+                    pendingBatchLedgerBytes: Self.pendingBatchLedgerBytes(
+                        provider: provider,
+                        calls: resume.checkpoint.pendingCalls.compactMap(Self.rebuiltCall)
+                    )
+                )
             )
             pendingToolCalls = resolution.calls
             pendingSettled = resolution.settled
@@ -925,6 +949,53 @@ public struct SubagentRunner: Sendable {
                 // the next tool turn opens, so readA is never lost on readB.
                 let priorSettled = pendingSettled
                 let priorSettledReasoning = pendingAssistantReasoning
+                // Re-fit the frozen schemas against the model's ACTUAL
+                // remaining request context before this turn. Conversation
+                // history grows, so a definition that fit an earlier request
+                // can honestly fall out now; the eviction is surfaced below.
+                // This never changes the offered universe or the parent's
+                // permission ceiling — discovery is presentation only.
+                let requiredMessageBytes = Self.requiredMessageLedgerBytes(messages)
+                let baseOverflowsContext = requiredMessageBytes
+                    > Self.requestContextByteCeiling(model: model)
+                let baseSchemaAllowance = Self.schemaAllowanceBytes(
+                    model: model,
+                    messageLedgerBytes: requiredMessageBytes
+                )
+                let pendingSchemaAllowance = Self.schemaAllowanceBytes(
+                    model: model,
+                    messageLedgerBytes: requiredMessageBytes,
+                    pendingBatchLedgerBytes: Self.pendingBatchLedgerBytes(
+                        provider: provider,
+                        calls: pendingToolCalls,
+                        settled: priorSettled,
+                        reasoning: pendingAssistantReasoning
+                    )
+                )
+                // A pathological base/pending batch must not evict the
+                // required seed before the request composer can report the
+                // real overflow. Keep exactly the immutable seed when the
+                // base itself overflows (the composer reports task input);
+                // otherwise keep the pending-inclusive allowance when it can
+                // hold the seed, falling back to the base-only allowance.
+                let requestSchemaAllowance: Int
+                if baseOverflowsContext {
+                    requestSchemaAllowance = discovery.pinnedSeedWireBytes
+                } else {
+                    requestSchemaAllowance = discovery.pinnedSeedFailure(
+                        maxBytes: pendingSchemaAllowance
+                    ) == nil ? pendingSchemaAllowance : baseSchemaAllowance
+                }
+                _ = discovery.load([], maxBytes: requestSchemaAllowance)
+                // A seed that cannot fit even the required base messages is an
+                // explicit, recoverable guard. It is never silently evicted
+                // and no request is sent without its own discovery base.
+                if !baseOverflowsContext,
+                   let seedFailure = discovery.pinnedSeedFailure(
+                       maxBytes: baseSchemaAllowance
+                   ) {
+                    throw LocalGuardAbort(message: seedFailure)
+                }
                 // Schema-budget evictions are never silent: the child is told
                 // which earlier definitions were unloaded before this request,
                 // that they stay callable, and how to reload one by exact name.
@@ -941,14 +1012,15 @@ public struct SubagentRunner: Sendable {
                 )
                 // Compose this turn through the single bounded request
                 // builder: task/base messages, accumulated assistant text, the
-                // current pending batch (real statuses, outputs clipped before
-                // their FIRST feedback), required reasoning and the replay
-                // history are all charged against one JSON-escaped wire
-                // budget. Optional context is dropped oldest-first and
-                // counted; an indivisible required element surfaces as an
-                // explicit recoverable guard instead of an over-budget
-                // request. toolSchemas carry the child's loaded definitions and
-                // the name ceiling keeps compat-name mapping total.
+                // current pending batch (real statuses; complete captures when
+                // the actual window permits, otherwise explicit excerpts),
+                // required reasoning and the replay history are all charged
+                // against one JSON-escaped wire budget. Optional context is
+                // dropped oldest-first and counted; an indivisible required
+                // element surfaces as an explicit recoverable guard instead of
+                // an over-budget request. toolSchemas carry the child's loaded
+                // definitions and the name ceiling keeps compat-name mapping
+                // total.
                 let bounded = try Self.boundedRequest(
                     provider: provider,
                     model: model,
@@ -1073,6 +1145,18 @@ public struct SubagentRunner: Sendable {
                     // the parent's real permission path.
                     var resultsByCallID: [String: ToolResult] = [:]
                     var dispatchedCalls: [ToolCall] = []
+                    // A discovery load grows the NEXT request, so admit it
+                    // against the same actual model window the composer will
+                    // enforce, minus the current messages and required batch.
+                    let discoveryAllowance = Self.schemaAllowanceBytes(
+                        model: model,
+                        messageLedgerBytes: Self.requiredMessageLedgerBytes(messages),
+                        pendingBatchLedgerBytes: Self.pendingBatchLedgerBytes(
+                            provider: provider,
+                            calls: calls,
+                            reasoning: turnReasoning.isEmpty ? nil : turnReasoning
+                        )
+                    )
                     for call in calls {
                         switch call.toolName {
                         case ToolDiscovery.listName:
@@ -1081,7 +1165,8 @@ public struct SubagentRunner: Sendable {
                             )
                         case ToolDiscovery.name:
                             resultsByCallID[call.id] = Self.localDiscoverySearchResult(
-                                call, discovery: &discovery, provider: provider
+                                call, discovery: &discovery, provider: provider,
+                                maxSchemaBytes: discoveryAllowance
                             )
                         default:
                             dispatchedCalls.append(call)
@@ -1133,6 +1218,18 @@ public struct SubagentRunner: Sendable {
                         }
                     }
                     pendingSettled = executed
+                    // Guide-declared definitions are admitted against the
+                    // same ACTUAL model window as the next composed request.
+                    let activationAllowance = Self.schemaAllowanceBytes(
+                        model: model,
+                        messageLedgerBytes: Self.requiredMessageLedgerBytes(messages),
+                        pendingBatchLedgerBytes: Self.pendingBatchLedgerBytes(
+                            provider: provider,
+                            calls: calls,
+                            settled: executed,
+                            reasoning: turnReasoning.isEmpty ? nil : turnReasoning
+                        )
+                    )
                     for item in executed {
                         let statusSuffix = item.result.status == .ok ? "" : " [\(item.result.status.rawValue)]"
                         evidence.append("\(item.call.toolName) \(Self.argumentsDigest(item.call))\(statusSuffix)")
@@ -1147,7 +1244,7 @@ public struct SubagentRunner: Sendable {
                         else { continue }
                         let receipt = discovery.activateSkillDependencies(
                             activation.requiredToolNames,
-                            maxBytes: Self.maximumFrozenToolSchemaBytes
+                            maxBytes: activationAllowance
                         )
                         let key = activation.skillID ?? "unknown"
                         let revision = activation.revision ?? "unversioned"
@@ -1725,6 +1822,109 @@ public struct SubagentRunner: Sendable {
         schemaLedgerBytes(request.toolSchemas, allToolNames: request.allToolNames)
     }
 
+    // MARK: - Actual model-window budget
+
+    /// Output reservation for this model, using exactly the parent runtime's
+    /// policy (`AgentRuntime.contextOutputReservation`): an explicitly
+    /// configured provider output limit wins (capped at half the window),
+    /// otherwise a conservative quarter-of-window default.
+    static func outputReservationTokens(limits: ModelLimits) -> Int {
+        if let configured = limits.configuredMaxOutputTokens {
+            return min(configured, max(1, limits.contextTokens / 2))
+        }
+        return min(4_096, max(512, limits.contextTokens / 4))
+    }
+
+    /// The ACTUAL byte ceiling of one child provider request for this model:
+    /// the current context window minus the output reservation and the
+    /// provider safety margin, converted with the same conservative
+    /// bytes-per-token inverse the request estimator uses. Wire-ledger bytes
+    /// are checked against this ceiling, so a fixed 96 KiB constant can never
+    /// truncate a result that really fits (and a small model can never be
+    /// overrun by assuming 96 KiB exists).
+    static func requestContextByteCeiling(model: ModelProfile) -> Int {
+        let window = max(1, model.limits.contextTokens)
+        let availableTokens = max(
+            0,
+            window - outputReservationTokens(limits: model.limits) - requestSafetyMarginTokens
+        )
+        return availableTokens * 3
+    }
+
+    /// Conservative token value of a wire-ledger byte count (the same
+    /// `(bytes + 2) / 3` shape as `ProviderRequestSizer.tokenEstimate`).
+    static func tokenEstimate(wireBytes: Int) -> Int {
+        guard wireBytes > 0 else { return 0 }
+        return max(1, (wireBytes + 2) / 3)
+    }
+
+    /// Complete-schema allowance (exact JSON schemas + the tool-name ceiling)
+    /// under this model's ACTUAL remaining request context. Messages and the
+    /// required pending protocol batch are charged first, and a realistic
+    /// share of the window stays reserved for pending tool results, exactly
+    /// like the parent's `ToolSchemaOfferPlanner` admission. There is no
+    /// fixed 48 KiB ceiling; a large window may carry a large loaded
+    /// definition whole, while a small window defers it honestly.
+    static func schemaAllowanceBytes(
+        model: ModelProfile,
+        messageLedgerBytes: Int,
+        pendingBatchLedgerBytes: Int = 0
+    ) -> Int {
+        let window = max(1, model.limits.contextTokens)
+        let toolResultReserve = min(window / 3, max(1_024, window / 4))
+        let available = ToolSchemaOfferPlanner.availableTokenBudget(
+            contextWindowTokens: window,
+            reservedOutputTokens: outputReservationTokens(limits: model.limits),
+            messageTokens: tokenEstimate(wireBytes: messageLedgerBytes)
+                + tokenEstimate(wireBytes: pendingBatchLedgerBytes),
+            imageTokens: 0,
+            replayTokens: 0,
+            toolResultReserveTokens: toolResultReserve
+        )
+        return max(0, available * 3)
+    }
+
+    /// Full wire-ledger weight of the REQUIRED system/user conversation
+    /// messages. Assistant text is optional (trimmed after schemas and the
+    /// pending batch), so it must not displace those required sections when
+    /// the schema allowance is computed.
+    static func requiredMessageLedgerBytes(
+        _ messages: [(role: String, content: String)]
+    ) -> Int {
+        messages.reduce(0) { partial, message in
+            guard message.role != "assistant" else { return partial }
+            return partial + messageLedgerBytes(role: message.role, content: message.content)
+        }
+    }
+
+    /// Full wire-ledger weight of the protocol-required pending batch: the
+    /// assistant tool calls, the settled call/result pairs and the reasoning
+    /// field that must ride the same request.
+    static func pendingBatchLedgerBytes(
+        provider: ProviderProfile,
+        calls: [ToolCall],
+        settled: [(call: ToolCall, result: ToolResult)] = [],
+        reasoning: String? = nil
+    ) -> Int {
+        var total = calls.reduce(0) { $0 + callLedgerBytes($1, for: provider) }
+        for item in settled {
+            total += callLedgerBytes(item.call, for: provider)
+                + resultLedgerBytes(item.result)
+        }
+        total += reasoning.map(reasoningLedgerBytes) ?? 0
+        return total
+    }
+
+    /// Exact conservative wire weight of the planner's selected result
+    /// outputs, including JSON escaping and the per-result id/scaffolding.
+    static func selectedResultLedgerBytes(_ items: [ToolResultSelection.Item]) -> Int {
+        items.reduce(0) {
+            $0 + resultOverheadBytes
+                + wireEscapedBytes($1.callID)
+                + wireEscapedBytes($1.output)
+        }
+    }
+
     /// One bounded child provider request plus the accounting of optional
     /// context dropped to keep it inside the wire budget. The bounded
     /// messages/replay pairs are what the caller must persist, so later
@@ -1741,14 +1941,15 @@ public struct SubagentRunner: Sendable {
     }
 
     /// Builds the single bounded form of every child provider request.
-    /// Protection order: (1) frozen schemas against their explicit cap, (2)
-    /// base/task messages, (3) the pending call/result/reasoning batch that
-    /// the protocol requires this turn, (4) newest assistant text, (5) newest
-    /// replay pairs. Only optional context (4/5) is dropped — oldest first
-    /// and always counted. When an indivisible required element cannot fit,
-    /// this throws `LocalGuardAbort`: an explicit, recoverable toolError
-    /// outcome with the bounded findings/iterations preserved, never an
-    /// over-budget request on the wire.
+    /// Protection order: (1) the model's ACTUAL context window after its
+    /// output reservation, (2) base/task messages, (3) the pending
+    /// call/result/reasoning batch that the protocol requires this turn,
+    /// (4) newest assistant text, (5) newest replay pairs. Only optional
+    /// context (4/5) is dropped — oldest first and always counted. When an
+    /// indivisible required element cannot fit, this throws `LocalGuardAbort`:
+    /// an explicit, recoverable toolError outcome with the bounded
+    /// findings/iterations preserved, never an over-budget request on the
+    /// wire and never a cut schema or paging page.
     private static func boundedRequest(
         provider: ProviderProfile,
         model: ModelProfile,
@@ -1760,44 +1961,116 @@ public struct SubagentRunner: Sendable {
         toolSchemas: [ToolSchemaDescriptor],
         allToolNames: [String]
     ) throws -> BoundedRequest {
+        let wireCeilingBytes = requestContextByteCeiling(model: model)
+        let reservedOutputTokens = outputReservationTokens(limits: model.limits)
         let schemaBytes = schemaLedgerBytes(toolSchemas, allToolNames: allToolNames)
-        guard schemaBytes <= maximumFrozenToolSchemaBytes else {
+        guard schemaBytes <= wireCeilingBytes else {
             throw LocalGuardAbort(
-                message: "Subagent frozen tool schemas exceed the bounded schema allowance "
-                    + "(\(schemaBytes) > \(maximumFrozenToolSchemaBytes) wire bytes)"
+                message: "Subagent frozen tool schemas cannot fit the model's actual request context "
+                    + "(definitions + tool-name ceiling \(schemaBytes) > \(wireCeilingBytes) wire bytes; "
+                    + "window \(model.limits.contextTokens) tokens, reserved output \(reservedOutputTokens) tokens). "
+                    + "No complete definition was cut and no request was sent."
             )
         }
 
-        // FIRST feedback: the pending batch's raw outputs are bounded before
-        // this request, not only when the pair later enters replay. Status,
-        // digest and artifacts stay intact; only the body is clipped.
+        // The model-facing child request uses the same budgeted selection as
+        // the parent: complete captured text when the real child wire budget
+        // allows it, an explicit excerpt+ref otherwise, and never a partially
+        // cut paging page. The durable child transcript/replay copy stays the
+        // bounded post-redaction summary and is built in the same pass, so a
+        // complete wire body never changes what is persisted.
+        //
+        // A ref/pageability claim is taken ONLY from the real retention
+        // receipt the canonical dispatcher attached to this result. A legacy
+        // child (no canonical dispatcher), a failed/evicted retention attempt
+        // or a paging page carries no receipt, so no hash of a run id is
+        // fabricated for it.
+        var wireInputs: [ToolResultSelectionInput] = []
         var clippedSettled: [(call: ToolCall, result: ToolResult)] = []
         var truncatedOutputs = 0
         for item in pendingSettled {
-            var result = item.result
-            if result.outputSummary.utf8.count > maximumResultBytes {
-                result = ToolResult(
-                    callID: result.callID,
-                    status: result.status,
-                    outputSummary: boundedPrefix(
-                        result.outputSummary,
-                        maxBytes: maximumResultBytes,
-                        marker: "\n[tool output truncated]"
-                    ),
-                    outputDigest: result.outputDigest,
-                    exitStatus: result.exitStatus,
-                    artifacts: result.artifacts,
-                    // S3-D: clipping bounds the summary body only. Sealed
-                    // user-output receipts describe committed snapshots, not
-                    // the prose, and must survive both the pending-batch
-                    // first-bound and the replayed-pair rebuild.
-                    outputFiles: result.outputFiles,
-                    provenance: result.provenance,
-                    maximumSummaryCharacters: maximumResultBytes
-                )
-                truncatedOutputs += 1
+            let isPaging = item.call.toolName == ToolResultPagingTool.name
+            var durable = item.result.durableProjection()
+            let durableSummary = boundedPrefix(
+                item.result.outputSummary,
+                maxBytes: maximumResultBytes,
+                marker: "\n[tool output truncated]"
+            )
+            let durableWasClipped = durableSummary != item.result.outputSummary
+            durable.outputSummary = durableSummary
+            clippedSettled.append((item.call, durable))
+
+            let sensitive = item.result.ephemeralSensitiveOutput
+            let captured = item.result.capturedOutput
+            let receipt = item.result.captureInfo
+            let retained = receipt?.available == true ? receipt : nil
+            let reference = (sensitive == nil && !isPaging) ? retained?.ref : nil
+            let modelVisibleText: String
+            let totalBytes: Int
+            if let sensitive {
+                modelVisibleText = "Ephemeral sensitive tool output for this child request only. It is not persisted, replayed or pageable.\n"
+                    + sensitive
+                totalBytes = sensitive.utf8.count
+            } else if isPaging {
+                // A paging page's own header promises a nextOffset: it is
+                // sent exactly and whole when it fits, or becomes a ref-only
+                // pointer when it does not. It is never trimmed on the wire.
+                modelVisibleText = item.result.outputSummary
+                totalBytes = item.result.outputSummary.utf8.count
+            } else if let captured {
+                // The complete post-redaction capture is what the planner
+                // weighs against the actual model window. When the store kept
+                // only a prefix, never send the unretained tail as if the
+                // advertised ref could page it back.
+                if let retained, retained.retentionTruncated,
+                   captured.utf8.count > retained.retainedBytes {
+                    modelVisibleText = ToolResultCaptureStore.utf8Prefix(
+                        captured, maxBytes: retained.retainedBytes
+                    )
+                } else {
+                    modelVisibleText = captured
+                }
+                totalBytes = modelVisibleText.utf8.count
+            } else if let retained, let retainedRef = retained.ref,
+                      retained.retainedBytes > 0 {
+                // A resumed/replayed durable projection has no in-memory
+                // body. Say so and name the verified ref instead of either
+                // pretending the bounded summary is the complete output or
+                // claiming retention never happened. A store-truncated record
+                // is described as truncated, never as complete.
+                let retentionState = retained.retentionTruncated
+                    ? "the store retained only \(retained.retainedBytes) bytes (truncated)"
+                    : "complete captured output retained (\(retained.retainedBytes) bytes)"
+                modelVisibleText = "[" + retentionState
+                    + " and pageable via tools.readResult ref=" + retainedRef
+                    + "; this request carries only the bounded durable summary]\n"
+                    + durableSummary
+                totalBytes = modelVisibleText.utf8.count
+            } else {
+                // No verified receipt accompanies this projection. Older
+                // checkpoints may still have task-owned captures; do not
+                // invent a ref or claim those records cannot exist.
+                modelVisibleText = durableSummary
+                totalBytes = item.result.outputSummary.utf8.count
+                // Only a model-visible cut counts as "truncated before
+                // feedback"; a complete capture may be sent whole while its
+                // separate durable replay projection stays bounded.
+                if durableWasClipped { truncatedOutputs += 1 }
             }
-            clippedSettled.append((item.call, result))
+            wireInputs.append(ToolResultSelectionInput(
+                callID: item.call.id,
+                toolName: item.call.toolName,
+                text: modelVisibleText,
+                ref: reference,
+                totalBytes: totalBytes,
+                captureTruncated: retained?.retentionTruncated ?? false,
+                executionReportedTruncation: retained?.executionReportedTruncation
+                    ?? item.result.capturedOutputTruncated,
+                captureUnavailable: sensitive != nil || receipt?.available == false,
+                isPagingPage: isPaging,
+                isSensitive: sensitive != nil,
+                continuationOffset: captured == nil && retained != nil ? 0 : nil
+            ))
         }
 
         var baseMessages: [(role: String, content: String)] = []
@@ -1812,21 +2085,73 @@ public struct SubagentRunner: Sendable {
         var used = baseMessages.reduce(0) {
             $0 + messageLedgerBytes(role: $1.role, content: $1.content)
         }
-        guard used <= maximumRequestContextBytes else {
+        used += schemaBytes
+        guard used <= wireCeilingBytes else {
             throw LocalGuardAbort(
-                message: "Subagent task input exceeds the bounded request context "
-                    + "(\(used) > \(maximumRequestContextBytes) wire bytes)"
+                message: "Subagent task input and frozen schemas exceed the model's actual request context "
+                    + "(bounded request context \(used) > \(wireCeilingBytes) wire bytes; "
+                    + "window \(model.limits.contextTokens) tokens, reserved output \(reservedOutputTokens) tokens)"
             )
         }
-        var pendingBytes = pendingCalls.reduce(0) { $0 + callLedgerBytes($1, for: provider) }
-        pendingBytes += clippedSettled.reduce(0) { $0 + resultLedgerBytes($1.result) }
-        if let pendingReasoning {
-            pendingBytes += reasoningLedgerBytes(pendingReasoning)
+        let pendingCallBytes = pendingCalls.reduce(0) { $0 + callLedgerBytes($1, for: provider) }
+        let reasoningBytes = pendingReasoning.map(reasoningLedgerBytes) ?? 0
+        // Each result also costs its wire id/scaffolding. Reserve that before
+        // deciding how many output bytes fit, so the final ledger — the same
+        // weight `contextWireBytes` computes — stays inside the model window.
+        let resultChannelOverhead = pendingSettled.reduce(0) {
+            $0 + resultOverheadBytes + wireEscapedBytes($1.call.id)
         }
-        guard used + pendingBytes <= maximumRequestContextBytes else {
+        // Same contract as the parent runtime: size the actual request
+        // sections (base messages, complete schemas, output reservation,
+        // images if a future child message carries them) with
+        // `ProviderRequestSizer`, then take the smaller of that remaining
+        // token budget and the conservative escaped-wire ledger bound.
+        let requestSize = ProviderRequestSizer.measure(
+            messages: baseMessages.map { ProviderMessage(role: $0.role, text: $0.content) },
+            schemas: toolSchemas,
+            contextWindowTokens: model.limits.contextTokens,
+            reservedOutputTokens: reservedOutputTokens,
+            safetyMarginTokens: requestSafetyMarginTokens
+        )
+        var wireResultBudget = min(
+            maximumProviderToolResultBytes,
+            min(
+                requestSize.toolResultBudgetBytes,
+                max(
+                    0,
+                    wireCeilingBytes - used - pendingCallBytes - reasoningBytes - resultChannelOverhead
+                )
+            )
+        )
+        var wirePlan = ToolResultPlanner.plan(
+            inputs: wireInputs,
+            budgetBytes: wireResultBudget
+        )
+        var resultWireBytes = selectedResultLedgerBytes(wirePlan.items)
+        // The planner allocates raw UTF-8 bytes; the real wire adds JSON
+        // escaping. If that escaped weight does not fit, shrink the raw
+        // budget deterministically (down to pointer-only) instead of sending
+        // an over-budget request or partially cutting a page/schema.
+        var shrinkAttempts = 0
+        while used + pendingCallBytes + reasoningBytes + resultWireBytes > wireCeilingBytes,
+              wireResultBudget > 0,
+              shrinkAttempts < 4 {
+            let overflow = used + pendingCallBytes + reasoningBytes
+                + resultWireBytes - wireCeilingBytes
+            wireResultBudget = max(0, wireResultBudget - max(1, overflow))
+            wirePlan = ToolResultPlanner.plan(
+                inputs: wireInputs,
+                budgetBytes: wireResultBudget
+            )
+            resultWireBytes = selectedResultLedgerBytes(wirePlan.items)
+            shrinkAttempts += 1
+        }
+        let pendingBytes = pendingCallBytes + reasoningBytes + resultWireBytes
+        guard used + pendingBytes <= wireCeilingBytes else {
             throw LocalGuardAbort(
-                message: "Subagent pending tool batch (call arguments, results and required reasoning) exceeds the bounded request context "
-                    + "(\(used + pendingBytes) > \(maximumRequestContextBytes) wire bytes)"
+                message: "Subagent pending tool batch (call arguments, results and required reasoning) exceeds the model's actual request context "
+                    + "(bounded request context \(used + pendingBytes) > \(wireCeilingBytes) wire bytes; "
+                    + "window \(model.limits.contextTokens) tokens, reserved output \(reservedOutputTokens) tokens)"
             )
         }
         used += pendingBytes
@@ -1836,7 +2161,7 @@ public struct SubagentRunner: Sendable {
         var keptAssistants: [(role: String, content: String)] = []
         for message in assistantMessages.reversed() {
             let size = messageLedgerBytes(role: message.role, content: message.content)
-            guard used + size <= maximumRequestContextBytes else { break }
+            guard used + size <= wireCeilingBytes else { break }
             used += size
             keptAssistants.append(message)
         }
@@ -1850,7 +2175,7 @@ public struct SubagentRunner: Sendable {
         var keptReplay: [ReplayedToolPair] = []
         for pair in replayedPairs.reversed() {
             let size = pairLedgerBytes(pair, for: provider)
-            guard used + size <= maximumRequestContextBytes else { break }
+            guard used + size <= wireCeilingBytes else { break }
             used += size
             keptReplay.append(pair)
         }
@@ -1861,8 +2186,8 @@ public struct SubagentRunner: Sendable {
             provider: provider,
             model: model,
             messages: baseMessages + keptAssistants,
-            toolResults: clippedSettled.map {
-                (callID: $0.result.callID, output: $0.result.outputSummary)
+            toolResults: wirePlan.items.map {
+                (callID: $0.callID, output: $0.output)
             },
             pendingToolCalls: pendingCalls,
             replayedToolPairs: keptReplay,
@@ -1922,7 +2247,10 @@ public struct SubagentRunner: Sendable {
                     // first-bound and the replayed-pair rebuild.
                     outputFiles: result.outputFiles,
                     provenance: result.provenance,
-                    maximumSummaryCharacters: maximumResultBytes
+                    maximumSummaryCharacters: maximumResultBytes,
+                    // Safe receipt metadata survives clipping: it names the
+                    // retained record without carrying any output body.
+                    captureInfo: result.captureInfo
                 )
             }
             candidates.append(ReplayedToolPair(
@@ -2186,7 +2514,8 @@ public struct SubagentRunner: Sendable {
         context: ToolContext,
         discovery: inout ChildToolDiscovery,
         activeSkillIDs: Set<String>,
-        childCancellation: CancellationToken
+        childCancellation: CancellationToken,
+        maxSchemaBytes: Int
     ) async -> (calls: [ToolCall], settled: [(call: ToolCall, result: ToolResult)], holds: [String], dropped: [String]) {
         let checkpoint = resume.checkpoint
         guard checkpoint.kind == .preCall else {
@@ -2234,7 +2563,8 @@ public struct SubagentRunner: Sendable {
                 )))
             case ToolDiscovery.name:
                 settled.append((call, Self.localDiscoverySearchResult(
-                    call, discovery: &discovery, provider: provider
+                    call, discovery: &discovery, provider: provider,
+                    maxSchemaBytes: maxSchemaBytes
                 )))
             default:
                 if let descriptor = executor.descriptor(named: call.toolName),
@@ -2352,7 +2682,8 @@ public struct SubagentRunner: Sendable {
             status: result.status.rawValue,
             outputSummary: result.outputSummary,
             outputDigest: result.outputDigest,
-            exitStatus: result.exitStatus
+            exitStatus: result.exitStatus,
+            captureInfo: result.captureInfo
         )
     }
 
@@ -2391,7 +2722,8 @@ public struct SubagentRunner: Sendable {
             status: ToolResult.Status(rawValue: result.status) ?? .failed,
             outputSummary: result.outputSummary,
             outputDigest: result.outputDigest,
-            exitStatus: result.exitStatus
+            exitStatus: result.exitStatus,
+            captureInfo: result.captureInfo
         )
     }
 
@@ -2580,8 +2912,8 @@ public struct SubagentRunner: Sendable {
     /// re-validated by the runtime anyway.
     ///
     /// This returns the UNIVERSE a child may discover, not the schemas put on
-    /// the wire: `ChildToolDiscovery` decides which definitions fit the
-    /// bounded 48 KiB frozen-schema allowance per request.
+    /// the wire: `ChildToolDiscovery` decides which complete definitions fit
+    /// the ACTUAL model-window schema allowance for each request.
     private func offeredDescriptors(
         kind: SubagentRequest.Kind,
         context: ToolContext,
@@ -2589,7 +2921,16 @@ public struct SubagentRunner: Sendable {
         canonicalChild: Bool
     ) -> [ToolCatalog.Descriptor] {
         let webPrefixes = Self.webGroupPrefixes
-        return executor.allDescriptors
+        var universe = executor.allDescriptors
+        // Retained-result paging is runtime metadata over this task's own
+        // post-redaction captures. It is offered to a canonical child too so a
+        // delegated read can recover evidence its own context no longer holds;
+        // dispatch still resolves the owning conversation in the parent
+        // runtime and never accepts a model-supplied task identity.
+        if canonicalChild, !universe.contains(where: { $0.name == ToolResultPagingTool.name }) {
+            universe.append(ToolResultPagingTool.descriptor)
+        }
+        return universe
             .filter { descriptor in
                 guard descriptor.executionBoundary != .mainRunOnly else { return false }
                 if descriptor.executionBoundary == .childOnly, !isChild { return false }
@@ -2650,9 +2991,9 @@ public struct SubagentRunner: Sendable {
     }
 
     /// `tools.search` handled inside the child. Reuses the main run's
-    /// progressive selection (same matcher, same 23-tool/23-KB per-search
-    /// presentation bound); the cumulative child context is bounded by the
-    /// real JSON-escaped 48 KiB frozen-schema ledger, evicting oldest
+    /// progressive selection (same matcher, same per-search presentation
+    /// bound); the cumulative child context is bounded by the ACTUAL
+    /// model-window schema allowance computed by the caller, evicting oldest
     /// definitions and reporting every eviction. The rendered "Loaded" block
     /// names only the schemas the next request really carries (the admission
     /// receipt), and a definition that is deferred or too large is reported
@@ -2662,8 +3003,10 @@ public struct SubagentRunner: Sendable {
     static func localDiscoverySearchResult(
         _ call: ToolCall,
         discovery: inout ChildToolDiscovery,
-        provider: ProviderProfile
+        provider: ProviderProfile,
+        maxSchemaBytes: Int
     ) -> ToolResult {
+        let schemaBudget = max(0, maxSchemaBytes)
         let queries: [String]
         do {
             queries = try JSONDecoder().decode(DiscoveryQueries.self, from: call.argumentsJSON).validated()
@@ -2682,10 +3025,14 @@ public struct SubagentRunner: Sendable {
         }
         let selected = ToolDiscovery.bounded(
             matched + skillFallback,
-            priority: matched.map(\.name)
+            priority: matched.map(\.name),
+            // The child's real allowance is the cumulative admission below;
+            // do not let a fixed presentation cap drop a large requested
+            // definition before that budget is consulted.
+            maxBytes: schemaBudget
         )
         let previouslyLoaded = Set(discovery.loaded)
-        let receipt = discovery.load(selected.map(\.name), maxBytes: maximumFrozenToolSchemaBytes)
+        let receipt = discovery.load(selected.map(\.name), maxBytes: schemaBudget)
         // The child context for the NEXT request carries exactly
         // `discovery.loaded`; this response must state the same truth. A
         // presentation match that admission deferred, replaced or left out is
@@ -2711,7 +3058,7 @@ public struct SubagentRunner: Sendable {
         // Definitions the next request will NOT carry are reported with their
         // real reason: individually too large (reported for themselves below)
         // or deferred by the schema budget with a concrete recovery step.
-        let remainingBudget = maximumFrozenToolSchemaBytes - discovery.namesLedgerBytes()
+        let remainingBudget = schemaBudget - discovery.namesLedgerBytes()
         var oversized = receipt.oversized
         let notLoaded = matched.filter { !loadedNow.contains($0.name) }
         for descriptor in notLoaded {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(SwiftUI) && canImport(UIKit)
+import Foundation
 import SwiftUI
 import FloeCore
 import FloeEnvironments
@@ -23,6 +24,102 @@ struct LinuxImageTransferSnapshot: Equatable, Sendable {
     var totalBytes: Int64?
     var bytesPerSecond: Int64
     var phase: LinuxGuestImageTransferPhase
+}
+
+/// Single-resume bridge between a shared attempt and one waiting caller.
+///
+/// The attempt can finish before the caller has installed its continuation
+/// (the job starts and completes inside the same MainActor turn), so the
+/// outcome is retained until `attach` arrives. Every path (completion,
+/// per-waiter cancellation, global cancellation) finishes exactly once; a
+/// cancelled waiter can therefore never receive a late success result.
+private final class SharedJobWaitContinuation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<String, Error>?
+    private var pending: Result<String, Error>?
+    private var finished = false
+
+    func attach(_ continuation: CheckedContinuation<String, Error>) {
+        lock.lock()
+        if finished {
+            let outcome = pending ?? .failure(CancellationError())
+            lock.unlock()
+            continuation.resume(with: outcome)
+            return
+        }
+        if let pending {
+            self.pending = nil
+            finished = true
+            lock.unlock()
+            continuation.resume(with: pending)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func finish(_ result: Result<String, Error>) {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        if let continuation {
+            self.continuation = nil
+            finished = true
+            lock.unlock()
+            continuation.resume(with: result)
+            return
+        }
+        // An outcome that arrives before `attach` is kept for later; a second
+        // pre-attach outcome (completion racing a cancel) never replaces it.
+        if pending == nil { pending = result }
+        lock.unlock()
+    }
+}
+
+/// One caller's lease on a shared job. The operation is service-owned, so a
+/// caller leaving — even if it was the first caller — never by itself kills
+/// the shared download. Only an explicit cancellation signal (its own token,
+/// or the settings-level global cancel) releases this lease; when the last
+/// lease is released the job is cancelled.
+@MainActor
+private final class SharedJobWaiter {
+    let id: UUID
+    let continuation = SharedJobWaitContinuation()
+    var pollTask: Task<Void, Never>?
+
+    init(id: UUID) {
+        self.id = id
+    }
+
+    func resume(with result: Result<String, Error>) {
+        continuation.finish(result)
+    }
+
+    func resumeCancelled() {
+        continuation.finish(.failure(CancellationError()))
+    }
+}
+
+/// One live shared attempt plus the callers currently waiting on it. The
+/// attempt keeps running while at least one lease exists, or while all
+/// callers have left without cancelling (the resource job persists outside
+/// the view that started it). The epoch gates every progress report, so a
+/// lease can never observe a newer attempt's phase or bytes.
+@MainActor
+private final class SharedJobAttempt {
+    let id: String
+    let epoch: UUID
+    let jobCancellation = CancellationToken()
+    var task: Task<String, Error>?
+    var waiters: [UUID: SharedJobWaiter] = [:]
+    var cancelling = false
+
+    init(id: String, epoch: UUID) {
+        self.id = id
+        self.epoch = epoch
+    }
 }
 
 /// Jobs survive navigation and are drained by the environment lifecycle before deletion.
@@ -279,6 +376,12 @@ struct LinuxImageTransferSnapshot: Equatable, Sendable {
         linuxStorageStage = raw
     }
     func cancel(id: String) {
+        // A shared attempt has its own service-owned task plus waiter leases;
+        // the plain-job path below never owns it.
+        if sharedAttempts[id] != nil {
+            cancelSharedJob(id: id)
+            return
+        }
         guard let task = tasks[id] else { return }
         messages[id] = String(localized: "envmgr.cancelling")
         // Plain jobs (no stamped byte channel) just drop any published
@@ -287,32 +390,119 @@ struct LinuxImageTransferSnapshot: Equatable, Sendable {
         clearTransferState(id: id)
         task.cancel()
     }
+
     func cancelAndWait(id: String) async {
+        if let attempt = sharedAttempts[id] {
+            cancelSharedJob(id: id)
+            _ = await attempt.task?.result
+            return
+        }
         guard let task = tasks[id] else { return }
         cancel(id: id)
         await task.value
     }
 
-    /// Throwing task storage for shared operations awaited from non-UI
-    /// callers (shell auto-preparation, the model tool). `running`/`messages`/
-    /// `failures` still drive the UI, so one download is observable whether
-    /// the user pressed the button or first Linux use started it.
-    private var sharedThrowingTasks: [String: Task<String, Error>] = [:]
+    /// Live service-owned attempts keyed by job id. An attempt outlives the
+    /// view/caller that started it and is removed only by its real terminal
+    /// transition, so repeated entry joins the actual same job.
+    private var sharedAttempts: [String: SharedJobAttempt] = [:]
 
-    /// Runs `operation` under one shared job id. A second caller while the
-    /// job is running awaits the same task, so two entry points never start
-    /// duplicate downloads; errors propagate to every awaiter. The operation
-    /// receives the job's epoch, which every progress/phase report must carry
-    /// so a delayed report can never land on a newer job.
+    /// The epoch of the live attempt for `id`, nil when no attempt is live.
+    /// The task banner binds its activity to this value so a completed
+    /// attempt's status can never be shown as the newer attempt's truth.
+    func attemptEpoch(id: String) -> UUID? {
+        sharedAttempts[id]?.epoch
+    }
+
+    /// Legacy shape for callers that do not have a per-waiter token. It still
+    /// gains the service-owned attempt and lease semantics; only explicit
+    /// cancellation is unavailable without a token.
     @discardableResult
     func runShared(
         id: String,
         title: String,
         operation: @escaping @Sendable (UUID) async throws -> String
     ) async throws -> String {
-        if let existing = sharedThrowingTasks[id] {
-            return try await existing.value
+        try await runShared(id: id, title: title, cancellation: nil, activityID: nil) { epoch, _ in
+            try await operation(epoch)
         }
+    }
+
+    /// Runs `operation` under one shared job id. Every caller gets its own
+    /// waiter lease (`cancellation`) on the one service-owned attempt:
+    ///
+    ///  * a second caller joins the live attempt and awaits the same result;
+    ///  * cancelling one lease returns only that caller;
+    ///  * the attempt is cancelled only when its LAST lease is explicitly
+    ///    cancelled (an ordinary view teardown leaves the resource job alive);
+    ///  * a cancelled lease is removed before it can be resumed by a later
+    ///    completion, so a stopped task never resumes from a late callback.
+    ///
+    /// The operation receives the attempt epoch (for the progress gate) and
+    /// the attempt's own cancellation token (what the real download observes),
+    /// never a caller's token: one waiter can no longer stop everyone else's
+    /// transfer.
+    @discardableResult
+    func runShared(
+        id: String,
+        title: String,
+        cancellation: CancellationToken?,
+        activityID: UUID? = nil,
+        operation: @escaping @Sendable (UUID, CancellationToken) async throws -> String
+    ) async throws -> String {
+        if cancellation?.isCancelled == true { throw CancellationError() }
+        // A caller entering while the previous attempt is unwinding waits for
+        // that real teardown and then starts a fresh attempt. Joining a
+        // cancelling attempt would only hand this caller its cancellation.
+        while let existing = sharedAttempts[id], existing.cancelling {
+            guard let task = existing.task else { break }
+            _ = await task.result
+        }
+        if cancellation?.isCancelled == true { throw CancellationError() }
+        let attempt: SharedJobAttempt
+        let createdAttempt: Bool
+        if let existing = sharedAttempts[id] {
+            attempt = existing
+            createdAttempt = false
+        } else {
+            attempt = makeSharedAttempt(id: id, title: title, operation: operation)
+            createdAttempt = true
+        }
+        // Every waiter's activity is bound to the SAME real attempt. The
+        // joining caller does not run the operation body, so this must happen
+        // here rather than inside it.
+        if let activityID {
+            TaskRuntimePreparationCenter.shared.bind(activityID, attemptEpoch: attempt.epoch)
+        }
+        let waiterID = UUID()
+        let attemptID = attempt.id
+        return try await withTaskCancellationHandler {
+            try await waitForSharedAttempt(
+                attempt, waiterID: waiterID, cancellation: cancellation,
+                createdAttempt: createdAttempt
+            )
+        } onCancel: {
+            // The awaiting view/task went away. Leave the wait without killing
+            // the service-owned resource job; an explicit run stop also
+            // cancels its waiter token and is observed by the token watcher.
+            Task { @MainActor [weak self] in
+                self?.callerTaskCancelled(
+                    jobID: attemptID, waiterID: waiterID, cancellation: cancellation
+                )
+            }
+        }
+    }
+
+    /// Starts the ONE service-owned attempt for `id`. The attempt's task runs
+    /// the real operation; its terminal transition publishes the result and
+    /// resumes every live lease. The initiating caller waiting below is only
+    /// one lease among them.
+    @MainActor
+    private func makeSharedAttempt(
+        id: String,
+        title: String,
+        operation: @escaping @Sendable (UUID, CancellationToken) async throws -> String
+    ) -> SharedJobAttempt {
         running.insert(id)
         messages[id] = title
         failures.remove(id)
@@ -323,30 +513,200 @@ struct LinuxImageTransferSnapshot: Equatable, Sendable {
         clearTransferState(id: id)
         let epoch = UUID()
         jobProgress[id] = LinuxGuestImageJobProgress(epoch: epoch)
-        let task = Task { try await operation(epoch) }
-        sharedThrowingTasks[id] = task
-        defer {
-            sharedThrowingTasks[id] = nil
-            running.remove(id)
-            progressHandlerBindings[id] = nil
-            phases[id] = nil
-            fractions[id] = nil
-            jobProgress[id] = nil
-            clearTransferState(id: id)
-            revision += 1
+        let attempt = SharedJobAttempt(id: id, epoch: epoch)
+        sharedAttempts[id] = attempt
+        attempt.task = Task { @MainActor [weak self] in
+            do {
+                let result = try await operation(epoch, attempt.jobCancellation)
+                self?.finishSharedAttempt(attempt, result: .success(result))
+                return result
+            } catch {
+                self?.finishSharedAttempt(attempt, result: .failure(error))
+                throw error
+            }
         }
-        do {
-            let result = try await task.value
-            messages[id] = result
-            return result
-        } catch is CancellationError {
-            messages[id] = String(localized: "envmgr.job_cancelled")
-            throw CancellationError()
-        } catch {
-            messages[id] = error.localizedDescription
-            failures.insert(id)
-            throw error
+        return attempt
+    }
+
+    /// Registers one lease and suspends until the attempt finishes or THIS
+    /// lease is cancelled. The continuation is single-resume, so a late
+    /// success can never reach a caller that already left as cancelled.
+    @MainActor
+    private func waitForSharedAttempt(
+        _ attempt: SharedJobAttempt,
+        waiterID: UUID,
+        cancellation: CancellationToken?,
+        createdAttempt: Bool
+    ) async throws -> String {
+        let waiter = SharedJobWaiter(id: waiterID)
+        attempt.waiters[waiterID] = waiter
+        if let cancellation {
+            if cancellation.isCancelled {
+                // The token can be cancelled from another thread in the tiny
+                // window between the entry check and this registration. This
+                // caller never became a real waiter: if it also created the
+                // attempt, no one else owns it, so stop that brand-new job
+                // instead of leaving a download no task is waiting for. A
+                // pre-existing resource job is left to its own owners.
+                attempt.waiters[waiterID] = nil
+                if createdAttempt, attempt.waiters.isEmpty {
+                    cancelSharedAttempt(attempt)
+                }
+                throw CancellationError()
+            }
+            // The token has no callback, so one bounded poll is the watcher.
+            // It observes an explicit run stop / banner cancel and releases
+            // only this lease; the last lease releases the job.
+            waiter.pollTask = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    guard attempt.waiters[waiterID] != nil else { return }
+                    if cancellation.isCancelled {
+                        self?.leaveWaiter(
+                            attempt: attempt, waiterID: waiterID, stopJobIfLast: true
+                        )
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
         }
+        let continuationBox = waiter.continuation
+        return try await withCheckedThrowingContinuation { continuation in
+            continuationBox.attach(continuation)
+        }
+    }
+
+    /// The caller's Swift task was cancelled (navigation teardown, parent
+    /// cancellation). This is not by itself a request to stop the shared
+    /// download: release the lease so the view unwinds, but keep the attempt
+    /// alive for other callers / later entry. A run stop cancels the token at
+    /// nearly the same time, so one bounded grace period lets that explicit
+    /// signal decide whether the last lease should stop the job.
+    @MainActor
+    private func callerTaskCancelled(
+        jobID: String,
+        waiterID: UUID,
+        cancellation: CancellationToken?
+    ) {
+        guard let attempt = sharedAttempts[jobID], attempt.waiters[waiterID] != nil else {
+            return
+        }
+        Task { @MainActor [weak self] in
+            if cancellation?.isCancelled == true {
+                self?.leaveWaiter(
+                    attempt: attempt, waiterID: waiterID, stopJobIfLast: true
+                )
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self else { return }
+            if cancellation?.isCancelled == true {
+                self.leaveWaiter(
+                    attempt: attempt, waiterID: waiterID, stopJobIfLast: true
+                )
+            } else {
+                self.leaveWaiter(
+                    attempt: attempt, waiterID: waiterID, stopJobIfLast: false
+                )
+            }
+        }
+    }
+
+    /// Releases exactly one lease. The caller is resumed as cancelled before
+    /// any later completion can reach it.
+    @MainActor
+    private func leaveWaiter(
+        attempt: SharedJobAttempt,
+        waiterID: UUID,
+        stopJobIfLast: Bool
+    ) {
+        guard let waiter = attempt.waiters.removeValue(forKey: waiterID) else { return }
+        waiter.pollTask?.cancel()
+        waiter.resumeCancelled()
+        guard stopJobIfLast, attempt.waiters.isEmpty else { return }
+        cancelSharedAttempt(attempt)
+    }
+
+    /// Stops ONE attempt after its last lease explicitly left. The attempt's
+    /// own token (what the downloader observes) and task are cancelled; the
+    /// byte snapshot is dropped for exactly this epoch.
+    @MainActor
+    private func cancelSharedAttempt(_ attempt: SharedJobAttempt) {
+        guard !attempt.cancelling else { return }
+        attempt.cancelling = true
+        markAttemptCancelling(attempt)
+        attempt.jobCancellation.cancel()
+        attempt.task?.cancel()
+    }
+
+    /// A cancelling attempt is terminal for progress reports: the last phase
+    /// label/fraction/byte row is dropped now, and the (now unregistered)
+    /// progress gate drops any delayed hop. The real task still unwinds and
+    /// `finishSharedAttempt` publishes the final cancellation message.
+    @MainActor
+    private func markAttemptCancelling(_ attempt: SharedJobAttempt) {
+        noteCancellation(id: attempt.id, epoch: attempt.epoch)
+        jobProgress[attempt.id] = nil
+        phases[attempt.id] = nil
+        fractions[attempt.id] = nil
+        clearTransferState(id: attempt.id)
+        messages[attempt.id] = String(localized: "envmgr.cancelling")
+    }
+
+    /// Explicit GLOBAL cancellation for one shared job id (the settings card's
+    /// cancel, or the service's `cancelLinuxImagePreparation`). Every live
+    /// lease is resumed as cancelled and the real operation is stopped. This
+    /// is deliberately separate from a task banner's per-wait cancel.
+    func cancelSharedJob(id: String) {
+        guard let attempt = sharedAttempts[id] else { return }
+        attempt.cancelling = true
+        markAttemptCancelling(attempt)
+        let waiters = Array(attempt.waiters.values)
+        attempt.waiters.removeAll()
+        for waiter in waiters {
+            waiter.pollTask?.cancel()
+            waiter.resumeCancelled()
+        }
+        attempt.jobCancellation.cancel()
+        attempt.task?.cancel()
+        revision += 1
+    }
+
+    /// The ONE terminal transition for an attempt. It publishes the truth,
+    /// removes the attempt from the live table, then resumes every waiter
+    /// still holding a lease. A waiter that already left as cancelled is no
+    /// longer in that set, so a late success can never resume its run.
+    @MainActor
+    private func finishSharedAttempt(
+        _ attempt: SharedJobAttempt,
+        result: Result<String, Error>
+    ) {
+        guard sharedAttempts[attempt.id] === attempt else { return }
+        sharedAttempts[attempt.id] = nil
+        running.remove(attempt.id)
+        progressHandlerBindings[attempt.id] = nil
+        phases[attempt.id] = nil
+        fractions[attempt.id] = nil
+        jobProgress[attempt.id] = nil
+        clearTransferState(id: attempt.id)
+        switch result {
+        case .success(let message):
+            messages[attempt.id] = message
+        case .failure(let error):
+            if error is CancellationError {
+                messages[attempt.id] = String(localized: "envmgr.job_cancelled")
+            } else {
+                messages[attempt.id] = error.localizedDescription
+                failures.insert(attempt.id)
+            }
+        }
+        let waiters = Array(attempt.waiters.values)
+        attempt.waiters.removeAll()
+        for waiter in waiters {
+            waiter.pollTask?.cancel()
+            waiter.resume(with: result)
+        }
+        revision += 1
     }
 }
 

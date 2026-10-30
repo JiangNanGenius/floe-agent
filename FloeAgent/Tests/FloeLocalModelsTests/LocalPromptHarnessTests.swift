@@ -79,9 +79,10 @@ struct LocalPromptHarnessTests {
             #expect(local.systemInstructions.contains("Prior result: revision seven"))
             #expect(local.systemInstructions.contains("Current runtime time:"))
             #expect(local.systemInstructions.contains("Runtime clock at dispatch:"))
-            // Discovery tools are admissible in fallback mode so weak models
-            // can find names; the authoritative directory lists them first.
-            #expect(local.systemInstructions.contains("AVAILABLE TOOL NAMES (authoritative): tools.list, tools.search, workspace.readFile"))
+            // Discovery/paging metadata helpers are admissible in fallback
+            // mode so weak models can find names and page retained results;
+            // the authoritative directory is exactly this run's supplied set.
+            #expect(local.systemInstructions.contains("AVAILABLE TOOL NAMES (authoritative): tools.list, tools.readResult, tools.search, workspace.readFile"))
             #expect(local.text.contains(user))
             #expect(!local.text.contains("Prior result: revision seven"))
             if let path = ProcessInfo.processInfo.environment["FLOE_SYNTHETIC_LOCAL_PROMPT_AUDIT_DIR"] {
@@ -260,34 +261,44 @@ struct LocalReplayedToolEvidenceTests {
 
 // MARK: - Cross-task history tools on-device admission
 
-@Suite("Local cross-task history admission")
+@Suite("Local authorized history tool admission")
 struct LocalHistoryAdmissionTests {
-    @Test("Conversation tools are hidden from MLX and Apple Foundation Models")
+    @Test("MLX receives the authorized conversation and shell tools; Apple keeps its native channel")
     @available(macOS 15.4, *)
-    func conversationToolsAreHidden() {
+    func conversationToolsFollowRuntimeAuthority() {
         let names: Set<String> = ["conversation.search", "conversation.read", "conversation.list", "workspace.readFile", "ssh.execute"]
         let mlx = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: "qwen3.8-4b-heretic-mlx4")
-        // Only the curated read tool survives; cross-task history is complex.
-        #expect(mlx == ["workspace.readFile"])
-        #expect(mlx.isDisjoint(with: ["conversation.search", "conversation.read", "conversation.list"]))
+        // The runtime already applied the task ceiling. The adapter forwards
+        // exactly that authorized set: cross-task history is no longer hidden
+        // by a second curated local fence.
+        #expect(mlx == names)
         let apple = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: AppleFoundationModelIdentity.remoteModelID)
-        #expect(apple.isDisjoint(with: ["conversation.search", "conversation.read", "conversation.list"]))
+        // The real Apple native-channel restriction still applies: no
+        // non-Apple name is offered to Foundation Models.
+        #expect(apple.isEmpty)
+        #expect(apple.isDisjoint(with: names))
     }
 
-    @Test("Notes tools are hidden from MLX along with heavier surfaces")
+    @Test("Notes and mail tools reach MLX; the Apple native channel stays Apple-only")
     @available(macOS 15.4, *)
-    func notesToolsAreHidden() {
+    func notesToolsFollowRuntimeAuthority() throws {
         let names: Set<String> = [
             "notes.read", "notes.search", "notes.edit",
             "notes.attachFile", "notes.stageAttachment", "mail.send"
         ]
         let mlx = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: "qwen3.8-4b-heretic-mlx4")
-        // The document assistant is not part of the curated local ceiling.
-        #expect(mlx.isEmpty)
-        #expect(!mlx.contains("notes.edit"))
-        #expect(!mlx.contains("notes.attachFile"))
-        #expect(!mlx.contains("notes.stageAttachment"))
-        #expect(!mlx.contains("mail.send"))
+        // Authorized document-assistant and mail surfaces are forwarded rather
+        // than hidden by the adapter.
+        #expect(mlx == names)
+        let apple = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: AppleFoundationModelIdentity.remoteModelID)
+        #expect(apple.isEmpty)
+        // Not supplied means not callable: the parser still enforces the real
+        // offered set rather than accepting any canonical name.
+        let unauthorized = try LocalProviderAdapter.toolCall(
+            from: #"{"tool_call":{"name":"notes.edit","arguments":{}}}"#,
+            offeredToolNames: ["notes.read"]
+        )
+        #expect(unauthorized == nil)
     }
 
     @Test("Chinese and English history intents select the conversation pair")
@@ -320,9 +331,13 @@ struct LocalHistoryAdmissionTests {
                 allToolNames: ["conversation.search", "conversation.read", "workspace.readFile"]
             ).refreshingRuntimeClock()
             let local = LocalProviderAdapter.buildPrompt(for: request)
-            // Hidden history tools never reach the offer, and no tool call is
-            // forced merely because a read schema sits in the directory.
-            #expect(!local.selectedTools.contains { $0.name.hasPrefix("conversation.") })
+            // An explicit history intent selects the authorized conversation
+            // schemas; nothing in the adapter hides them. Selection alone does
+            // not force a call on an informational question.
+            let selected = Set(local.selectedTools.map(\.name))
+            #expect(selected.contains("conversation.search"), "user text: \(userText)")
+            #expect(selected.contains("conversation.read"), "user text: \(userText)")
+            #expect(local.fallbackTools.contains { $0.name == "workspace.readFile" })
             #expect(!local.requiresToolCall, "user text: \(userText)")
         }
         // An explicit news-search turn with NO configured web.search gets
@@ -534,6 +549,331 @@ struct LocalPromptPressureTests {
         #expect(local.text.contains("cursor=opaque-cursor-42"))
         #expect(local.text.contains("sources=[22222222-2222-2222-2222-222222222222]"))
         #expect(!local.exceedsContextWindow)
+    }
+}
+
+
+// MARK: - Complete local tool contracts under the actual window
+
+@Suite("Local complete-contract sizing")
+struct LocalCompleteContractSizingTests {
+    private static let cadPayloadVocabulary = "material list|read|create|update|apply|applyFaces; parameters list|update|updateSketchEntity|setSketchDimension|feature.suppress|feature.delete; animation list|query|evaluate|createClip|updateClip|deleteClip|addTrack|setKeyframe|setCameraKeyframe|setPartKeyframe|capture|export"
+
+    private static func cadDescriptor(detail: String = String(repeating: "Authoring example. ", count: 60)) throws -> ToolSchemaDescriptor {
+        let schema: [String: Any] = [
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["action"],
+            "description": "Complete CAD authoring contract. \(detail)",
+            "properties": [
+                "action": [
+                    "type": "string",
+                    "enum": ["capabilities", "read", "query", "parameters", "material", "animation"]
+                ],
+                "path": ["type": "string", "maxLength": 1024],
+                "payload": [
+                    "type": "string",
+                    "description": Self.cadPayloadVocabulary + " " + detail
+                ],
+                "zz_last_field": [
+                    "type": "string",
+                    "description": "SENTINEL_LAST_FIELD"
+                ]
+            ]
+        ]
+        let raw = String(
+            decoding: try JSONSerialization.data(withJSONObject: schema),
+            as: UTF8.self
+        )
+        return ToolSchemaDescriptor(
+            name: "cad.document",
+            description: "Inspect and edit native CAD documents, including material, parameter and animation payloads.",
+            parametersJSON: raw
+        )
+    }
+
+    private static func model(_ id: String, _ contextTokens: Int, _ outputTokens: Int = 1_024) -> ModelProfile {
+        ModelProfile(
+            providerID: LocalProviderAdapter.providerProfile.id,
+            remoteModelID: id,
+            displayName: "Synthetic local",
+            limits: .init(contextTokens: contextTokens, maxOutputTokens: outputTokens),
+            capabilities: [.text, .tools]
+        )
+    }
+
+    @Test("A large window keeps complete CAD contracts and the result tail")
+    @available(macOS 15.4, *)
+    func largeWindowKeepsCompleteContractsAndResultTail() throws {
+        let cad = try Self.cadDescriptor()
+        let read = ToolSchemaDescriptor(
+            name: "workspace.readFile",
+            description: "Read a workspace file",
+            parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#
+        )
+        let call = try ToolCall(
+            id: "cad-read-1",
+            toolName: "workspace.readFile",
+            argumentsJSON: Data(#"{"path":"toycar.floecad"}"#.utf8),
+            scope: .local
+        )
+        let output = String(repeating: "verified evidence line ", count: 300)
+            + "RESULT_TAIL_SENTINEL"
+        let request = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: Self.model("qwen3.8-4b-heretic-mlx4", 32_768),
+            messages: [("user", "打开 toycar.floecad，修改支架孔径并检查动画关键帧")],
+            toolResults: [(callID: call.id, output: output)],
+            pendingToolCalls: [call],
+            toolSchemas: [cad, read],
+            allToolNames: [cad.name, read.name]
+        )
+        let build = LocalProviderAdapter.buildPrompt(for: request)
+        let selectedCAD = try #require(build.selectedTools.first { $0.name == "cad.document" })
+        #expect(selectedCAD.parametersJSON == cad.parametersJSON)
+        #expect(build.systemInstructions.contains(cad.parametersJSON))
+        #expect(build.systemInstructions.contains(Self.cadPayloadVocabulary))
+        #expect(build.systemInstructions.contains("SENTINEL_LAST_FIELD"))
+        #expect(build.systemInstructions.contains("CAD TOOL ARGUMENTS (cad.document)"))
+        #expect(build.nativeToolSchemas.isEmpty)
+        #expect(build.text.contains("TOOL RESULT \(call.id)"))
+        #expect(build.text.contains("RESULT_TAIL_SENTINEL"))
+        #expect(!build.text.contains("[omitted]"))
+        #expect(!build.systemInstructions.contains("SCHEMA BUDGET"))
+        #expect(build.estimatedPromptTokens <= build.windowPromptTokenBudget)
+        #expect(!build.exceedsContextWindow)
+
+        // Native-schema path: the same complete bytes reach the chat template.
+        let native = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: Self.model("gemma4-e4b-mlx4", 32_768),
+            messages: [("user", "打开 toycar.floecad，修改支架孔径并检查动画关键帧")],
+            toolResults: [(callID: call.id, output: output)],
+            pendingToolCalls: [call],
+            toolSchemas: [cad, read],
+            allToolNames: [cad.name, read.name]
+        ))
+        let nativeCAD = try #require(native.nativeToolSchemas.first { $0.name == "cad.document" })
+        #expect(nativeCAD.parametersJSON == cad.parametersJSON)
+        #expect(nativeCAD.description == cad.description)
+        #expect(native.text.contains("RESULT_TAIL_SENTINEL"))
+        #expect(native.estimatedPromptTokens <= native.windowPromptTokenBudget)
+        #expect(!native.exceedsContextWindow)
+    }
+
+    @Test("A small window defers a whole definition without slicing it")
+    @available(macOS 15.4, *)
+    func smallWindowDefersWholeDefinition() throws {
+        let huge = String(repeating: "X", count: 20_000)
+        let cad = try Self.cadDescriptor(detail: huge)
+        let read = ToolSchemaDescriptor(
+            name: "workspace.readFile",
+            description: "Read a workspace file",
+            parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}}}"#
+        )
+        let toolSearch = ToolSchemaDescriptor(
+            name: "tools.search",
+            description: "Load one exact tool definition",
+            parametersJSON: #"{"type":"object","properties":{"query":{"type":"string"}}}"#
+        )
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: Self.model("qwen3.8-4b-heretic-mlx4", 4_096, 512),
+            messages: [("user", "修改支架的孔径为 8 毫米并增加圆角")],
+            toolSchemas: [toolSearch, cad, read],
+            allToolNames: [toolSearch.name, cad.name, read.name]
+        ))
+        #expect(!build.selectedTools.contains { $0.name == "cad.document" })
+        #expect(build.fallbackTools.contains { $0.name == "cad.document" })
+        #expect(build.selectedTools.contains { $0.name == "tools.search" })
+        #expect(build.systemInstructions.contains("SCHEMA BUDGET"))
+        #expect(build.systemInstructions.contains("deferred rather than sliced"))
+        #expect(build.systemInstructions.contains("Load one exact name with tools.search"))
+        #expect(build.systemInstructions.contains("did not fit this model window"))
+        #expect(!build.systemInstructions.contains("SENTINEL_LAST_FIELD"))
+        #expect(!build.systemInstructions.contains(String(repeating: "X", count: 200)))
+        #expect(!build.selectedTools.contains { $0.parametersJSON.contains("XXXXX") })
+        #expect(!build.requiresToolCall)
+        #expect(build.estimatedPromptTokens <= build.windowPromptTokenBudget)
+        #expect(!build.exceedsContextWindow)
+    }
+
+    @Test("A complete pending result is not clipped a second time when it fits")
+    @available(macOS 15.4, *)
+    func completePendingResultIsNotReclipped() throws {
+        let read = ToolSchemaDescriptor(
+            name: "workspace.readFile",
+            description: "Read a workspace file",
+            parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}}}"#
+        )
+        let call = try ToolCall(
+            id: "receipt-full",
+            toolName: "workspace.readFile",
+            argumentsJSON: Data(#"{"path":"report.txt"}"#.utf8),
+            scope: .local
+        )
+        let output = "HEAD_SENTINEL\n"
+            + String(repeating: "complete result body line\n", count: 120)
+            + "TAIL_SENTINEL"
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: Self.model("qwen3.8-4b-heretic-mlx4", 16_384),
+            messages: [("user", "读取 report.txt 并总结")],
+            toolResults: [(callID: call.id, output: output)],
+            pendingToolCalls: [call],
+            toolSchemas: [read],
+            allToolNames: [read.name]
+        ))
+        #expect(build.text.contains("HEAD_SENTINEL"))
+        #expect(build.text.contains("TAIL_SENTINEL"))
+        #expect(build.text.contains(output))
+        #expect(!build.text.contains("[omitted]"))
+        #expect(build.estimatedPromptTokens <= build.windowPromptTokenBudget)
+        #expect(!build.exceedsContextWindow)
+    }
+
+    @Test("An over-budget pending result keeps its capture ref and marker")
+    @available(macOS 15.4, *)
+    func overBudgetPendingResultKeepsCaptureRef() throws {
+        let read = ToolSchemaDescriptor(
+            name: "workspace.readFile",
+            description: "Read a workspace file",
+            parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}}}"#
+        )
+        let call = try ToolCall(
+            id: "receipt-large",
+            toolName: "workspace.readFile",
+            argumentsJSON: Data(#"{"path":"large.txt"}"#.utf8),
+            scope: .local
+        )
+        let output = "status=ok ref=tr_ABC123\n"
+            + String(repeating: "这是一段完整保留但超出当前窗口的结果内容。", count: 160)
+            + "TAIL_SENTINEL"
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: Self.model("qwen3.8-4b-heretic-mlx4", 2_048, 256),
+            messages: [("user", "读取 large.txt")],
+            toolResults: [(callID: call.id, output: output)],
+            pendingToolCalls: [call],
+            toolSchemas: [read],
+            allToolNames: [read.name]
+        ))
+        #expect(build.text.contains("TOOL RESULT \(call.id)"))
+        #expect(build.text.contains("tr_ABC123"))
+        #expect(build.text.contains("[omitted]") || build.text.contains("omitted"))
+        #expect(build.text.contains("tools.readResult"))
+        #expect(build.estimatedPromptTokens <= build.windowPromptTokenBudget)
+        #expect(!build.exceedsContextWindow)
+    }
+
+    @Test("Apple and Qwen protocol guards remain after schema sizing")
+    @available(macOS 15.4, *)
+    func protocolGuardsRemain() throws {
+        let cad = try Self.cadDescriptor()
+        let qwen = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: Self.model("qwen3.8-4b-heretic-mlx4", 16_384),
+            messages: [("user", "检查 CAD 文档")],
+            toolSchemas: [cad],
+            allToolNames: [cad.name]
+        ))
+        #expect(qwen.nativeToolSchemas.isEmpty)
+        #expect(qwen.systemInstructions.contains(
+            "the chat template receives no native tool schemas"
+        ))
+        #expect(!qwen.systemInstructions.lowercased().contains(
+            "use the native tool interface"
+        ))
+
+        let apple = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: Self.model(AppleFoundationModelIdentity.remoteModelID, 8_192),
+            messages: [("user", "我的当前位置是哪里？")],
+            toolSchemas: [
+                ToolSchemaDescriptor(name: "apple.location.current", description: "Get current location"),
+                ToolSchemaDescriptor(name: "apple.automation.list", description: "List automations"),
+                cad
+            ]
+        ))
+        #expect(apple.selectedTools.map(\.name) == ["apple.location.current"])
+        #expect(apple.nativeToolSchemas.isEmpty)
+        #expect(apple.fallbackTools.map(\.name).sorted()
+            == ["apple.automation.list", "apple.location.current"])
+        #expect(apple.requiresToolCall)
+    }
+
+    @Test("Minimal repair carries the whole schema only when its actual window fits")
+    @available(macOS 15.4, *)
+    func minimalRepairUsesActualWindow() throws {
+        let padding = String(repeating: "a", count: 3_000)
+        let raw = #"{"type":"object","properties":{"q":{"type":"string","description":"__PADDING__"}},"required":["q"]}"#
+            .replacingOccurrences(of: "__PADDING__", with: padding)
+        let tool = ToolSchemaDescriptor(
+            name: "web.search",
+            description: "Search the web",
+            parametersJSON: raw
+        )
+        let instructions = try #require(LocalProviderAdapter.PromptBuild.minimalRepairInstructions(
+            tool: tool,
+            usesNativeToolSchemas: false,
+            extraSafety: "Keep workspace scope."
+        ))
+        // The old 2 400-character schema / 8 192-character instruction caps
+        // are gone; the complete schema is present and the actual repair
+        // window is the only fit decision.
+        #expect(instructions.contains(raw))
+        #expect(!instructions.contains("...[omitted]"))
+        #expect(instructions.contains("Required: q"))
+        #expect(!instructions.lowercased().contains("use the native tool interface"))
+        #expect(LocalProviderAdapter.PromptBuild.repairFitsContext(
+            instructions: instructions, prompt: "搜索今天的新闻",
+            tool: tool, usesNativeToolSchemas: false,
+            contextTokens: 16_384
+        ))
+        #expect(!LocalProviderAdapter.PromptBuild.repairFitsContext(
+            instructions: instructions, prompt: "搜索今天的新闻",
+            tool: tool, usesNativeToolSchemas: false,
+            contextTokens: 1_024
+        ))
+
+        // The native channel renders the schema a second time; the same whole
+        // contract still fits a large window and never uses the JSON claim.
+        let nativeInstructions = try #require(LocalProviderAdapter.PromptBuild.minimalRepairInstructions(
+            tool: tool,
+            usesNativeToolSchemas: true,
+            extraSafety: "Keep workspace scope."
+        ))
+        #expect(nativeInstructions.contains(raw))
+        #expect(nativeInstructions.contains("native tool interface"))
+        #expect(LocalProviderAdapter.PromptBuild.repairFitsContext(
+            instructions: nativeInstructions, prompt: "search",
+            tool: tool, usesNativeToolSchemas: true,
+            contextTokens: 16_384
+        ))
+
+        // A long authoritative envelope that does not fit the actual window
+        // is skipped explicitly; its complete text is never clipped.
+        let hugeRules = String(repeating: "Preserve user data. ", count: 5_000)
+        let tooLarge = try #require(LocalProviderAdapter.PromptBuild.minimalRepairInstructions(
+            tool: tool,
+            usesNativeToolSchemas: false,
+            extraSafety: hugeRules
+        ))
+        #expect(tooLarge.contains(hugeRules.trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(!LocalProviderAdapter.PromptBuild.repairFitsContext(
+            instructions: tooLarge, prompt: "搜索",
+            tool: tool, usesNativeToolSchemas: false,
+            contextTokens: 8_192
+        ))
+
+        // A malformed schema still fails closed without a repair attempt.
+        #expect(LocalProviderAdapter.PromptBuild.minimalRepairInstructions(
+            tool: ToolSchemaDescriptor(
+                name: "web.search", description: "x", parametersJSON: "not json"
+            ),
+            usesNativeToolSchemas: false,
+            extraSafety: ""
+        ) == nil)
     }
 }
 

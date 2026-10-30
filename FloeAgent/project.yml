@@ -754,6 +754,7 @@ targets:
       - path: Tests/FloeAppTests/SetupGuideLaunchRegressionTests.swift
       - path: Tests/FloeAppTests/SetupResourcePreparationTests.swift
       - path: Tests/FloeAppTests/SetupDownloadOwnerTests.swift
+      - path: Tests/FloeAppTests/TaskRuntimePreparationOwnershipTests.swift
       - path: Tests/FloeAppTests/SkillInstallAuthorizationRegressionTests.swift
       - path: Tests/FloeAgentUITests/SkillInstallApprovalUITests.swift
       - path: Tests/FloeAppTests/SkillHubMediaTests.swift
@@ -955,6 +956,7 @@ targets:
       - path: Tests/FloeSecurityTests/DeterministicLocalApprovalPolicyTests.swift
       - path: Tests/FloeSecurityTests/OrdinaryDocumentActionProfileTests.swift
       - path: Tests/FloeToolsTests/TypedMutationTargetContractTests.swift
+      - path: Tests/FloeToolsTests/FoundationPrimitivesTests.swift
       - path: Tests/FloeDocumentsTests/OfficeAuthorityPayloadParityTests.swift
       - path: Tests/FloeDocumentsTests/OfficeEditToolContractTests.swift
       - path: Tests/FloeWorkbenchTests/MediaAuthorityPayloadParityTests.swift
@@ -1179,11 +1181,21 @@ targets:
       - path: Tests/FloeProvidersTests/SubscriptionRouteTests.swift
       - path: Tests/FloeProvidersTests/LocalModelToolPolicyTests.swift
       - path: Tests/FloeLocalModelsTests/LocalCADAdmissionTests.swift
+      - path: Tests/FloeLocalModelsTests/LocalBaseToolSchemaTests.swift
+      - path: Tests/FloeLocalModelsTests/LocalCuratedToolTests.swift
+      - path: Tests/FloeLocalModelsTests/LocalModelCatalogTests.swift
+      - path: Tests/FloeLocalModelsTests/LocalPromptHarnessTests.swift
+      - path: Tests/FloeLocalModelsTests/LocalSearchRepairRegressionTests.swift
+      - path: Tests/FloeAgentRuntimeTests/SubagentExecutionTests.swift
+      - path: Tests/FloeAgentRuntimeTests/SubagentSafetyTests.swift
       - path: Tests/FloeToolsTests/CADMaterialMutationTargetTests.swift
       - path: Tests/FloeWorkbenchTests/CadDocumentToolTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialCoreTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHoleWorkflowTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchEditTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationUITests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyDrawingExtensionTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAnimationTests.swift
       # Same-Mac bridge, suspension ownership and assistant audio additions.
       - path: Tests/FloeAppTests/AssistantAudioToolTests.swift
       - path: Tests/FloeAppTests/LocalSpeechPreparationTests.swift

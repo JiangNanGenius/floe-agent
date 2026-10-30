@@ -905,12 +905,39 @@ final class FloePlatformServices: @unchecked Sendable {
         } else {
             resolvedImageID = LinuxGuestImageDistributionCatalog.defaultImageID
         }
-        let activityID = await TaskRuntimePreparationCenter.shared.begin(
-            runID: runID, imageID: resolvedImageID, environmentID: environmentID
+        try cancellation.throwIfCancelled()
+        try Task.checkCancellation()
+        // Fast path: a verified installed image is answered before any task
+        // activity is published, so a cache hit never flashes a download
+        // banner. The shared job repeats the check under its own epoch for a
+        // joining caller/repair race; this early read uses the same snapshot.
+        if let current = try await linuxImageStatusChecked(
+            id: resolvedImageID,
+            isCancelled: { cancellation.isCancelled || Task.isCancelled }
+        ), current.installed, current.verificationIssue == nil {
+            try cancellation.throwIfCancelled()
+            try Task.checkCancellation()
+            return "Linux image \(resolvedImageID) is already installed"
+        }
+        try cancellation.throwIfCancelled()
+        try Task.checkCancellation()
+        // This call's own lease. Deriving from the run/tool token means either
+        // that token or the task banner can stop THIS wait without cancelling
+        // another run's wait on the same image.
+        let waitToken = cancellation.derived()
+        let activity = await TaskRuntimePreparationCenter.shared.begin(
+            runID: runID,
+            imageID: resolvedImageID,
+            environmentID: environmentID,
+            waitToken: waitToken
         )
+        let activityID = activity?.id
         do {
             let result = try await prepareLinuxImage(
-            imageID: resolvedImageID, cancellation: cancellation, onProgress: onProgress
+                imageID: resolvedImageID,
+                cancellation: waitToken,
+                onProgress: onProgress,
+                activityID: activityID
             )
             await TaskRuntimePreparationCenter.shared.end(activityID)
             try cancellation.throwIfCancelled()
@@ -918,6 +945,10 @@ final class FloePlatformServices: @unchecked Sendable {
             return result
         } catch {
             await TaskRuntimePreparationCenter.shared.end(activityID)
+            // A stopped task/banner (or a cancelled shared job) is a clean
+            // cancellation, not a repair failure. A cancelled waiter never
+            // resumes its run from a late successful callback.
+            if error is CancellationError { throw FloeError.cancelled }
             throw error
         }
     }
@@ -972,11 +1003,20 @@ final class FloePlatformServices: @unchecked Sendable {
     private func prepareLinuxImage(
         imageID: String,
         cancellation: CancellationToken,
-        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void,
+        activityID: UUID? = nil
     ) async throws -> String {
+        let jobID = "linux-image:" + imageID
+        // Register this waiter BEFORE any awaits: a settings-level global
+        // cancel in the small window before the shared attempt exists must
+        // still reach this caller. A coalesced waiter adds another lease; it
+        // never replaces anyone else's.
+        registerLinuxImageWaitToken(cancellation, jobID: jobID)
+        defer { unregisterLinuxImageWaitToken(cancellation, jobID: jobID) }
         guard await ensureLinuxImageService(), let images = linuxImageBox.value else {
             throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
         }
+        try cancellation.throwIfCancelled()
         if let current = try await linuxImageStatusChecked(
             id: imageID, isCancelled: { cancellation.isCancelled || Task.isCancelled }
         ), current.installed && current.verificationIssue == nil {
@@ -987,17 +1027,9 @@ final class FloePlatformServices: @unchecked Sendable {
         // refresh that follows the job re-derives instead of serving stale.
         linuxImageStatusCache.bumpRevision()
         // Local reconstruction also belongs to the shared job below. Doing
-        // it before registering the owner lets concurrent callers replace
-        // the expanded view twice and leaves the card without cancellation
-        // or a completion transition while the disk is being reconstructed.
-        let jobID = "linux-image:" + imageID
-        // Register the owner token BEFORE the shared job starts: a cancel
-        // pressed in the small window before the operation begins must not be
-        // lost. A coalesced caller never replaces the active owner's token.
-        let ownsJob = registerLinuxImageJobCancellation(cancellation, jobID: jobID)
-        defer {
-            if ownsJob { unregisterLinuxImageJobCancellation(cancellation, jobID: jobID) }
-        }
+        // it outside the job would let concurrent callers replace the
+        // expanded view twice and leave the card without cancellation or a
+        // completion transition while the disk is being reconstructed.
         // The phase channel belongs to this job, not to the view: the service
         // operation reports what it is doing (download/verify/extract/
         // finalize/rebuild/check) and the UI only mirrors it. Reports are
@@ -1005,18 +1037,15 @@ final class FloePlatformServices: @unchecked Sendable {
         // can never land on a newer job or regress a later phase.
         // One shared, cancellable job whether the user pressed the card or
         // first Linux use (shell, Python, services, apt/npm) auto-prepares:
-        // two callers never start two downloads and both see progress.
+        // two callers never start two downloads and both see progress. The
+        // operation observes the JOB's token, never this caller's token: one
+        // waiter leaving cannot stop another waiter's transfer.
         return try await EnvironmentPackageJobs.shared.runShared(
             id: jobID,
-            title: String(format: String(localized: "environment.backend.image_download_title"), imageID)
-        ) { epoch in
-            // Bind the job-store epoch to the live shared attempt NOW: a
-            // cancellation is reported to the jobs store against exactly this
-            // identity, and the late main-actor note re-checks it before
-            // writing. A cancel pressed BEFORE the operation body runs (in
-            // the registration window) has no byte truth to suppress — the
-            // first cancellation checkpoint ends that attempt anyway.
-            self.lock.withLock { self.linuxImageJobEpochs[jobID] = epoch }
+            title: String(format: String(localized: "environment.backend.image_download_title"), imageID),
+            cancellation: cancellation,
+            activityID: activityID
+        ) { epoch, jobCancellation in
             let phaseBox = LinuxImageJobPhaseBox()
             let reportPhase: @Sendable (LinuxGuestImageTransferPhase) -> Void = { phase in
                 let stamp = phaseBox.advance(phase)
@@ -1033,8 +1062,12 @@ final class FloePlatformServices: @unchecked Sendable {
                 // a rate measured only from real byte growth, and derives the
                 // fraction there exactly as before (only when the total is
                 // known). No separate observer or timer exists: this IS the
-                // progress channel, one hop per sample.
-                onProgress(received, expected)
+                // progress channel, one hop per sample. A caller that already
+                // stopped waiting never receives further callback bytes; the
+                // shared job store still publishes the real progress.
+                if !cancellation.isCancelled {
+                    onProgress(received, expected)
+                }
                 let stamp = phaseBox.snapshot()
                 Task { @MainActor in
                     EnvironmentPackageJobs.shared.reportBytes(
@@ -1043,7 +1076,7 @@ final class FloePlatformServices: @unchecked Sendable {
                     )
                 }
             }
-            let cancelCheck: @Sendable () -> Bool = { cancellation.isCancelled || Task.isCancelled }
+            let cancelCheck: @Sendable () -> Bool = { jobCancellation.isCancelled || Task.isCancelled }
             return try await withTaskCancellationHandler {
                 try Task.checkCancellation()
                 reportPhase(.checking)
@@ -1056,7 +1089,7 @@ final class FloePlatformServices: @unchecked Sendable {
                     return "Linux image \(imageID) is already installed"
                 }
                 if let repaired = try await self.reconstructLinuxImageIfRebuildable(
-                    imageID: imageID, cancellation: cancellation, reportPhase: reportPhase
+                    imageID: imageID, cancellation: jobCancellation, reportPhase: reportPhase
                 ) {
                     return repaired
                 }
@@ -1067,7 +1100,7 @@ final class FloePlatformServices: @unchecked Sendable {
                         downloader: LinuxGuestImageHTTPDownloader(),
                         onProgress: reportProgress,
                         onPhase: reportPhase,
-                        isCancelled: { cancellation.isCancelled || Task.isCancelled }
+                        isCancelled: { jobCancellation.isCancelled || Task.isCancelled }
                     )
                 } catch let error as LinuxGuestImageInstallError {
                     // A cancelled transfer is cancellation, not a repair
@@ -1111,7 +1144,10 @@ final class FloePlatformServices: @unchecked Sendable {
                 }
                 return "Linux image \(image.id) installed and verified"
             } onCancel: {
-                cancellation.cancel()
+                // Only the job's own token reaches here: the last waiter left
+                // or the settings-level global cancel stopped this attempt.
+                // A single coalesced waiter's token never cancels the job.
+                jobCancellation.cancel()
                 self.cancelLinuxImageInstall(imageID: imageID)
             }
         }
@@ -1164,68 +1200,61 @@ final class FloePlatformServices: @unchecked Sendable {
 
     // MARK: Linux image job cancellation
     //
-    // The shared job coalesces every caller onto one download. Cancellation is
-    // owned by the operation that actually started the download; a coalesced
-    // caller cancelling its own context never cancels the shared transfer.
+    // Every caller waiting on the shared image job has its own lease. A
+    // caller's token stops only that wait; the shared operation observes the
+    // job's own token and stops only when its last lease is explicitly
+    // cancelled. The settings card's cancel calls the global entry below,
+    // which stops every waiter and the real operation.
 
-    private var linuxImageJobCancellations: [String: CancellationToken] = [:]
-    /// The job store epoch of the CURRENTLY running shared operation per
-    /// jobID, recorded synchronously when the operation body starts. A
-    /// cancellation note to the jobs store is bound to this identity so a
-    /// delayed main-actor hop can never suppress a NEWER attempt that started
-    /// after the cancel was pressed.
-    private var linuxImageJobEpochs: [String: UUID] = [:]
+    /// All live waiter leases per job id. This is not an owner map: any number
+    /// of callers coexist, and a lease is removed by its own defer when its
+    /// wait ends. It lets an explicit global cancel reach a waiter that is
+    /// still in the pre-attempt status check, before the shared job exists.
+    private var linuxImageWaitTokens: [String: [CancellationToken]] = [:]
 
-    /// Registers this caller's token as the owner of `jobID`'s shared
-    /// operation; false when another caller already owns it.
-    @discardableResult
-    private func registerLinuxImageJobCancellation(_ token: CancellationToken, jobID: String) -> Bool {
+    private func registerLinuxImageWaitToken(_ token: CancellationToken, jobID: String) {
         lock.withLock {
-            guard linuxImageJobCancellations[jobID] == nil else { return false }
-            linuxImageJobCancellations[jobID] = token
-            return true
+            linuxImageWaitTokens[jobID, default: []].append(token)
         }
     }
 
-    private func unregisterLinuxImageJobCancellation(_ token: CancellationToken, jobID: String) {
+    private func unregisterLinuxImageWaitToken(_ token: CancellationToken, jobID: String) {
         lock.withLock {
-            if linuxImageJobCancellations[jobID] === token {
-                linuxImageJobCancellations[jobID] = nil
-                linuxImageJobEpochs[jobID] = nil
+            guard var tokens = linuxImageWaitTokens[jobID] else { return }
+            tokens.removeAll { $0 === token }
+            if tokens.isEmpty {
+                linuxImageWaitTokens[jobID] = nil
+            } else {
+                linuxImageWaitTokens[jobID] = tokens
             }
         }
     }
 
-    /// Cancels the shared Linux image job for `imageID`: the download,
-    /// extraction and pre-promotion checkpoint all observe it, so a cancelled
-    /// repair never promotes a partial candidate and never replaces a working
-    /// image with an unverified one.
+    /// Explicit GLOBAL cancellation of the shared Linux image job for
+    /// `imageID` (the settings/card cancel and the service's existing entry).
+    /// Every current waiter lease is cancelled and the shared attempt is
+    /// stopped: the download, extraction and pre-promotion checkpoint all
+    /// observe it, so a cancelled repair never promotes a partial candidate
+    /// and never replaces a working image with an unverified one. A task
+    /// banner's cancel deliberately does NOT call this; it cancels only that
+    /// task's own wait token.
     func cancelLinuxImagePreparation(imageID: String) {
         let jobID = "linux-image:" + imageID
-        // The byte/rate note is bound to the CURRENT attempt owner: capture
-        // the registered token identity and its recorded epoch synchronously,
-        // then on the main actor re-check that that EXACT owner is still
-        // registered before writing the note. If the old job already
-        // finished and a newer attempt started, the delayed note is dropped
-        // and the new attempt's byte truth is never suppressed (the jobs
-        // store additionally gates its own notes on the attempt epoch —
-        // double fencing, no lookup of an unbound newer job at hop time).
-        let bound: (token: CancellationToken, epoch: UUID)? = lock.withLock {
-            guard let token = linuxImageJobCancellations[jobID],
-                  let epoch = linuxImageJobEpochs[jobID] else { return nil }
-            return (token, epoch)
+        // Copy under the lock, then cancel outside it: token cancellation
+        // propagates synchronously and must not run under this lock.
+        let waiters: [CancellationToken] = lock.withLock {
+            linuxImageWaitTokens[jobID] ?? []
         }
-        if let bound {
-            Task { @MainActor in
-                let stillCurrent = self.lock.withLock {
-                    self.linuxImageJobCancellations[jobID] === bound.token
-                        && self.linuxImageJobEpochs[jobID] == bound.epoch
-                }
-                guard stillCurrent else { return }
-                EnvironmentPackageJobs.shared.noteCancellation(id: jobID, epoch: bound.epoch)
-            }
+        for waiter in waiters {
+            waiter.cancel()
         }
-        lock.withLock { linuxImageJobCancellations[jobID] }?.cancel()
+        Task { @MainActor in
+            // Global stop: resumes every live lease for this job and cancels
+            // the service-owned attempt. The epoch-bound note is applied by
+            // the store itself, so a delayed hop can never suppress a newer
+            // attempt.
+            EnvironmentPackageJobs.shared.cancelSharedJob(id: jobID)
+        }
         cancelLinuxImageInstall(imageID: imageID)
     }
 

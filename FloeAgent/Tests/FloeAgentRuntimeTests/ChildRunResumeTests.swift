@@ -24,6 +24,34 @@ import FloeTestSupport
 @Suite("FloeAgentRuntime.ChildRunResume")
 struct ChildRunResumeTests {
 
+    @Test("child checkpoint retains only safe capture metadata across restoration")
+    func captureReferenceSurvivesCheckpointRoundTrip() throws {
+        let info = ToolResultCaptureInfo(
+            ref: "tr_checkpoint_receipt", originalBytes: 60_000,
+            retainedBytes: 60_000, retentionTruncated: false,
+            executionReportedTruncation: false, available: true
+        )
+        let original = ToolResult(
+            callID: "read-1", status: .failed, outputSummary: "bounded summary",
+            outputDigest: "digest", capturedOutput: "FULL_BODY_MUST_NOT_PERSIST",
+            ephemeralSensitiveOutput: "SECRET_MUST_NOT_PERSIST", captureInfo: info
+        )
+        let encoded = try JSONEncoder().encode(SubagentRunner.settledResult(original))
+        let text = String(decoding: encoded, as: UTF8.self)
+        #expect(!text.contains("FULL_BODY_MUST_NOT_PERSIST"))
+        #expect(!text.contains("SECRET_MUST_NOT_PERSIST"))
+        let saved = try JSONDecoder().decode(ChildRunCheckpoint.SettledResult.self, from: encoded)
+        let restored = SubagentRunner.toolResult(saved)
+        #expect(restored.captureInfo == info)
+        #expect(restored.status == .failed)
+        #expect(restored.capturedOutput == nil)
+        #expect(restored.ephemeralSensitiveOutput == nil)
+        let legacy = Data(#"{"callID":"old-call","status":"denied","outputSummary":"denied","outputDigest":"old-digest"}"#.utf8)
+        let old = try JSONDecoder().decode(ChildRunCheckpoint.SettledResult.self, from: legacy)
+        #expect(old.captureInfo == nil)
+        #expect(SubagentRunner.toolResult(old).status == .denied)
+    }
+
     // MARK: - Mocks
 
     /// Records every dispatch the child routes through the canonical seam.

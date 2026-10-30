@@ -1,6 +1,6 @@
 // FloeLocalModelsTests — Build 236 curated local toolset.
 //
-// Focused deterministic coverage of the curated on-device ceiling:
+// Focused deterministic coverage of bounded on-device tool presentation:
 //   * an explicit Chinese news search presents web.search ahead of file tools,
 //   * a follow-up search after a settled result runs a new search call,
 //   * a tight per-window schema budget keeps search (news) or read tools
@@ -8,7 +8,7 @@
 //   * a web.search pruned by the request's schema budget produces the
 //     request-scoped truthful notice (not a claim about device configuration),
 //   * a direct-URL fetch keeps web.fetch and is not mistaken for search,
-//   * complex tools never enter the authoritative directory.
+//   * authorized tools remain in the directory independently of schema selection.
 //
 // No weights, network or real model: the adapter builds prompts from
 // synthetic descriptors.
@@ -25,12 +25,12 @@ import FloeTools
 private enum CuratedFixtures {
     static let modelID = "qwen3.8-4b-heretic-mlx4"
 
-    static func model(contextTokens: Int = 8_192) -> ModelProfile {
+    static func model(contextTokens: Int = 8_192, outputTokens: Int = 1_024) -> ModelProfile {
         ModelProfile(
             providerID: LocalProviderAdapter.providerProfile.id,
             remoteModelID: modelID,
             displayName: "Synthetic local",
-            limits: .init(contextTokens: contextTokens, maxOutputTokens: 1_024),
+            limits: .init(contextTokens: contextTokens, maxOutputTokens: outputTokens),
             capabilities: [.text, .tools]
         )
     }
@@ -65,12 +65,13 @@ private enum CuratedFixtures {
     static func request(
         userText: String,
         contextTokens: Int = 8_192,
+        outputTokens: Int = 1_024,
         toolSchemas: [ToolSchemaDescriptor],
         replayedToolPairs: [ReplayedToolPair] = []
     ) -> ProviderStreamRequest {
         ProviderStreamRequest(
             provider: LocalProviderAdapter.providerProfile,
-            model: model(contextTokens: contextTokens),
+            model: model(contextTokens: contextTokens, outputTokens: outputTokens),
             messages: [
                 ("system", "Runtime envelope: synthetic workspace."),
                 ("user", userText)
@@ -128,31 +129,42 @@ struct LocalCuratedToolTests {
     @available(macOS 15.4, iOS 26.0, *)
     func tightBudgetKeepsIntentTool() {
         let schemas = CuratedFixtures.readChain + [CuratedFixtures.webSearch]
+        // A realistic tight-tier probe: a 2K context with a 1K output reserve
+        // leaves ~1K for the ENTIRE complete-definition prompt. The former
+        // fixture assumed a static schema-character cap that did not count
+        // complete definitions or the envelope protocol, so use a 512-token
+        // generation reserve here instead of pretending 1K is available.
         let newsBuild = LocalProviderAdapter.buildPrompt(for: CuratedFixtures.request(
             userText: "搜索今天的新闻",
             contextTokens: 2_048,
+            outputTokens: 512,
             toolSchemas: schemas
         ))
         #expect(newsBuild.selectedTools.map(\.name).contains("web.search"))
         #expect(newsBuild.requiresToolCall)
+        #expect(!newsBuild.exceedsContextWindow)
 
         let fileBuild = LocalProviderAdapter.buildPrompt(for: CuratedFixtures.request(
             userText: "搜索工作区目录里的文件",
             contextTokens: 2_048,
+            outputTokens: 512,
             toolSchemas: schemas
         ))
         let names = Set(fileBuild.selectedTools.map(\.name))
         #expect(names.contains("workspace.readFile"))
         #expect(names.contains("workspace.listDirectory"))
         #expect(!names.contains("web.search"), "file intent wins the tight budget")
+        #expect(!fileBuild.exceedsContextWindow)
     }
 
     @Test("A budget-pruned web.search yields a request-scoped truthful notice")
     @available(macOS 15.4, iOS 26.0, *)
     func budgetPrunedSearchIsTruthful() {
-        // A web.search schema whose own definition cannot fit the schema
-        // character budget (distinct from an unconfigured provider).
-        let padding = String(repeating: "q", count: 1_400)
+        // A web.search schema whose own COMPLETE definition cannot fit the
+        // actual remaining schema budget (distinct from an unconfigured
+        // provider). The old 1 400-character fixture only exceeded the removed
+        // static character cap; the real 2 048-token window can carry it.
+        let padding = String(repeating: "q", count: 8_000)
         let fatSearch = ToolSchemaDescriptor(
             name: "web.search",
             description: "Search the web",
@@ -183,12 +195,11 @@ struct LocalCuratedToolTests {
         #expect(!build.systemInstructions.contains("WEB SEARCH UNAVAILABLE"))
     }
 
-    @Test("Complex tools never enter the authoritative directory")
+    @Test("Authorized tools remain callable independently of the selected schema subset")
     @available(macOS 15.4, iOS 26.0, *)
-    func complexToolsAreAbsent() {
+    func authorizedToolsRemainAvailable() {
         let schemas = [
-            "exec.shell", "exec.localPython", "exec.javascript",
-            "environment.prepareLinux", "environment.startLinux",
+            "exec.shell", "environment.startLinux",
             "environment.hardRestartLinux", "workspace.applyPatch",
             "workspace.createFile", "workspace.writeFile", "workspace.deleteFile",
             "notes.edit", "image.ocr", "git.commit", "ssh.execute"
@@ -197,8 +208,10 @@ struct LocalCuratedToolTests {
             userText: "帮我运行这些复杂操作",
             toolSchemas: schemas
         ))
-        #expect(build.selectedTools.isEmpty)
-        #expect(build.fallbackTools.isEmpty)
-        #expect(!build.requiresToolCall)
+        let authorized = Set(schemas.map(\.name))
+        #expect(Set(build.fallbackTools.map(\.name)) == authorized)
+        #expect(Set(build.selectedTools.map(\.name)).isSubset(of: authorized))
+        #expect(build.selectedTools.contains { $0.name == "exec.shell" })
+        #expect(build.requiresToolCall)
     }
 }

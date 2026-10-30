@@ -305,12 +305,21 @@ struct ToolResultCaptureTests {
         #expect(denied.exitStatus == 66)
         #expect(denied.summary.contains("status=missing"))
 
-        // The same task but a different run is also outside this read's scope.
+        // The same task in another run (a resumed run or a delegated child)
+        // can read the task's retained evidence by its stable ref/call id.
         let otherRun = ToolContext(runID: UUID(), cancellation: CancellationToken(),
                                    conversationID: owner)
         let crossRun = try await tool.execute(args, context: otherRun)
-        #expect(crossRun.exitStatus == 66)
-        #expect(crossRun.summary.contains("current run"))
+        #expect(crossRun.exitStatus == 0)
+        #expect(crossRun.summary.contains("status=ok"))
+        #expect(crossRun.summary.contains("abc"))
+        #expect(crossRun.summary.contains("run="))
+        // A different task still cannot.
+        let foreignTask = ToolContext(runID: run, cancellation: CancellationToken(),
+                                      conversationID: UUID())
+        let foreignDenied = try await tool.execute(args, context: foreignTask)
+        #expect(foreignDenied.exitStatus == 66)
+        #expect(foreignDenied.summary.contains("status=missing"))
 
         let unbounded = try JSONDecoder().decode(
             ToolResultPagingTool.Arguments.self,
@@ -749,11 +758,14 @@ struct ToolResultCaptureTests {
         try await runtime.start(goal: "page the large result")
 
         #expect(adapter.requests.count == 3)
-        // Ordinary results keep the existing 2 KiB compaction.
+        // The complete 40 KiB post-redaction capture fits this 128K model, so
+        // the first continuation receives it whole instead of an arbitrary
+        // 2 KiB excerpt.
         let ordinary = adapter.requests[1].toolResults
             .first { $0.callID == sourceCall.id }?.output ?? ""
-        #expect(ordinary.contains("[middle of tool output compacted]"))
-        #expect(ordinary.count < 4_000)
+        #expect(!ordinary.contains("[middle of tool output compacted]"))
+        #expect(ordinary.contains(large))
+        #expect(ordinary.utf8.count >= large.utf8.count)
         // The explicit page crosses the provider boundary in full: the
         // dispatcher must not compact it a second time and make nextOffset
         // point past bytes the model never received.
@@ -987,5 +999,478 @@ struct ToolResultTransientCaptureTests {
         #expect(projected.callID == original.callID)
         #expect(projected.outputSummary == original.outputSummary)
         #expect(projected.outputDigest == original.outputDigest)
+    }
+}
+
+@Suite("Budget-aware tool result selection")
+struct ToolResultSelectionTests {
+    private func input(
+        _ callID: String,
+        text: String,
+        ref: String? = nil,
+        paging: Bool = false,
+        captureUnavailable: Bool = false
+    ) -> ToolResultSelectionInput {
+        ToolResultSelectionInput(
+            callID: callID,
+            toolName: paging ? ToolResultPagingTool.name : "exec.shell",
+            text: text,
+            ref: ref,
+            totalBytes: text.utf8.count,
+            captureUnavailable: captureUnavailable,
+            isPagingPage: paging
+        )
+    }
+
+    @Test("Complete results are sent whole when the real budget fits")
+    func completeWhenFits() {
+        let text = String(repeating: "A", count: 50_000)
+        let plan = ToolResultPlanner.plan(
+            inputs: [input("c1", text: text, ref: "tr_0123456789abcdef01234567")],
+            budgetBytes: 100_000
+        )
+        #expect(plan.allComplete)
+        #expect(plan.items[0].output == text)
+        #expect(plan.items[0].complete)
+    }
+
+    @Test("An over-budget result keeps a head/tail excerpt with its stable ref and length")
+    func excerptNamesRefAndLength() {
+        let text = String(repeating: "B", count: 50_000)
+        let plan = ToolResultPlanner.plan(
+            inputs: [input("c1", text: text, ref: "tr_0123456789abcdef01234567")],
+            budgetBytes: 4_000
+        )
+        let item = plan.items[0]
+        #expect(!plan.allComplete)
+        #expect(item.excerpted)
+        #expect(item.output.contains("tr_0123456789abcdef01234567"))
+        #expect(item.output.contains("of 50000 bytes"))
+        #expect(item.output.utf8.count <= 4_000)
+        #expect(item.output.hasPrefix("BBBB"))
+    }
+
+    @Test("A paging page is never partially cut")
+    func pagingPageIsNeverPartiallyCut() {
+        let text = String(repeating: "P", count: 32_000)
+        let plan = ToolResultPlanner.plan(
+            inputs: [input("page", text: text, paging: true)],
+            budgetBytes: 2_000
+        )
+        #expect(plan.items[0].pointerOnly)
+        #expect(!plan.items[0].output.contains(String(repeating: "P", count: 100)))
+        #expect(plan.items[0].output.contains("not repeated"))
+    }
+
+    @Test("Excerpt continuation starts after the head, without skipping the unseen middle")
+    func excerptCursorDoesNotCountTail() async throws {
+        let text = String(repeating: "中文段落0123456789\n", count: 1_000)
+        let store = ToolResultCaptureStore(durableRoot: nil)
+        let task = UUID(), run = UUID()
+        await store.capture(conversationID: task, runID: run, callID: "cursor",
+                            toolName: "exec.shell", status: "ok", text: text, temporary: false)
+        let ref = ToolResultCaptureStore.reference(runID: run, callID: "cursor")
+        let output = ToolResultPlanner.plan(
+            inputs: [input("cursor", text: text, ref: ref)], budgetBytes: 4_000
+        ).items[0].output
+        let marker = try #require(output.range(of: "\n[tool output truncated for this request:"))
+        let head = String(output[..<marker.lowerBound])
+        let offsetStart = try #require(output.range(of: #""offset":"#)).upperBound
+        let cursor = try #require(Int(output[offsetStart...].prefix(while: \.isNumber)))
+        #expect(cursor == head.utf8.count)
+        var rebuilt = head
+        var offset = cursor
+        while case .page(let page) = await store.page(
+            conversationID: task, ref: ref, offset: offset, maxBytes: 1_024
+        ) {
+            rebuilt += page.text
+            guard let next = page.nextOffset else { break }
+            offset = next
+        }
+        #expect(rebuilt == text)
+    }
+
+    @Test("A lost capture is explicitly unrecoverable rather than promised")
+    func lostCaptureIsExplicit() {
+        let plan = ToolResultPlanner.plan(
+            inputs: [input("lost", text: String(repeating: "x", count: 5_000), captureUnavailable: true)],
+            budgetBytes: 1_000
+        )
+        #expect(plan.items[0].output.localizedCaseInsensitiveContains("not retained"))
+        #expect(!plan.items[0].output.contains("read it with"))
+    }
+
+    @Test("Retention truncation stays explicit even when all retained bytes fit")
+    func fittingRetainedPrefixStillReportsMissingOriginal() {
+        var retained = input("short", text: "retained prefix", ref: "tr_retained_prefix")
+        retained.captureTruncated = true
+        let full = ToolResultPlanner.plan(inputs: [retained], budgetBytes: 4_000)
+        #expect(full.items[0].output.hasPrefix("retained prefix"))
+        #expect(full.items[0].output.contains("retention truncated"))
+        #expect(full.items[0].output.contains("tr_retained_prefix"))
+        #expect(full.sentBytes == full.items[0].output.utf8.count)
+        #expect(full.sentBytes <= full.budgetBytes)
+    }
+
+    @Test("A saved summary reads its retained original from byte zero")
+    func projectedSummaryDoesNotInventSourceOffset() {
+        var projection = input("saved", text: String(repeating: "Summary text. ", count: 800), ref: "tr_saved")
+        projection.continuationOffset = 0
+        let plan = ToolResultPlanner.plan(inputs: [projection], budgetBytes: 4_000)
+        #expect(plan.items[0].output.contains(#""offset":0"#))
+        #expect(plan.items[0].output.contains("tr_saved"))
+    }
+
+    @Test("Schema admission keeps definitions complete and defers the rest")
+    func schemaAdmissionIsComplete() {
+        func descriptor(_ name: String, schema: String) -> ToolCatalog.Descriptor {
+            .init(name: name, toolDescription: "d", parametersJSON: schema,
+                  riskLabels: [], isSideEffecting: false)
+        }
+        let small = descriptor("tools.search", schema: #"{"type":"object"}"#)
+        let wide = descriptor(
+            "wide.tool",
+            schema: #"{"type":"object","properties":{"a":{"type":"object","properties":{"b":{"type":"string","enum":["x","y"]}}}},"required":["a"]}"#
+        )
+        let plan = ToolSchemaOfferPlanner.plan(
+            descriptors: [wide, small],
+            tokenBudget: 30,
+            alwaysKeep: ["tools.search"]
+        )
+        #expect(plan.offered.map(\.name) == ["tools.search"])
+        #expect(plan.deferred.contains("wide.tool") || plan.oversized.contains("wide.tool"))
+        #expect(plan.offered.allSatisfy { !$0.parametersJSON.isEmpty })
+    }
+
+    @Test("A large explicitly loaded CAD schema is admitted whole ahead of optional core")
+    func largeLoadedSchemaSurvivesDynamicBudget() {
+        func descriptor(_ name: String, description: String, schema: String) -> ToolCatalog.Descriptor {
+            .init(name: name, toolDescription: description, parametersJSON: schema,
+                  riskLabels: [], isSideEffecting: false)
+        }
+        let cadSchema = #"{"type":"object","properties":{"operation":{"enum":[""# +
+            String(repeating: "x", count: 14_000) +
+            #""]},"required":["operation"],"additionalProperties":false}"#
+        let cad = descriptor(
+            "cad.document",
+            description: String(repeating: "drawing operation ", count: 180),
+            schema: cadSchema
+        )
+        let shell = descriptor("exec.shell", description: "shell", schema: #"{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}"#)
+        let skill = descriptor("skill.read", description: "skill", schema: #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#)
+        #expect(cad.parametersJSON.utf8.count > 14_000)
+
+        // Explicitly loaded CAD ranks before optional core in the dispatch
+        // candidate order.
+        let ordered = ToolSchemaOfferPlanner.prioritized(
+            [shell, skill, cad],
+            priority: ["cad.document", "exec.shell"],
+            pinned: []
+        )
+        #expect(ordered.first?.name == "cad.document")
+
+        // A large cloud/local window carries the complete schema.
+        let largeBudget = ToolSchemaOfferPlanner.availableTokenBudget(
+            contextWindowTokens: 128_000,
+            reservedOutputTokens: 4_096,
+            messageTokens: 9_000,
+            imageTokens: 0,
+            replayTokens: 0,
+            toolResultReserveTokens: 8_192
+        )
+        let large = ToolSchemaOfferPlanner.plan(
+            descriptors: ordered,
+            tokenBudget: largeBudget,
+            alwaysKeep: ["tools.search"]
+        )
+        #expect(large.offered.contains { $0.name == "cad.document" })
+        #expect(large.offered.first { $0.name == "cad.document" }?.parametersJSON == cad.parametersJSON)
+
+        // If only the CAD definition fits, it is still admitted before the
+        // optional core descriptors rather than being silently dropped.
+        let cadOnlyBudget = ToolSchemaOfferPlanner.tokenCost(cad)
+            + ToolSchemaOfferPlanner.tokenCost(descriptor(
+                "tools.search", description: "search", schema: #"{"type":"object"}"#
+            ))
+        let tight = ToolSchemaOfferPlanner.plan(
+            descriptors: ordered,
+            tokenBudget: cadOnlyBudget,
+            alwaysKeep: ["tools.search"]
+        )
+        #expect(tight.offered.contains { $0.name == "cad.document" })
+        #expect(!tight.offered.contains { $0.name == "exec.shell" })
+    }
+
+    @Test("The request sizer charges messages, schemas, images and output reserve")
+    func requestSizerChargesEverySection() {
+        let messages = [
+            ProviderMessage(role: "system", content: [.text(String(repeating: "s", count: 3_000))]),
+            ProviderMessage(role: "user", content: [
+                .text("hello"),
+                .imageData(mimeType: "image/png", base64: String(repeating: "A", count: 4_000))
+            ])
+        ]
+        let size = ProviderRequestSizer.measure(
+            messages: messages,
+            schemas: [ToolSchemaDescriptor(
+                name: "t", description: "d",
+                parametersJSON: String(repeating: "p", count: 3_000)
+            )],
+            contextWindowTokens: 8_000,
+            reservedOutputTokens: 1_000
+        )
+        #expect(size.messageTokens > 1_000)
+        #expect(size.schemaTokens > 1_000)
+        #expect(size.reservedOutputTokens == 1_000)
+        #expect(size.availableToolResultTokens < 8_000)
+    }
+}
+
+@Suite("Explicit credential argument sanitisation")
+struct ToolArgumentSanitizerTests {
+    @Test("Cookie object/array and storage setter values are scrubbed with metadata preserved")
+    func cookieShapesAreScrubbed() throws {
+        let json = #"{"url":"https://example.test","headers":{"Cookie":"a=1","Authorization":"Bearer t"},"cookie":{"name":"session","value":"SECRET2","domain":"example.test","path":"/"},"cookies":[{"name":"x","value":"SECRET3"}],"storage":{"area":"localStorage","key":"token","value":"SECRET4"}}"#
+        let redacted = ToolArgumentSanitizer.redactedArgumentText(json)
+        #expect(!redacted.contains("SECRET2"))
+        #expect(!redacted.contains("SECRET3"))
+        #expect(!redacted.contains("SECRET4"))
+        #expect(!redacted.contains("Bearer t"))
+        #expect(redacted.contains("example.test"))
+        #expect(redacted.contains("localStorage"))
+        #expect(redacted.contains("\"name\":\"session\""))
+        #expect(ToolArgumentSanitizer.containsSensitiveValues(Data(json.utf8)))
+    }
+
+    @Test("Actual browser tool shapes: JSON-string headers/cookies and storage set")
+    func browserWireShapesAreScrubbed() {
+        let headers = #"{"Cookie":"sid=BROWSER_SECRET","Accept":"application/json"}"#
+        let cookies = #"[{"name":"sid","value":"BROWSER_SECRET2","domain":"example.test","path":"/"}]"#
+        let arguments: [String: Any] = [
+            "url": "https://example.test",
+            "headers": headers,
+            "cookies": cookies
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: arguments)
+        let redacted = ToolArgumentSanitizer.redactedArgumentText(
+            String(decoding: data, as: UTF8.self),
+            toolName: "browser.cookies"
+        )
+        #expect(!redacted.contains("BROWSER_SECRET"))
+        #expect(redacted.contains("application/json"))
+        #expect(redacted.contains("example.test"))
+        #expect(ToolArgumentSanitizer.containsSensitiveValues(data, toolName: "browser.cookies"))
+
+        let storage = Data(#"{"action":"set","key":"token","value":"BROWSER_SECRET3"}"#.utf8)
+        let storageRedacted = ToolArgumentSanitizer.redactedArgumentText(
+            String(decoding: storage, as: UTF8.self),
+            toolName: "browser.storage"
+        )
+        #expect(!storageRedacted.contains("BROWSER_SECRET3"))
+        #expect(storageRedacted.contains("\"key\":\"token\""))
+        #expect(ToolArgumentSanitizer.containsSensitiveValues(storage, toolName: "browser.storage"))
+
+        // The same {action,key,value} shape for CAD is ordinary data.
+        let cad = Data(#"{"action":"set","key":"foo","value":"bar"}"#.utf8)
+        let cadText = ToolArgumentSanitizer.redactedArgumentText(
+            String(decoding: cad, as: UTF8.self),
+            toolName: "cad.document"
+        )
+        #expect(cadText.contains("\"value\":\"bar\""))
+        #expect(!ToolArgumentSanitizer.containsSensitiveValues(cad, toolName: "cad.document"))
+    }
+
+    @Test("A harmless header container cannot hide credentials in another argument")
+    func harmlessContainersDoNotShortCircuitSensitiveDetection() throws {
+        for container in ["headers", "header", "localStorage"] {
+            let arguments: [String: Any] = [
+                container: "{\"Accept\":\"application/json\"}",
+                "body": ["access_token": "DO_NOT_REPLAY"]
+            ]
+            let data = try JSONSerialization.data(withJSONObject: arguments)
+            #expect(ToolArgumentSanitizer.containsSensitiveValues(data))
+            let scrubbed = ToolArgumentSanitizer.redactedArgumentsJSON(data)
+            #expect(!String(decoding: scrubbed, as: UTF8.self).contains("DO_NOT_REPLAY"))
+        }
+        let listedHeader = #"{"headers":[{"name":"Authorization","value":"NO_HEADER_REPLAY"}]}"#
+        #expect(ToolArgumentSanitizer.containsSensitiveValues(Data(listedHeader.utf8)))
+        #expect(!ToolArgumentSanitizer.redactedArgumentText(listedHeader).contains("NO_HEADER_REPLAY"))
+    }
+
+    @Test("Ordinary name/value pairs are not treated as credentials")
+    func ordinaryPairsAreUntouched() throws {
+        let json = #"{"name":"report.txt","value":"hello"}"#
+        let redacted = ToolArgumentSanitizer.redactedArgumentText(json)
+        #expect(redacted.contains("report.txt"))
+        #expect(redacted.contains("hello"))
+        #expect(!ToolArgumentSanitizer.containsSensitiveValues(Data(json.utf8)))
+    }
+
+    @Test("Malformed JSON still loses a quoted cookie value")
+    func malformedFallback() {
+        let redacted = ToolArgumentSanitizer.redactedArgumentText(#"{"headers":{"Cookie":"a=SECRET"#)
+        #expect(!redacted.contains("SECRET"))
+    }
+}
+
+@Suite("Generic large producer capture")
+struct LargeProducerCaptureTests {
+    struct LargeReplyTool: AgentTool {
+        struct Arguments: Decodable, Sendable {}
+        static let name = "test.largeNativeReply"
+        static let toolDescription = "Return a large structured native reply."
+        static let parametersJSON = #"{"type":"object","additionalProperties":false}"#
+        static let riskLabels: Set<RiskLabel> = []
+        static let isSideEffecting = false
+        static let reply: String = {
+            let head = #"{"capabilities":["draw","measure"],"payload":"#
+            let body = String(repeating: "A", count: 18_000)
+            return head + body + #""}"#
+        }()
+
+        func validate(_ args: Arguments) throws {}
+        func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+            // The producer uses the ordinary digesting factory with the 4K UI
+            // summary cap. The shared factory must retain the full admitted
+            // text transiently; the runtime must then use that full capture
+            // for the model wire when it fits.
+            ToolExecutionOutput(
+                digesting: Self.reply,
+                maximumSummaryCharacters: 4_096
+            )
+        }
+    }
+
+    @Test("A factory-capped 18K native reply reaches the wire whole and stays pageable")
+    func factoryCappedReplyReachesWireWhole() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-large-producer-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let conversationID = UUID()
+        let provider = TestFixtures.localhostProvider()
+        let call = try TestFixtures.toolCall(
+            id: "large-producer", toolName: LargeReplyTool.name, arguments: "{}"
+        )
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(call), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let registry = ToolRunnerRegistry()
+        registry.register(LargeReplyTool())
+        let sink = MockSink()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                toolResultCaptureRoot: root
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: CatalogToolExecutor(runners: registry),
+            auditSink: MockAuditSink(),
+            checkpointStore: MockCheckpointStore(),
+            sink: sink
+        )
+        try await runtime.start(goal: "return a large native reply")
+        #expect(await runtime.state.name == "completed")
+        #expect(adapter.requests.count == 2)
+
+        let wire = try #require(adapter.requests[1].toolResults.first?.output)
+        #expect(wire.utf8.count >= LargeReplyTool.reply.utf8.count)
+        #expect(wire.hasSuffix(String(LargeReplyTool.reply.suffix(64))))
+        #expect(!wire.contains("[middle of tool output compacted]"))
+
+        // The UI/event projection stays the bounded 4K summary.
+        let eventResult = sink.events.compactMap { event -> ToolResult? in
+            if case .toolResult(let result) = event { return result }
+            return nil
+        }.first
+        let summary = try #require(eventResult?.outputSummary)
+        #expect(summary.utf8.count <= 4_096)
+
+        // The full bytes are retained and pageable by the stable ref.
+        let store = ToolResultCaptureStore.shared(durableRoot: root)
+        guard case .index(let rows, _) = await store.taskIndex(
+            conversationID: conversationID
+        ) else {
+            Issue.record("expected a retained result index")
+            return
+        }
+        let row = try #require(rows.first { $0.callID == call.id })
+        guard case .page(let tailPage) = await store.page(
+            conversationID: conversationID,
+            ref: row.ref,
+            offset: row.totalBytes - 64,
+            maxBytes: 64
+        ) else {
+            Issue.record("expected a pageable tail")
+            return
+        }
+        #expect(LargeReplyTool.reply.hasSuffix(tailPage.text))
+    }
+}
+
+@Suite("ToolResult capture receipt metadata")
+struct ToolResultCaptureInfoTests {
+    @Test("safe receipt metadata is optional, Codable and survives the durable projection")
+    func captureInfoRoundTripsWithoutBodiesOrIdentity() throws {
+        let info = ToolResultCaptureInfo(
+            ref: "tr_0123456789abcdef01234567",
+            originalBytes: 90_000,
+            retainedBytes: 4_096,
+            retentionTruncated: true,
+            executionReportedTruncation: false,
+            available: true
+        )
+        let sentinel = "TRANSIENT_BODY_SENTINEL"
+        let result = ToolResult(
+            callID: "call-info",
+            status: .ok,
+            outputSummary: "bounded summary",
+            outputDigest: "digest",
+            capturedOutput: sentinel,
+            captureInfo: info
+        )
+        let data = try JSONEncoder().encode(result)
+        let encoded = String(decoding: data, as: UTF8.self)
+        // Only the safe ref/byte facts are persisted; the transient capture
+        // body never enters the encoded payload.
+        #expect(!encoded.contains(sentinel))
+        #expect(encoded.contains("tr_0123456789abcdef01234567"))
+        let decoded = try JSONDecoder().decode(ToolResult.self, from: data)
+        #expect(decoded.captureInfo == info)
+        // Receipt metadata describes the retention side record, so it is not
+        // part of the settled result's identity.
+        #expect(decoded == result)
+
+        let durable = result.durableProjection()
+        #expect(durable.capturedOutput == nil)
+        #expect(durable.captureInfo == info)
+    }
+
+    @Test("an older payload without receipt metadata decodes with none, never a guess")
+    func legacyPayloadHasNoReceipt() throws {
+        let legacy = #"{"callID":"c","status":"ok","outputSummary":"summary","outputDigest":"d"}"#
+        let decoded = try JSONDecoder().decode(ToolResult.self, from: Data(legacy.utf8))
+        #expect(decoded.captureInfo == nil)
+        #expect(decoded.capturedOutput == nil)
+    }
+
+    @Test("an unavailable retention receipt never exposes a usable ref")
+    func unavailableReceiptDropsRef() {
+        let info = ToolResultCaptureInfo(
+            ref: "tr_0123456789abcdef01234567",
+            originalBytes: 100,
+            retainedBytes: 0,
+            retentionTruncated: false,
+            executionReportedTruncation: false,
+            available: false
+        )
+        #expect(info.ref == nil)
+        #expect(!info.available)
     }
 }

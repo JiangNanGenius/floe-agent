@@ -2444,14 +2444,14 @@ struct AgentRuntimeTests {
         #expect(await runtime.state.name == "completed")
         #expect(adapter.requests.count == 2)
 
-        // The live continuation request carries exactly one bounded form of
-        // the large result, with the provenance envelope intact at the head.
+        // The live continuation request carries the COMPLETE captured result
+        // because it fits this 128K model; the provenance envelope stays at
+        // the head. The arbitrary 2 KiB compaction is gone.
         let liveRequest = try #require(adapter.requests.last)
         let wireOutput = try #require(liveRequest.toolResults.first?.output)
         #expect(wireOutput.contains("trustedSourceID"))
-        #expect(wireOutput.contains("[middle of tool output compacted]"))
-        #expect(wireOutput.contains("originalBytes="))
-        #expect(wireOutput.utf8.count < rawOutput.utf8.count)
+        #expect(!wireOutput.contains("[middle of tool output compacted]"))
+        #expect(wireOutput.contains(rawOutput))
         // Reasoning rides the same request as a capped, non-empty excerpt.
         let liveReasoning = try #require(liveRequest.pendingAssistantReasoning)
         #expect(liveReasoning.hasPrefix("[earlier reasoning omitted]\n"))
@@ -2497,6 +2497,129 @@ struct AgentRuntimeTests {
         #expect(resumedRequest.pendingAssistantReasoning == liveReasoning)
         // Settled work is replayed, never re-executed.
         #expect(executor.executedCalls.map(\.id) == [call.id])
+    }
+
+    // MARK: Sensitive tool output
+
+    struct SensitiveCookieTool: AgentTool {
+        struct Arguments: Decodable, Sendable {
+            var cookie: String?
+            var headers: [String: String]?
+        }
+        static let name = "test.sensitiveCookie"
+        static let toolDescription = "Return an authorized Cookie value for this request only."
+        static let parametersJSON = #"{"type":"object","properties":{"cookie":{"type":"string"},"headers":{"type":"object"}},"additionalProperties":true}"#
+        static let riskLabels: Set<RiskLabel> = [.networkAccess]
+        static let isSideEffecting = false
+
+        func validate(_ args: Arguments) throws {}
+        func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+            ToolExecutionOutput(
+                summary: "Authorized cookie read; the value is supplied in the ephemeral channel.",
+                fullOutputSHA256: FloeDigest.sha256Hex(Data("cookie-read".utf8)),
+                ephemeralSensitiveOutput: "session=MODEL_ONLY_SENTINEL"
+            )
+        }
+    }
+
+    @Test("Sensitive tool output reaches the model once but never checkpoints, audits, captures, events or pages")
+    func sensitiveOutputIsTransient() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-sensitive-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let conversationID = UUID()
+        let provider = TestFixtures.localhostProvider()
+        let model = TestFixtures.testModel(providerID: provider.id)
+        let call = try TestFixtures.toolCall(
+            id: "sensitive-read",
+            toolName: SensitiveCookieTool.name,
+            arguments: #"{"cookie":{"name":"session","value":"ARG_COOKIE_SENTINEL","domain":"example.test"},"headers":{"Authorization":"Bearer ARG_AUTH_SENTINEL"}}"#
+        )
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(call), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let registry = ToolRunnerRegistry()
+        registry.register(SensitiveCookieTool())
+        let executor = CatalogToolExecutor(runners: registry)
+        let checkpoints = MockCheckpointStore()
+        let sink = MockSink()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: provider,
+                model: model,
+                toolResultCaptureRoot: root
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            auditSink: MockAuditSink(),
+            checkpointStore: checkpoints,
+            sink: sink
+        )
+        try await runtime.start(goal: "read the authorized cookie")
+        #expect(await runtime.state.name == "completed")
+        #expect(adapter.requests.count == 2)
+
+        // Model-visible for exactly this request.
+        let wire = try #require(adapter.requests[1].toolResults.first?.output)
+        #expect(wire.contains("MODEL_ONLY_SENTINEL"))
+        #expect(wire.contains("Ephemeral sensitive tool output"))
+
+        // The live call keeps the exact authorized arguments; only the
+        // persistence-boundary copy is scrubbed.
+        #expect(String(decoding: call.argumentsJSON, as: UTF8.self).contains("ARG_COOKIE_SENTINEL"))
+        let persistedCall = ToolArgumentSanitizer.sanitizedForPersistence(call)
+        #expect(!String(decoding: persistedCall.argumentsJSON, as: UTF8.self)
+            .contains("ARG_COOKIE_SENTINEL"))
+        #expect(!String(decoding: persistedCall.argumentsJSON, as: UTF8.self)
+            .contains("ARG_AUTH_SENTINEL"))
+        for checkpoint in checkpoints.saved {
+            let encoded = String(decoding: try checkpoint.encoded(), as: UTF8.self)
+            #expect(!encoded.contains("MODEL_ONLY_SENTINEL"))
+            #expect(!encoded.contains("ARG_COOKIE_SENTINEL"))
+            #expect(!encoded.contains("ARG_AUTH_SENTINEL"))
+        }
+
+        // No event carries the sensitive field or value.
+        for event in sink.events {
+            if case .toolResult(let result) = event {
+                #expect(result.ephemeralSensitiveOutput == nil)
+                #expect(!result.outputSummary.contains("MODEL_ONLY_SENTINEL"))
+            }
+        }
+
+        // Capture/paging contains only the redacted durable summary and never
+        // the raw value or the model-only sentinel.
+        let store = ToolResultCaptureStore.shared(durableRoot: root)
+        if case .search(let hits) = await store.search(
+            conversationID: conversationID,
+            query: "MODEL_ONLY_SENTINEL"
+        ) {
+            #expect(hits.hits.isEmpty)
+        } else {
+            Issue.record("expected a bounded search result")
+        }
+        if case .index(let rows, _) = await store.taskIndex(conversationID: conversationID) {
+            #expect(rows.contains { $0.callID == call.id })
+            for row in rows {
+                if case .page(let page) = await store.page(
+                    conversationID: conversationID,
+                    ref: row.ref,
+                    offset: 0,
+                    maxBytes: 32_000
+                ) {
+                    #expect(!page.text.contains("MODEL_ONLY_SENTINEL"))
+                    #expect(!page.text.contains("ARG_COOKIE_SENTINEL"))
+                }
+            }
+        } else {
+            Issue.record("expected a task index")
+        }
     }
 
     // MARK: Helpers

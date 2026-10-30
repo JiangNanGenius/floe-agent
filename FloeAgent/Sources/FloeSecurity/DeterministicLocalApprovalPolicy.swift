@@ -22,6 +22,10 @@
 //   are covered by `isOrdinaryDocumentReadOrDraft`: they write no original
 //   bytes (drafts write internal proposal state only), so they never need a
 //   per-step card — the actual commit keeps its review.
+// - Native 3D document work (user policy, 2026-10-30) also skips review
+//   when the exact resolved .floecad document is inside a repository. This
+//   exception covers the document itself, not an unrelated output or shared
+//   library. Task/file ownership and revision-bound commit checks still run.
 // - Routine commands in a resolved local Linux guest that are either
 //   strictly read-only or a bounded build/test/format form do not need
 //   repeated review. This is the user's REDUCED-REVIEW policy for the local
@@ -85,8 +89,12 @@ public enum DeterministicLocalApprovalPolicy {
     public static func isOrdinaryNativeCADWork(_ action: ProposedAction) -> Bool {
         guard case .local = action.toolCall.scope,
               action.toolCall.toolName == "cad.document",
-              let context = action.trustedContext, !context.hasUnresolvedExtent,
-              let arguments = action.argumentObject,
+              let arguments = action.argumentObject else { return false }
+        // Static capability discovery does not require an existing document.
+        if arguments["action"] as? String == "capabilities" {
+            return isOrdinaryDocumentReadOrDraft(action)
+        }
+        guard let context = action.trustedContext, !context.hasUnresolvedExtent,
               let path = arguments["path"] as? String,
               (path as NSString).pathExtension.lowercased() == "floecad" else { return false }
         if isOrdinaryDocumentReadOrDraft(action) { return true }
@@ -95,6 +103,14 @@ public enum DeterministicLocalApprovalPolicy {
                "material", "parameters", "animation"].contains(operation),
               context.typedContractCovered,
               context.mutableTargetPaths.count == 1 else { return false }
+        if let resolved = context.nativeCADDocumentPath {
+            // A Canvas-relative path maps to its staged document, not the
+            // task root. Only the runtime can supply this resolved identity.
+            return (resolved as NSString).pathExtension.lowercased() == "floecad"
+                && URL(fileURLWithPath: resolved).standardizedFileURL.resolvingSymlinksInPath().path
+                    == URL(fileURLWithPath: context.mutableTargetPaths[0])
+                        .standardizedFileURL.resolvingSymlinksInPath().path
+        }
         // The trusted typed target must be precisely this document, rather
         // than a model-claimed safe flag or an unrelated output/library file.
         let target: URL

@@ -112,6 +112,48 @@ public struct ToolCall: Sendable, Codable, Identifiable, Hashable {
     }
 }
 
+/// Honest, non-authorizing metadata about one retained copy of a tool result.
+///
+/// It carries ONLY the deterministic capture ref and byte/truncation facts —
+/// never output text, credentials or any other sensitive value — so it may
+/// ride a durable projection and a child provider boundary safely. Its
+/// presence means the runtime's retention store really returned this receipt;
+/// absence means "no verified retention receipt" (an older payload, a legacy
+/// child without the canonical dispatcher, a paging page or a sensitive
+/// result), never that paging is proven impossible for a record that exists.
+public struct ToolResultCaptureInfo: Sendable, Codable, Hashable {
+    /// Deterministic `tr_...` identity of the retained record. Present only
+    /// when the retention outcome was `retained`.
+    public var ref: String?
+    /// Full post-redaction captured length BEFORE the store's per-result cap.
+    public var originalBytes: Int
+    /// Bytes actually retained; this is the pageable length.
+    public var retainedBytes: Int
+    /// The store kept only a prefix of the captured body.
+    public var retentionTruncated: Bool
+    /// The tool itself reported truncating its own output.
+    public var executionReportedTruncation: Bool
+    /// The receipt outcome was `retained`. False means retention was attempted
+    /// and did not keep the record, so paging cannot recover it.
+    public var available: Bool
+
+    public init(
+        ref: String?,
+        originalBytes: Int,
+        retainedBytes: Int,
+        retentionTruncated: Bool,
+        executionReportedTruncation: Bool,
+        available: Bool
+    ) {
+        self.ref = available ? ref : nil
+        self.originalBytes = max(0, originalBytes)
+        self.retainedBytes = max(0, retainedBytes)
+        self.retentionTruncated = retentionTruncated
+        self.executionReportedTruncation = executionReportedTruncation
+        self.available = available
+    }
+}
+
 /// Terminal outcome of a tool execution. Only results in a terminal state
 /// (or explicit recoverable failure) are returned to the model.
 ///
@@ -120,12 +162,20 @@ public struct ToolCall: Sendable, Codable, Identifiable, Hashable {
 /// is deliberately NOT part of result identity: it is excluded from Codable,
 /// exists only between execution and retention, and must never make a UI
 /// dictionary/set hash megabytes or make a decoded result unequal to the
-/// result it was encoded from.
+/// result it was encoded from. `captureInfo` is safe, optional receipt
+/// metadata: it is Codable and survives the durable projection, but is also
+/// excluded from identity because it describes the retention side record, not
+/// the settled result itself.
 public struct ToolResult: Sendable, Codable, Hashable {
     /// Transient sanitized capture: deliberately excluded from CodingKeys so
     /// checkpoints retain their bounded projection rather than large outputs.
     public var capturedOutput: String? = nil
+    /// Transient authorized data, excluded from Codable, identity and durable history.
+    public var ephemeralSensitiveOutput: String? = nil
     public var capturedOutputTruncated: Bool = false
+    /// Safe receipt metadata for the ONE retained copy of this result. Nil
+    /// unless the runtime's retention store actually produced a receipt.
+    public var captureInfo: ToolResultCaptureInfo? = nil
     public var callID: String
     public var status: Status
     public var outcomeUnknown: Bool
@@ -173,7 +223,9 @@ public struct ToolResult: Sendable, Codable, Hashable {
         maximumSummaryCharacters: Int = 4096,
         capturedOutput: String? = nil,
         capturedOutputTruncated: Bool = false,
-        outcomeUnknown: Bool = false
+        outcomeUnknown: Bool = false,
+        ephemeralSensitiveOutput: String? = nil,
+        captureInfo: ToolResultCaptureInfo? = nil
     ) {
         self.callID = callID
         self.status = status
@@ -181,6 +233,8 @@ public struct ToolResult: Sendable, Codable, Hashable {
         self.maximumSummaryCharacters = min(max(0, maximumSummaryCharacters), 262_144)
         self.outputSummary = String(outputSummary.prefix(self.maximumSummaryCharacters))
         self.capturedOutput = capturedOutput
+        self.ephemeralSensitiveOutput = ephemeralSensitiveOutput
+        self.captureInfo = captureInfo
         self.capturedOutputTruncated = capturedOutputTruncated
             || (capturedOutput == nil && self.outputSummary != outputSummary)
         self.outputDigest = outputDigest
@@ -193,9 +247,13 @@ public struct ToolResult: Sendable, Codable, Hashable {
     /// Drops the transient capture fields. Durable projections (checkpoints,
     /// provider/replay history, UI state) use this so a large capture is
     /// neither encoded nor retained, and so comparisons/hashes stay bounded.
+    /// The safe receipt metadata is kept: it contains only a ref and byte
+    /// facts, so a later turn of the same namespace can still name the exact
+    /// retained record without carrying the body.
     public func durableProjection() -> ToolResult {
         var projected = self
         projected.capturedOutput = nil
+        projected.ephemeralSensitiveOutput = nil
         projected.capturedOutputTruncated = false
         return projected
     }
@@ -230,7 +288,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case callID, status, outcomeUnknown, outputSummary, outputDigest, exitStatus, artifacts, outputFiles, provenance, maximumSummaryCharacters
+        case callID, status, outcomeUnknown, outputSummary, outputDigest, exitStatus, artifacts, outputFiles, provenance, maximumSummaryCharacters, captureInfo
     }
 
     public init(from decoder: any Decoder) throws {
@@ -247,6 +305,9 @@ public struct ToolResult: Sendable, Codable, Hashable {
         // stable empty value, never to a guessed or reconstructed receipt.
         outputFiles = try values.decodeIfPresent([RunOutputFile].self, forKey: .outputFiles) ?? []
         provenance = try values.decodeIfPresent(ToolResultProvenance.self, forKey: .provenance)
+        // Backward-compatible: an older payload simply carries no retention
+        // receipt. Never fabricate one from the summary or a guessed run id.
+        captureInfo = try values.decodeIfPresent(ToolResultCaptureInfo.self, forKey: .captureInfo)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -263,6 +324,9 @@ public struct ToolResult: Sendable, Codable, Hashable {
         // wire shapes stay byte-identical for ordinary tools.
         if !outputFiles.isEmpty { try values.encode(outputFiles, forKey: .outputFiles) }
         try values.encodeIfPresent(provenance, forKey: .provenance)
+        // Safe receipt metadata only (ref + byte facts); the captured body
+        // and any sensitive value are excluded from CodingKeys entirely.
+        try values.encodeIfPresent(captureInfo, forKey: .captureInfo)
     }
 }
 

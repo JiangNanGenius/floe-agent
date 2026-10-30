@@ -4,6 +4,28 @@ import FloeCore
 @testable import FloeTools
 
 struct FoundationPrimitivesTests {
+    @Test("A short UI summary retains the complete admitted tool response")
+    func fullToolResponseSurvivesSummaryProjection() throws {
+        let full = String(decoding: try JSONSerialization.data(withJSONObject: [
+            "rows": Array(repeating: "完整参数与结果 mixed text", count: 5000),
+            "tail": "RESULT-TAIL-MUST-SURVIVE"
+        ]), as: UTF8.self)
+        let output = ToolExecutionOutput(digesting: full)
+        #expect(output.summary.count == 4096)
+        #expect(output.summaryTruncated)
+        #expect(output.capturedOutput == full)
+        #expect(!output.capturedOutputTruncated)
+        #expect(output.fullOutputSHA256 == FloeDigest.sha256Hex(Data(full.utf8)))
+        let restored = try #require(output.capturedOutput)
+        let json = try #require(try JSONSerialization.jsonObject(with: Data(restored.utf8)) as? [String: Any])
+        #expect(json["tail"] as? String == "RESULT-TAIL-MUST-SURVIVE")
+        let explicit = ToolExecutionOutput(digesting: full, capturedOutput: "explicit sanitized body",
+                                           capturedOutputTruncated: true)
+        #expect(explicit.capturedOutput == "explicit sanitized body")
+        #expect(explicit.capturedOutputTruncated)
+        #expect(ToolExecutionOutput(digesting: "short").capturedOutput == nil)
+    }
+
     @Test("Digest matches the standard SHA-256 vector")
     func digestVector() {
         #expect(FloeDigest.sha256Hex(Data("abc".utf8))

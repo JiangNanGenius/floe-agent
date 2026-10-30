@@ -120,11 +120,15 @@ struct NativeMediaRoutingTests {
 
     // MARK: - Discovery arbitration
 
-    @Test func coveredMediaTaskKeepsTheInterpreterOutOfTheAutomaticSet() {
+    @Test func capabilityDiscoveryDoesNotSuppressTheInterpreterWhenNativeToolsExist() {
+        // Truthful discovery: the native tools and the interpreter are both
+        // offered; the model chooses. No backend is suppressed because another
+        // backend exists.
         let available = ["exec.shell", "exec.localPython", "video.transcode", "video.edit"].map(descriptor)
         let found = ToolDiscovery.matches(query: "把这个视频转码成 mp4", descriptors: available).map(\.name)
         #expect(found.contains("video.transcode"))
-        #expect(!found.contains("exec.shell"))
+        #expect(found.contains("exec.shell"))
+        // Retired aliases are never discovered.
         #expect(!found.contains("exec.localPython"))
     }
 
@@ -154,13 +158,12 @@ struct NativeMediaRoutingTests {
         #expect(!found.contains("exec.localPython"))
     }
 
-    @Test func mixedTaskPrefersMatchedNativeAndKeepsOtherGroups() {
+    @Test func mixedTaskKeepsEveryMatchedCapabilityWithoutBackendRanking() {
         let available = ["exec.shell", "video.transcode", "document.pdf.inspect", "image.ocr"].map(descriptor)
         let found = ToolDiscovery.matches(query: "把这个视频转码，然后从 PDF 里提取页面", descriptors: available).map(\.name)
-        #expect(found.first.map(ToolRoutingPolicy.isNativeMediaTool) == true)
         #expect(found.contains("video.transcode"))
         #expect(found.contains("document.pdf.inspect"))
-        #expect(!found.contains("exec.shell"))
+        #expect(found.contains("exec.shell"))
     }
 
     @Test func nonMediaDiscoveryIsUnchanged() {
@@ -183,7 +186,8 @@ struct NativeMediaRoutingTests {
 
     @Test func guidanceNamesOnlyOfferedToolsAndDescribesRealBackends() {
         let index = ToolDiscovery.index(["video.transcode", "exec.shell"].map(descriptor))
-        #expect(index.contains("Native-first routing"))
+        #expect(index.contains("Offered native media capabilities"))
+        #expect(!index.contains("Native-first routing"))
         #expect(index.contains("video.transcode"))
         #expect(index.contains("exec.shell"))
         // Never mention an interpreter entry that this run does not offer.
@@ -192,7 +196,7 @@ struct NativeMediaRoutingTests {
         // Native includes configured model routes; no on-device GPU promise is
         // made from a name prefix alone.
         #expect(index.contains("configured model route"))
-        #expect(index.contains("never through the emulated guest"))
+        #expect(index.contains("not through the emulated guest"))
         #expect(!index.contains("Media rule"))
 
         let pythonOnly = ToolDiscovery.index(["video.transcode", "exec.localPython"].map(descriptor))
@@ -208,29 +212,33 @@ struct NativeMediaRoutingTests {
 
     @Test func guidanceWithoutNativeToolsStatesTheFallback() {
         let index = ToolDiscovery.index([descriptor("exec.shell")])
-        #expect(index.contains("Media rule"))
+        #expect(index.contains("No native image/video/audio/PDF/OCR tool is offered"))
         #expect(!index.contains("Native-first routing"))
         // environment.prepareLinux alone is not an execution fallback.
         let prepareOnly = ToolDiscovery.index([descriptor("environment.prepareLinux")])
-        #expect(!prepareOnly.contains("Media rule"))
+        #expect(!prepareOnly.contains("No native image/video/audio/PDF/OCR tool is offered"))
     }
 
     // MARK: - Prompt layer
 
-    @Test func promptCarriesCapabilityRoutingInCloudAndLocalContracts() {
+    @Test func promptStatesCapabilityFactsWithoutEnforcedRouting() {
         let cloud = AgentPromptComposer.compose(mode: .chat, runtimeContext: "ctx", toolsAvailable: true)
-        let routing = cloud.range(of: "# Capability routing")
+        let facts = cloud.range(of: "# Capability facts")
         let mode = cloud.range(of: "# Chat mode")
-        #expect(routing != nil && mode != nil)
-        #expect(routing!.lowerBound < mode!.lowerBound)
+        #expect(facts != nil && mode != nil)
+        #expect(facts!.lowerBound < mode!.lowerBound)
+        #expect(!cloud.contains("Route by capability"))
+        #expect(!cloud.contains("purpose-built native tools"))
+        #expect(!cloud.contains("is owned by the app"))
         #expect(cloud.contains("do not request the global tool directory"))
-        #expect(cloud.contains("never present a scripted or emulated approximation"))
         #expect(cloud.contains("environment.linuxStatus before exec.shell"))
         #expect(cloud.contains("environment.startLinux(vcpus=2)"))
         #expect(cloud.contains("environment.hardRestartLinux(vcpus=2)"))
+        #expect(cloud.contains("choose based on the task"))
 
         let local = AgentPromptComposer.compose(mode: .chat, runtimeContext: "ctx", compactForLocal: true)
-        #expect(local.contains("Route by capability"))
+        #expect(!local.contains("Route by capability"))
+        #expect(!local.contains("use shell/Python only when"))
         #expect(local.contains("environment.startLinux(vcpus, memoryMB)"))
         #expect(local.contains("after interruption reuse the last successful shape"))
         #expect(local.utf8.count < 8_000)

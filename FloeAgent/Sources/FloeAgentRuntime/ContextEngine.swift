@@ -72,7 +72,9 @@ public struct ContextCompressionPolicy: Sendable, Hashable {
     /// tool availability.
     public static func cloud(
         contextWindowTokens: Int,
-        reservedOutputTokens: Int
+        reservedOutputTokens: Int,
+        toolSchemaTokens: Int = 0,
+        imageTokens: Int = 0
     ) -> ContextCompressionPolicy {
         ContextCompressionPolicy(
             mode: .cloud,
@@ -80,6 +82,8 @@ public struct ContextCompressionPolicy: Sendable, Hashable {
             budget: ContextBudget(
                 contextWindowTokens: contextWindowTokens,
                 reservedOutputTokens: reservedOutputTokens,
+                toolSchemaTokens: toolSchemaTokens,
+                imageTokens: imageTokens,
                 triggerRatio: 0.75,
                 targetRatio: 0.55,
                 emergencyRatio: 0.90,

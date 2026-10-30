@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 @MainActor
 final class ComposerOverflowUITests: XCTestCase {
@@ -209,6 +210,55 @@ final class ComposerOverflowUITests: XCTestCase {
         finalShot.name = "New Task composer wrapped with newline"
         finalShot.lifetime = .keepAlways
         add(finalShot)
+    }
+
+    func testLargeTextComposerKeepsDraftAcrossRotation() {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+                               "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL",
+                               "-ui-testing", "-ui-testing-ipad", "--ui-test-skip-onboarding",
+                               "--ui-test-task-management-fixture", "--ui-test-home-composer"]
+        app.launch()
+        defer {
+            app.terminate()
+            XCUIDevice.shared.orientation = .portrait
+        }
+        let input = app.textViews["composer.input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["home.temporary.toggle"].exists,
+                      "The test must edit only the synthetic Home draft")
+        let draft = String(repeating: "大字输入需要换行 Mixed input ", count: 10) + "LARGE-TAIL-VISIBLE"
+        input.tap()
+        // This launch flag uses a dedicated synthetic Home draft identity.
+        let previousDraft = input.value as? String ?? ""
+        if !previousDraft.isEmpty {
+            input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousDraft.count))
+        }
+        input.typeText(draft)
+        XCTAssertTrue(app.buttons["composer.expand"].waitForExistence(timeout: 10))
+        XCTAssertEqual(input.value as? String, draft)
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            XCTAssertTrue(input.waitForExistence(timeout: 10))
+            XCTAssertEqual(input.value as? String, draft, "Rotation must preserve the exact draft")
+            XCTAssertTrue(app.buttons["composer.expand"].waitForExistence(timeout: 10))
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = "Home large text \(orientation.rawValue): inspect LARGE-TAIL-VISIBLE and caret"
+            shot.lifetime = .keepAlways
+            add(shot)
+        }
+        app.buttons["composer.expand"].tap()
+        let editor = app.textViews["composer.editor.input"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 10))
+        XCTAssertEqual(editor.value as? String, draft)
+        editor.tap()
+        editor.typeText(" edited")
+        let edited = editor.value as? String
+        app.buttons["composer.editor.done"].tap()
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        XCTAssertEqual(input.value as? String, edited)
     }
 
     /// Direct measurement against the live host: the editable field must own
