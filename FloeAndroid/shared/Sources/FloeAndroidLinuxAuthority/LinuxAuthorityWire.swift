@@ -367,6 +367,23 @@ public struct LinuxAuthorityConfigureRequest: Codable, Sendable, Equatable {
     }
 }
 
+/// G07.3A — the closed workload-role vocabulary the trusted host may name on
+/// an acquire. Roles are admission accounting only: every lease still holds
+/// the SAME ORIGINAL registry/coordinator authority, and a role can never
+/// widen a workspace/environment/ownership rule.
+public enum LinuxAuthorityLeaseRole: String, Codable, Sendable, Equatable, Hashable, CaseIterable {
+    /// Human interactive terminal tab (two independent sessions).
+    case interactive
+    /// The Agent's one-shot exec.shell command.
+    case agent
+    /// Language run / LSP service session.
+    case run
+
+    /// The historical default: an acquire without a role is one Agent command,
+    /// preserving the previous single-slot admission for legacy callers.
+    public static let legacyDefault: LinuxAuthorityLeaseRole = .agent
+}
+
 public struct LinuxAuthorityAcquireRequest: Codable, Sendable, Equatable {
     /// Required project identity — no hidden first-project/default selection.
     public var projectID: String
@@ -377,15 +394,20 @@ public struct LinuxAuthorityAcquireRequest: Codable, Sendable, Equatable {
     /// Optional explicit environment id; nil resolves through the original
     /// coordinator's project/session ensure chain for THIS workspace only.
     public var environmentID: String?
+    /// Optional bounded workload role. Absent keeps the legacy Agent default.
+    public var leaseRole: String?
 
-    public init(projectID: String, runID: String, conversationID: String?, environmentID: String?) {
+    public init(projectID: String, runID: String, conversationID: String?,
+                environmentID: String?, leaseRole: String? = nil) {
         self.projectID = projectID
         self.runID = runID
         self.conversationID = conversationID
         self.environmentID = environmentID
+        self.leaseRole = leaseRole
     }
 
-    private static let allowedKeys: Set<String> = ["projectID", "runID", "conversationID", "environmentID"]
+    private static let allowedKeys: Set<String> = ["projectID", "runID", "conversationID",
+                                                    "environmentID", "leaseRole"]
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: AnyCodingKey.self)
@@ -394,6 +416,14 @@ public struct LinuxAuthorityAcquireRequest: Codable, Sendable, Equatable {
         runID = try LinuxAuthorityStrict.require(String.self, "runID", in: container)
         conversationID = try LinuxAuthorityStrict.optional(String.self, "conversationID", in: container)
         environmentID = try LinuxAuthorityStrict.optional(String.self, "environmentID", in: container)
+        leaseRole = try LinuxAuthorityStrict.optional(String.self, "leaseRole", in: container)
+    }
+
+    /// Validated role: absent means the legacy Agent default; an unknown
+    /// string is rejected by the authority before any acquire.
+    public var resolvedLeaseRole: LinuxAuthorityLeaseRole? {
+        guard let leaseRole else { return .legacyDefault }
+        return LinuxAuthorityLeaseRole(rawValue: leaseRole)
     }
 }
 
@@ -638,6 +668,13 @@ public struct LinuxAuthorityHandshakeInfo: Codable, Sendable, Equatable {
     /// ONE runtime lease globally, so materialization never mutates a live
     /// directory.
     public var maxConcurrentRuntimeLeases: Int
+    /// G07.3A per-role ceilings actually enforced by this authority.
+    public var maxInteractiveLeases: Int = 0
+    public var maxAgentLeases: Int = 0
+    /// Shared Agent+run execution ceiling (approved default 1).
+    public var maxExecutionLeases: Int = 1
+    /// Live retained leases (all roles).
+    public var activeLeases: Int = 0
     /// ALWAYS false from this module: registry existence is not readiness.
     /// The original records/leases are authoritative for identity; capability
     /// enablement belongs to Main's composition after rootfs materialization,
@@ -646,7 +683,9 @@ public struct LinuxAuthorityHandshakeInfo: Codable, Sendable, Equatable {
 
     public init(wireVersion: Int, configured: Bool, activeLease: Bool,
                 leaseAdmissionPending: Bool, configurationInFlight: Bool,
-                maxConcurrentRuntimeLeases: Int, execShellReady: Bool) {
+                maxConcurrentRuntimeLeases: Int, execShellReady: Bool,
+                maxInteractiveLeases: Int = 0, maxAgentLeases: Int = 0,
+                activeLeases: Int = 0, maxExecutionLeases: Int = 1) {
         self.wireVersion = wireVersion
         self.configured = configured
         self.activeLease = activeLease
@@ -654,6 +693,10 @@ public struct LinuxAuthorityHandshakeInfo: Codable, Sendable, Equatable {
         self.configurationInFlight = configurationInFlight
         self.maxConcurrentRuntimeLeases = maxConcurrentRuntimeLeases
         self.execShellReady = execShellReady
+        self.maxInteractiveLeases = maxInteractiveLeases
+        self.maxAgentLeases = maxAgentLeases
+        self.activeLeases = activeLeases
+        self.maxExecutionLeases = maxExecutionLeases
     }
 }
 
@@ -732,10 +775,14 @@ public struct LinuxAuthorityAcquireInfo: Codable, Sendable, Equatable {
     /// for lifecycle operations.
     public var leaseID: String
     public var descriptor: LinuxAuthorityDescriptor
+    /// The role this lease was admitted under (echoed for host accounting).
+    public var leaseRole: String? = nil
 
-    public init(leaseID: String, descriptor: LinuxAuthorityDescriptor) {
+    public init(leaseID: String, descriptor: LinuxAuthorityDescriptor,
+                leaseRole: String? = nil) {
         self.leaseID = leaseID
         self.descriptor = descriptor
+        self.leaseRole = leaseRole
     }
 }
 
@@ -785,12 +832,15 @@ public struct LinuxAuthorityLeaseStateInfo: Codable, Sendable, Equatable {
     public var started: Bool
     /// Always false in version 1: cancellation and disconnect NEVER release.
     public var released: Bool
+    public var leaseRole: String? = nil
 
-    public init(leaseID: String, state: String, started: Bool, released: Bool) {
+    public init(leaseID: String, state: String, started: Bool, released: Bool,
+                leaseRole: String? = nil) {
         self.leaseID = leaseID
         self.state = state
         self.started = started
         self.released = released
+        self.leaseRole = leaseRole
     }
 }
 

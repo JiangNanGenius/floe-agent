@@ -326,15 +326,14 @@ final class G04TerminalDomainTests: XCTestCase {
         XCTAssertTrue(token.allSatisfy { !$0.isWhitespace || $0 == "_" })
     }
 
-    // MARK: Single engine slot truth (device 2026-10-25: Retry/run/reset refusals)
+    // MARK: Role-bounded engine slots (G07.3A: 2 interactive + 1 Agent)
 
-    func testOpenSessionRefusesWhileSingleEngineSlotHeld() async throws {
-        // The single runtime-UID workload gate is held by a live session: a
-        // second interactive open must refuse with the occupied-slot error
-        // and dispatch NO second shell.start. This is the exact condition
-        // the G04 lanes now surface pre-dispatch as typed saturated /
-        // engineSlotBusy (terminal open, run draft, LSP start) instead of
-        // collapsing into a generic backendFailed after the gate timeout.
+    func testTwoInteractiveSlotsAdmitThenTheThirdRefuses() async throws {
+        // G07.3A replaces the historical single-workload gate with a BOUNDED
+        // role pool. Two independent interactive PTY sessions must be admitted
+        // concurrently (different conversations are different tasks); the THIRD
+        // interactive open refuses pre-dispatch with the typed occupied-slot
+        // error and never reaches the engine transport.
         let transport = FakeTerminalTransport()
         let backend = AndroidLinuxShellBackend(
             transport: transport,
@@ -343,27 +342,31 @@ final class G04TerminalDomainTests: XCTestCase {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("floe-slot-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let runA = UUID()
-        _ = try await backend.openSession(ShellOpenRequest(
-            command: "", cwd: ".", rootURL: root, environment: [:], columns: 80, rows: 24,
-            gateTimeout: 2, sessionID: runA.uuidString.lowercased(), runID: runA,
-            toolEnvironment: nil, conversationID: runA, prepareLinuxIfMissing: false),
-            cancellation: nil)
-        let slotIsBusy = await backend.isEngineSlotBusy()
-        XCTAssertTrue(slotIsBusy)
-        let runB = UUID()
+        func open(_ suffix: String) async throws {
+            let id = UUID()
+            _ = try await backend.openSession(ShellOpenRequest(
+                command: "", cwd: ".", rootURL: root, environment: [:], columns: 80, rows: 24,
+                gateTimeout: 2, sessionID: id.uuidString.lowercased(), runID: id,
+                toolEnvironment: nil, conversationID: id, prepareLinuxIfMissing: false),
+                cancellation: nil)
+        }
+        try await open("a")
+        try await open("b")
+        let third = UUID()
         do {
             _ = try await backend.openSession(ShellOpenRequest(
                 command: "", cwd: ".", rootURL: root, environment: [:], columns: 80, rows: 24,
-                gateTimeout: 0.2, sessionID: runB.uuidString.lowercased(), runID: runB,
-                toolEnvironment: nil, conversationID: runB, prepareLinuxIfMissing: false),
+                gateTimeout: 0.2, sessionID: third.uuidString.lowercased(), runID: third,
+                toolEnvironment: nil, conversationID: third, prepareLinuxIfMissing: false),
                 cancellation: nil)
-            XCTFail("the second open must refuse while the single slot is held")
+            XCTFail("the third interactive open must refuse: only two terminal slots exist")
         } catch let error as FloeError {
-            XCTAssertTrue(String(describing: error).contains("single Linux workload slot is occupied"),
+            XCTAssertTrue(String(describing: error).contains("interactive terminal slots"),
                           String(describing: error))
         }
-        XCTAssertEqual(transport.dispatches.filter { $0.operation == "shell.start" }.count, 1,
+        XCTAssertEqual(transport.dispatches.filter { $0.operation == "shell.start" }.count, 2,
                        "the refused open must never reach the engine transport")
+        let busy = await backend.isEngineSlotBusy()
+        XCTAssertTrue(busy, "two live sessions still mean a busy engine")
     }
 }

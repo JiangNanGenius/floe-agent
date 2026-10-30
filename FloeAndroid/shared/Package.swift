@@ -666,6 +666,9 @@ let package = Package(
             "GRDB", "GRDBSQLite",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeAndroidLinuxAuthorityTests", dependencies: [
+            "FloeAndroidLinuxAuthority", "FloeCore", "FloeEnvironments",
+        ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidShellToolsTests", dependencies: [
             "FloeAndroidShellTools", "FloeAndroidCore", "FloeCore", "FloeTools",
             .product(name: "Crypto", package: "swift-crypto"),

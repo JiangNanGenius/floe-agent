@@ -55,15 +55,15 @@ import FloeAgentRuntime
 // MARK: - Limits
 
 public enum G04TerminalLimits {
-    /// One interactive terminal per exact conversation (the iOS owner store
-    /// is one per workspace; a second interactive pane per task would just
-    /// fight the single engine slot). A `.run` session may coexist while an
-    /// interactive session exists only when the engine slot is free — the
-    /// backend gate refuses the second open honestly (`.notStarted`/policy
-    /// refusal), never a fake queue.
-    public static let maximumSessionsPerConversation = 1
-    /// Global live UI (terminal + run) sessions owned by this domain.
-    public static let maximumLiveSessions = 4
+    /// G07.3A: TWO independent interactive terminal tabs per exact
+    /// conversation. Each has its own engine PTY session, process, emulator
+    /// state and stop; they are not views over one session. A `.run` session
+    /// may coexist under its own engine role slot.
+    public static let maximumSessionsPerConversation = 2
+    /// Global live UI (terminal + run) sessions owned by this domain. The
+    /// engine has exactly 3 slots: two interactive tabs + ONE shared execution
+    /// (Agent/run) slot.
+    public static let maximumLiveSessions = 3
     /// Bounded per-session raw output ring handed to the host between
     /// claims (matches the iOS owner's 256 KiB presentation bound). When
     /// the UI lags, the OLDEST unconsumed chunks roll over and the typed
@@ -169,6 +169,8 @@ private final class TerminalSessionRecord: @unchecked Sendable {
     let ownerRunID: UUID              // native-issued UI identity (NEVER a model run)
     let conversationID: UUID
     let workspaceID: UUID
+    /// Canonical Core workspace root used for the live-read project identity.
+    let rootURL: URL
     let purpose: G04TerminalSessionPurpose
     let requestID: String
     let cancellation: CancellationToken
@@ -190,16 +192,28 @@ private final class TerminalSessionRecord: @unchecked Sendable {
     var stopReason: String?
     var faultCode: String?
     var lastRunToolchain: String?
+    /// Engine process generation and workspace ownership echoed by the start
+    /// reply. Live read-only file actions require the EXACT generation.
+    var environmentID: String = ""
+    var runtimeGeneration: String = ""
+    var workspaceOwner: Bool = true
+    /// G07.3A measured preparation facts (never promised latencies).
+    var prepareReused = false
+    var prepareMillis: Int64 = 0
+    var prepareCopiedBytes: Int64 = 0
+    var importMillis: Int64 = 0
+    var importedEntries: Int64 = 0
     /// Set by ONE explicit user Close. It never settles the session by
     /// itself: the pump still waits for the engine's REAL terminal (and its
     /// workspace export receipt) and only then may report `.closed`.
     var closeRequested = false
 
     init(sessionToken: String, ownerRunID: UUID, conversationID: UUID, workspaceID: UUID,
-         purpose: G04TerminalSessionPurpose, requestID: String,
+         rootURL: URL, purpose: G04TerminalSessionPurpose, requestID: String,
          cancellation: CancellationToken, receipt: G04WorkspaceOwnedOperation) {
         self.sessionToken = sessionToken; self.ownerRunID = ownerRunID
         self.conversationID = conversationID; self.workspaceID = workspaceID
+        self.rootURL = rootURL
         self.purpose = purpose; self.requestID = requestID
         self.cancellation = cancellation; self.receipt = receipt
     }
@@ -267,6 +281,20 @@ public actor G04TerminalStore {
             "runID": record.purpose.runTag ?? "",
             "requestID": record.requestID,
             "rolledOverBytes": record.rolledOverBytes,
+            // G07.3A explicit identity: the generic terminal surface and the
+            // live read-only file API both address ONE generation-bound
+            // session, never a conversation-wide guess.
+            "environmentID": record.environmentID,
+            "generation": record.runtimeGeneration,
+            "workspaceOwner": record.workspaceOwner,
+            // Measured stage facts: a reused base revision and the ACTUAL
+            // materialize/import durations of this admission. 0 for a
+            // participant's skipped import, never an invented cache hit.
+            "prepareReused": record.prepareReused,
+            "prepareMillis": record.prepareMillis,
+            "prepareCopiedBytes": record.prepareCopiedBytes,
+            "importMillis": record.importMillis,
+            "importedEntries": record.importedEntries,
         ]
         if let exitCode = record.exitCode { object["exitCode"] = Int(exitCode) }
         if let stopReason = record.stopReason { object["stopReason"] = stopReason }
@@ -339,8 +367,8 @@ public actor G04TerminalStore {
         guard let components, RuntimeFacadeLinuxBindings.shared.isCapabilityQualified else {
             reply(requestID, ok: false, code: .engineUnqualified); return
         }
-        if await components.backend.isEngineSlotBusy() {
-            // The single engine slot is occupied: nothing was started, and
+        if !(await components.backend.hasCapacity(for: .run)) {
+            // The run/service role slot is occupied: nothing was started, and
             // no queue is fabricated (ORIGINAL .notStarted semantics).
             reply(requestID, ok: false, code: .notStarted, reason: "engineSlotBusy")
             return
@@ -660,20 +688,22 @@ public actor G04TerminalStore {
             reply(requestID, ok: false, code: .engineUnqualified); return
         }
         let conversationSessions = byConversation[conversationID] ?? []
+        let liveInteractive = conversationSessions.filter {
+            sessions[$0]?.purpose.isInteractive == true && sessions[$0]?.alive == true
+        }.count
         if purpose == .interactive,
-           conversationSessions.contains(where: { sessions[$0]?.purpose.isInteractive == true && sessions[$0]?.alive == true }) {
+           liveInteractive >= G04TerminalLimits.maximumSessionsPerConversation {
             reply(requestID, ok: false, code: .saturated, reason: "interactiveTerminalAlreadyOpen"); return
         }
         guard sessions.count < G04TerminalLimits.maximumLiveSessions else {
             reply(requestID, ok: false, code: .saturated, reason: "uiSessionsSaturated"); return
         }
-        if await components.backend.isEngineSlotBusy() {
-            // G04-R2 single-workload truth (the same honest pre-check the run
-            // lane makes): the gate is held by a live language server or
-            // program run, so NOTHING is minted, registered or dispatched.
-            // The refusal names the exact condition instead of waiting the
-            // gate timeout and collapsing into a generic backendFailed
-            // (ORIGINAL .notStarted truth; never a queue, never a lie).
+        let role: LinuxShellLeaseRole = purpose.isInteractive ? .interactive : .run
+        if !(await components.backend.hasCapacity(for: role)) {
+            // The role slot is held by a live session of this class, so
+            // NOTHING is minted, registered or dispatched. The refusal names
+            // the exact condition instead of waiting the gate timeout and
+            // collapsing into a generic backendFailed (never a queue/lie).
             reply(requestID, ok: false, code: .saturated, reason: "engineSlotBusy")
             return
         }
@@ -715,11 +745,21 @@ public actor G04TerminalStore {
                 toolEnvironment: nil,        // ORIGINAL persisted workspace binding resolves the layer
                 clientSessionID: nil,        // ORIGINAL nil-owner = existing UI terminals
                 conversationID: conversationID,
-                workspaceOperationID: operationGrantID)
+                workspaceOperationID: operationGrantID,
+                leaseRole: role)
             let record = TerminalSessionRecord(sessionToken: result.sessionID, ownerRunID: ownerRunID,
                                                conversationID: conversationID, workspaceID: workspaceID,
+                                               rootURL: rootURL,
                                                purpose: purpose, requestID: requestID,
                                                cancellation: receipt.cancellation, receipt: receipt)
+            record.environmentID = result.environmentID
+            record.runtimeGeneration = result.runtimeGeneration ?? ""
+            record.workspaceOwner = result.workspaceOwner ?? true
+            record.prepareReused = result.prepareReused ?? false
+            record.prepareMillis = result.prepareMillis ?? 0
+            record.prepareCopiedBytes = result.prepareCopiedBytes ?? 0
+            record.importMillis = result.importMillis ?? 0
+            record.importedEntries = result.importedEntries ?? 0
             record.columns = max(20, min(columns, 500))
             record.rows = max(5, min(rows, 200))
             record.phase = result.alive ? .running : .closed
@@ -989,6 +1029,103 @@ public actor G04TerminalStore {
         _ = root
     }
 
+    // MARK: - Live read-only guest files (G07.3A)
+
+    /// Resolves ONE generation-bound live session to its live-files transport.
+    /// Every clause is a real read: the store is not retired, the exact native
+    /// generation is live, the token is a live record of THIS conversation and
+    /// the engine reported the process generation/environment that admitted it.
+    /// A participant session is still a valid read identity (its workspace root
+    /// is the live owner's guest tree); a settled/unknown token answers nil.
+    private func liveFilesContext(conversationID: UUID, sessionToken: String)
+        -> (record: TerminalSessionRecord, transport: any LinuxLiveFilesTransport,
+            projectID: String)? {
+        guard !retired, G02NativeRootEpoch.readback() == epoch,
+              let record = sessions[sessionToken], record.conversationID == conversationID,
+              record.alive, !record.runtimeGeneration.isEmpty, !record.environmentID.isEmpty,
+              let components, let transport = components.liveFiles else { return nil }
+        let projectID = LinuxShellProjectMapping
+            .projectID(forCanonicalCoreWorkspaceRoot: record.rootURL).uuidString
+        return (record, transport, projectID)
+    }
+
+    /// Bounded directory/tree listing over the LIVE guest workspace.
+    func filesTree(conversationID: UUID, sessionToken: String, relativePath: String,
+                   maxEntries: Int, maxDepth: Int, requestID: String) async {
+        guard let (record, transport, projectID) =
+                liveFilesContext(conversationID: conversationID, sessionToken: sessionToken) else {
+            reply(requestID, ok: false, code: .sessionUnknown, reason: "staleLiveSession")
+            return
+        }
+        let request = LinuxLiveFilesRequest(
+            sessionID: sessionToken,
+            workspaceKey: projectID,
+            environmentID: record.environmentID,
+            generation: record.runtimeGeneration,
+            relativePath: relativePath,
+            maxEntries: max(1, min(maxEntries, LinuxLiveFilesRequest.maximumTreeEntries)),
+            maxDepth: max(0, min(maxDepth, LinuxLiveFilesRequest.maximumDepth)))
+        do {
+            let tree = try await transport.filesTree(request, timeoutMillis: 8_000)
+            let entries: [[String: Any]] = tree.entries.map { entry in
+                ["path": entry.path, "kind": entry.kind,
+                 "size": entry.size, "mtimeMillis": entry.mtimeMillis]
+            }
+            reply(requestID, ok: true, extra: [
+                "workspaceKey": projectID,
+                "sessionToken": sessionToken,
+                "generation": tree.generation,
+                "listingToken": tree.listingToken,
+                "truncated": tree.truncated,
+                "entries": entries,
+            ])
+        } catch let error as LinuxLiveFilesError {
+            reply(requestID, ok: false, code: .backendFailed, reason: error.code)
+        } catch {
+            reply(requestID, ok: false, code: .backendFailed, reason: "liveFilesUnavailable")
+        }
+    }
+
+    /// Bounded content page over the LIVE guest workspace. A race/instability
+    /// is a typed refusal (`retry:*`), never a partial "complete" snapshot.
+    func filesRead(conversationID: UUID, sessionToken: String, relativePath: String,
+                   offset: Int64, maxBytes: Int, requestID: String) async {
+        guard let (record, transport, projectID) =
+                liveFilesContext(conversationID: conversationID, sessionToken: sessionToken) else {
+            reply(requestID, ok: false, code: .sessionUnknown, reason: "staleLiveSession")
+            return
+        }
+        let request = LinuxLiveFilesRequest(
+            sessionID: sessionToken,
+            workspaceKey: projectID,
+            environmentID: record.environmentID,
+            generation: record.runtimeGeneration,
+            relativePath: relativePath,
+            offset: max(0, offset),
+            maxBytes: max(1, min(maxBytes, LinuxLiveFilesRequest.maximumReadBytes)))
+        do {
+            let page = try await transport.filesRead(request, timeoutMillis: 8_000)
+            reply(requestID, ok: true, extra: [
+                "workspaceKey": projectID,
+                "sessionToken": sessionToken,
+                "generation": page.generation,
+                "path": page.path,
+                "offset": page.offset,
+                "bytes": page.bytes,
+                "size": page.size,
+                "mtimeMillis": page.mtimeMillis,
+                "digest": page.digest,
+                "consistencyToken": page.consistencyToken,
+                "contentBase64": page.content.base64EncodedString(),
+                "truncated": page.truncated,
+            ])
+        } catch let error as LinuxLiveFilesError {
+            reply(requestID, ok: false, code: .backendFailed, reason: error.code)
+        } catch {
+            reply(requestID, ok: false, code: .backendFailed, reason: "liveFilesUnavailable")
+        }
+    }
+
     // MARK: Owned-slot conflict truth (model admission gate)
 
     /// Trusted host fact for the runtime's admission gate (Main ruling
@@ -1020,7 +1157,7 @@ public actor G04TerminalStore {
         // engine already released (or a gate freed by a generation fence) is
         // never presented as a live conflict.
         let ownedKeys = await components.backend.ownedSessions().map(\.sessionKey)
-        let slotBusy = await components.backend.isEngineSlotBusy()
+        let slotBusy = !(await components.backend.hasCapacity(for: .interactive))
         // Ownership is re-proven AFTER those two suspensions and immediately
         // before the fact is published: this actor can be retired, or the Root
         // generation replaced, while either read is in flight — and the
@@ -1144,7 +1281,11 @@ public actor G04TerminalStore {
     static func settledPhase(closeRequested: Bool, cancelled: Bool,
                              exitCode: Int32?, workspaceStatus: String?) -> G04TerminalPhase {
         if closeRequested, cancelled {
-            return workspaceStatus == "synced" ? .closed : .fault
+            // `deferred` is a REAL settled close when another owned session
+            // still mounts the same workspace: the export obligation moved to
+            // the last session, so this one is closed (not a fake saved state
+            // and not a fault). A missing/failed export stays a fault.
+            return (workspaceStatus == "synced" || workspaceStatus == "deferred") ? .closed : .fault
         }
         return exitCode != nil ? .exited : .stopped
     }

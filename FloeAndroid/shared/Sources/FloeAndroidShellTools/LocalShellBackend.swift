@@ -214,6 +214,11 @@ public struct ShellOpenRequest: Sendable {
     public var workspaceOperationID: UUID?
     /// UI terminals surface an installation card instead of downloading during open.
     public var prepareLinuxIfMissing: Bool
+    /// G07.3A trusted workload role for engine admission accounting.
+    public var leaseRole: LinuxShellLeaseRole
+    /// G07.3A same-workspace participation hint (trusted same-conversation
+    /// observation only; the runtime re-proves the live owner).
+    public var workspaceReuse: LinuxShellWorkspaceReuse?
 
     public init(
         command: String = "",
@@ -228,7 +233,9 @@ public struct ShellOpenRequest: Sendable {
         toolEnvironment: ToolEnvironment? = nil,
         conversationID: UUID? = nil,
         workspaceOperationID: UUID? = nil,
-        prepareLinuxIfMissing: Bool = true
+        prepareLinuxIfMissing: Bool = true,
+        leaseRole: LinuxShellLeaseRole = .interactive,
+        workspaceReuse: LinuxShellWorkspaceReuse? = nil
     ) {
         self.command = command
         self.cwd = cwd
@@ -243,6 +250,8 @@ public struct ShellOpenRequest: Sendable {
         self.conversationID = conversationID
         self.workspaceOperationID = workspaceOperationID
         self.prepareLinuxIfMissing = prepareLinuxIfMissing
+        self.leaseRole = leaseRole
+        self.workspaceReuse = workspaceReuse
     }
 }
 
@@ -251,12 +260,37 @@ public struct ShellOpenResult: Sendable, Equatable {
     public var initialOutput: String
     public var terminalOutput: Data?
     public var alive: Bool
+    /// G07.3A engine process generation that admitted this session.
+    public var runtimeGeneration: String?
+    /// G07.3A resolved environment identity of the engine session.
+    public var environmentID: String
+    /// True when this session owns the workspace import/export.
+    public var workspaceOwner: Bool?
+    /// G07.3A measured preparation facts (see LinuxShellStartReply).
+    public var prepareReused: Bool?
+    public var prepareMillis: Int64?
+    public var prepareCopiedBytes: Int64?
+    public var importMillis: Int64?
+    public var importedEntries: Int64?
 
-    public init(sessionID: String, initialOutput: String, alive: Bool, terminalOutput: Data? = nil) {
+    public init(sessionID: String, initialOutput: String, alive: Bool,
+                terminalOutput: Data? = nil, runtimeGeneration: String? = nil,
+                environmentID: String = "", workspaceOwner: Bool? = nil,
+                prepareReused: Bool? = nil, prepareMillis: Int64? = nil,
+                prepareCopiedBytes: Int64? = nil, importMillis: Int64? = nil,
+                importedEntries: Int64? = nil) {
         self.sessionID = sessionID
         self.initialOutput = initialOutput
         self.terminalOutput = terminalOutput
         self.alive = alive
+        self.runtimeGeneration = runtimeGeneration
+        self.environmentID = environmentID
+        self.workspaceOwner = workspaceOwner
+        self.prepareReused = prepareReused
+        self.prepareMillis = prepareMillis
+        self.prepareCopiedBytes = prepareCopiedBytes
+        self.importMillis = importMillis
+        self.importedEntries = importedEntries
     }
 }
 

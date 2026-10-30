@@ -349,8 +349,11 @@ final class LinuxShellBackendTests: XCTestCase {
     func testGateBusyReportsNotStartedNeverFakeTimeout() async {
         let root = try! ShellTestRoot.make()
         let (backend, transport) = makeBackend()
-        // Occupy the slot with an interactive session.
-        let open = ShellOpenRequest(cwd: ".", rootURL: root, sessionID: "session-held", runID: UUID())
+        // G07.3A: occupy the AGENT role slot with an agent-role session. A
+        // human interactive terminal no longer blocks the Agent command (role
+        // slots are independent); the SAME role still refuses honestly.
+        let open = ShellOpenRequest(cwd: ".", rootURL: root, sessionID: "session-held", runID: UUID(),
+                                    leaseRole: .agent)
         transport.pollScript = { session, cursor, nth in
             if nth == 1 { return FakeLinuxShellTransport.page(session: session, cursor: cursor, text: "$ ") }
             return nil

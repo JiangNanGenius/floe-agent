@@ -12,10 +12,18 @@
 // environment DB, no host execution alias, and no backend selection outside
 // the settled `linuxPRoot` value.
 //
-// Settled lifecycle rules (Main 2026-10-22):
-// - ONE active runtime lease globally for this initial backend (bounded
-//   concurrency 1): a later materialization can never mutate a live
-//   directory, and Main's rootfs materializer runs under the held lease.
+// Settled lifecycle rules (Main 2026-10-22) + G07.3A bounded concurrency:
+// - The engine admits the APPROVED bounded set: two human interactive terminal
+//   tabs plus ONE execution slot shared by the Agent `exec.shell` command and a
+//   language/run service session (3 total). Each lease is a separate holder
+//   with its own process identity, cancellation token and completion proof;
+//   leases never share ownership, and the role/execution ceilings are enforced
+//   here in the SAME authority (no second lease store exists).
+// - A role is admission accounting ONLY. Every acquire still runs the ORIGINAL
+//   registry/coordinator resolver (workspace hash, session ownership, backend,
+//   writable layer), so a role cannot widen what may open.
+// - Legacy acquires without a role are Agent commands, preserving the
+//   historical single-slot behaviour for every un-opted caller.
 // - Holders live only here. Nothing in this wire releases on client
 //   disconnect — there is no disconnect signal — and `cancel` NEVER
 //   releases: it only requests cooperative cancellation and retains the
@@ -68,6 +76,7 @@ public actor FloeLinuxAuthority {
 
     private struct LeaseEntry {
         let leaseID: String
+        let role: LinuxAuthorityLeaseRole
         let holder: LinuxExecutionLeaseHolder
         let descriptor: LinuxExecutionLeaseDescriptor
         let cancellation: CancellationToken
@@ -80,6 +89,18 @@ public actor FloeLinuxAuthority {
 
     private enum TerminalKind: Equatable { case released, abandoned }
 
+    /// G07.3A bounded role ceilings (enforced in this ONE authority).
+    /// Approved default: TWO interactive tabs + ONE execution slot, where the
+    /// Agent command and a language/run session SHARE that one execution slot.
+    /// Total live leases are therefore <= 3 (never 4).
+    static let maximumConcurrentLeases = 3
+    static let maximumInteractiveLeases = 2
+    static let maximumExecutionLeases = 1
+    /// Per-role individual ceilings; Agent and Run are combined by
+    /// `maximumExecutionLeases` (a role keeps its own admission identity).
+    static let maximumAgentLeases = 1
+    static let maximumRunLeases = 1
+
     private var configuration: Configuration?
     private var leases: [String: LeaseEntry] = [:]
     /// Reentrancy gates (Main review 2026-10-22): Swift actors suspend at
@@ -88,7 +109,11 @@ public actor FloeLinuxAuthority {
     /// before any suspension — and cleared on every exit path, so a
     /// concurrent acquire/configure callback (possibly from different trusted
     /// threads) can never pass a stale emptiness check.
-    private var acquireInFlight = false
+    /// Number of acquires currently past the synchronous gate (spans their
+    /// awaits). A role counter is reserved in the same synchronous stretch, so
+    /// two concurrent acquires can never over-admit a role.
+    private var acquireInFlight = 0
+    private var acquireInFlightByRole: [LinuxAuthorityLeaseRole: Int] = [:]
     private var configureInFlight = false
     /// Bounded FIFO of finished lease ids so an idempotent `complete`/
     /// `abandon` retry returns success instead of `leaseNotFound`.
@@ -101,10 +126,14 @@ public actor FloeLinuxAuthority {
             wireVersion: LinuxAuthorityWire.version,
             configured: configuration != nil,
             activeLease: !leases.isEmpty,
-            leaseAdmissionPending: acquireInFlight,
+            leaseAdmissionPending: acquireInFlight > 0,
             configurationInFlight: configureInFlight,
-            maxConcurrentRuntimeLeases: 1,
-            execShellReady: false
+            maxConcurrentRuntimeLeases: Self.maximumConcurrentLeases,
+            execShellReady: false,
+            maxInteractiveLeases: Self.maximumInteractiveLeases,
+            maxAgentLeases: Self.maximumAgentLeases,
+            activeLeases: leases.count,
+            maxExecutionLeases: Self.maximumExecutionLeases
         )
     }
 
@@ -142,7 +171,7 @@ public actor FloeLinuxAuthority {
                existing.baseRevision == baseRevision {
                 return Self.configureInfo(existing, replaced: false)
             }
-            guard leases.isEmpty, !acquireInFlight else {
+            guard leases.isEmpty, acquireInFlight == 0 else {
                 // Any retained holder OR a pending lease admission (reserved
                 // across its await window) locks the configuration.
                 throw LinuxAuthorityError(code: .configurationLockedByLease,
@@ -240,22 +269,59 @@ public actor FloeLinuxAuthority {
         } else {
             environmentID = nil
         }
-        // Settled global concurrency 1: ANY retained entry (including a
-        // failed-release one) blocks acquisition so no later materialization
-        // can mutate a live directory. The IN-FLIGHT admission is reserved
-        // here, in this synchronous stretch BEFORE the first suspension, so
-        // two concurrent acquires (or an acquire against a configuring
-        // replacement) can never both pass the emptiness check (Main
-        // reentrancy review 2026-10-22).
+        // Bounded role admission: the role is resolved and the counters are
+        // reserved in this synchronous stretch BEFORE the first suspension, so
+        // concurrent acquires can never over-admit. Absent role = legacy Agent
+        // (one command), which leaves every un-opted caller unchanged.
+        let role: LinuxAuthorityLeaseRole
+        if let raw = request.leaseRole {
+            guard let parsed = LinuxAuthorityLeaseRole(rawValue: raw) else {
+                throw LinuxAuthorityError(code: .invalidIdentifier,
+                                          message: "leaseRole must be one of interactive|agent|run")
+            }
+            role = parsed
+        } else {
+            role = .legacyDefault
+        }
         guard !configureInFlight else {
             throw LinuxAuthorityError(code: .configurationInFlight,
                                       message: "a configure is applying; lease admission is refused until it settles")
         }
-        guard leases.isEmpty, !acquireInFlight else {
-            throw LinuxAuthorityError(code: .leaseBusy, message: "one runtime lease is already retained or being admitted; release or abandon it before acquiring another")
+        let liveForRole = leases.values.filter { $0.role == role }.count
+            + (acquireInFlightByRole[role] ?? 0)
+        let liveExecution = leases.values.filter { $0.role == .agent || $0.role == .run }.count
+            + (acquireInFlightByRole[.agent] ?? 0) + (acquireInFlightByRole[.run] ?? 0)
+        guard leases.count + acquireInFlight < Self.maximumConcurrentLeases else {
+            throw LinuxAuthorityError(code: .leaseBusy,
+                                      message: "the runtime admits at most \(Self.maximumConcurrentLeases) concurrent workloads; release a session before acquiring another")
         }
-        acquireInFlight = true
-        defer { acquireInFlight = false }
+        switch role {
+        case .interactive:
+            guard liveForRole < Self.maximumInteractiveLeases else {
+                throw LinuxAuthorityError(code: .leaseBusy,
+                                          message: "both interactive terminal sessions are already live or being admitted")
+            }
+        case .agent, .run:
+            // ONE shared execution slot: an Agent command and a language/run
+            // session can never be live at the same time. The role still
+            // identifies which exact workload holds it.
+            guard liveExecution < Self.maximumExecutionLeases else {
+                throw LinuxAuthorityError(code: .leaseBusy,
+                                          message: "the single execution slot is occupied by the \(role.rawValue) workload; an Agent command and a run session share it")
+            }
+            guard liveForRole < (role == .agent ? Self.maximumAgentLeases : Self.maximumRunLeases) else {
+                throw LinuxAuthorityError(code: .leaseBusy,
+                                          message: "the \(role.rawValue) execution workload is already live or being admitted")
+            }
+        }
+        acquireInFlight += 1
+        acquireInFlightByRole[role, default: 0] += 1
+        defer {
+            acquireInFlight -= 1
+            let remaining = (acquireInFlightByRole[role] ?? 1) - 1
+            if remaining <= 0 { acquireInFlightByRole.removeValue(forKey: role) }
+            else { acquireInFlightByRole[role] = remaining }
+        }
 
         let workspace = try LinuxAuthorityRootPolicy.workspace(parentCanonicalPath: config.workspacesRoot.canonicalPath, name: projectID.uuidString)
         let cancellation = CancellationToken()
@@ -288,8 +354,10 @@ public actor FloeLinuxAuthority {
             throw LinuxAuthorityError(code: .internalError, message: "acquired descriptor does not match the requested identities; lease was retired unstarted")
         }
         let leaseID = UUID().uuidString
-        leases[leaseID] = LeaseEntry(leaseID: leaseID, holder: holder, descriptor: descriptor, cancellation: cancellation)
-        return LinuxAuthorityAcquireInfo(leaseID: leaseID, descriptor: Self.descriptorInfo(descriptor))
+        leases[leaseID] = LeaseEntry(leaseID: leaseID, role: role, holder: holder,
+                                     descriptor: descriptor, cancellation: cancellation)
+        return LinuxAuthorityAcquireInfo(leaseID: leaseID, descriptor: Self.descriptorInfo(descriptor),
+                                         leaseRole: role.rawValue)
     }
 
     private static func descriptorInfo(_ descriptor: LinuxExecutionLeaseDescriptor) -> LinuxAuthorityDescriptor {
@@ -329,7 +397,8 @@ public actor FloeLinuxAuthority {
             entry.processIdentity = request.processIdentity
             leases[leaseID.uuidString] = entry
         }
-        return LinuxAuthorityLeaseStateInfo(leaseID: leaseID.uuidString, state: "started", started: true, released: false)
+        return LinuxAuthorityLeaseStateInfo(leaseID: leaseID.uuidString, state: "started", started: true,
+                                            released: false, leaseRole: entry.role.rawValue)
     }
 
     /// Cooperative cancellation REQUEST only: cancels the context token the
@@ -345,7 +414,8 @@ public actor FloeLinuxAuthority {
         entry.cancellation.cancel()
         leases[leaseID.uuidString] = entry
         return LinuxAuthorityLeaseStateInfo(leaseID: leaseID.uuidString, state: "cancelRequested",
-                                            started: entry.processIdentity != nil, released: false)
+                                            started: entry.processIdentity != nil, released: false,
+                                            leaseRole: entry.role.rawValue)
     }
 
     /// The ONLY finish path for a STARTED lease. Requires the exact bound

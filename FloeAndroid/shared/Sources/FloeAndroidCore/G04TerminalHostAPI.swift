@@ -258,7 +258,10 @@ public final class G04TerminalHostMailbox: @unchecked Sendable {
 
     private func drainLoop(epoch boundEpoch: UInt64) async {
         let backgroundControls: Set<String> = ["terminalOpen", "terminalClose", "runDraft",
-            "lspEnsure", "lspShutdown", "lspSetLanguageEnabled"]
+            "lspEnsure", "lspShutdown", "lspSetLanguageEnabled",
+            // Bounded read-only live file pages: a slow guest read must never
+            // hold already-typed keystrokes behind it.
+            "terminalFilesTree", "terminalFilesRead"]
         while !Task.isCancelled {
             let alive = condition.g04Locked { !closed && epoch == boundEpoch }
             guard alive else { return }
@@ -378,6 +381,29 @@ public final class G04TerminalHostMailbox: @unchecked Sendable {
                              "code": "invalidConversation"]); return
             }
             await store.statusSnapshot(conversationID: conversation, requestID: requestID)
+        case "terminalFilesTree":
+            guard let conversation = uuid(object["conversationID"]),
+                  let token = object["sessionToken"] as? String, !token.isEmpty else {
+                emitControl(["type": "actionReply", "requestID": requestID, "ok": false,
+                             "code": "invalidPayload"]); return
+            }
+            await store.filesTree(conversationID: conversation, sessionToken: token,
+                                  relativePath: object["relativePath"] as? String ?? "",
+                                  maxEntries: int(object["maxEntries"]) ?? 200,
+                                  maxDepth: int(object["maxDepth"]) ?? 3,
+                                  requestID: requestID)
+        case "terminalFilesRead":
+            guard let conversation = uuid(object["conversationID"]),
+                  let token = object["sessionToken"] as? String, !token.isEmpty,
+                  let relativePath = object["relativePath"] as? String, !relativePath.isEmpty else {
+                emitControl(["type": "actionReply", "requestID": requestID, "ok": false,
+                             "code": "invalidPayload"]); return
+            }
+            await store.filesRead(conversationID: conversation, sessionToken: token,
+                                  relativePath: relativePath,
+                                  offset: (object["offset"] as? NSNumber)?.int64Value ?? 0,
+                                  maxBytes: int(object["maxBytes"]) ?? 16 * 1024,
+                                  requestID: requestID)
         case "runDraft":
             guard let conversation = uuid(object["conversationID"]),
                   let relativePath = object["relativePath"] as? String,
