@@ -364,7 +364,13 @@ class FloeApplication : Application() {
                 linuxShell.stopAndDrain(linuxShell.boundNativeEpoch) &&
                 (linuxCleanup.boundNativeEpoch == 0L ||
                     linuxCleanup.drainAndStop(linuxCleanup.boundNativeEpoch)) &&
-                prepareNotesForRootStop()
+                prepareNotesForRootStop() &&
+                // G07.1: the full-window PDF/image preview holds a verified
+                // native-root snapshot plus an isolated renderer lease. Its
+                // real quiescent closure must precede Root retirement; the
+                // network lane remains the LAST drain clause.
+                (runtimeHost?.prepareWorkspaceDocumentPreviewForRootStop() != false) &&
+                (runtimeHost?.prepareNetworkForRootStop() != false)
         }
         runtimeCoordinator.start()
         // G02 App host binding: data-only creation; commands stay off-main.

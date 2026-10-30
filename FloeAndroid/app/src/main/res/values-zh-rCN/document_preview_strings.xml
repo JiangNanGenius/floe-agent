@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_document_preview_opening">正在打开…</string>
+    <string name="workspace_document_preview_failed_title">无法打开此文件</string>
+    <string name="workspace_document_preview_owner">此文档已不可用。</string>
+    <string name="workspace_document_preview_source">无法从当前工作区读取该文件。</string>
+    <string name="workspace_document_preview_too_large">此文件过大，无法预览。</string>
+    <string name="workspace_document_preview_invalid">此文件与其类型不符。</string>
+    <string name="workspace_document_preview_unsupported">此设备无法显示此格式。</string>
+    <string name="workspace_document_preview_transport">当前无法预览，请重试。</string>
+    <string name="workspace_document_preview_render">此页面无法显示，请重试。</string>
+    <string name="workspace_document_preview_retry">重试</string>
+    <string name="workspace_document_preview_password_title">受保护的 PDF</string>
+    <string name="workspace_document_preview_password_needed">输入密码以打开此 PDF。</string>
+    <string name="workspace_document_preview_password_rejected">密码不正确。</string>
+    <string name="workspace_document_preview_password_unsupported">此设备的 PDF 查看器无法打开受保护的 PDF。</string>
+    <string name="workspace_document_image_unsupported_body">此版本无法显示 SVG 或 TIFF 图片，文件未被读取或修改。</string>
+    <string name="workspace_document_pdf_page_indicator">%1$d / %2$d</string>
+    <string name="workspace_document_pdf_prev">上一页</string>
+    <string name="workspace_document_pdf_next">下一页</string>
+    <string name="workspace_document_zoom_out">缩小</string>
+    <string name="workspace_document_zoom_in">放大</string>
+    <string name="workspace_document_zoom_fit">适应</string>
+</resources>

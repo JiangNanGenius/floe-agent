@@ -1,4 +1,6 @@
 <!-- docs-updated: 2026-10-30 -->
+
+> 本指南主要介绍iOS/iPadOS。Android Alpha16 新增手机网络工作台与列表优先的全窗口文档。打开 **更多 → 网络** 开始检查；只有在你选择“允许访问”后，应用才请求实际需要的系统权限（验证版本为定位），授权后不会自动重放检查，请再次开始。文件中的文本／代码可展开为全窗口编辑器，PDF 与常见栅格图片以只读全窗口预览打开。新任务首次使用 Linux 终端可能需要准备运行环境，同一任务稍后进入会复用。手记仍从“任务列表 → 手记 → 新建”进入；基础编辑无需配置模型，AI 助手使用自备云端配置。安装、平台差异与当前验证边界见[Android发布说明](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.16)和[安装说明](../README.zh-CN.md#开始使用)。
 <!-- doc-anchor: section-1 -->
 # Floe Agent 使用手册
 

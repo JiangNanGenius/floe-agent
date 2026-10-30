@@ -256,8 +256,10 @@ private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) 
                         .semantics { contentDescription = menuCd },
                     contentAlignment = Alignment.Center,
                 ) {
+                    // ⇄ inspectorButton: iOS chart.bar (temporary Progress)
+                    // and sidebar.right (ordinary inspector menu).
                     IconGlyph(
-                        if (state?.isTemporary == true) FloeIcons.Chip else FloeIcons.BookPages,
+                        if (state?.isTemporary == true) FloeIcons.ChartBar else FloeIcons.SidebarTrailing,
                         Floe.colors.label,
                         20.dp,
                     )

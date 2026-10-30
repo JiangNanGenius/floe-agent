@@ -231,6 +231,7 @@ private fun FloeShellContent(
         AttachmentPickerEffect(runtimeHost)
         SkillsFolderPickerEffect(runtimeHost)
         LocalNetworkPermissionEffect(runtimeHost)
+        com.floe.android.host.NetworkDiagnosticPermissionEffect(runtimeHost)
         com.floe.android.host.BackgroundTaskPermissionEffect(runtimeHost)
         // D04 (job-6f953da44de048d0): the owned run-output Save-Copy
         // CREATE_DOCUMENT launcher mounts exactly once with the other
@@ -425,7 +426,8 @@ private fun FloeShellContent(
         }
         val totalWidthDp = maxWidth.value
         val overlayMaxWidthDp = maxWidth * 0.92f
-        val twoColumn = maxWidth >= FloeLayout.PersistentTwoColumnMinWidth
+        val minimumWindowWidth = androidx.compose.ui.platform.LocalConfiguration.current.smallestScreenWidthDp.toFloat()
+        val twoColumn = !FloeLayout.usesCompactNavigation(maxWidth.value, minimumWindowWidth)
         val persistentSidebar = twoColumn && !sidebarCollapsed
         val inspectorWidthFits = twoColumn && !sidebarCollapsed &&
             maxWidth >= FloeLayout.InspectorOverlayMaxTotalWidth

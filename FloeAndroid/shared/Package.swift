@@ -574,6 +574,16 @@ let package = Package(
             "FloeCore", "FloeTools", "FloeTransport",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
+        // G07.1 network diagnostics: the six `network.*` AgentTools, request
+        // v1 builder and the typed `NetworkObservationV1` over the FROZEN
+        // Android `PhoneNetworkService` API (platform01 owns :core:network).
+        // Pure tool/schema/validation/value code — no sockets, no JNI and no
+        // duplicate transport; the trusted epoch mailbox lives in
+        // FloeAndroidCore (G07NetworkHostMailbox) and Kotlin performs the
+        // actual platform IO on IO dispatchers.
+        .target(name: "FloeAndroidNetwork", dependencies: [
+            "FloeCore", "FloeTools",
+        ], swiftSettings: strictSettings),
         // Android-safe manifest mirror of ZIPFoundation 0.9.20 (rev
         // 22787ffb59de99e5dc1fbfe80b19c97a904ad48d): the upstream
         // Package.swift picks its zlib binding with a host-evaluated
@@ -628,6 +638,10 @@ let package = Package(
             // qualified original tools/service link before the facade
             // registers them (dependency only; NO service registration here).
             "FloeAndroidWebTools", "FloeAndroidShellTools", "FloeAndroidJobTools", "FloeAndroidWorkspaceTools",
+            // G07.1 network tools + typed observation over the frozen phone
+            // service API; the epoch mailbox/executor in this module owns the
+            // only model-to-host route and registers the runners at bind.
+            "FloeAndroidNetwork",
             "FloeWorkspace", "FloeGit", "FloeBrowser",
             // G06 independent Notes authority (one NotesStore per runtime
             // generation; no chat database dependency or incidental open).
@@ -682,8 +696,16 @@ let package = Package(
             "FloeAndroidWorkspaceTools", "FloeCore", "FloeTools",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
+        // G07.1 network tool/request/observation suites (authored, host-
+        // runnable): argument clamping, canonical request v1, observation
+        // identity validation, export redaction and summary bounds. No
+        // sockets, no Android runtime, no device.
+        .testTarget(name: "FloeAndroidNetworkTests", dependencies: [
+            "FloeAndroidNetwork", "FloeCore", "FloeTools",
+        ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [
             "FloeBrowser", "FloeAndroidCore", "FloeCore", "FloeModels", "FloePersistence", "GRDB",
+            "FloeAndroidNetwork",
             "FloeWorkspace",
             // G02-P3 transport suites: the REAL incremental seam + provider
             // pump/MCP collect bodies run on the host against synthetic

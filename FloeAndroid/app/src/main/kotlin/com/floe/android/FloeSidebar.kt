@@ -15,6 +15,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import com.floe.android.design.FloeChoiceMenu
+import com.floe.android.design.FloeChoiceOption
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -200,6 +206,20 @@ fun FloeSidebar(
                 tint = Floe.colors.label,
             )
             Spacer(Modifier.weight(1f))
+            Box {
+                var moreOpen by remember { mutableStateOf(false) }
+                FloeCircleButton(
+                    icon = FloeIcons.Ellipsis, contentDescription = stringResource(R.string.shell_more),
+                    onClick = { moreOpen = true }, visualSize = 34.dp, iconSize = 19.dp,
+                    background = androidx.compose.ui.graphics.Color.Transparent, hairline = false, tint = Floe.colors.label,
+                )
+                FloeChoiceMenu(
+                    expanded = moreOpen, onDismissRequest = { moreOpen = false },
+                    options = listOf(FloeChoiceOption("network", stringResource(R.string.network_workbench))),
+                    selectedKey = if (selection == SidebarSelection.More(MoreDestination.NETWORK)) "network" else null,
+                    onSelect = { moreOpen = false; onSelect(SidebarSelection.More(MoreDestination.NETWORK)) },
+                )
+            }
         }
     }
 }

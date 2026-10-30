@@ -162,6 +162,13 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
     /// never re-enter each other's gate.
     private var gateHolder: String?
     private var sessions: [String: SessionRecord] = [:]
+    /// G07.1 terminal04: bounded client-visible phase composition of the MOST
+    /// RECENT one-shot dispatch this backend measured (closed vocabulary +
+    /// integers, ≤512 bytes). Diagnostic only; it never feeds admission, an
+    /// outcome or a lease. Cleared at the start of every dispatch, so a run
+    /// that fails BEFORE any phase was measured journals NO composition
+    /// instead of a previous run's timing.
+    private var lastRunPhaseReport: String?
 
     public init(
         transport: any LinuxShellTransport,
@@ -172,6 +179,12 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         self.readiness = readiness
         self.configuration = configuration
     }
+
+    /// Bounded phase composition of the MOST RECENT one-shot run (client
+    /// half: gate/start/stdin/run/settle). `nil` until a run was dispatched on
+    /// this backend. Read-only diagnostics: it carries no command text, path,
+    /// identifier or output, and reading it changes no state.
+    public func lastRunPhaseDiagnostics() -> String? { lastRunPhaseReport }
 
     /// Trusted observation for the facade/Main reconciliation surface:
     /// leases whose real release has not been proven yet. Model code never
@@ -202,32 +215,60 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
     // MARK: - LocalShellBackend: one-shot run
 
     public func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
+        await executeRun(request, cancellation: cancellation).0
+    }
+
+    /// G07.1 terminal04: the outcome and the phase composition of the SAME
+    /// dispatch, returned together from ONE actor call. This is what the
+    /// journal attributes; the `last` accessor below is only for a diagnostic
+    /// UI read.
+    public func runReportingPhases(_ request: ShellRunRequest,
+                                   cancellation: CancellationToken?) async -> ShellRunReport {
+        let (outcome, phases) = await executeRun(request, cancellation: cancellation)
+        lastRunPhaseReport = phases
+        return ShellRunReport(outcome: outcome, phaseTimings: phases)
+    }
+
+    private func executeRun(_ request: ShellRunRequest,
+                            cancellation: CancellationToken?) async -> (ShellRunOutcome, String?) {
         // Fail-closed owner routing: the engine payload requires runID and
         // a canonical project root; nothing is guessed.
         guard let runID = request.runID else {
-            return .failed(message: "Linux shell requires an explicit run owner; no run context was supplied (fail closed)")
+            return (.failed(message: "Linux shell requires an explicit run owner; no run context was supplied (fail closed)"), nil)
         }
         guard readiness.isQualifiedForLinuxShell else {
-            return .failed(message: readiness.refusalGuidance)
+            return (.failed(message: readiness.refusalGuidance), nil)
         }
         guard request.command.utf8.count <= 16 * 1024, !request.command.contains("\0") else {
-            return .failed(message: "command exceeds the engine 16 KiB bound or contains NUL")
+            return (.failed(message: "command exceeds the engine 16 KiB bound or contains NUL"), nil)
         }
         if let refusal = LinuxShellStartRequest.environmentRefusal(request.environment) {
-            return .failed(message: "Linux engine bounds rejected the requested env before dispatch: \(refusal)")
+            return (.failed(message: "Linux engine bounds rejected the requested env before dispatch: \(refusal)"), nil)
         }
 
         // Unique per-dispatch gate/record key so a concurrent same-token
         // one-shot can never share or steal the slot bookkeeping.
         let holdKey = "run:" + request.sessionID + ":" + UUID().uuidString.lowercased()
         let started = Date()
+        // G07.1 terminal04: bounded client-visible phase composition for THIS
+        // dispatch. Diagnostic only — every deadline/outcome/lease rule below
+        // is unchanged; `started` (wall clock) keeps its ORIGINAL position
+        // and its ORIGINAL meaning for `durationMs` and the local deadline.
+        // The composition is returned WITH the outcome (never stored globally
+        // for attribution), so a concurrent/denied dispatch can never be
+        // journaled against another call's timing.
+        var phases = TerminalLatencyPhases(originNanos: TerminalLatencyPhases.now())
         guard await acquireGate(heldBy: holdKey, timeout: request.gateTimeout, cancellation: cancellation) else {
-            if cancellation?.isCancelled == true || Task.isCancelled { return .cancelled }
+            phases.mark(.gate, at: TerminalLatencyPhases.now())
+            let cancelled = cancellation?.isCancelled == true || Task.isCancelled
+            if cancelled { return (.cancelled, phases.render(terminal: .cancelled)) }
             // The engine slot is still owned (or being reconciled): nothing
             // of this command ran. Distinct from a timeout, exactly as the
             // original contract documents.
-            return .notStarted(reason: "the single runtime-UID Linux workload slot is occupied (another command or session still holds the engine lease); nothing was started")
+            return (.notStarted(reason: "the single runtime-UID Linux workload slot is occupied (another command or session still holds the engine lease); nothing was started"),
+                    phases.render(terminal: .notStarted))
         }
+        phases.mark(.gate, at: TerminalLatencyPhases.now())
 
         let start = LinuxShellStartRequest(
             projectID: LinuxShellProjectMapping.projectID(forCanonicalCoreWorkspaceRoot: request.rootURL),
@@ -252,8 +293,10 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             reply = try await transport.shellStart(start)
         } catch {
             releaseGate(heldBy: holdKey)
-            return .failed(message: describeTransportError(error))
+            phases.mark(.start, at: TerminalLatencyPhases.now())
+            return (.failed(message: describeTransportError(error)), phases.render(terminal: .failed))
         }
+        phases.mark(.start, at: TerminalLatencyPhases.now())
         var engine = EngineSession(sessionKey: holdKey,
                                    engineSessionID: reply.sessionID,
                                    environmentID: reply.environmentID,
@@ -285,6 +328,15 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         }
         if let eofNote = await sendStdinEof(sessionKey: holdKey) {
             stdinFailureNote = stdinFailureNote.map { "\($0); \(eofNote)" } ?? eofNote
+        }
+        phases.mark(.stdin, at: TerminalLatencyPhases.now())
+
+        // Closes the diagnostic composition at the REAL return point and
+        // returns it for THIS call's report. Diagnostic only: `durationMs`
+        // below keeps its ORIGINAL `started` origin and meaning.
+        func closePhases(_ terminal: TerminalLatencyPhases.Terminal) -> String {
+            phases.mark(.settle, at: TerminalLatencyPhases.now())
+            return phases.render(terminal: terminal)
         }
 
         var merged = Data()
@@ -320,13 +372,16 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                 // Hand ownership to reconciliation instead of pretending.
                 handoffReconciliation(holdKey)
                 let durationMs = Int(Date().timeIntervalSince(started) * 1000)
-                if cancelIntent { return .cancelled }
+                phases.mark(.run, at: TerminalLatencyPhases.now())
+                if cancelIntent { return (.cancelled, closePhases(.cancelled)) }
                 if timeoutIntent {
-                    return .timedOut(partialStdout: String(decoding: merged, as: UTF8.self),
-                                     partialStderr: stdinFailureNote.map { "[metadata] \($0)" } ?? "",
-                                     durationMs: durationMs)
+                    return (.timedOut(partialStdout: String(decoding: merged, as: UTF8.self),
+                                      partialStderr: stdinFailureNote.map { "[metadata] \($0)" } ?? "",
+                                      durationMs: durationMs),
+                            closePhases(.timedOut))
                 }
-                return .failed(message: "engine lease retained: the stop/exit could not be proven within the bounded wait; the lease stays owned for reconciliation and nothing was replayed or assumed")
+                return (.failed(message: "engine lease retained: the stop/exit could not be proven within the bounded wait; the lease stays owned for reconciliation and nothing was replayed or assumed"),
+                        closePhases(.failed))
             }
             let page: LinuxShellPollReply
             do {
@@ -340,13 +395,15 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                 // cancellation rules require.
                 handoffReconciliation(holdKey)
                 let message = describeTransportError(error)
-                if cancelIntent { return .cancelled }
+                phases.mark(.run, at: TerminalLatencyPhases.now())
+                if cancelIntent { return (.cancelled, closePhases(.cancelled)) }
                 if timeoutIntent {
-                    return .timedOut(partialStdout: String(decoding: merged, as: UTF8.self),
-                                     partialStderr: "",
-                                     durationMs: Int(Date().timeIntervalSince(started) * 1000))
+                    return (.timedOut(partialStdout: String(decoding: merged, as: UTF8.self),
+                                      partialStderr: "",
+                                      durationMs: Int(Date().timeIntervalSince(started) * 1000)),
+                            closePhases(.timedOut))
                 }
-                return .failed(message: message)
+                return (.failed(message: message), closePhases(.failed))
             }
             let room = max(0, request.maxOutputBytes - merged.count)
             if page.mergedOutput.count > room {
@@ -372,6 +429,11 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             if page.leaseReleased {
                 // Real terminal proven by the engine (whole-UID quiescence;
                 // the runtime releases the lease exactly once after finish()).
+                // G07.1 terminal04: the release wait ends HERE; its span
+                // covers process execution plus the engine's own stop proof
+                // and workspace export (both engine-owned, see
+                // `unobserved` in the rendered diagnostics).
+                phases.mark(.run, at: TerminalLatencyPhases.now())
                 sessions.removeValue(forKey: holdKey)
                 releaseGate(heldBy: holdKey)
                 let durationMs = Int(Date().timeIntervalSince(started) * 1000)
@@ -402,8 +464,8 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                         if let summary = evidence.recoverableSummary { message += " " + summary }
                         if let detail = evidence.evidenceText { message += "\n" + detail }
                     }
-                    return .failed(message: message
-                        + (mergedText.isEmpty ? "" : "\n" + mergedText))
+                    return (.failed(message: message
+                        + (mergedText.isEmpty ? "" : "\n" + mergedText)), closePhases(.failed))
                 }
                 if page.cancelled {
                     // Engine truth outranks the local intent: a cancelled
@@ -411,40 +473,57 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                     // fixed service code; unknown codes surface honestly.
                     switch page.stopReason {
                     case "timeout":
-                        return .timedOut(partialStdout: mergedText, partialStderr: metaErr,
-                                         durationMs: durationMs)
+                        return (.timedOut(partialStdout: mergedText, partialStderr: metaErr,
+                                          durationMs: durationMs), closePhases(.timedOut))
                     case "user-stop":
-                        return .cancelled
+                        return (.cancelled, closePhases(.cancelled))
                     case "start-binding-failed":
-                        return .failed(message: "the engine could not bind the spawned process (stopReason=start-binding-failed); the stop itself is proven by the released lease")
+                        return (.failed(message: "the engine could not bind the spawned process (stopReason=start-binding-failed); the stop itself is proven by the released lease"),
+                                closePhases(.failed))
                     case .some(let code):
-                        if cancelIntent { return .cancelled }
-                        return .failed(message: "engine cancelled terminal with unknown stopReason='\(code)'; no outcome was assumed")
+                        if cancelIntent { return (.cancelled, closePhases(.cancelled)) }
+                        return (.failed(message: "engine cancelled terminal with unknown stopReason='\(code)'; no outcome was assumed"),
+                                closePhases(.failed))
                     case nil:
                         // Defensive: cancelled without a reason code. Only a
                         // tracked local intent may classify it.
                         if timeoutIntent {
-                            return .timedOut(partialStdout: mergedText, partialStderr: metaErr,
-                                             durationMs: durationMs)
+                            return (.timedOut(partialStdout: mergedText, partialStderr: metaErr,
+                                              durationMs: durationMs), closePhases(.timedOut))
                         }
-                        return .cancelled
+                        return (.cancelled, closePhases(.cancelled))
                     }
                 }
                 if let waitErrno = page.waitErrno, waitErrno != 0 {
                     // A waitpid error is never reported as a benign exit or
                     // "still running" (engine ExitResult contract).
-                    return .failed(message: "engine wait error waitErrno=\(waitErrno)"
-                                   + (stdinFailureNote.map { "; \($0)" } ?? ""))
+                    return (.failed(message: "engine wait error waitErrno=\(waitErrno)"
+                                    + (stdinFailureNote.map { "; \($0)" } ?? "")),
+                            closePhases(.failed))
                 }
                 let code = engine.reportedExit ?? -1
-                return .exited(code: code,
-                               stdout: mergedText,
-                               stderr: metaErr,
-                               truncated: truncated || gapSeen,
-                               stderrTruncated: false,
-                               durationMs: durationMs)
+                return (.exited(code: code,
+                                stdout: mergedText,
+                                stderr: metaErr,
+                                truncated: truncated || gapSeen,
+                                stderrTruncated: false,
+                                durationMs: durationMs),
+                        closePhases(.exited))
             }
-            try? await Task.sleep(nanoseconds: configuration.pollIntervalNanos)
+            // G07.1 terminal04 confirmed redundant-wait repair: a page that
+            // BOTH reports more buffered bytes at the engine AND delivered
+            // bytes into our bounded buffer means the next page is ready NOW,
+            // so the fixed inter-poll sleep only delays an already-available
+            // bounded read. Skip it exactly then. Every other page — idle, or
+            // a discarding poll where the caller's output cap is already
+            // reached — keeps the ORIGINAL cadence, so no busy loop is
+            // introduced. The deadline/cancellation checks at the top of every
+            // iteration are unchanged: nothing about the timeout, lease, exit,
+            // cancellation or export contract moves.
+            let buffered = page.more && !page.mergedOutput.isEmpty && room > 0
+            if !buffered {
+                try? await Task.sleep(nanoseconds: configuration.pollIntervalNanos)
+            }
         }
     }
 

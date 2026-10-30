@@ -115,6 +115,24 @@ internal object FloeIdeIcons {
         }
     }
 
+    /** arrow.up.left.and.arrow.down.right — promote to the full-window document. */
+    val Expand = icon("floe.ide.expand") {
+        stroke {
+            moveTo(9f, 4f)
+            lineTo(4f, 4f)
+            lineTo(4f, 9f)
+            moveTo(15f, 4f)
+            lineTo(20f, 4f)
+            lineTo(20f, 9f)
+            moveTo(4f, 15f)
+            lineTo(4f, 20f)
+            lineTo(9f, 20f)
+            moveTo(20f, 15f)
+            lineTo(20f, 20f)
+            lineTo(15f, 20f)
+        }
+    }
+
     /** textformat.subset — code language chip. */
     val Code = icon("floe.ide.code") {
         stroke {

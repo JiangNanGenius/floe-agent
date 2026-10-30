@@ -15,6 +15,15 @@ import java.util.UUID
  * Call on the service's IO dispatcher, never on the UI thread. A returned
  * file is an immutable input snapshot, not permission to save to its source.
  * The Office session owner retains/removes it after its native reader closes.
+ *
+ * G07.1 extension (ONE storage implementation, never a rewritten one): the
+ * accepted extension set and byte cap are now parameters of [stage],
+ * defaulted to the reviewed OOXML triple and the original 256 MiB cap, so
+ * every existing Office caller is byte-identical in behaviour. The
+ * read-only full-window PDF/image preview passes its OWN closed format set
+ * and a tighter image cap; it still goes through the exact same native
+ * egress, streaming SHA-256, exact-EOF and immutable part→fsync→rename
+ * discipline, and it never receives a host path from the model/UI.
  */
 internal class WorkspaceOfficeSnapshotStager(
     private val root: File,
@@ -47,11 +56,24 @@ internal class WorkspaceOfficeSnapshotStager(
     /** No provider grant, editor slot, Run or native write is minted here.
      * [isCurrent] must check this captured owner, not whichever task is now
      * selected. It also carries the service operation's cancellation fence.
+     * [formats] and [maxBytes] are closed caller inputs (never derived from
+     * the file or its name) and are bounded again here.
      */
-    fun stage(owner: Owner, relativePath: String, isCurrent: () -> Boolean): Snapshot {
+    fun stage(
+        owner: Owner,
+        relativePath: String,
+        formats: Set<String> = OFFICE_FORMAT_EXTENSIONS,
+        maxBytes: Long = MAX_BYTES,
+        isCurrent: () -> Boolean,
+    ): Snapshot {
         val parts = relativePath.split('/')
         val extension = relativePath.substringAfterLast('.', "").lowercase(Locale.ROOT)
-        if (extension !in setOf("docx", "xlsx", "pptx") ||
+        val cap = maxBytes.coerceIn(1L, MAX_BYTES)
+        // Normalise the caller's set once: a lowercase extension is the only
+        // shape ever compared, so a case/whitespace variant can never widen
+        // the accepted purpose.
+        val allowed = formats.map { it.lowercase(Locale.ROOT) }.toSet()
+        if (extension !in allowed ||
             relativePath.length > 4096 || relativePath.any { it == '\\' || it.code < 32 } ||
             parts.any { it.isEmpty() || it == "." || it == ".." }) throw Failure("invalidOfficePath")
         fun checkOwner() {
@@ -70,8 +92,8 @@ internal class WorkspaceOfficeSnapshotStager(
             if (!info.ok) throw Failure("snapshotInfoRefused:${info.status}")
             val bytes = info.number("bytes") ?: throw Failure("snapshotInfoMissing")
             val sha = info.text("sha256")
-            if (bytes > MAX_BYTES) throw Failure("contentTooLarge")
-            if (bytes !in 1..MAX_BYTES || !sha.matches(Regex("[0-9a-f]{64}")) ||
+            if (bytes > cap) throw Failure("contentTooLarge")
+            if (bytes !in 1..cap || !sha.matches(Regex("[0-9a-f]{64}")) ||
                 info.text("logicalPath") != relativePath || info.text("mode") != "export") {
                 throw Failure("invalidSnapshotInfo")
             }
@@ -148,5 +170,9 @@ internal class WorkspaceOfficeSnapshotStager(
     companion object {
         const val MAX_BYTES = 256L * 1024 * 1024
         private const val CHUNK_BYTES = 64 * 1024
+
+        /** The reviewed Office purpose; the default keeps every existing
+         * caller byte-identical (do not widen Office opens). */
+        val OFFICE_FORMAT_EXTENSIONS: Set<String> = setOf("docx", "xlsx", "pptx")
     }
 }

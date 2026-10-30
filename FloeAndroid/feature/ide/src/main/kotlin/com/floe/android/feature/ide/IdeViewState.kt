@@ -45,6 +45,10 @@ public data class IdeViewState(
     public val tabs: List<IdeTabItem> = emptyList(),
     public val closeRequest: IdeCloseRequest? = null,
     public val bottomPaneOpen: Boolean = false,
+    /** Phone file-list-first navigation level. The wide split and the 430dp
+     * tablet pane ignore it: [FloeIdeWorkspace] reads it only when the actual
+     * window is a phone. Document/tab/draft truth stays in the fields above. */
+    public val compactLevel: IdeCompactLevel = IdeCompactLevel.FILE_LIST,
     public val caretLine: Int = 0,
     public val caretColumn: Int = 0,
     public val selectionLengthUtf16: Int = 0,

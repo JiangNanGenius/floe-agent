@@ -202,3 +202,41 @@ G05-R3 当前仍在修复后的统一编译及 App 验收阶段，实际大目�
 G06尚未关闭或发布。文本保存与重开状态已修复，并通过三星实际保存及强制停止后重开；Office准备、PDF背景、手机操作层级和完整工作区导入仍需闭合。下一批集中编译/设备复核这些改动，已通过的定向证据复用。上述新增系统差异登记为后续输入，不预排工作队列。
 
 下次大目标收尾从`90da89dbc1ee9c6e38bc0bb313547ecb192b6ba6`之后的实际iOS源码增量继续核对。以上差异审计是源码/元数据证据，不代表审计任务运行过iOS编译、Apple处理或设备安装。
+
+### 2026-10-30：G06 收尾前的公共主线增量（`b469c25b` → `ac11bdf0`）
+
+- 读回：`origin/main` = `ac11bdf05f7c829dd712c6c0c7a8ad198996c73d`（2026-10-30T07:46:26+11:00，tree `0c61c75c09f5e6b3d2895a0e5ac85a8f003ca8b3`）；基线 `b469c25bf11bd88bfb551ef346d7c31a1b82134d`（tree `35790e2d9c7302e0469070d5e6d7af9981ea4a24`）。`90da89db` 至 `b469` 的 `FloeAgent` 差异为零（仅 Android/Feather 提交），`b469` 是 `ac11` 的祖先；区间 11 个提交，其中 4 个触及 `FloeAgent/FloeApp|Sources`。
+- 范围：仅 `FloeAgent/FloeApp` 与 `FloeAgent/Sources`，32 文件 +24700/−19592；逐文件变更行数与预计算 `SOURCE_DELTA.stat` 一致（stat 只给增删合计；路径缩写宽度不同）。`FloeAgent/ThirdParty/FloeCADKit` 另有 54 文件 +14156/−241，属 vendor 输入，未计入本 32 文件，也不据此声称已进入安卓共享源。
+- **G06 结论：当面无功能变化、无新增阻断。**`Sources/FloeNotes`、`FloeApp/Notes`、`FloeApp/Canvas`、Office/PDF/笔迹产品文件均为 0；`Localizable.xcstrings` 仅新增 162 个键（153 个 `cad.*`、9 个 provider 连接/发现键），既有键与值零改动、零删除。手记参照、PDF/笔迹合同和 Office 保存/重开路径不漂移；待验证项仍是最终 APK 的连续笔迹/保存/导出、终端关闭文件导出与手机头部几何。
+- 分类：provider/content 正确性 17 文件 +921/−87（端点身份、订阅连接探针、发现闸、图像/视频 wire family、catalog 限额、服务角色语义、provider 内容包基线 1.1.1→1.1.2）按 D18/D24 既有行补强，归 G02 后续/G11/G14，不进入 G07；原生 CAD 编辑 4 文件 +863/−13（material/parameters/capture、共享材质库、canvas-cad 所有权）新增 D34，归 G10；本地模型 CAD 暴露 2 文件 +180/−28 因安卓不做本地大模型排除；共享管线 6 文件 +95/−8 的新行为限定于 `cad.document`、canvas-cad 键或 CAD 视口 artifact 前缀，`document.*`/`office.*`/`notes.*`/`canvas.*` 的 typed target、mutation lease 与普通文档审批不变；CAD 测试夹具 1 文件 +13，资源 2 文件为 catalog/字符串。
+- 新编号（接续 D33）：
+
+| ID | 新增实际源码差异 | 安卓安排 |
+| --- | --- | --- |
+| IOS-D34 | `cad.document` 新增 `material`/`parameters`/`capture`：共享材质库合并写、特征参数与既有圆半径更新、真实视口 PNG（revision/change_count/图像与内容摘要分离）、canvas-cad 冻结映射、修订钉与临时会话只读拒绝；同批 `FloeCADKit` vendor 为输入 | G10（G07–G09 之后）；复用统一几何内核、typed mutation 与审批，不把 RealityKit 捕获当安卓等价；canvas-cad 只接受冻结的 conversation→canvas→package 映射；不扩 G06 或当前发布 |
+
+- 既有 IOS-D01..D33 身份与归属保持不变；D34 不改变 G06 收尾顺序或 Android 当前批次。下次收尾继续比较 `ac11bdf0` 之后的实际 `FloeAgent/FloeApp|Sources` 增量。以上仅为源码/元数据静态比对，未运行 iOS 编译、测试、设备或发布。
+
+### 2026-10-30：G06 阶段交付后的最终增量复核
+
+G06以Android Alpha15/code17交付，源码标签`86b20a34a14ebda636213fa480cdf14f8d4fee05`，实际APK与公开附件哈希已通过。收尾读回公共main为`b7feb3f8fe749ec730e27444dda02f909d7d47c9`；`ac11bdf05f7c829dd712c6c0c7a8ad198996c73d`之后的`FloeAgent/FloeApp`和`FloeAgent/Sources`差异为零。本次只关闭安卓交付和文档，不自动重钉共享源码；此前D01..D33与D34安排完整保留。下一目标仍为G07网络/Wi-Fi，后续从本次iOS基线继续做增量核对。实体笔硬件、OCR真实推理和紧凑列表优先的验证/精修边界保留。
+
+
+### 2026-10-30：G07 文档交互补欠检查点（历史，已被下方 G07.1 收尾复核取代）
+
+公共主线读回 `f9a052e3628f69df7dff6daea93c743a97946030`；与上次 `b7feb3f8fe749ec730e27444dda02f909d7d47c9` 相比，`FloeAgent/FloeApp` 和 `FloeAgent/Sources` 无增量。本轮没有重置 D01–D34 或重新钉住全部共享源。另以当前 iOS 工作线 `c5e7a3c1c41b766173f2d17d9516ef8f79ed62bc` 的实际文件作交互参照；相关四个 Workspace 文件无未提交修改，不能将此参照当作已发布 iOS 版本。
+
+用户指出的文档打开差距属于 D15 已有布局／导航缺口，补强如下：
+
+- `FileInspectorView` 的文件选择先进入预览；`fullScreenCover` 承载 `WorkspaceIDEView`。`WorkspaceIDEView` 紧凑窗口使用抽屉，宽窗口才使用固定侧栏；关闭时处理未保存修改。
+- `WorkspaceFileRouter` 对文本、Office、PDF、图像／工程／媒体分别路由。`FilePreviewView` 的 Office 使用独立全屏编辑面，不能把所有格式塞进文本编辑器。
+- Android 本轮实现手机文本／代码全屏与返回列表、同一草稿拥有者；横屏手机不因宽度增加变成平板三列；平板文本保留分栏和显式展开。PDF／常见栅格图片接已有快照和渲染器，Office 保留真实已有 Activity。尚未实现的格式、真实材质／图标精修与完整最新交互继续保留 D15／G14。
+- 本条为源码与合同补强；App 双渠道编译、三星与 API37 实际交互、发行结果仍待本轮统一验证后补录。
+
+### 2026-10-30：G07.1 收尾增量复核（`b7feb3f8` → `bde65bf0`）
+
+- 本次以 GitHub API 读回公共 `main` 为 `bde65bf0b4fb6bfeae2597b0bc558b1df67f3cd2`（tree `ff1bf043bd45b719273c09208693c11e3b62b614`，提交时间 2026-10-30T05:56:04Z）；上一 iOS 收尾基线为 `b7feb3f8fe749ec730e27444dda02f909d7d47c9`。比较结果为 ahead 6／behind 0，祖先关系成立。
+- 区间共 6 个提交、119 个变更文件，`FloeAgent/FloeApp`、`FloeAgent/Sources` 与 `FloeAgent/Tests` 变更均为 0。逐段：`b7feb3f8`→`aaeb0a4a` 的 5 个提交只修改 FloeAndroid、Android 文档与 README；`aaeb0a4a`→`bde65bf0` 仅修改根目录 `README.md` 与 `README.zh-CN.md` 的 iPad-first 产品描述。
+- 既有 `IOS-D01..D34` 的身份、归属和完成证据全部保留。本次没有新的 iOS 功能族，未新增 `IOS-D35`；也不整体重钉 Android 共享源，不把 iOS 1.7.64 已发布的界面、材质或图标当作 Android 已对齐。
+- G07.1 文档交互只使用只读工作线 `c5e7a3c1` 的四个 Workspace 文件作为源码参照；该工作线不是公开基线或已发布 iOS 版本。本轮手机全窗口、PDF／图片预览与返回层级仍归 D15 及后续精修，不另起差异编号。
+- 结论：G07.1 收尾没有 iOS 源码新增阻断。下次大目标收尾从 `bde65bf0` 之后的实际 `FloeAgent/FloeApp` 与 `FloeAgent/Sources` 增量继续，只做增量核对，不重启全量审计。以上为源码／元数据静态比对，未运行 iOS 编译、测试、设备安装或发布。

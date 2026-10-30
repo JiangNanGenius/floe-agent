@@ -5,6 +5,7 @@
 <resources>
     <!-- shell / chrome -->
     <string name="ide_back_cd">Back to task</string>
+    <string name="ide_back_to_files_cd">Back to file list</string>
     <string name="ide_title_no_document">No file open</string>
     <string name="ide_empty_hint">Open a text or code file from the workspace file list.</string>
     <string name="ide_doc_loading">Loading…</string>

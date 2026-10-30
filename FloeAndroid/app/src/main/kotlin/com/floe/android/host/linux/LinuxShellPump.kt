@@ -56,6 +56,17 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
     @Volatile var readiness: LinuxRuntimeReadinessController? = null
     val boundNativeEpoch: Long get() = epoch.get()
 
+    /**
+     * Bounded READ-ONLY diagnostic for the Diagnostics & About surface: the
+     * MOST RECENT host-side terminal composition ([LinuxTerminalLatency]) as a
+     * closed `hostLatency v1 ...` string, or null before the first terminal.
+     * Stage names and integer durations only — no command, path, payload or
+     * identifier — and reading it mutates nothing. Main may render it next to
+     * the runtime's own `status.lastTerminalPhases`; this pump never fabricates
+     * the engine half it cannot measure.
+     */
+    fun lastTerminalLatency(): String? = LinuxTerminalLatency.lastSummary()
+
     fun requestSessionStop(sessionID: String) {
         val owner = work.values.firstOrNull { it.sessionID == sessionID } ?: return
         scope.launch(Dispatchers.IO) { owner.requestStop() }
@@ -66,6 +77,10 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
     internal data class FailedStartEvidence(val failureCode: String, val recovery: JsonObject)
 
     private inner class OwnedSession(val controlID: String, val nativeEpoch: Long, val runID: String, val toolCallID: String?) {
+        /** G07.1 terminal04: bounded host-side phase composition for THIS
+         *  dispatch (diagnostic only; admission/lease rules are untouched).
+         *  Published exactly once from whichever observer sees the terminal. */
+        val latency = LinuxTerminalLatency.begin()
         lateinit var lease: ForegroundLease
         var client: RuntimeConnection? = null
         var workspaceGrant: CoreWorkspaceGrant? = null
@@ -312,6 +327,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 if (requiresControlReceipt(operation)) awaitReceipt(owner, first) else first
             }
             if (operation == "shell.poll" && response.optBoolean("leaseReleased")) {
+                // G07.1 terminal04: the release wait for THIS dispatch ended.
+                owner.latency.mark(LinuxTerminalLatency.Phase.SETTLE)
+                owner.latency.publish(
+                    if (response.optBoolean("cancelled")) LinuxTerminalLatency.TERMINAL_CANCELLED
+                    else LinuxTerminalLatency.TERMINAL_EXITED)
                 val proof = owner.finish(terminalProof(response))
                 copyWorkspaceProof(response, proof)
             }
@@ -338,8 +358,10 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         try {
             // Ownership is registered BEFORE any IPC may start a process.
             RuntimeExecutionTrace.mark(Stage.PUMP_REGISTER)
+            owned.latency.mark(LinuxTerminalLatency.Phase.CLAIM)
             owned.lease = foreground.acquireOperation(owned.controlID, OperationKind.LOCAL_EXECUTION,
                 RunStopHandler { scope.launch(Dispatchers.IO) { owned.requestStop() } })
+            owned.latency.mark(LinuxTerminalLatency.Phase.FOREGROUND)
             work[owned.controlID] = owned
             RuntimeExecutionTrace.mark(Stage.PUMP_OWNED)
             if (admissionClosed.get() || owned.stop.get() || LinuxShellNative.shouldStop(claim) != 0) error("Caller stopped before admission")
@@ -361,17 +383,21 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             // completed; the key must survive that close ordering).
             owned.grantSessionKey = grant.sessionKey
             check(grant.projectID == payload.getString("projectID"))
+            owned.latency.mark(LinuxTerminalLatency.Phase.GRANT)
             RuntimeExecutionTrace.mark(Stage.PUMP_GRANT_READY)
             // A transport failure may follow accepted dispatch. Never replay it.
             possiblyAdmitted = true
             RuntimeExecutionTrace.mark(Stage.PUMP_DISPATCH)
             val response = owned.exchange("shell.start", payload, owned.controlID)
+            owned.latency.mark(LinuxTerminalLatency.Phase.DISPATCH)
             RuntimeExecutionTrace.mark(Stage.PUMP_REQUEST_ACCEPTED)
             val started = awaitReceipt(owned, response) {
                 if (LinuxShellNative.shouldStop(claim) != 0) owned.requestStop()
             }
+            owned.latency.mark(LinuxTerminalLatency.Phase.RECEIPT)
             RuntimeExecutionTrace.mark(Stage.PUMP_RECEIPT_RETURNED)
             owned.sessionID = started.getString("sessionID")
+            owned.latency.mark(LinuxTerminalLatency.Phase.READY)
             RuntimeExecutionTrace.mark(Stage.PUMP_SESSION_READY)
             if (owned.stop.get() || LinuxShellNative.shouldStop(claim) != 0) {
                 owned.requestStop()
@@ -385,6 +411,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         } catch (failure: Exception) {
             RuntimeExecutionTrace.mark(if (failure is AdmissionRefused) Stage.PUMP_ADMISSION_REFUSED else Stage.PUMP_START_EXCEPTION)
             if (failure is AdmissionRefused) possiblyAdmitted = false
+            // Diagnostic only: a start that provably crossed no wire to a live
+            // workload ends here with the phases it actually reached. A
+            // possibly-admitted start keeps ownership and is published by its
+            // real terminal observer instead (never a fabricated terminal).
+            if (!possiblyAdmitted) owned.latency.publish(LinuxTerminalLatency.TERMINAL_FAILED)
             if (!possiblyAdmitted) {
                 if (work.containsKey(owned.controlID)) owned.finish(JSONObject().put("state", "quiescent"))
                 complete(claim, 1, JSONObject().put("code", "runtime_not_started"))
@@ -430,6 +461,10 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                         val page = owned.exchange("shell.poll", JSONObject().put("sessionID", session)
                             .put("cursor", 0).put("maxBytes", 1))
                         if (page.getBoolean("leaseReleased")) {
+                            owned.latency.mark(LinuxTerminalLatency.Phase.SETTLE)
+                            owned.latency.publish(
+                                if (page.optBoolean("cancelled")) LinuxTerminalLatency.TERMINAL_CANCELLED
+                                else LinuxTerminalLatency.TERMINAL_EXITED)
                             owned.finish(terminalProof(page))
                             RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
                             failedStartClaim?.let { complete(it, 1, failedStartProof(owned, "runtime_start_stopped")) }
@@ -1517,6 +1552,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         }
         val id = first.getString("requestID")
         while (true) {
+            owned.latency.noteReceiptPoll()
             val value = owned.exchange("request.status", JSONObject().put("requestID", id))
             when (value.getString("state")) {
                 "completed" -> return value.getJSONObject("result")

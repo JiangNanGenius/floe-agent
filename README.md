@@ -2,20 +2,20 @@
   <img src="docs/images/floe-agent-icon.png" width="88" alt="Floe Agent app icon">
   <h1>Floe Agent</h1>
   <p><strong>Your models. Your files. Your machines.</strong></p>
-  <p>Floe Agent is an open-source on-device AI agent workspace designed for iOS and Android — iPad-first, with native iPhone support. Bring AI tasks, Notes, Office documents, creative tools, development, voice conversations and skills together — with a real Linux environment on your device that runs code, packages and services, supported local models for on-device inference, and cloud AI using your own API keys (BYOK).</p>
+  <p>Floe Agent is an open-source, iPad-first iOS AI Agent optimized for iOS and iPadOS, with native iPhone support and a separate Android alpha. Bring AI tasks, Notes, Office documents, creative tools, development, voice conversations and skills together — with a real Linux environment on your device that runs code, packages and services, supported local models for on-device inference, and cloud AI using your own API keys (BYOK).</p>
   <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://www.floe-agent.com/">Website</a> · <a href="docs/USER_GUIDE.md">User manual</a> · <a href="docs/README.md">Documentation</a></p>
 </div>
 
 [![Release](https://img.shields.io/github/v/release/JiangNanGenius/floe-agent?include_prereleases&label=release)](https://github.com/JiangNanGenius/floe-agent/releases)
 [![iOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
-[![Android 9+ ARM64 alpha](https://img.shields.io/badge/Android-9%2B%20ARM64%20alpha-3DDC84)](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13)
+[![Android 9+ ARM64 alpha](https://img.shields.io/badge/Android-9%2B%20ARM64%20alpha-3DDC84)](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.16)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
 [Install](#get-started) · [Features](#features) · [Demo](#see-floe-at-work) · [Docs](#documentation) · [Develop](#build-from-source) · [Contribute](#contributing-and-license)
 
 ## Get started
 
-Choose an installation channel on the [website](https://www.floe-agent.com/#download). Check [current status](docs/CURRENT_STATUS.md) and the installation page for each channel’s version, region and eligibility.
+Choose an installation channel on the [website](https://www.floe-agent.com/#download). Explore the [iOS AI Agent workspace for iPad and iPhone](https://www.floe-agent.com/en/ios-ai-agent). Check [current status](docs/CURRENT_STATUS.md) and the installation page for each channel’s version, region and eligibility.
 
 <p align="center">
   <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/badge-add-to-feather.png" alt="Add to Feather" height="52"></a>
@@ -40,9 +40,9 @@ https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json
 | iOS / iPadOS · TestFlight | Requires valid beta access. Available builds and expiry appear in TestFlight. |
 | iOS / iPadOS · Feather / AltStore | Install the corresponding app, use a button above to add the source, then sign with your own setup. |
 | iOS / iPadOS · GitHub IPA | Download the IPA and checksum from Releases. The IPA is unsigned and requires your own signing. |
-| Android alpha | Android 9+ (ARM64). Download the signed APK and checksum from the [Android release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13) and install it manually; updates are manual for now. The current alpha already covers cloud AI chat and tasks with your own provider key (BYOK), history and attachments, provider and credential management, MCP connections, an on-device Linux environment with terminal and jobs, the file workspace, a code IDE with completion and run output, Git, a browser, and built-in Office viewing plus basic editing of DOCX, XLSX and PPTX. No local model is included yet; Notes, Canvas, voice and the Skill Hub store are still coming to Android. |
+| Android alpha | Android 9+ (ARM64). Download the signed APK and checksum from the [Android release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.16) and install it manually; GitHub builds automatically check for updates and guide download, verification and system installation. The current alpha already covers cloud AI chat and tasks with your own provider key (BYOK), history and attachments, provider and credential management, MCP connections, an on-device Linux environment with terminal and jobs, the file workspace, a code IDE with completion and run output, Git, a browser, and built-in Office viewing plus basic editing of DOCX, XLSX and PPTX. Alpha15 added core Notes workflows (text/pages, images/PDF, ink, mind maps, Office links and import/export); Alpha16 adds a phone network workbench (Wi‑Fi scan, channels and signal history, DNS, Ping, TCP, HTTPS and six shared agent tools) plus list-first phone files with full-window text/code and read-only PDF/image previews. Android does not include local language models; full G07 networking (LAN discovery, speed tests, continuous monitoring and notifications, reports and coverage), Canvas, voice and the Skill Hub store remain on the roadmap. |
 
-For your first iOS / iPadOS task: **install → connect a model → create a task → open the result**. Core Notes, file organization and Canvas work without an AI provider; AI features use your configured provider or a local model supported by your device. On Android: **install → add your cloud provider key → start chatting**; Office files, the file workspace, the Linux terminal and the code IDE are already in the alpha.
+For your first iOS / iPadOS task: **install → connect a model → create a task → open the result**. Core Notes, file organization and Canvas work without an AI provider; AI features use your configured provider or a local model supported by your device. On Android: **install → add your cloud provider key → start chatting**; Basic Notes editing works without a provider; AI actions use your cloud configuration. Office files, the file workspace, the Linux terminal, the code IDE and the network workbench are already in the alpha.
 
 [Installation steps](docs/USER_GUIDE.md#1-installation-and-first-use) · [Model setup](docs/USER_GUIDE.md#2-models-and-auxiliary-capabilities) · [Sources and signing](docs/FEATHER_SOURCE.md)
 
@@ -50,7 +50,7 @@ The iOS setup guide offers four recommendations to prefill choices for models, s
 
 ## Features
 
-The features below describe Floe core workflows. Availability varies by platform and release; see the installation notes above and the [Android release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13) for the current Android alpha.
+The features below describe Floe core workflows. Availability varies by platform and release; see the installation notes above and the [Android release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.16) for the current Android alpha.
 
 | Workflow | What you can do | Guide |
 | --- | --- | --- |
@@ -69,7 +69,7 @@ Cloud model requests go directly to your chosen provider; supported local models
 
 ## See Floe at work
 
-Recorded on iOS; the Android alpha already includes chat, Office, files, terminal and IDE workflows and keeps growing.
+Recorded on iOS; the Android alpha already includes chat, Office, files, terminal, IDE and network-diagnostic workflows and keeps growing.
 
 [![Watch Floe: tasks, Office, code, Notes and Canvas](docs/assets/video/floe-en.jpg)](https://www.youtube.com/watch?v=OXHntB2dyvo)
 

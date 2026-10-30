@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="network_workbench">网络</string>
+    <string name="shell_more">更多</string>
+    <string name="network_permission_notice_title">需要网络访问权限</string>
+    <string name="network_permission_notice_body">授权后即可使用此网络工具。授权完成后，请再次开始检测。</string>
+    <string name="network_permission_allow">授权访问</string>
+    <string name="network_permission_later">暂不授权</string>
+</resources>

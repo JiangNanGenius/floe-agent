@@ -52,6 +52,10 @@ fun FloeDetailColumn(
     runtimeHost: RuntimeHost? = null,
     onConversationHolderBound: (String, com.floe.android.feature.conversation.ConversationFlowHolder) -> Unit = { _, _ -> },
 ) {
+    androidx.compose.runtime.LaunchedEffect(selection, runtimeHost) {
+        if (selection == SidebarSelection.More(MoreDestination.NETWORK)) runtimeHost?.networkWorkbench?.enter()
+        else runtimeHost?.networkWorkbench?.leave()
+    }
     Box(modifier.fillMaxSize()) {
         when (selection) {
             is SidebarSelection.Workbench -> when (selection.selection) {
@@ -81,6 +85,10 @@ fun FloeDetailColumn(
                 )
             }
             is SidebarSelection.More -> when (selection.destination) {
+                MoreDestination.NETWORK -> NetworkWorkbenchDestination(
+                    host = runtimeHost, compact = compact,
+                    onNavigate = { if (compact) onOpenDrawer() else onExpandSidebar() },
+                )
                 MoreDestination.NOTES -> NotesDestination(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact, onOpenSettingsSection)
                 MoreDestination.CREATIVE -> FloePlaceholderPage(stringResource(R.string.creative), FloeIcons.Creative, stringResource(R.string.workspace_later_update), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
                 // Skills opens the Settings sheet at the Skills section

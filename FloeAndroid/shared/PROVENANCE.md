@@ -933,3 +933,62 @@ checks. The pre-change failures are retained in the local qualification
 record. The G04-R1 Core cohort has actual Swift 6.4.1 Android ARM64 object
 compilation and linking evidence, including 16 KiB load alignment; App/JNI,
 behavior and device acceptance remain separate delivery gates.
+
+## G06 Notes authority (2026-10-29, job-f82af38369cb4b96)
+
+- Source: public iOS `FloeAgent/Sources/FloeNotes` at immutable commit
+  `96cd41c92ad20a8070776887ccbf3a3967e7d8a3`, imported per file into the frozen
+  native mirror `FloeAgent/Sources/FloeNotes` and linked from
+  `Sources/FloeNotes`. The iOS source, `FloeAgent/Package.swift` and the rest of
+  the frozen mirror were not refreshed.
+- Android adaptations (both documented in the mirror and
+  `Local/Private/android-g06-20261029/notes-foundation01/SOURCE_BINDING.json`):
+  1. `NoteLocalization.swift` replaces Apple-only
+     `String(localized:defaultValue:)` with the product `FloeL10n` lookup plus
+     the exact English fallback; the iOS target keeps the original.
+  2. `NotesStore.resourceRecord(_:)` / `NoteResourceRecord` is a read-only
+     metadata projection used by the Android resource contract. No mutation,
+     reference or collection rule changed.
+  3. `NotesStore.deleteNotebook(_:)` permits deleting only an EMPTY notebook;
+     a populated notebook is refused with `notebookNotEmpty` so documents are
+     never silently orphaned. Required by the C1 library contract.
+- The module keeps the original FloeNotes SQLite/GRDB schema (`notes.v1`–`v5`),
+  content-addressed resource store, FTS5 search, archive codec, edit/rebase,
+  cover policy, proposals and mind-map layout. No second Kotlin notes database
+  exists.
+- Target `FloeNotes` (Swift 6 language mode) depends only on `FloeCore`, `GRDB`,
+  `ZIPFoundation` and the pinned `swift-crypto`; no new third-party product
+  dependency was added. Host builds of `FloeNotes` and `FloeAndroidCore` passed
+  on 2026-10-30; see the lane CONTRACT.json for exact commands and limits.
+
+## G07.1 phone-network tools and terminal timing overlays (2026-10-30)
+
+`FloeAndroidNetwork` is Android-owned MPL-2.0 source. Its six `network.*`
+AgentTools use the existing ToolCatalog/ToolRunnerRegistry and a bounded,
+epoch-fenced host mailbox (`G07NetworkHostMailbox`, `G07NetworkToolBindings`).
+The Kotlin phone-network service owns the Android API measurements; the Swift
+module validates the measured envelope and emits bounded structured JSON.
+Neither guest DNS nor WebDAV/SMB mounts are represented as phone diagnostics.
+No Apple Network.framework implementation or privileged capture backend is
+silently substituted. Temporary chat's public-web ceiling is preserved.
+
+`Sources/FloeAndroidShellTools/ShellOperationJournal.swift` is now a copied
+Android overlay of the previously linked original under
+`FloeExecution/Shell/ShellOperationJournal.swift` (original SHA-256
+`bde51ea4bee81bc4d66381314eacb71a108ed7248664b85c8ecdf70fa753bbd8`).
+The frozen iOS mirror remains byte-identical to that original. The G1 delta
+adds optional `phaseTimings` to the existing journal entry, omitted when nil;
+old journal records and existing field meanings remain valid. The historical
+G03-R2 six-link inventory above is unchanged as a dated record; this entry
+supersedes its classification for this file only.
+
+The existing Android `LocalShellBackend`, `LocalShellService` and
+`AndroidLinuxShellBackend` overlays add a per-call `ShellRunReport` carrying
+the outcome and its own measured timing together. A separately read global
+"last timing" is not used to attribute journal records. New
+`TerminalLatencyPhases` reports monotonic closed-name phases with absent
+measurements explicitly unobserved, without command text or paths. Buffered
+output pages skip the prior 50 ms sleep only while bytes and output capacity
+remain; cancellation, timeout, process/lease release and workspace export
+proofs are retained. Host compilation/tests do not establish Android device
+latency or an installable release; those results are recorded separately.

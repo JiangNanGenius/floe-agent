@@ -48,6 +48,15 @@ object FloeLayout {
      */
     val PersistentTwoColumnMinWidth = 600.dp
 
+    /** A landscape handset remains compact; only a sufficiently large window
+     * in BOTH orientations gains persistent columns. Unknown minimum width
+     * keeps the historical measured-width fallback for previews. */
+    fun usesCompactNavigation(widthDp: Float?, smallestWindowWidthDp: Float? = null): Boolean =
+        (widthDp != null && widthDp < PersistentTwoColumnMinWidth.value) ||
+            (smallestWindowWidthDp != null && smallestWindowWidthDp > 0f &&
+                smallestWindowWidthDp < PersistentTwoColumnMinWidth.value)
+
+
     /** Below this width the inspector cannot coexist with a persistent
      * sidebar + readable content, so it overlays the content column. */
     val InspectorOverlayMaxTotalWidth = 900.dp
