@@ -958,7 +958,15 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         document.close()
         let reopened = try await FloeCADDocument.open(at: document.url)
         let reopenedService = CADDrawingService(document: reopened)
-        let geometry = reopenedService.handle(action: "project", args: ["pageID": pageID])
+        // Read the saved sheet without the explicit re-projection mutation.
+        // action=project intentionally refreshes its mesh-generation stamp;
+        // a reopened body's runtime mesh generation differs from the old one.
+        let savedDrawings = reopened.session.document.drawingsData
+        let savedChangeCount = reopened.session.changeCount
+        let geometry = reopenedService.pageGeometry(pageID: pageUUID)
+        XCTAssertEqual(reopened.session.document.drawingsData, savedDrawings)
+        XCTAssertEqual(reopened.session.changeCount, savedChangeCount,
+                       "inspecting the saved sheet must not re-project or mutate it")
         let annotations = try XCTUnwrap(geometry["annotations"] as? [[String: Any]])
         let reopenedAnnotation = try XCTUnwrap(
             annotations.first { ($0["id"] as? String) == annotationID })
