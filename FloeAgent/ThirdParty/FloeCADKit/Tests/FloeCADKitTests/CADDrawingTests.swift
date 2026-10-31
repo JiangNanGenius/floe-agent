@@ -20,6 +20,7 @@ import Foundation
 import simd
 @testable import FloeCAD
 
+@MainActor
 final class CADDrawingTests: XCTestCase {
 
     private var workDir: URL!
