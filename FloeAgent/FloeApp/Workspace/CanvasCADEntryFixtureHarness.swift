@@ -93,12 +93,80 @@ struct CanvasCADEntryFixtureHarness: View {
                 guard let created = result.nodeID else {
                     throw CADDocumentError(code: "fixture_failed", message: result.message)
                 }
+                if ProcessInfo.processInfo.arguments.contains("--ui-test-canvas-cad-damaged") {
+                    try await prepareDamagedPackage(nodeID: created)
+                }
                 documentID = docID
                 nodeID = created
             } catch {
                 failed = error.localizedDescription
             }
         }
+    }
+
+    /// Only the UI fixture owns this new canvas/package. Two real commits
+    /// precede the corruption, so the product recovery route must inspect the
+    /// previous commit rather than promote it while opening the editor.
+    @MainActor
+    private func prepareDamagedPackage(nodeID: UUID) async throws {
+        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        guard let node = project.documents.flatMap(\.nodes).first(where: { $0.id == nodeID }),
+              let key = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath],
+              let url = CADCanvasActionBridge.packageURL(forSourceKey: key) else {
+            throw CADDocumentError(code: "fixture_failed", message: "Missing fixture CAD binding.")
+        }
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        defer { live.close() }
+
+        func run(_ json: String) throws -> [String: Any] {
+            let result = live.executeJSON(Data(json.utf8))
+            guard result.isOK,
+                  let value = try JSONSerialization.jsonObject(with: result.payload) as? [String: Any] else {
+                throw CADDocumentError(code: result.errorCode ?? "fixture_failed",
+                                       message: result.message ?? "Fixture command failed.")
+            }
+            return value
+        }
+        let created = try run(#"{"op":"sketch.create","args":{"name":"Recovery base"}}"#)
+        guard let sketchID = created["sketchID"] as? String else {
+            throw CADDocumentError(code: "fixture_failed", message: "Missing fixture sketch.")
+        }
+        _ = try run("""
+        {"op":"sketch.addEntities","args":{"sketchID":"\(sketchID)",
+         "entities":[{"kind":"rect","min":[0,0],"max":[30,20]}]}}
+        """)
+        _ = try run("""
+        {"op":"feature.extrude","args":{"sketchID":"\(sketchID)",
+         "seedPoint":[15,10],"distance":8}}
+        """)
+        let capture = try live.captureViewportPNG(width: 640, height: 480)
+        var saved = await live.saveViewportPreview(capture.pngData)
+        guard saved.succeeded else {
+            throw CADDocumentError(code: "fixture_failed", message: saved.error ?? "Could not save fixture.")
+        }
+        _ = try run(#"{"op":"sketch.create","args":{"name":"Current only"}}"#)
+        saved = await live.save()
+        guard saved.succeeded else {
+            throw CADDocumentError(code: "fixture_failed", message: saved.error ?? "Could not save fixture.")
+        }
+        live.close()
+        _ = await FloeCAD3DBridge.shared.releaseDocumentOutcome(at: url, expected: live)
+        try Data("{".utf8).write(to: url.appendingPathComponent("document.json"), options: .atomic)
+        guard case .damaged(_, let preview) = await FloeCADDocument.recoveryInspection(at: url),
+              preview != nil else {
+            throw CADDocumentError(code: "fixture_failed", message: "No verified previous fixture commit.")
+        }
+        let witness = try JSONSerialization.data(withJSONObject: [
+            "canvasID": canvasID.uuidString,
+            "nodeID": nodeID.uuidString,
+            "sourceKey": key,
+            "packagePath": url.path,
+            "purpose": "Owned native recovery UI fixture; not user data",
+        ], options: [.sortedKeys])
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FloeAgent/CADFixtures", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try witness.write(to: root.appendingPathComponent("CanvasRecoveryFixture.json"), options: .atomic)
     }
 }
 #endif

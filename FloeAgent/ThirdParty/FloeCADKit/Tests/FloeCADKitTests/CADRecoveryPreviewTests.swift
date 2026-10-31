@@ -488,14 +488,14 @@ final class CADRecoveryPreviewTests: XCTestCase {
 
     // MARK: Atomic step and active-ownership fences
 
-    private enum RestoreAttempt: Sendable {
+    private nonisolated enum RestoreAttempt: Sendable {
         case success(revision: Int)
         case refused(CADRecoveryError)
         case failed(String)
     }
 
-    private func attemptRestore(_ preview: CADRecoveryPreview,
-                                to destination: URL) async -> RestoreAttempt {
+    private nonisolated static func attemptRestore(_ preview: CADRecoveryPreview,
+                                                  to destination: URL) async -> RestoreAttempt {
         do {
             let result = try await FloeCADDocument.restorePreviousCopy(
                 preview, to: destination)
@@ -541,8 +541,8 @@ final class CADRecoveryPreviewTests: XCTestCase {
         let sourceBefore = try packageBytes(url)
         let destination = workDir.appendingPathComponent("Box Recovered.floecad")
 
-        async let first = attemptRestore(previewValue, to: destination)
-        async let second = attemptRestore(previewValue, to: destination)
+        async let first = Self.attemptRestore(previewValue, to: destination)
+        async let second = Self.attemptRestore(previewValue, to: destination)
         let firstOutcome = await first
         let secondOutcome = await second
 

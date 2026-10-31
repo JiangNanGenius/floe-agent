@@ -110,4 +110,95 @@ final class CanvasCADEntryUITests: XCTestCase {
                       "closing the workbench returns to the selected canvas node")
     }
 }
+
+@MainActor
+final class CADRecoveryCopyFlowUITests: XCTestCase {
+    func testDamagedCanvasPreviewsPreviousAndRestoresAnEditableSeparateCopy() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                               "-ui-testing", "-ui-testing-ipad",
+                               "--ui-test-canvas-cad-fixture", "--ui-test-canvas-cad-damaged"]
+        app.launch()
+        defer { app.terminate() }
+        let open = app.buttons["canvas.toolbar.openNativeCAD"]
+        XCTAssertTrue(open.waitForExistence(timeout: 60))
+        open.tap()
+
+        let sheet = app.descendants(matching: .any)
+            .matching(identifier: "cad.recovery.sheet").firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 30))
+        XCTAssertTrue(app.descendants(matching: .any)["cad.recovery.previewImage"].exists,
+                      "the real previous viewport thumbnail must be available")
+        snapshot("Damaged canvas verified previous preview")
+        // Cancel does not silently replace the damaged package.
+        app.buttons["cad.recovery.closeButton"].tap()
+        let review = app.buttons["cad.recovery.reviewButton"]
+        XCTAssertTrue(review.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.segmentedControls["CADWorkbenchMode"].exists)
+        review.tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: 10))
+
+        let unknown = app.staticTexts[
+            "Changes made after this save can't be verified. Their fields are unknown; they stay in the damaged document."]
+        reveal(unknown, in: app)
+        XCTAssertTrue(unknown.exists, "unrecoverable fields must be reported honestly")
+        snapshot("Recovery report keeps unverified current changes explicit")
+        app.buttons["cad.recovery.restoreButton"].tap()
+        let mode = app.segmentedControls["CADWorkbenchMode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 30))
+        XCTAssertTrue(app.descendants(matching: .any)["cad.recovery.canvas.unbound"].exists,
+                      "the recovered copy must not silently replace the node binding")
+        snapshot("Recovered copy is editable and remains separate from its canvas node")
+
+        openWorkbenchAction("VariablesButton", label: "Variables", in: app)
+        let add = app.buttons["AddVariableButton"]
+        XCTAssertTrue(add.waitForExistence(timeout: 10))
+        add.tap()
+        XCTAssertTrue(app.textFields["VariableNameField-var1"].waitForExistence(timeout: 10))
+        openWorkbenchAction("VariablesButton", label: "Variables", in: app)
+        app.buttons["canvas.nativeCAD.done"].tap()
+        XCTAssertTrue(open.waitForExistence(timeout: 20))
+        open.tap()
+        XCTAssertTrue(sheet.waitForExistence(timeout: 20),
+                      "reopening the node must still find the damaged original, not the recovered copy")
+        snapshot("Canvas still owns the unchanged damaged original after copy editing")
+        app.buttons["cad.recovery.closeButton"].tap()
+        app.buttons["canvas.nativeCAD.done"].tap()
+        XCTAssertTrue(open.waitForExistence(timeout: 10))
+    }
+
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
+        for _ in 0..<8 {
+            if element.exists && element.isHittable { return }
+            let scroll = app.scrollViews.firstMatch
+            if scroll.exists { scroll.swipeUp() } else { app.swipeUp() }
+        }
+        XCTFail("The recovery report must keep its remaining fields reachable")
+    }
+
+    private func openWorkbenchAction(_ identifier: String, label: String,
+                                     in app: XCUIApplication) {
+        let direct = app.buttons[identifier].firstMatch
+        if direct.exists && direct.isHittable {
+            direct.tap()
+            return
+        }
+        let bar = app.navigationBars.containing(.button, identifier: "canvas.nativeCAD.done").firstMatch
+        let overflow = bar.buttons["OverflowBarButtonItem"].firstMatch
+        XCTAssertTrue(overflow.waitForExistence(timeout: 5))
+        overflow.tap()
+        let action = direct.exists ? direct : app.buttons[label].firstMatch
+        XCTAssertTrue(action.waitForExistence(timeout: 5))
+        action.tap()
+    }
+
+    private func snapshot(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}
 #endif
