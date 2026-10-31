@@ -28,7 +28,8 @@ struct CloudASRProfilesView: View {
                     }
                 } label: {
                     Label("voice.cloud.profiles.add", systemImage: "plus.circle")
-                        .frame(minHeight: 44)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityIdentifier("voice.cloud.profiles.add")
                 if store.profiles.isEmpty {

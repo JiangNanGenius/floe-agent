@@ -65,8 +65,8 @@ struct AssistantAudioServiceDescriptor: Codable, Sendable, Hashable, Identifiabl
 struct AssistantAudioPreferences: Codable, Sendable, Equatable {
     static let defaultASRModelID = "whisper-1"
     /// Ordered ready-service priority for automatic selection. An empty array
-    /// means the deterministic default (ready local, configured cloud, then
-    /// system). Explicit tool `service` arguments bypass this list.
+    /// follows the selected recognition route for transcription and prefers
+    /// ready local synthesis. Explicit tool `service` arguments bypass it.
     var transcriptionPriority: [String]
     var synthesisPriority: [String]
     /// Canonical OpenAI-compatible base, or nil for the official endpoint.
@@ -248,6 +248,7 @@ final class AssistantAudioService: ObservableObject {
     private let asrAdapter: any ASRTranscribing
     private let keychain: any KeychainProbeStore
     private let defaults: UserDefaults
+    private let recognitionMethod: @MainActor () -> VoiceRecognitionPreferences.Method
     private var sourceByID: [String: SpeechOutputSource] = [:]
     private static let storageKey = "voice.assistantAudio.v1"
     private static let asrAccount = "asr.openai-compatible.payAsYouGo"
@@ -259,7 +260,10 @@ final class AssistantAudioService: ObservableObject {
         keychain: any KeychainProbeStore = KeychainStore(
             service: "org.floeagent.ios.assistant-audio", synchronizable: false),
         asrAdapter: any ASRTranscribing = OpenAITranscriptionAdapter(),
-        cloudASRSettings: CloudASRSettingsStore = .shared
+        cloudASRSettings: CloudASRSettingsStore = .shared,
+        recognitionMethod: @escaping @MainActor () -> VoiceRecognitionPreferences.Method = {
+            VoiceRecognitionPreferences.method
+        }
     ) {
         self.settings = settings
         self.speech = speech
@@ -267,6 +271,7 @@ final class AssistantAudioService: ObservableObject {
         self.keychain = keychain
         self.asrAdapter = asrAdapter
         self.cloudASRSettings = cloudASRSettings
+        self.recognitionMethod = recognitionMethod
         self.preferences = defaults.data(forKey: Self.storageKey)
             .flatMap { try? JSONDecoder().decode(AssistantAudioPreferences.self, from: $0) }
             ?? AssistantAudioPreferences()
@@ -849,20 +854,21 @@ final class AssistantAudioService: ObservableObject {
         let ready = services.filter { $0.capability == capability && $0.ready }
         let byID = Dictionary(uniqueKeysWithValues: ready.map { ($0.id, $0) })
         if capability == .transcription {
-            switch VoiceRecognitionPreferences.method {
+            // A deliberate file-tool order remains independent of dictation.
+            // Only an unset order follows the shared primary recognizer.
+            for id in priorityIDs(for: capability) {
+                if let descriptor = byID[id] { return descriptor }
+            }
+            let method = recognitionMethod()
+            switch method {
             case .system:
                 return byID[ID.transcriptionSystem]
             case .enhanced:
                 return byID[ID.transcriptionEnhanced]
             case .cloud, .automatic:
-                // Explicit priority (including a deliberate local order) is
-                // preserved; otherwise the shared route resolver decides:
-                // usable selected cloud first, local when it is unusable.
-                for id in priorityIDs(for: capability) {
-                    if let descriptor = byID[id] { return descriptor }
-                }
+                // With no file-tool override, follow the saved primary route.
                 let resolution = CloudASRRouteResolver.resolve(
-                    method: VoiceRecognitionPreferences.method.rawValue,
+                    method: method.rawValue,
                     profiles: cloudASRSettings.profiles,
                     primaryProfileID: cloudASRSettings.primaryProfileID,
                     readyProfileIDs: Set(cloudASRSettings.readyProfiles.map(\.id)))

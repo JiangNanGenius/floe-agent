@@ -1,10 +1,37 @@
 import XCTest
 import Foundation
 import FloeCore
+import FloeProviders
 import FloeSecurity
 @testable import FloeApp
 
 final class CloudASRPreloadIntegrationTests: XCTestCase {
+    @MainActor
+    func testExplicitFileServicePriorityDoesNotFollowOrChangeDictationSelection() async throws {
+        let suite = "floe.asr.file-priority." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let credentials = CountingASRKeychain()
+        let store = CloudASRSettingsStore(defaults: defaults, keychain: credentials,
+                                           legacyKeychain: credentials)
+        let primary = try store.addProfile(.openAICompatible(name: "Primary"),
+                                           credential: "synthetic-primary-token")
+        let file = try store.addProfile(.openAICompatible(name: "File preference"),
+                                        credential: "synthetic-file-token")
+        let fileID = store.serviceID(for: file)
+        for method in [VoiceRecognitionPreferences.Method.system, .enhanced] {
+            let assistant = AssistantAudioService(
+                settings: TTSSettingsService(defaults: defaults, keychain: credentials),
+                speech: TTSSpeechService(), defaults: defaults, keychain: credentials,
+                cloudASRSettings: store, recognitionMethod: { method })
+            await assistant.refreshAvailability()
+            assistant.setPriority([fileID], for: .transcription)
+            XCTAssertEqual(assistant.service(id: nil, for: .transcription)?.id, fileID)
+            XCTAssertEqual(store.primaryProfileID, primary.id,
+                           "A file-tool preference must not change the dictation profile")
+        }
+    }
+
     @MainActor
     func testOrdinarySettingsRefreshNeverReadsCredentialsOrResetsPreload() async throws {
         let suite = "floe.asr.metadata-refresh." + UUID().uuidString
