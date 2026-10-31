@@ -46,7 +46,8 @@ final class CADVersionManagementUITests: XCTestCase {
         let compare = app.buttons["CADVersionCompare-" + baselineID]
         reveal(compare, upwards: true)
         compare.tap()
-        let comparison = app.otherElements["CADVersionCompareResult"]
+        let comparison = app.descendants(matching: .any)
+            .matching(identifier: "CADVersionCompareResult").firstMatch
         let modelChanged = app.staticTexts["Model changed"]
         reveal(modelChanged, upwards: true)
         XCTAssertTrue(comparison.exists)
@@ -58,7 +59,8 @@ final class CADVersionManagementUITests: XCTestCase {
             format: "identifier BEGINSWITH %@", "CADVersionRecord-")).firstMatch
         reveal(record, upwards: true)
         record.tap()
-        XCTAssertTrue(app.otherElements["CADVersionRecordSheet"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.descendants(matching: .any)
+            .matching(identifier: "CADVersionRecordSheet").firstMatch.waitForExistence(timeout: 10),
                       "a real selected comparison record must be accessible")
         snapshot("Native version stored record details")
         app.buttons["CADVersionRecordCloseButton"].tap()

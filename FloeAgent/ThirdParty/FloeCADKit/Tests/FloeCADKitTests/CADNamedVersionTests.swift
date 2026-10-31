@@ -690,7 +690,18 @@ final class CADNamedVersionTests: XCTestCase {
                           userInfo: [NSLocalizedDescriptionKey: "injected version carry failure"])
         }
         print("E34_RECOVERY_TRACE open-with-carry-failure cancelled=\(Task.isCancelled)")
-        let recoveredWithoutVersions = try await FloeCADDocument.open(at: url)
+        let hasPrevious = FileManager.default.fileExists(
+            atPath: url.appendingPathComponent("previous/manifest.json").path)
+        print("E34_RECOVERY_TRACE second-open previous=\(hasPrevious)")
+        XCTAssertTrue(hasPrevious, "an interrupted recovery needs a real previous commit")
+        let recoveredWithoutVersions: FloeCADDocument
+        do {
+            recoveredWithoutVersions = try await FloeCADDocument.open(at: url)
+        } catch {
+            let detail = error as NSError
+            print("E34_RECOVERY_TRACE second-open-error type=\(String(reflecting: type(of: error))) domain=\(detail.domain) code=\(detail.code) cancelled=\(Task.isCancelled)")
+            throw error
+        }
         CADDocumentFaultInjection.beforeVersionRecoveryCarry = nil
         print("E34_RECOVERY_TRACE list-after-carry-failure cancelled=\(Task.isCancelled)")
         let missingCarryRows = try await recoveredWithoutVersions.namedVersions()

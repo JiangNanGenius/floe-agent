@@ -960,6 +960,7 @@
 		C8FAF9D5A968E4A2416A284F /* CADAssociativeSketchDragTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A181C6F5E11BD869A9FB256 /* CADAssociativeSketchDragTests.swift */; };
 		C917D3CABAE4AB1EBC15A055 /* SubagentCoordinationRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB409D791FDDE2D5DFCFE631 /* SubagentCoordinationRegressionTests.swift */; };
 		C93CA320F6CD197A7C04CCDA /* OfficeRealEngineQualificationFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95F9427A76B0BB74A8F59384 /* OfficeRealEngineQualificationFixture.swift */; };
+		C96D6EF73B865749E36B0831 /* HarnessPlanningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22ED36CFC04F3BDAFBF89F80 /* HarnessPlanningTests.swift */; };
 		C9DDF5F04DFA4AECF3AB06F7 /* BackgroundJobDurationReminderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81ED3DBB8BC16B60A029AB40 /* BackgroundJobDurationReminderTests.swift */; };
 		CA014FF410250DD56A683A39 /* SkillLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3453A73FCC9986445D9D3949 /* SkillLifecycleTests.swift */; };
 		CA0F31691897A12A961D8A4F /* ProviderServiceRole.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DFCAB0BEA5779876F42194A /* ProviderServiceRole.swift */; };
@@ -972,6 +973,7 @@
 		CC059FAA8C5FC2AEB77E2401 /* NativeJobPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3195240E7F98D70A42B085B3 /* NativeJobPolicyTests.swift */; };
 		CC44EFAFC16BB15E726B3333 /* PDFUnlockTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */; };
 		CC580BC854A9C66E1B364607 /* LinuxUnknownOutcomeReconcilerBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBB9CB972B719483B9E44DC8 /* LinuxUnknownOutcomeReconcilerBridge.swift */; };
+		CCB2A7C4C315F26C47DF3A32 /* TaskChecklistTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 879FCF1E170F73D853012E70 /* TaskChecklistTests.swift */; };
 		CCCDAF293FB9806156F44A8F /* SkillOriginResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 487109D6D2AAA96BEBCA128F /* SkillOriginResolverTests.swift */; };
 		CD1194126440A9ED929AC910 /* OfficeAttachmentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC3E986891CA3776E2C72939 /* OfficeAttachmentListView.swift */; };
 		CD29ED1B24B82380B7BBF766 /* SubagentSafetyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE702CB32B8AC610F34FB0C8 /* SubagentSafetyTests.swift */; };
@@ -1445,6 +1447,7 @@
 		219F54B7E7F1C386A884EFD1 /* MacOriginalSkillTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacOriginalSkillTests.swift; sourceTree = "<group>"; };
 		2249858DC00109A2BC7D861F /* BrowserTaskSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserTaskSessionTests.swift; sourceTree = "<group>"; };
 		224C3D6B873B21963949DAA8 /* SkillDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillDreamService.swift; sourceTree = "<group>"; };
+		22ED36CFC04F3BDAFBF89F80 /* HarnessPlanningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessPlanningTests.swift; sourceTree = "<group>"; };
 		234B9833AEA3E18EC2CB4C61 /* CanvasCADEntryFixtureHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasCADEntryFixtureHarness.swift; sourceTree = "<group>"; };
 		238052542CCEFF5EA4FF6DC3 /* Bundled */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Bundled; path = FloeApp/Resources/Fonts/Bundled; sourceTree = SOURCE_ROOT; };
 		24052B762D62EEB6DFC4E142 /* ProviderHotfixUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderHotfixUITests.swift; sourceTree = "<group>"; };
@@ -1899,6 +1902,7 @@
 		86CDA5BDD4FE1BEF6D191937 /* FloeTLSConfiguration.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloeTLSConfiguration.h; sourceTree = "<group>"; };
 		871FFA753BBCEEACD71CE8DA /* FloePDFExceptionGuard.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloePDFExceptionGuard.h; sourceTree = "<group>"; };
 		879216097372B853E89FDB18 /* ProviderCatalogPickerUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderCatalogPickerUITests.swift; sourceTree = "<group>"; };
+		879FCF1E170F73D853012E70 /* TaskChecklistTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskChecklistTests.swift; sourceTree = "<group>"; };
 		87ADEC523CC9F7745B851700 /* CADParameterCorrectnessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADParameterCorrectnessTests.swift; sourceTree = "<group>"; };
 		87C3A91AB613CA522E9B4A93 /* SkillCreateToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillCreateToolTests.swift; sourceTree = "<group>"; };
 		87D11C32C126ECBBEBD5D113 /* SearchProviderCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchProviderCatalogTests.swift; sourceTree = "<group>"; };
@@ -3217,6 +3221,7 @@
 				B16F299F135E80635DDD9F14 /* ConversationSearchTests.swift */,
 				B976F65D3ADEEA233FB58C84 /* DependencyWaitTests.swift */,
 				F6C30FE60836D472C9A097BB /* DeterministicLocalApprovalRuntimeTests.swift */,
+				22ED36CFC04F3BDAFBF89F80 /* HarnessPlanningTests.swift */,
 				4A59619945E871C3F2F9F034 /* LocalRuntimeCurationTests.swift */,
 				0BE68B525A0B9718BDC00020 /* MacUnknownOutcomeTests.swift */,
 				818313EC0E4CBC16B2C85372 /* ModelContextSummarizerTests.swift */,
@@ -3230,6 +3235,7 @@
 				2CCD77B29E4E7F6F1480708C /* SQLiteRunCheckpointStoreTests.swift */,
 				A34774AE9EC91D786C93B382 /* SubagentExecutionTests.swift */,
 				AE702CB32B8AC610F34FB0C8 /* SubagentSafetyTests.swift */,
+				879FCF1E170F73D853012E70 /* TaskChecklistTests.swift */,
 				FFBC383BCD69059E3D40A361 /* TemporaryChatCeilingTests.swift */,
 				EE32851919961BD7F25EBFF4 /* TemporaryReadOnlyRuntimeTests.swift */,
 				DBFA2D875A3198C9F8C61638 /* ToolCallPreparationPresentationTests.swift */,
@@ -5676,6 +5682,7 @@
 				DD181E43B7E3B3E1F327F7B5 /* FoundationPrimitivesTests.swift in Sources */,
 				F4CAA296193BC5383D3A1921 /* GitHubDirectoryUpdateTests.swift in Sources */,
 				9E91FBEB4CF6E7EAFCC3C8E9 /* GuestPythonRuntimeTests.swift in Sources */,
+				C96D6EF73B865749E36B0831 /* HarnessPlanningTests.swift in Sources */,
 				3B8E38A8F0D60AC49112D1FD /* HealthReadToolsTests.swift in Sources */,
 				448125A55DDC627D8D972046 /* HomeChatSeparationTests.swift in Sources */,
 				52A8476FF309A8252EB8AEC2 /* IDEGitHubActionsTests.swift in Sources */,
@@ -5926,6 +5933,7 @@
 				70C853FDEBC620B5CD9A2A7A /* TTSSettingsServiceTests.swift in Sources */,
 				22DEB92094E0B06D3979926C /* TableSpeechReadabilityTests.swift in Sources */,
 				D10D86DCB27628502FAEAB55 /* TaskBulkManagementTests.swift in Sources */,
+				CCB2A7C4C315F26C47DF3A32 /* TaskChecklistTests.swift in Sources */,
 				ECF5BEF0705797ED8B9A3717 /* TaskEnvironmentOwnershipTests.swift in Sources */,
 				4E864F59E56EA16637F1C3BC /* TaskExecutionBindingStoreTests.swift in Sources */,
 				B8EFBFDFAAA72EB661037DCD /* TaskLifecycleStoreTests.swift in Sources */,

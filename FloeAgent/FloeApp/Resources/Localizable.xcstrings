@@ -330,13 +330,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Store one complete checkpoint of the current design. Later edits do not change it."
+            "value": "Save the current design as a version."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "存储当前设计的一个完整检查点。后续编辑不会改变它。"
+            "value": "将当前设计保存为一个版本。"
           }
         }
       }
@@ -347,13 +347,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pending edits will be saved first, then one complete version will be stored. This does not create a version on every edit."
+            "value": "Save the current changes as a version."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "待定编辑会先被保存，然后存储一个完整版本。这不会在每次编辑时创建版本。"
+            "value": "将当前修改一起保存为一个版本。"
           }
         }
       }

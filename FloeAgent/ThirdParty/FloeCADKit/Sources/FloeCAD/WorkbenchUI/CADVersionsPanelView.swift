@@ -206,10 +206,10 @@ struct CADVersionsPanelView: View {
             Text(document.hasUnsavedChanges
                  ? FloeCADStrings.text(
                     "cad.versions.create.messageDirty",
-                    "Pending edits will be saved first, then one complete version will be stored. This does not create a version on every edit.")
+                    "Save the current changes as a version.")
                  : FloeCADStrings.text(
                     "cad.versions.create.message",
-                    "Store one complete checkpoint of the current design. Later edits do not change it."))
+                    "Save the current design as a version."))
         }
         .alert(FloeCADStrings.text("cad.versions.restore.title", "Restore Version?"),
                isPresented: Binding(
