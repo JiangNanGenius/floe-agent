@@ -202,7 +202,7 @@ final class CADCommandExecutor {
                                     + "segments; nothing was added. Use shorter text.")
             }
             if !shaped.missingCharacters.isEmpty {
-                let list = missingGlyphList(shaped.missingCharacters)
+                let list = Self.missingGlyphList(shaped.missingCharacters)
                 let primary = shaped.resolvedFontNames.first ?? "?"
                 let fallbacks = shaped.fallbackFontNames.isEmpty
                     ? "no fallback fonts used"
