@@ -772,9 +772,9 @@ public final class CADDrawingService {
             var bodies: [Body] = []
             for occurrence in occurrences {
                 guard let sourceID = occurrence.effectiveBodyID,
-                      let source = body(for: sourceID),
-                      let placement = occurrence.explodedWorldTransform ?? occurrence.worldTransform,
-                      placement.isPlaceable else { continue }
+                      let source = body(for: sourceID) else { continue }
+                let placement = occurrence.explodedWorldTransform ?? occurrence.worldTransform
+                guard placement.isPlaceable else { continue }
                 var placed = source
                 placed.transform = placement.placement3D().composed(onto: source.transform)
                 bodies.append(placed)
@@ -5645,6 +5645,10 @@ private nonisolated struct PageProjection {
     var viewIssues: [String] = []
     var sectionCoverage: [CADDrawingSectionCoverage] = []
     var sectionIncomplete: Bool = false
+    var sectionComplete: Bool {
+        get { !sectionIncomplete }
+        set { sectionIncomplete = !newValue }
+    }
     var outputBlocked: Bool = false
 }
 

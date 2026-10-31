@@ -20,7 +20,7 @@ final class CADPresentationFlowUITests: XCTestCase {
         app.buttons["CADPresentMaterial"].tap()
         XCTAssertTrue(app.textFields["CADMaterialNameField"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["CADMaterialCancel"].isHittable)
-        let inspector = XCTAttachment(screenshot: app.screenshot())
+        let inspector = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         inspector.name = "CAD-narrow-large-text-material-inspector"
         inspector.lifetime = .keepAlways
         add(inspector)
@@ -46,7 +46,7 @@ final class CADPresentationFlowUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["CADPresentationSurface"].waitForExistence(timeout: 20))
         XCTAssertTrue(app.buttons["CADPresentFit"].isHittable)
         app.buttons["CADPresentFit"].tap()
-        let present = XCTAttachment(screenshot: app.screenshot())
+        let present = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         present.name = "CAD-Present-placed-parts"
         present.lifetime = .keepAlways
         add(present)
@@ -61,7 +61,7 @@ final class CADPresentationFlowUITests: XCTestCase {
         app.buttons["CADPresentMaterial"].tap()
         XCTAssertTrue(app.textFields["CADMaterialNameField"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["CADMaterialCancel"].exists)
-        let inspector = XCTAttachment(screenshot: app.screenshot())
+        let inspector = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         inspector.name = "CAD-Material-inspector"
         inspector.lifetime = .keepAlways
         add(inspector)
