@@ -12,6 +12,7 @@
 
 import XCTest
 import simd
+import CoreText
 @testable import FloeCAD
 
 @MainActor
@@ -113,9 +114,42 @@ final class CADTextSketchTests: XCTestCase {
         return try XCTUnwrap(row["id"] as? String)
     }
 
+    /// The exact ink bounds of the first character's vector outline computed
+    /// straight from CoreText — an INDEPENDENT path from `TextSketch.shape`'s
+    /// chord flattening. The flattened polyline's extrema approach the exact
+    /// curve extrema within one chord sagitta (chord tolerance ~0.02 × height,
+    /// radii ≥ ~5 mm at these sizes ⇒ sagitta « 0.05 mm), so a 0.05 mm window
+    /// is geometrically principled, not a fudge.
+    private func coreTextInkBounds(
+        text: String, fontName: String, height: Double, at origin: SIMD2<Double>
+    ) -> (min: SIMD2<Double>, max: SIMD2<Double>) {
+        let font = CTFontCreateWithName(fontName as CFString, 100, nil)
+        let capHeight = max(Double(CTFontGetCapHeight(font)), 1e-9)
+        let scale = height / capHeight
+        var code = [UniChar](text.utf16.prefix(1))
+        var glyph = CGGlyph()
+        XCTAssertTrue(CTFontGetGlyphsForCharacters(font, &code, &glyph, 1))
+        let path = CTFontCreatePathForGlyph(font, glyph, nil)
+        let box = path?.boundingBoxOfPath ?? .zero
+        return (min: origin + SIMD2(Double(box.minX), Double(box.minY)) * scale,
+                max: origin + SIMD2(Double(box.maxX), Double(box.maxY)) * scale)
+    }
+
     /// A point the production ProfileDetector resolves to `outer` (inside the
     /// outer loop and NOT inside any counter loop).
-    private func seedPoint(in outer: Profile, sketch: Sketch) throws -> SIMD2<Double> {
+    ///
+    /// The scan and the verification are GEOMETRIC: every `detectProfiles`
+    /// pass mints brand-new `Profile.id`s, so comparing `Profile.id` across
+    /// two detections (this helper's `profiles(at:)` and the caller's
+    /// `detectProfiles`) can never match — that identity comparison always
+    /// scanned to exhaustion and fell through to `outer.interiorPoint`, which
+    /// on a hollow glyph lies INSIDE the counter loop. The production exec
+    /// then resolved the innermost region at that seed (the counter disc) and
+    /// extruded it — measured 1850.4029079364504 mm³ at distance 10 = exactly
+    /// counter area 185.04029079364504 × 10. Verified 2026-10-31 against a
+    /// host CoreText replication of this exact pipeline.
+    private func seedPoint(in outer: Profile, excludingHoles holes: [Profile],
+                           sketch: Sketch) throws -> SIMD2<Double> {
         var lo = outer.loop[0], hi = outer.loop[0]
         for p in outer.loop { lo = simd_min(lo, p); hi = simd_max(hi, p) }
         let stepX = max((hi.x - lo.x) / 24, 0.25)
@@ -125,8 +159,17 @@ final class CADTextSketchTests: XCTestCase {
             var x = lo.x
             while x <= hi.x + 1e-9 {
                 let point = SIMD2(x, y)
-                let resolved = ProfileDetector.profiles(at: point, in: sketch).first
-                if resolved?.id == outer.id { return point }
+                if outer.contains(point), !holes.contains(where: { $0.contains(point) }) {
+                    // Same-detection geometry is identical bit for bit; a
+                    // relative epsilon only guards a hypothetical platform
+                    // recomputation difference, never papering over a real
+                    // resolution change.
+                    if let resolved = ProfileDetector.profiles(at: point, in: sketch).first,
+                       abs(abs(resolved.area) - abs(outer.area))
+                           <= 1e-9 * max(abs(outer.area), 1e-9) {
+                        return point
+                    }
+                }
                 x += stepX
             }
             y += stepY
@@ -199,9 +242,29 @@ final class CADTextSketchTests: XCTestCase {
         let lo = try XCTUnwrap(bounds.first), hi = try XCTUnwrap(bounds.last)
         XCTAssertEqual(lo.count, 2)
         XCTAssertEqual(hi.count, 2)
-        XCTAssertEqual(lo[0], 10, accuracy: 0.75, "origin anchors the glyph baseline start")
+        // FACT, proven against real CoreText geometry: `boundsMM` reports the
+        // glyph INK bounds, while the requested `origin` is the baseline PEN
+        // origin. Helvetica 'O' at a 20 mm cap carries a ~1.09 mm LEFT SIDE
+        // BEARING, so the ink min.x sits at origin.x + sideBearing — never at
+        // origin.x itself. Anchoring to font metrics, not to the pen origin.
+        let ink = coreTextInkBounds(text: "O", fontName: "Helvetica",
+                                    height: 20, at: SIMD2(10, 5))
+        XCTAssertEqual(lo[0], ink.min.x, accuracy: 0.05,
+                       "flattened ink approaches the exact CoreText ink bounds within one chord sagitta")
+        XCTAssertEqual(lo[1], ink.min.y, accuracy: 0.05)
+        XCTAssertEqual(hi[0], ink.max.x, accuracy: 0.05)
+        XCTAssertEqual(hi[1], ink.max.y, accuracy: 0.05)
         XCTAssertEqual(hi[1] - lo[1], 20, accuracy: 2.5, "cap height is honoured (round letters overshoot slightly)")
         XCTAssertEqual(hi[0] - lo[0], 20, accuracy: 3.0)
+        // The requested origin is applied EXACTLY: the identical outline
+        // shaped at (0,0) translates by precisely (10,5).
+        let shapedAtZero = TextSketch.shape(text: "O", height: 20,
+                                            fontName: "Helvetica", at: .zero)
+        let zeroBounds = try XCTUnwrap(shapedAtZero.bounds)
+        XCTAssertEqual(lo[0], zeroBounds.min.x + 10, accuracy: 1e-9)
+        XCTAssertEqual(lo[1], zeroBounds.min.y + 5, accuracy: 1e-9)
+        XCTAssertEqual(hi[0], zeroBounds.max.x + 10, accuracy: 1e-9)
+        XCTAssertEqual(hi[1], zeroBounds.max.y + 5, accuracy: 1e-9)
 
         // The 300+ 'O' outline segments stay bounded: ids are queryable, not
         // dumped into an unbounded tool result.
@@ -248,7 +311,11 @@ final class CADTextSketchTests: XCTestCase {
         let holes = ProfileDetector.holes(of: outer, among: profiles)
         XCTAssertEqual(holes.count, 1)
         let ringArea = abs(outer.area) - holes.reduce(0) { $0 + abs($1.area) }
-        let seed = try seedPoint(in: outer, sketch: sketch)
+        // Independent hollow-O contract, measured from the real detected
+        // outlines: outer 334.823326800005 mm² − counter 185.040290793645 mm²
+        // = ring 149.783036006360 mm² (host CoreText replication, 2026-10-31,
+        // matching this document's areas bit for bit).
+        let seed = try seedPoint(in: outer, excludingHoles: holes, sketch: sketch)
 
         // 2. Extrude the real text profile (hole included) through the same
         //    propose → apply transaction.
@@ -337,10 +404,38 @@ final class CADTextSketchTests: XCTestCase {
         XCTAssertTrue(badFont.outcome.message?.contains("FloeNoSuchFontXYZ") == true)
         XCTAssertTrue(badFont.outcome.message?.contains("NOT used") == true)
 
-        let missingGlyph = try runFailure(document, #"{"op":"sketch.addText","args":{"sketchID":"\#(sketchID)","text":"A\u{FFFE}B","height":10,"fontName":"Helvetica"}}"#)
+        // A noncharacter request must carry REAL UTF-8 through valid JSON:
+        // JSONSerialization encodes U+FFFE as standard JSON, and CoreText
+        // resolves the scalar to the LastResort placeholder run, which the
+        // kernel reports as a missing glyph. (The previous raw-string form
+        // embedded the literal bytes "\u{FFFE}" — invalid JSON — and only
+        // exercised the bad_json refusal.)
+        let missingData = try JSONSerialization.data(withJSONObject: [
+            "op": "sketch.addText",
+            "args": ["sketchID": sketchID, "text": "A\u{FFFE}B",
+                     "height": 10, "fontName": "Helvetica"],
+        ])
+        let missingGlyph = try runFailure(document, String(decoding: missingData, as: UTF8.self))
         XCTAssertEqual(missingGlyph.outcome.errorCode, "unsupported_glyphs")
         XCTAssertTrue(missingGlyph.outcome.message?.contains("U+FFFE") == true)
         XCTAssertTrue(missingGlyph.outcome.message?.contains("placeholder") == true)
+
+        // A valid but unassigned scalar exercises the same honest refusal
+        // through a different code point (LastResort placeholder coverage).
+        let unassignedData = try JSONSerialization.data(withJSONObject: [
+            "op": "sketch.addText",
+            "args": ["sketchID": sketchID, "text": "A\u{0378}B",
+                     "height": 10, "fontName": "Helvetica"],
+        ])
+        let unassignedGlyph = try runFailure(document, String(decoding: unassignedData, as: UTF8.self))
+        XCTAssertEqual(unassignedGlyph.outcome.errorCode, "unsupported_glyphs")
+        XCTAssertTrue(unassignedGlyph.outcome.message?.contains("U+0378") == true)
+
+        // A genuinely malformed escape is a precise bad_json refusal with no
+        // document mutation: the raw-string form embeds the literal bytes
+        // "\u{FFFE}", which is not valid JSON.
+        let malformedEscape = try runFailure(document, #"{"op":"sketch.addText","args":{"sketchID":"\#(sketchID)","text":"A\u{FFFE}B","height":10,"fontName":"Helvetica"}}"#)
+        XCTAssertEqual(malformedEscape.outcome.errorCode, "bad_json")
 
         // A colour/bitmap-only glyph has no vector outline and must refuse too.
         let bitmapOnly = try runFailure(document, #"{"op":"sketch.addText","args":{"sketchID":"\#(sketchID)","text":"😀","height":10,"fontName":"Helvetica"}}"#)
