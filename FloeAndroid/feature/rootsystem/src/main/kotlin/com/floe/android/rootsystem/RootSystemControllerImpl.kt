@@ -333,7 +333,10 @@ internal class RootSystemControllerImpl(
             setAdb(AdbStatus.Error("stored pairing identity is unreadable", e.code))
             return AccessActionResult.Denied(e.code)
         }
-        if (!hasTrust) return AccessActionResult.Denied("pair_required")
+        if (!hasTrust) {
+            setAdb(AdbStatus.PairRequired)
+            return AccessActionResult.Denied("pair_required")
+        }
 
         val port = requestedPort ?: config.connectPort ?: connectPort
             ?: withContext(Dispatchers.IO) { discovery.findConnectPort() }
@@ -399,13 +402,22 @@ internal class RootSystemControllerImpl(
             return AccessActionResult.Failed("launch_configuration")
         }
 
+        // Start may only present the identity whose pairing completed. This
+        // path must never create a fresh key: a candidate or unreadable record
+        // fails closed instead of presenting a key the device never authorized.
         val identity = try {
-            pairing.identity()
+            pairing.pairedIdentity()
         } catch (e: IdentityException) {
             BinderHub.clearExpectedToken(BinderProtocol.MODE_ADB)
+            if (e.code == "identity_unpaired") {
+                setAdb(AdbStatus.PairRequired)
+                return AccessActionResult.Denied("pair_required")
+            }
+            setAdb(AdbStatus.Error("stored pairing identity is unreadable", e.code))
             return AccessActionResult.Denied(e.code)
         }
 
+        var connectFailure = AdbConnectDiagnostics.CONNECT
         val launched = try {
             withContext(Dispatchers.IO) {
                 AdbClient(
@@ -418,14 +430,22 @@ internal class RootSystemControllerImpl(
                     runCatching { client.shellCommand(launch.command, 32 * 1024) }.isSuccess
                 }
             }
+        } catch (e: AdbClient.AdbFailure) {
+            connectFailure = AdbConnectDiagnostics.codeFor(e.failure)
+            false
         } catch (_: Throwable) {
             false
         }
 
         if (!launched) {
             BinderHub.clearExpectedToken(BinderProtocol.MODE_ADB)
+            // A client-side TLS-layer failure does not distinguish a rejected
+            // client certificate from a local cipher/protocol/IO/server-cert
+            // failure. Keep the recoverable identity and its recorded trust;
+            // only an explicit user "forget pairing" removes it. The bounded
+            // failure class is returned for diagnostics.
             setAdb(AdbStatus.Paired(port))
-            return AccessActionResult.Failed("adb_connect")
+            return AccessActionResult.Failed(connectFailure)
         }
         if (adoptBinder(BinderProtocol.MODE_ADB, 12_000)) {
             // Keep the launch token: a same-token republish by this verified

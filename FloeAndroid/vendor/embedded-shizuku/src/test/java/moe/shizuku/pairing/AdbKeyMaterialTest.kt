@@ -64,6 +64,16 @@ class AdbKeyMaterialTest {
         assertEquals("floe-device", decoded.identity.displayName)
         assertEquals(identity.adbPublicKey.toList(), decoded.identity.adbPublicKey.toList())
         assertEquals(identity.certificateBytes.toList(), decoded.identity.certificateBytes.toList())
+        assertEquals(false, decoded.paired)
+
+        val pairedEncoded = AdbIdentityCodec.encode(identity, paired = true)
+        val pairedDecoded = AdbIdentityCodec.decode(pairedEncoded) as AdbIdentityCodec.Result.Ok
+        assertEquals(true, pairedDecoded.paired)
+        assertEquals(identity.adbPublicKey.toList(), pairedDecoded.identity.adbPublicKey.toList())
+        assertEquals(
+            "flags",
+            (AdbIdentityCodec.decode(encoded.copyOf().also { it[5] = 2 }) as AdbIdentityCodec.Result.Rejected).code,
+        )
 
         assertEquals(
             "size",

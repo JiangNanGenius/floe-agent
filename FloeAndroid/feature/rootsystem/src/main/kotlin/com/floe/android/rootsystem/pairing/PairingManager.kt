@@ -29,14 +29,21 @@ internal class PairingManager(
     @Volatile
     private var cachedIdentity: AdbIdentity? = null
 
+    /** Only a completed, recorded pairing handshake is trust. */
     suspend fun hasTrust(): Boolean = withContext(Dispatchers.IO) {
-        try {
-            identities.load() != null
-        } catch (e: IdentityException) {
-            throw e
-        }
+        identities.load(requirePaired = true) != null
     }
 
+    /**
+     * The identity a start may present. This never creates or upgrades a
+     * candidate: a missing/unpaired record fails closed as [IdentityException]
+     * instead of generating a key the device has not authorized.
+     */
+    suspend fun pairedIdentity(): AdbIdentity = withContext(Dispatchers.IO) {
+        identities.load(requirePaired = true) ?: throw IdentityException("identity_unpaired")
+    }
+
+    /** Candidate identity for a pairing attempt; reused for retries. */
     suspend fun identity(): AdbIdentity = withContext(Dispatchers.IO) {
         cachedIdentity ?: identities.loadOrCreate(displayName()).also { cachedIdentity = it }
     }
@@ -70,7 +77,18 @@ internal class PairingManager(
                 )
                 activeClient = client
                 when (val outcome = client.pair()) {
-                    is AdbPairingClient.Outcome.Success -> PairingResult.Success
+                    is AdbPairingClient.Outcome.Success -> {
+                        // The record may only say "paired" after the pairing
+                        // handshake completed for exactly this identity. A
+                        // failed receipt write is a failed pairing, not a
+                        // silent trust upgrade.
+                        try {
+                            identities.markPaired(identity)
+                            PairingResult.Success
+                        } catch (e: IdentityException) {
+                            PairingResult.Failed(e.code)
+                        }
+                    }
                     is AdbPairingClient.Outcome.InvalidCode -> PairingResult.InvalidCode
                     is AdbPairingClient.Outcome.Unsupported -> PairingResult.Unsupported(outcome.code)
                     is AdbPairingClient.Outcome.Timeout -> PairingResult.Timeout

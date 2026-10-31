@@ -53,7 +53,8 @@
     <string name="device_access_adb_state_uid">Shell UID %1$d</string>
     <string name="device_access_adb_enable">Turn on embedded ADB</string>
     <string name="device_access_adb_pair">Pair with Android</string>
-    <string name="device_access_adb_pair_hint">Floe opens Developer options; turn on Wireless debugging, then return to enter the 6-digit code. A temporary notification brings you back.</string>
+    <string name="device_access_adb_pair_hint">Floe opens Developer options. Turn on Wireless debugging; Android shows a 6-digit code. Enter it in the pairing notification so Android’s screen stays in front.</string>
+    <string name="device_access_adb_pair_open_hint">Enter the 6-digit code in the pairing notification. If your device closes the dialog when Floe comes forward, use split screen or enter the code here while the dialog stays visible.</string>
     <string name="device_access_adb_code_label">Pairing code</string>
     <string name="device_access_adb_code_submit">Finish pairing</string>
     <string name="device_access_adb_code_invalid">Enter the 6-digit code</string>
@@ -137,7 +138,15 @@
 
     <string name="device_access_pairing_notification_channel">Device pairing</string>
     <string name="device_access_pairing_notification_title">Pairing with Android</string>
-    <string name="device_access_pairing_notification_text">Return to Floe to enter the 6-digit pairing code.</string>
+    <string name="device_access_pairing_notification_text">Android’s pairing screen stays open. Enter the 6-digit code here.</string>
+    <string name="device_access_pairing_notification_action">Enter code</string>
+    <string name="device_access_pairing_notification_invalid">Enter exactly the 6-digit code shown by Android.</string>
+    <string name="device_access_pairing_notification_retry">The code was not accepted. Check Android’s pairing screen and try again.</string>
+    <string name="device_access_pairing_notification_off">Notifications are off, so you cannot enter the code inline. Allow pairing notifications, or keep Android’s dialog visible and enter the code here.</string>
+    <string name="device_access_pairing_notification_allow">Allow pairing notifications</string>
+    <string name="device_access_pairing_notification_settings">Open notification settings</string>
+    <string name="device_access_pairing_service_channel">Pairing in progress</string>
+    <string name="device_access_pairing_service_text">Finishing pairing with Android…</string>
 
     <string name="device_access_error_open_settings">Could not open system settings.</string>
     <string name="device_access_error_no_task">No running task is using this device.</string>

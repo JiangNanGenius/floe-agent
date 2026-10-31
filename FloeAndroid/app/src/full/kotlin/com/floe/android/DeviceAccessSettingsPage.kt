@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android
 
+import android.Manifest
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,13 +13,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.floe.android.design.Floe
 import com.floe.android.design.FloeActionRow
 import com.floe.android.design.FloeBadgePill
@@ -32,6 +40,9 @@ import com.floe.android.design.FloeSettingsSectionCard
 import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeValueRow
+import com.floe.android.host.deviceaccess.PairingNotificationAccess
+import com.floe.android.host.deviceaccess.PairingNotificationPolicy
+import io.github.robinpcrd.cupertino.section.SectionScope
 
 /**
  * G08 stateless "Phone" settings page.
@@ -52,6 +63,9 @@ import com.floe.android.design.FloeValueRow
  *  - The pairing code is caller-owned RAM input. This page never saves it
  *    (no `rememberSaveable`), never logs it and never renders it outside the
  *    masked field. The reveal toggle is local presentation only.
+ *  - FULL only: the page owns the platform POST_NOTIFICATIONS request/settings
+ *    entry used by the inline pairing notification. It never posts the
+ *    notification or handles the code itself; that stays in DeviceAccessHost.
  *  - The page is host-neutral so the same content works in the compact
  *    phone detail page and in the tablet settings detail column.
  */
@@ -129,8 +143,10 @@ sealed interface DeviceAccessAdbUi {
 
     /**
      * No usable pairing. [pairingSessionOpen] means the Android pairing
-     * screen was opened from Floe and the user came back to enter the code;
-     * the entry field then stays available (the caller keeps it in RAM).
+     * screen was opened from Floe. The six-digit code can be entered in the
+     * inline notification while that screen stays in front, or in the visible
+     * field when the device keeps the dialog open (manual/split path). The
+     * value is caller-owned RAM only.
      */
     data class PairRequired(val pairingSessionOpen: Boolean = false) : DeviceAccessAdbUi
 
@@ -226,7 +242,7 @@ class DeviceAccessCallbacks(
     val onScreenScopeChange: (DeviceAccessScreenScopeUi) -> Unit = {},
     val onEnableAdb: () -> Unit = {},
     /** Opens the system Wireless debugging pairing screen and posts the
-     * temporary return notification; the caller keeps Floe's code entry alive. */
+     * inline-code notification; the caller keeps Floe's code entry alive. */
     val onPairAdb: () -> Unit = {},
     /** [code] is the RAM-only field value; the callee must not persist/log it. */
     val onSubmitPairingCode: (String) -> Unit = {},
@@ -480,6 +496,68 @@ fun DeviceAccessSettingsPage(
     var revealPairingCode by remember { mutableStateOf(false) }
     var confirmForget by remember { mutableStateOf(false) }
     var confirmRootCheck by remember { mutableStateOf(false) }
+    // FULL-only inline notification permission. The notification is what lets
+    // the user enter the six-digit code while Android's pairing dialog stays
+    // in front; when it is unavailable the page says so and keeps the manual
+    // (split-screen) path explicit instead of claiming a broken return flow.
+    val context = LocalContext.current
+    var notificationAvailability by remember {
+        mutableStateOf(PairingNotificationAccess.availability(context))
+    }
+    var notificationDeniedHere by remember { mutableStateOf(false) }
+    var pairAfterNotificationGrant by remember { mutableStateOf(false) }
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        notificationAvailability = PairingNotificationAccess.availability(context)
+        if (!granted) notificationDeniedHere = true
+        if (pairAfterNotificationGrant) {
+            pairAfterNotificationGrant = false
+            // Pairing is still useful on devices that keep the dialog open;
+            // the page shows the explicit inline-unavailable hint.
+            callbacks.onPairAdb()
+        }
+    }
+    val activity = context as? ComponentActivity
+    DisposableEffect(activity) {
+        if (activity == null) return@DisposableEffect onDispose { }
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val next = PairingNotificationAccess.availability(context)
+                notificationAvailability = next
+                if (next == PairingNotificationPolicy.Availability.AVAILABLE) {
+                    notificationDeniedHere = false
+                }
+            }
+        }
+        activity.lifecycle.addObserver(observer)
+        onDispose { activity.lifecycle.removeObserver(observer) }
+    }
+    val allowPairingNotifications: () -> Unit = {
+        if (notificationAvailability ==
+            PairingNotificationPolicy.Availability.PERMISSION_REQUIRED &&
+            !notificationDeniedHere
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            // App/channel block or a permission the platform will no longer
+            // ask for: the real system settings page is the honest action.
+            PairingNotificationAccess.openSettings(context)
+        }
+    }
+    val pairWithNotification: () -> Unit = {
+        when (notificationAvailability) {
+            PairingNotificationPolicy.Availability.AVAILABLE -> callbacks.onPairAdb()
+            PairingNotificationPolicy.Availability.PERMISSION_REQUIRED -> {
+                pairAfterNotificationGrant = true
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            else -> {
+                notificationDeniedHere = true
+                callbacks.onPairAdb()
+            }
+        }
+    }
     // Explicit app-data folder draft. RAM-only presentation input; the host
     // validates the backend-shape before it becomes a grantable root.
     var appDataDraft by remember { mutableStateOf("") }
@@ -1016,17 +1094,22 @@ fun DeviceAccessSettingsPage(
                     })
                 }
             }
-            // State-specific guidance, never a fabricated success.
+            // State-specific guidance, never a fabricated success. While the
+            // pairing session is open the notification is the inline path;
+            // the manual/split fallback is stated without claiming that a
+            // foreground return keeps Android's dialog alive.
             when (val adb = state.adb) {
                 is DeviceAccessAdbUi.PairRequired -> if (adb.pairingSessionOpen) {
-                    FloeSectionRow(title = { AdbHint(stringResource(R.string.device_access_adb_pair_hint)) })
+                    PairingNotificationHint(
+                        availability = notificationAvailability,
+                        permissionDenied = notificationDeniedHere,
+                        onAllow = allowPairingNotifications,
+                    )
                 }
                 DeviceAccessAdbUi.RestartRequired ->
                     FloeSectionRow(title = { AdbHint(stringResource(R.string.device_access_adb_restart_hint)) })
                 DeviceAccessAdbUi.Revoked ->
                     FloeSectionRow(title = { AdbHint(stringResource(R.string.device_access_adb_revoked_hint)) })
-                DeviceAccessAdbUi.Pairing ->
-                    FloeSectionRow(title = { AdbHint(stringResource(R.string.device_access_adb_pair_hint)) })
                 else -> Unit
             }
             // One explicit row per action the current state genuinely offers.
@@ -1042,7 +1125,7 @@ fun DeviceAccessSettingsPage(
                 FloeSectionRow(title = {
                     FloeCapsuleButton(
                         stringResource(R.string.device_access_adb_pair),
-                        onClick = callbacks.onPairAdb,
+                        onClick = pairWithNotification,
                     )
                 })
                 FloeSectionRow(title = { AdbHint(stringResource(R.string.device_access_adb_pair_hint)) })
@@ -1256,4 +1339,44 @@ private fun AdbHint(text: String) {
         style = Floe.typography.metadata,
         color = Floe.colors.secondaryLabel,
     )
+}
+
+/**
+ * Inline pairing availability is shown only for an actually open pairing
+ * session. AVAILABLE explains the notification entry; anything else names the
+ * real system permission/settings action and keeps the manual fallback. There
+ * is no "Paired" claim here and no promise that returning to Floe preserves
+ * Android's pairing dialog.
+ */
+@Composable
+private fun SectionScope.PairingNotificationHint(
+    availability: PairingNotificationPolicy.Availability,
+    permissionDenied: Boolean,
+    onAllow: () -> Unit,
+) {
+    when (availability) {
+        PairingNotificationPolicy.Availability.AVAILABLE ->
+            FloeSectionRow(title = {
+                AdbHint(stringResource(R.string.device_access_adb_pair_open_hint))
+            })
+        PairingNotificationPolicy.Availability.UNSUPPORTED -> Unit
+        else -> {
+            FloeSectionRow(title = {
+                AdbHint(stringResource(R.string.device_access_pairing_notification_off))
+            })
+            FloeActionRow(
+                label = stringResource(
+                    if (availability ==
+                        PairingNotificationPolicy.Availability.PERMISSION_REQUIRED &&
+                        !permissionDenied
+                    ) {
+                        R.string.device_access_pairing_notification_allow
+                    } else {
+                        R.string.device_access_pairing_notification_settings
+                    },
+                ),
+                onClick = onAllow,
+            )
+        }
+    }
 }

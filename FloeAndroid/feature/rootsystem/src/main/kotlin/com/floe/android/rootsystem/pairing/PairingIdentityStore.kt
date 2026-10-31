@@ -14,10 +14,16 @@ internal class IdentityException(val code: String, cause: Throwable? = null) : E
  * (implemented by core/credentials in the App). The stored bytes are the
  * versioned private-key/certificate envelope; there is no plaintext preference,
  * file or in-memory fallback and nothing is logged.
+ *
+ * A generated identity is a pairing candidate until [markPaired] records that
+ * the peer handshake completed. Only a paired record may be treated as trust:
+ * otherwise a failed or cancelled pairing would leave a key that the device
+ * never authorized looking "paired" and make the controller attempt that
+ * key on the connect port.
  */
 internal class PairingIdentityStore(private val credentials: CredentialStore) {
 
-    suspend fun load(): AdbIdentity? {
+    suspend fun load(requirePaired: Boolean = false): AdbIdentity? {
         val bytes = try {
             credentials.read(REFERENCE)
         } catch (e: Throwable) {
@@ -29,7 +35,8 @@ internal class PairingIdentityStore(private val credentials: CredentialStore) {
             bytes.fill(0)
         }
         return when (result) {
-            is AdbIdentityCodec.Result.Ok -> result.identity
+            is AdbIdentityCodec.Result.Ok ->
+                if (requirePaired && !result.paired) null else result.identity
             is AdbIdentityCodec.Result.Rejected -> throw IdentityException("identity_${result.code}")
         }
     }
@@ -45,15 +52,32 @@ internal class PairingIdentityStore(private val credentials: CredentialStore) {
         } catch (e: Throwable) {
             throw IdentityException("identity_generate", e)
         }
-        val encoded = AdbIdentityCodec.encode(identity)
+        write(identity, paired = false, errorCode = "identity_write")
+        return identity
+    }
+
+    /**
+     * Records a completed pairing for exactly this identity. Rewriting the
+     * same envelope reuses the existing per-reference key and atomically
+     * replaces the record; the key pair itself never changes.
+     */
+    suspend fun markPaired(identity: AdbIdentity) {
+        write(identity, paired = true, errorCode = "identity_pair_write")
+    }
+
+    private suspend fun write(identity: AdbIdentity, paired: Boolean, errorCode: String) {
+        val encoded = try {
+            AdbIdentityCodec.encode(identity, paired = paired)
+        } catch (e: Throwable) {
+            throw IdentityException(errorCode, e)
+        }
         try {
             credentials.write(REFERENCE, encoded)
         } catch (e: Throwable) {
-            throw IdentityException("identity_write", e)
+            throw IdentityException(errorCode, e)
         } finally {
             encoded.fill(0)
         }
-        return identity
     }
 
     suspend fun forget() {

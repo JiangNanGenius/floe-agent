@@ -51,7 +51,8 @@
     <string name="device_access_adb_state_uid">Shell 身份（UID %1$d）</string>
     <string name="device_access_adb_enable">开启内嵌 ADB</string>
     <string name="device_access_adb_pair">与 Android 配对</string>
-    <string name="device_access_adb_pair_hint">Floe 会打开开发者选项；请开启无线调试后返回输入 6 位配对码。临时通知会带你回来。</string>
+    <string name="device_access_adb_pair_hint">Floe 会打开开发者选项。开启无线调试后，Android 会显示 6 位配对码；请在配对通知中输入，让 Android 的配对界面保持在前台。</string>
+    <string name="device_access_adb_pair_open_hint">请在配对通知中输入 6 位配对码。如果设备在 Floe 回到前台时关闭配对对话框，请使用分屏，或在对话框保持可见时在 Floe 内输入。</string>
     <string name="device_access_adb_code_label">配对码</string>
     <string name="device_access_adb_code_submit">完成配对</string>
     <string name="device_access_adb_code_invalid">请输入 6 位配对码</string>
@@ -134,7 +135,15 @@
 
     <string name="device_access_pairing_notification_channel">设备配对</string>
     <string name="device_access_pairing_notification_title">正在与 Android 配对</string>
-    <string name="device_access_pairing_notification_text">返回 Floe 输入 6 位配对码。</string>
+    <string name="device_access_pairing_notification_text">Android 的配对界面会保持打开。请在此输入 6 位配对码。</string>
+    <string name="device_access_pairing_notification_action">输入配对码</string>
+    <string name="device_access_pairing_notification_invalid">请准确输入 Android 显示的 6 位配对码。</string>
+    <string name="device_access_pairing_notification_retry">配对码未被接受。请查看 Android 的配对界面后重试。</string>
+    <string name="device_access_pairing_notification_off">通知已关闭，无法在通知中直接输入配对码。请允许配对通知，或让 Android 的配对对话框保持可见并在 Floe 内输入。</string>
+    <string name="device_access_pairing_notification_allow">允许配对通知</string>
+    <string name="device_access_pairing_notification_settings">打开通知设置</string>
+    <string name="device_access_pairing_service_channel">配对进行中</string>
+    <string name="device_access_pairing_service_text">正在完成与 Android 的配对…</string>
 
     <string name="device_access_error_open_settings">无法打开系统设置。</string>
     <string name="device_access_error_no_task">当前没有正在使用此设备的任务。</string>

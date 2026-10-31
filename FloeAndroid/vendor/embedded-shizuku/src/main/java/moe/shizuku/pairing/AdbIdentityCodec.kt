@@ -18,17 +18,27 @@ object AdbIdentityCodec {
 
     private const val MAGIC = 0x464C4F45 // "FLOE"
     private const val VERSION = 1
+
+    /**
+     * The flags byte used to be reserved and always zero. Bit 0 now records
+     * that the peer pairing handshake completed and the device accepted this
+     * identity. A stored key without that bit is only a retry candidate and
+     * must never be presented as pairing trust.
+     */
+    const val FLAGS_CANDIDATE = 0
+    const val FLAGS_PAIRED = 1
+
     const val MAX_BYTES = 32 * 1024
     private const val MAX_KEY_BYTES = 8 * 1024
     private const val MAX_CERT_BYTES = 8 * 1024
     const val MAX_NAME_BYTES = 64
 
     sealed interface Result {
-        data class Ok(val identity: AdbIdentity) : Result
+        data class Ok(val identity: AdbIdentity, val paired: Boolean) : Result
         data class Rejected(val code: String) : Result
     }
 
-    fun encode(identity: AdbIdentity): ByteArray {
+    fun encode(identity: AdbIdentity, paired: Boolean = false): ByteArray {
         val name = identity.displayName.toByteArray(Charsets.UTF_8)
         val key = identity.privateKeyPkcs8
         val certificate = identity.certificateBytes
@@ -40,7 +50,7 @@ object AdbIdentityCodec {
             DataOutputStream(out).use { stream ->
                 stream.writeInt(MAGIC)
                 stream.writeByte(VERSION)
-                stream.writeByte(0)
+                stream.writeByte(if (paired) FLAGS_PAIRED else FLAGS_CANDIDATE)
                 stream.writeShort(name.size)
                 stream.writeInt(key.size)
                 stream.writeInt(certificate.size)
@@ -60,7 +70,10 @@ object AdbIdentityCodec {
             DataInputStream(ByteArrayInputStream(bytes)).use { stream ->
                 if (stream.readInt() != MAGIC) return Result.Rejected("magic")
                 if (stream.readUnsignedByte() != VERSION) return Result.Rejected("version")
-                if (stream.readUnsignedByte() != 0) return Result.Rejected("flags")
+                val flags = stream.readUnsignedByte()
+                if (flags != FLAGS_CANDIDATE && flags != FLAGS_PAIRED) {
+                    return Result.Rejected("flags")
+                }
                 val nameSize = stream.readUnsignedShort()
                 val keySize = stream.readInt()
                 val certSize = stream.readInt()
@@ -86,7 +99,10 @@ object AdbIdentityCodec {
                     // Certificate is public material but the buffer is still bounded and dropped.
                 }
                 val publicKey = certificate.publicKey
-                Result.Ok(AdbIdentity(KeyPair(publicKey, privateKey), certificate, name))
+                Result.Ok(
+                    AdbIdentity(KeyPair(publicKey, privateKey), certificate, name),
+                    paired = flags == FLAGS_PAIRED,
+                )
             }
         } catch (t: Throwable) {
             Result.Rejected("malformed")

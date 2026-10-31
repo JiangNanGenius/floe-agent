@@ -12,6 +12,23 @@
              Android release). Distinct receiver extras/state from the
              bundled-runtime child installer above. Not present in Play. -->
         <receiver android:name="com.floe.android.host.update.AppUpdateInstallReceiver" android:exported="false" />
+        <!-- Inline wireless-pairing code reply. FULL only: reached exclusively
+             by the explicit mutable RemoteInput PendingIntent created for the
+             live pairing notification; never exported and never in Play. -->
+        <receiver
+            android:name="com.floe.android.host.deviceaccess.PairingCodeReceiver"
+            android:exported="false" />
+        <!-- Bounded, user-initiated inline-pairing handshake owner. FULL only:
+             no Play manifest/resource/code path includes it. It has no command
+             surface; the 60 s self-stop prevents any idle keep-alive. -->
+        <service
+            android:name="com.floe.android.host.deviceaccess.PairingForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="bounded user-initiated wireless ADB pairing with inline code entry; no idle keep-alive" />
+        </service>
         <service
             android:name="com.floe.android.host.update.AppUpdateDownloadService"
             android:exported="false"

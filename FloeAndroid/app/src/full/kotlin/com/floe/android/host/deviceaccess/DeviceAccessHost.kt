@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host.deviceaccess
 
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -8,6 +9,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import androidx.core.app.NotificationCompat
+import androidx.core.app.RemoteInput
+import androidx.core.app.NotificationManagerCompat
 import com.floe.android.DeviceAccessAccessibilityUi
 import com.floe.android.DeviceAccessActiveTaskUi
 import com.floe.android.DeviceAccessAdbUi
@@ -227,13 +231,31 @@ internal class DeviceAccessHost(
     @Volatile
     private var recentTitle: String? = null
 
+    @Volatile
     private var pairingSessionOpen = false
     private var pairingPortInput = ""
+    @Volatile
     private var discoveredPairingPort: Int? = null
+    @Volatile
     private var pairingDiscovery = DeviceAccessPairingDiscoveryUi.IDLE
     private var pairingJob: Job? = null
 
+    /**
+     * RAM-only notification session: unpredictable nonce/epoch, monotonic
+     * generation and a consumed-on-submit token. It is never persisted and is
+     * closed on cancel/close/success/forget/root-stop.
+     */
+    private val pairingNotification = PairingNotificationSession()
+
+    /**
+     * The active notification-reply broadcast handoff. The manifest receiver
+     * holds goAsync until this callback runs; every completion/failure/cancel
+     * path below invokes it exactly once.
+     */
+    private var pairingReplyCompletion: (() -> Unit)? = null
+
     /** RAM-only code while the API 37 local-network permission flow is pending. */
+    @Volatile
     private var pendingPairingCode: CharArray? = null
 
     @Volatile
@@ -281,8 +303,10 @@ internal class DeviceAccessHost(
     fun start() {
         if (started || closed) return
         started = true
+        PairingNotificationRelay.attach(this)
         // A notification from a previous process is stale: pairing state is
         // RAM-only and never restored across process death.
+        pairingNotification.close()
         cancelPairingNotification()
         settings = loadSettings()
         refreshRootCatalog()
@@ -357,9 +381,7 @@ internal class DeviceAccessHost(
     }
 
     suspend fun prepareForRootStop(): Boolean {
-        pairingJob?.cancel()
-        pairingJob = null
-        wipePendingPairingCode()
+        closePairingSession()
         val drained = pump?.stopAndJoin() ?: true
         if (!drained) return false
         closeBackends()
@@ -367,9 +389,7 @@ internal class DeviceAccessHost(
     }
 
     fun onRootStopped() {
-        pairingJob?.cancel()
-        pairingJob = null
-        wipePendingPairingCode()
+        closePairingSession()
         pump?.forceClose()
         closeBackends()
         pruneAppDataRoots(rebuild = false)
@@ -402,8 +422,8 @@ internal class DeviceAccessHost(
     fun close() {
         if (closed) return
         closed = true
-        pairingJob?.cancel()
-        wipePendingPairingCode()
+        closePairingSession()
+        PairingNotificationRelay.detach(this)
         statusJobs.forEach { it.cancel() }
         statusJobs.clear()
         pump?.forceClose()
@@ -1232,6 +1252,7 @@ internal class DeviceAccessHost(
     private fun withLocalPairingPermission(
         owner: String,
         onDenied: (String) -> Unit,
+        isCurrent: () -> Boolean = { !closed },
         dispatch: () -> Unit,
     ): Boolean {
         if (Build.VERSION.SDK_INT < LOCAL_NETWORK_API) {
@@ -1242,7 +1263,7 @@ internal class DeviceAccessHost(
             host.integrations.localNetwork.runExplicitAction(
                 ownerID = owner,
                 endpoint = LOCAL_PAIRING_ENDPOINT,
-                isCurrent = { !closed },
+                isCurrent = isCurrent,
                 onDenied = onDenied,
                 dispatch = dispatch,
             )
@@ -1268,14 +1289,49 @@ internal class DeviceAccessHost(
     }
 
     private fun onPairingLocalNetworkDenied(code: String) {
+        val submitting = pendingPairingCode != null
         wipePendingPairingCode()
         pairingDiscovery = DeviceAccessPairingDiscoveryUi.UNAVAILABLE
         onLocalNetworkDenied(code)
+        // A notification reply that could not dispatch keeps one actionable
+        // retry token; opening/discovering the dialog does not post a useless
+        // notification.
+        if (submitting && pairingSessionOpen && !closed) {
+            PairingForegroundService.stop(context)
+            reissuePairingNotification(
+                R.string.device_access_pairing_notification_retry)
+        }
+        if (submitting) finishPairingReplyHandoff()
     }
 
     private fun wipePendingPairingCode() {
         pendingPairingCode?.fill('\u0000')
         pendingPairingCode = null
+    }
+
+    /**
+     * Closes the ONE live pairing flow and invalidates its notification token.
+     * Cancel, success, forget, host close, root stop and process start all use
+     * this exact boundary; no stale notification can revive an old session.
+     */
+    private fun closePairingSession() {
+        pairingSessionOpen = false
+        pairingJob?.cancel()
+        pairingJob = null
+        discoveredPairingPort = null
+        pairingPortInput = ""
+        pairingDiscovery = DeviceAccessPairingDiscoveryUi.IDLE
+        wipePendingPairingCode()
+        pairingNotification.close()
+        cancelPairingNotification()
+        PairingForegroundService.stop(context)
+        finishPairingReplyHandoff()
+    }
+
+    private fun finishPairingReplyHandoff() {
+        val done = pairingReplyCompletion
+        pairingReplyCompletion = null
+        runCatching { done?.invoke() }
     }
 
     private fun enableAdb() {
@@ -1291,10 +1347,21 @@ internal class DeviceAccessHost(
 
     private fun openPairing() {
         if (busy != DeviceAccessBusyUi.NONE) return
+        // Wireless debugging pairing exists only on API 30+. API 28/29 keeps
+        // the existing USB bootstrap path and never advertises this flow.
+        if (!pairingSupported() || Build.VERSION.SDK_INT < 30) {
+            error = DeviceAccessUiError(
+                context.getString(R.string.device_access_error_pairing_unsupported),
+                "pairing_requires_api30",
+            )
+            publish()
+            return
+        }
+        // A new explicit user action replaces any previous session/token.
+        closePairingSession()
         pairingSessionOpen = true
-        discoveredPairingPort = null
-        pairingDiscovery = DeviceAccessPairingDiscoveryUi.IDLE
         error = null
+        pairingNotification.open()
         postPairingNotification()
         publish()
         val started = withLocalPairingPermission(
@@ -1339,6 +1406,9 @@ internal class DeviceAccessHost(
         pairingJob = scope.launch(io) {
             val port = AdbPairingPortDiscovery.findPairingPort(context)
             if (closed || !pairingSessionOpen) return@launch
+            // Discovery never reissues the notification token: the user may
+            // be typing in the current RemoteInput, and a live port refresh
+            // must not replace the action under their draft.
             discoveredPairingPort = port
             pairingDiscovery = if (port != null) {
                 DeviceAccessPairingDiscoveryUi.FOUND
@@ -1352,6 +1422,8 @@ internal class DeviceAccessHost(
     private suspend fun discoverPairingPortInternal() {
         val port = AdbPairingPortDiscovery.findPairingPort(context)
         if (closed || !pairingSessionOpen) return
+        // Same rule as launchPairingDiscovery: never invalidate a RemoteInput
+        // draft just because the bounded NSD lookup finished.
         discoveredPairingPort = port
         pairingDiscovery = if (port != null) {
             DeviceAccessPairingDiscoveryUi.FOUND
@@ -1413,8 +1485,10 @@ internal class DeviceAccessHost(
             publish()
             return
         }
-        val port = discoveredPairingPort
-            ?: AdbPairingPortDiscovery.parsePort(pairingPortInput)
+        // The freshly discovered pairing port always wins over a stale manual
+        // fallback. A notification Intent never carries a port.
+        val port = PairingNotificationPolicy.selectPairingPort(
+            discoveredPairingPort, pairingPortInput)
         if (port == null) {
             error = DeviceAccessUiError(
                 context.getString(R.string.device_access_error_pairing_port), "pairing_port")
@@ -1424,12 +1498,19 @@ internal class DeviceAccessHost(
         wipePendingPairingCode()
         val chars = code.toCharArray()
         pendingPairingCode = chars
+        cancelPairingNotification()
         busy = DeviceAccessBusyUi.PAIRING
         error = null
         publish()
+        val sessionEpoch = pairingNotification.currentEpoch()
         val started = withLocalPairingPermission(
             owner = "adb-pairing-submit",
             onDenied = ::onPairingLocalNetworkDenied,
+            isCurrent = {
+                !closed && pairingSessionOpen &&
+                    (sessionEpoch == null ||
+                        pairingNotification.currentEpoch() == sessionEpoch)
+            },
         ) {
             startPairing(controller, port)
         }
@@ -1441,54 +1522,264 @@ internal class DeviceAccessHost(
     }
 
     private fun startPairing(controller: RootSystemController, port: Int) {
+        scope.launch(io) { performPairing(controller, port) }
+    }
+
+    /**
+     * Notification replies may arrive after the initial bounded discovery ran
+     * while the user was still opening Android's pairing dialog. Refresh the
+     * own-device PAIRING port exactly once at submission time, then pair. If
+     * it is still unavailable the user gets an actionable retry notification
+     * instead of an endless scan or a guessed port.
+     */
+    private fun startPairingWithPortRefresh(controller: RootSystemController) {
         scope.launch(io) {
             val chars = pendingPairingCode
             if (chars == null) {
+                PairingForegroundService.stop(context)
                 busy = DeviceAccessBusyUi.NONE
                 publish()
+                finishPairingReplyHandoff()
                 return@launch
             }
-            try {
-                val result = controller.pair(port, chars)
-                when (result) {
-                    PairingResult.Success -> {
-                        pairingSessionOpen = false
-                        discoveredPairingPort = null
-                        pairingPortInput = ""
-                        pairingDiscovery = DeviceAccessPairingDiscoveryUi.IDLE
-                        cancelPairingNotification()
-                        error = null
-                    }
-                    PairingResult.InvalidCode -> error = DeviceAccessUiError(
-                        context.getString(R.string.device_access_error_pairing_code), "invalid_code")
-                    PairingResult.Timeout -> error = DeviceAccessUiError(
-                        context.getString(R.string.device_access_error_pairing_timeout), "timeout")
-                    is PairingResult.Unsupported -> error = DeviceAccessUiError(
-                        context.getString(R.string.device_access_error_pairing_unsupported), result.code)
-                    is PairingResult.Failed -> error = DeviceAccessUiError(
-                        context.getString(R.string.device_access_error_pairing_failed), result.code)
+            var port = PairingNotificationPolicy.selectPairingPort(
+                discoveredPairingPort, pairingPortInput)
+            if (port == null) {
+                val found = AdbPairingPortDiscovery.findPairingPort(context)
+                if (closed || !pairingSessionOpen) {
+                    wipePendingPairingCode()
+                    PairingForegroundService.stop(context)
+                    busy = DeviceAccessBusyUi.NONE
+                    publish()
+                    finishPairingReplyHandoff()
+                    return@launch
                 }
-            } catch (_: Throwable) {
-                error = DeviceAccessUiError(
-                    context.getString(R.string.device_access_error_pairing_failed), "pair")
-            } finally {
-                wipePendingPairingCode()
-                refreshControllerStatus()
-                busy = DeviceAccessBusyUi.NONE
+                discoveredPairingPort = found
+                pairingDiscovery = if (found != null) {
+                    DeviceAccessPairingDiscoveryUi.FOUND
+                } else {
+                    DeviceAccessPairingDiscoveryUi.UNAVAILABLE
+                }
                 publish()
-                tryRebuildRootController()
+                port = found
             }
+            if (port == null) {
+                wipePendingPairingCode()
+                error = DeviceAccessUiError(
+                    context.getString(R.string.device_access_error_pairing_port), "pairing_port")
+                busy = DeviceAccessBusyUi.NONE
+                PairingForegroundService.stop(context)
+                publish()
+                if (pairingSessionOpen && !closed) {
+                    reissuePairingNotification(
+                        R.string.device_access_pairing_notification_retry)
+                }
+                finishPairingReplyHandoff()
+                return@launch
+            }
+            performPairing(controller, port)
         }
     }
 
-    private fun cancelPairing() {
-        pairingSessionOpen = false
-        discoveredPairingPort = null
-        pairingPortInput = ""
-        pairingDiscovery = DeviceAccessPairingDiscoveryUi.IDLE
-        wipePendingPairingCode()
-        if (busy == DeviceAccessBusyUi.PAIRING) busy = DeviceAccessBusyUi.NONE
+    private suspend fun performPairing(controller: RootSystemController, port: Int) {
+        val chars = pendingPairingCode
+        if (chars == null) {
+            PairingForegroundService.stop(context)
+            busy = DeviceAccessBusyUi.NONE
+            publish()
+            finishPairingReplyHandoff()
+            return
+        }
+        var retryNotification = false
+        // A timeout/transport failure may mean this dialog advertised a NEW
+        // ephemeral pairing port. Clear the cached one so the retry performs
+        // one fresh bounded discovery instead of repeating a stale port.
+        var refreshPortOnRetry = false
+        try {
+            val result = controller.pair(port, chars)
+            // Cancel/close/root-stop during the handshake owns the final UI;
+            // a late failure never resurrects an error or a notification.
+            val keepSession = !closed && pairingSessionOpen
+            when (result) {
+                PairingResult.Success -> {
+                    closePairingSession()
+                    error = null
+                }
+                PairingResult.InvalidCode -> if (keepSession) {
+                    error = DeviceAccessUiError(
+                        context.getString(R.string.device_access_error_pairing_code), "invalid_code")
+                    retryNotification = true
+                }
+                PairingResult.Timeout -> if (keepSession) {
+                    error = DeviceAccessUiError(
+                        context.getString(R.string.device_access_error_pairing_timeout), "timeout")
+                    retryNotification = true
+                    refreshPortOnRetry = true
+                }
+                is PairingResult.Unsupported -> if (keepSession) {
+                    error = DeviceAccessUiError(
+                        context.getString(R.string.device_access_error_pairing_unsupported), result.code)
+                }
+                is PairingResult.Failed -> if (keepSession) {
+                    error = DeviceAccessUiError(
+                        context.getString(R.string.device_access_error_pairing_failed), result.code)
+                    retryNotification = true
+                    refreshPortOnRetry = true
+                }
+            }
+        } catch (_: Throwable) {
+            if (!closed && pairingSessionOpen) {
+                error = DeviceAccessUiError(
+                    context.getString(R.string.device_access_error_pairing_failed), "pair")
+                retryNotification = true
+                refreshPortOnRetry = true
+            }
+        } finally {
+            wipePendingPairingCode()
+            if (refreshPortOnRetry && !closed && pairingSessionOpen) {
+                discoveredPairingPort = null
+                pairingDiscovery = DeviceAccessPairingDiscoveryUi.IDLE
+            }
+            refreshControllerStatus()
+            busy = DeviceAccessBusyUi.NONE
+            publish()
+            tryRebuildRootController()
+            PairingForegroundService.stop(context)
+            if (retryNotification && pairingSessionOpen && !closed) {
+                reissuePairingNotification(
+                    R.string.device_access_pairing_notification_retry)
+            }
+            finishPairingReplyHandoff()
+        }
+    }
+
+    /**
+     * Manifest receiver entry. The token is checked and consumed before any
+     * controller/network work; only the CURRENT open session can proceed.
+     */
+    internal fun onPairingNotificationReply(
+        nonce: String?,
+        epoch: Long,
+        generation: Long,
+        code: CharArray?,
+        onFinished: (() -> Unit)? = null,
+    ): Boolean {
+        if (closed) {
+            code?.fill('\u0000')
+            cancelPairingNotification()
+            onFinished?.invoke()
+            return false
+        }
+        val sessionEpoch = pairingNotification.currentEpoch()
+        when (pairingNotification.authorize(nonce, epoch, generation, code)) {
+            PairingNotificationPolicy.Decision.STALE -> {
+                code?.fill('\u0000')
+                // An older PendingIntent must not dismiss a newer session's
+                // live notification. Only remove an orphan after close.
+                if (!pairingSessionOpen || !pairingNotification.isOpen()) {
+                    cancelPairingNotification()
+                }
+                onFinished?.invoke()
+                // Handled rejection: do not let the receiver cancel the
+                // current notification as though no live host existed.
+                return true
+            }
+            PairingNotificationPolicy.Decision.EXPIRED -> {
+                code?.fill('\u0000')
+                reissuePairingNotification(
+                    R.string.device_access_pairing_notification_retry)
+                onFinished?.invoke()
+                return true
+            }
+            PairingNotificationPolicy.Decision.INVALID_CODE -> {
+                code?.fill('\u0000')
+                reissuePairingNotification(
+                    R.string.device_access_pairing_notification_invalid)
+                onFinished?.invoke()
+                return true
+            }
+            PairingNotificationPolicy.Decision.ACCEPTED -> Unit
+        }
+        val chars = code
+        if (chars == null) {
+            cancelPairingNotification()
+            onFinished?.invoke()
+            return false
+        }
+        if (!pairingSessionOpen) {
+            chars.fill('\u0000')
+            cancelPairingNotification()
+            onFinished?.invoke()
+            return false
+        }
+        if (busy != DeviceAccessBusyUi.NONE) {
+            chars.fill('\u0000')
+            // A concurrent real pairing owns the controller; the reply is
+            // stale. Any other busy state may be retried by the user.
+            if (busy == DeviceAccessBusyUi.PAIRING) {
+                cancelPairingNotification()
+            } else {
+                reissuePairingNotification(
+                    R.string.device_access_pairing_notification_retry)
+            }
+            onFinished?.invoke()
+            return false
+        }
+        val controller = rootController
+        if (controller == null) {
+            chars.fill('\u0000')
+            closePairingSession()
+            error = DeviceAccessUiError(
+                context.getString(R.string.device_access_error_unavailable), "controller_unbound")
+            publish()
+            onFinished?.invoke()
+            return false
+        }
+        // The token is consumed and the host takes its OWN copy. The receiver
+        // can wipe its array and finish goAsync immediately; the FGS below is
+        // the bounded process-lifetime owner for the real handshake.
+        val owned = chars.copyOf()
+        chars.fill('\u0000')
+        pairingReplyCompletion = onFinished
         cancelPairingNotification()
+        wipePendingPairingCode()
+        pendingPairingCode = owned
+        PairingForegroundService.start(context)
+        busy = DeviceAccessBusyUi.PAIRING
+        error = null
+        publish()
+        val started = withLocalPairingPermission(
+            owner = "adb-pairing-notification",
+            onDenied = ::onPairingLocalNetworkDenied,
+            isCurrent = {
+                !closed && pairingSessionOpen &&
+                    sessionEpoch != null &&
+                    pairingNotification.currentEpoch() == sessionEpoch
+            },
+        ) {
+            startPairingWithPortRefresh(controller)
+        }
+        if (!started) {
+            // A denied-forever broker already stopped/reissued above; avoid a
+            // second post for the same failed submission. Even a close/root
+            // stop racing this reply must finish the receiver handoff.
+            val hadPendingReply = pendingPairingCode != null
+            wipePendingPairingCode()
+            PairingForegroundService.stop(context)
+            busy = DeviceAccessBusyUi.NONE
+            publish()
+            if (!closed && hadPendingReply && pairingSessionOpen) {
+                reissuePairingNotification(
+                    R.string.device_access_pairing_notification_retry)
+            }
+            finishPairingReplyHandoff()
+        }
+        return true
+    }
+
+    private fun cancelPairing() {
+        closePairingSession()
+        if (busy == DeviceAccessBusyUi.PAIRING) busy = DeviceAccessBusyUi.NONE
         publish()
         scope.launch(io) {
             runCatching { rootController?.cancelPairing() }
@@ -1534,11 +1825,7 @@ internal class DeviceAccessHost(
     }
 
     private fun forgetPairing() {
-        pairingSessionOpen = false
-        discoveredPairingPort = null
-        pairingPortInput = ""
-        pairingDiscovery = DeviceAccessPairingDiscoveryUi.IDLE
-        cancelPairingNotification()
+        closePairingSession()
         runBackendAction(DeviceAccessBusyUi.FORGETTING) {
             val controller = rootController
             if (controller != null) {
@@ -1622,51 +1909,101 @@ internal class DeviceAccessHost(
 
     // ------------------------------------------------------------ pairing notice
 
-    private fun postPairingNotification() {
-        try {
-            val manager = context.getSystemService(android.app.NotificationManager::class.java)
-                ?: return
-            if (Build.VERSION.SDK_INT >= 26) {
-                val channel = android.app.NotificationChannel(
-                    PAIRING_CHANNEL,
-                    context.getString(R.string.device_access_pairing_notification_channel),
-                    android.app.NotificationManager.IMPORTANCE_DEFAULT,
-                )
-                manager.createNotificationChannel(channel)
-            }
-            val intent = Intent(context, com.floe.android.MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            val pending = android.app.PendingIntent.getActivity(
-                context,
-                PAIRING_NOTIFICATION_ID,
-                intent,
-                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
-                    android.app.PendingIntent.FLAG_IMMUTABLE,
-            )
-            val builder = if (Build.VERSION.SDK_INT >= 26) {
-                android.app.Notification.Builder(context, PAIRING_CHANNEL)
-            } else {
-                @Suppress("DEPRECATION")
-                android.app.Notification.Builder(context)
-            }
-            val notification = builder
-                .setSmallIcon(context.applicationInfo.icon)
-                .setContentTitle(context.getString(R.string.device_access_pairing_notification_title))
-                .setContentText(context.getString(R.string.device_access_pairing_notification_text))
-                .setContentIntent(pending)
-                .setAutoCancel(true)
-                .build()
-            manager.notify(PAIRING_NOTIFICATION_ID, notification)
-        } catch (_: Throwable) {
-            // Notification is a convenience only; pairing remains available in
-            // the page and never depends on it.
+    /**
+     * Posts the ONE active inline-code notification. Availability is checked
+     * explicitly first (API 33+ POST_NOTIFICATIONS and the pairing channel),
+     * so a disabled notification surface is reported by the settings page
+     * instead of being swallowed by a catch around notify().
+     */
+    private fun postPairingNotification(
+        textRes: Int = R.string.device_access_pairing_notification_text,
+    ): Boolean {
+        if (closed || !pairingSessionOpen) return false
+        val token = pairingNotification.currentToken() ?: return false
+        PairingNotificationAccess.ensureChannel(context) ?: return false
+        if (PairingNotificationAccess.availability(context) !=
+            PairingNotificationPolicy.Availability.AVAILABLE
+        ) {
+            return false
         }
+        return try {
+            val contentIntent = Intent(context, com.floe.android.MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            val contentPending = PendingIntent.getActivity(
+                context,
+                PairingNotificationPolicy.NOTIFICATION_ID,
+                contentIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            // Explicit component + a fresh requestCode per token. The mutable
+            // flag is required ONLY so the platform can attach RemoteInput
+            // results; there is no implicit intent another app could target.
+            val replyIntent = Intent(context, PairingCodeReceiver::class.java)
+                .setAction(PairingNotificationPolicy.ACTION_REPLY)
+                .putExtra(PairingNotificationPolicy.EXTRA_NONCE, token.nonce)
+                .putExtra(PairingNotificationPolicy.EXTRA_EPOCH, token.epoch)
+                .putExtra(PairingNotificationPolicy.EXTRA_GENERATION, token.generation)
+            val mutableFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_MUTABLE
+            } else {
+                0
+            }
+            val replyPending = PendingIntent.getBroadcast(
+                context,
+                token.requestCode,
+                replyIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or mutableFlag,
+            )
+            val remoteInput = RemoteInput.Builder(PairingNotificationPolicy.KEY_CODE)
+                .setLabel(context.getString(R.string.device_access_adb_code_label))
+                .build()
+            val builder = NotificationCompat.Builder(
+                context, PairingNotificationPolicy.CHANNEL_ID)
+                .setSmallIcon(context.applicationInfo.icon)
+                .setContentTitle(
+                    context.getString(R.string.device_access_pairing_notification_title))
+                .setContentText(context.getString(textRes))
+                .setContentIntent(contentPending)
+                .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .setTimeoutAfter(PairingNotificationSession.TOKEN_LIFETIME_MILLIS)
+                .addAction(
+                    NotificationCompat.Action.Builder(
+                        0,
+                        context.getString(
+                            R.string.device_access_pairing_notification_action),
+                        replyPending,
+                    )
+                        .addRemoteInput(remoteInput)
+                        .setAllowGeneratedReplies(false)
+                        .setSemanticAction(
+                            NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
+                        .build(),
+                )
+            NotificationManagerCompat.from(context)
+                .notify(PairingNotificationPolicy.NOTIFICATION_ID, builder.build())
+            true
+        } catch (_: Throwable) {
+            // Unexpected platform failure: the page's explicit availability
+            // row remains the actionable surface; pairing itself is unchanged.
+            false
+        }
+    }
+
+    /** Replaces the consumed/failed token and updates the notification in place. */
+    private fun reissuePairingNotification(textRes: Int) {
+        if (closed || !pairingSessionOpen) return
+        pairingNotification.reissue() ?: return
+        postPairingNotification(textRes)
     }
 
     private fun cancelPairingNotification() {
         runCatching {
-            context.getSystemService(android.app.NotificationManager::class.java)
-                ?.cancel(PAIRING_NOTIFICATION_ID)
+            NotificationManagerCompat.from(context)
+                .cancel(PairingNotificationPolicy.NOTIFICATION_ID)
         }
     }
 
@@ -2700,8 +3037,6 @@ internal class DeviceAccessHost(
         const val MAX_LIST_ROWS = 24
         const val MAX_WRITE_BYTES = 48_000
         const val ROOT_GRANT_LIFETIME_MILLIS = 30_000L
-        const val PAIRING_CHANNEL = "floe_device_pairing"
-        const val PAIRING_NOTIFICATION_ID = 0x0F10
         val FILE_OPERATIONS = setOf(
             SystemOperation.FILE_LIST,
             SystemOperation.FILE_READ,
