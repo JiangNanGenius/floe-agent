@@ -790,7 +790,7 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         // station, so it must report the precise MISSING-cylinder reason —
         // never the ambiguous-face error (an empty match set is not
         // "several valid faces").
-        let shiftedDimension = try XCTUnwrap(dimensionRow(geometry, id: dimensionID))
+        let shiftedDimension = try XCTUnwrap(self.dimensionRow(geometry, id: dimensionID))
         XCTAssertEqual(shiftedDimension["id"] as? String, dimensionID)
         XCTAssertEqual(shiftedDimension["dangling"] as? Bool, true,
                        "the dimension keeps the captured axial station: \(shiftedDimension)")
