@@ -67,6 +67,41 @@ final class CADPresentationSelectionTests: XCTestCase {
         return CADPresentationSelection.apply(pick, stamp: identity, currentStamp: identity, scene: scene, document: document)
     }
 
+    /// A routine save advances the committed receipt (`revision`/`contentSHA256`)
+    /// of unchanged live content, and an animation-only edit advances the
+    /// document generation; neither changes a static-scene pixel. Both must
+    /// leave the presentation build key unchanged, otherwise the Present
+    /// poller rebuilds the stage, bumps `renderGeneration` and cancels an
+    /// active animation/capture render lease (the run-16/run-18 stale class).
+    /// A real rendered-material edit must still force a rebuild.
+    func testSaveAndAnimationOnlyEditsKeepRenderBuildKey() async throws {
+        let body = try box()
+        let before = scene()
+        let revisionBefore = document.revision
+        let save = await document.save()
+        XCTAssertTrue(save.succeeded, save.error ?? "save failed")
+        XCTAssertGreaterThan(document.revision, revisionBefore)
+
+        let savedScene = scene()
+        XCTAssertEqual(savedScene.documentRevision, document.revision)
+        XCTAssertEqual(savedScene.buildKey, before.buildKey,
+                       "a save-only identity advance must reuse the built stage")
+
+        _ = try document.createAnimationClip(name: "Identity-only clip",
+                                             duration: 1)
+        XCTAssertGreaterThan(document.liveChangeCount, before.changeCount)
+        XCTAssertEqual(scene().buildKey, before.buildKey,
+                       "animation data is not a static-stage build input")
+
+        document.session.perform(SetMaterialCommand(
+            bodyIDs: [body.id],
+            material: BodyMaterialSpec(baseColor: SIMD4(0.9, 0.1, 0.1, 1)),
+            document: document.session.document))
+        XCTAssertGreaterThan(document.liveChangeCount, before.changeCount)
+        XCTAssertNotEqual(scene().buildKey, before.buildKey,
+                          "a real rendered-material edit must rebuild the stage")
+    }
+
     func testBodyBlankAndAdditiveSelectionUseLiveEditorWithoutGeometryEdit() async throws {
         let body = try box()
         let scene = scene()

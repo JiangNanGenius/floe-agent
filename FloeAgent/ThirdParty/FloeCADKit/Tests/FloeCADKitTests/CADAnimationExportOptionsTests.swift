@@ -348,7 +348,7 @@ final class CADAnimationExportReadbackTests: XCTestCase {
         XCTAssertEqual(status.error,
                        CADAnimationExportError.stale.localizedDescription)
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
-        try assertNoStagingRemains(in: fixture.directory)
+        try assertNoStagingRemains(in: fixture.directory, status: status)
         XCTAssertEqual(session.document.bodies.count, 2,
                        "the edit must survive the aborted export")
 
@@ -382,7 +382,7 @@ final class CADAnimationExportReadbackTests: XCTestCase {
         XCTAssertEqual(status.error,
                        CADAnimationExportError.stale.localizedDescription)
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
-        try assertNoStagingRemains(in: fixture.directory)
+        try assertNoStagingRemains(in: fixture.directory, status: status)
     }
 
     /// Cancellation through the service removes the staging directory and
@@ -404,7 +404,7 @@ final class CADAnimationExportReadbackTests: XCTestCase {
         XCTAssertTrue(status.isCancelled)
         XCTAssertEqual(status.progress.phase, .cancelled)
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
-        try assertNoStagingRemains(in: fixture.directory)
+        try assertNoStagingRemains(in: fixture.directory, status: status)
     }
 
     /// Closing the document aborts the service-owned export job, removes the
@@ -425,7 +425,7 @@ final class CADAnimationExportReadbackTests: XCTestCase {
         let status = await fixture.document.waitForAnimationExport(handle.id)
         XCTAssertTrue(status.isCancelled)
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
-        try assertNoStagingRemains(in: fixture.directory)
+        try assertNoStagingRemains(in: fixture.directory, status: status)
     }
 
     // MARK: Mid-render helpers
@@ -452,16 +452,25 @@ final class CADAnimationExportReadbackTests: XCTestCase {
 
     /// The exporter stages beside the destination and must remove that
     /// directory on failure/cancel — never leave a partial video tree behind.
+    /// A failure message names the actual leftovers and the terminal status so
+    /// a run can be reviewed without guessing which phase leaked.
     private func assertNoStagingRemains(
         in directory: URL,
+        status: CADAnimationExportStatus? = nil,
         file: StaticString = #filePath,
         line: UInt = #line
     ) throws {
         let names = try FileManager.default.contentsOfDirectory(
             atPath: directory.path)
-        XCTAssertFalse(
-            names.contains { $0.hasPrefix(".") && $0.contains(".export-") },
-            "staging directory must be removed on failure/cancel",
+        let leftovers = names
+            .filter { $0.hasPrefix(".") && $0.contains(".export-") }
+            .sorted()
+        let phase = status?.progress.phase.rawValue ?? "nil"
+        let error = status?.error ?? "nil"
+        XCTAssertTrue(
+            leftovers.isEmpty,
+            "staging directory must be removed on failure/cancel; "
+                + "leftovers=\(leftovers) terminalPhase=\(phase) terminalError=\(error)",
             file: file, line: line)
     }
 

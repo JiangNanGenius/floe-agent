@@ -305,12 +305,22 @@ nonisolated struct CADPresentationScene: Equatable, Sendable {
 
     var isEmpty: Bool { bodies.isEmpty }
 
-    /// Identity of everything a renderer consumes. A snapshot with an equal
-    /// user-visible identity can reuse built entities.
+    /// Identity of everything a renderer ACTUALLY consumes. A snapshot with an
+    /// equal user-visible identity can reuse built entities.
+    ///
+    /// The committed save identity (`documentRevision`/`contentSHA256`) and
+    /// the document generation (`changeCount`) are deliberately excluded.
+    /// A routine autosave advances the receipt fields while live geometry and
+    /// materials are byte-identical, and animation-only/metadata edits advance
+    /// `changeCount` without changing a single static-scene pixel. Rebuilding
+    /// the stage for either cancels an active animation/capture render lease
+    /// mid-render (run-16/run-18) and forces needless GPU work. Every REAL
+    /// renderer input (bodies, meshes, transforms, materials, face groups,
+    /// environment, document key) is still in the key, and the exporters keep
+    /// their own live `changeCount`/revision fences for true edits.
     var buildKey: String {
         var parts: [String] = [
-            documentKey, String(changeCount), String(documentRevision),
-            contentSHA256, environment.stableKey,
+            documentKey, environment.stableKey,
         ]
         for body in bodies {
             parts.append("\(body.id.uuidString):\(body.sourceBodyID?.uuidString ?? "-"):\(body.mesh.cacheKey):\(body.material.stableKey):\(body.transform.stableKey)")

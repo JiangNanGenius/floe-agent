@@ -268,15 +268,23 @@ public final class CADAnimationExportCenter {
 
     public func status(_ id: UUID) -> CADAnimationExportStatus? { jobs[id]?.status }
 
+    /// Join the service-owned job. A cancellation REQUEST is not terminal:
+    /// the exporter still owns the render lease, writer and staging directory
+    /// until its task returns. Only `finish` (called after the task removed
+    /// staging and released the lease) publishes `isFinished`, so this wait
+    /// never hands back "cancelled, clean" while cleanup is still running.
     public func wait(_ id: UUID) async -> CADAnimationExportStatus {
-        if let job = jobs[id], job.status.isFinished { return job.status }
-        if jobs[id] == nil {
+        guard let job = jobs[id] else {
             return CADAnimationExportStatus(
                 id: id,
                 progress: CADAnimationExportProgress(phase: .failed),
                 error: CADAnimationExportError.cancelled.localizedDescription,
                 isCancelled: true)
         }
+        // Only `finish` clears the task; a public handle always has it
+        // attached before the handle is returned. Returning here cannot
+        // skip a live task and cannot hang a pre-attach internal job.
+        if job.task == nil { return job.status }
         return await withCheckedContinuation { continuation in
             guard var job = jobs[id] else {
                 continuation.resume(returning: CADAnimationExportStatus(
@@ -291,12 +299,13 @@ public final class CADAnimationExportCenter {
         }
     }
 
+    /// Record a cancellation request immediately (observable through
+    /// `status.isCancelled`) but leave the terminal phase to the owned task.
+    /// Publishing `.cancelled`/`isFinished` here used to return from `wait`
+    /// before the writer was cancelled and the staging directory removed.
     public func cancel(_ id: UUID) {
-        guard var job = jobs[id], !job.status.isFinished else { return }
+        guard var job = jobs[id], job.task != nil || !job.status.isFinished else { return }
         job.task?.cancel()
-        var progress = job.status.progress
-        progress.phase = .cancelled
-        job.status.progress = progress
         job.status.isCancelled = true
         jobs[id] = job
     }
@@ -582,16 +591,37 @@ public extension FloeCADDocument {
             token: String(format: "capture|%@|%.6f", clip.id.uuidString, clamped),
             expectedGeneration: generation,
             lease: lease)
-        guard applied else { throw CADAnimationExportError.stale }
+        guard applied else {
+            Self.logAnimationExportStale(
+                "capture-apply-rejected",
+                leaseHeld: controller.holdsAnimationLease(lease),
+                generation: controller.renderGeneration,
+                expectedGeneration: generation)
+            throw CADAnimationExportError.stale
+        }
         let image = try await controller.snapshotImage(targetWidth: width)
         if Task.isCancelled { throw CADAnimationExportError.cancelled }
+        let snapshotRevision = revision
+        let snapshotChangeCount = liveChangeCount
+        let snapshotSHA = contentSHA256
         guard !isClosed,
               url.standardizedFileURL.path == documentKey,
-              documentRevision == revision,
-              documentChangeCount == liveChangeCount,
-              documentContentSHA == contentSHA256,
+              documentRevision == snapshotRevision,
+              documentChangeCount == snapshotChangeCount,
+              documentContentSHA == snapshotSHA,
               controller.renderGeneration == generation,
               controller.holdsAnimationLease(lease) else {
+            Self.logAnimationExportStale(
+                "capture-post-snapshot-fence",
+                changeCount: snapshotChangeCount,
+                expectedChangeCount: documentChangeCount,
+                revision: snapshotRevision,
+                expectedRevision: documentRevision,
+                contentSHAMatches: snapshotSHA == documentContentSHA,
+                leaseHeld: controller.holdsAnimationLease(lease),
+                generation: controller.renderGeneration,
+                expectedGeneration: generation,
+                isClosed: isClosed)
             throw CADAnimationExportError.stale
         }
         let data: Data
@@ -627,6 +657,44 @@ public extension FloeCADDocument {
             note: "Actual animated RealityKit frame (live Present or service render host); the document and assembly baseline were not changed.")
     }
 
+    // MARK: Stale diagnostics
+
+    /// One bounded, DEBUG-only line per rejected render. The user-facing error
+    /// stays the concise existing message; this trace lets an actual
+    /// App-hosted run identify WHICH frozen input moved instead of inferring
+    /// a cause from the generic "document changed" wrapper. Values only, no
+    /// document content and no unbounded loop.
+    private nonisolated static func logAnimationExportStale(
+        _ reason: String,
+        changeCount: Int? = nil,
+        expectedChangeCount: Int? = nil,
+        revision: Int? = nil,
+        expectedRevision: Int? = nil,
+        contentSHAMatches: Bool? = nil,
+        leaseHeld: Bool? = nil,
+        generation: UInt64? = nil,
+        expectedGeneration: UInt64? = nil,
+        clipMatches: Bool? = nil,
+        isClosed: Bool? = nil,
+        isBackground: Bool? = nil
+    ) {
+        #if DEBUG
+        var fields = ["reason=\(reason)"]
+        if let changeCount { fields.append("changeCount=\(changeCount)") }
+        if let expectedChangeCount { fields.append("expectedChangeCount=\(expectedChangeCount)") }
+        if let revision { fields.append("revision=\(revision)") }
+        if let expectedRevision { fields.append("expectedRevision=\(expectedRevision)") }
+        if let contentSHAMatches { fields.append("contentSHAMatches=\(contentSHAMatches)") }
+        if let leaseHeld { fields.append("leaseHeld=\(leaseHeld)") }
+        if let generation { fields.append("generation=\(generation)") }
+        if let expectedGeneration { fields.append("expectedGeneration=\(expectedGeneration)") }
+        if let clipMatches { fields.append("clipMatches=\(clipMatches)") }
+        if let isClosed { fields.append("closed=\(isClosed)") }
+        if let isBackground { fields.append("background=\(isBackground)") }
+        NSLog("[CADAnimationExport] stale %@", fields.joined(separator: " "))
+        #endif
+    }
+
     // MARK: Identity preparation
 
     /// Run the session's async identity settle, translating its typed result
@@ -646,6 +714,12 @@ public extension FloeCADDocument {
         case .ready:
             return
         case .sourceChanged:
+            Self.logAnimationExportStale(
+                "settle-source-changed",
+                changeCount: liveChangeCount,
+                expectedChangeCount: sourceChangeCount,
+                revision: revision,
+                isClosed: isClosed)
             throw CADAnimationExportError.stale
         case .saveFailed(let message):
             throw CADAnimationExportError.verification(
@@ -663,12 +737,26 @@ public extension FloeCADDocument {
     ) throws {
         guard !isClosed else { throw CADAnimationExportError.cancelled }
         guard liveChangeCount == sourceChangeCount else {
+            Self.logAnimationExportStale(
+                "frozen-source-changed",
+                changeCount: liveChangeCount,
+                expectedChangeCount: sourceChangeCount,
+                revision: revision,
+                isClosed: isClosed)
             throw CADAnimationExportError.stale
         }
         guard let current = animationLoadState().animation.clip(withID: clip.id) else {
             throw CADAnimationExportError.noClip
         }
-        guard current == clip else { throw CADAnimationExportError.stale }
+        guard current == clip else {
+            Self.logAnimationExportStale(
+                "frozen-clip-changed",
+                changeCount: liveChangeCount,
+                expectedChangeCount: sourceChangeCount,
+                revision: revision,
+                clipMatches: false)
+            throw CADAnimationExportError.stale
+        }
     }
 
     // MARK: Render session
@@ -690,6 +778,7 @@ public extension FloeCADDocument {
            let handle = CADPresentationCaptureRegistry.shared.activeHandle(for: self),
            let controller = handle.controller {
             guard let lease = controller.beginAnimationLease() else {
+                if Task.isCancelled { throw CADAnimationExportError.cancelled }
                 throw CADAnimationExportError.rendererUnavailable
             }
             return CADAnimationRenderSession(
@@ -706,10 +795,12 @@ public extension FloeCADDocument {
         }
         guard await host.waitUntilReady() else {
             host.release()
+            if Task.isCancelled { throw CADAnimationExportError.cancelled }
             throw CADAnimationExportError.rendererUnavailable
         }
         guard let lease = host.controller.beginAnimationLease() else {
             host.release()
+            if Task.isCancelled { throw CADAnimationExportError.cancelled }
             throw CADAnimationExportError.rendererUnavailable
         }
         return CADAnimationRenderSession(
@@ -784,6 +875,17 @@ public extension FloeCADDocument {
             try requireUnchangedAnimationClip(
                 clip, sourceChangeCount: sourceChangeCount)
             guard liveChangeCount == documentChangeCount else {
+                Self.logAnimationExportStale(
+                    "post-lease-fence",
+                    changeCount: liveChangeCount,
+                    expectedChangeCount: documentChangeCount,
+                    revision: revision,
+                    expectedRevision: documentRevision,
+                    contentSHAMatches: contentSHA256 == documentContentSHA,
+                    leaseHeld: session.controller.holdsAnimationLease(session.lease),
+                    generation: session.controller.renderGeneration,
+                    expectedGeneration: session.generation,
+                    isClosed: isClosed)
                 throw CADAnimationExportError.stale
             }
             let controller = session.controller
@@ -835,11 +937,28 @@ public extension FloeCADDocument {
                 guard UIApplication.shared.applicationState != .background else {
                     throw CADAnimationExportError.presentationNotActive
                 }
-                guard controller.holdsAnimationLease(exportLease),
-                      controller.renderGeneration == generation,
-                      liveChangeCount == documentChangeCount,
-                      revision == documentRevision,
-                      contentSHA256 == documentContentSHA else {
+                let frameLeaseHeld = controller.holdsAnimationLease(exportLease)
+                let frameGeneration = controller.renderGeneration
+                let frameChangeCount = liveChangeCount
+                let frameRevision = revision
+                let frameSHA = contentSHA256
+                guard frameLeaseHeld,
+                      frameGeneration == generation,
+                      frameChangeCount == documentChangeCount,
+                      frameRevision == documentRevision,
+                      frameSHA == documentContentSHA else {
+                    Self.logAnimationExportStale(
+                        "frame-fence",
+                        changeCount: frameChangeCount,
+                        expectedChangeCount: documentChangeCount,
+                        revision: frameRevision,
+                        expectedRevision: documentRevision,
+                        contentSHAMatches: frameSHA == documentContentSHA,
+                        leaseHeld: frameLeaseHeld,
+                        generation: frameGeneration,
+                        expectedGeneration: generation,
+                        isClosed: isClosed,
+                        isBackground: UIApplication.shared.applicationState == .background)
                     throw CADAnimationExportError.stale
                 }
                 let time = Self.animationFrameTime(
@@ -854,6 +973,14 @@ public extension FloeCADDocument {
                     token: String(format: "export|%@|%.6f", clip.id.uuidString, time),
                     expectedGeneration: generation,
                     lease: exportLease) else {
+                    Self.logAnimationExportStale(
+                        "frame-apply-rejected",
+                        changeCount: liveChangeCount,
+                        expectedChangeCount: documentChangeCount,
+                        leaseHeld: controller.holdsAnimationLease(exportLease),
+                        generation: controller.renderGeneration,
+                        expectedGeneration: generation,
+                        isClosed: isClosed)
                     throw CADAnimationExportError.stale
                 }
                 let image = try await controller.snapshotImage(targetWidth: settings.width)
@@ -909,12 +1036,28 @@ public extension FloeCADDocument {
                 expectedFrameCount: totalFrames,
                 codec: settings.codec)
             try Task.checkCancellation()
+            let promotionLeaseHeld = controller.holdsAnimationLease(exportLease)
+            let promotionGeneration = controller.renderGeneration
+            let promotionChangeCount = liveChangeCount
+            let promotionRevision = revision
+            let promotionSHA = contentSHA256
             guard !isClosed,
-                  controller.holdsAnimationLease(exportLease),
-                  controller.renderGeneration == generation,
-                  liveChangeCount == documentChangeCount,
-                  revision == documentRevision,
-                  contentSHA256 == documentContentSHA else {
+                  promotionLeaseHeld,
+                  promotionGeneration == generation,
+                  promotionChangeCount == documentChangeCount,
+                  promotionRevision == documentRevision,
+                  promotionSHA == documentContentSHA else {
+                Self.logAnimationExportStale(
+                    "promotion-fence",
+                    changeCount: promotionChangeCount,
+                    expectedChangeCount: documentChangeCount,
+                    revision: promotionRevision,
+                    expectedRevision: documentRevision,
+                    contentSHAMatches: promotionSHA == documentContentSHA,
+                    leaseHeld: promotionLeaseHeld,
+                    generation: promotionGeneration,
+                    expectedGeneration: generation,
+                    isClosed: isClosed)
                 throw CADAnimationExportError.stale
             }
             try Task.checkCancellation()
@@ -928,7 +1071,12 @@ public extension FloeCADDocument {
             } else {
                 try FileManager.default.moveItem(at: stagedURL, to: destination)
             }
-            try? FileManager.default.removeItem(at: staging)
+            // The destination is already promoted and verified; a leftover
+            // empty staging directory is a cleanup defect, not a reason to
+            // discard the file. Log it instead of claiming a silent success.
+            if let cleanupFailure = await Self.removeAnimationStaging(staging) {
+                NSLog("[CADAnimationExport] %@", cleanupFailure)
+            }
             stagingDirectory = nil
             let attributes = try? FileManager.default.attributesOfItem(
                 atPath: destination.path)
@@ -952,28 +1100,71 @@ public extension FloeCADDocument {
                 result: result)
         } catch is CancellationError {
             writer?.cancelWriting()
-            if let stagingDirectory {
-                try? FileManager.default.removeItem(at: stagingDirectory)
-            }
+            let cleanupFailure = await Self.removeAnimationStaging(stagingDirectory)
+            stagingDirectory = nil
+            let message = cleanupFailure.map {
+                "\(CADAnimationExportError.cancelled.localizedDescription) \($0)"
+            } ?? CADAnimationExportError.cancelled.localizedDescription
             let progress = CADAnimationExportProgress(
                 phase: .cancelled, completedFrames: 0,
                 totalFrames: totalFrames, timeSeconds: 0)
             return CADAnimationExportStatus(
-                id: id, progress: progress,
-                error: CADAnimationExportError.cancelled.localizedDescription,
+                id: id, progress: progress, error: message,
                 isCancelled: true)
         } catch {
+            // Close/background/lease revocation surfaces the typed
+            // `.cancelled` error (not only CancellationError); report it as a
+            // cancellation rather than a failed export with no cancelled flag.
             writer?.cancelWriting()
-            if let stagingDirectory {
-                try? FileManager.default.removeItem(at: stagingDirectory)
+            let cleanupFailure = await Self.removeAnimationStaging(stagingDirectory)
+            stagingDirectory = nil
+            let wasCancelled: Bool
+            if let exportError = error as? CADAnimationExportError,
+               case .cancelled = exportError {
+                wasCancelled = true
+            } else {
+                wasCancelled = false
             }
+            var message = error.localizedDescription
+            if let cleanupFailure { message += " \(cleanupFailure)" }
             let progress = CADAnimationExportProgress(
-                phase: .failed, completedFrames: 0,
+                phase: wasCancelled ? .cancelled : .failed,
+                completedFrames: 0,
                 totalFrames: totalFrames, timeSeconds: 0)
             return CADAnimationExportStatus(
-                id: id, progress: progress,
-                error: error.localizedDescription)
+                id: id, progress: progress, error: message,
+                isCancelled: wasCancelled)
         }
+    }
+
+    /// Remove this job's staging directory before the terminal status is
+    /// published. The writer is already cancelled, but AVFoundation may keep
+    /// its file handle for a moment; retry a bounded three times and return
+    /// the actual failure instead of `try?` reporting a clean cancellation
+    /// while a partial `.export-*` tree remains.
+    private nonisolated static func removeAnimationStaging(
+        _ directory: URL?
+    ) async -> String? {
+        guard let directory else { return nil }
+        let fileManager = FileManager.default
+        var lastError: Error?
+        for attempt in 0..<3 {
+            if !fileManager.fileExists(atPath: directory.path) { return nil }
+            do {
+                try fileManager.removeItem(at: directory)
+                return nil
+            } catch {
+                lastError = error
+                if attempt < 2 { await Task.yield() }
+            }
+        }
+        let reason = lastError?.localizedDescription ?? "unknown error"
+        #if DEBUG
+        NSLog("[CADAnimationExport] %@", "staging cleanup failed path="
+            + "\(directory.path) error=\(reason)")
+        #endif
+        return FloeCADStrings.text("cad.animation.export.cleanupFailed",
+                                  "Temporary export files could not be removed.")
     }
 
     // MARK: Writer / pixels

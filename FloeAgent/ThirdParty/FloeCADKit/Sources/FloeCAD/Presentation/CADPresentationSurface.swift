@@ -248,6 +248,16 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             // means the same bytes/environment, so nothing is rebuilt.
             return
         }
+        #if DEBUG
+        if animationLease != nil {
+            // A real identity change (edit/environment) during a render lease
+            // is a legitimate stale abort. Log which side moved so a run can
+            // distinguish it from an unexplained export failure.
+            NSLog("[CADPresentation] %@", "scene identity changed during an "
+                + "animation lease; previous=\(String((buildKey ?? "nil").prefix(32))) "
+                + "next=\(String(scene.buildKey.prefix(32)))")
+        }
+        #endif
         buildTask?.cancel()
         pendingTapStamp = nil
         // The old visible stage cannot accept hits while its replacement
@@ -276,6 +286,12 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             originalMaterials.removeAll()
             // A replaced stage always starts from its document baseline; any
             // transient animation frame belonged to the previous generation.
+            #if DEBUG
+            if animationLease != nil {
+                NSLog("[CADPresentation] %@", "stage rebuild generation="
+                    + "\(renderGeneration) invalidated the active animation lease")
+            }
+            #endif
             animationToken = "static"
             animationRestoreCamera = nil
             animationLease = nil
@@ -807,6 +823,49 @@ final class CADPresentationSnapshotService {
         guard let controller = handle.controller else {
             throw CADPresentationError.notAttached
         }
+        // A pending debounced autosave of the SAME live content commits a new
+        // receipt while the asynchronous ARView snapshot flies; the fence
+        // below then discarded an unchanged image (run-18 colour witnesses).
+        // Settle through the canonical async writer BEFORE pinning the
+        // revision/SHA, and still abort on a real edit or save refusal.
+        let sourceChangeCount = document.liveChangeCount
+        let settleResult: AnimationIdentitySettleResult
+        do {
+            settleResult = try await document.session
+                .settleSaveStateBeforeIdentityPin(
+                    expectingChangeCount: sourceChangeCount)
+        } catch is CancellationError {
+            throw CADPresentationError.snapshotCancelled
+        }
+        // A close revokes the store: report the release before interpreting a
+        // possible save refusal caused by it.
+        guard !document.isClosed else {
+            #if DEBUG
+            NSLog("[CADPresentationCapture] %@", "stale "
+                + "reason=document-closed revision=\(document.revision)")
+            #endif
+            throw CADPresentationError.snapshotStale
+        }
+        switch settleResult {
+        case .ready:
+            break
+        case .sourceChanged:
+            #if DEBUG
+            NSLog("[CADPresentationCapture] %@", "stale "
+                + "reason=settle-source-changed "
+                + "changeCount=\(document.liveChangeCount) "
+                + "expected=\(sourceChangeCount) "
+                + "revision=\(document.revision)")
+            #endif
+            throw CADPresentationError.snapshotStale
+        case .saveFailed:
+            #if DEBUG
+            NSLog("[CADPresentationCapture] %@", "failed "
+                + "reason=settle-save-failed changeCount=\(document.liveChangeCount) "
+                + "expected=\(sourceChangeCount)")
+            #endif
+            throw CADPresentationError.snapshotFailed
+        }
         let documentKey = document.url.standardizedFileURL.path
         let revision = document.revision
         let changeCount = document.liveChangeCount
@@ -819,17 +878,35 @@ final class CADPresentationSnapshotService {
         if Task.isCancelled { throw CADPresentationError.snapshotCancelled }
         let result = try await controller.snapshotPNG(targetWidth: targetWidth)
         if Task.isCancelled { throw CADPresentationError.snapshotCancelled }
-        guard document.url.standardizedFileURL.path == documentKey,
-              document.revision == revision,
-              document.liveChangeCount == changeCount,
-              document.contentSHA256 == contentSHA256 else {
+        let documentKeyAfter = document.url.standardizedFileURL.path
+        let revisionAfter = document.revision
+        let changeCountAfter = document.liveChangeCount
+        let contentSHA256After = document.contentSHA256
+        let stateAfter = controller.renderStateToken
+        guard documentKeyAfter == documentKey,
+              revisionAfter == revision,
+              changeCountAfter == changeCount,
+              contentSHA256After == contentSHA256 else {
+            #if DEBUG
+            NSLog("[CADPresentationCapture] %@", "stale "
+                + "reason=document-fence "
+                + "keyMatches=\(documentKeyAfter == documentKey) "
+                + "revision=\(revisionAfter) expectedRevision=\(revision) "
+                + "changeCount=\(changeCountAfter) expectedChangeCount=\(changeCount) "
+                + "contentSHAMatches=\(contentSHA256After == contentSHA256) "
+                + "closed=\(document.isClosed)")
+            #endif
             throw CADPresentationError.snapshotStale
         }
         // A playback frame, export camera or environment change during the
         // asynchronous snapshot must discard the image rather than return a
         // picture of a different render state under the old key.
-        let stateAfter = controller.renderStateToken
         guard stateAfter == stateBefore else {
+            #if DEBUG
+            NSLog("[CADPresentationCapture] %@", "stale "
+                + "reason=render-state-changed "
+                + "revision=\(revision) changeCount=\(changeCount)")
+            #endif
             throw CADPresentationError.snapshotStale
         }
         let snapshot = CADPresentationSnapshot(

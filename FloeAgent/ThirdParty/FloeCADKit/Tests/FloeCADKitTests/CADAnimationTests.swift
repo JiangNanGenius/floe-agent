@@ -413,4 +413,97 @@ final class CADAnimationTests: XCTestCase {
         XCTAssertTrue(status.isFinished)
         XCTAssertEqual(status.progress.totalFrames, 10)
     }
+
+    /// A cancel request is observable immediately, but `wait` must join the
+    /// owned task: terminal status means its writer/staging/lease cleanup has
+    /// already run. The held task below deliberately ignores cancellation, so
+    /// returning from `wait` before `finish` is the regression.
+    func testExportCenterWaitJoinsTaskAfterCancelRequest() async throws {
+        let center = CADAnimationExportCenter.shared
+        let id = center.register(
+            documentKey: "animation-wait-\(UUID().uuidString)",
+            totalFrames: 3, progress: nil)
+        let gate = AnimationExportJobGate()
+        let task = Task { @MainActor in
+            await gate.suspend()
+            center.finish(id, status: CADAnimationExportStatus(
+                id: id,
+                progress: CADAnimationExportProgress(
+                    phase: .cancelled, completedFrames: 0, totalFrames: 3),
+                error: "cancelled", isCancelled: true))
+        }
+        center.attach(task: task, to: id)
+        let entered = await gate.waitUntilEntered()
+        XCTAssertTrue(entered, "the owned task never started")
+        guard entered else {
+            task.cancel()
+            gate.release()
+            return
+        }
+
+        center.cancel(id)
+        XCTAssertEqual(center.status(id)?.isCancelled, true,
+                       "a cancel request is promptly observable")
+        XCTAssertEqual(center.status(id)?.isFinished, false,
+                       "a cancel request must not claim terminal cleanup "
+                           + "before the owned task exits")
+
+        gate.release()
+        let status = await center.wait(id)
+        XCTAssertTrue(status.isCancelled)
+        XCTAssertTrue(status.isFinished)
+        XCTAssertEqual(status.progress.phase, .cancelled)
+        XCTAssertFalse(gate.timedOut)
+    }
+}
+
+/// Holds one service-owned job after cancellation until the test releases it,
+/// proving `CADAnimationExportCenter.wait` does not publish terminal status
+/// while cleanup is still owned by the task. Bounded watchdog, explicit state.
+@MainActor
+private final class AnimationExportJobGate {
+    private var entered = false
+    private var enteredWaiters: [CheckedContinuation<Bool, Never>] = []
+    private var released = false
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var timedOut = false
+
+    func suspend() async {
+        entered = true
+        let waiters = enteredWaiters
+        enteredWaiters.removeAll()
+        waiters.forEach { $0.resume(returning: true) }
+        if released { return }
+        let watchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled, let self, !self.released else { return }
+            self.timedOut = true
+            self.release()
+        }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+        watchdog.cancel()
+    }
+
+    func waitUntilEntered(timeout: TimeInterval = 20) async -> Bool {
+        if entered { return true }
+        let watchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard !Task.isCancelled, let self, !self.entered else { return }
+            self.timedOut = true
+            let waiters = self.enteredWaiters
+            self.enteredWaiters.removeAll()
+            waiters.forEach { $0.resume(returning: false) }
+            self.release()
+        }
+        let result = await withCheckedContinuation { enteredWaiters.append($0) }
+        watchdog.cancel()
+        return result
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
 }
