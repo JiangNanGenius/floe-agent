@@ -62,7 +62,7 @@ nonisolated enum ConstraintSolver {
                       fixed: Set<Int>,
                       constraints: [any ConstraintResidual],
                       maxIterations: Int = 200,
-                      tolerance: Double = 1e-9,
+                      tolerance: Double = 1e-15,
                       diagonalDamping: Bool = true) -> SolveResult {
         let n = initial.count
 
@@ -288,10 +288,12 @@ nonisolated enum ConstraintSolver {
         let dof = estimateDOF(jacobian(x), m: m, nFree: nFree)
 
         // Near-axis free geometry can make diagonal preconditioning amplify
-        // an almost-zero derivative into a huge transverse step. Preserve all
-        // successful solves; only retry a stalled solve from its original state
-        // with isotropic LM damping, accepting it only when residual improves.
-        if !converged, diagonalDamping {
+        // an almost-zero derivative into a huge transverse step. A tiny gradient
+        // can ALSO mark a nonzero-residual local minimum as converged; that is
+        // not a reason to keep a worse best fit. Retry both stalled solves and
+        // such stationary points from the original state with isotropic LM
+        // damping, accepting the alternative only when its residual improves.
+        if !converged || residualNorm > 1e-9, diagonalDamping {
             let retry = solve(initial: initial, fixed: fixed, constraints: constraints,
                               maxIterations: maxIterations, tolerance: tolerance,
                               diagonalDamping: false)

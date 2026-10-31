@@ -95,12 +95,14 @@ nonisolated enum SketchSolverBridge {
         knownDOF: Int? = nil,
         preservingRectangleCorner: UUID? = nil,
         preservingLineDirection: UUID? = nil,
-        preservingTangentCircle: (circle: UUID, line: UUID)? = nil
+        preservingTangentCircle: (circle: UUID, line: UUID)? = nil,
+        holdingSplinePoints: [UUID: Set<Int>] = [:]
     ) -> Outcome {
         let sys = buildSystem(from: sketch, movingEntity: movingEntity, dragTarget: dragTarget,
                               preservingRectangleCorner: preservingRectangleCorner,
                               preservingLineDirection: preservingLineDirection,
-                              preservingTangentCircle: preservingTangentCircle)
+                              preservingTangentCircle: preservingTangentCircle,
+                              holdingSplinePoints: holdingSplinePoints)
         guard !sys.initial.isEmpty else {
             return Outcome(entities: sketch.entities, dof: 0,
                            converged: true, structuralResidual: 0)
@@ -175,7 +177,7 @@ nonisolated enum SketchSolverBridge {
         var pulls = sys.structural
         for entity in targets {
             for slot in mutableSlots(entity, connectedArcEndpoints: connected.contains(entity.id)) {
-                guard let index = sys.pointIndex[SlotKey(entityID: slot.entityID, role: slot.role)]
+                guard let index = sys.pointIndex[SlotKey(entityID: slot.entityID, role: slot.role, splineIndex: slot.splineIndex)]
                 else { return nil }
                 pulls.append(FixedPointConstraint(p: index, target: slot.position))
             }
@@ -511,6 +513,14 @@ nonisolated enum SketchSolverBridge {
     private struct SlotKey: Hashable {
         let entityID: UUID
         let role: PointRole
+        /// Internal fit-point identity for an open spline. Persisted constraint
+        /// refs leave this nil; it is solver metadata, not a new saved role.
+        let splineIndex: Int?
+        init(entityID: UUID, role: PointRole, splineIndex: Int? = nil) {
+            self.entityID = entityID
+            self.role = role
+            self.splineIndex = splineIndex
+        }
     }
 
     private struct RawSlot {
@@ -518,6 +528,16 @@ nonisolated enum SketchSolverBridge {
         let role: PointRole
         let position: SIMD2<Double>
         let endpointLike: Bool
+        /// Internal fit-point identity; never encoded into a ConstraintRef.
+        let splineIndex: Int?
+        init(entityID: UUID, role: PointRole, position: SIMD2<Double>,
+             endpointLike: Bool, splineIndex: Int? = nil) {
+            self.entityID = entityID
+            self.role = role
+            self.position = position
+            self.endpointLike = endpointLike
+            self.splineIndex = splineIndex
+        }
     }
 
     /// Which document object a lowered residual came from — the provenance
@@ -738,14 +758,22 @@ nonisolated enum SketchSolverBridge {
         case let .polygon(id, c, _, _, _):
             return [RawSlot(entityID: id, role: .center, position: c, endpointLike: false)]
         case let .spline(id, points, closed):
-            // Expose the OPEN spline's ends so it can be constrained/welded to
-            // neighbouring geometry like a line. Interior fit points are not
-            // solver variables yet (spec §1.4 spline constraints are future
-            // work), so the curve keeps its shape when the ends move.
+            // An open spline's rendered tangent depends on its fit points, not
+            // only its ends. Every fit point is therefore a real variable;
+            // interior indices are internal solver keys, never persisted refs.
+            // This is required for junction G1 to survive arbitrary sweep and
+            // radius edits instead of collapsing into an infeasible best fit.
             guard !closed, let first = points.first, let last = points.last,
                   points.count >= 2 else { return [] }
-            return [RawSlot(entityID: id, role: .endpointA, position: first, endpointLike: true),
-                    RawSlot(entityID: id, role: .endpointB, position: last, endpointLike: true)]
+            var slots = [RawSlot(entityID: id, role: .endpointA, position: first, endpointLike: true),
+                         RawSlot(entityID: id, role: .endpointB, position: last, endpointLike: true)]
+            if points.count > 2 {
+                slots += (1..<(points.count - 1)).map {
+                    RawSlot(entityID: id, role: .center, position: points[$0],
+                            endpointLike: false, splineIndex: $0)
+                }
+            }
+            return slots
         }
     }
 
@@ -815,7 +843,8 @@ nonisolated enum SketchSolverBridge {
         dragTarget: SIMD2<Double>?,
         preservingRectangleCorner: UUID? = nil,
         preservingLineDirection: UUID? = nil,
-        preservingTangentCircle: (circle: UUID, line: UUID)? = nil
+        preservingTangentCircle: (circle: UUID, line: UUID)? = nil,
+        holdingSplinePoints: [UUID: Set<Int>] = [:]
     ) -> System {
         // 0. Connected arcs (M02) and the scale every length row is
         // normalized by (M06).
@@ -827,7 +856,7 @@ nonisolated enum SketchSolverBridge {
         var rawIndexOf: [SlotKey: Int] = [:]
         for e in sketch.entities {
             for s in mutableSlots(e, connectedArcEndpoints: connectedArcs.contains(e.id)) {
-                rawIndexOf[SlotKey(entityID: s.entityID, role: s.role)] = slots.count
+                rawIndexOf[SlotKey(entityID: s.entityID, role: s.role, splineIndex: s.splineIndex)] = slots.count
                 slots.append(s)
             }
         }
@@ -881,7 +910,8 @@ nonisolated enum SketchSolverBridge {
         // 4. slotKey -> point index.
         var pointIndex: [SlotKey: Int] = [:]
         for i in 0..<slots.count {
-            pointIndex[SlotKey(entityID: slots[i].entityID, role: slots[i].role)] = rootToPoint[find(i)]
+            pointIndex[SlotKey(entityID: slots[i].entityID, role: slots[i].role,
+                               splineIndex: slots[i].splineIndex)] = rootToPoint[find(i)]
         }
 
         // 5. Radius scalars, appended after the points.
@@ -924,13 +954,22 @@ nonisolated enum SketchSolverBridge {
         for e in sketch.entities {
             entityPoints[e.id] = mutableSlots(e, connectedArcEndpoints: connectedArcs.contains(e.id))
                 .compactMap {
-                    pointIndex[SlotKey(entityID: $0.entityID, role: $0.role)]
+                    pointIndex[SlotKey(entityID: $0.entityID, role: $0.role, splineIndex: $0.splineIndex)]
                 }
         }
 
         // Resolve helpers.
         func pIdx(_ id: UUID, _ role: PointRole) -> Int? {
             pointIndex[SlotKey(entityID: id, role: role)]
+        }
+        func splinePointIndices(_ id: UUID, count: Int) -> [Int]? {
+            guard count >= 2 else { return nil }
+            let indices = (0..<count).compactMap { index -> Int? in
+                if index == 0 { return pIdx(id, .endpointA) }
+                if index == count - 1 { return pIdx(id, .endpointB) }
+                return pointIndex[SlotKey(entityID: id, role: .center, splineIndex: index)]
+            }
+            return indices.count == count ? indices : nil
         }
         func linePair(_ id: UUID) -> (Int, Int)? {
             // An arc is never a "line pair": even with connected endpoints,
@@ -996,6 +1035,90 @@ nonisolated enum SketchSolverBridge {
            sketch.rectangleSizingAnchors[id]?.cornerUsesMax != nil,
            let a = pIdx(id, .endpointA) {
             fixPoint(a)
+        }
+
+        // Direct spline point edits hold the caller's requested fit indices
+        // transiently. They use internal solver keys, never a persisted role;
+        // all other fit points remain free to satisfy the saved system.
+        for (id, indices) in holdingSplinePoints {
+            guard case let .spline(_, points, closed)? = sketch.entities.first(where: {
+                $0.id == id
+            }), !closed, let pointVars = splinePointIndices(id, count: points.count)
+            else { continue }
+            for index in indices where pointVars.indices.contains(index) {
+                fixPoint(pointVars[index])
+            }
+        }
+
+        // 8b. Connected-curve branch seeds. These change only the solver's
+        // initial candidate, never a fixed variable or a saved equation. A
+        // connected sweep dimension retains the current start ray and places
+        // the end on its requested CCW branch; otherwise LM can settle at a
+        // nonzero-residual stationary point before discovering that branch.
+        for dimension in sketch.dimensions where dimension.kind == .angle && dimension.refs.count == 1 {
+            let id = dimension.refs[0].entityID
+            guard let ends = arcEndpoints[id], let center = pIdx(id, .center),
+                  let rv = radiusVar[id], dimension.value.isFinite,
+                  dimension.value > 0, dimension.value < 2 * Double.pi
+            else { continue }
+            let c = SIMD2(initial[2 * center], initial[2 * center + 1])
+            let a = SIMD2(initial[2 * ends.start] - c.x,
+                          initial[2 * ends.start + 1] - c.y)
+            let start = atan2(a.y, a.x)
+            let b = c + SketchEntity.arcPoint(center: SIMD2<Double>(),
+                radius: initial[rv], angle: start + dimension.value)
+            if !fixed.contains(2 * ends.end) { initial[2 * ends.end] = b.x }
+            if !fixed.contains(2 * ends.end + 1) { initial[2 * ends.end + 1] = b.y }
+        }
+
+        // A three-point open Catmull–Rom has straight end spans. When both of
+        // its ends are welded and tangent to one arc, the intersection of the
+        // two circle tangent lines is an exact, geometry-derived seed for its
+        // single interior fit point. It removes the collapsed-spline local
+        // minimum while leaving all DOF and all residuals genuinely solved.
+        for case let .arc(arcID, _, _, _, _) in sketch.entities {
+            guard let ends = arcEndpoints[arcID], let center = pIdx(arcID, .center)
+            else { continue }
+            for case let .spline(splineID, points, closed) in sketch.entities
+            where !closed && points.count == 3 {
+                guard let splinePoints = splinePointIndices(splineID, count: 3),
+                      let mid = pointIndex[SlotKey(entityID: splineID, role: .center, splineIndex: 1)]
+                else { continue }
+                func relation(_ arcRole: PointRole, _ splineRole: PointRole) -> Bool {
+                    sketch.constraints.contains { constraint in
+                        guard constraint.kind == .tangent, constraint.refs.count == 2
+                        else { return false }
+                        return constraint.refs.contains {
+                            $0.entityID == arcID && $0.role == arcRole
+                        } && constraint.refs.contains {
+                            $0.entityID == splineID && $0.role == splineRole
+                        }
+                    }
+                }
+                let direct = relation(.endpointA, .endpointA)
+                    && relation(.endpointB, .endpointB)
+                    && ends.start == splinePoints[0] && ends.end == splinePoints[2]
+                let reversed = relation(.endpointA, .endpointB)
+                    && relation(.endpointB, .endpointA)
+                    && ends.start == splinePoints[2] && ends.end == splinePoints[0]
+                guard direct || reversed else { continue }
+                let c = SIMD2(initial[2 * center], initial[2 * center + 1])
+                let a = SIMD2(initial[2 * ends.start], initial[2 * ends.start + 1])
+                let b = SIMD2(initial[2 * ends.end], initial[2 * ends.end + 1])
+                let rayA = a - c, rayB = b - c
+                let lenA = simd_length(rayA), lenB = simd_length(rayB)
+                guard lenA > 0, lenB > 0 else { continue }
+                let tangentA = SIMD2(-rayA.y / lenA, rayA.x / lenA)
+                let tangentB = SIMD2(-rayB.y / lenB, rayB.x / lenB)
+                let denominator = tangentA.x * tangentB.y - tangentA.y * tangentB.x
+                guard abs(denominator) > 1e-9 else { continue }
+                let delta = b - a
+                let distance = (delta.x * tangentB.y - delta.y * tangentB.x) / denominator
+                let seed = a + tangentA * distance
+                guard seed.x.isFinite, seed.y.isFinite else { continue }
+                if !fixed.contains(2 * mid) { initial[2 * mid] = seed.x }
+                if !fixed.contains(2 * mid + 1) { initial[2 * mid + 1] = seed.y }
+            }
         }
 
         // 9. Lower constraints + dimensions to residuals, recording each
@@ -1122,24 +1245,26 @@ nonisolated enum SketchSolverBridge {
                 }
                 return nil
             }
-            func splineEnd(_ ref: ConstraintRef) -> (points: [SIMD2<Double>], atStart: Bool)? {
+            func splineEnd(_ ref: ConstraintRef) -> (pointVars: [Int], atStart: Bool)? {
                 guard ref.role == .endpointA || ref.role == .endpointB,
                       case let .spline(_, points, closed)? =
                         sketch.entities.first(where: { $0.id == ref.entityID }),
-                      !closed, points.count >= 2 else { return nil }
-                return (points, ref.role == .endpointA)
+                      !closed, points.count >= 2,
+                      let pointVars = splinePointIndices(ref.entityID, count: points.count)
+                else { return nil }
+                return (pointVars, ref.role == .endpointA)
             }
             if let arc = arcEndpoint(r0), let spl = splineEnd(r1) {
                 lower(ArcSplineTangentConstraint(
                     center: arc.center, point: arc.point,
-                    splinePoints: spl.points,
+                    splinePointVars: spl.pointVars,
                     end: spl.atStart ? .start : .end))
                 return true
             }
             if let arc = arcEndpoint(r1), let spl = splineEnd(r0) {
                 lower(ArcSplineTangentConstraint(
                     center: arc.center, point: arc.point,
-                    splinePoints: spl.points,
+                    splinePointVars: spl.pointVars,
                     end: spl.atStart ? .start : .end))
                 return true
             }
@@ -1428,15 +1553,21 @@ nonisolated enum SketchSolverBridge {
                 return .polygon(id: id, center: pt(id, .center) ?? c, radius: rad(id, r),
                                 sides: sides, rotation: rot)
             case let .spline(id, points, closed):
-                // Move the ends the solver placed; interior points ride along by
-                // the same translation so the curve is not distorted.
-                guard !closed, points.count >= 2,
-                      let a = pt(id, .endpointA) ?? points.first,
-                      let b = pt(id, .endpointB) ?? points.last
-                else { return e }
+                // Write every solved fit point back in its original order and
+                // with the same stable entity ID. Interior keys are internal
+                // solver metadata and never alter the persisted ref vocabulary.
+                guard !closed, points.count >= 2 else { return e }
                 var moved = points
-                moved[0] = a
-                moved[moved.count - 1] = b
+                for index in points.indices {
+                    if index == 0 {
+                        moved[index] = pt(id, .endpointA) ?? points[index]
+                    } else if index == points.count - 1 {
+                        moved[index] = pt(id, .endpointB) ?? points[index]
+                    } else if let pi = sys.pointIndex[
+                        SlotKey(entityID: id, role: .center, splineIndex: index)] {
+                        moved[index] = SIMD2(vars[2 * pi], vars[2 * pi + 1])
+                    }
+                }
                 return .spline(id: id, points: moved, closed: closed)
             }
         }
@@ -1644,7 +1775,8 @@ nonisolated extension SketchSolverBridge {
         // `entityStates` returning `true` for an empty system).
         guard !sys.initial.isEmpty else {
             for e in sketch.entities {
-                for slot in mutableSlots(e, connectedArcEndpoints: connected.contains(e.id)) {
+                for slot in mutableSlots(e, connectedArcEndpoints: connected.contains(e.id))
+                where slot.splineIndex == nil {
                     let key = SketchPointKey(entityID: slot.entityID, role: slot.role)
                     out[key] = explicitlyLocked(slot.entityID, slot.role) ? .locked : .constrained
                 }
@@ -1660,9 +1792,10 @@ nonisolated extension SketchSolverBridge {
         let determined = nullSpaceAnalysis(sys, at: solved).determined
 
         for e in sketch.entities {
-            for slot in mutableSlots(e, connectedArcEndpoints: connected.contains(e.id)) {
+            for slot in mutableSlots(e, connectedArcEndpoints: connected.contains(e.id))
+            where slot.splineIndex == nil {
                 let key = SketchPointKey(entityID: slot.entityID, role: slot.role)
-                guard let pi = sys.pointIndex[SlotKey(entityID: slot.entityID, role: slot.role)] else {
+                guard let pi = sys.pointIndex[SlotKey(entityID: slot.entityID, role: slot.role, splineIndex: slot.splineIndex)] else {
                     out[key] = explicitlyLocked(slot.entityID, slot.role) ? .locked : .free
                     continue
                 }

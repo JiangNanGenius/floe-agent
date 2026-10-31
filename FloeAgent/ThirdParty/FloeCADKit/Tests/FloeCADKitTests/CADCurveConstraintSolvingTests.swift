@@ -159,7 +159,8 @@ final class CADCurveConstraintSolvingTests: XCTestCase {
     /// M02: with connection + tangency constrained, changing the driving
     /// radius dimension keeps the loop welded, on-circle and G1-tangent —
     /// identically at 10^-3, 1 and 10^3 scale (M06). The remaining DOF is
-    /// reported truthfully (0 with the center locked).
+    /// reported truthfully: with the center locked, the two endpoint tangent
+    /// configurations remain free after radius, on-circle and G1 rows.
     func testConnectedLoopSurvivesDimensionEditAtThreeScales() throws {
         for scale in [1e-3, 1.0, 1e3] {
             let loop = CurveLoopFixture.make(scale: scale)
@@ -175,8 +176,8 @@ final class CADCurveConstraintSolvingTests: XCTestCase {
             XCTAssertLessThanOrEqual(outcome.structuralResidual,
                                      SketchSolverBridge.overConstraintTolerance,
                                      "scale \(scale): initial loop conflicts")
-            XCTAssertEqual(outcome.dof, 0,
-                           "scale \(scale): locked center + radius dimension + welds + tangency must fully define the loop")
+            XCTAssertEqual(outcome.dof, 2,
+                           "scale \(scale): radius + welds + on-circle + G1 leave two real tangent-configuration DOF")
             var m = try XCTUnwrap(CurveLoopFixture.measure(outcome.entities, loop: loop),
                                   "scale \(scale)")
             XCTAssertLessThan(m.junctionGapStart, 1e-9, "scale \(scale): start junction split")
@@ -216,13 +217,13 @@ final class CADCurveConstraintSolvingTests: XCTestCase {
                               "scale \(scale): tangency lost after dimension edit")
             XCTAssertLessThan(m.tangentDeviationEnd, 1e-4,
                               "scale \(scale): tangency lost after dimension edit")
-            XCTAssertEqual(outcome.dof, 0, "scale \(scale): edited loop DOF changed")
+            XCTAssertEqual(outcome.dof, 2, "scale \(scale): edited loop DOF changed")
         }
     }
 
-    /// M02: without a Lock the same loop truthfully reports its 2 remaining
-    /// degrees of freedom (the arc center's x/y), while closure and tangency
-    /// still hold.
+    /// M02: without a Lock the same loop truthfully reports 4 remaining DOF:
+    /// the arc center's x/y translation plus the two endpoint tangent
+    /// configurations, while closure and tangency still hold.
     func testConnectedLoopReportsRemainingDOFTruthfully() throws {
         let loop = CurveLoopFixture.make(scale: 1)
         let sketch = CurveLoopFixture.sketch(
@@ -232,10 +233,10 @@ final class CADCurveConstraintSolvingTests: XCTestCase {
         XCTAssertTrue(outcome.converged)
         XCTAssertLessThanOrEqual(outcome.structuralResidual,
                                  SketchSolverBridge.overConstraintTolerance)
-        XCTAssertEqual(outcome.dof, 2,
-                       "a free arc center leaves exactly 2 DOF on the connected loop")
+        XCTAssertEqual(outcome.dof, 4,
+                       "free center x/y plus two tangent configurations leave exactly 4 DOF")
         let report = SketchSolverBridge.definitionReport(sketch)
-        XCTAssertEqual(report.dof, 2)
+        XCTAssertEqual(report.dof, 4)
         XCTAssertFalse(report.conflicting)
         XCTAssertEqual(report.states[loop.arcID], false)
         XCTAssertEqual(report.states[loop.splineID], false)

@@ -83,24 +83,39 @@ final class CADCurveConstraintServiceTests: XCTestCase {
         let pointJSON = points.map { "[\(num($0.x)),\(num($0.y))]" }.joined(separator: ",")
         let created = try run(document, #"{"op":"sketch.create","args":{"name":"\#(name)"}}"#)
         let sketchID = try XCTUnwrap(created["sketchID"] as? String)
-        _ = try run(document, #"""
+        let added = try run(document, #"""
         {"op":"sketch.addEntities","args":{"sketchID":"\#(sketchID)","entities":[
           {"kind":"arc","center":[\#(num(arc.center.x)),\#(num(arc.center.y))],
            "radius":\#(num(arc.radius)),
            "startAngle":\#(num(arc.startAngle)),"endAngle":\#(num(arc.endAngle))},
           {"kind":"spline","points":[\#(pointJSON)],"closed":false}]}}
         """#)
+        // JSON creation owns the real entity IDs. Bind every subsequent ref,
+        // undo baseline and measurement to those returned/live IDs instead of
+        // the temporary fixture UUIDs (which are never inserted by this API).
+        let idRows = try XCTUnwrap(added["entityIDs"] as? [String])
+        XCTAssertEqual(idRows.count, 2)
+        let actualArcID = try XCTUnwrap(UUID(uuidString: idRows[0]))
+        let actualSplineID = try XCTUnwrap(UUID(uuidString: idRows[1]))
+        var bound = fixture
+        bound.arcID = actualArcID
+        bound.splineID = actualSplineID
+        bound.arc = .arc(id: actualArcID, center: arc.center, radius: arc.radius,
+                         startAngle: arc.startAngle, endAngle: arc.endAngle)
+        bound.spline = .spline(id: actualSplineID, points: points, closed: false)
+        let liveIDs = try sketchEntities(document, sketchID: sketchID).map(\.id)
+        XCTAssertEqual(liveIDs, [actualArcID, actualSplineID])
         let sketch = SketchID(raw: UUID(uuidString: sketchID)!)
-        for constraint in CurveLoopFixture.loopConstraints(fixture) {
+        for constraint in CurveLoopFixture.loopConstraints(bound) {
             document.session.perform(AddSketchConstraintCommand(sketchID: sketch, constraint: constraint))
         }
         document.session.perform(AddSketchDimensionCommand(
             sketchID: sketch,
-            dimension: CurveLoopFixture.radiusDimension(fixture, value: 25 * scale)))
+            dimension: CurveLoopFixture.radiusDimension(bound, value: 25 * scale)))
         return ConnectedLoop(sketchID: sketchID,
-                             arcID: fixture.arcID.uuidString,
-                             splineID: fixture.splineID.uuidString,
-                             fixture: fixture)
+                             arcID: bound.arcID.uuidString,
+                             splineID: bound.splineID.uuidString,
+                             fixture: bound)
     }
 
     // MARK: - M02: dimension edit keeps the section closed

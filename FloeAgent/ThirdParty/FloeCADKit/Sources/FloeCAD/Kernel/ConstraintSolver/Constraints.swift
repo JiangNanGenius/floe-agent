@@ -501,48 +501,47 @@ nonisolated enum ArcSplineTangentEnd: Sendable {
 /// shared (welded/coincident) junction: the spline's RENDERED end tangent is
 /// perpendicular to the arc radius at the junction
 /// (dot(normalize(P − c), normalize(tangent)) = 0). The tangent is the exact
-/// centripetal Catmull–Rom end derivative (`CatmullRomBezier`), recomputed each
-/// evaluation with the solved junction point substituted for the end fit
-/// point, so a satisfied residual is true G1 continuity of the drawn curve —
-/// not a chord approximation. Interior fit points are constants here (they are
-/// not solver variables), which is exactly why a tangency can be satisfied by
-/// sliding the junction along the arc. Unitless (a cosine); never NaN — a
-/// degenerate zero-length tangent span carries no direction and reports the
-/// junction unsatisfied instead of dividing by zero.
+/// centripetal Catmull–Rom end derivative (`CatmullRomBezier`), recomputed from
+/// the CURRENT solved fit points on every evaluation. Interior fit points are
+/// real solver variables: freezing them makes a general sweep edit impossible
+/// and previously drove the junctions into a collapsed, unsatisfied best fit.
+/// Unitless (a cosine); a degenerate zero-length tangent has no direction and
+/// is explicitly unsatisfied rather than a false zero residual.
 nonisolated struct ArcSplineTangentConstraint: ConstraintResidual {
     let center: Int
     let point: Int
-    /// Full current fit-point array; the addressed end is replaced by the
-    /// solved junction point on every evaluation.
-    let splinePoints: [SIMD2<Double>]
+    /// Global solver point index for every fit point, in stored spline order.
+    /// Coincident ends intentionally share the arc's welded point index.
+    let splinePointVars: [Int]
     let end: ArcSplineTangentEnd
 
-    init(center: Int, point: Int, splinePoints: [SIMD2<Double>], end: ArcSplineTangentEnd) {
+    init(center: Int, point: Int, splinePointVars: [Int], end: ArcSplineTangentEnd) {
         self.center = center
         self.point = point
-        self.splinePoints = splinePoints
+        self.splinePointVars = splinePointVars
         self.end = end
     }
 
-    var variableIndices: [Int] { pointIndices(center) + pointIndices(point) }
+    var variableIndices: [Int] {
+        pointIndices(center) + pointIndices(point)
+            + splinePointVars.flatMap(pointIndices)
+    }
     var residualCount: Int { 1 }
     func residuals(_ vars: [Double]) -> [Double] {
-        guard splinePoints.count >= 2 else { return [0] }
-        var points = splinePoints
-        // Read the global helper's value directly: the `point` property would
-        // otherwise shadow that helper under Swift 6 object compilation.
-        let junction = SIMD2<Double>(vars[2 * self.point], vars[2 * self.point + 1])
-        switch end {
-        case .start: points[0] = junction
-        case .end: points[points.count - 1] = junction
+        guard splinePointVars.count >= 2 else { return [1] }
+        let points = splinePointVars.map {
+            SIMD2<Double>(vars[2 * $0], vars[2 * $0 + 1])
         }
         let spanIndex = end == .start ? 0 : points.count - 2
         let span = CatmullRomBezier.spans(points, closed: false)[spanIndex]
         let tangent = CatmullRomBezier.derivative(span, end == .start ? 0 : 1)
         let tLen = simd_length(tangent)
+        let junction = points[end == .start ? 0 : points.count - 1]
         let radius = junction - SIMD2<Double>(vars[2 * center], vars[2 * center + 1])
         let rLen = simd_length(radius)
-        guard tLen > 1e-12, rLen > 1e-12 else { return [0] }
+        // Keep the predicate scale-free: a tiny but nonzero tangent at 10^-3
+        // scale is valid, while an exactly degenerate tangent is not G1.
+        guard tLen.isFinite, rLen.isFinite, tLen > 0, rLen > 0 else { return [1] }
         return [simd_dot(radius / rLen, tangent / tLen)]
     }
 }

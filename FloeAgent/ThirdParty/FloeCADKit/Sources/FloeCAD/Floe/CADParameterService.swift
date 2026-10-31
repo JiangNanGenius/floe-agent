@@ -481,8 +481,24 @@ public final class CADParameterService {
             }
             proposed.dimensions[index] = afterDimension
         }
+        // Interior spline fit points are now genuine solver variables. Preserve
+        // the same direct-edit contract as the endpoint refs: a full points
+        // replacement holds every supplied index; point_index holds exactly the
+        // changed index. These transient holds never enter the document.
+        var heldSplinePointIndices: [Int] = []
+        if case let .spline(_, afterPoints, closed) = plan.after, !closed {
+            if args["points"] != nil {
+                heldSplinePointIndices = Array(afterPoints.indices)
+            } else if case let .spline(_, beforePoints, _) = before,
+                      beforePoints.count == afterPoints.count {
+                heldSplinePointIndices = afterPoints.indices.filter {
+                    beforePoints[$0] != afterPoints[$0]
+                }
+            }
+        }
         let entitiesToCommit: [SketchEntity]
-        switch Self.solveEditedSketch(proposed, edited: plan.after, heldRefs: plan.heldRefs) {
+        switch Self.solveEditedSketch(proposed, edited: plan.after, heldRefs: plan.heldRefs,
+                                      heldSplinePointIndices: heldSplinePointIndices) {
         case .success(let value): entitiesToCommit = value
         case .failure(let error): return Self.fail(error.code, error.message)
         }
@@ -1738,10 +1754,9 @@ public final class CADParameterService {
 
     /// Edit a SPLINE's fit points by stable entity id. `point_index` is the
     /// zero-based identity of one point in the stored order; `points` replaces
-    /// the whole list and therefore every index. Interior fit points are not
-    /// solver variables (only an open spline's two ends are), so the direct
-    /// reference gate refuses a closed/wholly-referenced spline instead of
-    /// pretending the solver could validate it.
+    /// the whole list and therefore every index. Open-spline fit points are
+    /// solver variables, so the caller's edited indices are held transiently
+    /// while related geometry solves; closed splines remain outside this model.
     private static func splineEditPlan(
         args: [String: Any], id: UUID, points: [SIMD2<Double>], closed: Bool
     ) -> Result<SketchEntityEditPlan, SketchEditFailure> {
@@ -2132,10 +2147,20 @@ public final class CADParameterService {
             proposed.dimensions.append(candidate)
         }
         if SketchSolverBridge.residualNorm(proposed) > Self.overConstraintTolerance {
+            // Name the actual saved relations, not a generic conflict label.
+            // A newly proposed dimension is excluded from partner blame; the
+            // user needs the existing IDs that already clash in the document.
+            let blame = SketchSolverBridge.conflictPartners(
+                in: proposed, excludingDimensions: isNew ? [candidate.id] : [])
+            let ids = blame.constraintIDs.map(\.uuidString)
+                + blame.dimensionIDs.map(\.uuidString)
+            let suffix = ids.isEmpty ? "" : " Conflicting relation IDs: "
+                + ids.sorted().joined(separator: ", ") + "."
             return Self.fail(
                 "constraint_conflict",
                 "The driving \(requestedKind) conflicts with the sketch's existing constraints/dimensions; "
-                    + "nothing was changed. Remove or relax the conflicting relationship first.")
+                    + "nothing was changed." + suffix
+                    + " Remove or relax the conflicting relationship first.")
         }
         let solved = SketchSolverBridge.solveDimensionEdit(
             proposed, dimension: candidate, tolerance: Self.overConstraintTolerance)
@@ -3725,7 +3750,8 @@ public final class CADParameterService {
     /// primitive in the sketch. Returns the solved entity list plus explicit
     /// failure diagnostics instead of silently accepting an unsatisfied system.
     private static func solveEditedSketch(
-        _ sketch: Sketch, edited: SketchEntity, heldRefs: [ConstraintRef]
+        _ sketch: Sketch, edited: SketchEntity, heldRefs: [ConstraintRef],
+        heldSplinePointIndices: [Int] = []
     ) -> Result<[SketchEntity], SketchEditFailure> {
         let anchored: Sketch
         switch applyingCoincidentFollowers(sketch, edited: edited) {
@@ -3738,7 +3764,9 @@ public final class CADParameterService {
                 kind: .fixed, refs: heldRefs))
         }
         let outcome = SketchSolverBridge.solveOutcome(
-            solvedSketch, movingEntity: nil, dragTarget: nil)
+            solvedSketch, movingEntity: nil, dragTarget: nil,
+            holdingSplinePoints: heldSplinePointIndices.isEmpty
+                ? [:] : [edited.id: Set(heldSplinePointIndices)])
         // Final admission: per-equation backward error AND absolute product
         // precision (see SketchSolverBridge.structuralNorms), AND a converged
         // solve. Small-scale contradictions cannot hide under display

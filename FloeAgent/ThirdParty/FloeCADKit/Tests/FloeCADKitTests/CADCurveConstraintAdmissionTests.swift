@@ -439,15 +439,25 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
               {"kind":"spline","points":[\#(pointJSON)],"closed":false}]}}
             """#.utf8))
         XCTAssertTrue(added.isOK, added.message ?? "")
+        let addedObject = try XCTUnwrap(
+            (try? JSONSerialization.jsonObject(with: added.payload)) as? [String: Any])
+        let idRows = try XCTUnwrap(addedObject["entityIDs"] as? [String])
+        XCTAssertEqual(idRows.count, 2)
+        var liveLoop = loop
+        liveLoop.arcID = try XCTUnwrap(UUID(uuidString: idRows[0]))
+        liveLoop.splineID = try XCTUnwrap(UUID(uuidString: idRows[1]))
+        liveLoop.arc = .arc(id: liveLoop.arcID, center: arc.center, radius: arc.radius,
+                            startAngle: arc.startAngle, endAngle: arc.endAngle)
+        liveLoop.spline = .spline(id: liveLoop.splineID, points: points, closed: false)
         let sid = SketchID(raw: UUID(uuidString: sketchID)!)
-        for constraint in CurveLoopFixture.loopConstraints(loop) {
+        for constraint in CurveLoopFixture.loopConstraints(liveLoop) {
             document.session.perform(AddSketchConstraintCommand(sketchID: sid, constraint: constraint))
         }
 
         let service = CADParameterService(document: document)
         let edited = service.handle(action: "updateSketchEntity", args: [
             "sketch_id": sketchID,
-            "entity_id": loop.arcID.uuidString,
+            "entity_id": liveLoop.arcID.uuidString,
             "radius": 40.0,
             "expected_radius": 25.0,
         ])
@@ -775,15 +785,7 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
         XCTAssertTrue(created.isOK)
         let sketchID = try XCTUnwrap(
             ((try? JSONSerialization.jsonObject(with: created.payload)) as? [String: Any])?["sketchID"] as? String)
-        let arcID = UUID()
-        let circleID = UUID()
-        let splineID = UUID()
-        let arc = SketchEntity.arc(id: arcID, center: SIMD2(0, 0), radius: 25,
-                                   startAngle: 200 * Double.pi / 180, endAngle: 340 * Double.pi / 180)
-        let ghost = SketchEntity.circle(id: circleID, center: SIMD2(200, 0), radius: 10)
         let pA = SketchEntity.arcPoint(center: SIMD2(0, 0), radius: 25, angle: 200 * Double.pi / 180)
-        let openSpline = SketchEntity.spline(
-            id: splineID, points: [pA, pA + SIMD2(-30, -40)], closed: false)
         let added = document.executeJSON(Data(#"""
             {"op":"sketch.addEntities","args":{"sketchID":"\#(sketchID)","entities":[
               {"kind":"arc","center":[0,0],"radius":25,
@@ -792,6 +794,13 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
               {"kind":"spline","points":[[\#(pA.x),\#(pA.y)],[\#(pA.x - 30),\#(pA.y - 40)]],"closed":false}]}}
             """#.utf8))
         XCTAssertTrue(added.isOK, added.message ?? "")
+        let addedObject = try XCTUnwrap(
+            (try? JSONSerialization.jsonObject(with: added.payload)) as? [String: Any])
+        let idRows = try XCTUnwrap(addedObject["entityIDs"] as? [String])
+        XCTAssertEqual(idRows.count, 3)
+        let arcID = try XCTUnwrap(UUID(uuidString: idRows[0]))
+        let circleID = try XCTUnwrap(UUID(uuidString: idRows[1]))
+        let splineID = try XCTUnwrap(UUID(uuidString: idRows[2]))
         let sid = SketchID(raw: UUID(uuidString: sketchID)!)
         // Ghost: arc endpoint welded to a whole circle — the solver has no
         // such lowering.

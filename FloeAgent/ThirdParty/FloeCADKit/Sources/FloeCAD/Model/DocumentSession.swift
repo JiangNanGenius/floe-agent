@@ -2150,9 +2150,12 @@ final class DocumentSession {
         // Diff by ID against the persisted objects. Every deletion loop
         // excludes `unreadableRows` — rows load() couldn't decode are not in
         // `document`, but deleting them would turn a recoverable skip into
-        // permanent data loss. Encode failures likewise skip the row update
+        // permanent data loss. Body encode failures skip the row update
         // (keeping the old blob) rather than writing empty Data; the ID is
         // recorded as live FIRST so the row survives the deletion diff.
+        // Sketch encoding is different: ConstraintRef rejects transient roles,
+        // and swallowing that error would silently preserve the old sketch and
+        // acknowledge a save whose in-memory model was never committed.
         var persistedByID = [UUID: PersistedBody]()
         for persisted in project.bodies {
             persistedByID[persisted.bodyID] = persisted
@@ -2247,7 +2250,10 @@ final class DocumentSession {
         var liveSketchIDs = Set<UUID>()
         for sketch in document.sketches {
             liveSketchIDs.insert(sketch.id.raw)
-            guard let data = try? JSONEncoder().encode(sketch) else { continue }
+            // Fail the whole save BEFORE commit when any saved ref is not in
+            // the persistable vocabulary (for example solver-local radiusOnly).
+            // The previous healthy package remains readable and byte-stable.
+            let data = try JSONEncoder().encode(sketch)
             if let persisted = persistedSketchByID[sketch.id.raw] {
                 persisted.sketchData = data
             } else {
