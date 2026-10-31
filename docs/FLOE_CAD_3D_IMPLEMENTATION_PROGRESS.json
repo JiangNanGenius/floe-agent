@@ -3825,10 +3825,21 @@
       "package": "engineering",
       "implementation": {
         "stage": "D",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "in_progress",
+        "source_changes": [
+          "fe1bc656f19ebfba86dec37fc5ee9a29b942151a"
+        ],
+        "verification": [
+          {
+            "kind": "source_and_focused_typecheck_review",
+            "result": "reviewed_and_integrated",
+            "observed": "结构化制造标注、模板、格式7兼容、34项工具目录及真实存储测试源码已整合；不等同实际App通过。"
+          }
+        ],
+        "limitations": [
+          "数值语义、原生编辑和文案修正仍在进行。",
+          "Swift6实际App编译、真实保存重开及PDF/DXF读回待验证。"
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -3941,10 +3952,21 @@
       "package": "engineering",
       "implementation": {
         "stage": "D",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "in_progress",
+        "source_changes": [
+          "fe1bc656f19ebfba86dec37fc5ee9a29b942151a"
+        ],
+        "verification": [
+          {
+            "kind": "source_and_focused_typecheck_review",
+            "result": "reviewed_and_integrated",
+            "observed": "结构化制造标注、模板、格式7兼容、34项工具目录及真实存储测试源码已整合；不等同实际App通过。"
+          }
+        ],
+        "limitations": [
+          "数值语义、原生编辑和文案修正仍在进行。",
+          "Swift6实际App编译、真实保存重开及PDF/DXF读回待验证。"
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
