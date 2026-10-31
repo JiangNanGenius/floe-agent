@@ -119,7 +119,6 @@ internal class DeviceAccessHost(
         /** Explicit other-app data folders; used only while Root is live. */
         val appDataPaths: Set<String> = emptySet(),
         val fileWritesAllowed: Boolean = false,
-        val screenScope: DeviceAccessScreenScopeUi = DeviceAccessScreenScopeUi.OFF,
         val wholeScreenConsent: Boolean = false,
         val packageManagementAllowed: Boolean = false,
         val adbEnabled: Boolean = false,
@@ -244,6 +243,23 @@ internal class DeviceAccessHost(
     @Volatile
     private var recentTitle: String? = null
 
+    /**
+     * RAM-only screen-share consent. "This task" is bound to the exact live
+     * task/run owner and native epoch the user selected; it is never stored in
+     * [preferences] and never follows another task or a restarted process.
+     * "Until stopped" is the distinct broader session mode. See
+     * [ScreenScopeConsent].
+     */
+    private val screenShare = ScreenScopeConsent()
+
+    /**
+     * RAM revision of the separate whole-screen consent. It does not replace
+     * that persistent user ceiling; it lets a pending display capture prove
+     * the exact consent it started under was not revoked and re-granted.
+     */
+    @Volatile
+    private var wholeScreenConsentRevision = 0L
+
     @Volatile
     private var pairingSessionOpen = false
     private var pairingPortInput = ""
@@ -335,7 +351,15 @@ internal class DeviceAccessHost(
         ensureRootController()
         statusJobs += scope.launch {
             PhoneControlModule.status.collect { status ->
+                val tornDownBefore = phoneServiceTornDown(phoneStatus)
                 phoneStatus = status
+                // Actual Accessibility/driver teardown revokes the RAM-only
+                // screen consent. A user Stop/Takeover is cleared by its own
+                // action; the transient blockers emitted while explicitly
+                // arming the next task must not discard its fresh choice.
+                if (!tornDownBefore && phoneServiceTornDown(status)) {
+                    screenShare.clear()
+                }
                 publish()
             }
         }
@@ -425,6 +449,7 @@ internal class DeviceAccessHost(
         userStopped = false
         lastStoppedOwner = null
         stoppedOwnerSettled = false
+        screenShare.clear()
         publish()
     }
 
@@ -479,6 +504,9 @@ internal class DeviceAccessHost(
         phoneClient = null
         rootGrants.clear()
         phoneBindings.clear()
+        // The phone/root session owning the screen ceiling is gone; RAM-only
+        // screen consent must not outlive the service it was granted to.
+        screenShare.clear()
     }
 
     private fun attachSettingsPresentation() {
@@ -503,6 +531,12 @@ internal class DeviceAccessHost(
         packageName != null && FloePackageFamily.isWithinRoots(packageName, floeProtectedPackages)
 
     private fun loadSettings(): AccessSettings {
+        // Screen sharing is an ephemeral task consent (RAM-only). A value
+        // stored by an older build is discarded, never restored: process
+        // reconstruction must not re-grant another task's screen access.
+        if (preferences.contains(KEY_SCREEN_SCOPE)) {
+            preferences.edit().remove(KEY_SCREEN_SCOPE).apply()
+        }
         val storedPackages = preferences.getStringSet(KEY_PACKAGES, emptySet()).orEmpty().toSet()
         val packages = storedPackages.filterNot { isFloeSelfPackage(it) }.toSet()
         if (packages != storedPackages) {
@@ -517,17 +551,11 @@ internal class DeviceAccessHost(
             .distinct()
             .take(FileRootCatalog.MAX_APP_DATA_ROOTS)
             .toSet()
-        val scope = runCatching {
-            DeviceAccessScreenScopeUi.valueOf(
-                preferences.getString(KEY_SCREEN_SCOPE, null)
-                    ?: DeviceAccessScreenScopeUi.OFF.name)
-        }.getOrDefault(DeviceAccessScreenScopeUi.OFF)
         return AccessSettings(
             allowedPackages = packages,
             fileRootIds = roots,
             appDataPaths = appData,
             fileWritesAllowed = preferences.getBoolean(KEY_FILE_WRITES, false),
-            screenScope = scope,
             wholeScreenConsent = preferences.getBoolean(KEY_WHOLE_SCREEN, false),
             packageManagementAllowed = preferences.getBoolean(KEY_MANAGEMENT, false),
             adbEnabled = preferences.getBoolean(KEY_ADB_ENABLED, false),
@@ -539,7 +567,6 @@ internal class DeviceAccessHost(
             .putStringSet(KEY_PACKAGES, HashSet(settings.allowedPackages))
             .putStringSet(KEY_ROOTS, HashSet(settings.fileRootIds))
             .putStringSet(KEY_APP_DATA_ROOTS, HashSet(settings.appDataPaths))
-            .putString(KEY_SCREEN_SCOPE, settings.screenScope.name)
             .putBoolean(KEY_FILE_WRITES, settings.fileWritesAllowed)
             .putBoolean(KEY_WHOLE_SCREEN, settings.wholeScreenConsent)
             .putBoolean(KEY_MANAGEMENT, settings.packageManagementAllowed)
@@ -659,7 +686,9 @@ internal class DeviceAccessHost(
 
     private fun setWholeScreenConsent(enabled: Boolean) {
         if (busy != DeviceAccessBusyUi.NONE) return
+        if (settings.wholeScreenConsent == enabled) return
         settings = settings.copy(wholeScreenConsent = enabled)
+        wholeScreenConsentRevision += 1
         persist()
         publish()
     }
@@ -672,10 +701,37 @@ internal class DeviceAccessHost(
         publish()
     }
 
+    /**
+     * USER-ONLY screen-share selection. "This task" requires a CURRENT live
+     * run candidate and is bound to that exact owner plus the current native
+     * epoch; a retained arm or a stopped task can never mint it. "Until
+     * stopped" is the broader session mode (still epoch-bound and RAM-only).
+     */
     private fun setScreenScope(scope: DeviceAccessScreenScopeUi) {
         if (busy != DeviceAccessBusyUi.NONE) return
-        settings = settings.copy(screenScope = scope)
-        persist()
+        val candidate = currentCandidate()
+        val selection = screenShare.select(
+            requested = scope,
+            candidateOwner = candidate?.owner,
+            sessionOwner = candidate?.owner ?: exactArmedOwner(),
+            epoch = host.nativeRootEpoch()?.takeIf { it > 0 },
+        )
+        when (selection) {
+            is ScreenScopeSelection.Active -> error = null
+            is ScreenScopeSelection.Cleared -> error = null
+            is ScreenScopeSelection.Refused -> {
+                error = DeviceAccessUiError(
+                    context.getString(
+                        if (selection.code == ScreenScopeConsent.CODE_RUNTIME_NOT_READY) {
+                            R.string.device_access_error_runtime_not_ready
+                        } else {
+                            R.string.device_access_error_no_task
+                        },
+                    ),
+                    selection.code,
+                )
+            }
+        }
         publish()
     }
 
@@ -1053,6 +1109,41 @@ internal class DeviceAccessHost(
         }
 
     /**
+     * The exact run that is live in the REAL holder: the task/run pair the
+     * conversation host itself reports as running and selected. A released
+     * holder or a terminal/other selected run is not live.
+     */
+    private fun isOwnerRunLive(owner: PhoneControlOwner): Boolean {
+        val entry = runCatching {
+            host.conversations.entryFor(owner.taskID.toString())
+        }.getOrNull() ?: return false
+        val state = runCatching { entry.holder.snapshot.value }.getOrNull()
+            ?: return false
+        return state.isRunning && state.selectedRunId == owner.runID.toString()
+    }
+
+    /**
+     * The host arm ONLY while it is also the phone service's actual fence
+     * owner. A stale host arm is not a live session to extend.
+     */
+    private fun exactArmedOwner(): PhoneControlOwner? =
+        armedOwner?.takeIf { !userStopped && it == phoneStatus.activeOwner }
+
+    /**
+     * Drop RAM-only screen consent that can no longer authorize the exact
+     * live session: the bound "This task" run terminal, a new native epoch,
+     * or a torn-down phone service. "Until stopped" deliberately survives a
+     * task terminal; only the user's Stop/Takeover, epoch or teardown ends it.
+     */
+    private fun reconcileScreenShare() {
+        if (screenShare.binding == null) return
+        screenShare.reconcile(
+            epoch = host.nativeRootEpoch()?.takeIf { it > 0 },
+            ownerRunLive = ::isOwnerRunLive,
+        )
+    }
+
+    /**
      * Latch the exact stop as settled only after the ACTUAL holder no longer
      * reports that run live. This is what separates the short cancellation
      * window from a real Continue/retry incarnation of the same run id.
@@ -1062,16 +1153,7 @@ internal class DeviceAccessHost(
         if (!userStopped) return
         val owner = lastStoppedOwner ?: return
         if (stoppedOwnerSettled) return
-        val entry = runCatching {
-            host.conversations.entryFor(owner.taskID.toString())
-        }.getOrNull()
-        val state = entry?.let {
-            runCatching { it.holder.snapshot.value }.getOrNull()
-        }
-        val live = state != null &&
-            state.isRunning &&
-            state.selectedRunId == owner.runID.toString()
-        if (!live) stoppedOwnerSettled = true
+        if (!isOwnerRunLive(owner)) stoppedOwnerSettled = true
     }
 
     // ------------------------------------------------------------ presentation
@@ -1079,6 +1161,7 @@ internal class DeviceAccessHost(
     private fun publish() {
         if (closed) return
         markStoppedOwnerSettled()
+        reconcileScreenShare()
         val candidate = currentCandidate()
         // Only the phone service's ACTUAL fence owner may be shown as armed.
         // After a user touch, stop, takeover, lock or service loss the host's
@@ -1136,7 +1219,13 @@ internal class DeviceAccessHost(
             accessibility = accessibilityUi(),
             adb = adbUi(),
             root = rootUi(),
-            screenScope = if (active == null) DeviceAccessScreenScopeUi.OFF else settings.screenScope,
+            // Never project a global/stale choice: the effective RAM consent
+            // is shown only for the candidate it actually covers.
+            screenScope = screenShare.presented(
+                activeOwner = ownership?.owner,
+                liveCandidateOwner = candidate?.owner,
+                epoch = host.nativeRootEpoch()?.takeIf { it > 0 },
+            ),
             activeTask = active,
             taskControl = control,
             targets = targets,
@@ -1294,6 +1383,11 @@ internal class DeviceAccessHost(
                 val liveOwner = phoneStatus.activeOwner
                 if (liveOwner != null && liveOwner != owner) {
                     armedOwner = null
+                    // Moving the one phone-control grant away from the OLD
+                    // actual owner ends that owner's exact "This task"
+                    // consent. A choice already made for the new task and the
+                    // explicit broader Until-stopped mode both survive.
+                    screenShare.clearExactTask(liveOwner)
                     client.takeover()
                 }
                 when (val result = client.arm(principal)) {
@@ -1349,12 +1443,9 @@ internal class DeviceAccessHost(
             stoppedOwnerSettled = false
             armedOwner = null
             recentOwner = owner
-            // Both scope choices end with the user's stop/takeover; a later
-            // task must ask again instead of silently inheriting screen access.
-            if (settings.screenScope != DeviceAccessScreenScopeUi.OFF) {
-                settings = settings.copy(screenScope = DeviceAccessScreenScopeUi.OFF)
-                persist()
-            }
+            // An actual Stop/Takeover ends BOTH screen-share modes, including
+            // the broader "Until stopped"; a later task must ask again.
+            screenShare.clear()
             // Publish the reduced availability mask first (fences queued
             // dispatch), then cancel the real in-flight backend operation.
             publish()
@@ -2144,9 +2235,9 @@ internal class DeviceAccessHost(
         (settings.adbEnabled && adbStatus is AdbStatus.ServiceAlive) ||
             rootStatus is RootStatus.Enabled
 
-    private fun phoneServiceUsable(): Boolean {
-        if (!phoneStatus.connected || !phoneStatus.enabled) return false
-        return when (phoneStatus.blocker) {
+    private fun phoneServiceUsable(status: PhoneControlStatus = phoneStatus): Boolean {
+        if (!status.connected || !status.enabled) return false
+        return when (status.blocker) {
             PhoneControlBlocker.STOPPED,
             PhoneControlBlocker.TAKEN_OVER,
             PhoneControlBlocker.SERVICE_REVOKED,
@@ -2202,16 +2293,21 @@ internal class DeviceAccessHost(
             epoch = principal.epoch,
             allowedPackages = packages,
             allowGlobalNavigation = true,
-            allowScreenshot = screenshotCeiling(),
+            allowScreenshot = screenshotCeiling(principal.owner, principal.epoch),
             generation = principal.generation,
             grantID = principal.grantID,
         )
     }
 
-    /** Screen content ceiling. Display capture additionally requires explicit
-     * whole-screen consent in the tool handler; window capture does not. */
-    private fun screenshotCeiling(): Boolean =
-        settings.screenScope != DeviceAccessScreenScopeUi.OFF
+    /**
+     * Screen content ceiling for the EXACT call owner and epoch. There is no
+     * global/persistent fallback: a missing binding, a different owner, a
+     * terminal run for "This task", a new epoch or a revoked session denies.
+     * Display capture additionally requires the separate whole-screen consent
+     * in the tool handler; window capture does not.
+     */
+    private fun screenshotCeiling(owner: PhoneControlOwner, epoch: Long): Boolean =
+        screenShare.allows(owner, epoch, ownerRunLive = isOwnerRunLive(owner))
 
     // -------------------------------------------------------------- tool entry
 
@@ -2380,10 +2476,21 @@ internal class DeviceAccessHost(
         val client = phoneClient ?: return PlatformToolOutcome.Failure("phone_unavailable")
         val principal = phonePrincipal(call)
             ?: return PlatformToolOutcome.Failure("phone_arm_required")
-        if (!screenshotCeiling()) {
-            return PlatformToolOutcome.Failure(
-                "screen_scope_off", "Screen content sharing is off in Settings > Phone")
+        val owner = ownerOf(call)
+        val dispatchEpoch = host.nativeRootEpoch()?.takeIf { it > 0 }
+            ?: return PlatformToolOutcome.Failure("runtime_not_ready")
+        if (dispatchEpoch != call.epoch) {
+            return PlatformToolOutcome.Failure("epoch_fenced")
         }
+        // Immutable per-dispatch consent ticket. It is checked again BEFORE
+        // writing the returned bytes, so a revoke/regrant, whole-screen change
+        // or live-epoch change while the async capture is pending cannot
+        // publish an image.
+        val ticket = screenShare.ticket(
+            owner, dispatchEpoch, ownerRunLive = isOwnerRunLive(owner),
+        ) ?: return PlatformToolOutcome.Failure(
+            "screen_scope_off", "Screen content sharing is off for this task in Settings > Phone")
+        val wholeScreenRevision = wholeScreenConsentRevision
         val observationId = call.arguments.optString("observationId").ifEmpty { null }
         if (observationId != null && Build.VERSION.SDK_INT < 34) {
             return PlatformToolOutcome.Failure(
@@ -2391,11 +2498,25 @@ internal class DeviceAccessHost(
                 "Window screenshots need Android 14; no silent display fallback is used",
             )
         }
-        if (observationId == null && !settings.wholeScreenConsent) {
+        val displayCapture = observationId == null
+        if (displayCapture && !settings.wholeScreenConsent) {
             return PlatformToolOutcome.Failure(
                 "whole_screen_consent_required",
                 "The user must allow whole-screen capture in Settings > Phone",
             )
+        }
+        if (!screenShare.ticketStillValid(
+                ticket = ticket,
+                owner = owner,
+                epoch = dispatchEpoch,
+                ownerRunLive = isOwnerRunLive(owner),
+                displayCapture = displayCapture,
+                wholeScreenConsent = settings.wholeScreenConsent,
+                wholeScreenUnchanged = wholeScreenConsentRevision == wholeScreenRevision,
+            )
+        ) {
+            return PlatformToolOutcome.Failure(
+                "screen_scope_off", "Screen sharing changed before capture started")
         }
         bindPhoneCall(call)
         try {
@@ -2408,9 +2529,53 @@ internal class DeviceAccessHost(
             }
             return when (result) {
                 is PhoneControlResult.Ok -> {
-                    if (userStopped || armedOwner != ownerOf(call)) {
+                    if (userStopped || armedOwner != owner) {
                         result.value.bytes.fill(0)
                         return PlatformToolOutcome.Failure("phone_stopped_by_user")
+                    }
+                    // The native ticket/epoch is the real authority; an
+                    // asynchronous binding clear may lag it. Re-read both
+                    // before any image can be published.
+                    val liveEpoch = host.nativeRootEpoch()?.takeIf { it > 0 }
+                    if (liveEpoch == null || liveEpoch != ticket.epoch) {
+                        result.value.bytes.fill(0)
+                        return PlatformToolOutcome.Failure(
+                            "epoch_fenced",
+                            "The native epoch changed before the image was stored",
+                        )
+                    }
+                    if (!PlatformToolsNativeLive.isLive(call.claim) ||
+                        PlatformToolsNativeLive.shouldStop(call.claim)
+                    ) {
+                        result.value.bytes.fill(0)
+                        return PlatformToolOutcome.Failure(
+                            "cancelled",
+                            "The screenshot call was fenced before the image was stored",
+                        )
+                    }
+                    val ownerLive = isOwnerRunLive(owner)
+                    if (!screenShare.ticketStillValid(
+                            ticket = ticket,
+                            owner = owner,
+                            epoch = liveEpoch,
+                            ownerRunLive = ownerLive,
+                            displayCapture = displayCapture,
+                            wholeScreenConsent = settings.wholeScreenConsent,
+                            wholeScreenUnchanged =
+                                wholeScreenConsentRevision == wholeScreenRevision,
+                        )
+                    ) {
+                        result.value.bytes.fill(0)
+                        val scopeStill = screenShare.allows(owner, liveEpoch, ownerLive)
+                        return PlatformToolOutcome.Failure(
+                            if (displayCapture && scopeStill && !settings.wholeScreenConsent) {
+                                "whole_screen_consent_required"
+                            } else {
+                                "screen_scope_off"
+                            },
+                            "Screen sharing consent changed while the screenshot was " +
+                                "being captured; the image was discarded",
+                        )
                     }
                     val screenshot = result.value
                     try {
@@ -3143,6 +3308,9 @@ internal class DeviceAccessHost(
         // Phone: fencethe whole service session; the module rejects the
         // in-flight call and the pump settles it as cancelled, never success.
         if (call.tool.startsWith("phone.")) {
+            // The actual phone session is being stopped: its RAM-only screen
+            // consent cannot outlive that service state.
+            screenShare.clear()
             runCatching { phoneClient?.stop() }
             return
         }
@@ -3161,6 +3329,7 @@ internal class DeviceAccessHost(
         const val KEY_APP_DATA_ROOTS = "app_data_roots"
         const val LOCAL_NETWORK_API = 37
         const val LOCAL_PAIRING_ENDPOINT = "adb-tls-pairing._tcp.local"
+        /** Legacy persisted choice; removed at startup, never restored. */
         const val KEY_SCREEN_SCOPE = "screen_scope"
         const val KEY_FILE_WRITES = "file_writes"
         const val KEY_WHOLE_SCREEN = "whole_screen"
