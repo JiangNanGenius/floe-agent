@@ -589,7 +589,9 @@ struct CADAssemblyPanelView: View {
                     }
                     .padding(.leading, CGFloat(instance.depth) * 12)
                     .padding(.vertical, 2)
-                    .accessibilityIdentifier("CADAssemblyInstance-\(instance.id)")
+                    // A container identifier is inherited by every nested
+                    // button on iPadOS. Keep the distinct select/edit/part
+                    // identifiers on the actual controls instead.
                     .contextMenu {
                         Button(FloeCADStrings.label("cad.workbench.assembly.selectInstance", "Select in viewport")) {
                             select(instance)

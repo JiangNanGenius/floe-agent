@@ -566,8 +566,11 @@ struct EngineeringObservationServiceTests {
         let result = try await EngineeringObservationService().observe(
             path: "plate.step", service: fixture.service,
             request: .init(
+                // Opposite azimuths project this rectangular plate to nearly
+                // the same silhouette. Use unequal oblique views so the pixel
+                // comparison exercises camera motion as well as its small hole.
                 views: [.init(azimuthDegrees: 35, elevationDegrees: 20),
-                        .init(azimuthDegrees: 215, elevationDegrees: 20)],
+                        .init(azimuthDegrees: 120, elevationDegrees: 45)],
                 width: 320, height: 240, projection: .perspective,
                 expectedSourceSHA256: digest))
         #expect(result.frames.count == 2)
