@@ -68,7 +68,7 @@ final class CADVersionManagementUITests: XCTestCase {
         restore.tap()
         let restoreAlert = app.alerts["Restore Version?"]
         XCTAssertTrue(restoreAlert.waitForExistence(timeout: 5))
-        restoreAlert.buttons["Restore"].tap()
+        restoreAlert.buttons.matching(identifier: "CADVersionRestoreConfirm").firstMatch.tap()
         let outcome = app.staticTexts["CADVersionsOutcome"]
         let restored = NSPredicate(format: "exists == true AND label CONTAINS %@", "Restored")
         let restoredExpectation = expectation(for: restored, evaluatedWith: outcome)
@@ -89,7 +89,7 @@ final class CADVersionManagementUITests: XCTestCase {
         delete.tap()
         let deleteAlert = app.alerts["Delete Version?"]
         XCTAssertTrue(deleteAlert.waitForExistence(timeout: 5))
-        deleteAlert.buttons["Delete"].tap()
+        deleteAlert.buttons.matching(identifier: "CADVersionDeleteConfirm").firstMatch.tap()
         let deleted = expectation(for: NSPredicate(format: "exists == false"),
                                   evaluatedWith: branch)
         wait(for: [deleted], timeout: 20)
@@ -125,7 +125,9 @@ final class CADVersionManagementUITests: XCTestCase {
         XCTAssertTrue(field.exists)
         field.tap()
         field.typeText(name)
-        alert.buttons["Create"].tap()
+        // UIKit exposes nested same-frame buttons for this native alert on
+        // iPadOS 27. Use its semantic action identifier and one native target.
+        alert.buttons.matching(identifier: "CADVersionCreateConfirm").firstMatch.tap()
         let row = app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
             "CADVersionRow-", name)).firstMatch

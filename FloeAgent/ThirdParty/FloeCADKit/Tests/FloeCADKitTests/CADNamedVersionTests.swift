@@ -654,10 +654,14 @@ final class CADNamedVersionTests: XCTestCase {
     // MARK: - Interrupted-commit recovery carries versions or warns
 
     func testInterruptedRecoveryCarriesVersionsOrWarns() async throws {
+        print("E34_RECOVERY_TRACE create cancelled=\(Task.isCancelled)")
         let (document, url) = try await makeDocument("Recovery")
         addTriangle(document, name: "Solid")
+        print("E34_RECOVERY_TRACE save cancelled=\(Task.isCancelled)")
         try await save(document)
+        print("E34_RECOVERY_TRACE checkpoint cancelled=\(Task.isCancelled)")
         _ = try await document.createNamedVersion(name: "Keep")
+        print("E34_RECOVERY_TRACE close-original cancelled=\(Task.isCancelled)")
         document.close()
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: url.appendingPathComponent("previous/manifest.json").path))
@@ -666,13 +670,16 @@ final class CADNamedVersionTests: XCTestCase {
         // the last complete commit is under previous/. The current root still
         // carries versions, which recovery must carry forward.
         try FileManager.default.removeItem(at: url.appendingPathComponent("manifest.json"))
+        print("E34_RECOVERY_TRACE open-recovery cancelled=\(Task.isCancelled)")
         let recovered = try await FloeCADDocument.open(at: url)
+        print("E34_RECOVERY_TRACE list-recovery cancelled=\(Task.isCancelled)")
         let recoveredRows = try await recovered.namedVersions()
         XCTAssertEqual(recoveredRows.map(\.name), ["Keep"])
         let recoveredFloor = try XCTUnwrap(try manifestObject(url)["schemaVersion"] as? Int)
         XCTAssertGreaterThanOrEqual(recoveredFloor, CADDocumentFormat.namedVersionFormatVersion,
                                     "carrying versions forward must keep the floor")
         XCTAssertFalse(recovered.session.loadWarning?.contains("named versions") == true)
+        print("E34_RECOVERY_TRACE close-recovery cancelled=\(Task.isCancelled)")
         recovered.close()
 
         // Now make the carry fail. Opening still recovers the document, but
@@ -682,8 +689,10 @@ final class CADNamedVersionTests: XCTestCase {
             throw NSError(domain: "FloeCADVersionTest", code: 30,
                           userInfo: [NSLocalizedDescriptionKey: "injected version carry failure"])
         }
+        print("E34_RECOVERY_TRACE open-with-carry-failure cancelled=\(Task.isCancelled)")
         let recoveredWithoutVersions = try await FloeCADDocument.open(at: url)
         CADDocumentFaultInjection.beforeVersionRecoveryCarry = nil
+        print("E34_RECOVERY_TRACE list-after-carry-failure cancelled=\(Task.isCancelled)")
         let missingCarryRows = try await recoveredWithoutVersions.namedVersions()
         XCTAssertEqual(missingCarryRows.count, 0)
         XCTAssertTrue(recoveredWithoutVersions.session.loadWarning?
@@ -1238,6 +1247,8 @@ final class CADNamedVersionTests: XCTestCase {
         addTriangle(document, name: "Base")
         try await save(document)
         let contentBefore = document.contentSHA256
+        let revisionBefore = document.revision
+        var retainedID: UUID?
 
         let failing = PromotionFailingFileManager()
         failing.failPendingPromotion = true
@@ -1249,9 +1260,14 @@ final class CADNamedVersionTests: XCTestCase {
                 expectedContentSHA256: document.contentSHA256)
             XCTFail("a real FileManager promotion failure must be reported")
         } catch let error as CADNamedVersionError {
-            guard case .ioFailure(let detail) = error else {
-                return XCTFail("expected ioFailure, got \(error)")
+            guard case .promotionFailed(let id, let revision, let content, let model, let detail) = error else {
+                return XCTFail("expected committed-floor promotionFailed, got \(error)")
             }
+            retainedID = id
+            XCTAssertGreaterThan(revision, revisionBefore,
+                                 "the failure receipt must report the actual committed floor")
+            XCTAssertEqual(content, contentBefore)
+            XCTAssertFalse(model.isEmpty)
             XCTAssertTrue(detail.contains("injected actual FileManager"),
                           "the real FileManager error must be reported, got \(detail)")
         }
@@ -1264,6 +1280,7 @@ final class CADNamedVersionTests: XCTestCase {
         let recoveries = try await reopened.namedVersionRecoveries()
         XCTAssertEqual(recoveries.count, 1)
         let recovery = try XCTUnwrap(recoveries.first)
+        XCTAssertEqual(recovery.id, retainedID, "the retained checkpoint must match the failure receipt")
         XCTAssertEqual(recovery.name, "FM retained")
         XCTAssertEqual(recovery.contentSHA256, contentBefore)
         XCTAssertTrue(recovery.isUsable)
