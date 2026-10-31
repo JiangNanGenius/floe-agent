@@ -1034,8 +1034,11 @@ private struct CADAssemblyInterferenceSheet: View {
                         "Instances to inspect"))
                 } footer: {
                     Text(FloeCADStrings.format(
-                        "cad.workbench.assembly.interference.selectionSummary",
-                        "%@ selected · %@ pairs", selectedLeaves.count, pairCount))
+                        pairCount == 1
+                            ? "cad.workbench.assembly.interference.selectionSummary.one"
+                            : "cad.workbench.assembly.interference.selectionSummary",
+                        pairCount == 1 ? "%@ selected · %@ pair" : "%@ selected · %@ pairs",
+                        selectedLeaves.count, pairCount))
                     .accessibilityIdentifier("CADAssemblyInterferencePairCount")
                 }
 
@@ -1124,6 +1127,7 @@ private struct CADAssemblyInterferenceSheet: View {
                         Text(errorText)
                             .font(.callout)
                             .foregroundStyle(.red)
+                            .accessibilityIdentifier("CADAssemblyInterferenceError")
                     }
                 }
 
@@ -1315,25 +1319,51 @@ private struct CADAssemblyInterferenceSheet: View {
             "%@ / %@ pairs", processed, total)
     }
 
+    /// One actual result count with stable native label/value semantics for
+    /// VoiceOver and UI acceptance. The visual row stays the system
+    /// LabeledContent used by the rest of this inspector.
+    private func resultValueRow(
+        key: String, fallback: String, value: String, identifier: String
+    ) -> some View {
+        let label = FloeCADStrings.text(key, fallback)
+        return LabeledContent(label) {
+            Text(value)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(value)
+        .accessibilityIdentifier(identifier)
+    }
+
     @ViewBuilder
     private var resultSections: some View {
-        if !result.isEmpty {
+        if result["ok"] as? Bool == true {
             Section {
-                LabeledContent(FloeCADStrings.text(
-                    "cad.workbench.assembly.interference.resultPairs", "Pairs checked"),
-                               value: "\(int(result["processedPairCount"])) / \(int(result["requestedPairCount"]))")
-                LabeledContent(FloeCADStrings.text(
-                    "cad.workbench.assembly.interference.resultInterfering", "Interfering"),
-                               value: "\(int(result["interferingPairCount"]))")
-                LabeledContent(FloeCADStrings.text(
-                    "cad.workbench.assembly.interference.resultContacts", "Contacts"),
-                               value: "\(int(result["contactPairCount"]))")
-                LabeledContent(FloeCADStrings.text(
-                    "cad.workbench.assembly.interference.resultClearances", "Clearances"),
-                               value: "\(int(result["separatedPairCount"]))")
-                LabeledContent(FloeCADStrings.text(
-                    "cad.workbench.assembly.interference.resultUnresolved", "Unresolved"),
-                               value: "\(int(result["unresolvedPairCount"]))")
+                resultValueRow(
+                    key: "cad.workbench.assembly.interference.resultPairs",
+                    fallback: "Pairs checked",
+                    value: "\(int(result["processedPairCount"])) / \(int(result["requestedPairCount"]))",
+                    identifier: "CADAssemblyInterferenceResultPairs")
+                resultValueRow(
+                    key: "cad.workbench.assembly.interference.resultInterfering",
+                    fallback: "Interfering",
+                    value: "\(int(result["interferingPairCount"]))",
+                    identifier: "CADAssemblyInterferenceResultInterfering")
+                resultValueRow(
+                    key: "cad.workbench.assembly.interference.resultContacts",
+                    fallback: "Contacts",
+                    value: "\(int(result["contactPairCount"]))",
+                    identifier: "CADAssemblyInterferenceResultContacts")
+                resultValueRow(
+                    key: "cad.workbench.assembly.interference.resultClearances",
+                    fallback: "Clearances",
+                    value: "\(int(result["separatedPairCount"]))",
+                    identifier: "CADAssemblyInterferenceResultClearances")
+                resultValueRow(
+                    key: "cad.workbench.assembly.interference.resultUnresolved",
+                    fallback: "Unresolved",
+                    value: "\(int(result["unresolvedPairCount"]))",
+                    identifier: "CADAssemblyInterferenceResultUnresolved")
                 DisclosureGroup(FloeCADStrings.text(
                     "cad.workbench.assembly.interference.details", "Check details")) {
                     LabeledContent(FloeCADStrings.text(

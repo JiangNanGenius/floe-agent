@@ -558,6 +558,7 @@
 		72C870BCF4471B247ACE15A9 /* MacBridgeLocalServiceRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 172EA95EC15C54B0A5D6D0C9 /* MacBridgeLocalServiceRunner.swift */; };
 		72F15BB25D642639C88FA6FA /* ContentUpdateStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C5DCB2BA03B05432D100E24 /* ContentUpdateStoreTests.swift */; };
 		72F687318496A3451661FD31 /* dayjs.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 5A836CC647019173A92D3490 /* dayjs.min.js */; };
+		731DF6D4E145DF3E0D525F37 /* CADAssemblyInterferenceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C289067E08421AB4D4AA6918 /* CADAssemblyInterferenceUITests.swift */; };
 		732CE90E182930B252C9B56C /* NotesMarkdownLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32AFFE629DB45CB58B683A86 /* NotesMarkdownLayout.swift */; };
 		73F21A6BD4A9C81430CAF5DE /* UserQuestionStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DE7F4A152360E19605DB7C2 /* UserQuestionStoreTests.swift */; };
 		7406BA3E19502E5CBC9BDD23 /* DocumentIntakeBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 820E19B59700A5DBA96067C3 /* DocumentIntakeBanner.swift */; };
@@ -2188,6 +2189,7 @@
 		C18CFCC60B3C36AE7E9F48D2 /* NotesInkRefreshTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesInkRefreshTests.swift; sourceTree = "<group>"; };
 		C1D44C323625EB030E4695F7 /* SkillAuthoringPackage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillAuthoringPackage.swift; sourceTree = "<group>"; };
 		C249A312D3F94BF9CBA98F76 /* CrashAndFeedbackRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashAndFeedbackRegressionTests.swift; sourceTree = "<group>"; };
+		C289067E08421AB4D4AA6918 /* CADAssemblyInterferenceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADAssemblyInterferenceUITests.swift; sourceTree = "<group>"; };
 		C298297A7E2B2DE1AAF2AF86 /* extraCommandsDictionary.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = extraCommandsDictionary.plist; sourceTree = "<group>"; };
 		C32A0C8B4F11083AF054DBC3 /* ChatReasoningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatReasoningTests.swift; sourceTree = "<group>"; };
 		C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLaunchpadViewModel.swift; sourceTree = "<group>"; };
@@ -2720,6 +2722,7 @@
 			children = (
 				0F5511B28209423336F53BF2 /* BackgroundAudioSettingsUITests.swift */,
 				734621A9EFCDFAC074872173 /* BrowserProtocolTests.swift */,
+				C289067E08421AB4D4AA6918 /* CADAssemblyInterferenceUITests.swift */,
 				6BAD4D2116F3695FB0355486 /* CADPresentationFlowUITests.swift */,
 				6E0F5C03E1DDA3B11950FA13 /* CADVersionManagementUITests.swift */,
 				43D7F54EF158BB08BE04D76A /* CADWorkbenchHostUITests.swift */,
@@ -5465,6 +5468,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E3F357ACD06C0B2EAE2E6387 /* BackgroundAudioSettingsUITests.swift in Sources */,
+				731DF6D4E145DF3E0D525F37 /* CADAssemblyInterferenceUITests.swift in Sources */,
 				C3492863C2659762AD635D2B /* CADPresentationFlowUITests.swift in Sources */,
 				712AD396FE57DF4E9646FEEB /* CADVersionManagementUITests.swift in Sources */,
 				784FA7A7965AAE2F946434AD /* CADWorkbenchHostUITests.swift in Sources */,

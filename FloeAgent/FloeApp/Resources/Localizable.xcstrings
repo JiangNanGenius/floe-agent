@@ -118560,6 +118560,23 @@
           }
         }
       }
+    },
+    "cad.workbench.assembly.interference.selectionSummary.one": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ selected · %@ pair"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选 %@ 个 · %@ 对"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

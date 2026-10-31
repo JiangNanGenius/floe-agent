@@ -3157,10 +3157,25 @@
       "package": "engineering",
       "implementation": {
         "stage": "D",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "partial",
+        "source_changes": [
+          "b281bb0c91f6e50ecd6e40da015490a2cb00e710"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_behavior",
+            "source": "b281bb0c91f6e50ecd6e40da015490a2cb00e710",
+            "related_group_passed": 48,
+            "related_group_failed": 1,
+            "skipped": 0,
+            "observed": "50实例全部1225对、完整结果及尾部、精确体积阈值、中空网格间隙、取消/关闭/陈旧结果回收通过。",
+            "failure": "旋转用例原预期漏算1mm另一轴偏移；解析距离为sqrt(101)mm。保留原失败，补正预期并追加见证点验证，待实际重跑。"
+          }
+        ],
+        "limitations": [
+          "原生干涉选择与结果界面仍待实际验收。",
+          "源码及部分通过的检查不代表本项全部完成。"
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -3221,10 +3236,25 @@
       "package": "engineering",
       "implementation": {
         "stage": "D",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "partial",
+        "source_changes": [
+          "b281bb0c91f6e50ecd6e40da015490a2cb00e710"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_behavior",
+            "source": "b281bb0c91f6e50ecd6e40da015490a2cb00e710",
+            "related_group_passed": 48,
+            "related_group_failed": 1,
+            "skipped": 0,
+            "observed": "50实例全部1225对、完整结果及尾部、精确体积阈值、中空网格间隙、取消/关闭/陈旧结果回收通过。",
+            "failure": "旋转用例原预期漏算1mm另一轴偏移；解析距离为sqrt(101)mm。保留原失败，补正预期并追加见证点验证，待实际重跑。"
+          }
+        ],
+        "limitations": [
+          "原生干涉选择与结果界面仍待实际验收。",
+          "源码及部分通过的检查不代表本项全部完成。"
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -5033,13 +5063,45 @@
       "package": "engineering",
       "implementation": {
         "stage": "B",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "verified",
+        "source_changes": [
+          "f75e748249e98792c9fc70f7e0eb87eba30ed65c",
+          "77af9d7448db2b8daca32fb913e52a041e7692ec",
+          "12d38af6dd368bd1f72b1944161b3c734e5e6702",
+          "b281bb0c91f6e50ecd6e40da015490a2cb00e710"
+        ],
+        "verification": [
+          {
+            "kind": "Swift6_App_build_for_testing",
+            "source": "b281bb0c91f6e50ecd6e40da015490a2cb00e710",
+            "toolchain": "Xcode27.1 27A9275 Swift6.4 iOSSimulator27.1",
+            "result": "passed",
+            "elapsed_seconds": 373.833
+          },
+          {
+            "kind": "actual_native_UI",
+            "source": "b281bb0c91f6e50ecd6e40da015490a2cb00e710",
+            "selector": "FloeAgentUITests/CADVersionManagementUITests/testNativeVersionsCreateCompareRestoreAndDeleteBranch",
+            "passed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "elapsed_seconds": 128.528,
+            "observed": "创建、比较、查看差异、恢复到新分支、删除分支，实际变量图恢复为空；截图已人工核对。"
+          },
+          {
+            "kind": "actual_store_behavior",
+            "source": "12d38af6dd368bd1f72b1944161b3c734e5e6702",
+            "result": "passed",
+            "observed": "真实提交故障、重新打开及重复中断恢复、关闭所有者、完整记录分页和取消；保留最初失败记录。"
+          }
+        ],
+        "limitations": [
+          "Undo/Redo 只覆盖当前打开的会话；设计版本可保存重开，界面明确说明。",
+          "本项通过不代表其他能力、真实模型三维视觉循环或最终发版已完成。"
+        ]
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "verified",
         "existing": "基线已有：内存命令栈支持50步、拖动合并和失败checkpoint恢复；FeatureGraph保参数历史。",
         "remaining": "补用户命名设计版本、版本比较/恢复与跨会话undo明确边界；内存undo和previous快照不是版本系统。",
         "evidence": [
@@ -5066,8 +5128,8 @@
         ],
         "notes": [],
         "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "用户可创建设计版本并比较/恢复到新分支；明确跨会话undo能力边界。"
+        "verified_delta": "完成 Swift6 App 编译及完整原生版本管理界面验收。",
+        "acceptance_pending": false
       }
     },
     {
@@ -8140,5 +8202,34 @@
     "view_reuse_routes": 3,
     "new_builds_or_runtime_tests": false,
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
+  },
+  "current_integration_verification": {
+    "source": "b281bb0c91f6e50ecd6e40da015490a2cb00e710",
+    "all_106_retained": true,
+    "all_106_accepted": false,
+    "release_ready": false,
+    "context_live": {
+      "configured_windows": [
+        65536,
+        131072
+      ],
+      "each_actual_compactions": 3,
+      "exact_early_facts_and_instruction": true,
+      "actual_tool_resume_and_capture_page": true,
+      "capture_total_bytes": 12368,
+      "read_offset": 4080,
+      "read_length": 160,
+      "main_reported_tokens_total": 314102,
+      "helper_usage": "另行记录，不包含于主运行计数；不宣称所有模型总量。",
+      "scope": "真实App和已付套餐；1MiB与42对回放属于独立确定性证据。"
+    },
+    "image_routes": {
+      "kind": "actual_App_with_controlled_network",
+      "passed": 34,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "目录、参数、显式路由、批次与工具名；未新增付费图片生成。"
+    },
+    "production_release_performed": false
   }
 }

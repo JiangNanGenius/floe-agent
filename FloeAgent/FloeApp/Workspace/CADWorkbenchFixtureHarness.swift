@@ -7,6 +7,10 @@
 // there is no release code path that can create or open this fixture, and no
 // secret/credential configuration is involved.
 //
+// `--ui-test-cad-assembly-interference` keeps that real document but replaces
+// the two default separated occurrences with three real occurrences for the
+// native interference inspector UI flow (A/B overlap, C separate).
+//
 
 #if DEBUG && canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -50,23 +54,51 @@ enum CADQualificationFixture {
             {"op":"feature.extrude","args":{"sketchID":"\(holeSketchID)","seedPoint":[50,30],
              "distance":40,"symmetric":true,"boolean":"subtract","booleanTargets":["\(bodyID)"]}}
             """)
-            // Two SEPARATED assembly instances of the same immutable source
-            // body (shared mesh, own transforms) so the primary CUA can see
-            // placement, selection and hide/update behavior in the viewport.
+            // Real assembly occurrences of the same immutable source body
+            // (shared mesh/B-rep, own transforms). The default two are
+            // separated so the primary CUA can see placement, selection and
+            // hide/update behavior. The interference launch argument instead
+            // places the documented three-instance subset used by the native
+            // assembly interference UI flow: A at the origin, B overlapping by
+            // 50 mm along X, and C at X=250 (100 mm clear of B's right edge,
+            // 150 mm clear of A). The actual service result is one positive
+            // common (A/B) and two clearances.
             let assembly = CADAssemblyService(document: document)
-            let first = assembly.handle(action: "addInstance", args: [
-                "bodyID": bodyID,
-                "name": "Plate A",
-                "transform": ["position": [0.0, 0.0, 0.0]],
-            ])
-            let second = assembly.handle(action: "addInstance", args: [
-                "bodyID": bodyID,
-                "name": "Plate B",
-                "transform": ["position": [140.0, 0.0, 0.0]],
-            ])
-            guard first["ok"] as? Bool == true, second["ok"] as? Bool == true else {
-                throw CADDocumentError(code: "fixture_assembly_failed",
-                                       message: "The fixture assembly instances could not be placed.")
+            let interferenceFixture = ProcessInfo.processInfo.arguments
+                .contains("--ui-test-cad-assembly-interference")
+            if interferenceFixture {
+                let placements: [(name: String, x: Double)] = [
+                    ("Plate A", 0.0),
+                    ("Plate B", 50.0),
+                    ("Plate C", 250.0),
+                ]
+                for placement in placements {
+                    let reply = assembly.handle(action: "addInstance", args: [
+                        "bodyID": bodyID,
+                        "name": placement.name,
+                        "transform": ["position": [placement.x, 0.0, 0.0]],
+                    ])
+                    guard reply["ok"] as? Bool == true else {
+                        throw CADDocumentError(
+                            code: "fixture_assembly_failed",
+                            message: "The interference fixture assembly instances could not be placed.")
+                    }
+                }
+            } else {
+                let first = assembly.handle(action: "addInstance", args: [
+                    "bodyID": bodyID,
+                    "name": "Plate A",
+                    "transform": ["position": [0.0, 0.0, 0.0]],
+                ])
+                let second = assembly.handle(action: "addInstance", args: [
+                    "bodyID": bodyID,
+                    "name": "Plate B",
+                    "transform": ["position": [140.0, 0.0, 0.0]],
+                ])
+                guard first["ok"] as? Bool == true, second["ok"] as? Bool == true else {
+                    throw CADDocumentError(code: "fixture_assembly_failed",
+                                           message: "The fixture assembly instances could not be placed.")
+                }
             }
             if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-shared-sheet") {
                 let sheet = CADDrawingService(document: document).handle(action: "multiViewSheet", args: [

@@ -658,8 +658,28 @@ final class CADAssemblyInterferenceClosureTests: XCTestCase {
         ])
         let gapRow = try XCTUnwrap(rows(gap, "clearances").first)
         XCTAssertEqual(gapRow["classification"] as? String, "separated")
+        // Independently transform the fixture: Rz90(x,y,z)+(30,0,0)
+        // maps D to [20,30]×[11,21]×[0,10], while A is [0,10]³.
+        // The closest delta is (10,1,0), not (10,0,0).
+        let expectedDistance = hypot(10.0, 1.0)
         XCTAssertEqual(try XCTUnwrap(gapRow["minimumDistanceMM"] as? Double),
-                       10.0, accuracy: 1e-4)
+                       expectedDistance, accuracy: 1e-4)
+        let rawA = try XCTUnwrap((gapRow["witnessA"] as? [Double])
+            .flatMap { $0.count == 3 ? $0 : nil })
+        let rawB = try XCTUnwrap((gapRow["witnessB"] as? [Double])
+            .flatMap { $0.count == 3 ? $0 : nil })
+        XCTAssertEqual(Set([gapRow["a"] as? String, gapRow["b"] as? String].compactMap { $0 }),
+                       Set([a, d]))
+        let onA = gapRow["a"] as? String == a ? rawA : rawB
+        let onD = gapRow["a"] as? String == a ? rawB : rawA
+        XCTAssertEqual(onA[0], 10, accuracy: 1e-4)
+        XCTAssertEqual(onA[1], 10, accuracy: 1e-4)
+        XCTAssertEqual(onD[0], 20, accuracy: 1e-4)
+        XCTAssertEqual(onD[1], 11, accuracy: 1e-4)
+        XCTAssertTrue((0...10).contains(onA[2]))
+        XCTAssertEqual(onD[2], onA[2], accuracy: 1e-4)
+        XCTAssertEqual(simd_length(SIMD3(onD[0] - onA[0], onD[1] - onA[1], onD[2] - onA[2])),
+                       expectedDistance, accuracy: 1e-4)
     }
 
     func testDegenerateTriangleIsHandledAsRealGeometry() async throws {
