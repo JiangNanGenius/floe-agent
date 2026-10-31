@@ -736,10 +736,13 @@ struct SkillHubCuratedSnapshotCacheTests {
     }
 
     private func fixtureTransport(catalog: Data, signature: Data,
+                                  layout: CuratedSkillCatalogLayout = .legacy,
                                   resolveCancels: Bool = false, fetchFails: Bool = false)
         -> (GitHubSkillDownload.ResolveCommit, GitHubSkillDownload.FetchFile)
     {
         let commit = Self.fixtureCommit
+        let catalogPath = CuratedSkillHub.catalogPath(for: .ios, layout: layout)
+        let signaturePath = CuratedSkillHub.signaturePath(for: .ios, layout: layout)
         let resolve: GitHubSkillDownload.ResolveCommit = { _ in
             if resolveCancels { throw CancellationError() }
             return commit
@@ -750,8 +753,8 @@ struct SkillHubCuratedSnapshotCacheTests {
                 throw CacheFixtureFailure(detail: "fetch pinned to another commit")
             }
             switch path {
-            case CuratedSkillHub.catalogPath(for: .ios): return catalog
-            case CuratedSkillHub.signaturePath(for: .ios): return signature
+            case catalogPath: return catalog
+            case signaturePath: return signature
             default: throw CacheFixtureFailure(detail: "unexpected path \(path)")
             }
         }
@@ -771,11 +774,13 @@ struct SkillHubCuratedSnapshotCacheTests {
 
     private func snapshot(_ commit: String = SkillHubCuratedSnapshotCacheTests.fixtureCommit,
                           catalog: Data, signature: Data,
-                          schemaVersion: Int = SkillsCenter.CuratedPublicationSnapshot.schemaVersion)
+                          schemaVersion: Int = SkillsCenter.CuratedPublicationSnapshot.schemaVersion,
+                          layout: CuratedSkillCatalogLayout? = nil)
         -> SkillsCenter.CuratedPublicationSnapshot
     {
         SkillsCenter.CuratedPublicationSnapshot(
-            schemaVersion: schemaVersion, commit: commit, catalogBytes: catalog, signatureBytes: signature)
+            schemaVersion: schemaVersion, commit: commit,
+            catalogBytes: catalog, signatureBytes: signature, layout: layout)
     }
 
     private func expectSignatureFailure(_ error: any Error, _ label: String) {
@@ -819,6 +824,67 @@ struct SkillHubCuratedSnapshotCacheTests {
         let restored = try await SkillsCenter.verifiedPublication(from: stored, channel: .ios, mode: mode)
         #expect(restored.publicationCommit == live.publicationCommit)
         #expect(restored.verifiedFeed == live.verifiedFeed)
+    }
+
+    @Test func explicitFullLayoutLoadStoresFullSnapshotAndRestoresIt() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        let box = SnapshotBox()
+        let (resolve, fetch) = fixtureTransport(
+            catalog: catalog, signature: signature, layout: .full)
+        let live = try await SkillsCenter.loadCuratedPublication(
+            channel: .ios, mode: mode, layout: .full,
+            resolve: resolve, fetch: fetch, store: { await box.store($0) })
+        #expect(live.layout == .full)
+        #expect(live.source.path == "catalog-full.json")
+        let stored = try #require(await box.first())
+        #expect(stored.layout == .full)
+        #expect(stored.resolvedLayout == .full)
+        let restored = try await SkillsCenter.verifiedPublication(
+            from: stored, channel: .ios, mode: mode)
+        #expect(restored.layout == .full)
+        #expect(restored.source.path == "catalog-full.json")
+        #expect(restored.verifiedFeed == live.verifiedFeed)
+    }
+
+    @Test func oldSnapshotWithoutLayoutRestoresAsLegacyAndFullSnapshotUsesFullPaths() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        // A snapshot written by the pre-expansion client has no layout key.
+        // It must restore through the legacy fixed paths, never silently
+        // pretend it was captured from the full feed.
+        let old = snapshot(catalog: catalog, signature: signature)
+        #expect(old.layout == nil)
+        #expect(old.resolvedLayout == .legacy)
+        let restoredOld = try await SkillsCenter.verifiedPublication(
+            from: old, channel: .ios, mode: mode)
+        #expect(restoredOld.layout == .legacy)
+        #expect(restoredOld.source.path == "catalog.json")
+        #expect(restoredOld.verifiedFeed.catalogSHA256.count == 64)
+        #expect(restoredOld.verifiedFeed.catalogSHA256.allSatisfy(\.isHexDigit))
+
+        // A full snapshot records its layout and revalidates through the
+        // fixed full source paths. If the restore path used the legacy
+        // names, the closure below would reject the lookup.
+        let full = snapshot(catalog: catalog, signature: signature, layout: .full)
+        #expect(full.resolvedLayout == .full)
+        let restoredFull = try await SkillsCenter.verifiedPublication(
+            from: full, channel: .ios, mode: mode)
+        #expect(restoredFull.layout == .full)
+        #expect(restoredFull.source.path == "catalog-full.json")
+        #expect(restoredFull.verifiedFeed == restoredOld.verifiedFeed)
+    }
+
+    @Test func fullSnapshotStillRunsExactByteSignatureVerification() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        var tampered = catalog
+        tampered[tampered.count / 2] ^= 0x01
+        do {
+            _ = try await SkillsCenter.verifiedPublication(
+                from: snapshot(catalog: tampered, signature: signature, layout: .full),
+                channel: .ios, mode: mode)
+            Issue.record("a full-layout snapshot must not bypass the exact-byte signature check")
+        } catch {
+            expectSignatureFailure(error, "tampered full-layout snapshot")
+        }
     }
 
     @Test func corruptedFeedByteNeverRestores() async throws {

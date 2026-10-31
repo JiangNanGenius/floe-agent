@@ -11,7 +11,15 @@ public enum SkillHubTransportBudget {
               path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy({
                   !$0.isEmpty && $0 != "." && $0 != ".."
               }) else { return 2_097_152 }
-        if path == "catalog.json" || path == "android/catalog.json" { return 4_194_304 }
+        // The two fixed channel layouts share the feed bound. The expanded
+        // full paths receive the same 4 MiB ceiling as the legacy projection;
+        // no other repository path gains a larger budget.
+        if path == CuratedSkillCatalogLayout.legacy.catalogPath(for: .ios)
+            || path == CuratedSkillCatalogLayout.legacy.catalogPath(for: .android)
+            || path == CuratedSkillCatalogLayout.full.catalogPath(for: .ios)
+            || path == CuratedSkillCatalogLayout.full.catalogPath(for: .android) {
+            return 4_194_304
+        }
         if (path.hasPrefix("packages/") || path.hasPrefix("android/packages/")), path.hasSuffix(".zip") {
             return 8_388_608
         }

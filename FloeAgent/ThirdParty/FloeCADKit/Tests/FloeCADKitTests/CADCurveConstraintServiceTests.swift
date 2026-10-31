@@ -59,6 +59,25 @@ final class CADCurveConstraintServiceTests: XCTestCase {
         return sketch.entities
     }
 
+    /// Independent ray-cast containment over a profile loop (pure arithmetic,
+    /// not `Profile.contains`), proving a chosen extrude seed really is
+    /// interior to the detected boundary.
+    private static func contains(_ point: SIMD2<Double>,
+                                 inPolygon loop: [SIMD2<Double>]) -> Bool {
+        guard loop.count >= 3 else { return false }
+        var inside = false
+        var previous = loop.count - 1
+        for current in loop.indices {
+            let a = loop[previous], b = loop[current]
+            if (a.y > point.y) != (b.y > point.y),
+               point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x {
+                inside.toggle()
+            }
+            previous = current
+        }
+        return inside
+    }
+
     private struct ConnectedLoop {
         var sketchID: String
         var arcID: String
@@ -90,21 +109,31 @@ final class CADCurveConstraintServiceTests: XCTestCase {
            "startAngle":\#(num(arc.startAngle)),"endAngle":\#(num(arc.endAngle))},
           {"kind":"spline","points":[\#(pointJSON)],"closed":false}]}}
         """#)
-        // JSON creation owns the real entity IDs. Bind every subsequent ref,
-        // undo baseline and measurement to those returned/live IDs instead of
-        // the temporary fixture UUIDs (which are never inserted by this API).
+        // JSON creation owns the real entity IDs AND the stored doubles: the
+        // command API parses JSONSerialization numbers, whose decimal parser
+        // is not bit-exact for every Double (the 1e-3 fixture's fit points
+        // move by 1-2 ULP). One undo restores the command's `before` value,
+        // i.e. the entity the document actually stored — not the in-process
+        // fixture copy. Bind every later ref, undo baseline and measurement
+        // to the live entities so the exact snapshot assertion compares the
+        // real pre-edit document state.
         let idRows = try XCTUnwrap(added["entityIDs"] as? [String])
         XCTAssertEqual(idRows.count, 2)
         let actualArcID = try XCTUnwrap(UUID(uuidString: idRows[0]))
         let actualSplineID = try XCTUnwrap(UUID(uuidString: idRows[1]))
+        let liveEntities = try sketchEntities(document, sketchID: sketchID)
+        XCTAssertEqual(liveEntities.map(\.id), [actualArcID, actualSplineID])
+        XCTAssertEqual(liveEntities.count, 2)
         var bound = fixture
         bound.arcID = actualArcID
         bound.splineID = actualSplineID
-        bound.arc = .arc(id: actualArcID, center: arc.center, radius: arc.radius,
-                         startAngle: arc.startAngle, endAngle: arc.endAngle)
-        bound.spline = .spline(id: actualSplineID, points: points, closed: false)
-        let liveIDs = try sketchEntities(document, sketchID: sketchID).map(\.id)
-        XCTAssertEqual(liveIDs, [actualArcID, actualSplineID])
+        bound.arc = liveEntities[0]
+        bound.spline = liveEntities[1]
+        if case let .spline(_, storedPoints, _) = liveEntities[1] {
+            XCTAssertEqual(storedPoints.count, points.count)
+            bound.start = storedPoints.first ?? bound.start
+            bound.end = storedPoints.last ?? bound.end
+        }
         let sketch = SketchID(raw: UUID(uuidString: sketchID)!)
         for constraint in CurveLoopFixture.loopConstraints(bound) {
             document.session.perform(AddSketchConstraintCommand(sketchID: sketch, constraint: constraint))
@@ -211,9 +240,37 @@ final class CADCurveConstraintServiceTests: XCTestCase {
             "value": 40.0,
         ])["ok"] as? Bool, true)
 
+        // The true G1 solution puts the 3-point spline's interior fit point on
+        // the tangent-line intersection BELOW the arc: the closed face is the
+        // lens between the arc and that lower spline, and the old [60,0] seed
+        // is outside it. Ask the actual production profile detector for the
+        // one profile bounded by these two entities and seed the extrude with
+        // the point it guarantees to be interior. A split/unresolved loop
+        // fails here instead of being guessed from a hand-picked point.
+        let sketch = try XCTUnwrap(document.session.document.sketches.first {
+            $0.id.raw.uuidString == loop.sketchID
+        })
+        let arcID = try XCTUnwrap(UUID(uuidString: loop.arcID))
+        let splineID = try XCTUnwrap(UUID(uuidString: loop.splineID))
+        let loopProfiles = ProfileDetector.detectProfiles(in: sketch).filter {
+            $0.sourceEntityIDs == Set([arcID, splineID])
+        }
+        XCTAssertEqual(loopProfiles.count, 1,
+                       "the edited loop must resolve as exactly one closed profile")
+        let profile = try XCTUnwrap(loopProfiles.first)
+        let seed = profile.interiorPoint
+        XCTAssertTrue(Self.contains(seed, inPolygon: profile.loop),
+                      "the profile interior seed must lie inside its closed loop")
+        XCTAssertFalse(Self.contains(SIMD2<Double>(60, 0), inPolygon: profile.loop),
+                       "the old centre seed is outside the true tangent lens")
+        let seededProfiles = ProfileDetector.profiles(at: seed, in: sketch)
+        XCTAssertEqual(seededProfiles.count, 1,
+                       "the extrude seed must select exactly one closed profile")
+        XCTAssertEqual(seededProfiles.first?.sourceEntityIDs, Set([arcID, splineID]))
+
         let extrude = try run(document, #"""
         {"op":"feature.extrude","args":{"sketchID":"\#(loop.sketchID)",
-          "seedPoint":[60,0],"distance":10}}
+          "seedPoint":[\#(seed.x),\#(seed.y)],"distance":10}}
         """#)
         let bodyID = try XCTUnwrap(
             (extrude["producedBodyIDs"] as? [String])?.first
@@ -224,7 +281,7 @@ final class CADCurveConstraintServiceTests: XCTestCase {
             (try? JSONSerialization.jsonObject(with: outcome.payload)) as? [String: Any])
         let volume = try XCTUnwrap(object["volumeMM3"] as? Double)
         XCTAssertGreaterThan(volume, 0)
-        // The lens area is on the order of chord(≈47) × mean height(≈21);
+        // The true lens area is on the order of chord(≈75) × mean height(≈17);
         // anything near zero means the profile split or collapsed.
         XCTAssertGreaterThan(volume / 10, 300, "profile volume implausible: \(volume)")
     }
@@ -275,27 +332,33 @@ final class CADCurveConstraintServiceTests: XCTestCase {
                        "one undo must restore arc and spline together")
     }
 
-    /// An IMPOSSIBLE entity edit (center moved while the junctions and radius
-    /// are pinned by saved constraints) refuses with `constraint_conflict` and
-    /// leaves every byte unchanged — no half change, no stale dimension.
+    /// An IMPOSSIBLE entity edit on a LOCKED entity refuses through the real
+    /// whole-entity Lock fence (`locked_entity`, naming the arc's exact fixed
+    /// constraint) instead of pretending the solver produced a satisfiable
+    /// compromise. Geometry, source IDs and undo/redo history stay unchanged.
     func testImpossibleArcEditRefusesWithoutHalfChanges() async throws {
         let (document, _) = try await makeDocument()
         let loop = try makeConnectedLoop(document)
         let service = CADParameterService(document: document)
         let baseline = try sketchEntities(document, sketchID: loop.sketchID)
 
-        // Freeze the loop: locked arc center and locked spline ends make the
-        // requested center move unsatisfiable.
+        // Freeze the loop: the arc's own fixed constraint is a whole-entity
+        // solver fence (rebuilding from a proposed value would silently
+        // re-lock it, so the edit gate must refuse it), and the two spline
+        // endpoint locks make the requested centre move unsatisfiable too.
         let sketchID = SketchID(raw: UUID(uuidString: loop.sketchID)!)
-        document.session.perform(AddSketchConstraintCommand(sketchID: sketchID, constraint:
-            SketchConstraint(kind: .fixed, refs: [
-                ConstraintRef(entityID: loop.fixture.arcID, role: .center)])))
+        let arcLock = SketchConstraint(kind: .fixed, refs: [
+            ConstraintRef(entityID: loop.fixture.arcID, role: .center)])
+        document.session.perform(AddSketchConstraintCommand(sketchID: sketchID, constraint: arcLock))
         document.session.perform(AddSketchConstraintCommand(sketchID: sketchID, constraint:
             SketchConstraint(kind: .fixed, refs: [
                 ConstraintRef(entityID: loop.fixture.splineID, role: .endpointA)])))
         document.session.perform(AddSketchConstraintCommand(sketchID: sketchID, constraint:
             SketchConstraint(kind: .fixed, refs: [
                 ConstraintRef(entityID: loop.fixture.splineID, role: .endpointB)])))
+        let countBefore = document.session.changeCount
+        let canUndoBefore = document.session.undoStack.canUndo
+        let canRedoBefore = document.session.undoStack.canRedo
 
         let refused = service.handle(action: "updateSketchEntity", args: [
             "sketch_id": loop.sketchID,
@@ -304,8 +367,12 @@ final class CADCurveConstraintServiceTests: XCTestCase {
             "expected_center": [60.0, 0.0],
         ])
         XCTAssertEqual(refused["ok"] as? Bool, false, "\(refused)")
-        XCTAssertEqual(refused["error"] as? String, "constraint_conflict", "\(refused)")
+        XCTAssertEqual(refused["error"] as? String, "locked_entity", "\(refused)")
         let message = try XCTUnwrap(refused["message"] as? String)
+        XCTAssertTrue(message.contains(loop.arcID),
+                      "the refusal must name the edited entity: \(message)")
+        XCTAssertTrue(message.contains(arcLock.id.uuidString),
+                      "the refusal must name the actual fixed constraint: \(message)")
         XCTAssertTrue(message.contains("Nothing was changed"), "\(message)")
 
         let after = try sketchEntities(document, sketchID: loop.sketchID)
@@ -314,6 +381,12 @@ final class CADCurveConstraintServiceTests: XCTestCase {
             $0.id.raw.uuidString == loop.sketchID
         })
         XCTAssertTrue(sketch.validateConstraintRefs())
+        XCTAssertEqual(document.session.changeCount, countBefore,
+                       "a refused edit must not create a document change")
+        XCTAssertEqual(document.session.undoStack.canUndo, canUndoBefore,
+                       "a refused edit must not push an undo step")
+        XCTAssertEqual(document.session.undoStack.canRedo, canRedoBefore,
+                       "a refused edit must not clear redo")
     }
 
     // MARK: - M06: contradictory driving values refuse at every scale

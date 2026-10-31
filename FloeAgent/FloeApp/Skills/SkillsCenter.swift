@@ -100,10 +100,13 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
-    private func loadCuratedPublication(ref: String = "main") async throws -> CuratedSkillHub.Publication {
+    private func loadCuratedPublication(
+        ref: String = "main",
+        layout: CuratedSkillCatalogLayout = .full
+    ) async throws -> CuratedSkillHub.Publication {
         let connector = environment.sourceControlCenter
         return try await Self.loadCuratedPublication(
-            channel: .ios, mode: .production, ref: ref,
+            channel: .ios, mode: .production, ref: ref, layout: layout,
             resolve: { source in
                 let bytes = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
                     ref: source.ref, path: nil, usesConnectorCredential: false)
@@ -137,16 +140,35 @@ final class SkillsCenter: ObservableObject {
     // nothing.
 
     /// One authenticated channel publication captured exactly as verified:
-    /// the resolved immutable commit Y plus the channel feed bytes and the
-    /// signature bytes that covered exactly those feed bytes. Written and
-    /// read as ONE atomic self-contained JSON file, so a crash can never
-    /// tear a commit/feed/signature mismatch.
+    /// the resolved immutable commit Y plus the channel feed bytes, the
+    /// signature bytes that covered exactly those feed bytes, and the fixed
+    /// catalog layout those bytes came from. Written and read as ONE atomic
+    /// self-contained JSON file, so a crash can never tear a
+    /// commit/feed/signature mismatch.
+    ///
+    /// The layout is optional on decode so a snapshot written before the
+    /// expanded feed existed still restores as `.legacy`; a new full
+    /// snapshot records `.full` and revalidates through the full fixed
+    /// paths. `schemaVersion` stays 1 because the compatible extension is an
+    /// optional field, not a new snapshot protocol.
     struct CuratedPublicationSnapshot: Codable, Sendable {
         static let schemaVersion = 1
         let schemaVersion: Int
         let commit: String
         let catalogBytes: Data
         let signatureBytes: Data
+        let layout: CuratedSkillCatalogLayout?
+
+        init(schemaVersion: Int, commit: String, catalogBytes: Data, signatureBytes: Data,
+             layout: CuratedSkillCatalogLayout? = nil) {
+            self.schemaVersion = schemaVersion
+            self.commit = commit
+            self.catalogBytes = catalogBytes
+            self.signatureBytes = signatureBytes
+            self.layout = layout
+        }
+
+        var resolvedLayout: CuratedSkillCatalogLayout { layout ?? .legacy }
     }
 
     /// Live load with exact-byte capture. `store` is invoked only after the
@@ -159,14 +181,16 @@ final class SkillsCenter: ObservableObject {
         channel: CuratedSkillChannel,
         mode: CuratedSkillTrustMode,
         ref: String = "main",
+        layout: CuratedSkillCatalogLayout = .legacy,
         resolve: GitHubSkillDownload.ResolveCommit,
         fetch: GitHubSkillDownload.FetchFile,
         store: (@Sendable (CuratedPublicationSnapshot) async -> Void)? = nil
     ) async throws -> CuratedSkillHub.Publication {
         try Task.checkCancellation()
-        let tee = CuratedPublicationTee(channel: channel)
+        let tee = CuratedPublicationTee(channel: channel, layout: layout)
         do {
-            let publication = try await CuratedSkillHub.loadPublication(channel: channel, mode: mode, ref: ref,
+            let publication = try await CuratedSkillHub.loadPublication(
+                channel: channel, mode: mode, ref: ref, layout: layout,
                 resolve: { source in
                     let commit = try await resolve(source)
                     await tee.noteResolvedCommit(commit)
@@ -219,15 +243,17 @@ final class SkillsCenter: ObservableObject {
         let commit = snapshot.commit
         let catalogBytes = snapshot.catalogBytes
         let signatureBytes = snapshot.signatureBytes
-        return try await CuratedSkillHub.loadPublication(channel: channel, mode: mode, ref: "main",
+        let layout = snapshot.resolvedLayout
+        return try await CuratedSkillHub.loadPublication(
+            channel: channel, mode: mode, ref: "main", layout: layout,
             resolve: { _ in commit },
             fetch: { _, fetchedCommit, path in
                 guard fetchedCommit == commit else {
                     throw CuratedSkillHubFailure.source("curated catalog snapshot commit mismatch")
                 }
                 switch path {
-                case CuratedSkillHub.catalogPath(for: channel): return catalogBytes
-                case CuratedSkillHub.signaturePath(for: channel): return signatureBytes
+                case CuratedSkillHub.catalogPath(for: channel, layout: layout): return catalogBytes
+                case CuratedSkillHub.signaturePath(for: channel, layout: layout): return signatureBytes
                 default:
                     throw CuratedSkillHubFailure.source(
                         "curated catalog snapshot only serves the channel feed and signature")
@@ -240,24 +266,29 @@ final class SkillsCenter: ObservableObject {
     /// returns a fully verified publication for that same commit.
     private actor CuratedPublicationTee {
         private let channel: CuratedSkillChannel
+        private let layout: CuratedSkillCatalogLayout
         private var resolvedCommit: String?
         private var catalog: (commit: String, bytes: Data)?
         private var signature: (commit: String, bytes: Data)?
 
-        init(channel: CuratedSkillChannel) { self.channel = channel }
+        init(channel: CuratedSkillChannel, layout: CuratedSkillCatalogLayout) {
+            self.channel = channel
+            self.layout = layout
+        }
 
         func noteResolvedCommit(_ commit: String) { resolvedCommit = commit }
 
         func noteFetchedFile(path: String, commit: String, bytes: Data) {
-            if path == CuratedSkillHub.catalogPath(for: channel) {
+            if path == CuratedSkillHub.catalogPath(for: channel, layout: layout) {
                 catalog = (commit, bytes)
-            } else if path == CuratedSkillHub.signaturePath(for: channel) {
+            } else if path == CuratedSkillHub.signaturePath(for: channel, layout: layout) {
                 signature = (commit, bytes)
             }
         }
 
         func authenticatedSnapshot(matching publication: CuratedSkillHub.Publication) -> CuratedPublicationSnapshot? {
             guard resolvedCommit == publication.publicationCommit,
+                  publication.layout == layout,
                   let capturedCatalog = catalog, capturedCatalog.commit == publication.publicationCommit,
                   let capturedSignature = signature, capturedSignature.commit == publication.publicationCommit,
                   !capturedCatalog.bytes.isEmpty, !capturedSignature.bytes.isEmpty,
@@ -267,7 +298,8 @@ final class SkillsCenter: ObservableObject {
                 schemaVersion: CuratedPublicationSnapshot.schemaVersion,
                 commit: publication.publicationCommit,
                 catalogBytes: capturedCatalog.bytes,
-                signatureBytes: capturedSignature.bytes)
+                signatureBytes: capturedSignature.bytes,
+                layout: layout)
         }
     }
 
@@ -383,6 +415,9 @@ final class SkillsCenter: ObservableObject {
         let runID: UUID
         let publicationCommit: String
         let catalogDigest: String
+        /// Optional for pins written before the expanded feed existed; a
+        /// missing value means the original legacy layout.
+        let layout: CuratedSkillCatalogLayout?
     }
 
     private struct HubReadCache: Codable {
@@ -447,16 +482,22 @@ final class SkillsCenter: ObservableObject {
                 try context.cancellation.throwIfCancelled()
                 return detail
             }
-            publication = try await loadCuratedPublication(ref: pin.publicationCommit)
+            // A pin written before the expanded feed existed has no layout
+            // and was produced from the legacy projection; keep it valid.
+            publication = try await loadCuratedPublication(
+                ref: pin.publicationCommit, layout: pin.layout ?? .legacy)
         } else {
             // The first read freezes Y before exposing any instruction body.
             publication = try await loadCuratedPublication()
             try context.cancellation.throwIfCancelled()
             pin = HubReadPin(schemaVersion: 1, ownerID: ownerID, runID: context.runID,
-                publicationCommit: publication.publicationCommit, catalogDigest: publication.verifiedFeed.catalogSHA256)
+                publicationCommit: publication.publicationCommit,
+                catalogDigest: publication.verifiedFeed.catalogSHA256,
+                layout: publication.layout)
             try JSONEncoder().encode(pin).write(to: pinURL, options: .atomic)
         }
         guard publication.publicationCommit == pin.publicationCommit,
+              publication.layout == (pin.layout ?? .legacy),
               publication.verifiedFeed.catalogSHA256 == pin.catalogDigest else { throw SkillUpgradeError.localConflict }
         let detail = try await hubCatalogDetail(id: id, publication: publication)
         try context.cancellation.throwIfCancelled()
@@ -550,7 +591,20 @@ final class SkillsCenter: ObservableObject {
         if pendingInstallation != nil || pendingReviewChoiceKey != nil { throw SkillUpgradeError.localConflict }
         isWorking = true
         defer { isWorking = false }
-        let publication = try await loadCuratedPublication(ref: request.publicationCommit ?? "main")
+        // A task install may still carry the Y of the last authenticated
+        // publication shown by this process. Keep that publication's fixed
+        // layout when the pin matches it (a restored legacy snapshot stays
+        // installable); otherwise the production path prefers the current
+        // full feed at the requested immutable Y.
+        let requestLayout: CuratedSkillCatalogLayout
+        if let current = curatedPublication,
+           request.publicationCommit == nil || request.publicationCommit == current.publicationCommit {
+            requestLayout = current.layout
+        } else {
+            requestLayout = .full
+        }
+        let publication = try await loadCuratedPublication(
+            ref: request.publicationCommit ?? "main", layout: requestLayout)
         if let pin = request.publicationCommit, publication.publicationCommit != pin { throw SkillHubValidationError.receiptIdentityMismatch }
         try context.cancellation.throwIfCancelled()
         let scratch = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
@@ -568,7 +622,7 @@ final class SkillsCenter: ObservableObject {
                 expectedDigest: current.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: current))
             candidate = try staged.upgradeCandidate(installed: previous)
         } else { candidate = nil }
-        guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(CuratedSkillHub.catalogPath(for: .ios))") else {
+        guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(publication.source.path)") else {
             throw SkillUpgradeError.invalidSource
         }
         // The single deterministic authorization decision for this call. All
@@ -719,7 +773,7 @@ final class SkillsCenter: ObservableObject {
             let snapshot = staged.content
             try await self.requireCompatibility(snapshot.package)
             try Self.validateDependencyDeclaration(in: snapshot)
-            guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(CuratedSkillHub.catalogPath(for: .ios))") else { throw SkillUpgradeError.invalidSource }
+            guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(publication.source.path)") else { throw SkillUpgradeError.invalidSource }
             self.pendingInstallation = PendingInstallation(sourceURL: sourceURL,
                 skillMarkdown: String(decoding: snapshot.files["SKILL.md"] ?? Data(), as: UTF8.self),
                 manifest: snapshot.package.manifest, files: [:],
@@ -891,7 +945,7 @@ final class SkillsCenter: ObservableObject {
               pendingUpgrade == nil else { throw SkillUpgradeError.localConflict }
         isWorking = true
         defer { isWorking = false }
-        guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(CuratedSkillHub.catalogPath(for: .ios))") else {
+        guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(publication.source.path)") else {
             throw SkillUpgradeError.invalidSource
         }
         if let candidate {
@@ -1035,10 +1089,19 @@ final class SkillsCenter: ObservableObject {
         guard DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false else { return nil }
         if let receipt = Self.curatedReceipt(for: skill) {
             guard receipt.contentDigest == skill.rewrittenDigest else { return nil }
-            return try? CuratedSkillHub.source(channel: receipt.channel)
+            // Receipts written before the expanded feed existed have no
+            // layout and keep their original legacy source identity; new
+            // receipts carry the exact fixed layout that was verified. The
+            // production loader still reads the current full feed at the
+            // receipt's ref, so an old receipt stays a valid check source
+            // without reclassifying the installed row or forcing a reinstall.
+            return try? CuratedSkillHub.source(
+                channel: receipt.channel, layout: receipt.catalogLayout ?? .legacy)
         }
         if origin(of: skill) == .official {
             if curatedCards.contains(where: { $0.entry.id == skill.id && $0.showsInstallAction }) {
+                // Stable legacy source identity for existing update-state
+                // keys; the production loader itself reads `.full`.
                 return try? CuratedSkillHub.source(channel: .ios)
             }
             return OfficialSkillHub.skillIDs.contains(skill.id) ? try? OfficialSkillHub.source() : nil

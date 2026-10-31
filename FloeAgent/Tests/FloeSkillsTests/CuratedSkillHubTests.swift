@@ -179,6 +179,47 @@ private func androidFixtureFiles() throws -> [String: Data] {
     ]
 }
 
+/// Builds a schemaVersion-3 fixture feed with exactly `count` structurally
+/// legal guide-only rows, reusing the reviewed fixture entry shape. Only the
+/// documented test key ever signs these bytes; this never represents
+/// production content or a production signature. The helper exists so the
+/// row-count and plan-number bounds are exercised past the old 43-row clamp
+/// without inventing a looser decoder or a second fixture contract.
+private func expandedFixtureCatalog(
+    _ count: Int,
+    duplicatePlanNumber: Bool = false,
+    secondPlanNumber: Int? = nil
+) throws -> Data {
+    guard var root = try JSONSerialization.jsonObject(
+            with: curatedFixture("catalog.json")) as? [String: Any],
+          let entries = root["entries"] as? [[String: Any]],
+          let template = entries.first else {
+        throw UnexpectedSuccess()
+    }
+    var expanded: [[String: Any]] = []
+    expanded.reserveCapacity(count)
+    for index in 0..<count {
+        var entry = template
+        entry["id"] = "fixture-row-\(index + 1)"
+        entry["planNumber"] = duplicatePlanNumber && index > 0
+            ? 1
+            : (index == 1 ? (secondPlanNumber ?? index + 1) : index + 1)
+        expanded.append(entry)
+    }
+    root["entries"] = expanded
+    root["counts"] = [
+        "total": count,
+        "builtin": 0,
+        "optional": count,
+        "deepAdaptation": 0,
+        "packaged": 0,
+        "reviewed": 0,
+        "qualified": 0,
+        "offerQualified": 0,
+    ]
+    return try JSONSerialization.data(withJSONObject: root)
+}
+
 private func stagingRoot() -> URL {
     FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
 }
@@ -497,6 +538,172 @@ struct CuratedSkillHubTests {
         duplicated = try mutate(duplicated, "\"packages/fixture-script/1.0.0/fixture-script.zip\"",
                                 to: "\"packages/fixture-guide/1.0.0/fixture-guide.zip\"")
         try expectFeedDecodeFailure(duplicated, "duplicate entry id")
+    }
+
+    @Test("Fixed full and legacy layouts stay distinct; the low-level default remains legacy")
+    func fixedLayoutSelection() throws {
+        #expect(CuratedSkillHub.catalogPath(for: .ios) == "catalog.json")
+        #expect(CuratedSkillHub.catalogPath(for: .android) == "android/catalog.json")
+        #expect(CuratedSkillHub.signaturePath(for: .ios) == "catalog.sig")
+        #expect(CuratedSkillHub.signaturePath(for: .android) == "android/catalog.sig")
+        #expect(CuratedSkillHub.catalogPath(for: .ios, layout: .full) == "catalog-full.json")
+        #expect(CuratedSkillHub.catalogPath(for: .android, layout: .full) == "android/catalog-full.json")
+        #expect(CuratedSkillHub.signaturePath(for: .ios, layout: .full) == "catalog-full.sig")
+        #expect(CuratedSkillHub.signaturePath(for: .android, layout: .full) == "android/catalog-full.sig")
+        #expect(Set(CuratedSkillCatalogLayout.allCases.map { $0.catalogPath(for: .ios) })
+                == Set(["catalog.json", "catalog-full.json"]))
+        #expect(Set(CuratedSkillCatalogLayout.allCases.map { $0.signaturePath(for: .android) })
+                == Set(["android/catalog.sig", "android/catalog-full.sig"]))
+
+        let legacy = try CuratedSkillHub.source(channel: .ios)
+        let full = try CuratedSkillHub.source(channel: .ios, layout: .full)
+        #expect(legacy.path == "catalog.json")
+        #expect(full.path == "catalog-full.json")
+        // The compatibility form (nil layout) accepts either fixed channel
+        // path so old installed receipts stay checkable; an explicit layout
+        // accepts only its own exact path.
+        try CuratedSkillHub.validateSource(legacy, for: .ios)
+        try CuratedSkillHub.validateSource(full, for: .ios)
+        try CuratedSkillHub.validateSource(legacy, for: .ios, layout: .legacy)
+        try CuratedSkillHub.validateSource(full, for: .ios, layout: .full)
+        try expectCuratedFailure(
+            { try CuratedSkillHub.validateSource(full, for: .ios, layout: .legacy) },
+            case: "source")
+        try expectCuratedFailure(
+            { try CuratedSkillHub.validateSource(legacy, for: .ios, layout: .full) },
+            case: "source")
+        // A full iOS path is still not an Android channel source.
+        try expectCuratedFailure(
+            { try CuratedSkillHub.validateSource(full, for: .android) },
+            case: "source")
+        try expectCuratedFailure(
+            { try CuratedSkillHub.validateSource(
+                GitHubSkillSource(owner: CuratedSkillHub.owner, repository: CuratedSkillHub.repository,
+                                  ref: "main", path: "catalog-full.json.bak"),
+                for: .ios) },
+            case: "source")
+    }
+
+    @Test("A signed full feed beyond 43 rows decodes up to 256 and pins every fetch to one Y")
+    func fullFeedBeyondLegacyLimitLoads() async throws {
+        let catalog44 = try expandedFixtureCatalog(44)
+        let signature = try signedEnvelope(over: catalog44)
+        let y = String(repeating: "9", count: 40)
+        let transport = HubTransport(
+            files: ["catalog-full.json": catalog44, "catalog-full.sig": signature],
+            commits: [y, String(repeating: "8", count: 40)])
+        let (resolve, fetch) = makeClosures(transport)
+        let publication = try await CuratedSkillHub.loadPublication(
+            channel: .ios, mode: fixtureMode(), ref: "main", layout: .full,
+            resolve: resolve, fetch: fetch)
+        #expect(publication.layout == .full)
+        #expect(publication.source.path == "catalog-full.json")
+        #expect(publication.publicationCommit == y)
+        #expect(publication.feed.entries.count == 44)
+        #expect(publication.feed.entries.map(\.planNumber) == Array(1...44))
+        #expect(publication.verifiedFeed.catalogSHA256 == sha256Hex(catalog44))
+        let traffic = await transport.snapshot()
+        #expect(traffic.resolveCount == 1)
+        #expect(traffic.fetches.map { $0.path } == ["catalog-full.json", "catalog-full.sig"])
+        #expect(Set(traffic.fetches.map { $0.commit }) == Set([y]))
+
+        // 256 is the inclusive feed bound; 257 is refused structurally
+        // before any entry is accepted.
+        let catalog256 = try expandedFixtureCatalog(256)
+        let feed256 = try CuratedSkillFeed.decode(bytes: catalog256, expectedChannel: .ios)
+        #expect(feed256.entries.count == 256)
+        #expect(feed256.entries.last?.planNumber == 256)
+        let catalog257 = try expandedFixtureCatalog(257)
+        do {
+            _ = try CuratedSkillFeed.decode(bytes: catalog257, expectedChannel: .ios)
+            Issue.record("a 257-row feed must never decode")
+        } catch let failure as CuratedSkillHubFailure {
+            #expect(String(describing: failure).contains("1...256 rows"), "got \(failure)")
+        }
+        // planNumber itself now uses the same 1...256 bound, not 1...43.
+        let plan257 = try expandedFixtureCatalog(2, secondPlanNumber: 257)
+        do {
+            _ = try CuratedSkillFeed.decode(bytes: plan257, expectedChannel: .ios)
+            Issue.record("planNumber 257 must never decode")
+        } catch let failure as CuratedSkillHubFailure {
+            #expect(String(describing: failure).contains("planNumber must be a 1...256 row"),
+                    "got \(failure)")
+        }
+        let duplicatePlan = try expandedFixtureCatalog(2, duplicatePlanNumber: true)
+        do {
+            _ = try CuratedSkillFeed.decode(bytes: duplicatePlan, expectedChannel: .ios)
+            Issue.record("a duplicate planNumber must never decode")
+        } catch let failure as CuratedSkillHubFailure {
+            #expect(String(describing: failure).contains("duplicate planNumber"), "got \(failure)")
+        }
+    }
+
+    @Test("Full staging records the verified layout; older receipts without it decode as legacy")
+    func fullStagingReceiptLayoutCompatibility() async throws {
+        let y = String(repeating: "6", count: 40)
+        var files = try iosFixtureFiles()
+        files["catalog-full.json"] = try curatedFixture("catalog.json")
+        files["catalog-full.sig"] = try curatedFixture("catalog.sig")
+        let transport = HubTransport(files: files, commits: [y])
+        let (resolve, fetch) = makeClosures(transport)
+        let publication = try await CuratedSkillHub.loadPublication(
+            channel: .ios, mode: fixtureMode(), ref: "main", layout: .full,
+            resolve: resolve, fetch: fetch)
+        let root = stagingRoot()
+        let staged = try await CuratedSkillHub.stage(
+            publication, entryID: "fixture-reviewed", appVersion: "1.7.58",
+            at: root, fetch: fetch)
+        #expect(staged.source.path == "catalog-full.json")
+        #expect(staged.receipt.catalogLayout == .full)
+        #expect(staged.receipt.publicationCommit == y)
+        // A receipt written by the pre-expansion client has no layout key.
+        // Removing the new optional field must still decode as legacy, and
+        // the row's source/update identity stays valid.
+        let encoded = try JSONEncoder().encode(staged.receipt)
+        let value = try JSONSerialization.jsonObject(with: encoded)
+        var object = try #require(value as? [String: Any])
+        object.removeValue(forKey: "catalogLayout")
+        let oldBytes = try JSONSerialization.data(withJSONObject: object)
+        let oldReceipt = try JSONDecoder().decode(CuratedSkillHub.Receipt.self, from: oldBytes)
+        #expect(oldReceipt.catalogLayout == nil)
+        #expect(oldReceipt.publicationCommit == y)
+        #expect(oldReceipt.catalogSHA256 == staged.receipt.catalogSHA256)
+        #expect(oldReceipt.contentDigest == staged.receipt.contentDigest)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    @Test("Full layout failure never falls back to legacy bytes at the same Y; signature still gates")
+    func fullLayoutFailsClosedWithoutLegacyFallback() async throws {
+        let y = String(repeating: "7", count: 40)
+        // Legacy files exist, but a full load must not read them.
+        let legacyTransport = HubTransport(files: try iosFixtureFiles(), commits: [y])
+        let (legacyResolve, legacyFetch) = makeClosures(legacyTransport)
+        try await expectCuratedFailureAsync(
+            { _ = try await CuratedSkillHub.loadPublication(
+                channel: .ios, mode: fixtureMode(), ref: "main", layout: .full,
+                resolve: legacyResolve, fetch: legacyFetch) },
+            case: "unavailable")
+        let legacyTraffic = await legacyTransport.snapshot()
+        #expect(legacyTraffic.fetches.map { $0.path } == ["catalog-full.json"])
+
+        // A full feed with a tampered envelope fails on exact bytes, not on
+        // a fallback to the legacy feed that is also present.
+        let fullCatalog = try expandedFixtureCatalog(44)
+        var tamperedSignature = try signedEnvelope(over: fullCatalog)
+        tamperedSignature[tamperedSignature.count / 2] ^= 0x01
+        var files = try iosFixtureFiles()
+        files["catalog-full.json"] = fullCatalog
+        files["catalog-full.sig"] = tamperedSignature
+        let transport = HubTransport(files: files, commits: [y])
+        let (resolve, fetch) = makeClosures(transport)
+        try await expectCuratedFailureAsync(
+            { _ = try await CuratedSkillHub.loadPublication(
+                channel: .ios, mode: fixtureMode(), ref: "main", layout: .full,
+                resolve: resolve, fetch: fetch) },
+            case: "signature")
+        let traffic = await transport.snapshot()
+        #expect(Set(traffic.fetches.map { $0.path })
+                == Set(["catalog-full.json", "catalog-full.sig"]))
     }
 
     @Test("Real production-signed legacy bytes verify under the legacy decoder and fail closed in the curated client")

@@ -94,9 +94,40 @@ public enum CuratedSkillTrustMode: Sendable {
     case fixtureTestOnly(fixturePublicKey: Data)
 }
 
+/// The two fixed, immutable catalog layouts of one channel publication.
+///
+/// `legacy` is the original `catalog.json` projection kept for old clients
+/// and old authenticated snapshots. `full` is the expanded
+/// `catalog-full.json` feed with the same schemaVersion-3 contract and no
+/// additional wire fields. Both are published at the SAME immutable commit Y
+/// by the content owner; neither carries an arbitrary URL or a new trust
+/// root. The low-level loader defaults to `legacy` so existing callers and
+/// cached receipt sources keep their original meaning; the production App
+/// consumer selects `full` explicitly.
+public enum CuratedSkillCatalogLayout: String, Codable, Sendable, CaseIterable, Hashable {
+    case legacy
+    case full
+
+    public func catalogPath(for channel: CuratedSkillChannel) -> String {
+        switch (channel, self) {
+        case (.ios, .legacy): "catalog.json"
+        case (.android, .legacy): "android/catalog.json"
+        case (.ios, .full): "catalog-full.json"
+        case (.android, .full): "android/catalog-full.json"
+        }
+    }
+
+    public func signaturePath(for channel: CuratedSkillChannel) -> String {
+        String(catalogPath(for: channel).dropLast(".json".count)) + ".sig"
+    }
+}
+
 // MARK: - Client
 
 public enum CuratedSkillHub {
+    /// Convenience spelling for the fixed catalog layouts.
+    public typealias CatalogLayout = CuratedSkillCatalogLayout
+
     /// Fixed repository identity (contract §1, FIELD-TABLE). Not the legacy
     /// `JiangNanGenius/floe-agent` source; the legacy protocol is unchanged.
     public static let owner = "JiangNanGenius"
@@ -112,7 +143,9 @@ public enum CuratedSkillHub {
     /// reachable through `CuratedSkillTrustMode.fixtureTestOnly`.
     public static let fixtureKeyID = "fixture-only-2026-10"
 
-    /// Bounded feed size for the 43-row channel feeds (generous, fail-closed).
+    /// Bounded feed size for the channel feeds (generous, fail-closed). Both
+    /// the legacy projection and the expanded full feed share the same
+    /// 4 MiB transport/feed ceiling and the same 256-entry structural bound.
     public static let maximumFeedBytes = 4_194_304
     public static let maximumEntries = 256
     public static let maximumDirectoryListingBytes = 2_097_152
@@ -120,30 +153,54 @@ public enum CuratedSkillHub {
     // MARK: Identity and paths
 
     /// Channel root within the hub repository at publication Y. iOS lives at
-    /// the tree root; Android under `android/`. Reviews are shared.
-    public static func catalogPath(for channel: CuratedSkillChannel) -> String {
-        switch channel {
-        case .ios: "catalog.json"
-        case .android: "android/catalog.json"
-        }
+    /// the tree root; Android under `android/`. Reviews are shared. The
+    /// default remains the legacy projection so every existing low-level
+    /// caller keeps its original source identity; callers that need the
+    /// expanded feed pass `layout: .full` explicitly.
+    public static func catalogPath(
+        for channel: CuratedSkillChannel,
+        layout: CuratedSkillCatalogLayout = .legacy
+    ) -> String {
+        layout.catalogPath(for: channel)
     }
 
-    public static func signaturePath(for channel: CuratedSkillChannel) -> String {
-        String(catalogPath(for: channel).dropLast(".json".count)) + ".sig"
+    public static func signaturePath(
+        for channel: CuratedSkillChannel,
+        layout: CuratedSkillCatalogLayout = .legacy
+    ) -> String {
+        layout.signaturePath(for: channel)
     }
 
     /// The pinned repository source for one channel. `ref` is the branch or
     /// tag the caller has pinned; it is resolved to an immutable commit
     /// exactly once by `loadPublication`.
-    public static func source(channel: CuratedSkillChannel, ref: String = "main") throws -> GitHubSkillSource {
-        try GitHubSkillSource(owner: owner, repository: repository, ref: ref, path: catalogPath(for: channel))
+    public static func source(
+        channel: CuratedSkillChannel,
+        ref: String = "main",
+        layout: CuratedSkillCatalogLayout = .legacy
+    ) throws -> GitHubSkillSource {
+        try GitHubSkillSource(owner: owner, repository: repository, ref: ref,
+                              path: catalogPath(for: channel, layout: layout))
     }
 
     /// A curated operation may only read the fixed hub repository at one of
-    /// the two channel catalog paths. Model-supplied URLs are never accepted.
-    public static func validateSource(_ source: GitHubSkillSource, for channel: CuratedSkillChannel) throws {
+    /// the channel's fixed catalog paths. Model-supplied URLs are never
+    /// accepted. `layout` selects exactly one layout; `nil` accepts either
+    /// fixed path during the compatible transition (old installed receipts
+    /// keep their legacy path while the production consumer reads `full`).
+    public static func validateSource(
+        _ source: GitHubSkillSource,
+        for channel: CuratedSkillChannel,
+        layout: CuratedSkillCatalogLayout? = nil
+    ) throws {
+        let allowed: [String]
+        if let layout {
+            allowed = [catalogPath(for: channel, layout: layout)]
+        } else {
+            allowed = CuratedSkillCatalogLayout.allCases.map { catalogPath(for: channel, layout: $0) }
+        }
         guard source.owner == owner, source.repository == repository,
-              source.path == catalogPath(for: channel) else {
+              allowed.contains(source.path) else {
             throw CuratedSkillHubFailure.source(
                 "curated skills download only from \(hubRepository) at a channel catalog path")
         }
@@ -340,6 +397,8 @@ public enum CuratedSkillHub {
     /// as provenance only (`feed.sourceCommit`) and is never a fetch pin.
     public struct Publication: Sendable {
         public let source: GitHubSkillSource
+        /// Fixed catalog layout this publication was fetched from.
+        public let layout: CuratedSkillCatalogLayout
         /// Y — the resolved immutable commit whose tree carries every artifact.
         public let publicationCommit: String
         public let verifiedFeed: VerifiedFeed
@@ -359,11 +418,12 @@ public enum CuratedSkillHub {
         channel: CuratedSkillChannel,
         mode: CuratedSkillTrustMode,
         ref: String = "main",
+        layout: CuratedSkillCatalogLayout = .legacy,
         resolve: GitHubSkillDownload.ResolveCommit,
         fetch: GitHubSkillDownload.FetchFile
     ) async throws -> Publication {
-        let source = try source(channel: channel, ref: ref)
-        try validateSource(source, for: channel)
+        let source = try source(channel: channel, ref: ref, layout: layout)
+        try validateSource(source, for: channel, layout: layout)
         let commit: String
         do {
             commit = try await resolve(source)
@@ -376,7 +436,7 @@ public enum CuratedSkillHub {
         }
         let catalogBytes: Data
         do {
-            catalogBytes = try await fetch(source, commit, catalogPath(for: channel))
+            catalogBytes = try await fetch(source, commit, catalogPath(for: channel, layout: layout))
         } catch {
             throw CuratedSkillHubFailure.unavailable(
                 "channel feed is not present at the pinned publication: \(error.localizedDescription)")
@@ -384,7 +444,8 @@ public enum CuratedSkillHub {
         let signatureBytes: Data
         do {
             signatureBytes = try await fetchSignatureBytes(
-                source: source, commit: commit, signaturePath: signaturePath(for: channel), fetch: fetch)
+                source: source, commit: commit,
+                signaturePath: signaturePath(for: channel, layout: layout), fetch: fetch)
         } catch let failure as CuratedSkillHubFailure {
             throw failure
         } catch {
@@ -393,7 +454,8 @@ public enum CuratedSkillHub {
         }
         let verified = try verifiedFeed(
             bytes: catalogBytes, signature: signatureBytes, channel: channel, mode: mode)
-        return Publication(source: source, publicationCommit: commit, verifiedFeed: verified, mode: mode)
+        return Publication(source: source, layout: layout, publicationCommit: commit,
+                           verifiedFeed: verified, mode: mode)
     }
 
     // MARK: Staged result types
@@ -408,6 +470,11 @@ public enum CuratedSkillHub {
         public let reviewRecordSHA256: String
         public let permissionDelta: CuratedSkillPermissionDelta
         public let receipt: Receipt
+        /// Exact verified channel source (including its fixed legacy/full
+        /// catalog path) this stage was fetched from. The upgrade candidate
+        /// reuses it so a new install records the path that was actually
+        /// verified instead of synthesizing another layout.
+        public let source: GitHubSkillSource
     }
 
     /// The reviewed receipt: every identity a later store write needs, with
@@ -440,6 +507,10 @@ public enum CuratedSkillHub {
         public let reviewedAt: String
         public let reviewer: String
         public let permissionDelta: CuratedSkillPermissionDelta
+        /// Fixed catalog layout whose exact bytes produced `catalogSHA256`.
+        /// Optional so receipts written before the expanded feed existed
+        /// still decode; `nil` means the original legacy layout.
+        public let catalogLayout: CuratedSkillCatalogLayout?
 
         /// Retrieval evidence for the caller's own persistence. This is
         /// deliberately NOT a generic GitHub folder-update binding: curated
@@ -610,11 +681,13 @@ public enum CuratedSkillHub {
                 reviewDecision: record.decision,
                 reviewedAt: record.reviewedAt,
                 reviewer: record.reviewer,
-                permissionDelta: delta
+                permissionDelta: delta,
+                catalogLayout: publication.layout
             )
             return StagedSkill(
                 content: snapshot, archiveSHA256: archiveSHA256,
-                reviewRecordSHA256: reviewSHA256, permissionDelta: delta, receipt: receipt)
+                reviewRecordSHA256: reviewSHA256, permissionDelta: delta,
+                receipt: receipt, source: publication.source)
         } catch {
             try? FileManager.default.removeItem(at: root)
             throw error

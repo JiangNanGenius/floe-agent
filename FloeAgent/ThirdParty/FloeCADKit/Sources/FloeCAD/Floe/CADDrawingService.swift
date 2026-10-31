@@ -4270,7 +4270,8 @@ public final class CADDrawingService {
         }
     }
 
-    private func bomReply(page: CADDrawingPage, assembly: CADAssembly?) -> [String: Any] {
+    private func bomReply(page: CADDrawingPage, assembly: CADAssembly?,
+                          includePlacementStatus: Bool = true) -> [String: Any] {
         var rows: [[String: Any]] = []
         var issues: [String] = []
         for entry in page.bom?.entries ?? [] {
@@ -4357,8 +4358,9 @@ public final class CADDrawingService {
             "issues": issues,
         ]
         if !rows.isEmpty {
-            payload["bomOutput"] = bomOutputStatus(page: page, rowCount: rows.count,
-                                                   rows: rows)
+            payload["bomOutput"] = bomOutputStatus(
+                page: page, rowCount: rows.count, rows: rows,
+                includePlacementStatus: includePlacementStatus)
         }
         if page.bom == nil { payload["bom"] = NSNull() }
         return payload
@@ -4389,7 +4391,10 @@ public final class CADDrawingService {
     /// existing CSV formula-neutralization policy, so this export never
     /// rewrites an engineering value to a different literal.
     private func bomCSVData(page: CADDrawingPage) throws -> Data {
-        let reply = bomReply(page: page, assembly: loadAssemblyValue())
+        // CSV is complete data, not a projected sheet layout; it needs no
+        // placement/collision check and must not pay for a projection.
+        let reply = bomReply(page: page, assembly: loadAssemblyValue(),
+                             includePlacementStatus: false)
         let rows = (reply["entries"] as? [[String: Any]]) ?? []
         guard !rows.isEmpty else {
             throw CADDocumentError(
@@ -4966,16 +4971,8 @@ public final class CADDrawingService {
         // Sheet layout: model geometry in the upper-left area, clear of the
         // title block at the bottom. All exports share this placement, and the
         // preview uses the same pre-offset model space.
-        var offset = SIMD2<Double>.zero
-        if page.sheetViews == nil {
-            // Legacy single-view sheet: model geometry is placed in the upper
-            // left, clear of the title block. A v4 page already carries an
-            // explicit per-view sheet offset, so it must not be moved again.
-            if let bounds = entityBounds(projection.entities)
-                ?? entityBounds(graphics.entities) {
-                offset = SIMD2(20 - bounds.min.x, 40 - bounds.min.y)
-            }
-        }
+        let offset = sheetOffset(page: page, projection: projection,
+                                 graphics: graphics)
         let placedEntities = graphics.entities.map { $0.translated(by: offset) }
         let placedTexts = graphics.texts.map {
             DrawingText(text: $0.text, position: $0.position + offset,
@@ -4986,17 +4983,27 @@ public final class CADDrawingService {
                               texts: placedTexts + sheet.texts)
     }
 
+    /// The one legacy sheet placement shared by rendering and BOM collision
+    /// checks. A v4 shared page already carries explicit per-view offsets and
+    /// must not be shifted a second time.
+    private func sheetOffset(page: CADDrawingPage, projection: PageProjection,
+                             graphics: RenderGraphics) -> SIMD2<Double> {
+        guard page.sheetViews == nil else { return .zero }
+        if let bounds = entityBounds(projection.entities)
+            ?? entityBounds(graphics.entities) {
+            return SIMD2(20 - bounds.min.x, 40 - bounds.min.y)
+        }
+        return .zero
+    }
+
     private func sheetGraphics(page: CADDrawingPage) -> RenderGraphics {
-        let width = max(page.paperWidthMM, 40)
-        let height = max(page.paperHeightMM, 40)
-        let margin = 8.0
-        let frameMin = SIMD2(margin, margin)
-        let frameMax = SIMD2(width - margin, height - margin)
+        let geometry = bomSheetGeometry(page: page)
+        let frameMin = geometry.frameMin
+        let frameMax = geometry.frameMax
         var entities = rectangleEntities(min: frameMin, max: frameMax, layer: "title")
         var texts: [DrawingText] = []
-        let blockWidth = min(120.0, frameMax.x - frameMin.x)
-        let blockMin = SIMD2(frameMax.x - blockWidth, frameMin.y)
-        let blockMax = SIMD2(frameMax.x, frameMin.y + 22)
+        let blockMin = geometry.titleBlockMin
+        let blockMax = geometry.titleBlockMax
         entities.append(contentsOf: rectangleEntities(min: blockMin, max: blockMax,
                                                       layer: "title"))
         entities.append(ProjectedEntity(
@@ -5060,7 +5067,10 @@ public final class CADDrawingService {
     /// bytes are produced. The preview path may draw a clearly labelled
     /// continuation instead; that partial table is never an exported artifact.
     private func bomTableGraphics(page: CADDrawingPage) -> RenderGraphics {
-        let reply = bomReply(page: page, assembly: loadAssemblyValue())
+        // Only the rows are used here; the placement-aware status is computed
+        // by the page/BOM status path, not a second time while drawing.
+        let reply = bomReply(page: page, assembly: loadAssemblyValue(),
+                             includePlacementStatus: false)
         let rows = (reply["entries"] as? [[String: Any]]) ?? []
         guard !rows.isEmpty else { return RenderGraphics(entities: [], texts: []) }
         let layout = bomTableLayout(page: page, rowCount: rows.count)
@@ -5087,10 +5097,6 @@ public final class CADDrawingService {
                 shape: .line(SIMD2(x, layout.minPoint.y), SIMD2(x, maxPoint.y)),
                 layer: "bom"))
         }
-        let nameLimit = max(1, Int((layout.nameWidth - 2) / 1.5))
-        let partLimit = max(1, Int((layout.partWidth - 2) / 1.5))
-        let materialLimit = max(1, Int((layout.materialWidth - 2) / 1.5))
-        let versionLimit = max(1, Int((layout.versionWidth - 2) / 1.5))
         let lastRowIndex = max(0, layout.totalRows - 1)
         for rowIndex in 0...lastRowIndex {
             let y = maxPoint.y - layout.rowHeight * Double(rowIndex)
@@ -5101,47 +5107,45 @@ public final class CADDrawingService {
             }
             let baseline = y - layout.rowHeight + 1.4
             if rowIndex == 0 {
-                let partHeader = layout.partWidth >= 18 ? "Part no." : "P/N"
-                let materialHeader = layout.materialWidth >= 18 ? "Material" : "Mat."
-                texts.append(DrawingText(text: "#",
-                                         position: SIMD2(layout.itemX + 1, baseline),
-                                         height: 2.8, layer: "bom"))
-                texts.append(DrawingText(text: "Part",
-                                         position: SIMD2(layout.nameX + 1, baseline),
-                                         height: 2.8, layer: "bom"))
-                texts.append(DrawingText(text: "Qty",
-                                         position: SIMD2(layout.quantityX + 1, baseline),
-                                         height: 2.8, layer: "bom"))
-                texts.append(DrawingText(text: partHeader,
-                                         position: SIMD2(layout.partX + 1, baseline),
-                                         height: 2.8, layer: "bom"))
-                texts.append(DrawingText(text: materialHeader,
-                                         position: SIMD2(layout.materialX + 1, baseline),
-                                         height: 2.8, layer: "bom"))
-                texts.append(DrawingText(text: "Rev",
-                                         position: SIMD2(layout.versionX + 1, baseline),
-                                         height: 2.8, layer: "bom"))
+                for header in bomHeaderDescriptors(layout) {
+                    texts.append(DrawingText(
+                        text: bomFittedCell(header.text,
+                                            availableWidth: header.width - 2,
+                                            height: 2.8).text,
+                        position: SIMD2(header.x, baseline),
+                        height: 2.8, layer: "bom"))
+                }
             } else if rowIndex <= displayRows.count {
                 let row = displayRows[rowIndex - 1]
                 let item = row["itemNumber"] as? Int ?? rowIndex
-                let name = bomCellText((row["name"] as? String) ?? "—",
-                                       limit: nameLimit)
-                let part = bomCellText((row["partNumber"] as? String) ?? "",
-                                       limit: partLimit)
-                let material = bomCellText((row["material"] as? String) ?? "",
-                                           limit: materialLimit)
-                let version = bomCellText((row["version"] as? String) ?? "",
-                                           limit: versionLimit)
                 let quantity = row["quantity"] as? Int ?? 0
-                texts.append(DrawingText(text: "\(item)",
-                                         position: SIMD2(layout.itemX + 1, baseline),
-                                         height: 2.8, layer: "bom"))
+                let name = bomFittedCell((row["name"] as? String) ?? "—",
+                                         availableWidth: layout.nameWidth - 2,
+                                         height: 2.8).text
+                let part = bomFittedCell((row["partNumber"] as? String) ?? "",
+                                         availableWidth: layout.partWidth - 2,
+                                         height: 2.8).text
+                let material = bomFittedCell((row["material"] as? String) ?? "",
+                                             availableWidth: layout.materialWidth - 2,
+                                             height: 2.8).text
+                let version = bomFittedCell((row["version"] as? String) ?? "",
+                                            availableWidth: layout.versionWidth - 2,
+                                            height: 2.8).text
+                texts.append(DrawingText(
+                    text: bomFittedCell("\(item)",
+                                        availableWidth: layout.itemWidth - 2,
+                                        height: 2.8).text,
+                    position: SIMD2(layout.itemX + 1, baseline),
+                    height: 2.8, layer: "bom"))
                 texts.append(DrawingText(text: name,
                                          position: SIMD2(layout.nameX + 1, baseline),
                                          height: 2.8, layer: "bom"))
-                texts.append(DrawingText(text: "\(quantity)",
-                                         position: SIMD2(layout.quantityX + 1, baseline),
-                                         height: 2.8, layer: "bom"))
+                texts.append(DrawingText(
+                    text: bomFittedCell("\(quantity)",
+                                        availableWidth: layout.quantityWidth - 2,
+                                        height: 2.8).text,
+                    position: SIMD2(layout.quantityX + 1, baseline),
+                    height: 2.8, layer: "bom"))
                 texts.append(DrawingText(text: part,
                                          position: SIMD2(layout.partX + 1, baseline),
                                          height: 2.8, layer: "bom"))
@@ -5156,8 +5160,9 @@ public final class CADDrawingService {
                 let range = shown == 0 ? "0" : "1–\(shown)"
                 let footer = "Rows \(range) of \(rows.count) · CSV: full table"
                 texts.append(DrawingText(
-                    text: bomCellText(footer,
-                                      limit: max(1, Int((layout.tableWidth - 2) / 1.4))),
+                    text: bomFittedCell(footer,
+                                        availableWidth: layout.tableWidth - 4,
+                                        height: 2.6).text,
                     position: SIMD2(layout.minPoint.x + 2, baseline),
                     height: 2.6, layer: "bom"))
             }
@@ -5166,43 +5171,96 @@ public final class CADDrawingService {
     }
 
     /// Sheet-space geometry and capacity for the complete BOM table. The
-    /// table normally uses the free bottom-left area; if that is too narrow
-    /// for the six required columns it moves above the title block and uses
-    /// the full frame width. If even that cannot fit, every vector format
-    /// refuses with `bom_output_incomplete`.
-    private func bomTableLayout(page: CADDrawingPage, rowCount: Int) -> BOMTableLayout {
-        let width = max(page.paperWidthMM, 40)
-        let height = max(page.paperHeightMM, 40)
-        let margin = 8.0
-        let frameMin = SIMD2(margin, margin)
-        let frameMax = SIMD2(width - margin, height - margin)
-        let titleBlockWidth = min(120.0, frameMax.x - frameMin.x)
+    /// legacy bottom-left zone is preferred; if projected drawing content
+    /// occupies it, a complete table moves above the projection or to the top
+    /// of the sheet instead of being drawn through model geometry. If no clear
+    /// zone can hold every row, every vector format refuses with
+    /// `bom_output_incomplete`; the CSV remains the full table.
+    private func bomTableLayout(page: CADDrawingPage, rowCount: Int,
+                                checkPlacement: Bool = true) -> BOMTableLayout {
+        let base = bomTableLayoutBase(page: page, rowCount: rowCount)
+        guard checkPlacement else { return base }
+        // Only a complete table is exported. An incomplete preview keeps its
+        // legacy zone and continuation row; export already refuses it.
+        guard base.requiredColumnsFit, base.complete else { return base }
+        let obstacles = bomPlacementObstacles(page: page)
+        guard bomTable(base, intersects: obstacles) else { return base }
+        let geometry = bomSheetGeometry(page: page)
+        let topLimit = geometry.frameMax.y - 2
+        let baseHeight = base.rowHeight * Double(base.totalRows)
+        let bottomWidth = max(80.0, geometry.frameMax.x - geometry.frameMin.x
+            - geometry.titleBlockWidth - 14)
+        let textMaxY = obstacles.textBounds.map { $0.max.y }.max() ?? 0
+        let allMaxY = max(obstacles.maxY, textMaxY)
+        let candidates: [(minY: Double, width: Double, zone: String)] = [
+            (max(geometry.frameMin.y + 2, obstacles.maxY + 2),
+             base.tableWidth, "aboveProjection"),
+            (max(geometry.frameMin.y + 2, allMaxY + 2),
+             base.tableWidth, "aboveText"),
+            (topLimit - baseHeight, base.tableWidth, "top"),
+            (geometry.frameMin.y + 2, bottomWidth, "bottomLeft"),
+        ]
+        for candidate in candidates {
+            guard candidate.minY >= geometry.frameMin.y + 2 - 1e-9,
+                  candidate.minY + baseHeight <= topLimit + 1e-9 else { continue }
+            let layout = bomTableLayoutBase(page: page, rowCount: rowCount,
+                                            minYOverride: candidate.minY,
+                                            tableWidthOverride: candidate.width,
+                                            tableZone: candidate.zone)
+            guard layout.complete, !bomTable(layout, intersects: obstacles) else {
+                continue
+            }
+            return layout
+        }
+        // Truthful no-fit: draw no table and let status/export name the
+        // missing free area rather than painting it over model geometry.
+        return BOMTableLayout(
+            tableWidth: base.tableWidth, rowHeight: base.rowHeight,
+            minPoint: base.minPoint, maxPoint: base.minPoint,
+            itemWidth: base.itemWidth, nameWidth: base.nameWidth,
+            partWidth: base.partWidth, materialWidth: base.materialWidth,
+            versionWidth: base.versionWidth, quantityWidth: base.quantityWidth,
+            itemX: base.itemX, nameX: base.nameX, partX: base.partX,
+            materialX: base.materialX, versionX: base.versionX,
+            quantityX: base.quantityX, capacity: 0,
+            requiredColumnsFit: true, complete: false, visibleRows: 0,
+            totalRows: 0, placedAboveTitleBlock: false,
+            tableZone: "none", zoneFits: false)
+    }
+
+    /// The original width/capacity selection. Overrides are used only after a
+    /// complete layout collides with projected content.
+    private func bomTableLayoutBase(page: CADDrawingPage, rowCount: Int,
+                                    minYOverride: Double? = nil,
+                                    tableWidthOverride: Double? = nil,
+                                    tableZone: String? = nil) -> BOMTableLayout {
+        let geometry = bomSheetGeometry(page: page)
+        let frameMin = geometry.frameMin
+        let frameMax = geometry.frameMax
         let rowHeight = 5.0
         let minimumColumnsWidth = 80.0
-        let bottomAvailable = frameMax.x - frameMin.x - titleBlockWidth - 14
+        let bottomAvailable = frameMax.x - frameMin.x - geometry.titleBlockWidth - 14
         let fullAvailable = frameMax.x - frameMin.x - 4
         var placedAboveTitleBlock = false
         var available = bottomAvailable
         var minY = frameMin.y + 2
-        if available < minimumColumnsWidth {
+        if let minYOverride {
+            minY = max(frameMin.y + 2, minYOverride)
+            if let tableWidthOverride {
+                available = tableWidthOverride
+            }
+            placedAboveTitleBlock = tableZone == "aboveTitleBlock"
+        } else if available < minimumColumnsWidth {
             guard fullAvailable >= minimumColumnsWidth else {
-                let minPoint = SIMD2(frameMin.x + 2, frameMin.y + 2)
-                return BOMTableLayout(
-                    tableWidth: minimumColumnsWidth, rowHeight: rowHeight,
-                    minPoint: minPoint, maxPoint: minPoint,
-                    itemWidth: 8, nameWidth: 24, partWidth: 18,
-                    materialWidth: 14, versionWidth: 8, quantityWidth: 8,
-                    itemX: minPoint.x, nameX: minPoint.x,
-                    partX: minPoint.x, materialX: minPoint.x,
-                    versionX: minPoint.x, quantityX: minPoint.x,
-                    capacity: 0, requiredColumnsFit: false, complete: false,
-                    visibleRows: 0, totalRows: 0,
-                    placedAboveTitleBlock: false)
+                return bomTableLayoutFailure(frameMin: frameMin, rowHeight: rowHeight)
             }
             placedAboveTitleBlock = true
             available = fullAvailable
             // Clear the 22 mm title block plus a small gap.
             minY = frameMin.y + 26
+        }
+        guard available >= minimumColumnsWidth else {
+            return bomTableLayoutFailure(frameMin: frameMin, rowHeight: rowHeight)
         }
         let tableWidth = min(230.0, max(minimumColumnsWidth, available))
         let itemWidth = 8.0
@@ -5236,31 +5294,214 @@ public final class CADDrawingService {
             quantityX: quantityX, capacity: capacity,
             requiredColumnsFit: true, complete: complete,
             visibleRows: visibleRows, totalRows: totalRows,
-            placedAboveTitleBlock: placedAboveTitleBlock)
+            placedAboveTitleBlock: placedAboveTitleBlock,
+            tableZone: tableZone ?? (placedAboveTitleBlock ? "aboveTitleBlock" : "bottomLeft"))
     }
 
-    /// Vector cells are text, not an unbounded column. Newlines become spaces
-    /// and overlong values get one visible ellipsis; the CSV artifact above
-    /// always retains the exact value.
-    private func bomCellText(_ text: String, limit: Int) -> String {
+    private func bomTableLayoutFailure(frameMin: SIMD2<Double>,
+                                       rowHeight: Double) -> BOMTableLayout {
+        let minPoint = SIMD2(frameMin.x + 2, frameMin.y + 2)
+        return BOMTableLayout(
+            tableWidth: 80, rowHeight: rowHeight,
+            minPoint: minPoint, maxPoint: minPoint,
+            itemWidth: 8, nameWidth: 24, partWidth: 18,
+            materialWidth: 14, versionWidth: 8, quantityWidth: 8,
+            itemX: minPoint.x, nameX: minPoint.x,
+            partX: minPoint.x, materialX: minPoint.x,
+            versionX: minPoint.x, quantityX: minPoint.x,
+            capacity: 0, requiredColumnsFit: false, complete: false,
+            visibleRows: 0, totalRows: 0,
+            placedAboveTitleBlock: false)
+    }
+
+    private func bomSheetGeometry(page: CADDrawingPage) -> BOMSheetGeometry {
+        let width = max(page.paperWidthMM, 40)
+        let height = max(page.paperHeightMM, 40)
+        let margin = 8.0
+        let frameMin = SIMD2(margin, margin)
+        let frameMax = SIMD2(width - margin, height - margin)
+        let titleBlockWidth = min(120.0, frameMax.x - frameMin.x)
+        return BOMSheetGeometry(
+            frameMin: frameMin, frameMax: frameMax,
+            titleBlockWidth: titleBlockWidth,
+            titleBlockMin: SIMD2(frameMax.x - titleBlockWidth, frameMin.y),
+            titleBlockMax: SIMD2(frameMax.x, frameMin.y + 22))
+    }
+
+    /// Projected content already placed on the sheet. Used only to choose a
+    /// free BOM table zone; the same placement offset as `renderGraphics` is
+    /// applied, so the check sees the actual export coordinates.
+    private func bomPlacementObstacles(page: CADDrawingPage) -> BOMPlacementObstacles {
+        let projection = projectPage(page)
+        let graphics = pageGraphics(page: page, projection: projection)
+        let offset = sheetOffset(page: page, projection: projection, graphics: graphics)
+        let entities = graphics.entities.map { $0.translated(by: offset) }
+        var textBounds: [(min: SIMD2<Double>, max: SIMD2<Double>)] = []
+        func appendText(_ text: String, position: SIMD2<Double>, height: Double) {
+            let width = bomTextAdvance(text, height: height)
+            let min = SIMD2(position.x, position.y - height * 0.25)
+            let max = SIMD2(position.x + width, position.y + height * 0.85)
+            textBounds.append((min, max))
+        }
+        for text in graphics.texts {
+            appendText(text.text, position: text.position + offset,
+                       height: text.height)
+        }
+        // The sheet labels are not part of pageGraphics; include the two
+        // free-standing ones so a top/above-text candidate cannot cover them.
+        let geometry = bomSheetGeometry(page: page)
+        if let viewID = page.explodedViewID,
+           let view = loadAssemblyValue()?.explodedView(viewID) {
+            appendText("Exploded: \(view.name)",
+                       position: SIMD2(geometry.frameMin.x + 2,
+                                       geometry.frameMax.y - 6),
+                       height: 3.0)
+        }
+        if let revision = page.modelRevision {
+            appendText("Rev \(revision)",
+                       position: SIMD2(max(geometry.frameMin.x + 2,
+                                           geometry.frameMax.x - 34),
+                                       geometry.frameMax.y - 6),
+                       height: 3.0)
+        }
+        // The first repair candidate clears the projected geometry. Text
+        // bounds are checked by `bomTable`; a separate candidate clears the
+        // highest text band if the geometry-only candidate hits one.
+        let entityMaxY = entityBounds(entities)?.max.y ?? 0
+        let maxY = max(0, entityMaxY)
+        return BOMPlacementObstacles(
+            entities: entities, textBounds: textBounds,
+            titleBlockMin: geometry.titleBlockMin,
+            titleBlockMax: geometry.titleBlockMax,
+            maxY: maxY)
+    }
+
+    private func bomTable(_ layout: BOMTableLayout,
+                          intersects obstacles: BOMPlacementObstacles) -> Bool {
+        if bomRectsOverlap(layout.minPoint, layout.maxPoint,
+                           obstacles.titleBlockMin, obstacles.titleBlockMax) {
+            return true
+        }
+        for entity in obstacles.entities {
+            if bomEntity(entity, intersects: layout.minPoint, layout.maxPoint) {
+                return true
+            }
+        }
+        for bounds in obstacles.textBounds {
+            if bomRectsOverlap(layout.minPoint, layout.maxPoint,
+                               bounds.min, bounds.max) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func bomRectsOverlap(_ aMin: SIMD2<Double>, _ aMax: SIMD2<Double>,
+                                 _ bMin: SIMD2<Double>, _ bMax: SIMD2<Double>) -> Bool {
+        aMin.x < bMax.x - 1e-6 && aMax.x > bMin.x + 1e-6
+            && aMin.y < bMax.y - 1e-6 && aMax.y > bMin.y + 1e-6
+    }
+
+    private func bomEntity(_ entity: ProjectedEntity,
+                           intersects rectMin: SIMD2<Double>,
+                           _ rectMax: SIMD2<Double>) -> Bool {
+        let rect = (min: rectMin, max: rectMax)
+        switch entity.shape {
+        case let .line(a, b):
+            return clipSegment(a, b, rect: rect) != nil
+        case let .circle(center, radius):
+            let closest = SIMD2(Swift.min(Swift.max(center.x, rectMin.x), rectMax.x),
+                                Swift.min(Swift.max(center.y, rectMin.y), rectMax.y))
+            return simd_distance(closest, center) <= radius + 1e-9
+        case let .arc(center, radius, _, _):
+            let closest = SIMD2(Swift.min(Swift.max(center.x, rectMin.x), rectMax.x),
+                                Swift.min(Swift.max(center.y, rectMin.y), rectMax.y))
+            return simd_distance(closest, center) <= radius + 1e-9
+        case let .polyline(points, _):
+            guard points.count >= 2 else { return false }
+            for index in 0..<(points.count - 1) {
+                if clipSegment(points[index], points[index + 1], rect: rect) != nil {
+                    return true
+                }
+            }
+            return false
+        }
+    }
+
+    private func bomHeaderDescriptors(_ layout: BOMTableLayout)
+        -> [(text: String, x: Double, width: Double)] {
+        let partHeader = layout.partWidth >= 18 ? "Part no." : "P/N"
+        let materialHeader = layout.materialWidth >= 18 ? "Material" : "Mat."
+        return [
+            ("#", layout.itemX + 1, layout.itemWidth),
+            ("Part", layout.nameX + 1, layout.nameWidth),
+            ("Qty", layout.quantityX + 1, layout.quantityWidth),
+            (partHeader, layout.partX + 1, layout.partWidth),
+            (materialHeader, layout.materialX + 1, layout.materialWidth),
+            ("Rev", layout.versionX + 1, layout.versionWidth),
+        ]
+    }
+
+    /// Fit a vector cell to its real column width. The PDF renderer draws with
+    /// `CTFontCreateWithName("Helvetica", height, nil)`, and CoreText supplies
+    /// the same PingFang SC fallback for Chinese, so those are the metrics
+    /// used here. The result is a whole-grapheme prefix plus one ellipsis
+    /// (never a UTF-16 slice), or empty when even the ellipsis does not fit.
+    private func bomFittedCell(_ text: String, availableWidth: Double,
+                               height: Double) -> BOMCellFit {
         let flattened = text
             .replacingOccurrences(of: "\r\n", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
-        guard flattened.count > limit else { return flattened }
-        guard limit > 1 else { return String(flattened.prefix(max(0, limit))) }
-        return String(flattened.prefix(limit - 1)) + "…"
+        guard !flattened.isEmpty else {
+            return BOMCellFit(text: "", truncated: false)
+        }
+        let available = max(0.25, availableWidth)
+        if bomTextAdvance(flattened, height: height) <= available + 1e-9 {
+            return BOMCellFit(text: flattened, truncated: false)
+        }
+        let characters = Array(flattened)
+        var low = 0
+        var high = characters.count
+        var best = -1
+        while low <= high {
+            let mid = (low + high) / 2
+            let candidate = String(characters.prefix(mid)) + "…"
+            if bomTextAdvance(candidate, height: height) <= available + 1e-9 {
+                best = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        guard best >= 0 else {
+            return BOMCellFit(text: "", truncated: true)
+        }
+        return BOMCellFit(text: String(characters.prefix(best)) + "…",
+                          truncated: true)
+    }
+
+    private func bomTextAdvance(_ text: String, height: Double) -> Double {
+        guard !text.isEmpty else { return 0 }
+        let font = CTFontCreateWithName("Helvetica" as CFString, height, nil)
+        let attributed = NSAttributedString(
+            string: text,
+            attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])
+        let line = CTLineCreateWithAttributedString(attributed)
+        return Double(CTLineGetTypographicBounds(line, nil, nil, nil))
     }
 
     private func bomOutputStatus(page: CADDrawingPage, rowCount: Int,
-                                 rows: [[String: Any]]? = nil) -> [String: Any] {
-        let layout = bomTableLayout(page: page, rowCount: rowCount)
+                                 rows: [[String: Any]]? = nil,
+                                 includePlacementStatus: Bool = true) -> [String: Any] {
+        let layout = bomTableLayout(page: page, rowCount: rowCount,
+                                    checkPlacement: includePlacementStatus)
         var output: [String: Any] = [
             "totalRows": rowCount,
             "capacity": layout.capacity,
             "vectorComplete": layout.complete,
             "requiredColumnsFit": layout.requiredColumnsFit,
-            "tableZone": layout.placedAboveTitleBlock ? "aboveTitleBlock" : "bottomLeft",
+            "tableZone": layout.tableZone,
             "fullTableFormat": "csv",
         ]
         if let rows {
@@ -5276,23 +5517,35 @@ public final class CADDrawingService {
 
     private func bomVectorTextTruncated(rows: [[String: Any]],
                                         layout: BOMTableLayout) -> Bool {
-        let limits: [(String, Int)] = [
-            ("name", max(1, Int((layout.nameWidth - 2) / 1.5))),
-            ("partNumber", max(1, Int((layout.partWidth - 2) / 1.5))),
-            ("material", max(1, Int((layout.materialWidth - 2) / 1.5))),
-            ("version", max(1, Int((layout.versionWidth - 2) / 1.5))),
+        let fields: [(String, Double)] = [
+            ("name", layout.nameWidth - 2),
+            ("partNumber", layout.partWidth - 2),
+            ("material", layout.materialWidth - 2),
+            ("version", layout.versionWidth - 2),
         ]
         for row in rows {
-            for (key, limit) in limits {
+            for (key, width) in fields {
                 let value = (row[key] as? String) ?? ""
-                let flattened = value
-                    .replacingOccurrences(of: "\r\n", with: " ")
-                    .replacingOccurrences(of: "\n", with: " ")
-                    .replacingOccurrences(of: "\r", with: " ")
-                if value.contains("\n") || value.contains("\r")
-                    || flattened.count > limit {
+                let fit = bomFittedCell(value, availableWidth: width, height: 2.8)
+                if value.contains("\n") || value.contains("\r") || fit.truncated {
                     return true
                 }
+            }
+            let item = row["itemNumber"] as? Int ?? 0
+            if bomFittedCell("\(item)", availableWidth: layout.itemWidth - 2,
+                             height: 2.8).truncated {
+                return true
+            }
+            let quantity = row["quantity"] as? Int ?? 0
+            if bomFittedCell("\(quantity)", availableWidth: layout.quantityWidth - 2,
+                             height: 2.8).truncated {
+                return true
+            }
+        }
+        for header in bomHeaderDescriptors(layout) {
+            if bomFittedCell(header.text, availableWidth: header.width - 2,
+                             height: 2.8).truncated {
+                return true
             }
         }
         return false
@@ -5301,7 +5554,10 @@ public final class CADDrawingService {
     private func bomOutputIncomplete(rowCount: Int,
                                      layout: BOMTableLayout) -> CADDocumentError {
         let reason: String
-        if !layout.requiredColumnsFit {
+        if !layout.zoneFits {
+            reason = "no free sheet area can hold the table clear of the projected "
+                + "drawing and title block"
+        } else if !layout.requiredColumnsFit {
             reason = "the sheet is too narrow for the required item, name, part number, "
                 + "material, revision and quantity columns"
         } else {
@@ -5317,6 +5573,8 @@ public final class CADDrawingService {
                 "capacity": String(layout.capacity),
                 "requiredColumns": "6",
                 "requiredColumnsFit": layout.requiredColumnsFit ? "true" : "false",
+                "tableZone": layout.tableZone,
+                "zoneFits": layout.zoneFits ? "true" : "false",
                 "fullTableFormat": "csv",
                 "nextAction": Self.bomFullTableNextAction,
             ])
@@ -6080,6 +6338,8 @@ public final class CADDrawingService {
 /// One deterministic sheet-space placement for the complete BOM table.
 /// `capacity` counts data rows (the header is extra); `totalRows` includes the
 /// header and, for an incomplete preview, one explicit continuation row.
+/// `zoneFits` is false only when a complete table has no free sheet area clear
+/// of projected content and the title block.
 private nonisolated struct BOMTableLayout {
     let tableWidth: Double
     let rowHeight: Double
@@ -6103,6 +6363,31 @@ private nonisolated struct BOMTableLayout {
     let visibleRows: Int
     let totalRows: Int
     let placedAboveTitleBlock: Bool
+    var tableZone: String = "bottomLeft"
+    /// False only when a complete table has no free sheet zone clear of the
+    /// projected drawing and title block.
+    var zoneFits: Bool = true
+}
+
+private nonisolated struct BOMCellFit {
+    let text: String
+    let truncated: Bool
+}
+
+private nonisolated struct BOMSheetGeometry {
+    let frameMin: SIMD2<Double>
+    let frameMax: SIMD2<Double>
+    let titleBlockWidth: Double
+    let titleBlockMin: SIMD2<Double>
+    let titleBlockMax: SIMD2<Double>
+}
+
+private nonisolated struct BOMPlacementObstacles {
+    let entities: [ProjectedEntity]
+    let textBounds: [(min: SIMD2<Double>, max: SIMD2<Double>)]
+    let titleBlockMin: SIMD2<Double>
+    let titleBlockMax: SIMD2<Double>
+    let maxY: Double
 }
 
 private nonisolated struct CADDrawingServiceError: Error {

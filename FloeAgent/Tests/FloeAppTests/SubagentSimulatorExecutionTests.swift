@@ -3709,7 +3709,7 @@ run_engine() {
         if [ "$state" = "Z" ] || [ -z "$state" ]; then break; fi
         sleep 0.02
     done
-    wait "$pid"; rc=$?
+    if wait "$pid"; then rc=0; else rc=$?; fi
     end=$(date +%s%N)
     echo "FLOE_ENGINE label=$label rc=$rc elapsed_ms=$(( (end - start) / 1000000 )) vmhwm_kb=${peak:-unavailable}"
     return 0

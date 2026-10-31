@@ -2158,8 +2158,8 @@ public final class CADParameterService {
                 + ids.sorted().joined(separator: ", ") + "."
             return Self.fail(
                 "constraint_conflict",
-                "The driving \(requestedKind) conflicts with the sketch's existing constraints/dimensions; "
-                    + "nothing was changed." + suffix
+                "The driving \(requestedKind) conflicts with the sketch's existing constraints/dimensions. "
+                    + "Nothing was changed." + suffix
                     + " Remove or relax the conflicting relationship first.")
         }
         let solved = SketchSolverBridge.solveDimensionEdit(

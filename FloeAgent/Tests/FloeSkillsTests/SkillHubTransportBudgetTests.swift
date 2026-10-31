@@ -25,8 +25,17 @@ struct SkillHubTransportBudgetTests {
     }
 
     @Test func curatedChannelsHaveBoundedFeedAndArchiveBudgets() {
-        for path in ["catalog.json", "android/catalog.json"] {
+        for path in [
+            "catalog.json", "android/catalog.json",
+            "catalog-full.json", "android/catalog-full.json",
+        ] {
             #expect(SkillHubTransportBudget.maximumBytes(owner: "JiangNanGenius", repository: "floe-skill-hub", path: path) == 4_194_304)
+        }
+        for path in [
+            "catalog-full.json.bak", "catalog-full.JSON", "extra/catalog-full.json",
+            "android/catalog-full.json/child", "catalog.json/child",
+        ] {
+            #expect(SkillHubTransportBudget.maximumBytes(owner: "JiangNanGenius", repository: "floe-skill-hub", path: path) == 2_097_152)
         }
         for path in ["packages/example/1.0.0/example.zip", "android/packages/example/1.0.0/example.zip"] {
             #expect(SkillHubTransportBudget.maximumBytes(owner: "JiangNanGenius", repository: "floe-skill-hub", path: path) == 8_388_608)

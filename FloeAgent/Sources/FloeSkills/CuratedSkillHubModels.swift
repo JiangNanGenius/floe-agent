@@ -650,8 +650,12 @@ enum CuratedSkillEntryDecoder {
             throw CuratedSkillHubFailure.feed("\(path).id is not a SkillIdentifier-grammar identifier")
         }
         let planNumber = try CuratedSkillStrictJSON.integer(object["planNumber"], path: "\(path).planNumber")
-        guard (1...43).contains(planNumber) else {
-            throw CuratedSkillHubFailure.feed("\(path).planNumber must be a 1...43 row")
+        // Plan numbers are unique per feed, not a 43-row limit. The feed-wide
+        // bound is `CuratedSkillHub.maximumEntries`; uniqueness is enforced by
+        // the feed decoder across every entry. Legacy feeds remain valid.
+        guard (1...CuratedSkillHub.maximumEntries).contains(planNumber) else {
+            throw CuratedSkillHubFailure.feed(
+                "\(path).planNumber must be a 1...\(CuratedSkillHub.maximumEntries) row")
         }
         guard let kind = CuratedSkillEntryKind(
             rawValue: try CuratedSkillStrictJSON.string(object["kind"], path: "\(path).kind")) else {

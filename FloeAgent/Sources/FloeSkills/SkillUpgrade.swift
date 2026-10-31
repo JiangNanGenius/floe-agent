@@ -99,7 +99,17 @@ public struct SkillUpgradeCandidate: Sendable {
            installed.package.canonicalSHA256 != proposed.package.canonicalSHA256 {
             throw CuratedSkillHubFailure.immutableVersion("A published version cannot change its package bytes")
         }
-        source = try CuratedSkillHub.source(channel: receipt.channel)
+        // Keep the exact fixed layout that was actually verified: legacy for
+        // old receipts, full for the expanded production feed. Synthesizing a
+        // different layout here would make a new install point at a catalog
+        // that was not the one it read.
+        let receiptLayout = receipt.catalogLayout ?? .legacy
+        guard staged.source.path == CuratedSkillHub.catalogPath(
+            for: receipt.channel, layout: receiptLayout) else {
+            throw CuratedSkillHubFailure.source(
+                "staged source layout drifted from the verified receipt")
+        }
+        source = staged.source
         commit = receipt.publicationCommit
         releaseNotes = [:]
         expectedInstalledDigest = installed.package.canonicalSHA256
