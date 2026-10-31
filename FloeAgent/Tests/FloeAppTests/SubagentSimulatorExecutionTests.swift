@@ -7560,4 +7560,660 @@ extension SubagentSimulatorExecutionTests {
     }
 }
 
+// ==== Impeccable current signed installation preparation ====
+// Additive, opt-in preparation for
+// `impeccableCurrentSignedSkillGuestQualification`. It never seeds a store
+// row, receipt, trust key or local package bytes: a missing install is created
+// through the REAL `skill.install(source:"hub")` tool and the existing
+// `SkillsCenter.installHubSkill` verified catalog/review/digest/install
+// transaction under a REAL runtime `TaskFullAccessPolicy` grant (the runtime mints
+// the single-use approval; nothing is read from package text). An exact current
+// install is reused through that same production entry (`.alreadyInstalled`)
+// without rewriting a byte. A disabled, modified, older, non-official or
+// otherwise conflicting row is reported and left untouched BEFORE dispatch.
+//
+// Opt-in, fail-closed:
+//   FLOE_IMPECCABLE_CURRENT_INSTALL_PREPARATION=1
+//
+// The human "Get" service (`SkillHubInstallCoordinator`) is the other
+// existing production entry for the same verified
+// `SkillsCenter.installHubSkill` transaction. This preparation deliberately
+// uses the direct `skill.install` tool path because the task requires a real
+// runtime-issued full-access approval contract and a typed receipt; it is not
+// a bypass, and it never fabricates approval, a row, a receipt or trust.
+//
+// The test uses the canonical App data (Application Support/FloeAgent/Skills),
+// the compiled production Hub key and the live signed iOS catalog. The current
+// signed entry identity is pinned below: a changed feed/entry fails actionably
+// instead of installing a different package or claiming the pinned guest
+// acceptance. The synthetic engine-contract inputs used by the guest test are
+// unrelated to this installation preparation and are not counted as the
+// missing original user page.
+
+private enum ImpeccableCurrentFeedPins {
+    /// Canonical digest of the reviewed 1.1.1 package files.
+    static let contentDigest = "62dabffefe62c4bd2cf96a24e7354222312b597c38d3026c7e1a4ba1437c1797"
+    /// Exact signed archive SHA-256 and size.
+    static let packageSHA256 = "54566f6bb469bf541f74a7157a1397b3343247b50d39ef13d53388595a46f6f0"
+    static let packageBytes = 492_059
+    /// Exact signed review-record SHA-256.
+    static let reviewSHA256 = "e3a997238a29a38d077b43e218b6c52940f08a365851fd53cd2e538912d1ee0b"
+    /// Pinned engine target triple (the descriptor's own target identity).
+    static let engineTriple = "riscv64gc-unknown-linux-musl"
+}
+
+private struct ImpeccableCurrentInstalledState {
+    let row: PersistedSkill
+    let receipt: CuratedSkillHub.Receipt
+    let descriptor: SkillRuntimeDependencyDescriptor
+    let launcherSHA256: String
+    let fileFingerprint: [String: String]
+    let declaredCapabilities: [String]
+}
+
+extension SubagentSimulatorExecutionTests {
+
+    /// Loads the CURRENT signed iOS publication through the production loader
+    /// (unchanged exact-byte Ed25519 verification with the compiled key,
+    /// immutable commit pinning and strict feed decode). No cache write and no
+    /// state mutation: this is the same production reader, with `store: nil`.
+    private func impeccableCurrentLoadLivePublication(
+        app: AppEnvironment
+    ) async throws -> CuratedSkillHub.Publication {
+        let connector = app.sourceControlCenter
+        return try await SkillsCenter.loadCuratedPublication(
+            channel: .ios, mode: .production, ref: "main",
+            resolve: { source in
+                let bytes = try await connector.skillRepositoryData(
+                    owner: source.owner, repository: source.repository,
+                    ref: source.ref, path: nil, usesConnectorCredential: false)
+                struct Commit: Decodable { let sha: String }
+                let commit: String
+                do { commit = try JSONDecoder().decode(Commit.self, from: bytes).sha }
+                catch {
+                    throw FloeError.validationFailed(
+                        "The curated Hub main ref resolved to malformed commit JSON: \(error)")
+                }
+                guard commit.count == 40, commit.allSatisfy(\.isHexDigit) else {
+                    throw FloeError.validationFailed(
+                        "The curated Hub main ref did not resolve to one immutable 40-hex commit")
+                }
+                return commit
+            },
+            fetch: { source, commit, path in
+                try await connector.skillRepositoryData(
+                    owner: source.owner, repository: source.repository,
+                    ref: commit, path: path, usesConnectorCredential: false)
+            })
+    }
+
+    /// Read-only verification of the installed row and exact package bytes.
+    /// Throws a readable, fail-closed state for every non-current/unsafe case;
+    /// nothing in a failed inspect is repaired, enabled, deleted or replaced.
+    private func impeccableCurrentInspectInstalled(
+        app: AppEnvironment,
+        expectedDigest: String
+    ) async throws -> ImpeccableCurrentInstalledState? {
+        let rows = try await app.skillStore.all()
+        guard let row = rows.first(where: { $0.id == ImpeccableCurrentPins.skillID }) else {
+            return nil
+        }
+        guard row.status == "enabled" else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=disabled id=\(row.id) status=\(row.status) — the user's disabled choice wins; this preparation will not enable or replace it")
+        }
+        guard row.version == ImpeccableCurrentPins.entryVersion else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=version-conflict id=\(row.id) installed=\(row.version) expected=\(ImpeccableCurrentPins.entryVersion) — this preparation will not overwrite an existing different revision")
+        }
+        guard row.rewrittenDigest == expectedDigest else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=conflict id=\(row.id) installedDigest=\(row.rewrittenDigest) currentSignedDigest=\(expectedDigest) — the installed content is not the current signed entry; it was left untouched")
+        }
+        guard let receipt = SkillsCenter.curatedReceipt(for: row) else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=modified id=\(row.id) — the row has no curated Hub receipt; it is not a current signed official installation and was left untouched")
+        }
+        guard receipt.entryID == row.id,
+              receipt.entryVersion == row.version,
+              receipt.contentDigest == row.rewrittenDigest,
+              receipt.feedStatus == .production,
+              receipt.reviewDecision == .approve,
+              receipt.feedSignatureKeyID == CuratedSkillHub.productionKeyID,
+              receipt.reviewKeyID == CuratedSkillHub.productionKeyID,
+              receipt.hubRepository == CuratedSkillHub.hubRepository,
+              receipt.publicationCommit.count == 40,
+              receipt.publicationCommit.allSatisfy(\.isHexDigit) else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=modified id=\(row.id) — the row/receipt identity is not the production signed/approved Hub installation; it was left untouched")
+        }
+        guard receipt.packageSHA256 == ImpeccableCurrentFeedPins.packageSHA256,
+              receipt.packageSize == ImpeccableCurrentFeedPins.packageBytes,
+              receipt.reviewSHA256 == ImpeccableCurrentFeedPins.reviewSHA256 else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=conflict id=\(row.id) — the installed receipt is not the current pinned signed package; it was left untouched")
+        }
+        let installedRoot = try impeccableCurrentSkillRoot()
+            .appendingPathComponent(ImpeccableCurrentPins.skillID, isDirectory: true)
+        let rootValues = try? installedRoot.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard rootValues?.isDirectory == true, rootValues?.isSymbolicLink != true else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=modified id=\(row.id) path=\(installedRoot.path) — the installation root is not a real directory; preserved for diagnosis")
+        }
+        let snapshot: SkillContentSnapshot
+        do {
+            snapshot = try SkillContentSnapshot(
+                root: installedRoot, expectedDigest: row.rewrittenDigest)
+        } catch {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=modified id=\(row.id) path=\(installedRoot.path) — the installed bytes do not hash to the recorded digest (\(error)); preserved for diagnosis")
+        }
+        guard snapshot.files[SkillDependency.packagePath] == nil else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=modified id=\(row.id) — the current signed package unexpectedly carries references/dependencies.json")
+        }
+        guard let descriptorBytes = snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath] else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=modified id=\(row.id) — the installed package has no references/engine-dependency.json")
+        }
+        let descriptor: SkillRuntimeDependencyDescriptor
+        do {
+            descriptor = try SkillRuntimeDependency.decode(descriptorBytes)
+        } catch {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=modified id=\(row.id) — the installed engine descriptor is not strict-decodable (\(error))")
+        }
+        guard descriptor.componentID == ImpeccableCurrentPins.componentID,
+              descriptor.componentVersion == ImpeccableCurrentPins.componentVersion,
+              descriptor.target.triple == ImpeccableCurrentFeedPins.engineTriple,
+              descriptor.artifact.size == ImpeccableCurrentPins.engineBytes,
+              descriptor.artifact.sha256 == ImpeccableCurrentPins.engineSHA256,
+              descriptor.captureContract.version == 1,
+              descriptor.captureContract.sha256 == ImpeccableCurrentPins.contractSHA256 else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=modified id=\(row.id) — the signed descriptor is not the pinned current component/engine/contract")
+        }
+        guard let launcher = snapshot.files["scripts/floe-impeccable.sh"],
+              launcher.count == ImpeccableCurrentPins.launcherBytes,
+              launcher.starts(with: Data("#!/bin/sh".utf8)) else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=modified id=\(row.id) — the installed launcher is not the pinned executable script bytes")
+        }
+        let declared = snapshot.package.manifest.capabilities
+        let grants = try await app.skillStore.allowedCapabilities(skillID: row.id)
+        let missing = declared.filter { !grants.contains($0) }.sorted()
+        guard missing.isEmpty else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=not-ready id=\(row.id) reason=declared-capabilities-not-granted missing=\(missing.joined(separator: ",")) — the user's permission state was preserved; it does not cover the reviewed package ceiling")
+        }
+        return ImpeccableCurrentInstalledState(
+            row: row,
+            receipt: receipt,
+            descriptor: descriptor,
+            launcherSHA256: FloeDigest.sha256Hex(launcher),
+            fileFingerprint: snapshot.files.mapValues { FloeDigest.sha256Hex($0) },
+            declaredCapabilities: declared)
+    }
+
+    /// One deterministic per-row fingerprint for the "other installs stay
+    /// untouched" check. The target row uses the full projection; unrelated
+    /// rows compare identity, status and content digest only.
+    private func impeccableCurrentRowFingerprint(_ row: PersistedSkill, full: Bool) -> String {
+        var parts = [row.id, row.version, row.status, row.rewrittenDigest]
+        if full {
+            parts.append(row.declaredCapabilitiesJSON)
+            parts.append(row.effectiveCapabilitiesJSON)
+            parts.append(row.compatibilityReportJSON)
+            parts.append(row.sourceURL ?? "")
+            parts.append(row.sourceTrackingJSON ?? "")
+            parts.append(String(row.updatedAt.timeIntervalSince1970))
+        }
+        return parts.joined(separator: "\u{1F}")
+    }
+
+    /// Parses the bounded `key=value` fields of the real skill.install Hub
+    /// summary. The durable row/receipt remains the authority; this is only
+    /// corroborating tool evidence.
+    private func impeccableCurrentToolFields(_ summary: String) -> [String: String] {
+        var fields: [String: String] = [:]
+        for token in summary.split(whereSeparator: { $0 == " " || $0 == "\n" }) {
+            let pieces = token.split(separator: "=", maxSplits: 1)
+            guard pieces.count == 2 else { continue }
+            fields[String(pieces[0])] = String(pieces[1])
+        }
+        return fields
+    }
+
+    /// Advisory read-only state of the app-owned component cache. Absent is
+    /// expected before the guest test's exact seed; a corrupt entry is
+    /// preserved and reported, never repaired or overwritten here.
+    private func impeccableCurrentEngineCacheState(
+        _ descriptor: SkillRuntimeDependencyDescriptor
+    ) throws -> String {
+        try impeccableCurrentEngineCacheState(
+            componentID: descriptor.componentID,
+            componentVersion: descriptor.componentVersion,
+            triple: descriptor.target.triple)
+    }
+
+    private func impeccableCurrentEngineCacheState(
+        componentID: String,
+        componentVersion: String,
+        triple: String
+    ) throws -> String {
+        let cacheRoot = try FloeArtifactStore.root()
+            .appendingPathComponent("RuntimeComponents", isDirectory: true)
+        let target = cacheRoot
+            .appendingPathComponent(componentID, isDirectory: true)
+            .appendingPathComponent(componentVersion, isDirectory: true)
+            .appendingPathComponent(triple, isDirectory: true)
+            .appendingPathComponent(SkillRuntimeDependency.frozenEngineFileName, isDirectory: false)
+        if (try? FileManager.default.destinationOfSymbolicLink(atPath: target.path)) != nil {
+            return "non-regular-preserved"
+        }
+        guard FileManager.default.fileExists(atPath: target.path) else { return "absent" }
+        let values = try? target.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values?.isRegularFile == true, values?.isSymbolicLink != true else {
+            return "non-regular-preserved"
+        }
+        guard let bytes = try? Data(contentsOf: target), bytes.count <= 16 * 1_048_576 else {
+            return "unreadable-preserved"
+        }
+        guard bytes.count == ImpeccableCurrentPins.engineBytes,
+              FloeDigest.sha256Hex(bytes) == ImpeccableCurrentPins.engineSHA256 else {
+            return "mismatch-preserved"
+        }
+        return "verified"
+    }
+
+    /// Bounded dispatch of the real `skill.install` child call. The timeout
+    /// task cancels THIS call's runtime-issued cancellation token; the parent
+    /// runtime/task are separately cancelled by `finish()`. A missing result is
+    /// a readable failure, never an invented success.
+    private func impeccableCurrentBoundedInstall(
+        runtime: FloeAgentRuntime,
+        call: ToolCall,
+        identity: ChildExecutionIdentity,
+        context: ToolContext,
+        seconds: TimeInterval
+    ) async throws -> ToolResult {
+        let result: ToolResult? = await withTaskGroup(of: ToolResult?.self) { group in
+            group.addTask {
+                await runtime.dispatchChildTool(call, identity: identity, childContext: context)
+            }
+            group.addTask {
+                do { try await Task.sleep(for: .seconds(Int(seconds))) }
+                catch { return nil }
+                context.cancellation.cancel()
+                return nil
+            }
+            if let outer = await group.next(), let value = outer {
+                group.cancelAll()
+                return value
+            }
+            group.cancelAll()
+            return nil
+        }
+        guard let result else {
+            throw FloeError.validationFailed(
+                "FLOE_IMPECCABLE_INSTALL_STATE=timeout phase=skill.install seconds=\(Int(seconds)) — the bounded install call did not settle; cancellation was requested")
+        }
+        return result
+    }
+
+    /// The same runtime shape the existing same-file guest qualifications use,
+    /// with the app's per-task full-access policy instead of a host-scoped
+    /// full-control grant. This is the real runtime that mints the single-use
+    /// call approval; the test never supplies an approvalGrantID itself.
+    private func makeImpeccableCurrentInstallRuntime(
+        root: URL,
+        conversationID: UUID,
+        runID: UUID,
+        adapter: any ProviderAdapter
+    ) -> FloeAgentRuntime {
+        let provider = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://child-guest.example/v1")!,
+            displayName: "Child Guest Provider")
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "child-guest-model",
+            displayName: "Child Guest Model",
+            limits: ModelLimits(contextTokens: 8_192, maxOutputTokens: 1_024),
+            capabilities: [.tools])
+        return FloeAgentRuntime(
+            configuration: FloeAgentRuntime.Configuration(
+                conversationID: conversationID,
+                provider: provider,
+                model: model,
+                allowedToolNames: Set(["skill.install"]),
+                workspaceRootURL: root,
+                environmentID: nil,
+                environmentLifecycleWait: 30),
+            adapter: adapter,
+            policy: TaskFullAccessPolicy(),
+            executor: CatalogToolExecutor(),
+            auditSink: DiscardingAuditSink(),
+            checkpointStore: EphemeralCheckpointStore(),
+            runID: runID)
+    }
+
+    @Test(
+        "Impeccable current signed Hub installation preparation installs the exact enabled production package through the real skill.install path or reuses it unchanged",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_IMPECCABLE_CURRENT_INSTALL_PREPARATION"] == "1")
+    )
+    func impeccableCurrentSignedSkillInstallPreparation() async throws {
+        let app = try await appQualificationEnvironment()
+        let root = try makeWorkspaceRoot()
+        let conversationID = UUID()
+        let runID = UUID()
+        var recordsCreated = false
+        var ownedRuntime: FloeAgentRuntime?
+        var parentHold: CancellationToken?
+        var parentTask: Task<Void, Error>?
+        var phase = "start"
+        func finish() async {
+            await skillHubCleanup(
+                runtime: ownedRuntime, parentHold: parentHold, parentTask: parentTask,
+                jobs: nil, jobIDs: [], environmentID: nil, root: root,
+                conversationID: recordsCreated ? conversationID : nil, app: app)
+        }
+        do {
+            phase = "catalog"
+            print("FLOE_IMPECCABLE_INSTALL_PHASE=catalog")
+            let publication = try await impeccableCurrentLoadLivePublication(app: app)
+            switch publication.mode {
+            case .production:
+                break
+            case .fixtureTestOnly:
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=catalog-untrusted — the loader returned fixture test trust; a fixture feed can never prepare a production install")
+            }
+            guard publication.verifiedFeed.keyID == CuratedSkillHub.productionKeyID else {
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=catalog-untrusted keyID=\(publication.verifiedFeed.keyID) — the live publication did not verify under the compiled production key")
+            }
+            guard publication.feed.feedStatus == .production,
+                  publication.feed.channel == .ios,
+                  publication.feed.hubRepository == CuratedSkillHub.hubRepository else {
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=catalog-untrusted channel=\(publication.feed.channel.rawValue) status=\(publication.feed.feedStatus.rawValue) hub=\(publication.feed.hubRepository)")
+            }
+            let appVersion = Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+            guard let card = CuratedSkillHub.cards(
+                feed: publication.feed, mode: .production, appVersion: appVersion
+            ).first(where: { $0.entry.id == ImpeccableCurrentPins.skillID }) else {
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=feed-entry-missing id=\(ImpeccableCurrentPins.skillID) commit=\(publication.publicationCommit) appVersion=\(appVersion)")
+            }
+            switch card.offer {
+            case .installable:
+                break
+            case .simulatedFixture:
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=catalog-untrusted id=\(ImpeccableCurrentPins.skillID) — a fixture offer can never prepare a production install")
+            case .incompatibleApp(let minimum):
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=app-version appVersion=\(appVersion) minimum=\(minimum) — this build cannot install the current signed entry")
+            case .unavailable(let reason):
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=feed-entry-unavailable id=\(ImpeccableCurrentPins.skillID) reason=\(reason)")
+            }
+            let entry = card.entry
+            guard entry.version == ImpeccableCurrentPins.entryVersion,
+                  entry.status.published, entry.status.reviewed, entry.status.qualified,
+                  entry.installOffer == .qualified,
+                  let packageBinding = entry.package,
+                  packageBinding.contentDigest.lowercased() == ImpeccableCurrentFeedPins.contentDigest,
+                  packageBinding.sha256.lowercased() == ImpeccableCurrentFeedPins.packageSHA256,
+                  packageBinding.size == ImpeccableCurrentFeedPins.packageBytes,
+                  let reviewBinding = entry.review,
+                  reviewBinding.sha256.lowercased() == ImpeccableCurrentFeedPins.reviewSHA256,
+                  reviewBinding.keyID == CuratedSkillHub.productionKeyID else {
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=feed-drift id=\(ImpeccableCurrentPins.skillID) commit=\(publication.publicationCommit) actualVersion=\(entry.version) actualContentDigest=\(entry.package?.contentDigest ?? "nil") actualPackageSHA256=\(entry.package?.sha256 ?? "nil") actualPackageBytes=\(String(describing: entry.package?.size)) actualReviewSHA256=\(entry.review?.sha256 ?? "nil") expectedVersion=\(ImpeccableCurrentPins.entryVersion) expectedContentDigest=\(ImpeccableCurrentFeedPins.contentDigest)")
+            }
+            let liveContentDigest = packageBinding.contentDigest.lowercased()
+            let livePackageSHA256 = packageBinding.sha256.lowercased()
+            let liveReviewSHA256 = reviewBinding.sha256.lowercased()
+            print("FLOE_IMPECCABLE_INSTALL_FEED commit=\(publication.publicationCommit) catalogSHA256=\(publication.verifiedFeed.catalogSHA256) entryVersion=\(entry.version) contentDigest=\(liveContentDigest) packageSHA256=\(livePackageSHA256) packageBytes=\(packageBinding.size) reviewSHA256=\(liveReviewSHA256) sourceCommit=\(publication.auditedSourceCommit ?? "none") appVersion=\(appVersion)")
+
+            phase = "seed"
+            print("FLOE_IMPECCABLE_INSTALL_PHASE=seed")
+            // Join the app's own launch seeding before taking snapshots or
+            // dispatching. This is the existing coalescing seed service, not a
+            // new installer; it prevents a concurrent bundled-seed write from
+            // being mistaken for this installation's work.
+            await app.skillsCenter.seedBuiltinDomainSkills()
+
+            phase = "precheck"
+            print("FLOE_IMPECCABLE_INSTALL_PHASE=precheck")
+            let rowsBefore = try await app.skillStore.all()
+            let unrelatedBefore = Dictionary(uniqueKeysWithValues: rowsBefore
+                .filter { $0.id != ImpeccableCurrentPins.skillID }
+                .map { ($0.id, impeccableCurrentRowFingerprint($0, full: false)) })
+            let wasRemoved = try await app.skillStore.wasExplicitlyRemoved(
+                id: ImpeccableCurrentPins.skillID)
+            guard !wasRemoved else {
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=removed id=\(ImpeccableCurrentPins.skillID) — the user explicitly removed this skill; that choice wins and nothing is reinstalled")
+            }
+            let existing = try await impeccableCurrentInspectInstalled(
+                app: app, expectedDigest: liveContentDigest)
+            if let existing {
+                print("FLOE_IMPECCABLE_INSTALL_STATE=reuse-eligible id=\(existing.row.id) version=\(existing.row.version) digest=\(existing.row.rewrittenDigest) publication=\(existing.receipt.publicationCommit) rowUpdatedAt=\(existing.row.updatedAt.timeIntervalSince1970)")
+            } else {
+                let installedRoot = try impeccableCurrentSkillRoot()
+                    .appendingPathComponent(ImpeccableCurrentPins.skillID, isDirectory: true)
+                if FileManager.default.fileExists(atPath: installedRoot.path) {
+                    throw FloeError.validationFailed(
+                        "FLOE_IMPECCABLE_INSTALL_STATE=orphan-install-directory path=\(installedRoot.path) — no skill row exists but files are present; preserved and not overwritten")
+                }
+                print("FLOE_IMPECCABLE_INSTALL_STATE=missing id=\(ImpeccableCurrentPins.skillID)")
+            }
+
+            let center = app.skillsCenter
+            let idleDeadline = Date().addingTimeInterval(60)
+            while Date() < idleDeadline {
+                if !center.isWorking, !center.updates.isRunning,
+                   center.pendingUpgrade == nil, center.pendingInstallation == nil,
+                   !center.hasLiveHubInstall {
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            guard !center.isWorking, !center.updates.isRunning,
+                  center.pendingUpgrade == nil, center.pendingInstallation == nil,
+                  !center.hasLiveHubInstall else {
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=busy — another SkillsCenter operation is active; no install was attempted")
+            }
+
+            // Preserve a damaged/planted app-owned engine cache: the real
+            // install path's production prefetch would replace it, but Root's
+            // guest-test correction deliberately keeps that evidence for
+            // diagnosis. Absent is fine (the production prefetch or the guest
+            // test's exact seed may fill it); an exact entry is reused.
+            let cachePreflight = try impeccableCurrentEngineCacheState(
+                componentID: ImpeccableCurrentPins.componentID,
+                componentVersion: ImpeccableCurrentPins.componentVersion,
+                triple: ImpeccableCurrentFeedPins.engineTriple)
+            guard cachePreflight == "absent" || cachePreflight == "verified" else {
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=cache-preserved cache=\(cachePreflight) component=\(ImpeccableCurrentPins.componentID)@\(ImpeccableCurrentPins.componentVersion) — the app-owned engine cache is not the exact pinned artifact; it is preserved for diagnosis and no install was attempted")
+            }
+            print("FLOE_IMPECCABLE_INSTALL_ENGINE_CACHE_PREFLIGHT=\(cachePreflight)")
+
+            phase = "runtime"
+            print("FLOE_IMPECCABLE_INSTALL_PHASE=runtime")
+            try await skillHubCreateRunRows(
+                app: app, conversationID: conversationID, runID: runID,
+                title: "Impeccable current signed Hub installation preparation",
+                goal: "Prepare the exact current signed Hub installation through skill.install; no model")
+            recordsCreated = true
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeImpeccableCurrentInstallRuntime(
+                root: root, conversationID: conversationID, runID: runID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task {
+                try await runtime.start(
+                    goal: "Prepare the current signed Impeccable installation through the real Hub install path")
+            }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before the signed Hub installation preparation")
+            guard CatalogToolExecutor().descriptor(named: "skill.install") != nil else {
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=tool-unavailable tool=skill.install — the production install tool is not registered in this App build")
+            }
+
+            phase = "install"
+            print("FLOE_IMPECCABLE_INSTALL_PHASE=install")
+            print("FLOE_IMPECCABLE_INSTALL_APPROVAL=policy:full-access runtimeGrant=single-use tool=skill.install source=hub")
+            var arguments: [String: Any] = [
+                "source": "hub",
+                "id": ImpeccableCurrentPins.skillID,
+            ]
+            if existing == nil {
+                arguments["publicationCommit"] = publication.publicationCommit
+            }
+            let call = try toolCall(
+                id: "impeccable-current-install", toolName: "skill.install",
+                arguments: try Self.json(arguments))
+            let context = ToolContext(
+                runID: runID, scope: .local, activeSkillIDs: [],
+                allowedToolNames: Set(["skill.install"]), workspaceRootURL: root,
+                cancellation: CancellationToken(), conversationID: conversationID)
+            let identity = ChildExecutionIdentity(
+                parentRunID: runID, rootTaskID: conversationID,
+                delegateCallID: "impeccable-current-install-preparation")
+            let result = try await impeccableCurrentBoundedInstall(
+                runtime: runtime, call: call, identity: identity,
+                context: context, seconds: 300)
+            print("FLOE_IMPECCABLE_INSTALL_PHASE=tool-result status=\(result.status.rawValue)")
+            guard result.status == .ok else {
+                let text = result.outputSummary
+                if text.contains("status=user-choice-blocked") {
+                    throw FloeError.validationFailed(
+                        "FLOE_IMPECCABLE_INSTALL_STATE=user-choice-blocked — the existing disabled/removed/edited choice won and nothing was installed: \(text.prefix(600))")
+                }
+                if text.contains("status=review-declined") {
+                    throw FloeError.validationFailed(
+                        "FLOE_IMPECCABLE_INSTALL_STATE=review-declined — the required review was declined; nothing was installed: \(text.prefix(600))")
+                }
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=tool-error status=\(result.status.rawValue) output=\(text.prefix(600))")
+            }
+            let fields = impeccableCurrentToolFields(result.outputSummary)
+            let expectedToolStatus = existing == nil ? "installed" : "alreadyInstalled"
+            guard fields["status"] == expectedToolStatus else {
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=tool-status-mismatch expected=\(expectedToolStatus) actual=\(fields["status"] ?? "nil") output=\(result.outputSummary.prefix(600))")
+            }
+            guard fields["version"] == ImpeccableCurrentPins.entryVersion,
+                  fields["contentDigest"] == liveContentDigest,
+                  fields["packageSHA256"] == livePackageSHA256,
+                  fields["reviewDigest"] == liveReviewSHA256 else {
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=tool-receipt-mismatch version=\(fields["version"] ?? "nil") contentDigest=\(fields["contentDigest"] ?? "nil") packageSHA256=\(fields["packageSHA256"] ?? "nil") reviewDigest=\(fields["reviewDigest"] ?? "nil") output=\(result.outputSummary.prefix(600))")
+            }
+            if existing == nil {
+                guard fields["publicationCommit"] == publication.publicationCommit else {
+                    throw FloeError.validationFailed(
+                        "FLOE_IMPECCABLE_INSTALL_STATE=tool-receipt-mismatch expectedPublication=\(publication.publicationCommit) actual=\(fields["publicationCommit"] ?? "nil")")
+                }
+                guard fields["catalogDigest"] == publication.verifiedFeed.catalogSHA256 else {
+                    throw FloeError.validationFailed(
+                        "FLOE_IMPECCABLE_INSTALL_STATE=tool-receipt-mismatch expectedCatalog=\(publication.verifiedFeed.catalogSHA256) actual=\(fields["catalogDigest"] ?? "nil")")
+                }
+                guard fields["sourceCommit"] == publication.auditedSourceCommit else {
+                    throw FloeError.validationFailed(
+                        "FLOE_IMPECCABLE_INSTALL_STATE=tool-receipt-mismatch expectedSource=\(publication.auditedSourceCommit ?? "none") actual=\(fields["sourceCommit"] ?? "nil")")
+                }
+            }
+            print("FLOE_IMPECCABLE_INSTALL_TOOL status=\(fields["status"] ?? "nil") version=\(fields["version"] ?? "nil") contentDigest=\(fields["contentDigest"] ?? "nil") packageSHA256=\(fields["packageSHA256"] ?? "nil") reviewDigest=\(fields["reviewDigest"] ?? "nil") publication=\(fields["publicationCommit"] ?? "nil") source=\(fields["sourceCommit"] ?? "nil")")
+            print("FLOE_IMPECCABLE_INSTALL_REVIEWED capabilities=\(fields["capabilities"] ?? "nil") tools=\(fields["tools"] ?? "nil")")
+
+            phase = "readback"
+            print("FLOE_IMPECCABLE_INSTALL_PHASE=readback")
+            let rowsAfter = try await app.skillStore.all()
+            let unrelatedAfter = Dictionary(uniqueKeysWithValues: rowsAfter
+                .filter { $0.id != ImpeccableCurrentPins.skillID }
+                .map { ($0.id, impeccableCurrentRowFingerprint($0, full: false)) })
+            let disappeared = Set(unrelatedBefore.keys)
+                .subtracting(unrelatedAfter.keys).sorted()
+            let changedAll = unrelatedBefore.keys
+                .filter { unrelatedAfter[$0] != nil && unrelatedBefore[$0] != unrelatedAfter[$0] }
+                .sorted()
+            // App-bundled guides are owned by the launch seeder; a concurrent
+            // seed update is production startup work, not this install.
+            let bundledSeedIDs = Set(BundledDomainSkills.all.map(\.id))
+            let bundledChanged = changedAll.filter { bundledSeedIDs.contains($0) }
+            let changed = changedAll.filter { !bundledSeedIDs.contains($0) }
+            let appeared = Set(unrelatedAfter.keys)
+                .subtracting(unrelatedBefore.keys).sorted()
+            guard disappeared.isEmpty, changed.isEmpty else {
+                throw FloeError.validationFailed(
+                    "FLOE_IMPECCABLE_INSTALL_STATE=unrelated-change disappeared=\(disappeared.joined(separator: ",")) changed=\(changed.joined(separator: ",")) — installation preparation must not modify unrelated skills")
+            }
+            if !bundledChanged.isEmpty {
+                print("FLOE_IMPECCABLE_INSTALL_UNRELATED_BUNDLED ids=\(bundledChanged.joined(separator: ",")) — launch seeder update, not this install")
+            }
+            if !appeared.isEmpty {
+                print("FLOE_IMPECCABLE_INSTALL_UNRELATED_NEW ids=\(appeared.joined(separator: ",")) — added by unrelated app startup/background work, not by this install")
+            }
+            let verifiedOptional = try await impeccableCurrentInspectInstalled(
+                app: app, expectedDigest: liveContentDigest)
+            let verified = try #require(
+                verifiedOptional,
+                "The install call completed but the exact current signed row/snapshot could not be read back")
+            if let existing {
+                guard verified.row.updatedAt == existing.row.updatedAt,
+                      verified.row.createdAt == existing.row.createdAt,
+                      verified.row.compatibilityReportJSON == existing.row.compatibilityReportJSON,
+                      verified.row.skillMarkdown == existing.row.skillMarkdown,
+                      verified.row.manifestJSON == existing.row.manifestJSON,
+                      verified.row.sourceTrackingJSON == existing.row.sourceTrackingJSON,
+                      verified.row.rewrittenDigest == existing.row.rewrittenDigest,
+                      verified.receipt.publicationCommit == existing.receipt.publicationCommit,
+                      verified.fileFingerprint == existing.fileFingerprint,
+                      verified.launcherSHA256 == existing.launcherSHA256 else {
+                    throw FloeError.validationFailed(
+                        "FLOE_IMPECCABLE_INSTALL_STATE=rewritten id=\(verified.row.id) — an exact current install was not reused unchanged")
+                }
+                print("FLOE_IMPECCABLE_INSTALL_REUSED id=\(verified.row.id) version=\(verified.row.version) digest=\(verified.row.rewrittenDigest) publication=\(verified.receipt.publicationCommit) unchanged=true files=\(verified.fileFingerprint.count)")
+            } else {
+                guard verified.receipt.publicationCommit == publication.publicationCommit,
+                      verified.receipt.contentDigest == ImpeccableCurrentFeedPins.contentDigest,
+                      verified.receipt.packageSHA256 == ImpeccableCurrentFeedPins.packageSHA256,
+                      verified.receipt.packageSize == ImpeccableCurrentFeedPins.packageBytes,
+                      verified.receipt.reviewSHA256 == ImpeccableCurrentFeedPins.reviewSHA256,
+                      verified.row.status == "enabled" else {
+                    throw FloeError.validationFailed(
+                        "FLOE_IMPECCABLE_INSTALL_STATE=readback-mismatch id=\(verified.row.id) version=\(verified.row.version) digest=\(verified.row.rewrittenDigest) publication=\(verified.receipt.publicationCommit) status=\(verified.row.status)")
+                }
+                print("FLOE_IMPECCABLE_INSTALL_CREATED id=\(verified.row.id) version=\(verified.row.version) digest=\(verified.row.rewrittenDigest) publication=\(verified.receipt.publicationCommit) files=\(verified.fileFingerprint.count)")
+            }
+            let cache = try impeccableCurrentEngineCacheState(verified.descriptor)
+            print("FLOE_IMPECCABLE_INSTALL_ENGINE_CACHE=\(cache) component=\(verified.descriptor.componentID)@\(verified.descriptor.componentVersion)")
+            print("FLOE_IMPECCABLE_INSTALL_GRANTS declared=\(verified.declaredCapabilities.joined(separator: ","))")
+            print("FLOE_IMPECCABLE_INSTALL_PREPARED id=\(verified.row.id) mode=\(existing == nil ? "created" : "reused") version=\(verified.row.version) digest=\(verified.row.rewrittenDigest) publication=\(verified.receipt.publicationCommit)")
+            phase = "done"
+            print("FLOE_IMPECCABLE_INSTALL_PHASE=done")
+            await finish()
+        } catch {
+            print("FLOE_IMPECCABLE_INSTALL_FAILED phase=\(phase) error=\(String(describing: error).prefix(1200))")
+            await finish()
+            throw error
+        }
+    }
+}
+
 #endif
