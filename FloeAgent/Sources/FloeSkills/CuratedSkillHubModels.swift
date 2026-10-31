@@ -46,6 +46,9 @@ public enum CuratedSkillSourceCode: String, Codable, Sendable, CaseIterable, Has
     case kDense = "K"
     case superpowers = "S"
     case impeccable = "I"
+    /// An external upstream outside the named collections. The actual
+    /// repository and immutable commit remain mandatory provenance.
+    case other = "O"
 }
 
 public enum CuratedSkillCategory: String, Codable, Sendable, CaseIterable, Hashable {
@@ -681,6 +684,9 @@ enum CuratedSkillEntryDecoder {
         let firstParty = try decodeFirstParty(object["firstParty"], path: "\(path).firstParty")
         if upstream != nil && firstParty != nil {
             throw CuratedSkillHubFailure.feed("\(path): upstream and firstParty pins are mutually exclusive")
+        }
+        if source == .other, upstream == nil || firstParty != nil {
+            throw CuratedSkillHubFailure.feed("\(path): source O requires an external upstream pin and no firstParty pin")
         }
         let runtime = try decodeRuntime(object["runtime"], feedChannel: feedChannel, path: "\(path).runtime")
         let version = try CuratedSkillStrictJSON.string(object["version"], path: "\(path).version")

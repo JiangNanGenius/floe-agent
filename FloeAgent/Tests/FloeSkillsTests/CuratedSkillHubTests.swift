@@ -638,6 +638,113 @@ struct CuratedSkillHubTests {
         }
     }
 
+    @Test("Signed full feeds preserve generic upstream O and the existing R collection on both channels")
+    func otherUpstreamLoadsFromSignedFullFeed() async throws {
+        for channel in CuratedSkillChannel.allCases {
+            var root = try #require(JSONSerialization.jsonObject(
+                with: expandedFixtureCatalog(44)) as? [String: Any])
+            var entries = try #require(root["entries"] as? [[String: Any]])
+            let upstream: [String: Any] = [
+                "repository": "https://github.com/example/upstream",
+                "commit": String(repeating: "a", count: 40),
+                "path": "skills/example",
+                "skillManifestPath": "skills/example/SKILL.md",
+                "retrievedAt": "2026-10-31",
+                "licenseStatus": "verified",
+                "licenseEvidencePath": "LICENSE",
+                "repositoryLicense": "MIT",
+                "licenseNote": ["en": "Fixture evidence.", "zh-Hans": "夹具证据。"],
+            ]
+            entries[0]["source"] = "O"
+            entries[0]["upstream"] = upstream
+            entries[1]["source"] = "R"
+            entries[1]["upstream"] = upstream
+            root["entries"] = entries
+            root["channel"] = channel.rawValue
+            let bytes = try JSONSerialization.data(withJSONObject: root)
+            let catalogPath = channel == .ios ? "catalog-full.json" : "android/catalog-full.json"
+            let signaturePath = channel == .ios ? "catalog-full.sig" : "android/catalog-full.sig"
+            let y = String(repeating: "b", count: 40)
+            let transport = HubTransport(files: [catalogPath: bytes,
+                signaturePath: try signedEnvelope(over: bytes)], commits: [y])
+            let (resolve, fetch) = makeClosures(transport)
+            let publication = try await CuratedSkillHub.loadPublication(
+                channel: channel, mode: fixtureMode(), ref: "main", layout: .full,
+                resolve: resolve, fetch: fetch)
+            #expect(publication.verifiedFeed.catalogSHA256 == sha256Hex(bytes))
+            #expect(publication.publicationCommit == y)
+            let other = try #require(publication.feed.entry(id: "fixture-row-1"))
+            #expect(other.source == .other)
+            #expect(other.upstream?.repository == "https://github.com/example/upstream")
+            #expect(other.upstream?.commit == String(repeating: "a", count: 40))
+            #expect(other.firstParty == nil)
+            #expect(other.installOffer == .none)
+            #expect(other.runtime.scriptRuntime == .none)
+            #expect(publication.feed.entry(id: "fixture-row-2")?.source == .alirezarezvani)
+            let traffic = await transport.snapshot()
+            #expect(traffic.resolveCount == 1)
+            #expect(Set(traffic.fetches.map { $0.commit }) == Set([y]))
+        }
+    }
+
+    @Test("Generic upstream O refuses missing, first-party, mutable and unsafe provenance")
+    func otherUpstreamRequiresStrictExternalPin() throws {
+        var root = try #require(JSONSerialization.jsonObject(
+            with: expandedFixtureCatalog(1)) as? [String: Any])
+        var entries = try #require(root["entries"] as? [[String: Any]])
+        let valid: [String: Any] = [
+            "repository": "https://github.com/example/upstream",
+            "commit": String(repeating: "a", count: 40),
+            "path": "skills/example",
+            "skillManifestPath": "skills/example/SKILL.md",
+            "retrievedAt": "2026-10-31", "licenseStatus": "verified",
+            "licenseEvidencePath": "LICENSE", "repositoryLicense": "MIT",
+            "licenseNote": ["en": "Fixture evidence.", "zh-Hans": "夹具证据。"],
+        ]
+        entries[0]["source"] = "O"
+        entries[0]["upstream"] = valid
+        root["entries"] = entries
+        let decoded = try CuratedSkillFeed.decode(
+            bytes: JSONSerialization.data(withJSONObject: root), expectedChannel: .ios)
+        #expect(decoded.entries.first?.source == .other)
+
+        var invalidPins: [[String: Any]] = []
+        for (field, value) in [("commit", "main"), ("commit", ""),
+                               ("repository", "http://github.com/example/upstream"),
+                               ("path", "../outside"), ("skillManifestPath", "/SKILL.md")] {
+            var pin = valid
+            pin[field] = value
+            invalidPins.append(pin)
+        }
+        var unknown = valid
+        unknown["unexpected"] = true
+        invalidPins.append(unknown)
+        for pin in invalidPins {
+            entries[0]["upstream"] = pin
+            root["entries"] = entries
+            let bytes = try JSONSerialization.data(withJSONObject: root)
+            try expectCuratedFailure(
+                { try CuratedSkillFeed.decode(bytes: bytes, expectedChannel: .ios) }, case: "feed")
+        }
+        entries[0]["upstream"] = NSNull()
+        root["entries"] = entries
+        let missing = try JSONSerialization.data(withJSONObject: root)
+        try expectCuratedFailure(
+            { try CuratedSkillFeed.decode(bytes: missing, expectedChannel: .ios) }, case: "feed")
+
+        var firstParty = valid
+        firstParty.removeValue(forKey: "repositoryLicense")
+        firstParty.removeValue(forKey: "licenseNote")
+        firstParty["licenseStatus"] = "floe-owned"
+        firstParty["releasedVersion"] = "1.0.0"
+        firstParty["stagedSourceVersion"] = "1.0.0"
+        entries[0]["firstParty"] = firstParty
+        root["entries"] = entries
+        let wrongOwner = try JSONSerialization.data(withJSONObject: root)
+        try expectCuratedFailure(
+            { try CuratedSkillFeed.decode(bytes: wrongOwner, expectedChannel: .ios) }, case: "feed")
+    }
+
     @Test("Full staging records the verified layout; older receipts without it decode as legacy")
     func fullStagingReceiptLayoutCompatibility() async throws {
         let y = String(repeating: "6", count: 40)
