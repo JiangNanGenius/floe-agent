@@ -173,20 +173,9 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         add(screen)
     }
 
-    func testManufacturingEditAndTemplateDraftsUseTheNativeSavedDocument() throws {
-        continueAfterFailure = false
-        XCUIDevice.shared.orientation = .landscapeLeft
-        let app = XCUIApplication()
-        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
-                               "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture",
-                               "--ui-test-cad-shared-sheet"]
-        app.launch()
+    func testManufacturingEditKeepsOneSavedAnnotation() throws {
+        let app = launchManufacturingDrawing()
         defer { app.terminate() }
-        XCTAssertTrue(app.otherElements["CADFixtureHarness"].waitForExistence(timeout: 30))
-        app.buttons["CADWorkbenchToolsButton"].tap()
-        XCTAssertTrue(app.otherElements["CADWorkbenchToolsPanel"].waitForExistence(timeout: 15))
-        app.buttons["Drawings"].tap()
-        expandDrawingInspector("CAD Tools", in: app)
 
         let manufacturing = app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@", "CADDrawingManufacturing-")).firstMatch
@@ -219,7 +208,11 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         XCTAssertEqual(rows.count, 1)
         XCTAssertTrue(rows.firstMatch.label.contains("B"), "Reopening must read the edited document")
         app.navigationBars["GD&T"].buttons["Close"].tap()
+    }
 
+    func testTemplateDecimalDraftsAndNativeRevisionSurviveReopening() throws {
+        let app = launchManufacturingDrawing()
+        defer { app.terminate() }
         let templates = app.buttons["Templates"].firstMatch
         reveal(templates, in: app, scrollingUp: false)
         templates.tap()
@@ -266,6 +259,22 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         XCTAssertEqual(app.textFields["Description"].value as? String, "Native revision proof")
         XCTAssertEqual(app.buttons.matching(identifier: "CADDrawingRevisionRemove").count, 1)
         drawingSnapshot("CAD template values and native revision survive reopening")
+    }
+
+    private func launchManufacturingDrawing() -> XCUIApplication {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                               "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture",
+                               "--ui-test-cad-shared-sheet"]
+        app.launch()
+        XCTAssertTrue(app.otherElements["CADFixtureHarness"].waitForExistence(timeout: 30))
+        app.buttons["CADWorkbenchToolsButton"].tap()
+        XCTAssertTrue(app.otherElements["CADWorkbenchToolsPanel"].waitForExistence(timeout: 15))
+        app.buttons["Drawings"].tap()
+        expandDrawingInspector("CAD Tools", in: app)
+        return app
     }
 
     private func expandDrawingInspector(_ title: String, in app: XCUIApplication) {
@@ -397,9 +406,19 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         let keyboard = app.keyboards.firstMatch
         if keyboard.exists {
             let hide = app.buttons["Hide keyboard"].firstMatch
-            XCTAssertTrue(hide.waitForExistence(timeout: 5))
-            hide.tap()
-            XCTAssertTrue(keyboard.waitForNonExistence(timeout: 5))
+            // UIKit retains an offscreen keyboard AX tree during dismissal.
+            // Its old Hide control can be below the entire screen. Act only
+            // on the currently visible native key; never scroll that ghost.
+            if hide.exists && hide.isHittable && app.frame.contains(
+                CGPoint(x: hide.frame.midX, y: hide.frame.midY)) {
+                hide.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                let deadline = Date().addingTimeInterval(5)
+                while Date() < deadline, hide.exists && hide.isHittable {
+                    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                }
+                XCTAssertFalse(hide.exists && hide.isHittable,
+                               "The visible native keyboard must dismiss before scrolling")
+            }
         }
         // Form creates offscreen sections lazily; requiring existence before
         // scrolling prevents the driver from reaching real controls below it.
