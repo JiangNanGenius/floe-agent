@@ -125,7 +125,21 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
         legacyWritableDirectory: URL?, targetCapacityBytes: Int64
     ) async throws -> RuntimeV2WorkingDisk
     /// The only per-environment Runtime v2 directory exported through 9P.
+    /// This boot entry may prepare/migrate the substrate and create the
+    /// directory; callers that only need the mapping must use the pure
+    /// `environmentDataDirectoryIfKnown` below instead.
     func environmentDataDirectory(environmentID: String) async throws -> URL
+    /// The exact per-environment directory a boot of THIS substrate exports
+    /// as `/floe/env`, answered WITHOUT preparing, recovering, migrating,
+    /// creating a directory, booting a VM or downloading anything. This is
+    /// the pure form of the same layout answer `environmentDataDirectory`
+    /// uses at boot, so a path map / component stager can follow the live
+    /// substrate without turning a read into work.
+    ///
+    /// nil means this substrate cannot name the directory; callers must
+    /// fence the environment share and must never fall back to a legacy
+    /// layer that a v2 boot does not mount.
+    func environmentDataDirectoryIfKnown(environmentID: String) async -> URL?
     /// A VM confirmed stopped: flush, capture the delta, record the shutdown
     /// (clean or interrupted), sweep the runtime dir, release the lease.
     func completeStop(environmentID: String, runtimeID: String, imageID: String, clean: Bool) async
@@ -188,6 +202,11 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
 }
 
 public extension LinuxGuestRuntimeV2Integrating {
+    /// Conservative default: a substrate that does not implement the pure
+    /// mapping cannot advertise an environment share. It must never be read
+    /// as "fall back to legacy" — a v2 boot does not mount that layer.
+    func environmentDataDirectoryIfKnown(environmentID: String) async -> URL? { nil }
+
     /// Conservative default for conformers that cannot evaluate image
     /// manifests: a capability that is not proven is false. The production
     /// integrator overrides this with the verified image manifest's own
@@ -1383,6 +1402,14 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         let directory = try store.layout.environmentDataDirectory(environmentID: environmentID)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    /// Pure layout answer for the exact directory `environmentDataDirectory`
+    /// exports at boot. Deliberately does NOT call `ensurePrepared`, create a
+    /// directory or touch the store: a status/path-map read must never start
+    /// recovery, migration or any other work.
+    public func environmentDataDirectoryIfKnown(environmentID: String) async -> URL? {
+        try? store.layout.environmentDataDirectory(environmentID: environmentID)
     }
 
     public func recordedRunnerCapabilities(environmentID: String) async -> String? {

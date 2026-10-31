@@ -504,6 +504,12 @@ public actor TinyEMULinuxGuestRegistry {
         }
     }
     private var reconnectBarrier: ReconnectBarrier?
+    /// Monotonic identity of the active wiring (image resolver + Runtime v2
+    /// substrate). Every swap and every abort-restore advances it, so an
+    /// asynchronous share-map resolution that read the old substrate can
+    /// detect the change before publishing a now-stale answer. The value is
+    /// not persisted and carries no durability meaning.
+    private var wiringGeneration: UInt64 = 0
 
     /// Phase 1 of a recoverable reconnect. Checks the idle invariants
     /// (running/starting/tearing-down guests and queued admissions), swaps in
@@ -543,6 +549,7 @@ public actor TinyEMULinuxGuestRegistry {
         }
         self.images = images
         self.runtimeV2 = runtimeV2
+        wiringGeneration &+= 1
         return true
     }
 
@@ -559,6 +566,10 @@ public actor TinyEMULinuxGuestRegistry {
         self.images = barrier.oldImages
         self.runtimeV2 = barrier.oldRuntimeV2
         reconnectBarrier = nil
+        // The substrate changed again (back to the captured one): a mapping
+        // pass suspended across the abort must not publish an answer read
+        // from the refused wiring.
+        wiringGeneration &+= 1
     }
 
     /// True when a reconnect barrier blocks guest-booting entries.
@@ -3471,17 +3482,104 @@ public actor TinyEMULinuxGuestRegistry {
 
     // MARK: background services (exec.localService)
 
+    /// The environment 9P table that is authoritative at this instant.
+    private enum CurrentEnvironmentShares {
+        case resolved([LinuxGuestShare])
+        /// A Runtime v2 substrate is configured but cannot name the
+        /// environment's data directory. Callers must omit the environment
+        /// share (fail closed): a v2 boot never mounts the legacy layer, so
+        /// advertising it would stage bytes the guest cannot see.
+        case unavailable
+    }
+
+    /// Resolve the share table a boot would really mount at this instant.
+    ///
+    /// - A registered session's descriptor is the exact table its guest
+    ///   mounted, including the Runtime v2 data directory chosen at boot.
+    /// - With no session, the CURRENT Runtime v2 substrate answers the same
+    ///   per-environment data directory the boot path uses. That answer is a
+    ///   pure layout read: it never prepares, migrates, creates a directory,
+    ///   boots a VM or downloads.
+    /// - Without Runtime v2 the legacy provider descriptor is authoritative.
+    ///
+    /// A reconnect can replace the substrate while the mapping call is
+    /// suspended. `wiringGeneration` makes that detectable: a stale answer is
+    /// discarded and resolved again against the new wiring (bounded retry);
+    /// if the wiring keeps changing the environment share is fenced off.
+    private func currentEnvironmentShares(
+        environmentID: String,
+        descriptor: LinuxGuestEnvironmentDescriptor
+    ) async -> CurrentEnvironmentShares {
+        if let session = sessions[environmentID] {
+            return .resolved(session.descriptor.shares)
+        }
+        for _ in 0..<3 {
+            let generation = wiringGeneration
+            guard let runtimeV2 else {
+                // No v2 substrate is active: the legacy layer is exactly what
+                // the next start boots, so preserving it is not a fallback.
+                return .resolved(descriptor.shares)
+            }
+            guard let dataDirectory = await runtimeV2.environmentDataDirectoryIfKnown(
+                environmentID: environmentID
+            ) else {
+                // A configured substrate that cannot answer must never turn
+                // into a legacy advertisement.
+                return .unavailable
+            }
+            guard wiringGeneration == generation else { continue }
+            var shares = descriptor.shares
+            shares.removeAll { $0.tag == LinuxGuestShare.environmentTag }
+            shares.insert(
+                LinuxGuestShare(
+                    tag: LinuxGuestShare.environmentTag,
+                    hostDirectory: dataDirectory
+                ),
+                at: 0
+            )
+            return .resolved(shares)
+        }
+        return .unavailable
+    }
+
     /// Guest-side operations for the local-service supervisor. These keep the
     /// same single-session rule as commands and sessions: a SPAWN/KILL/ALIVE
     /// exchange owns the console only while it is in flight.
+    ///
+    /// Only the 9P table follows the live substrate; `writableDirectory`
+    /// remains the legacy layer because Runtime v2 consumes it as the
+    /// migration input and the lifecycle config still lives there.
     public func guestDescriptor(environmentID: String) async -> LinuxGuestEnvironmentDescriptor? {
-        await environments.linuxGuestEnvironment(id: environmentID)
+        guard var descriptor = await environments.linuxGuestEnvironment(id: environmentID) else {
+            return nil
+        }
+        switch await currentEnvironmentShares(
+            environmentID: environmentID, descriptor: descriptor
+        ) {
+        case .resolved(let shares):
+            descriptor.shares = shares
+        case .unavailable:
+            descriptor.shares.removeAll { $0.tag == LinuxGuestShare.environmentTag }
+        }
+        return descriptor
     }
 
-    /// Host↔guest path mapping for this environment's 9p shares.
+    /// Host↔guest path mapping for this environment's 9p shares. This is the
+    /// same live table the boot mounts, so a component staged through it is
+    /// visible at `/floe/env`; a configured-but-unanswerable Runtime v2
+    /// mapping removes the environment share instead of reverting to legacy.
     public func linuxGuestPathMap(environmentID: String) async -> LinuxGuestPathMap? {
         guard let descriptor = await environments.linuxGuestEnvironment(id: environmentID) else { return nil }
-        return LinuxGuestPathMap(shares: descriptor.shares)
+        switch await currentEnvironmentShares(
+            environmentID: environmentID, descriptor: descriptor
+        ) {
+        case .resolved(let shares):
+            return LinuxGuestPathMap(shares: shares)
+        case .unavailable:
+            return LinuxGuestPathMap(
+                shares: descriptor.shares.filter { $0.tag != LinuxGuestShare.environmentTag }
+            )
+        }
     }
 
     public func guestSpawn(

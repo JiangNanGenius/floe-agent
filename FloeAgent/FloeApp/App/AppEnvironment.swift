@@ -1107,8 +1107,18 @@ final class AppEnvironment: ObservableObject {
         let skillRuntimeComponents = SkillRuntimeComponentCenter(
             environmentResolver: { environmentID in
                 guard let record = await environmentRegistry.record(id: environmentID) else { return nil }
+                // The staging authority is the guest's ACTUAL `/floe/env`
+                // share, resolved through the same live path map the boot and
+                // the fixed probe verbs use. For Runtime v2 that is the
+                // substrate's environment data directory (never the legacy
+                // container layer), and it follows a reconnect because the
+                // registry resolves against its current wiring. A configured
+                // v2 mapping that cannot answer yields nil: staging fails
+                // closed instead of writing into a legacy layer the guest
+                // does not mount.
+                let pathMap = await linuxGuests.linuxGuestPathMap(environmentID: environmentID)
                 return SkillRuntimeComponentEnvironment(
-                    layerURL: await environmentRegistry.layerURL(for: environmentID),
+                    layerURL: SkillRuntimeComponentEnvironment.resolvedLayerURL(pathMap: pathMap),
                     isLinuxVM: record.effectiveExecutionBackend == .linuxVM,
                     isActive: record.state != .deleting
                 )

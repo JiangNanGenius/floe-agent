@@ -878,6 +878,112 @@ private func makePreparedChain(
         #expect(harness.transport.callHistory().isEmpty)
     }
 
+    @Test func prepareBindingsCommitsExecutableModeOnVerifiedReuse() async throws {
+        let (harness, component, staged, _, runID) = try await makePreparedChain()
+        let target = stagedHostPath(layer: staged.layer, version: component.descriptor.componentVersion)
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try component.engineBytes.write(to: target, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: target.path)
+        let cacheFile = harness.cacheRoot
+            .appendingPathComponent(componentID, isDirectory: true)
+            .appendingPathComponent(component.descriptor.componentVersion, isDirectory: true)
+            .appendingPathComponent(component.descriptor.target.triple, isDirectory: true)
+            .appendingPathComponent(SkillRuntimeDependency.frozenEngineFileName, isDirectory: false)
+        try FileManager.default.createDirectory(at: cacheFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try component.engineBytes.write(to: cacheFile, options: .atomic)
+
+        let bindings = await harness.center.prepareBindings(
+            environmentID: staged.environmentID, runID: runID, cancellation: nil
+        )
+        #expect(bindings != nil)
+        let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
+        let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        #expect(mode & 0o777 == 0o755)
+        #expect(harness.runner.callHistory().count == 3)
+    }
+
+    @Test func componentEnvironmentUsesOnlyTheLiveGuestEnvironmentShare() throws {
+        let runtimeData = makeComponentTemporaryDirectory("runtime-v2-data")
+        let workspace = makeComponentTemporaryDirectory("workspace")
+        let pathMap = LinuxGuestPathMap(shares: [
+            LinuxGuestShare(tag: LinuxGuestShare.environmentTag, hostDirectory: runtimeData),
+            LinuxGuestShare(tag: LinuxGuestShare.workspaceTag, hostDirectory: workspace)
+        ])
+        #expect(
+            SkillRuntimeComponentEnvironment.resolvedLayerURL(pathMap: pathMap)?
+                .resolvingSymlinksInPath().standardizedFileURL.path
+                == runtimeData.resolvingSymlinksInPath().standardizedFileURL.path
+        )
+        // No map, or a map with no environment share, is NOT a legacy
+        // fallback: staging must fail closed rather than write where the
+        // guest does not mount.
+        #expect(SkillRuntimeComponentEnvironment.resolvedLayerURL(pathMap: nil) == nil)
+        let workspaceOnly = LinuxGuestPathMap(shares: [
+            LinuxGuestShare(tag: LinuxGuestShare.workspaceTag, hostDirectory: workspace)
+        ])
+        #expect(SkillRuntimeComponentEnvironment.resolvedLayerURL(pathMap: workspaceOnly) == nil)
+    }
+
+    @Test func adoptedVerifiedTargetCommitsExecutableModeOnTheVerifiedInode() async throws {
+        let (harness, component, staged, _, _) = try await makePreparedChain()
+        let target = stagedHostPath(layer: staged.layer, version: component.descriptor.componentVersion)
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try component.engineBytes.write(to: target, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: target.path)
+        // The same helper is called by BOTH final concurrent-publisher
+        // branches (after a copy and in the error recovery).
+        try await harness.center.adoptVerifiedArtifact(
+            at: target, descriptor: component.descriptor, token: CancellationToken()
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
+        let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        #expect(mode & 0o777 == 0o755)
+    }
+
+    @Test func adoptingSymlinkedStagedTargetFailsClosedWithoutFollowingIt() async throws {
+        let (harness, component, staged, _, _) = try await makePreparedChain()
+        let outside = makeComponentTemporaryDirectory("outside").appendingPathComponent("floe-impeccable")
+        try component.engineBytes.write(to: outside, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: outside.path)
+        let target = stagedHostPath(layer: staged.layer, version: component.descriptor.componentVersion)
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: target, withDestinationURL: outside)
+
+        do {
+            try await harness.center.adoptVerifiedArtifact(
+                at: target, descriptor: component.descriptor, token: CancellationToken()
+            )
+            Issue.record("a symlinked staged target must fail closed")
+        } catch {}
+        let isSymlink = (try? target.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
+        #expect(isSymlink)
+        let outsideAttributes = try FileManager.default.attributesOfItem(atPath: outside.path)
+        let outsideMode = (outsideAttributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        #expect(outsideMode & 0o777 == 0o644)
+        #expect((try? Data(contentsOf: outside)) == component.engineBytes)
+    }
+
+    @Test func adoptingCorruptStagedTargetFailsClosedWithoutMutatingIt() async throws {
+        let (harness, component, staged, _, _) = try await makePreparedChain()
+        var damaged = component.engineBytes
+        damaged[64] = damaged[64] ^ 0xFF
+        let target = stagedHostPath(layer: staged.layer, version: component.descriptor.componentVersion)
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try damaged.write(to: target, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: target.path)
+
+        do {
+            try await harness.center.adoptVerifiedArtifact(
+                at: target, descriptor: component.descriptor, token: CancellationToken()
+            )
+            Issue.record("a corrupt staged target must fail closed")
+        } catch {}
+        #expect((try? Data(contentsOf: target)) == damaged)
+        let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
+        let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        #expect(mode & 0o777 == 0o644)
+    }
+
     // MARK: Probe negatives + staged-vs-probed distinction
 
     @Test func prepareBindingsRejectsFailedChmodVerb() async throws {

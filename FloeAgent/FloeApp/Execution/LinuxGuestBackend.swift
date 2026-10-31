@@ -46,6 +46,14 @@ final class PinnedImageSource: @unchecked Sendable {
 /// Maps Floe environment records onto Linux guest descriptors. Only
 /// environments explicitly declared `executionBackend == .linuxVM` are owned
 /// by the guest backend; deleted environments disappear immediately.
+///
+/// The descriptor's environment share is the legacy layer: it remains the
+/// boot/migration input (`writableDirectory`) and the mapping used only while
+/// Runtime v2 is INACTIVE. The registry resolves the live 9P table
+/// (`linuxGuestPathMap` / `guestDescriptor`) against its CURRENT substrate on
+/// every read, so a reconnect from nil to v2 (or a changed substrate) cannot
+/// leave a captured v2 environment-data directory stale. This provider
+/// deliberately captures no Runtime v2 environment-share answer.
 struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
     let registry: EnvironmentRegistry
     let defaultImageID: String

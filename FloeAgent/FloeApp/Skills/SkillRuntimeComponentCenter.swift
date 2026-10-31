@@ -15,11 +15,13 @@
 //       static-ELF gate, committed atomically into app-owned storage. GitHub
 //       unavailable + verified cache => offline reuse; no website fallback
 //       exists anywhere on this path.
-//   staged — the verified bytes copied into the RESOLVED environment's write
-//       layer (`registry.layerURL`, shared with the guest as /floe/env) under
-//       a reserved `runtime-components` root, chunked, cancellation-fenced,
-//       hash-verified, atomically renamed. A foreign/damaged/oversized entry
-//       at the staged path is preserved exactly as found and fails closed.
+//   staged — the verified bytes copied into the RESOLVED guest's actual
+//       `/floe/env` share (the live path-map root: Runtime v2's environment
+//       data directory when that substrate is active, never a legacy layer
+//       the guest does not mount) under a reserved `runtime-components` root,
+//       chunked, cancellation-fenced, hash-verified, atomically renamed. A
+//       foreign/damaged/oversized entry at the staged path is preserved
+//       exactly as found and fails closed.
 //   probed — FIXED native-owned guest commands only (`chmod 0755`,
 //       `engine-probe`, `contract`): exit 0, the exact handshake line, and the
 //       contract bytes hashing to the descriptor's capture-contract sha256
@@ -83,9 +85,22 @@ struct SkillRuntimeComponentAuthority: Sendable, Equatable {
 // MARK: - Environment facts
 
 struct SkillRuntimeComponentEnvironment: Sendable, Equatable {
+    /// Host directory of the guest's ACTUAL `/floe/env` share. A Runtime v2
+    /// guest mounts the substrate's environment data directory, not the
+    /// legacy container layer; the value is resolved from the live guest
+    /// path map so it also follows a backend reconnect. Nil means no live
+    /// environment share is available and staging must fail closed.
     let layerURL: URL?
     let isLinuxVM: Bool
     let isActive: Bool
+
+    /// The environment share from the live map. There is deliberately no
+    /// legacy fallback: a nil or unavailable mapping means the guest does not
+    /// export an environment share, and writing into the legacy layer would
+    /// only be invisible to the guest (the original wrong-share failure).
+    static func resolvedLayerURL(pathMap: LinuxGuestPathMap?) -> URL? {
+        pathMap?.hostPath(forGuestPath: LinuxGuestMountPoint.environment)
+    }
 }
 
 // MARK: - Plan / readiness / state
@@ -1096,11 +1111,131 @@ actor SkillRuntimeComponentCenter {
         }
         guard !Self.isFenced(token) else { throw CancellationError() }
         guard result.exitCode == 0 else {
+            // Operator/test diagnostic only: these are fixed native-owned
+            // verbs, and only bounded stderr is recorded. The model-facing
+            // reason stays the stable, path-free `probeFailed` value.
+            Self.logFixedVerbFailure(verb: verb, exitCode: result.exitCode, stderr: result.stderr)
             throw SkillRuntimeComponentFailure(
                 reason: SkillRuntimeComponentReason.probeFailed(verb, exitCode: result.exitCode)
             )
         }
         return result
+    }
+
+    /// Bounded fixed-verb failure detail for diagnostics. Control bytes are
+    /// dropped and the text is capped so a guest error can never flood a log;
+    /// no command text, stdout, host path or credential is recorded here.
+    private static func logFixedVerbFailure(verb: String, exitCode: Int32, stderr: String) {
+        let filtered = stderr.unicodeScalars.filter { scalar in
+            !CharacterSet.controlCharacters.contains(scalar)
+                || scalar.value == 0x0A || scalar.value == 0x09
+        }
+        let text = String(String.UnicodeScalarView(filtered))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = text.isEmpty ? "none" : String(text.prefix(240))
+        FloeLogger(category: .tools).warning(
+            "runtimeComponent fixed verb failed verb=\(verb) exit=\(exitCode) stderr=\(detail)"
+        )
+    }
+
+    /// Identity of the exact regular file a staging decision verified. Mode
+    /// commit must target this same inode, never a name that was swapped for
+    /// a symlink or another file in between.
+    private struct VerifiedFileIdentity: Equatable {
+        let device: Int64
+        let inode: UInt64
+        let size: Int64
+
+        init(_ info: stat) {
+            device = Int64(info.st_dev)
+            inode = UInt64(info.st_ino)
+            size = Int64(info.st_size)
+        }
+    }
+
+    /// lstat-based identity: never follows a symlink and rejects a
+    /// directory/absent/oversized entry.
+    private static func regularFileIdentity(
+        at url: URL,
+        expectedSize: Int
+    ) -> VerifiedFileIdentity? {
+        var info = stat()
+        guard lstat(url.path, &info) == 0,
+              (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              info.st_size == Int64(expectedSize) else { return nil }
+        return VerifiedFileIdentity(info)
+    }
+
+    /// True for any directory entry, including a dangling symlink (which
+    /// `FileManager.fileExists` reports as absent and could then be replaced
+    /// by a move).
+    private static func pathExistsNoFollow(at url: URL) -> Bool {
+        var info = stat()
+        return lstat(url.path, &info) == 0
+    }
+
+    /// Commits the executable bit on the verified staged artifact HOST-side.
+    /// The guest `chmod` remains the fixed readiness verb; this commit makes
+    /// the host mode deterministic as well (a reused staged entry from an
+    /// older build may still be 0644) and verifies the mode read back before
+    /// any probe can run. It only ever touches the reserved, hash-verified
+    /// component path under the resolved guest environment share.
+    ///
+    /// The final component is opened with `O_NOFOLLOW`; the opened descriptor
+    /// must still be the exact regular-file inode the caller verified before
+    /// `fchmod`. A symlink, a corrupt/foreign entry or a name replaced after
+    /// verification is refused and left untouched.
+    private static func commitExecutableMode(
+        at url: URL,
+        identity: VerifiedFileIdentity,
+        token: CancellationToken
+    ) throws {
+        guard !Self.isFenced(token) else { throw CancellationError() }
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.writeFailed)
+        }
+        defer { _ = Darwin.close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              VerifiedFileIdentity(info) == identity else {
+            throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.writeFailed)
+        }
+        guard fchmod(descriptor, mode_t(0o755)) == 0 else {
+            throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.writeFailed)
+        }
+        var readBack = stat()
+        guard fstat(descriptor, &readBack) == 0,
+              VerifiedFileIdentity(readBack) == identity,
+              (readBack.st_mode & mode_t(0o777)) == mode_t(0o755) else {
+            throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.writeFailed)
+        }
+    }
+
+    /// Adopt an already-present staged artifact only when its CURRENT bytes
+    /// verify, then commit the executable mode on that exact regular-file
+    /// inode. A symlink, a foreign/damaged entry and a target replaced
+    /// between the hash and the mode commit are refused without being
+    /// mutated. Both final concurrent-publisher branches (after a copy and in
+    /// the error recovery) call this exact helper.
+    func adoptVerifiedArtifact(
+        at target: URL,
+        descriptor: SkillRuntimeDependencyDescriptor,
+        token: CancellationToken
+    ) throws {
+        guard let identity = Self.regularFileIdentity(
+            at: target, expectedSize: descriptor.artifact.size
+        ),
+              try verified(
+                file: target,
+                size: descriptor.artifact.size,
+                sha256: descriptor.artifact.sha256,
+                token: token
+              ) else {
+            throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.stagedPathBlocked)
+        }
+        try Self.commitExecutableMode(at: target, identity: identity, token: token)
     }
 
     // MARK: - Cache
@@ -1412,15 +1547,13 @@ actor SkillRuntimeComponentCenter {
             throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.noShareMap)
         }
 
-        if FileManager.default.fileExists(atPath: target.path) {
+        if Self.pathExistsNoFollow(at: target) {
             // Reuse is granted ONLY by full byte verification; a foreign,
-            // damaged or oversized entry stays exactly as found.
-            if try verified(file: target, size: descriptor.artifact.size,
-                            sha256: descriptor.artifact.sha256, token: token) {
-                Self.pruneStaleComponentTemps(in: directory)
-                return (target, guestPath)
-            }
-            throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.stagedPathBlocked)
+            // damaged, symlinked or oversized entry stays exactly as found.
+            // Verified reuse also repairs the host mode on that same inode.
+            try adoptVerifiedArtifact(at: target, descriptor: descriptor, token: token)
+            Self.pruneStaleComponentTemps(in: directory)
+            return (target, guestPath)
         }
 
         // Chunked, cancellation-fenced copy from the verified cache file,
@@ -1432,22 +1565,23 @@ actor SkillRuntimeComponentCenter {
         defer { try? output.close() }
         do {
             try copyVerified(from: cached, to: output, token: token)
-            guard try verified(file: temporary, size: descriptor.artifact.size,
+            guard let temporaryIdentity = Self.regularFileIdentity(
+                at: temporary, expectedSize: descriptor.artifact.size
+            ),
+                  try verified(file: temporary, size: descriptor.artifact.size,
                                sha256: descriptor.artifact.sha256, token: token) else {
                 throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.artifactDigestMismatch)
             }
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temporary.path)
+            try Self.commitExecutableMode(
+                at: temporary, identity: temporaryIdentity, token: token
+            )
             guard !Self.isFenced(token) else { throw CancellationError() }
-            if FileManager.default.fileExists(atPath: target.path) {
+            if Self.pathExistsNoFollow(at: target) {
                 // A concurrent publisher committed meanwhile: adopt only a
-                // fully verifying tree, never overwrite.
-                if try verified(file: target, size: descriptor.artifact.size,
-                                sha256: descriptor.artifact.sha256, token: token) {
-                    try? FileManager.default.removeItem(at: temporary)
-                } else {
-                    try? FileManager.default.removeItem(at: temporary)
-                    throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.stagedPathBlocked)
-                }
+                // fully verifying tree (and commit the mode on its inode),
+                // never overwrite. A symlink/corrupt entry is preserved.
+                try adoptVerifiedArtifact(at: target, descriptor: descriptor, token: token)
+                try? FileManager.default.removeItem(at: temporary)
             } else {
                 try FileManager.default.moveItem(at: temporary, to: target)
             }
@@ -1459,10 +1593,14 @@ actor SkillRuntimeComponentCenter {
             throw CancellationError()
         } catch {
             try? FileManager.default.removeItem(at: temporary)
-            if FileManager.default.fileExists(atPath: target.path),
-               try verified(file: target, size: descriptor.artifact.size,
-                            sha256: descriptor.artifact.sha256, token: token) {
-                // A concurrent publisher won; the verified tree stands.
+            if Self.pathExistsNoFollow(at: target) {
+                do {
+                    // A concurrent publisher won: only its verified bytes
+                    // and inode may be adopted; anything else stays put.
+                    try adoptVerifiedArtifact(at: target, descriptor: descriptor, token: token)
+                } catch {
+                    throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.writeFailed)
+                }
             } else {
                 throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.writeFailed)
             }

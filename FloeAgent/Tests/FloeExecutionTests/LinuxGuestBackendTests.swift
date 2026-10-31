@@ -1961,3 +1961,277 @@ final class LinuxGuestSectionOwnershipTests: XCTestCase {
         XCTAssertEqual(diagnostics.foreignEndEvents, 0)
     }
 }
+
+// MARK: - Live share mapping across backend reconnects
+
+/// Runtime v2 double for share-map resolution. Only the pure mapping method
+/// (and the benign lifecycle stubs) are exercised; `fixedDirectory == nil`
+/// means "configured substrate cannot answer". `parks` suspends the mapping
+/// answer so a reconnect can be interleaved deterministically.
+private actor ShareMappingRuntimeV2: LinuxGuestRuntimeV2Integrating {
+    private let fixedDirectory: URL?
+    private let parks: Bool
+    private var entered = false
+    private var parked: CheckedContinuation<URL?, Never>?
+
+    init(fixedDirectory: URL?, parks: Bool = false) {
+        self.fixedDirectory = fixedDirectory
+        self.parks = parks
+    }
+
+    func environmentDataDirectoryIfKnown(environmentID: String) async -> URL? {
+        guard parks else { return fixedDirectory }
+        return await withCheckedContinuation { continuation in
+            parked = continuation
+            entered = true
+        }
+    }
+
+    func waitUntilEntered() async {
+        while !entered {
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+    }
+
+    func resumeMapping() {
+        let continuation = parked
+        parked = nil
+        continuation?.resume(returning: fixedDirectory)
+    }
+
+    func acquireSlot(
+        environmentID: String, runtimeID: String, requestedMB: Int
+    ) async throws -> RuntimeV2Admission {
+        RuntimeV2Admission(runtimeID: runtimeID, ramMB: requestedMB, downgraded: false)
+    }
+
+    func acquireShape(
+        environmentID: String, runtimeID: String, imageID: String,
+        request: GuestResourceRequest,
+        downgrade: GuestShapeDowngradePolicy
+    ) async throws -> LinuxGuestShapeAdmission {
+        LinuxGuestShapeAdmission(
+            runtimeID: runtimeID, ramMB: request.memory.mb,
+            vcpus: request.vcpus.count, downgraded: false
+        )
+    }
+
+    func planReshape(
+        environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int, imageID: String
+    ) async throws {}
+    func confirmReshape(environmentID: String, ramMB: Int, vcpus: Int) async {}
+    func releaseSlot(environmentID: String, runtimeID: String) async {}
+
+    func prepareWorkingDisk(
+        environmentID: String, runtimeID: String, imageID: String,
+        legacyWritableDirectory: URL?, targetCapacityBytes: Int64
+    ) async throws -> RuntimeV2WorkingDisk {
+        throw RuntimeV2Error.imageNotFound(imageID)
+    }
+
+    func environmentDataDirectory(environmentID: String) async throws -> URL {
+        guard let fixedDirectory else {
+            throw RuntimeV2Error.environmentNotFound(environmentID)
+        }
+        return fixedDirectory
+    }
+
+    func completeStop(environmentID: String, runtimeID: String, imageID: String, clean: Bool) async {}
+    func expandedImageDirectory(imageID: String) async throws -> URL {
+        throw RuntimeV2Error.imageNotFound(imageID)
+    }
+    func isImageVerified(imageID: String) async -> Bool { false }
+    func isImageVerifiedWithoutMigration(imageID: String) async -> Bool { false }
+    func recordedRunnerCapabilities(environmentID: String) async -> String? { nil }
+    func recordRunnerCapabilities(_ capabilities: String, environmentID: String) async {}
+    func workingDiskCapacityBytes(environmentID: String, runtimeID: String) async -> Int64? { nil }
+    func queuedStarts() async -> Int { 0 }
+    func planRetier(environmentID: String, ramMB: Int) async throws {}
+    func confirmTier(environmentID: String, ramMB: Int) async {}
+}
+
+final class LinuxGuestRuntimeShareMappingTests: XCTestCase {
+    private var root: URL!
+
+    override func setUpWithError() throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-share-mapping-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private func makeDirectory(_ name: String) -> URL {
+        let url = root.appendingPathComponent(name, isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        // `/var` is a symlink on macOS; the path map canonicalizes host
+        // shares, so expectations use the same canonical form.
+        return url.resolvingSymlinksInPath().standardizedFileURL
+    }
+
+    private func makeRegistry(
+        legacy: URL,
+        workspace: URL,
+        runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
+    ) -> TinyEMULinuxGuestRegistry {
+        TinyEMULinuxGuestRegistry(
+            environments: FakeEnvironmentProvider(descriptors: [
+                "env-1": LinuxGuestEnvironmentDescriptor(
+                    id: "env-1",
+                    ownerID: "owner",
+                    writableDirectory: legacy,
+                    shares: [
+                        LinuxGuestShare(tag: LinuxGuestShare.environmentTag, hostDirectory: legacy),
+                        LinuxGuestShare(tag: LinuxGuestShare.workspaceTag, hostDirectory: workspace)
+                    ],
+                    imageID: "env-image"
+                )
+            ]),
+            images: FakeImageResolver(images: [:]),
+            limits: .standard,
+            factory: FakeSessionFactory(ledger: FakeSessionLedger(), handler: { _, _ in [] }),
+            runtimeV2: runtimeV2
+        )
+    }
+
+    private func environmentHost(_ map: LinuxGuestPathMap?) -> String? {
+        map?.hostPath(forGuestPath: LinuxGuestMountPoint.environment)?.path
+    }
+
+    func testPathMapUsesTheLegacyLayerOnlyWithoutRuntimeV2() async {
+        let legacy = makeDirectory("legacy")
+        let workspace = makeDirectory("workspace")
+        let registry = makeRegistry(legacy: legacy, workspace: workspace, runtimeV2: nil)
+
+        let map = await registry.linuxGuestPathMap(environmentID: "env-1")
+        XCTAssertEqual(environmentHost(map), legacy.path)
+        let descriptor = await registry.guestDescriptor(environmentID: "env-1")
+        XCTAssertEqual(descriptor?.writableDirectory?.path, legacy.path)
+        XCTAssertEqual(
+            descriptor?.shares.first { $0.tag == LinuxGuestShare.environmentTag }?.hostDirectory.path,
+            legacy.path
+        )
+    }
+
+    func testPathMapUsesTheActualRuntimeV2DataDirectory() async {
+        let legacy = makeDirectory("legacy")
+        let workspace = makeDirectory("workspace")
+        let runtimeData = makeDirectory("runtime-v2/data/env-1")
+        let registry = makeRegistry(
+            legacy: legacy, workspace: workspace,
+            runtimeV2: ShareMappingRuntimeV2(fixedDirectory: runtimeData)
+        )
+
+        let map = await registry.linuxGuestPathMap(environmentID: "env-1")
+        XCTAssertEqual(environmentHost(map), runtimeData.path)
+        // The legacy layer stays the migration input/lifecycle location; only
+        // the mounted share follows the live substrate.
+        let descriptor = await registry.guestDescriptor(environmentID: "env-1")
+        XCTAssertEqual(descriptor?.writableDirectory?.path, legacy.path)
+        XCTAssertEqual(
+            descriptor?.shares.first { $0.tag == LinuxGuestShare.environmentTag }?.hostDirectory.path,
+            runtimeData.path
+        )
+        XCTAssertEqual(
+            descriptor?.shares.first { $0.tag == LinuxGuestShare.workspaceTag }?.hostDirectory.path,
+            workspace.path
+        )
+    }
+
+    func testPathMapFollowsReconnectFromNilToRuntimeV2() async {
+        let legacy = makeDirectory("legacy")
+        let workspace = makeDirectory("workspace")
+        let runtimeData = makeDirectory("runtime-v2/data/env-1")
+        let registry = makeRegistry(legacy: legacy, workspace: workspace, runtimeV2: nil)
+        let initialMap = await registry.linuxGuestPathMap(environmentID: "env-1")
+        XCTAssertEqual(environmentHost(initialMap), legacy.path)
+
+        let began = await registry.beginReconnect(
+            images: FakeImageResolver(images: [:]),
+            runtimeV2: ShareMappingRuntimeV2(fixedDirectory: runtimeData)
+        )
+        XCTAssertTrue(began)
+        let reconnectedMap = await registry.linuxGuestPathMap(environmentID: "env-1")
+        XCTAssertEqual(environmentHost(reconnectedMap), runtimeData.path)
+        let descriptor = await registry.guestDescriptor(environmentID: "env-1")
+        XCTAssertEqual(
+            descriptor?.shares.first { $0.tag == LinuxGuestShare.environmentTag }?.hostDirectory.path,
+            runtimeData.path
+        )
+        await registry.commitReconnect()
+    }
+
+    func testAbortReconnectRestoresTheCapturedMapping() async {
+        let legacy = makeDirectory("legacy")
+        let workspace = makeDirectory("workspace")
+        let runtimeData = makeDirectory("runtime-v2/data/env-1")
+        let registry = makeRegistry(
+            legacy: legacy, workspace: workspace,
+            runtimeV2: ShareMappingRuntimeV2(fixedDirectory: runtimeData)
+        )
+        let initialMap = await registry.linuxGuestPathMap(environmentID: "env-1")
+        XCTAssertEqual(environmentHost(initialMap), runtimeData.path)
+
+        let began = await registry.beginReconnect(
+            images: FakeImageResolver(images: [:]),
+            runtimeV2: nil
+        )
+        XCTAssertTrue(began)
+        let replacedMap = await registry.linuxGuestPathMap(environmentID: "env-1")
+        XCTAssertEqual(environmentHost(replacedMap), legacy.path)
+        await registry.abortReconnect()
+        let restoredMap = await registry.linuxGuestPathMap(environmentID: "env-1")
+        XCTAssertEqual(environmentHost(restoredMap), runtimeData.path)
+    }
+
+    func testConfiguredRuntimeV2MappingFailureIsFencedNotLegacy() async {
+        let legacy = makeDirectory("legacy")
+        let workspace = makeDirectory("workspace")
+        let registry = makeRegistry(
+            legacy: legacy, workspace: workspace,
+            runtimeV2: ShareMappingRuntimeV2(fixedDirectory: nil)
+        )
+
+        let map = await registry.linuxGuestPathMap(environmentID: "env-1")
+        XCTAssertNotNil(map, "the workspace share remains usable")
+        XCTAssertNil(environmentHost(map), "a configured-but-unanswerable v2 mapping must not advertise legacy")
+        XCTAssertEqual(
+            map?.hostPath(forGuestPath: LinuxGuestMountPoint.workspace)?.path,
+            workspace.path
+        )
+        let descriptor = await registry.guestDescriptor(environmentID: "env-1")
+        XCTAssertNil(descriptor?.shares.first { $0.tag == LinuxGuestShare.environmentTag })
+        XCTAssertEqual(descriptor?.writableDirectory?.path, legacy.path)
+    }
+
+    func testInFlightMappingIsNotReturnedAfterSubstrateReplacement() async {
+        let legacy = makeDirectory("legacy")
+        let workspace = makeDirectory("workspace")
+        let oldData = makeDirectory("runtime-v2/old/env-1")
+        let newData = makeDirectory("runtime-v2/new/env-1")
+        let oldSubstrate = ShareMappingRuntimeV2(fixedDirectory: oldData, parks: true)
+        let newSubstrate = ShareMappingRuntimeV2(fixedDirectory: newData)
+        let registry = makeRegistry(
+            legacy: legacy, workspace: workspace, runtimeV2: oldSubstrate
+        )
+
+        let mapping = Task {
+            await registry.linuxGuestPathMap(environmentID: "env-1")
+        }
+        await oldSubstrate.waitUntilEntered()
+        let began = await registry.beginReconnect(
+            images: FakeImageResolver(images: [:]),
+            runtimeV2: newSubstrate
+        )
+        XCTAssertTrue(began)
+        await oldSubstrate.resumeMapping()
+        let map = await mapping.value
+        XCTAssertEqual(
+            environmentHost(map), newData.path,
+            "a mapping resolved against replaced wiring must be discarded, never returned"
+        )
+        await registry.commitReconnect()
+    }
+}
