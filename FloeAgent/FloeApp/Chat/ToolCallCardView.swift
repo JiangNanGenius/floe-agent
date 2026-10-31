@@ -170,11 +170,11 @@ struct ToolCallCardView: View {
     }
 
     private var imageArtifacts: [ToolArtifactReference] {
-        artifacts.filter { ProviderImageEvidencePolicy.canonicalMIMEType($0.mimeType) != nil }
+        artifacts.filter(ToolArtifactPresentation.isImage)
     }
 
     private var richArtifacts: [ToolArtifactReference] {
-        artifacts.filter { ProviderImageEvidencePolicy.canonicalMIMEType($0.mimeType) == nil }
+        artifacts.filter { !ToolArtifactPresentation.isImage($0) }
     }
 
     private var statusIcon: String {
@@ -224,20 +224,43 @@ struct ToolCallCardView: View {
     }
 }
 
+/// Shared image-artifact classification. The chat row and the gallery must use
+/// the same canonical MIME policy so an image row is never collapsed into one
+/// accessibility element that hides its individual preview controls.
+enum ToolArtifactPresentation {
+    static func isImage(_ artifact: ToolArtifactReference) -> Bool {
+        ProviderImageEvidencePolicy.canonicalMIMEType(artifact.mimeType) != nil
+    }
+}
+
+/// One-based accessible name for a gallery entry. The catalog key is optional;
+/// an inline bilingual fallback keeps DEBUG fixtures and older catalogs honest.
+private enum ArtifactImageCopy {
+    static func title(index: Int) -> String {
+        let key = "chat.tool_call_card_view.image_number"
+        let resolved = FloeL10n.l(key, index + 1)
+        if resolved != key { return resolved }
+        return FloeL10n.isChinese ? "第 \(index + 1) 张图片" : "Image \(index + 1)"
+    }
+}
+
 private struct ArtifactImageGallery: View {
     let artifacts: [ToolArtifactReference]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(artifacts) { artifact in
-                ArtifactImageView(artifact: artifact)
+            ForEach(Array(artifacts.enumerated()), id: \.element.id) { index, artifact in
+                ArtifactImageView(artifact: artifact, index: index)
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.artifact.image.gallery")
     }
 }
 
 private struct ArtifactImageView: View {
     let artifact: ToolArtifactReference
+    let index: Int
     @State private var image: UIImage?
     @State private var fileURL: URL?
     @State private var failed = false
@@ -254,8 +277,9 @@ private struct ArtifactImageView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) { showingFullScreen = true }
-                        .accessibilityLabel("chat.tool_call_card_view.generated_images")
+                        .accessibilityLabel(Text(verbatim: imageTitle))
                         .accessibilityHint("chat.tool_call_card_view.double_tap_for_full_screen")
+                        .accessibilityIdentifier("chat.artifact.image.thumbnail.\(index)")
                     ShareLink(item: fileURL) {
                         Label("chat.tool_call_card_view.save_or_share_image", systemImage: "square.and.arrow.up")
                     }
@@ -273,10 +297,14 @@ private struct ArtifactImageView: View {
         .task(id: artifact.id) { await loadVerifiedImage() }
         .fullScreenCover(isPresented: $showingFullScreen) {
             if let image, let fileURL {
-                FullScreenArtifactImage(image: image, fileURL: fileURL)
+                FullScreenArtifactImage(image: image, fileURL: fileURL, title: imageTitle)
             }
         }
         .onChange(of: artifact.id) { _, _ in showingFullScreen = false }
+    }
+
+    private var imageTitle: String {
+        ArtifactImageCopy.title(index: index)
     }
 
     private func loadVerifiedImage() async {
@@ -303,6 +331,9 @@ private struct ArtifactImageView: View {
 private struct FullScreenArtifactImage: View {
     let image: UIImage
     let fileURL: URL
+    /// One-based gallery identity, visible in the navigation bar and exposed
+    /// to assistive technology so a batch never becomes an anonymous image.
+    let title: String
     @Environment(\.dismiss) private var dismiss
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
@@ -329,14 +360,20 @@ private struct FullScreenArtifactImage: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityLabel(Text(verbatim: title))
+                    .accessibilityIdentifier("chat.artifact.image.preview")
             }
+            .navigationTitle(Text(verbatim: title))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.black.opacity(0.72), for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("workspace.workspace_canvas_view.done") { dismiss() }
                         .foregroundStyle(.white)
                         .frame(minHeight: FloeTheme.minimumTarget)
+                        .accessibilityIdentifier("chat.artifact.image.preview.done")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     ShareLink(item: fileURL) {

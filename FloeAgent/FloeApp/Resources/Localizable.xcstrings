@@ -119521,6 +119521,23 @@
           }
         }
       }
+    },
+    "chat.tool_call_card_view.image_number": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %@ 张图片"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

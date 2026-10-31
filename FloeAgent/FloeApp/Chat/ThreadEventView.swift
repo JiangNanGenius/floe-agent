@@ -98,18 +98,27 @@ struct ThreadEventView: View {
     }
 
     var body: some View {
-        if isDelegateCall {
+        if isDelegateCall || hasImageArtifacts {
             // A delegate row must NOT be combined into one accessibility
             // element: the card owns a real "View subagents" button, and
             // combining made the row container inherit that button's
             // identifier and swallow its hit target (taps never reached the
-            // action). Delegate rows keep their children as separate
-            // elements; every other row keeps the historical combine.
+            // action). An image-artifact row has the same requirement: every
+            // verified thumbnail keeps its own identifier, hit target and
+            // full-screen action. Every other row keeps the historical combine.
             rowBody
         } else {
             rowBody
                 .accessibilityElement(children: .combine)
         }
+    }
+
+    /// Tool result payloads carry the retained image references the card will
+    /// verify. This only decides accessibility grouping; it never treats the
+    /// reference bytes as trusted display data.
+    private var hasImageArtifacts: Bool {
+        let source = event.kind == .toolRequest ? toolRequestResultPayload : payload
+        return artifacts(from: source).contains(where: ToolArtifactPresentation.isImage)
     }
 
     private var rowBody: some View {

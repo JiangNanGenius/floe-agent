@@ -217,6 +217,14 @@ struct FloeAgentApp: App {
                         router: router,
                         center: environment.conversationCenter
                     )
+                    // Multi-image gallery acceptance: seed the real chat with
+                    // TWO locally rendered, digest-verified GeneratedImages
+                    // artifacts and open it. No provider request or paid
+                    // generation is involved; normal launches skip this.
+                    await MultiImageArtifactUITestFixture.prepareIfRequested(
+                        environment: environment,
+                        router: router
+                    )
                     #endif
                 }
         }
