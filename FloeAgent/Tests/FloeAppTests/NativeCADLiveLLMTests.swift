@@ -1766,11 +1766,13 @@ private final class NativeCADLiveSession {
         let runStore = environment.runStore
         let ledger = self.ledger
         let stop = NativeCADLiveStopSignal()
-        let remaining = optIn.maxTotalSeconds - Date().timeIntervalSince(sessionStartedAt)
+        let aggregateLimit = optIn.maxTotalSeconds
+        let perRunLimit = optIn.perRunTimeoutSeconds
+        let remaining = aggregateLimit - Date().timeIntervalSince(sessionStartedAt)
         guard remaining > 1 else {
-            throw NativeCADLiveError.aggregateTimeExceeded(optIn.maxTotalSeconds)
+            throw NativeCADLiveError.aggregateTimeExceeded(aggregateLimit)
         }
-        let turnTimeout = min(optIn.perRunTimeoutSeconds, remaining)
+        let turnTimeout = min(perRunLimit, remaining)
         let timeoutMilliseconds = max(1_000, Int64(turnTimeout * 1000))
 
         do {
@@ -1780,10 +1782,10 @@ private final class NativeCADLiveSession {
                 }
                 group.addTask {
                     try await Task.sleep(for: .milliseconds(timeoutMilliseconds))
-                    if remaining < optIn.perRunTimeoutSeconds {
-                        await stop.set(.aggregateTimeExceeded(optIn.maxTotalSeconds))
+                    if remaining < perRunLimit {
+                        await stop.set(.aggregateTimeExceeded(aggregateLimit))
                         await service.cancel()
-                        throw NativeCADLiveError.aggregateTimeExceeded(optIn.maxTotalSeconds)
+                        throw NativeCADLiveError.aggregateTimeExceeded(aggregateLimit)
                     }
                     await stop.set(.timedOut(runID))
                     await service.cancel()
