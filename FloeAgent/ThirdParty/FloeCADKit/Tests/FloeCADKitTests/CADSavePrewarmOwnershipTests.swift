@@ -106,8 +106,9 @@ final class CADSavePrewarmOwnershipTests: XCTestCase {
             await MainActor.run {
                 let before = session.document.bodies[0]
                 let spec = PrimitiveSpec.box(width: 20, depth: 20, height: 5)
+                // ReplaceBodyCommand assigns the next document revision.
                 var replacement = Body(id: before.id, name: before.name, euclidMesh: .primitive(spec),
-                                       revision: session.document.nextRevision())
+                                       revision: before.meshRevision)
                 guard replacement.adoptBRep(OCCTKernel.primitiveShape(spec, placement: .identity)!) else {
                     XCTFail("replacement fixture must adopt its analytic solid")
                     return
