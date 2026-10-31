@@ -76,6 +76,10 @@ final class CanvasCADEntryUITests: XCTestCase {
                       "the explicit CAD action must open the native workbench")
         XCTAssertTrue(app.buttons["CADWorkbenchToolsButton"].waitForExistence(timeout: 20),
                       "the opened surface is the real CAD workbench (tools entry present)")
+        let workbench = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        workbench.name = "Canvas CAD node in the native workbench"
+        workbench.lifetime = .keepAlways
+        add(workbench)
         workbenchDone.tap()
         XCTAssertTrue(toolbar.waitForExistence(timeout: 10),
                       "closing the workbench returns to the canvas node")
