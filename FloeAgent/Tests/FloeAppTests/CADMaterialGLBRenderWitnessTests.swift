@@ -1419,7 +1419,7 @@ final class CADMaterialGLBRenderWitnessTests: XCTestCase {
             "negativeControl": "C",
             "sameMaterialCarriesBoth": true,
             "wholeFrameACMean": acDiff.mean,
-            "fixedACDominantMean": acFixed.mean,
+            "fixedACRGBMean": acFixed.mean,
             "fixedACChangedFraction": acFixed.changedFraction,
             "fixedACChangedMean": acFixed.changedMean,
             "fixedABNoiseMean": abNoise.mean,

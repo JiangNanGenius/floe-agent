@@ -600,9 +600,13 @@ final class CADDrawingBOMTableExportTests: XCTestCase {
         XCTAssertEqual(formulaRow["version"], Self.longVersion,
                        "formula-looking text is preserved literally in CSV")
 
-        // The whole artifact stays UTF-8, not a lossy printable-ASCII table.
-        XCTAssertTrue(text.contains(Self.longName))
-        XCTAssertTrue(text.contains(Self.longMaterial))
+        // RFC 4180 doubles quotes inside quoted fields. Assert the exact
+        // escaped UTF-8 cells as well as the independently decoded values
+        // above; unescaped source text is not a raw CSV byte subsequence.
+        let quotedName = "\"" + Self.longName.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        let quotedMaterial = "\"" + Self.longMaterial.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        XCTAssertTrue(text.contains(quotedName))
+        XCTAssertTrue(text.contains(quotedMaterial))
     }
 
     // MARK: - Vector coverage
