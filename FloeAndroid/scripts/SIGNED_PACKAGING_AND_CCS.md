@@ -109,8 +109,12 @@ divergent per-module constants are structurally impossible again.
   full-flavor-only, `REQUEST_INSTALL_PACKAGES` remains `app/src/full` only,
   and the existing channel-exclusion checks apply unchanged.
 
-`scripts/check-apk.py` compares the Full and Play application channels. For
-the Full application's embedded component, extract the exact
+`scripts/check-apk.py` compares the Full and Play application channels. The
+native packaging expectation is channel-exact: Full must set
+`android:extractNativeLibs=true` so its embedded starter is extracted to
+`nativeLibraryDir`, while Play must set it to `false` and keep every native
+entry stored and 16 KiB zip-aligned for direct mmap. For the Full
+application's embedded component, extract the exact
 `assets/linux-runtime/runtime.apk`, verify its embedded SHA-256 sidecar,
 and run SDK `apksigner verify --print-certs` on both APKs. Both must carry
 the approved certificate and matching version; check each package identity
@@ -122,10 +126,15 @@ each saved producer to the actual AGP merged input, then verify that NDK
 `llvm-strip --strip-unneeded` produces exactly the bytes in AGP's stripped
 output and the APK. Retain the unstripped producer for symbols. The PRoot
 executable pair is deliberately exempt from stripping and must match its
-original producer digests byte for byte. Every ELF load segment still needs
-16 KiB alignment. The outer application's mapped libraries also need stored,
-16 KiB-aligned ZIP entries; the runtime component uses package-manager
-extraction (`extractNativeLibs=true`).
+original producer digests byte for byte. Every ELF `PT_LOAD` segment still
+needs 16 KiB alignment in both channels. The Full application uses
+package-manager extraction (`extractNativeLibs=true`) because
+`StarterCommand` executes `$nativeLibraryDir/libfloe_starter.so`; AGP then
+deflates its native ZIP entries, so their ZIP data offsets are not a load
+contract, but any native entry that is actually stored must remain 16 KiB
+zip-aligned. Play keeps the mapped baseline (`extractNativeLibs=false`;
+stored, 16 KiB-aligned entries). The embedded runtime component independently
+uses package-manager extraction for its PRoot executables.
 
 ### Invocation sketch (Main)
 

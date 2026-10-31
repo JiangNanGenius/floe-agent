@@ -406,10 +406,12 @@ android {
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     packaging {
-        // The Full embedded starter is executed from nativeLibraryDir. Extract
-        // native libraries instead of treating an APK ZIP entry as executable.
-        // Play still excludes every enhancement module and native target.
-        jniLibs.useLegacyPackaging = true
+        // Channel policy is set per variant from the real "distribution"
+        // flavor below. This mapped baseline (extractNativeLibs=false, stored
+        // and 16 KiB-aligned ZIP entries for direct mmap) belongs to Play;
+        // Full overrides it because its embedded starter is executed from
+        // nativeLibraryDir and must be package-manager extracted.
+        jniLibs.useLegacyPackaging = false
         // Preserve the verified upstream Office bytes. Their own immutable
         // payload pins are checked independently from Floe's Swift core;
         // a packaging strip must not silently replace that native identity.
@@ -432,6 +434,22 @@ android {
             "**/lib_TestingInterop.so",
             "**/lib_Testing_Foundation.so",
         )
+    }
+}
+
+// The Full channel is the only one that embeds the executable ADB starter.
+// StarterCommand executes "$nativeLibraryDir/libfloe_starter.so", so AGP must
+// extract native libraries for Full/fullDev. Play/playDev keep the mapped
+// baseline. Select the actual distribution-flavor identity and fail on an
+// unknown channel instead of matching a filename or accepting both values.
+androidComponents.onVariants { variant ->
+    val distribution = variant.productFlavors
+        .singleOrNull { it.first == "distribution" }?.second
+        ?: error("app variant ${variant.name} has no distribution flavor")
+    when (distribution) {
+        "full" -> variant.packaging.jniLibs.useLegacyPackaging.set(true)
+        "play" -> variant.packaging.jniLibs.useLegacyPackaging.set(false)
+        else -> error("unexpected app distribution flavor: $distribution")
     }
 }
 

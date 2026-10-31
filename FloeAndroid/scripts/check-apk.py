@@ -13,9 +13,13 @@ class tables and the packaged ELF headers directly, and asks the Android SDK's
 * neither APK declares an AccessibilityService, a root/daemon service, or a
   forbidden elevated permission;
 * both APKs carry the Swift core, the JNI bridge and the Swift runtime;
-* every packaged native library is stored uncompressed and 16 KiB-aligned in
-  the zip, and every ELF ``PT_LOAD`` segment declares at least 16 KiB
-  alignment;
+* the Full channel requires package-manager extraction
+  (``extractNativeLibs=true``) for its embedded starter, allows deflated ZIP
+  entries, and still requires every stored entry to be 16 KiB zip-aligned;
+  the Play channel requires ``extractNativeLibs=false`` with every native
+  entry stored and 16 KiB zip-aligned for direct mmap;
+* every ELF ``PT_LOAD`` segment declares at least 16 KiB alignment in both
+  channels;
 * every ELF ``DT_NEEDED`` entry is a basename (no path separator) and resolves
   either to a packaged ``lib/arm64-v8a`` library or to a public Android system
   library;
@@ -614,6 +618,106 @@ def add_check(checks, identifier, ok, detail):
     checks.append({"id": identifier, "ok": bool(ok), "detail": detail})
 
 
+# Exact packaging contract per application channel. Full executes the embedded
+# starter from nativeLibraryDir, so PackageManager must extract its libraries;
+# AGP then deflates the ZIP entries. Play loads mapped libraries directly from
+# stored, 16 KiB-aligned ZIP entries. The values are channel identities, not
+# interchangeable accepted alternatives.
+CHANNEL_PACKAGING = {
+    "full": {"extractNativeLibs": "true", "requireStored": False},
+    "play": {"extractNativeLibs": "false", "requireStored": True},
+}
+STARTER_ENTRY = "lib/arm64-v8a/libfloe_starter.so"
+
+
+def native_packaging_checks(variant, native_libraries, extract_native_libs):
+    """Return the exact extraction/ZIP/ELF checks for one app channel.
+
+    Full: extraction must be enabled and deflated entries are expected; any
+    entry that is still stored must be 16 KiB zip-aligned, every ELF PT_LOAD
+    segment must remain 16 KiB-aligned, and the extracted starter must be
+    packaged. Play: extraction must be disabled, and every native entry must
+    be stored and 16 KiB zip-aligned for direct mmap. ELF alignment is never
+    waived.
+    """
+    policy = CHANNEL_PACKAGING[variant]
+    checks = []
+    if policy["requireStored"]:
+        bad_zip = [
+            item["entry"]
+            for item in native_libraries
+            if not item["stored"] or not item["zipAligned"]
+        ]
+        detail = "all {} native libraries stored and 16 KiB-aligned".format(
+            len(native_libraries)
+        )
+    else:
+        bad_zip = [
+            item["entry"]
+            for item in native_libraries
+            if item["stored"] and not item["zipAligned"]
+        ]
+        stored_count = sum(1 for item in native_libraries if item["stored"])
+        detail = (
+            "{} native libraries package-manager extracted; "
+            "{} stored entries checked for 16 KiB alignment".format(
+                len(native_libraries), stored_count
+            )
+        )
+    add_check(
+        checks,
+        "{}.native.zip16k".format(variant),
+        not bad_zip,
+        detail
+        if not bad_zip
+        else "native ZIP storage/alignment violations: " + ", ".join(bad_zip),
+    )
+    bad_elf = [
+        "{} (align {})".format(
+            item["entry"], ",".join(hex(value) for value in item["loadSegmentAlignments"])
+        )
+        for item in native_libraries
+        if item["elfMachine"] != ELF_EM_AARCH64
+        or any(value < PAGE_16K for value in item["loadSegmentAlignments"])
+    ]
+    add_check(
+        checks,
+        "{}.native.elf16k".format(variant),
+        not bad_elf,
+        "all {} ELF PT_LOAD segments >= 16 KiB".format(
+            sum(len(item["loadSegmentAlignments"]) for item in native_libraries)
+        )
+        if not bad_elf
+        else "non-16 KiB ELF LOAD segments: " + "; ".join(bad_elf),
+    )
+    expected_extraction = policy["extractNativeLibs"]
+    add_check(
+        checks,
+        "{}.native.extractNativeLibs{}".format(
+            variant, "True" if expected_extraction == "true" else "False"
+        ),
+        str(extract_native_libs).lower() == expected_extraction,
+        "android:extractNativeLibs={} (expected {})".format(
+            extract_native_libs, expected_extraction
+        ),
+    )
+    if variant == "full":
+        packaged = {item["name"] for item in native_libraries}
+        add_check(
+            checks,
+            "full.native.extractedStarter",
+            STARTER_ENTRY in packaged,
+            "embedded starter {} is packaged for nativeLibraryDir".format(
+                STARTER_ENTRY
+            )
+            if STARTER_ENTRY in packaged
+            else "{} is missing; extraction=true cannot make the starter run".format(
+                STARTER_ENTRY
+            ),
+        )
+    return checks
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Read-only full/play APK distribution-boundary checker"
@@ -654,8 +758,8 @@ def main(argv=None):
     limitations = [
         "Static inspection only: it does not install, launch or run instrumented "
         "tests, so runtime class loading and JNI execution remain device gates.",
-        "ELF PT_LOAD p_align and 16 KiB zip alignment demonstrate packaging, not "
-        "execution on a 16 KiB-page kernel/device.",
+        "ELF PT_LOAD p_align and applicable 16 KiB zip alignment demonstrate "
+        "packaging, not execution on a 16 KiB-page kernel/device.",
         "aapt2's merged manifest is inspected; runtime permission state, component "
         "enablement and behaviour are not evaluated.",
         "Dependency lockfiles and verification metadata are Gradle inputs and are "
@@ -775,38 +879,12 @@ def main(argv=None):
             if not foreign_abi
             else "unexpected native ABI paths: " + ", ".join(foreign_abi),
         )
-        bad_zip = [
-            item["entry"]
-            for item in data["nativeLibraries"]
-            if not item["stored"] or not item["zipAligned"]
-        ]
-        add_check(
-            checks,
-            "{}.native.zip16k".format(variant),
-            not bad_zip,
-            "all {} native libraries stored and 16 KiB-aligned".format(
-                len(data["nativeLibraries"])
+        checks.extend(
+            native_packaging_checks(
+                variant,
+                data["nativeLibraries"],
+                data["manifest"]["extractNativeLibs"],
             )
-            if not bad_zip
-            else "misaligned/compressed native libraries: " + ", ".join(bad_zip),
-        )
-        bad_elf = [
-            "{} (align {})".format(
-                item["entry"], ",".join(hex(value) for value in item["loadSegmentAlignments"])
-            )
-            for item in data["nativeLibraries"]
-            if item["elfMachine"] != ELF_EM_AARCH64
-            or any(value < PAGE_16K for value in item["loadSegmentAlignments"])
-        ]
-        add_check(
-            checks,
-            "{}.native.elf16k".format(variant),
-            not bad_elf,
-            "all {} ELF PT_LOAD segments >= 16 KiB".format(
-                sum(len(item["loadSegmentAlignments"]) for item in data["nativeLibraries"])
-            )
-            if not bad_elf
-            else "non-16 KiB ELF LOAD segments: " + "; ".join(bad_elf),
         )
         packaged_entries = {item["entry"] for item in data["nativeLibraries"]}
         needed_entries = [
@@ -857,13 +935,6 @@ def main(argv=None):
                 else "native manifest mismatches: "
                 + json.dumps(mismatches, sort_keys=True),
             )
-        extracted = data["manifest"]["extractNativeLibs"]
-        add_check(
-            checks,
-            "{}.native.extractNativeLibsFalse".format(variant),
-            str(extracted).lower() == "false",
-            "android:extractNativeLibs={}".format(extracted),
-        )
         forbidden_permission = forbidden_permissions(data["manifest"])
         add_check(
             checks,

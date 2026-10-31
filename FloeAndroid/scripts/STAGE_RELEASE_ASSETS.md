@@ -97,8 +97,10 @@ The APK must contain only the formal full-channel native set:
 - no `libXCTest.so`, `libTesting.so`, `lib_TestingInterop.so`,
   `lib_Testing_Foundation.so` or `libfloe_qualification_jni.so`;
 - no meaningful `.debug_*` data (empty placeholder sections are tolerated);
-- stored native libraries, 16 KiB zip data alignment and 16 KiB ELF
-  `PT_LOAD` alignment;
+- Full uses package-manager extraction (`extractNativeLibs=true`) for its
+  embedded starter; Play uses stored, 16 KiB ZIP-aligned native libraries
+  (`extractNativeLibs=false`). Every channel still requires 16 KiB ELF
+  `PT_LOAD` alignment, and any stored native entry requires 16 KiB ZIP alignment;
 - GNU build IDs, resolvable `DT_NEEDED` entries and a `Java_`/`JNI_OnLoad`
   export in `libfloe_jni.so`.
 

@@ -36,22 +36,26 @@ The checks are deliberately fail-closed:
 * the full distribution must be evidenced by the current full-only DEX marker
   classes, so a Play or test APK is not accepted because its filename says
   "release";
-* the APK must be a single ``arm64-v8a`` artifact with native libraries that
-  are stored, 16 KiB zip-aligned, 16 KiB ELF ``PT_LOAD``-aligned, carry build
-  IDs, resolve their ``DT_NEEDED`` entries, and contain no meaningful
-  ``.debug_*`` data;
+* the APK must be a single ``arm64-v8a`` Full artifact that sets
+  ``android:extractNativeLibs=true``: the embedded starter executes
+  ``nativeLibraryDir/libfloe_starter.so``. Its native libraries must be
+  16 KiB ELF ``PT_LOAD``-aligned, carry build IDs, resolve their
+  ``DT_NEEDED`` entries, and contain no meaningful ``.debug_*`` data. This
+  Full layout lets AGP deflate native ZIP entries, so a deflated entry is
+  accepted; any entry that is still stored must also be 16 KiB zip-aligned.
+  A mapped ``extractNativeLibs=false`` layout is rejected;
 * for a release embedding the pinned Office engine, ``--office-pins`` is the
   ONE bounded build-ID exception: the GNU build-id requirement is waived
   only for libraries whose bytes hash exactly to a
   ``core/officeengine/payload-pins.json`` entry (the producer's prebuilt
-  libraries ship without a build-id note). Every other gate — stored,
-  zip/ELF 16 KiB alignment, ``DT_NEEDED`` resolution, debug-section,
-  test-only — stays fully enforced on them; a pinned library missing from
-  the APK, a hash that drifts from its pin, or the producer's official
-  ``libc++_shared.so`` appearing in the APK are each hard failures, and the
-  report records the pins file digest and every waived library. Without
-  ``--office-pins`` the behavior is exactly as before (every library needs
-  a build id).
+  libraries ship without a build-id note). Every other gate — ELF 16 KiB
+  alignment, 16 KiB ZIP alignment for any stored entry, ``DT_NEEDED``
+  resolution, debug-section, test-only — stays fully enforced on them; a
+  pinned library missing from the APK, a hash that drifts from its pin, or
+  the producer's official ``libc++_shared.so`` appearing in the APK are each
+  hard failures, and the report records the pins file digest and every waived
+  library. Without ``--office-pins`` the behavior is exactly as before (every
+  library needs a build id).
 * the supplied preverified SHA-256, source commit, tag and formal signer
   certificate are bound to the exact bytes that are staged and published;
 * an existing non-empty destination is never replaced, and a failure leaves
@@ -1722,8 +1726,20 @@ def zip_data_offset(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> int:
 
 
 def native_facts(
-    path: Path, office_pins: Optional[Dict[str, Any]] = None
+    path: Path,
+    office_pins: Optional[Dict[str, Any]] = None,
+    *,
+    extract_native_libs: Optional[bool] = None,
 ) -> Dict[str, Any]:
+    """Inspect packaged native libraries.
+
+    ``extract_native_libs=True`` models the Full layout: PackageManager
+    extracts libraries into ``nativeLibraryDir`` (the embedded starter runs
+    from there), so AGP may deflate the ZIP entries and their ZIP data
+    offsets are not a load contract. A stored entry must still be 16 KiB
+    zip-aligned. ``False``/``None`` keeps the mapped-native requirement:
+    every library stored and 16 KiB zip-aligned for direct mmap.
+    """
     problems = []
     libraries = []
     total_debug = 0
@@ -1734,6 +1750,7 @@ def native_facts(
     office_waived: List[str] = []
     office_drift: List[str] = []
     official_libcxx_packaged = False
+    extraction = extract_native_libs is True
     with zipfile.ZipFile(str(path), "r") as archive:
         infos = archive.infolist()
         native_infos = [
@@ -1843,14 +1860,15 @@ def native_facts(
                 problems.append({"id": exc.code, "message": "{}: {}".format(name, exc.message)})
                 data_offset = None
             zip_aligned = data_offset is not None and data_offset % PAGE_16K == 0
-            if not stored:
+            if not stored and not extraction:
                 problems.append(
                     {
                         "id": "native.compression",
-                        "message": "{} is compressed; native libraries must be stored".format(name),
+                        "message": "{} is compressed; native libraries must be "
+                        "stored when package-manager extraction is disabled".format(name),
                     }
                 )
-            if not zip_aligned:
+            if not zip_aligned and (stored or not extraction):
                 problems.append(
                     {
                         "id": "native.zip-alignment",
@@ -1876,8 +1894,8 @@ def native_facts(
                 ):
                     # The ONE bounded exception: a byte-exact pinned producer
                     # library without a build-id note. Every other gate above
-                    # (stored, zip/ELF alignment, later debug/needed/test-only)
-                    # still applies to this library.
+                    # (stored-entry ZIP alignment, ELF alignment, later
+                    # debug/needed/test-only) still applies to this library.
                     office_waived.append(basename)
                 else:
                     problems.append(
@@ -1994,6 +2012,10 @@ def native_facts(
         "abi": ANDROID_ABI,
         "libraries": libraries,
         "problems": problems,
+        "extractNativeLibs": extract_native_libs,
+        "extractionLayout": (
+            "package-manager" if extraction else "zip-mapped"
+        ),
         "debugSectionBytes": total_debug,
         "maxDebugSectionBytes": max_debug_section,
         "testOnlyLibraries": sorted(set(test_only_libraries)),
@@ -2301,13 +2323,18 @@ class ApkInspector:
         }
 
     def inspect(self, apk: Path) -> Dict[str, Any]:
+        manifest = manifest_facts(self.aapt2, apk)
         facts = {
             "zip": zip_structure_facts(apk),
-            "manifest": manifest_facts(self.aapt2, apk),
+            "manifest": manifest,
             "badging": badging_facts(self.aapt2, apk),
             "signing": signing_facts(self.apksigner, apk),
             "dex": dex_facts(apk),
-            "native": native_facts(apk, self.office_pins),
+            "native": native_facts(
+                apk,
+                self.office_pins,
+                extract_native_libs=manifest.get("extractNativeLibs"),
+            ),
             "toolVersions": dict(self.versions),
         }
         facts["runtimeChild"] = self._inspect_runtime_child(apk)
@@ -2786,12 +2813,13 @@ def evaluate(
             "manifest.instrumentation",
             "APK declares instrumentation (test APK), not a user-facing release",
         )
-    if manifest.get("extractNativeLibs") is not False:
+    if manifest.get("extractNativeLibs") is not True:
         _failure(
             failures,
             "manifest.extract-native-libs",
-            "APK must set android:extractNativeLibs=false for the packaged "
-            "native libraries",
+            "Full APK must set android:extractNativeLibs=true so the embedded "
+            "starter executable (libfloe_starter.so) is extracted to "
+            "nativeLibraryDir; got {!r}".format(manifest.get("extractNativeLibs")),
         )
     if badging:
         for field in ("package", "versionCode", "versionName"):
@@ -2893,11 +2921,12 @@ def evaluate(
             office_limitations.append(
                 "Office pins gate active (pins file sha256 {}): the GNU build-id "
                 "requirement was waived only for byte-exact pinned producer "
-                "libraries ({}); stored, 16 KiB zip/ELF alignment, DT_NEEDED, "
-                "debug-section and test-only gates remained fully enforced, every "
-                "pinned library had to be packaged with its exact hash, and the "
-                "producer's official libc++_shared.so had to stay out of the APK. "
-                "Main confirms the pins file digest against the module authority."
+                "libraries ({}); ELF 16 KiB alignment, 16 KiB ZIP alignment for "
+                "any stored entry, DT_NEEDED, debug-section and test-only gates "
+                "remained fully enforced, every pinned library had to be "
+                "packaged with its exact hash, and the producer's official "
+                "libc++_shared.so had to stay out of the APK. Main confirms the "
+                "pins file digest against the module authority."
                 .format(
                     policy.office_pins_sha256,
                     ", ".join(office.get("buildIdWaived", [])) or "none",
