@@ -39,6 +39,36 @@ class HostEffectPumpTest {
         }
     }
 
+    @Test
+    fun admissionReasonFallsBackToTypedDetailWhenValueCarriesNoReason() = runBlocking {
+        // run28 exact shape: terminalResult() carries wire/reason/phase in
+        // detail and does NOT set `value` (or sets a value without reason).
+        for (valueMember in listOf(
+            "",
+            ",\"value\":{\"errorCode\":\"needsConfiguration\"}",
+        )) {
+            val client = client { raw ->
+                val correlation = correlationOf(raw)
+                """{"version":3,"requestID":"$correlation","ok":true,"schema":"floe.effect-cursor/3","correlationID":"$correlation","cursor":{"operationReceiptID":"op:v1:capability","sequence":1},"effects":[{"sequence":1,"kind":"failed","code":"ordinaryRuntimeBlocked","detail":[{"key":"wire","value":"needsConfiguration"},{"key":"reason","value":"modelDisabled"},{"key":"phase","value":"capabilityAdmission"}]$valueMember}],"hasMore":false,"resyncRequired":false}"""
+            }
+            val captured = Captured()
+            val handle = client.openEffectStream(
+                operationReceiptID = "op:v1:capability",
+                configurationScope = "models",
+                onFrame = captured.frames::add,
+                onTerminal = captured.terminals::add,
+                onFailure = captured.failures::add,
+            )
+            repeat(50) { if (captured.terminals.isEmpty()) delay(10) }
+            handle.close()
+            assertTrue(captured.failures.isEmpty())
+            val failure = captured.terminals.single() as HostEffectTerminal.Failed
+            assertEquals("needsConfiguration", failure.code)
+            assertEquals("modelDisabled", failure.reason)
+            assertEquals("capabilityAdmission", failure.detail["phase"])
+        }
+    }
+
     private class ScriptedExchange(
         private val script: (String) -> String,
     ) : HostBridgeExchange {

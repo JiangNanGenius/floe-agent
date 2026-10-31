@@ -858,7 +858,12 @@ class EffectPumpHandle internal constructor(
     // them available for recovery without accepting arbitrary diagnostic text.
     private fun HostEffectFrame.domainReason(fallback: String): String {
         val reason = if (code == "ordinaryRuntimeBlocked" && detail["wire"] != null) {
+            // The typed value wins when it carries a reason; terminalResult()
+            // domains (for example capabilityAdmission/modelDisabled) put the
+            // same typed reason in detail["reason"] and do NOT set value, so
+            // the old value-only lookup degraded it to the literal "rejected".
             ((value as? JsonObject)?.get("reason") as? JsonPrimitive)?.contentOrNull
+                ?: detail["reason"]
         } else detail["reason"]
         return reason?.takeIf {
             (it.length in 1..128 && it.all { ch ->

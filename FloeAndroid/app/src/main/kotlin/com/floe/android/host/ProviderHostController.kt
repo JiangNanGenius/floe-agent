@@ -17,6 +17,7 @@ import com.floe.android.feature.providers.ProviderEditorIdentity
 import com.floe.android.feature.providers.ProviderEditorSeedUi
 import com.floe.android.feature.providers.ProviderEditorUiState
 import com.floe.android.feature.providers.ProviderFlowHolder
+import com.floe.android.feature.providers.ProviderFormLogic
 import com.floe.android.feature.providers.ProviderListRowUi
 import com.floe.android.feature.providers.ProviderListUiState
 import com.floe.android.feature.providers.ProviderServiceRoleUi
@@ -155,8 +156,16 @@ class ProviderHostController internal constructor(
         // conversation host already reads (one reader, no second catalog).
         if (countObservation == null) {
             countObservation = host.scope.launch(host.ioDispatcher) {
-                host.conversations.modelProjectionFlow.collect {
+                host.conversations.modelProjectionFlow.collect { projection ->
                     republishModelCounts()
+                    // Targeted legacy capability-override repair: only a
+                    // COMPLETE model sweep can carry the full rows + native
+                    // CAS revisions, and the same projection event owns both
+                    // the count join and this one bounded repair pass.
+                    maybeRepairLegacyCapabilityOverrides(
+                        loaded = projection.loaded,
+                        sweep = projection.cacheGeneration,
+                    )
                 }
             }
         }
@@ -177,6 +186,13 @@ class ProviderHostController internal constructor(
         // native epoch/route fences retire the real slots.
         modelSets.discardAll()
         listActionFailure = null
+        // A stopped host retires no durable row; the next admitted root may
+        // retry a refused exact revision from a fresh read.
+        capabilityRepairInFlight.set(false)
+        capabilityRepairProcessedGeneration.set(-1L)
+        capabilityRepairPendingGeneration.set(-1L)
+        capabilityRepairAttempted.clear()
+        capabilityRepairModelAttempts.clear()
         countObservation?.cancel()
         countObservation = null
     }
@@ -185,6 +201,23 @@ class ProviderHostController internal constructor(
     private var lastProviderPageValue: JsonElement? = null
     private var lastModelCounts: Map<String, Int> = emptyMap()
     private var countObservation: kotlinx.coroutines.Job? = null
+    /** One targeted legacy-override repair pass at a time. */
+    private val capabilityRepairInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** Model-sweep generation already offered to the repair pass. */
+    private val capabilityRepairProcessedGeneration =
+        java.util.concurrent.atomic.AtomicLong(-1L)
+    /** Newer sweep observed while a repair pass was running. */
+    private val capabilityRepairPendingGeneration =
+        java.util.concurrent.atomic.AtomicLong(-1L)
+    /** Exact persisted row revisions already attempted in this process. */
+    private val capabilityRepairAttempted: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+    /** Per-model attempt bound (a hostile/failing writer cannot loop a pass). */
+    private val capabilityRepairModelAttempts = ConcurrentHashMap<String, Int>()
+    /** Test seam: production reads the complete conversation model cache. */
+    internal var repairProviders: () -> List<ProviderListRowUi> = { configuredProviders }
+    internal var repairModelRows: (String) -> List<ProviderWire.ModelRow> =
+        { host.conversations.modelRowsForProvider(it) }
     /** Last failed list action; read/count reconciliation must not erase it. */
     @Volatile private var listActionFailure: String? = null
     /** Fences provider/catalog page continuation chains (latest wins). */
@@ -349,6 +382,181 @@ class ProviderHostController internal constructor(
         }
         updateDestination { it.copy(list = it.list.copy(isLoading = false,
             errorMessage = loadFailureCopy())) }
+    }
+
+    // ------------------------------------- legacy capability-override repair
+
+    /**
+     * ONE bounded, targeted repair pass for rows the OLD Android producer
+     * persisted with a delta-only `explicitCapabilities` mask.
+     *
+     * The predicate is deliberately narrow (see
+     * [ProviderFormLogic.isLegacyConversationCapabilityOverride]): the
+     * complete base row owns the required text role AND the persisted
+     * explicit is exactly a non-zero editable-only ownership signature
+     * (2/4/6/8… of the editable mask 94). A reviewed zero, approval-only 32,
+     * every media override (8 on base 24), any unknown non-editable mask and
+     * nil provenance are NOT inferred and are never written here.
+     *
+     * The repair value comes from the COMPLETE base `capabilities` row (the
+     * last selected value), never from the ownership mask. The write goes
+     * through the EXISTING atomic single-row `config.model.save` full-snapshot
+     * CAS: the exact persisted row (with its native revision) is sent with
+     * ONLY explicitCapabilities replaced. A stale/refused CAS writes nothing,
+     * the cached record is never mutated locally, and that exact revision is
+     * not retried in this process.
+     */
+    internal fun maybeRepairLegacyCapabilityOverrides(loaded: Boolean, sweep: Long) {
+        if (!loaded || !admitted() || sweep <= 0) return
+        if (sweep <= capabilityRepairProcessedGeneration.get()) return
+        if (!capabilityRepairInFlight.compareAndSet(false, true)) {
+            capabilityRepairPendingGeneration.accumulateAndGet(sweep) { previous, next ->
+                maxOf(previous, next)
+            }
+            return
+        }
+        capabilityRepairProcessedGeneration.set(sweep)
+        dispatchCapabilityRepairPass()
+    }
+
+    internal fun dispatchCapabilityRepairPass() {
+        val rootEpoch = host.nativeRootEpoch()
+        val commands = capabilityRepairCommands()
+        if (commands.isEmpty() || host.nativeRootEpoch() != rootEpoch) {
+            finishCapabilityRepairPass()
+            return
+        }
+        repairNextCapabilityOverride(commands, 0, rootEpoch)
+    }
+
+    /**
+     * Current repair commands from the immutable complete model sweep. One
+     * carrier per row; the model UUID is the dedupe identity and the exact
+     * persisted row revision is the retry identity.
+     */
+    internal fun capabilityRepairCommands(): List<CapabilityRepairCommand> {
+        val seen = HashSet<String>()
+        val commands = ArrayList<CapabilityRepairCommand>()
+        for (provider in repairProviders()) {
+            val rows = repairModelRows(provider.providerId)
+            for (row in rows) {
+                if (!seen.add(row.id.uppercase())) continue
+                val version = (row.originalProjection?.get("revision") as? JsonObject)
+                    ?.let { (it["version"] as? JsonPrimitive)?.contentOrNull }
+                    ?: continue
+                val identity = "${row.id.uppercase()}|$version"
+                if (identity in capabilityRepairAttempted) continue
+                if ((capabilityRepairModelAttempts[row.id.uppercase()] ?: 0) >=
+                    MAX_CAPABILITY_REPAIR_ATTEMPTS_PER_MODEL
+                ) continue
+                commands.add(capabilityRepairCommand(row, identity) ?: continue)
+            }
+        }
+        return commands
+    }
+
+    /**
+     * The closed carrier for one repaired row: the EXACT original saved
+     * snapshot (unknown/extension members included) minus its native
+     * `revision` member, with ONLY `explicitCapabilities` replaced. Missing
+     * identity/revision or an over-bound row refuses (null) rather than
+     * fabricating a CAS token or a partial profile.
+     */
+    internal fun capabilityRepairCommand(
+        row: ProviderWire.ModelRow,
+        identity: String,
+    ): CapabilityRepairCommand? {
+        val repaired = ProviderFormLogic.repairedLegacyExplicitCapabilities(
+            baseCapabilities = row.capabilitiesRaw,
+            explicitCapabilities = row.savedMetadata?.explicitCapabilitiesRaw,
+        ) ?: return null
+        val projection = row.originalProjection ?: return null
+        val revisionObject = projection["revision"] as? JsonObject ?: return null
+        val resourceID = (revisionObject["resourceID"] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.contentOrNull ?: return null
+        val version = (revisionObject["version"] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.contentOrNull ?: return null
+        if (!resourceID.equals("model.${row.id}", ignoreCase = true)) return null
+        val persistedID = (projection["id"] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.contentOrNull ?: return null
+        if (!persistedID.equals(row.id, ignoreCase = true)) return null
+        val snapshot = JsonObject(LinkedHashMap(projection).apply {
+            remove("revision")
+            put("explicitCapabilities", JsonPrimitive(repaired))
+        })
+        if (snapshot.toString().encodeToByteArray().size > MODEL_ROW_MAXIMUM_BYTES) return null
+        return CapabilityRepairCommand(
+            identity = identity,
+            request = HostCommandRequest(
+                command = "config.model.save",
+                scope = HostScope.ApplicationConfiguration("models"),
+                stateful = true,
+                correlationID = client().correlationID("capfix"),
+                revision = HostRevision(resourceID, version),
+                payload = snapshot,
+            ),
+        )
+    }
+
+    private fun repairNextCapabilityOverride(
+        commands: List<CapabilityRepairCommand>,
+        index: Int,
+        rootEpoch: Long?,
+    ) {
+        if (index >= commands.size ||
+            host.nativeRootEpoch() != rootEpoch ||
+            !admitted()
+        ) {
+            finishCapabilityRepairPass()
+            return
+        }
+        val command = commands[index]
+        if (!capabilityRepairAttempted.add(command.identity)) {
+            repairNextCapabilityOverride(commands, index + 1, rootEpoch)
+            return
+        }
+        val modelID = command.identity.substringBefore('|')
+        capabilityRepairModelAttempts.merge(modelID, 1) { previous, next -> previous + next }
+        host.trackOperation(command.request) { outcome ->
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    // Canonical persisted truth changed: re-read so the
+                    // composer/provider surfaces join the repaired value.
+                    host.conversations.refreshModels()
+                    repairNextCapabilityOverride(commands, index + 1, rootEpoch)
+                }
+                is HostOperationOutcome.Rejected -> {
+                    // The native CAS wrote NOTHING. The original record is
+                    // preserved, this exact revision is not retried, and the
+                    // remaining independent rows still get their pass.
+                    logCapabilityRepairFailure(outcome.code)
+                    repairNextCapabilityOverride(commands, index + 1, rootEpoch)
+                }
+                is HostOperationOutcome.Failed -> {
+                    logCapabilityRepairFailure(outcome.code)
+                    repairNextCapabilityOverride(commands, index + 1, rootEpoch)
+                }
+                HostOperationOutcome.Cancelled,
+                HostOperationOutcome.Superseded -> finishCapabilityRepairPass()
+            }
+        }
+    }
+
+    private fun finishCapabilityRepairPass() {
+        capabilityRepairInFlight.set(false)
+        val pending = capabilityRepairPendingGeneration.getAndSet(-1L)
+        if (pending > capabilityRepairProcessedGeneration.get()) {
+            val projection = host.conversations.modelProjectionFlow.value
+            maybeRepairLegacyCapabilityOverrides(projection.loaded, projection.cacheGeneration)
+        }
+    }
+
+    /** Closed diagnostic code only; never a row/payload/secret. */
+    private fun logCapabilityRepairFailure(code: String) {
+        val safe = code.take(64).filter { ch ->
+            ch in 'A'..'Z' || ch in 'a'..'z' || ch in '0'..'9' || ch in "_.-[]"
+        }
+        runCatching { android.util.Log.w("FloeProviders", "capfix_refused:$safe") }
     }
 
     internal fun refreshCatalog() {
@@ -1660,6 +1868,10 @@ class ProviderHostController internal constructor(
         const val CUSTOM_PROVIDER_KIND = "custom"
         /** Frozen native `ProviderSaveCandidate` byte bound (16 KiB). */
         const val CANDIDATE_MAXIMUM_BYTES = 16_384
+        /** Frozen `config.model.save` full-snapshot payload bound. */
+        const val MODEL_ROW_MAXIMUM_BYTES = 61_440
+        /** Maximum legacy-repair writes one model may receive per process. */
+        const val MAX_CAPABILITY_REPAIR_ATTEMPTS_PER_MODEL = 2
         /** Continuation bounds for one read chain (composer page budget). */
         const val MAX_PAGE_CHAIN = 8
         const val MAX_PAGE_CHAIN_ROWS = 256
@@ -1719,10 +1931,16 @@ internal object ProviderWire {
          * full-snapshot model edits such as the reasoning shortcut. */
         val originalProjection: JsonObject? = null,
     ) {
-        /** Text-capable for the ordinary conversation composer. */
+        /** Text-capable for the ordinary conversation composer. The run
+         * admission uses the EFFECTIVE mask (`explicit ?? capabilities`), so
+         * the picker must use the same field or it offers a model the run
+         * will refuse. This deliberately does NOT apply the editor's narrow
+         * legacy inference: until the atomic repair lands, run admission
+         * really does refuse such a row and the composer must not offer it. */
         val supportsText: Boolean
             get() {
-                val bits = capabilitiesRaw ?: return true
+                val bits = savedMetadata?.explicitCapabilitiesRaw
+                    ?: capabilitiesRaw ?: return true
                 return (bits and TEXT_CAPABILITY_BIT) != 0
             }
 
@@ -1839,18 +2057,30 @@ internal object ProviderWire {
 
     /** One production seed path, retaining metadata with the row instead
      * of a mutable global model-ID registry or a later unrelated read. */
-    internal fun savedModelDraft(model: ModelRow): ModelDraftRowUi = ModelDraftRowUi(
-        draftModelId = model.id, savedModelId = model.id,
-        remoteModelID = model.remoteModelId, displayName = model.displayName,
-        enabled = model.isEnabled, hiddenFromPrimaryPicker = model.isHiddenFromPrimaryPicker,
-        capabilities = capabilitiesOf(model.capabilitiesRaw),
-        reasoningEffort = ReasoningEffortUi.entries.firstOrNull {
-            it.swiftRaw == model.reasoningEffort
-        } ?: ReasoningEffortUi.AUTOMATIC,
-        contextTokens = model.contextTokens, maxOutputTokens = model.maxOutputTokens,
-        source = com.floe.android.feature.providers.ModelSourceUi.SAVED,
-        selectedForSave = true, savedMetadata = model.savedMetadata,
-    )
+    internal fun savedModelDraft(model: ModelRow): ModelDraftRowUi {
+        // The editor shows the row's real selected state, never a fabricated
+        // one: a proven legacy ownership mask derives its values from the
+        // complete base row (see ProviderFormLogic), while a reviewed zero,
+        // approval-only 32 or media 8 override stays exactly authoritative.
+        // Role bits are not forced here — a deliberately reviewed empty row
+        // must not regain TEXT just by opening the editor.
+        val selectedBits = ProviderFormLogic.effectiveSelectedCapabilities(
+            baseCapabilities = model.capabilitiesRaw,
+            explicitCapabilities = model.savedMetadata?.explicitCapabilitiesRaw,
+        )
+        return ModelDraftRowUi(
+            draftModelId = model.id, savedModelId = model.id,
+            remoteModelID = model.remoteModelId, displayName = model.displayName,
+            enabled = model.isEnabled, hiddenFromPrimaryPicker = model.isHiddenFromPrimaryPicker,
+            capabilities = capabilitiesOf(selectedBits),
+            reasoningEffort = ReasoningEffortUi.entries.firstOrNull {
+                it.swiftRaw == model.reasoningEffort
+            } ?: ReasoningEffortUi.AUTOMATIC,
+            contextTokens = model.contextTokens, maxOutputTokens = model.maxOutputTokens,
+            source = com.floe.android.feature.providers.ModelSourceUi.SAVED,
+            selectedForSave = true, savedMetadata = model.savedMetadata,
+        )
+    }
 
     /**
      * Reads the persisted default agent model id from
@@ -2351,10 +2581,37 @@ internal object ProviderWire {
         modelUUID: (String) -> String,
     ): JsonObject {
         val saved = model.savedMetadata
-        val representedBits = ModelCapabilityUi.entries.fold(0) { bits, item -> bits or item.swiftBit }
-        // Keep persisted bits the pinned presentation does not expose.
-        val capabilities = capabilityBits(effectiveCapabilities(model)) or
-            ((saved?.capabilitiesRaw ?: 0) and representedBits.inv())
+        val draftBits = capabilityBits(effectiveCapabilities(model))
+        val baseBits = saved?.capabilitiesRaw
+        val explicit = saved?.explicitCapabilitiesRaw
+        // Only bits the pinned presentation does not expose are carried
+        // verbatim; every represented bit comes from the draft's real
+        // selection.
+        val unknownBits = ((baseBits ?: 0) or (explicit ?: 0)) and
+            ProviderFormLogic.knownCapabilityBits.inv()
+        val completeDraft = draftBits or unknownBits
+        // `explicitCapabilities` is a COMPLETE authoritative override for run
+        // admission. An unedited saved row therefore re-emits its persisted
+        // fields exactly: the base `capabilities` row is kept, and only a
+        // PROVEN legacy ownership mask is healed from that complete base. A
+        // reviewed zero, approval-only 32, media 8 and valid text 35 are
+        // authoritative and pass through unchanged. A real model-editor Save
+        // writes the draft's complete selection.
+        val selected = ProviderFormLogic.effectiveSelectedCapabilities(baseBits, explicit)
+        val selectedKnown = selected?.let { it and ProviderFormLogic.knownCapabilityBits }
+        val unmodified = saved != null && draftBits == (selectedKnown ?: draftBits)
+        val repaired = ProviderFormLogic.repairedLegacyExplicitCapabilities(
+            baseCapabilities = baseBits ?: draftBits,
+            explicitCapabilities = explicit,
+        )
+        val capabilities = if (unmodified) baseBits ?: completeDraft else completeDraft
+        val changed = ((baseBits ?: 0) xor draftBits) and
+            ProviderFormLogic.editableCapabilityBits
+        val emitted = when {
+            unmodified -> repaired ?: explicit
+            explicit != null || changed != 0 -> completeDraft
+            else -> null
+        }
         val fields = mutableMapOf<String, JsonElement>(
             "id" to JsonPrimitive(modelUUID(model.draftModelId)),
             "providerID" to JsonPrimitive(providerID),
@@ -2380,15 +2637,7 @@ internal object ProviderWire {
         // projection. Preserve exact decimal JSON and optional-zero intent.
         saved?.pricingJSON?.let { fields["pricing"] = Json.parseToJsonElement(it) }
         saved?.useSurfacesJSON?.let { fields["useSurfaces"] = Json.parseToJsonElement(it) }
-        val editable = listOf(ModelCapabilityUi.VISION, ModelCapabilityUi.TOOLS,
-            ModelCapabilityUi.IMAGE_GENERATION, ModelCapabilityUi.IMAGE_EDITING,
-            ModelCapabilityUi.VIDEO_GENERATION).fold(0) { bits, item -> bits or item.swiftBit }
-        val changed = saved?.capabilitiesRaw?.let { (it xor capabilities) and editable } ?: 0
-        if (changed != 0) {
-            fields["explicitCapabilities"] = JsonPrimitive((saved?.explicitCapabilitiesRaw ?: 0) or changed)
-        } else {
-            saved?.explicitCapabilitiesJSON?.let { fields["explicitCapabilities"] = Json.parseToJsonElement(it) }
-        }
+        emitted?.let { fields["explicitCapabilities"] = JsonPrimitive(it) }
         return JsonObject(fields)
     }
 
@@ -2480,6 +2729,14 @@ internal object ProviderWire {
 
     private fun JsonElement.intValue(): Int? = (this as? JsonPrimitive)?.longOrNull?.toInt()
 }
+
+/** One targeted legacy-override repair carrier. [identity] is the exact
+ * persisted model UUID + native revision version, so a refused CAS is never
+ * retried blindly in the same process. */
+internal data class CapabilityRepairCommand(
+    val identity: String,
+    val request: HostCommandRequest,
+)
 
 /** Process-wide revision memory for provider rows (identity-only).
  *
