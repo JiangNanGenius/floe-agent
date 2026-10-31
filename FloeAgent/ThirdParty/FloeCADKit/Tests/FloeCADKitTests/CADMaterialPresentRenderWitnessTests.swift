@@ -13,12 +13,13 @@
 //  the live RealityKit render (nil/inactive Present can never count, and a
 //  stale capture throws instead of falling back).
 //
-//  Fixture: the exact same A/B/C slab and 2x2 asymmetric normal map as the
-//  Metal witness (see that file; derivation and deterministic oracle in
-//  Local/Private/cad106-native-closure-20261031/material-render-control-review/):
+//  Fixture: the exact same A/B/C slab as the Metal witness (see that file).
+//  The normal half uses the 2x2 asymmetric normal map; the colour half uses
+//  the 64x64 four-quadrant sRGB base-colour map and projects its authored
+//  quadrant centres through the live Present camera for absolute landmarks.
 //    A = topLeft bytes; B = row-inverted bytes declared bottomLeft
-//      (identical physical normals -> identical lighting);
-//    C = SAME bytes as B declared topLeft (green reversed -> different
+//      (identical physical samples -> identical lighting);
+//    C = SAME bytes as B declared topLeft (vertical mirror -> different
 //      lighting). B and C byte-identical origin discriminant kills cached /
 //      stale-texture fakes.
 //
@@ -34,6 +35,8 @@
 //  must match, and all original whole-frame A/C gates remain enforced.
 //  Coverage, changed-region and border checks add independent controls for
 //  narrow highlights, cached images and scene drift; they replace no gate.
+//  The colour test is additive: it does not relax or replace any normal-map
+//  assertion.
 //
 // //  Environment: requires the App-hosted UIKit test target with a foreground
 //  window scene (the pane needs a real UIWindowScene to build its ARView
@@ -92,12 +95,16 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
         handles = []
     }
 
-    // MARK: Fixture (constants pinned with the Metal witness + the checker)
+    // MARK: Fixture (constants pinned with the Metal witness)
 
     private enum Fixture {
+        static let slabMinMM = SIMD3<Float>(-50, -50, 0)
+        static let slabMaxMM = SIMD3<Float>(50, 50, 12)
+        static let frontFaceZMM: Float = 12
+
         // Green 255 / 0 gives maximal endpoint tangent-Y variation
         // under row reversal; red 96 / 160 per column. Pinned with the
-        // Metal witness and the deterministic fixture oracle.
+        // Metal witness.
         static let rowTop: [[UInt8]] = [[96, 255, 164, 255], [160, 255, 164, 255]]
         static let rowBottom: [[UInt8]] = [[96, 0, 164, 255], [160, 0, 164, 255]]
 
@@ -124,13 +131,16 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
             }
         }
 
-        static func normalPNG(_ variant: Variant) throws -> Data {
+        static func png(width: Int, height: Int, rows: [[UInt8]]) throws -> Data {
+            XCTAssertEqual(rows.count, height)
+            XCTAssertTrue(rows.allSatisfy { $0.count == width * 4 })
             var bytes: [UInt8] = []
-            for row in variant.rows { bytes.append(contentsOf: row) }
+            bytes.reserveCapacity(width * height * 4)
+            for row in rows { bytes.append(contentsOf: row) }
             let provider = try XCTUnwrap(CGDataProvider(data: Data(bytes) as CFData))
             let image = try XCTUnwrap(CGImage(
-                width: 2, height: 2, bitsPerComponent: 8, bitsPerPixel: 32,
-                bytesPerRow: 2 * 4,
+                width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: width * 4,
                 space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
                 provider: provider, decode: nil, shouldInterpolate: false,
@@ -143,8 +153,14 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
             return output as Data
         }
 
-        static func slabBody(normalPNG png: Data,
-                             orientation: MaterialTextureOrientation) -> Body {
+        static func normalPNG(_ variant: Variant) throws -> Data {
+            try png(width: 2, height: 2, rows: variant.rows)
+        }
+
+        /// Closed 100x100x12 mm slab shared by the normal and colour
+        /// witnesses. Same mesh, UVs, winding and hard edges; only the
+        /// material map changes.
+        static func slabBody(material: BodyMaterialSpec, name: String) -> Body {
             let h: Float = 50
             let z0: Float = 0, z1: Float = 12
             var positions: [SIMD3<Float>] = []
@@ -176,22 +192,105 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
             addFace([SIMD3(-h, -h, z0), SIMD3(h, -h, z0),
                      SIMD3(h, -h, z1), SIMD3(-h, -h, z1)], SIMD3(0, -1, 0))
 
-            var body = Body(id: BodyID(), name: "X13 witness slab",
+            var body = Body(id: BodyID(), name: name,
                             transform: .identity, primitive: nil,
                             render: RenderMesh(positions: positions,
                                                normals: normals,
                                                indices: indices,
                                                texcoords: texcoords),
                             revision: 1)
+            body.material = material
+            return body
+        }
+
+        static func slabBody(normalPNG png: Data,
+                             orientation: MaterialTextureOrientation) -> Body {
             let metadata = CADMaterialTextureMetadata(
                 assetID: UUID(), slot: .normal, mimeType: "image/png",
                 colorSpace: .linear, orientation: orientation,
                 sha256: CADMaterialTexture.digest(png), byteCount: png.count)
-            body.material = BodyMaterialSpec(
+            return slabBody(material: BodyMaterialSpec(
                 baseColor: SIMD4(0.6, 0.6, 0.66, 1), metallic: 0, roughness: 0.8,
                 normalTexture: png, uvMapping: .mesh,
-                textureMetadata: [metadata])
-            return body
+                textureMetadata: [metadata]), name: "X13 witness slab")
+        }
+
+        // MARK: Colour fixture
+
+        static let colorWidth = 64
+        static let colorHeight = 64
+
+        /// Four solid quadrants in authored top-left row order:
+        /// red | green
+        /// -----+------
+        /// blue| yellow
+        static let colorTopRow: [UInt8] = {
+            var row: [UInt8] = []
+            row.reserveCapacity(Fixture.colorWidth * 4)
+            for column in 0..<Fixture.colorWidth {
+                row.append(contentsOf: column < Fixture.colorWidth / 2
+                           ? [255, 0, 0, 255] : [0, 255, 0, 255])
+            }
+            return row
+        }()
+        static let colorBottomRow: [UInt8] = {
+            var row: [UInt8] = []
+            row.reserveCapacity(Fixture.colorWidth * 4)
+            for column in 0..<Fixture.colorWidth {
+                row.append(contentsOf: column < Fixture.colorWidth / 2
+                           ? [0, 0, 255, 255] : [255, 255, 0, 255])
+            }
+            return row
+        }()
+
+        enum ColorVariant {
+            case a, b, c
+
+            var rows: [[UInt8]] {
+                switch self {
+                case .a:
+                    return Array(repeating: Fixture.colorTopRow,
+                                 count: Fixture.colorHeight / 2)
+                        + Array(repeating: Fixture.colorBottomRow,
+                                count: Fixture.colorHeight / 2)
+                case .b, .c:
+                    return Array(repeating: Fixture.colorBottomRow,
+                                 count: Fixture.colorHeight / 2)
+                        + Array(repeating: Fixture.colorTopRow,
+                                count: Fixture.colorHeight / 2)
+                }
+            }
+
+            var orientation: MaterialTextureOrientation {
+                switch self {
+                case .a, .c: return .topLeft
+                case .b: return .bottomLeft
+                }
+            }
+
+            var displayName: String {
+                switch self {
+                case .a: return "A-colourTopLeft"
+                case .b: return "B-colourBottomLeft"
+                case .c: return "C-colourBottomLeftBytesTopLeft"
+                }
+            }
+        }
+
+        static func colorPNG(_ variant: ColorVariant) throws -> Data {
+            try png(width: Fixture.colorWidth, height: Fixture.colorHeight, rows: variant.rows)
+        }
+
+        static func colorSlabBody(colorPNG png: Data,
+                                  orientation: MaterialTextureOrientation) -> Body {
+            let metadata = CADMaterialTextureMetadata(
+                assetID: UUID(), slot: .baseColor, mimeType: "image/png",
+                colorSpace: .srgb, orientation: orientation,
+                sha256: CADMaterialTexture.digest(png), byteCount: png.count)
+            return slabBody(material: BodyMaterialSpec(
+                baseColor: SIMD4(1, 1, 1, 1), metallic: 0, roughness: 1.0,
+                baseColorTexture: png, uvMapping: .mesh,
+                textureMetadata: [metadata]), name: "X13 colour witness slab")
         }
 
         /// Physics-chosen studio key direction: mostly +Y so the green
@@ -317,21 +416,320 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
         }
     }
 
+    // MARK: Absolute colour-landmark projection (actual live Present camera)
+
+    private struct WitnessFootprint {
+        var corners: [CGPoint]
+
+        var area: CGFloat {
+            guard corners.count >= 3 else { return 0 }
+            var doubled: CGFloat = 0
+            for index in corners.indices {
+                let a = corners[index]
+                let b = corners[(index + 1) % corners.count]
+                doubled += a.x * b.y - b.x * a.y
+            }
+            return abs(doubled) * 0.5
+        }
+
+        func contains(_ point: CGPoint, inset: CGFloat = 0) -> Bool {
+            guard corners.count >= 3 else { return false }
+            var doubled: CGFloat = 0
+            for index in corners.indices {
+                let a = corners[index]
+                let b = corners[(index + 1) % corners.count]
+                doubled += a.x * b.y - b.x * a.y
+            }
+            let sign: CGFloat = doubled >= 0 ? 1 : -1
+            for index in corners.indices {
+                let a = corners[index]
+                let b = corners[(index + 1) % corners.count]
+                let ex = b.x - a.x
+                let ey = b.y - a.y
+                let length = (ex * ex + ey * ey).squareRoot()
+                guard length > 0.0001 else { continue }
+                let cross = ex * (point.y - a.y) - ey * (point.x - a.x)
+                if cross * sign < inset * length { return false }
+            }
+            return true
+        }
+    }
+
+    private struct ColorProjection {
+        var matrix: simd_float4x4
+        var width: Int
+        var height: Int
+        var worldScale: Float
+
+        /// Project with the SAME live camera the Present stage uses: the
+        /// handle's `currentCamera` (target/distance/azimuth/elevation/FOV)
+        /// and the controller's world->camera stage transform.
+        static func present(camera: CADPresentationCamera,
+                            width: Int, height: Int) -> ColorProjection {
+            let fov = Float(camera.fovYDegrees) * .pi / 180
+            let aspect = Float(width) / Float(max(height, 1))
+            let near = max(0.001, camera.distance * 0.01)
+            let far = max(100, camera.distance * 40)
+            let projection = Matrices.perspective(fovYRadians: fov, aspect: aspect,
+                                                  near: near, far: far)
+            return ColorProjection(matrix: projection * camera.stageTransform,
+                                   width: width, height: height,
+                                   worldScale: 1 / CADPresentationAxes.millimetresPerMeter)
+        }
+
+        func point(_ worldMM: SIMD3<Float>) -> CGPoint? {
+            let clip = matrix * SIMD4<Float>(worldMM * worldScale, 1)
+            guard clip.w > 0.000001, clip.w.isFinite else { return nil }
+            let ndc = SIMD3<Float>(clip.x, clip.y, clip.z) / clip.w
+            guard ndc.x.isFinite, ndc.y.isFinite else { return nil }
+            let x = (Double(ndc.x) + 1) * 0.5 * Double(width)
+            let y = (1 - Double(ndc.y)) * 0.5 * Double(height)
+            return CGPoint(x: x, y: y)
+        }
+
+        func frontFaceFootprint() throws -> WitnessFootprint {
+            let cornersMM = [
+                SIMD3<Float>(Fixture.slabMinMM.x, Fixture.slabMinMM.y, Fixture.frontFaceZMM),
+                SIMD3<Float>(Fixture.slabMaxMM.x, Fixture.slabMinMM.y, Fixture.frontFaceZMM),
+                SIMD3<Float>(Fixture.slabMaxMM.x, Fixture.slabMaxMM.y, Fixture.frontFaceZMM),
+                SIMD3<Float>(Fixture.slabMinMM.x, Fixture.slabMaxMM.y, Fixture.frontFaceZMM),
+            ]
+            var points: [CGPoint] = []
+            for corner in cornersMM {
+                points.append(try XCTUnwrap(point(corner),
+                                            "colour landmark projection failed for \(corner)"))
+            }
+            return WitnessFootprint(corners: points)
+        }
+    }
+
+    private enum ColorQuadrant: CaseIterable {
+        case topLeft, topRight, bottomLeft, bottomRight
+
+        var uv: SIMD2<Float> {
+            switch self {
+            case .topLeft: return SIMD2(0.25, 0.25)
+            case .topRight: return SIMD2(0.75, 0.25)
+            case .bottomLeft: return SIMD2(0.25, 0.75)
+            case .bottomRight: return SIMD2(0.75, 0.75)
+            }
+        }
+
+        var worldMM: SIMD3<Float> {
+            SIMD3<Float>(-50 + 100 * uv.x, -50 + 100 * uv.y, Fixture.frontFaceZMM)
+        }
+
+        var mirrored: ColorQuadrant {
+            switch self {
+            case .topLeft: return .bottomLeft
+            case .topRight: return .bottomRight
+            case .bottomLeft: return .topLeft
+            case .bottomRight: return .topRight
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .topLeft: return "topLeft"
+            case .topRight: return "topRight"
+            case .bottomLeft: return "bottomLeft"
+            case .bottomRight: return "bottomRight"
+            }
+        }
+
+        var expectedHue: String {
+            switch self {
+            case .topLeft: return "red"
+            case .topRight: return "green"
+            case .bottomLeft: return "blue"
+            case .bottomRight: return "yellow"
+            }
+        }
+
+        func matches(red: Double, green: Double, blue: Double) -> Bool {
+            switch self {
+            case .topLeft:
+                return red - max(green, blue) >= 16 && red >= 24
+            case .topRight:
+                return green - max(red, blue) >= 16 && green >= 24
+            case .bottomLeft:
+                return blue - max(red, green) >= 12 && blue >= 16
+            case .bottomRight:
+                return min(red, green) - blue >= 16 && min(red, green) >= 24
+            }
+        }
+    }
+
+    private struct ColorMean {
+        var red: Double
+        var green: Double
+        var blue: Double
+        var count: Int
+
+        var description: String {
+            "rgb=(\(String(format: "%.1f", red)), "
+                + "\(String(format: "%.1f", green)), "
+                + "\(String(format: "%.1f", blue))), n=\(count)"
+        }
+    }
+
+    private struct ColorFootprintStats {
+        var mean: Double
+        var changedFraction: Double
+        var pixelCount: Int
+    }
+
+    private func colorMean(in pixels: WitnessPixels, at point: CGPoint, radius: Int,
+                           footprint: WitnessFootprint) -> ColorMean? {
+        let cx = Int(point.x.rounded())
+        let cy = Int(point.y.rounded())
+        let minX = max(0, cx - radius)
+        let maxX = min(pixels.width - 1, cx + radius)
+        let minY = max(0, cy - radius)
+        let maxY = min(pixels.height - 1, cy + radius)
+        guard minX <= maxX, minY <= maxY else { return nil }
+        var red = 0, green = 0, blue = 0, count = 0
+        for y in minY...maxY {
+            for x in minX...maxX {
+                guard footprint.contains(CGPoint(x: CGFloat(x), y: CGFloat(y))) else {
+                    continue
+                }
+                let base = (y * pixels.width + x) * 4
+                red += Int(pixels.rgba[base])
+                green += Int(pixels.rgba[base + 1])
+                blue += Int(pixels.rgba[base + 2])
+                count += 1
+            }
+        }
+        guard count > 0 else { return nil }
+        return ColorMean(red: Double(red) / Double(count),
+                         green: Double(green) / Double(count),
+                         blue: Double(blue) / Double(count), count: count)
+    }
+
+    private func footprintDiff(_ lhs: WitnessPixels, _ rhs: WitnessPixels,
+                               footprint: WitnessFootprint,
+                               inset: CGFloat = 0,
+                               noiseFloor: Int = 4) -> ColorFootprintStats {
+        guard lhs.width == rhs.width, lhs.height == rhs.height else {
+            return ColorFootprintStats(mean: .infinity, changedFraction: 0,
+                                       pixelCount: 0)
+        }
+        var total = 0
+        var changed = 0
+        var count = 0
+        for y in 0..<lhs.height {
+            for x in 0..<lhs.width {
+                guard footprint.contains(CGPoint(x: CGFloat(x), y: CGFloat(y)), inset: inset) else {
+                    continue
+                }
+                count += 1
+                let base = (y * lhs.width + x) * 4
+                var dmax = 0
+                for channel in 0..<3 {
+                    let delta = abs(Int(lhs.rgba[base + channel])
+                                    - Int(rhs.rgba[base + channel]))
+                    total += delta
+                    dmax = max(dmax, delta)
+                }
+                if dmax >= noiseFloor { changed += 1 }
+            }
+        }
+        guard count > 0 else {
+            return ColorFootprintStats(mean: .infinity, changedFraction: 0,
+                                       pixelCount: 0)
+        }
+        return ColorFootprintStats(mean: Double(total) / Double(count * 3),
+                                   changedFraction: Double(changed) / Double(count),
+                                   pixelCount: count)
+    }
+
+    private func assertColorLandmarks(_ pixels: WitnessPixels,
+                                      projection: ColorProjection,
+                                      footprint: WitnessFootprint,
+                                      mirrored: Bool,
+                                      label: String,
+                                      file: StaticString = #filePath,
+                                      line: UInt = #line) throws {
+        let radius = max(3, Int(Double(min(pixels.width, pixels.height)) * 0.008))
+        for quadrant in ColorQuadrant.allCases {
+            let expected = mirrored ? quadrant.mirrored : quadrant
+            let point = try XCTUnwrap(
+                projection.point(quadrant.worldMM),
+                "\(label): \(quadrant.label) did not project into the capture",
+                file: file, line: line)
+            XCTAssertGreaterThanOrEqual(point.x, CGFloat(radius + 1),
+                                        "\(label): \(quadrant.label) is outside the image",
+                                        file: file, line: line)
+            XCTAssertLessThanOrEqual(point.x, CGFloat(pixels.width - radius - 2),
+                                     "\(label): \(quadrant.label) is outside the image",
+                                     file: file, line: line)
+            XCTAssertGreaterThanOrEqual(point.y, CGFloat(radius + 1),
+                                        "\(label): \(quadrant.label) is outside the image",
+                                        file: file, line: line)
+            XCTAssertLessThanOrEqual(point.y, CGFloat(pixels.height - radius - 2),
+                                     "\(label): \(quadrant.label) is outside the image",
+                                     file: file, line: line)
+            XCTAssertTrue(footprint.contains(point, inset: CGFloat(radius) * 2),
+                          "\(label): \(quadrant.label) at world \(quadrant.worldMM) "
+                          + "uv \(quadrant.uv) is not inside the eroded front-face footprint",
+                          file: file, line: line)
+            let mean = try XCTUnwrap(
+                colorMean(in: pixels, at: point, radius: radius, footprint: footprint),
+                "\(label): no pixels sampled at \(quadrant.label)",
+                file: file, line: line)
+            let expectedPixels = (2 * radius + 1) * (2 * radius + 1)
+            XCTAssertGreaterThanOrEqual(mean.count, expectedPixels * 3 / 4,
+                                        "\(label): \(quadrant.label) ROI escaped the "
+                                        + "projected face (sampled \(mean.count) of "
+                                        + "\(expectedPixels))",
+                                        file: file, line: line)
+            XCTAssertTrue(expected.matches(red: mean.red, green: mean.green, blue: mean.blue),
+                          "\(label) \(quadrant.label) expected \(expected.expectedHue) "
+                          + "at world \(quadrant.worldMM) uv \(quadrant.uv): "
+                          + mean.description,
+                          file: file, line: line)
+        }
+    }
+
     private struct Captured {
-        var variant: Fixture.Variant
+        var variantName: String
         var png: Data
         var pixels: WitnessPixels
         var sourceSHA256: String
+        var orientation: MaterialTextureOrientation
         var revision: Int
         var changeCount: Int
         var contentSHA256: String
         var imageSHA256: String
         var documentKey: String
+        var camera: CADPresentationCamera?
     }
 
     // MARK: Capture through the REAL Present path
 
     private func capturePresent(_ variant: Fixture.Variant) async throws -> Captured {
+        let png = try Fixture.normalPNG(variant)
+        let body = Fixture.slabBody(normalPNG: png, orientation: variant.orientation)
+        return try await capturePresent(png: png, body: body,
+                                        orientation: variant.orientation,
+                                        variantName: variant.displayName)
+    }
+
+    private func capturePresentColor(_ variant: Fixture.ColorVariant) async throws -> Captured {
+        let png = try Fixture.colorPNG(variant)
+        let body = Fixture.colorSlabBody(colorPNG: png, orientation: variant.orientation)
+        return try await capturePresent(png: png, body: body,
+                                        orientation: variant.orientation,
+                                        variantName: variant.displayName)
+    }
+
+    /// One mount of the production Present pane, then one real
+    /// `capturePresentedPNG` bound to the document. The camera is read from
+    /// the live handle as a receipt for the absolute colour landmarks.
+    private func capturePresent(png: Data, body: Body,
+                                orientation: MaterialTextureOrientation,
+                                variantName: String) async throws -> Captured {
         let scenes = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
         guard let scene = scenes.first(where: {
@@ -347,14 +745,12 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory,
                                                 withIntermediateDirectories: true)
         directories.append(directory)
-        let png = try Fixture.normalPNG(variant)
         let document = try await FloeCADDocument.create(
-            at: directory.appendingPathComponent("witness-\(variant.displayName).floecad"),
-            name: "X13 \(variant.displayName)")
+            at: directory.appendingPathComponent("witness-\(variantName).floecad"),
+            name: "X13 \(variantName)")
         documents.append(document)
         document.session.perform(AddBodyCommand(
-            body: Fixture.slabBody(normalPNG: png, orientation: variant.orientation),
-            title: "Add witness slab"))
+            body: body, title: "Add witness slab"))
         // Before the pane mounts: same authored studio key light for every
         // variant (see Fixture.applyWitnessLight). The engineering Metal
         // viewport keeps its headlight rig and is unaffected by the
@@ -402,7 +798,7 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
         }
         guard ready else {
             XCTFail("Present never became active with a built stage for "
-                    + "\(variant.displayName); no image was fabricated.")
+                    + "\(variantName); no image was fabricated.")
             await unmount(hosting: hosting, window: testWindow, store: store,
                           handle: handle, document: document)
             throw CapturedError.presentNeverActive
@@ -411,6 +807,9 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
         // snapshot service's stale check sees a stable render state token.
         try await Task.sleep(for: .milliseconds(800))
 
+        // Actual live camera receipt, read before the snapshot; no gesture or
+        // animation can move it during this deterministic mount.
+        let camera = handle.currentCamera
         let result = try await document.capturePresentedPNG()
         let capture = try XCTUnwrap(result,
             "Present is active, so capturePresentedPNG must return the actual "
@@ -427,12 +826,13 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
                       handle: handle, document: document)
 
         return Captured(
-            variant: variant, png: capture.pngData, pixels: pixels,
+            variantName: variantName, png: capture.pngData, pixels: pixels,
             sourceSHA256: CADMaterialTexture.digest(png),
+            orientation: orientation,
             revision: capture.revision, changeCount: capture.changeCount,
             contentSHA256: capture.contentSHA256,
             imageSHA256: capture.imageSHA256,
-            documentKey: capture.documentKey)
+            documentKey: capture.documentKey, camera: camera)
     }
 
     /// Deterministic unmount: swap the pane for an empty view (the same
@@ -459,26 +859,67 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
 
     private func attach(_ captured: Captured) {
         let attachment = XCTAttachment(data: captured.png, uniformTypeIdentifier: UTType.png.identifier)
-        attachment.name = "x13-present-\(captured.variant.displayName)-rev\(captured.revision)"
+        attachment.name = "x13-present-\(captured.variantName)-rev\(captured.revision)"
         attachment.lifetime = .keepAlways
         add(attachment)
         let manifest: [String: Any] = [
             "witness": "X13 normal-map origins — RealityKit Present",
-            "variant": captured.variant.displayName,
+            "variant": captured.variantName,
             "renderer": "presentation",
             "documentRevision": captured.revision,
             "documentChangeCount": captured.changeCount,
             "documentContentSHA256": captured.contentSHA256,
             "renderedImageSHA256": captured.imageSHA256,
             "normalMapBytesSHA256": captured.sourceSHA256,
-            "normalMapOrientation": "\(captured.variant.orientation)",
+            "normalMapOrientation": "\(captured.orientation)",
             "captureEntryPoint": "FloeCADDocument.capturePresentedPNG",
             "documentKey": captured.documentKey,
         ]
         let data = (try? JSONSerialization.data(
             withJSONObject: manifest, options: [.sortedKeys])) ?? Data()
         let json = XCTAttachment(data: data, uniformTypeIdentifier: UTType.json.identifier)
-        json.name = "x13-present-\(captured.variant.displayName)-manifest.json"
+        json.name = "x13-present-\(captured.variantName)-manifest.json"
+        json.lifetime = .keepAlways
+        add(json)
+    }
+
+    private func attachColor(_ captured: Captured) {
+        let attachment = XCTAttachment(data: captured.png,
+                                       uniformTypeIdentifier: UTType.png.identifier)
+        attachment.name = "x13-present-colour-\(captured.variantName)-rev\(captured.revision)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        var cameraJSON: [String: Any] = ["available": false]
+        if let camera = captured.camera {
+            cameraJSON = [
+                "available": true,
+                "fovYDegrees": Double(camera.fovYDegrees),
+                "distanceM": Double(camera.distance),
+                "azimuthRadians": Double(camera.azimuthRadians),
+                "elevationRadians": Double(camera.elevationRadians),
+                "targetM": [Double(camera.target.x), Double(camera.target.y),
+                            Double(camera.target.z)],
+            ]
+        }
+        let manifest: [String: Any] = [
+            "witness": "X13 colour-map origins — RealityKit Present (absolute UV landmarks)",
+            "variant": captured.variantName,
+            "renderer": "presentation",
+            "documentRevision": captured.revision,
+            "documentChangeCount": captured.changeCount,
+            "documentContentSHA256": captured.contentSHA256,
+            "renderedImageSHA256": captured.imageSHA256,
+            "authoredColorMapBytesSHA256": captured.sourceSHA256,
+            "authoredColorMapOrientation": "\(captured.orientation)",
+            "authoredColorMapColorSpace": "srgb",
+            "captureEntryPoint": "FloeCADDocument.capturePresentedPNG",
+            "documentKey": captured.documentKey,
+            "cameraReceipt": cameraJSON,
+        ]
+        let data = (try? JSONSerialization.data(
+            withJSONObject: manifest, options: [.sortedKeys])) ?? Data()
+        let json = XCTAttachment(data: data, uniformTypeIdentifier: UTType.json.identifier)
+        json.name = "x13-present-colour-\(captured.variantName)-manifest.json"
         json.lifetime = .keepAlways
         add(json)
     }
@@ -513,10 +954,43 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(ab.exactFraction, 0.95)
         XCTAssertLessThanOrEqual(ab.max, 24, "A/B max delta \(ab.max)")
 
-        // Preserve every original whole-frame control. Regional statistics
-        // below are additive, never a substitute for a failed old gate.
-        XCTAssertGreaterThanOrEqual(ac.mean, 8.0,
-                                    "A/C mean delta \(ac.mean) in Present")
+        // Material response is measured over an independently projected face,
+        // not the empty canvas. Keep full-frame noise, peak and border guards;
+        // the same-source absolute color landmarks validate this projection.
+        XCTAssertEqual(a.camera, b.camera)
+        XCTAssertEqual(a.camera, c.camera)
+        let camera = try XCTUnwrap(a.camera, "Normal control needs the actual capture camera")
+        let projection = ColorProjection.present(camera: camera,
+                                                 width: a.pixels.width,
+                                                 height: a.pixels.height)
+        let footprint = try projection.frontFaceFootprint()
+        let footprintFraction = Double(footprint.area) / Double(a.pixels.width * a.pixels.height)
+        XCTAssertGreaterThanOrEqual(footprintFraction, 0.05)
+        XCTAssertLessThanOrEqual(footprintFraction, 0.60)
+        let erosion = CGFloat(max(6, Int(Double(min(a.pixels.width, a.pixels.height)) * 0.02)))
+        let fixedAC = footprintDiff(a.pixels, c.pixels, footprint: footprint, inset: erosion)
+        let fixedAB = footprintDiff(a.pixels, b.pixels, footprint: footprint, inset: erosion)
+        XCTAssertGreaterThanOrEqual(fixedAC.pixelCount, 1_000)
+        XCTAssertGreaterThanOrEqual(fixedAC.mean, 8.0,
+            "A/C authored-face mean \(fixedAC.mean); full-frame mean \(ac.mean)")
+        XCTAssertGreaterThanOrEqual(fixedAC.changedFraction, 0.25,
+            "Normal negative control must affect a substantial fixed material area")
+        XCTAssertLessThanOrEqual(fixedAB.mean, 2.0)
+        XCTAssertGreaterThanOrEqual(fixedAC.mean, 4 * max(fixedAB.mean, 0.5))
+        let footprintRecord: [String: Any] = [
+            "wholeFrameACMean": ac.mean, "fixedACMean": fixedAC.mean,
+            "fixedABMean": fixedAB.mean, "fixedChangedFraction": fixedAC.changedFraction,
+            "fixedPixelCount": fixedAC.pixelCount, "projectedFrameFraction": footprintFraction,
+            "insetPixels": Double(erosion),
+            "polygon": footprint.corners.map { [Double($0.x), Double($0.y)] },
+            "source": "Authored +Z face projected from source/capture camera; not difference-selected",
+        ]
+        let footprintAttachment = XCTAttachment(string: String(decoding:
+            try JSONSerialization.data(withJSONObject: footprintRecord, options: [.sortedKeys]),
+            as: UTF8.self))
+        footprintAttachment.name = "Normal fixed material footprint"
+        footprintAttachment.lifetime = .keepAlways
+        add(footprintAttachment)
         XCTAssertGreaterThanOrEqual(ac.mean, 4 * max(ab.mean, 0.5),
                                     "the negative control must dominate numerical noise")
         let acRegion = WitnessPixels.regionDiff(a.pixels, c.pixels)
@@ -544,6 +1018,85 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
                                     4 * max(ab.mean, 0.5),
                                     "the negative control must dominate "
                                     + "numerical noise")
+    }
+
+    func testColorMapOriginsPresentAuthoredQuadrantsAtKnownWorldPoints()
+        async throws {
+        let pngA = try Fixture.colorPNG(.a)
+        let pngB = try Fixture.colorPNG(.b)
+        let pngC = try Fixture.colorPNG(.c)
+        XCTAssertEqual(pngB, pngC,
+                       "B and C must share identical colour bytes; only the "
+                       + "declared origin differs")
+        XCTAssertNotEqual(pngA, pngB)
+
+        let a = try await capturePresentColor(.a)
+        let b = try await capturePresentColor(.b)
+        let c = try await capturePresentColor(.c)
+        attachColor(a); attachColor(b); attachColor(c)
+        XCTAssertEqual(a.sourceSHA256, CADMaterialTexture.digest(pngA))
+        XCTAssertEqual(b.sourceSHA256, CADMaterialTexture.digest(pngB))
+        XCTAssertEqual(c.sourceSHA256, CADMaterialTexture.digest(pngC))
+        XCTAssertEqual(a.orientation, .topLeft)
+        XCTAssertEqual(b.orientation, .bottomLeft)
+        XCTAssertEqual(c.orientation, .topLeft)
+
+        // Same live camera pose for all three variants: the absolute
+        // landmark check depends on one deterministic mount per variant.
+        XCTAssertEqual(a.camera, b.camera,
+                       "Present camera drifted between colour variants A and B")
+        XCTAssertEqual(a.camera, c.camera,
+                       "Present camera drifted between colour variants A and C")
+        let camera = try XCTUnwrap(a.camera,
+            "Present did not expose its live camera; absolute landmarks cannot "
+            + "be projected and the witness must fail rather than skip.")
+
+        let ab = try WitnessPixels.diff(a.pixels, b.pixels)
+        XCTAssertLessThanOrEqual(ab.mean, 2.0,
+                                 "A/B colour mean delta \(ab.mean) in Present")
+        XCTAssertGreaterThanOrEqual(ab.exactFraction, 0.95)
+        XCTAssertLessThanOrEqual(ab.max, 24, "A/B colour max delta \(ab.max)")
+
+        let projection = ColorProjection.present(camera: camera,
+                                                 width: a.pixels.width,
+                                                 height: a.pixels.height)
+        let footprint = try projection.frontFaceFootprint()
+        let frameArea = Double(a.pixels.width * a.pixels.height)
+        XCTAssertGreaterThanOrEqual(Double(footprint.area) / frameArea, 0.05,
+                                    "projected front face is implausibly small: "
+                                    + "\(Double(footprint.area) / frameArea)")
+        XCTAssertLessThanOrEqual(Double(footprint.area) / frameArea, 0.60,
+                                 "projected front face covers too much of the frame: "
+                                 + "\(Double(footprint.area) / frameArea)")
+
+        try assertColorLandmarks(a.pixels, projection: projection,
+                                 footprint: footprint, mirrored: false, label: "A")
+        try assertColorLandmarks(b.pixels, projection: projection,
+                                 footprint: footprint, mirrored: false, label: "B")
+        try assertColorLandmarks(c.pixels, projection: projection,
+                                 footprint: footprint, mirrored: true, label: "C")
+
+        let erosion = CGFloat(max(6, Int(Double(min(a.pixels.width, a.pixels.height)) * 0.02)))
+        let acFootprint = footprintDiff(a.pixels, c.pixels, footprint: footprint,
+                                        inset: erosion)
+        XCTAssertGreaterThanOrEqual(acFootprint.pixelCount, 1_000)
+        XCTAssertGreaterThanOrEqual(acFootprint.mean, 20.0,
+                                    "A/C fixed-footprint mean \(acFootprint.mean) "
+                                    + "at \(acFootprint.pixelCount) pixels")
+        XCTAssertGreaterThanOrEqual(acFootprint.changedFraction, 0.25,
+                                    "A/C fixed-footprint changed fraction "
+                                    + "\(acFootprint.changedFraction)")
+
+        let abFootprint = footprintDiff(a.pixels, b.pixels, footprint: footprint,
+                                        inset: erosion)
+        XCTAssertLessThanOrEqual(abFootprint.mean, 2.0,
+                                 "A/B fixed-footprint mean \(abFootprint.mean)")
+
+        let region = WitnessPixels.regionDiff(a.pixels, c.pixels)
+        XCTAssertLessThanOrEqual(region.borderMax, 4,
+                                 "A/C border max \(region.borderMax) in Present: "
+                                 + "the background must be identical across "
+                                 + "colour variants")
     }
 }
 #endif
