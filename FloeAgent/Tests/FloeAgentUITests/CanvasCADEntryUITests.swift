@@ -132,6 +132,10 @@ final class CADRecoveryCopyFlowUITests: XCTestCase {
         let imageReady = app.descendants(matching: .any)["cad.recovery.previewImage"]
             .waitForExistence(timeout: 10)
         snapshot("Damaged canvas verified previous preview")
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "Recovery preview accessibility hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
         XCTAssertTrue(imageReady, "the real previous viewport thumbnail must be accessible")
         // Cancel does not silently replace the damaged package.
         app.buttons["cad.recovery.closeButton"].tap()
@@ -141,10 +145,11 @@ final class CADRecoveryCopyFlowUITests: XCTestCase {
         review.tap()
         XCTAssertTrue(sheet.waitForExistence(timeout: 10))
 
-        let unknown = app.staticTexts[
-            "Changes made after this save can't be verified. Their fields are unknown; they stay in the damaged document."]
+        let unknown = app.descendants(matching: .any)
+            .matching(identifier: "cad.recovery.row.unknown.changesSincePrevious").firstMatch
         reveal(unknown, in: app)
-        XCTAssertTrue(unknown.exists, "unrecoverable fields must be reported honestly")
+        XCTAssertTrue(unknown.label.contains("Changes made after this save can't be verified"),
+                      "unrecoverable fields must be reported honestly")
         snapshot("Recovery report keeps unverified current changes explicit")
         app.buttons["cad.recovery.restoreButton"].tap()
         let mode = app.segmentedControls["CADWorkbenchMode"]
@@ -173,8 +178,11 @@ final class CADRecoveryCopyFlowUITests: XCTestCase {
     private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
         for _ in 0..<8 {
             if element.exists && element.isHittable { return }
-            let scroll = app.scrollViews.firstMatch
-            if scroll.exists { scroll.swipeUp() } else { app.swipeUp() }
+            if let scroll = app.scrollViews.allElementsBoundByIndex.first(where: { $0.isHittable }) {
+                scroll.swipeUp()
+            } else {
+                app.swipeUp()
+            }
         }
         XCTFail("The recovery report must keep its remaining fields reachable")
     }

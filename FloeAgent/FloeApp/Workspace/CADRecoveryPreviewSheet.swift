@@ -106,6 +106,7 @@ struct CADRecoveryPreviewSheet: View {
             }
             .safeAreaInset(edge: .bottom) { footer }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("cad.recovery.sheet")
         .interactiveDismissDisabled(isRestoring)
         .onDisappear {
