@@ -245,7 +245,7 @@ private struct CloudASRProfileEditor: View {
         .navigationTitle(original.name)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("voice.local.cancel") { dismiss(); onDone() }
+                Button("workspace.workspace_canvas_view.cancel") { dismiss(); onDone() }
             }
         }
     }

@@ -737,10 +737,11 @@ struct SkillHubCuratedSnapshotCacheTests {
 
     private func fixtureTransport(catalog: Data, signature: Data,
                                   layout: CuratedSkillCatalogLayout = .legacy,
+                                  commit requestedCommit: String? = nil,
                                   resolveCancels: Bool = false, fetchFails: Bool = false)
         -> (GitHubSkillDownload.ResolveCommit, GitHubSkillDownload.FetchFile)
     {
-        let commit = Self.fixtureCommit
+        let commit = requestedCommit ?? Self.fixtureCommit
         let catalogPath = CuratedSkillHub.catalogPath(for: .ios, layout: layout)
         let signaturePath = CuratedSkillHub.signaturePath(for: .ios, layout: layout)
         let resolve: GitHubSkillDownload.ResolveCommit = { _ in
@@ -757,6 +758,34 @@ struct SkillHubCuratedSnapshotCacheTests {
             case signaturePath: return signature
             default: throw CacheFixtureFailure(detail: "unexpected path \(path)")
             }
+        }
+        return (resolve, fetch)
+    }
+
+    /// The same one-Y fixture transport extended with the reviewed package
+    /// and review chain, so an install-resolution test can drive the real
+    /// staging pipeline at exactly the resolved publication Y/layout.
+    private func fixtureStageTransport(catalog: Data, signature: Data,
+                                       layout: CuratedSkillCatalogLayout,
+                                       commit: String)
+        throws -> (GitHubSkillDownload.ResolveCommit, GitHubSkillDownload.FetchFile)
+    {
+        let package = try cacheFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip")
+        let review = try cacheFixture("reviews/fixture-reviewed/1.0.0.review.json")
+        let reviewSignature = try cacheFixture("reviews/fixture-reviewed/1.0.0.review.json.sig")
+        let files: [String: Data] = [
+            CuratedSkillHub.catalogPath(for: .ios, layout: layout): catalog,
+            CuratedSkillHub.signaturePath(for: .ios, layout: layout): signature,
+            "packages/fixture-reviewed/1.0.0/fixture-reviewed.zip": package,
+            "reviews/fixture-reviewed/1.0.0.review.json": review,
+            "reviews/fixture-reviewed/1.0.0.review.json.sig": reviewSignature,
+        ]
+        let resolve: GitHubSkillDownload.ResolveCommit = { _ in commit }
+        let fetch: GitHubSkillDownload.FetchFile = { _, fetchedCommit, path in
+            guard fetchedCommit == commit, let bytes = files[path] else {
+                throw CacheFixtureFailure(detail: "unexpected staging fetch \(fetchedCommit) \(path)")
+            }
+            return bytes
         }
         return (resolve, fetch)
     }
@@ -1003,6 +1032,284 @@ struct SkillHubCuratedSnapshotCacheTests {
             arrivals.removeAll()
         }
         func finish() { release?.resume(); release = nil }
+    }
+
+    // MARK: - Task read pin governs the later install publication
+
+    private func hubReadPin(_ publication: CuratedSkillHub.Publication,
+                            ownerID: UUID, runID: UUID,
+                            layout: CuratedSkillCatalogLayout?) -> SkillsCenter.HubReadPin {
+        SkillsCenter.HubReadPin(
+            schemaVersion: 1, ownerID: ownerID, runID: runID,
+            publicationCommit: publication.publicationCommit,
+            catalogDigest: publication.verifiedFeed.catalogSHA256,
+            layout: layout)
+    }
+
+    private func loadFixturePublication(
+        _ transport: (GitHubSkillDownload.ResolveCommit, GitHubSkillDownload.FetchFile),
+        mode: CuratedSkillTrustMode,
+        ref: String,
+        layout: CuratedSkillCatalogLayout
+    ) async throws -> CuratedSkillHub.Publication {
+        try await SkillsCenter.loadCuratedPublication(
+            channel: .ios, mode: mode, ref: ref, layout: layout,
+            resolve: transport.0, fetch: transport.1)
+    }
+
+    @Test func installResolutionKeepsLegacyReadPinAcrossFullGlobalRefresh() async throws {
+        let ownerID = UUID()
+        let runID = UUID()
+        let (mode, catalog, signature) = try validFixturePair()
+        let legacyY = String(repeating: "a", count: 40)
+        let fullY = String(repeating: "b", count: 40)
+
+        // The task's detail read froze the original legacy publication.
+        let legacyTransport = fixtureTransport(
+            catalog: catalog, signature: signature, layout: .legacy, commit: legacyY)
+        let legacy = try await loadFixturePublication(
+            legacyTransport, mode: mode, ref: "main", layout: .legacy)
+        #expect(legacy.layout == .legacy)
+        #expect(legacy.publicationCommit == legacyY)
+        let pin = hubReadPin(legacy, ownerID: ownerID, runID: runID, layout: .legacy)
+
+        // The global store refreshed to a newer full publication in between.
+        let fullTransport = fixtureTransport(
+            catalog: catalog, signature: signature, layout: .full, commit: fullY)
+        let refreshed = try await loadFixturePublication(
+            fullTransport, mode: mode, ref: "main", layout: .full)
+        #expect(refreshed.layout == .full)
+        #expect(refreshed.publicationCommit == fullY)
+        #expect(refreshed.publicationCommit != pin.publicationCommit)
+
+        // The install still uses the task pin, not the refreshed global feed.
+        let installTransport = fixtureTransport(
+            catalog: catalog, signature: signature, layout: .legacy, commit: legacyY)
+        let resolved = try await SkillsCenter.resolveHubInstallPublication(
+            requestPublicationCommit: nil, pin: pin, ownerID: ownerID, runID: runID,
+            load: { ref, layout in
+                try await self.loadFixturePublication(
+                    installTransport, mode: mode, ref: ref, layout: layout)
+            })
+        #expect(resolved.publicationCommit == legacyY)
+        #expect(resolved.layout == .legacy)
+        #expect(resolved.source.ref == legacyY)
+        #expect(resolved.source.path == "catalog.json")
+        #expect(resolved.verifiedFeed.catalogSHA256 == pin.catalogDigest)
+
+        // The detail read normally hands that exact Y back to the model; an
+        // explicit request for the SAME pinned Y resolves identically.
+        let explicit = try await SkillsCenter.resolveHubInstallPublication(
+            requestPublicationCommit: legacyY, pin: pin, ownerID: ownerID, runID: runID,
+            load: { ref, layout in
+                try await self.loadFixturePublication(
+                    installTransport, mode: mode, ref: ref, layout: layout)
+            })
+        #expect(explicit.publicationCommit == legacyY)
+        #expect(explicit.layout == .legacy)
+        #expect(explicit.source.path == "catalog.json")
+
+        // Staging the resolved publication stays on exactly that Y/layout.
+        let stageTransport = try fixtureStageTransport(
+            catalog: catalog, signature: signature, layout: .legacy, commit: legacyY)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("skill-task-pin-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let staged = try await CuratedSkillHub.stage(
+            resolved, entryID: "fixture-reviewed", appVersion: "1.7.58",
+            at: root, fetch: stageTransport.1)
+        #expect(staged.receipt.publicationCommit == legacyY)
+        #expect(staged.receipt.catalogLayout == .legacy)
+        #expect(staged.receipt.catalogSHA256 == pin.catalogDigest)
+    }
+
+    @Test func coldRestoreOfPreExpansionPinStaysLegacy() async throws {
+        let ownerID = UUID()
+        let runID = UUID()
+        let (mode, catalog, signature) = try validFixturePair()
+        let y = String(repeating: "c", count: 40)
+        let transport = fixtureTransport(
+            catalog: catalog, signature: signature, layout: .legacy, commit: y)
+        let legacy = try await loadFixturePublication(
+            transport, mode: mode, ref: "main", layout: .legacy)
+
+        // A pin written before the expanded feed existed has no layout key.
+        let oldPin = hubReadPin(legacy, ownerID: ownerID, runID: runID, layout: nil)
+        let decoded = try SkillsCenter.decodeHubReadPin(
+            try JSONEncoder().encode(oldPin), ownerID: ownerID, runID: runID)
+        #expect(decoded.layout == nil)
+
+        let restored = try await SkillsCenter.resolveHubInstallPublication(
+            requestPublicationCommit: nil, pin: decoded, ownerID: ownerID, runID: runID,
+            load: { ref, layout in
+                try await self.loadFixturePublication(
+                    transport, mode: mode, ref: ref, layout: layout)
+            })
+        #expect(restored.publicationCommit == y)
+        #expect(restored.layout == .legacy)
+        #expect(restored.source.path == "catalog.json")
+        #expect(restored.verifiedFeed.catalogSHA256 == legacy.verifiedFeed.catalogSHA256)
+    }
+
+    @Test func newFullReadPinStaysFullAtItsY() async throws {
+        let ownerID = UUID()
+        let runID = UUID()
+        let (mode, catalog, signature) = try validFixturePair()
+        let y = String(repeating: "d", count: 40)
+        let transport = fixtureTransport(
+            catalog: catalog, signature: signature, layout: .full, commit: y)
+        let read = try await loadFixturePublication(
+            transport, mode: mode, ref: "main", layout: .full)
+        let pin = hubReadPin(read, ownerID: ownerID, runID: runID, layout: .full)
+
+        let resolved = try await SkillsCenter.resolveHubInstallPublication(
+            requestPublicationCommit: y, pin: pin, ownerID: ownerID, runID: runID,
+            load: { ref, layout in
+                try await self.loadFixturePublication(
+                    transport, mode: mode, ref: ref, layout: layout)
+            })
+        #expect(resolved.publicationCommit == y)
+        #expect(resolved.layout == .full)
+        #expect(resolved.source.ref == y)
+        #expect(resolved.source.path == "catalog-full.json")
+
+        let stageTransport = try fixtureStageTransport(
+            catalog: catalog, signature: signature, layout: .full, commit: y)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("skill-task-pin-full-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let staged = try await CuratedSkillHub.stage(
+            resolved, entryID: "fixture-reviewed", appVersion: "1.7.58",
+            at: root, fetch: stageTransport.1)
+        #expect(staged.receipt.publicationCommit == y)
+        #expect(staged.receipt.catalogLayout == .full)
+    }
+
+    @Test func installReadPinIdentityMismatchesFailClosed() async throws {
+        let ownerID = UUID()
+        let runID = UUID()
+        let (mode, catalog, signature) = try validFixturePair()
+        let y = String(repeating: "e", count: 40)
+        let transport = fixtureTransport(
+            catalog: catalog, signature: signature, layout: .legacy, commit: y)
+        let read = try await loadFixturePublication(
+            transport, mode: mode, ref: "main", layout: .legacy)
+        let good = hubReadPin(read, ownerID: ownerID, runID: runID, layout: .legacy)
+        let mustNotLoad: @MainActor (String, CuratedSkillCatalogLayout) async throws -> CuratedSkillHub.Publication = {
+            ref, layout in
+            throw CacheFixtureFailure(detail: "identity validation must run before loading \(layout.rawValue)@\(ref)")
+        }
+
+        // A pin from another owner/run, or a malformed schema, is untrusted
+        // cached input and never reaches the loader.
+        await #expect(throws: SkillUpgradeError.localConflict) {
+            _ = try await SkillsCenter.resolveHubInstallPublication(
+                requestPublicationCommit: nil,
+                pin: SkillsCenter.HubReadPin(
+                    schemaVersion: 1, ownerID: UUID(), runID: runID,
+                    publicationCommit: y, catalogDigest: good.catalogDigest, layout: .legacy),
+                ownerID: ownerID, runID: runID, load: mustNotLoad)
+        }
+        await #expect(throws: SkillUpgradeError.localConflict) {
+            _ = try await SkillsCenter.resolveHubInstallPublication(
+                requestPublicationCommit: nil,
+                pin: SkillsCenter.HubReadPin(
+                    schemaVersion: 1, ownerID: ownerID, runID: UUID(),
+                    publicationCommit: y, catalogDigest: good.catalogDigest, layout: .legacy),
+                ownerID: ownerID, runID: runID, load: mustNotLoad)
+        }
+        await #expect(throws: SkillUpgradeError.localConflict) {
+            _ = try await SkillsCenter.resolveHubInstallPublication(
+                requestPublicationCommit: nil,
+                pin: SkillsCenter.HubReadPin(
+                    schemaVersion: 2, ownerID: ownerID, runID: runID,
+                    publicationCommit: y, catalogDigest: good.catalogDigest, layout: .legacy),
+                ownerID: ownerID, runID: runID, load: mustNotLoad)
+        }
+        await #expect(throws: SkillUpgradeError.localConflict) {
+            _ = try await SkillsCenter.resolveHubInstallPublication(
+                requestPublicationCommit: nil,
+                pin: SkillsCenter.HubReadPin(
+                    schemaVersion: 1, ownerID: ownerID, runID: runID,
+                    publicationCommit: String(repeating: "e", count: 39),
+                    catalogDigest: good.catalogDigest, layout: .legacy),
+                ownerID: ownerID, runID: runID, load: mustNotLoad)
+        }
+        await #expect(throws: SkillUpgradeError.localConflict) {
+            _ = try await SkillsCenter.resolveHubInstallPublication(
+                requestPublicationCommit: nil,
+                pin: SkillsCenter.HubReadPin(
+                    schemaVersion: 1, ownerID: ownerID, runID: runID,
+                    publicationCommit: y,
+                    catalogDigest: String(repeating: "0", count: 63), layout: .legacy),
+                ownerID: ownerID, runID: runID, load: mustNotLoad)
+        }
+
+        // An explicit request for another immutable Y conflicts with the
+        // frozen read pin before any publication is fetched.
+        await #expect(throws: SkillHubValidationError.receiptIdentityMismatch) {
+            _ = try await SkillsCenter.resolveHubInstallPublication(
+                requestPublicationCommit: String(repeating: "f", count: 40),
+                pin: good, ownerID: ownerID, runID: runID, load: mustNotLoad)
+        }
+
+        // The loader's resolved publication must still equal the pin's Y.
+        let wrongYTransport = fixtureTransport(
+            catalog: catalog, signature: signature, layout: .legacy,
+            commit: String(repeating: "2", count: 40))
+        await #expect(throws: SkillUpgradeError.localConflict) {
+            _ = try await SkillsCenter.resolveHubInstallPublication(
+                requestPublicationCommit: nil, pin: good, ownerID: ownerID, runID: runID,
+                load: { ref, layout in
+                    try await self.loadFixturePublication(
+                        wrongYTransport, mode: mode, ref: ref, layout: layout)
+                })
+        }
+
+        // A well-formed pin whose digest does not match the verified feed is
+        // a local conflict, never a silent switch to the other bytes.
+        await #expect(throws: SkillUpgradeError.localConflict) {
+            _ = try await SkillsCenter.resolveHubInstallPublication(
+                requestPublicationCommit: nil,
+                pin: SkillsCenter.HubReadPin(
+                    schemaVersion: 1, ownerID: ownerID, runID: runID,
+                    publicationCommit: y, catalogDigest: String(repeating: "0", count: 64),
+                    layout: .legacy),
+                ownerID: ownerID, runID: runID,
+                load: { ref, layout in
+                    try await self.loadFixturePublication(
+                        transport, mode: mode, ref: ref, layout: layout)
+                })
+        }
+    }
+
+    @Test func installWithoutReadPinDefaultsToFullLayout() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        let y = String(repeating: "1", count: 40)
+        let transport = fixtureTransport(
+            catalog: catalog, signature: signature, layout: .full, commit: y)
+
+        let publication = try await SkillsCenter.resolveHubInstallPublication(
+            requestPublicationCommit: nil, pin: nil, ownerID: UUID(), runID: UUID(),
+            load: { ref, layout in
+                try await self.loadFixturePublication(
+                    transport, mode: mode, ref: ref, layout: layout)
+            })
+        #expect(publication.layout == .full)
+        #expect(publication.source.ref == "main")
+        #expect(publication.source.path == "catalog-full.json")
+        #expect(publication.publicationCommit == y)
+
+        let requested = try await SkillsCenter.resolveHubInstallPublication(
+            requestPublicationCommit: y, pin: nil, ownerID: UUID(), runID: UUID(),
+            load: { ref, layout in
+                try await self.loadFixturePublication(
+                    transport, mode: mode, ref: ref, layout: layout)
+            })
+        #expect(requested.layout == .full)
+        #expect(requested.source.ref == y)
+        #expect(requested.source.path == "catalog-full.json")
+        #expect(requested.publicationCommit == y)
     }
 
     @Test func pinnedLoadCannotReplaceMainChannelSnapshot() async throws {

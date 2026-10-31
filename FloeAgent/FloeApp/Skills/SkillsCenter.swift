@@ -409,7 +409,7 @@ final class SkillsCenter: ObservableObject {
             reviewedCapabilities: snapshot.package.manifest.capabilities, reviewedTools: snapshot.package.manifest.tools)
     }
 
-    private struct HubReadPin: Codable {
+    struct HubReadPin: Codable, Equatable {
         let schemaVersion: Int
         let ownerID: UUID
         let runID: UUID
@@ -442,6 +442,71 @@ final class SkillsCenter: ObservableObject {
         return bytes
     }
 
+    /// The single identity check for a task's frozen read pin. The pin is
+    /// written only after a verified read, but a cached file is still
+    /// untrusted input: its schema, owner/run binding, immutable commit and
+    /// feed digest must all agree before it can steer a publication fetch.
+    static func validatedHubReadPin(_ pin: HubReadPin, ownerID: UUID, runID: UUID) throws -> HubReadPin {
+        guard pin.schemaVersion == 1, pin.ownerID == ownerID, pin.runID == runID,
+              pin.publicationCommit.count == 40, pin.publicationCommit.allSatisfy(\.isHexDigit),
+              pin.catalogDigest.count == 64, pin.catalogDigest.allSatisfy(\.isHexDigit) else {
+            throw SkillUpgradeError.localConflict
+        }
+        return pin
+    }
+
+    static func decodeHubReadPin(_ bytes: Data, ownerID: UUID, runID: UUID) throws -> HubReadPin {
+        let decoded: HubReadPin
+        do { decoded = try JSONDecoder().decode(HubReadPin.self, from: bytes) }
+        catch { throw SkillUpgradeError.localConflict }
+        return try validatedHubReadPin(decoded, ownerID: ownerID, runID: runID)
+    }
+
+    /// Resolves the publication one task install must use. A same-task read
+    /// pin is authoritative: the install reuses its immutable Y and recorded
+    /// layout (a missing layout means the pre-expansion legacy projection),
+    /// so a global full-feed refresh can never switch the bytes being
+    /// installed. An omitted request pin is not an opt-out: it resolves to
+    /// the task's frozen Y. An explicit request pin that disagrees with the
+    /// frozen read pin is a truthful conflict; it is never silently
+    /// re-pinned. Without a read pin there is no task freeze, so the
+    /// production full layout is used at the requested Y (or main).
+    ///
+    /// The returned publication has already been loaded through the normal
+    /// one-Y loader; every later feed/signature/review/package fetch uses its
+    /// `publicationCommit`. The cached pin never supplies bytes or trust.
+    static func resolveHubInstallPublication(
+        requestPublicationCommit: String?,
+        pin: HubReadPin?,
+        ownerID: UUID,
+        runID: UUID,
+        load: @MainActor (String, CuratedSkillCatalogLayout) async throws -> CuratedSkillHub.Publication
+    ) async throws -> CuratedSkillHub.Publication {
+        if let pin {
+            let pin = try validatedHubReadPin(pin, ownerID: ownerID, runID: runID)
+            // A request naming a different immutable Y cannot be satisfied
+            // by the task's already-frozen read identity. Fail instead of
+            // guessing which publication the caller meant.
+            if let requested = requestPublicationCommit, requested != pin.publicationCommit {
+                throw SkillHubValidationError.receiptIdentityMismatch
+            }
+            let layout = pin.layout ?? .legacy
+            let publication = try await load(pin.publicationCommit, layout)
+            guard publication.publicationCommit == pin.publicationCommit,
+                  publication.layout == layout,
+                  publication.verifiedFeed.catalogSHA256 == pin.catalogDigest else {
+                throw SkillUpgradeError.localConflict
+            }
+            return publication
+        }
+        let ref = requestPublicationCommit ?? "main"
+        let publication = try await load(ref, .full)
+        if let requested = requestPublicationCommit, publication.publicationCommit != requested {
+            throw SkillHubValidationError.receiptIdentityMismatch
+        }
+        return publication
+    }
+
     func verifiedHubCatalogDetail(id: String, context: ToolContext) async throws -> SkillHubCatalogDetail? {
         if context.environment?.variables["FLOE_EXECUTION_BACKEND"] == "macBridge" {
             return try await MacOriginalSkillsCenter.shared.catalogDetail(id: id, using: environment)
@@ -466,11 +531,8 @@ final class SkillsCenter: ObservableObject {
         let pin: HubReadPin
         let publication: CuratedSkillHub.Publication
         if FileManager.default.fileExists(atPath: pinURL.path) {
-            let value = try JSONDecoder().decode(HubReadPin.self, from: readHubCacheBytes(pinURL, limit: 4096))
-            guard value.schemaVersion == 1, value.ownerID == ownerID, value.runID == context.runID,
-                  value.publicationCommit.count == 40, value.publicationCommit.allSatisfy(\.isHexDigit),
-                  value.catalogDigest.count == 64, value.catalogDigest.allSatisfy(\.isHexDigit) else { throw SkillUpgradeError.localConflict }
-            pin = value
+            pin = try Self.decodeHubReadPin(readHubCacheBytes(pinURL, limit: 4096),
+                                            ownerID: ownerID, runID: context.runID)
             if FileManager.default.fileExists(atPath: detailURL.path) {
                 let cache = try JSONDecoder().decode(HubReadCache.self, from: readHubCacheBytes(detailURL, limit: 1_048_576))
                 guard cache.ownerID == ownerID, cache.runID == context.runID,
@@ -591,21 +653,26 @@ final class SkillsCenter: ObservableObject {
         if pendingInstallation != nil || pendingReviewChoiceKey != nil { throw SkillUpgradeError.localConflict }
         isWorking = true
         defer { isWorking = false }
-        // A task install may still carry the Y of the last authenticated
-        // publication shown by this process. Keep that publication's fixed
-        // layout when the pin matches it (a restored legacy snapshot stays
-        // installable); otherwise the production path prefers the current
-        // full feed at the requested immutable Y.
-        let requestLayout: CuratedSkillCatalogLayout
-        if let current = curatedPublication,
-           request.publicationCommit == nil || request.publicationCommit == current.publicationCommit {
-            requestLayout = current.layout
+        // The task's own detail read freezes Y and its exact layout before
+        // any instruction body is exposed. An install in that same task must
+        // reuse that frozen identity, not the global curated feed that may
+        // have refreshed to a newer full publication in between. A missing
+        // pin means no read froze this task, so the production full layout
+        // remains the default at the requested Y (or main).
+        let pinRoot = try hubReadOwnerRoot(ownerID).appendingPathComponent(context.runID.uuidString, isDirectory: true)
+        let pinURL = pinRoot.appendingPathComponent("publication.json")
+        let readPin: HubReadPin?
+        if FileManager.default.fileExists(atPath: pinURL.path) {
+            readPin = try Self.decodeHubReadPin(readHubCacheBytes(pinURL, limit: 4096),
+                                                ownerID: ownerID, runID: context.runID)
         } else {
-            requestLayout = .full
+            readPin = nil
         }
-        let publication = try await loadCuratedPublication(
-            ref: request.publicationCommit ?? "main", layout: requestLayout)
-        if let pin = request.publicationCommit, publication.publicationCommit != pin { throw SkillHubValidationError.receiptIdentityMismatch }
+        try context.cancellation.throwIfCancelled()
+        let publication = try await Self.resolveHubInstallPublication(
+            requestPublicationCommit: request.publicationCommit,
+            pin: readPin, ownerID: ownerID, runID: context.runID,
+            load: { ref, layout in try await self.loadCuratedPublication(ref: ref, layout: layout) })
         try context.cancellation.throwIfCancelled()
         let scratch = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
         defer { try? FileManager.default.removeItem(at: scratch.url); scratch.lease.release() }
