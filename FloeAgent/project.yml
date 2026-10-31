@@ -736,6 +736,7 @@ targets:
       - path: Tests/FloeAppTests/SpeechPerformanceLifecycleTests.swift
       - path: Tests/FloeAppTests/SilentSpeechPlaybackTests.swift
       - path: Tests/FloeAppTests/SpeechRecognitionResidencyTests.swift
+      - path: Tests/FloeAppTests/CloudASRPreloadIntegrationTests.swift
       - path: Tests/FloeAppTests/SpeechPlaybackEffectTests.swift
       - path: Tests/FloeCoreTests/SpeechPlaybackControlsTests.swift
       - path: Tests/FloeAppTests/SpeechSettingsControlsTests.swift

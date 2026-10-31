@@ -159,14 +159,15 @@ final class CloudASRPreloadCoordinator {
     }
 
     private func resolution() -> CloudASRRouteResolution {
-        // Readiness deliberately does not participate in IDENTITY. It only
-        // decides whether the selected cloud is usable for this request.
-        let readyIDs = Set(store.readyProfiles.map(\.id))
+        // Only identity is consumed here. It is metadata-only: ordinary
+        // defaults notifications must not synchronously read Keychain on the
+        // main actor. Actual recognition resolves credential readiness when
+        // a request begins.
         return CloudASRRouteResolver.resolve(
             method: methodProvider(),
             profiles: store.profiles,
             primaryProfileID: store.primaryProfileID,
-            readyProfileIDs: readyIDs)
+            readyProfileIDs: [])
     }
 
     private func scheduleWarmIfAllowed() async {

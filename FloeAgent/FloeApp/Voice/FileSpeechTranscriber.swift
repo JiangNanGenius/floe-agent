@@ -125,10 +125,24 @@ actor FileSpeechTranscriber {
                 box.set(.cancelled(decoderFault: false))
                 return
             }
-            let outcome = await Self.decodeFile(
-                asset: asset, track: track, duration: duration, language: language,
-                allowAppleFallback: allowAppleFallback, lease: lease, progress: progress)
-            box.set(outcome)
+            // AVAsset/AVAssetTrack are not Sendable. This worker owns its own
+            // handles; the actor retains the preflight handles solely for the
+            // joined-worker rejection/fallback branch below.
+            let workerAsset = AVURLAsset(url: url)
+            do {
+                guard let workerTrack = try await workerAsset.loadTracks(withMediaType: .audio).first else {
+                    box.set(.failure(.invalidAudio, decoderFault: false))
+                    return
+                }
+                let outcome = await Self.decodeFile(
+                    asset: workerAsset, track: workerTrack, duration: duration, language: language,
+                    allowAppleFallback: allowAppleFallback, lease: lease, progress: progress)
+                box.set(outcome)
+            } catch is CancellationError {
+                box.set(.cancelled(decoderFault: false))
+            } catch {
+                box.set(.failure(.invalidAudio, decoderFault: false))
+            }
         }
         let start = gateContinuation
         guard await lease.attachWorker(worker, start: { start.finish() }) else {
