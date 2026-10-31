@@ -72,6 +72,10 @@ fun HomeLaunchpadPage(
     onOpenDrawer: () -> Unit,
     onOpenSettingsSection: (String) -> Unit,
     runtimeHost: RuntimeHost? = null,
+    /** Opens the REAL Task Center route through the shell's navigation/fence.
+     * Null keeps the card absent (fixtures/previews) rather than inventing a
+     * local destination. */
+    onOpenSchedules: (() -> Unit)? = null,
 ) {
     val colors = Floe.colors
     val freshTaskUiScope = rememberCoroutineScope()
@@ -300,6 +304,26 @@ fun HomeLaunchpadPage(
                     stringResource(R.string.home_welcome),
                     style = Floe.typography.title,
                     color = colors.label,
+                )
+            }
+        }
+        // Compact real schedule summary (next enabled task). Tapping it asks
+        // the SHELL to navigate to Task Center/schedules through the same
+        // temporary-session fence as every other route; this page owns no
+        // navigation state and the draft/pending-run/attachments below are
+        // never read by the schedule editor.
+        if (onOpenSchedules != null && runtimeHost != null) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 4.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                com.floe.android.schedule.ScheduledTasksSummaryCard(
+                    host = runtimeHost,
+                    onOpen = onOpenSchedules,
+                    modifier = Modifier.widthIn(max = 720.dp),
+                    showWhenEmpty = false,
                 )
             }
         }

@@ -767,14 +767,26 @@ internal class AppUpdateInstaller(
             }
             is InstallEvent.Finished -> {
                 if (event.sessionID != record.sessionID) return
-                store.pendingInstallJson = null
                 if (event.success) {
                     val installed = reader.installed()
-                    if (installed != null) adoptInstalled(record, installed) else {
+                    if (installed != null) {
+                        // adoptInstalled retires the consumed download and then
+                        // clears this install record, so a crash between the
+                        // two durable writes still leaves a record that
+                        // re-adopts and finishes the cleanup.
+                        adoptInstalled(record, installed)
+                    } else {
+                        // The system reported success for our own verified
+                        // session; keep the honest success result and retire
+                        // only the exact consumed target. Installed identity
+                        // was not readable, so no identity claim is made.
+                        retireConsumedDownload(record)
+                        store.pendingInstallJson = null
                         mutable.value = AppInstallState.Succeeded(record.versionName)
                         cleanupStaged(record)
                     }
                 } else {
+                    store.pendingInstallJson = null
                     val kind = InstallFailureClassifier.classify(event.status, event.legacyStatus)
                     runCatching { context.packageManager.packageInstaller.abandonSession(record.sessionID) }
                     // The verified staging APK is retained for an explicit retry.
@@ -785,15 +797,25 @@ internal class AppUpdateInstaller(
     }
 
     private fun adoptInstalled(record: PendingInstall, installed: ApkIdentity) {
+        if (!UpdateSettlementPolicy.installedMatchesRecord(installed, record)) {
+            store.pendingInstallJson = null
+            val detail = if (record.packageName.isNotEmpty() && installed.packageName != record.packageName) {
+                "installed-package-changed"
+            } else {
+                "installed-signer-changed"
+            }
+            mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, detail)
+            return
+        }
+        // Retire the completed download that this install consumed BEFORE the
+        // install record: the process is killed by the system right after a
+        // self-update, and a leftover completed download record would be
+        // re-admitted on the next start against the now-equal installed
+        // version (VERSION_NOT_HIGHER -> false "mismatch"). If that kill lands
+        // between these writes, the surviving install record is enough for the
+        // next reconcile to repeat adoption and finish the cleanup.
+        retireConsumedDownload(record)
         store.pendingInstallJson = null
-        if (record.packageName.isNotEmpty() && installed.packageName != record.packageName) {
-            mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, "installed-package-changed")
-            return
-        }
-        if (record.signerSha256.isNotEmpty() && installed.signerSha256 != record.signerSha256) {
-            mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, "installed-signer-changed")
-            return
-        }
         mutable.value = AppInstallState.Succeeded(
             if (installed.longVersionCode == record.versionCode && record.versionName.isNotEmpty()) {
                 record.versionName
@@ -802,6 +824,19 @@ internal class AppUpdateInstaller(
             },
         )
         cleanupStaged(record)
+    }
+
+    /**
+     * Clears ONE durable download record, and only when it is the exact
+     * target (file name, version name and release SHA-256) that the settled
+     * install streamed into its PackageInstaller session. A different or
+     * newer download is left untouched.
+     */
+    private fun retireConsumedDownload(record: PendingInstall) {
+        val meta = DownloadMeta.fromJson(store.pendingDownloadJson) ?: return
+        if (UpdateSettlementPolicy.isConsumedDownload(meta, record)) {
+            store.pendingDownloadJson = null
+        }
     }
 
     private fun refreshSession(sessionID: Int) {

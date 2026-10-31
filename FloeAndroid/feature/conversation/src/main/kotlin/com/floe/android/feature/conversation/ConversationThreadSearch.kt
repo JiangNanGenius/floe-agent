@@ -339,12 +339,43 @@ object ThreadSearchVisible {
                 }
             }
             if (character == '*' || character == '_' || character == '~') {
+                if (character == '_') {
+                    var runEnd = index + 1
+                    while (runEnd < source.length && source[runEnd] == '_') runEnd += 1
+                    // Match the native visible projection: intraword runs are
+                    // literal identifiers, including inside outer emphasis.
+                    var before = index
+                    while (before > 0) {
+                        val cp = source.codePointBefore(before)
+                        val kind = Character.getType(cp)
+                        if (kind != Character.NON_SPACING_MARK.toInt() &&
+                            kind != Character.COMBINING_SPACING_MARK.toInt() &&
+                            kind != Character.ENCLOSING_MARK.toInt()
+                        ) break
+                        before -= Character.charCount(cp)
+                    }
+                    val previousIsWord = before > 0 &&
+                        identifierCodePoint(source.codePointBefore(before))
+                    val nextIsWord = runEnd < source.length &&
+                        identifierCodePoint(source.codePointAt(runEnd))
+                    if (previousIsWord && nextIsWord) {
+                        output.append(source, index, runEnd)
+                        index = runEnd
+                        continue
+                    }
+                }
                 if (charAt(1) == character) {
                     index += 2
                     continue
                 }
-                val previousIsWord = index > 0 && source[index - 1].isLetterOrDigit()
-                val nextIsWord = index + 1 < source.length && source[index + 1].isLetterOrDigit()
+                // Match the native projection: `_` itself is word content
+                // for delimiter adjacency, so the remaining marker of a
+                // closing `___`/`__` run is still stripped instead of being
+                // emitted as literal text (`alpha_beta_`).
+                val previousIsWord = index > 0 &&
+                    (source[index - 1].isLetterOrDigit() || source[index - 1] == '_')
+                val nextIsWord = index + 1 < source.length &&
+                    (source[index + 1].isLetterOrDigit() || source[index + 1] == '_')
                 if (previousIsWord || nextIsWord) {
                     index += 1
                     continue
@@ -355,6 +386,11 @@ object ThreadSearchVisible {
         }
         return output.toString()
     }
+
+    private fun identifierCodePoint(codePoint: Int): Boolean =
+        Character.isLetterOrDigit(codePoint) ||
+            Character.getType(codePoint) == Character.LETTER_NUMBER.toInt() ||
+            Character.getType(codePoint) == Character.OTHER_NUMBER.toInt()
 
     /** Returns (visible label, index after the closing syntax). */
     private fun parseLink(source: String, start: Int): Pair<String, Int>? {

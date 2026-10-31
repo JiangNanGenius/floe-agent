@@ -247,6 +247,13 @@ internal class UpdateDownloader(
     private val store: UpdateStore,
     private val stagingDir: File,
     private val validate: (File) -> DownloadFailure?,
+    /**
+     * Restore-only settlement proof: true when the verified staging bytes are
+     * exactly the app that is already installed. A downloaded target that a
+     * completed install consumed is retired, never re-admitted as a new
+     * update (which would reject VERSION_NOT_HIGHER as a false mismatch).
+     */
+    private val settledTarget: (File) -> Boolean = { false },
     /** Installed-base facts for the delta path; null disables deltas. */
     private val deltaBaseProvider: InstalledBaseProvider? = null,
     private val deltaApplier: FloePatchApplier = FloePatchApplier(),
@@ -909,22 +916,95 @@ internal class UpdateDownloader(
         return buffer.toByteArray()
     }
 
+    /**
+     * Re-verifies one persisted completed download after process restart.
+     *
+     * A completed install can settle while this restore is still running (the
+     * install owner clears the record and deletes the staged file). Every
+     * decision below is therefore fenced by [isCurrentRecord] AGAIN after the
+     * slow hash/identity work: a late verdict for a record that a successful
+     * install already consumed must not publish APK_IDENTITY. A settled target
+     * is retired as consumed; genuinely stale or wrong bytes keep the normal
+     * admission rejection.
+     */
     private suspend fun verifyCompleted(meta: DownloadMeta, apk: File) {
         mutable.value = AppDownloadState.Verifying(meta.versionName)
-        val actual = sha256(apk)
+        val actual = try {
+            sha256(apk)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: Exception) {
+            // The staged bytes vanished during restore. When the record was
+            // also retired, an install settled this target; otherwise the
+            // completed record is unusable and a fresh download is the honest
+            // recovery (never a fabricated install or an identity claim).
+            if (!isCurrentRecord(meta)) {
+                clearSuperseded(meta)
+                return
+            }
+            store.pendingDownloadJson = null
+            mutable.value = AppDownloadState.Idle
+            return
+        }
         if (!actual.equals(meta.expectedSha256, ignoreCase = true)) {
+            if (!isCurrentRecord(meta)) {
+                clearSuperseded(meta)
+                return
+            }
             apk.delete()
             store.pendingDownloadJson = null
             mutable.value = AppDownloadState.Failed(meta.versionName, DownloadFailure.CHECKSUM_MISMATCH, false)
             return
         }
+        if (!isCurrentRecord(meta)) {
+            clearSuperseded(meta)
+            return
+        }
+        if (settledTarget(apk)) {
+            // These verified bytes are the app that is already installed: the
+            // install that consumed this download has settled. Retire only
+            // this task-owned record and its exact staged file instead of
+            // re-admitting the equal version as a new update.
+            store.pendingDownloadJson = null
+            runCatching { apk.delete() }
+            clearSuperseded(meta)
+            return
+        }
         validate(apk)?.let { failure ->
+            if (!isCurrentRecord(meta)) {
+                clearSuperseded(meta)
+                return
+            }
             apk.delete()
             store.pendingDownloadJson = null
             mutable.value = AppDownloadState.Failed(meta.versionName, failure, false)
             return
         }
+        if (!isCurrentRecord(meta)) {
+            clearSuperseded(meta)
+            return
+        }
         mutable.value = AppDownloadState.Ready(meta.versionName, meta.fileName, actual, meta.mode)
+    }
+
+    /** The durable record is still EXACTLY the one this restore started from. */
+    private fun isCurrentRecord(meta: DownloadMeta): Boolean =
+        DownloadMeta.fromJson(store.pendingDownloadJson) == meta
+
+    /**
+     * Drops the in-memory verifying state only when this restore still owns it
+     * and no writer has started; a settled record must not leave a spinner or a
+     * later Ready/Failed verdict behind.
+     */
+    private fun clearSuperseded(meta: DownloadMeta) {
+        synchronized(writerLock) {
+            val current = mutable.value
+            if (writer == null && current is AppDownloadState.Verifying &&
+                current.versionName == meta.versionName
+            ) {
+                mutable.value = AppDownloadState.Idle
+            }
+        }
     }
 
     private fun publishPaused(owner: Writer) {

@@ -31,8 +31,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -154,6 +156,20 @@ fun FloeConversationHistoryDestination(
             if (mode == HistoryDestinationMode.MANAGE) BulkReceiptSummary(receipt)
         }
         val rows = holder.visibleItems(archivedFilter)
+        val historyListState = rememberLazyListState()
+        val topRowID = rows.firstOrNull()?.id
+        // Capture the prior layout during composition, before LazyColumn can
+        // anchor its old first row below a newly inserted row. Readers who
+        // scrolled into older history keep their position.
+        val wasAtTopBeforeInsertion = remember(topRowID) {
+            historyListState.firstVisibleItemIndex == 0 &&
+                historyListState.firstVisibleItemScrollOffset == 0
+        }
+        LaunchedEffect(topRowID) {
+            if (topRowID != null && wasAtTopBeforeInsertion) {
+                historyListState.scrollToItem(0)
+            }
+        }
         val searching = state?.isSearching == true && holder.searchQuery.isNotBlank()
         // Local non-null capture so the branch bodies can read projection
         // fields without relying on smart casts across `when` branches.
@@ -196,6 +212,7 @@ fun FloeConversationHistoryDestination(
                         description = stringResource(R.string.history_empty_hint),
                     )
                 else -> LazyColumn(
+                    state = historyListState,
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {

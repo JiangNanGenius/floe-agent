@@ -18,6 +18,33 @@ class ConversationThreadSearchTest {
     private val session = ConversationSessionToken("conv-1", 0L)
 
     @Test
+    fun assistantIdentifiersKeepUnderscoresWithoutLosingUnicodeCharacters() {
+        val source = "ALPHA19_NOTE_OK alpha__beta 中文_标识 𐐀_𐐁 e\u0301_note"
+        val visible = ThreadSearchVisible.visibleText(MessageRoleUi.ASSISTANT, source)
+        assertEquals(source, visible)
+        assertTrue(ThreadSearchMatcher.matches(visible, ThreadSearchQuery("ALPHA19_NOTE_OK")))
+        assertTrue(ThreadSearchMatcher.matches(visible, ThreadSearchQuery("中文_标识")))
+    }
+
+    @Test
+    fun outerEmphasisAndCodeKeepIdentifierContent() {
+        val source = "**ALPHA19_NOTE_OK** / _alpha_beta_ / __alpha__beta__ / ___alpha_beta___ / `a_b` / \\_literal\\_"
+        assertEquals(
+            "ALPHA19_NOTE_OK / alpha_beta / alpha__beta / alpha_beta / a_b / _literal_",
+            ThreadSearchVisible.visibleText(MessageRoleUi.ASSISTANT, source),
+        )
+    }
+
+    @Test
+    fun identifierHighlightsUseExactVisibleUtf16PositionsAfterEmoji() {
+        val visible = ThreadSearchVisible.visibleText(
+            MessageRoleUi.ASSISTANT, "🙂 **ALPHA19_NOTE_OK** 中文_标识",
+        )
+        val range = ThreadSearchMatcher.ranges(visible, ThreadSearchQuery("alpha19_note_ok")).single()
+        assertEquals("ALPHA19_NOTE_OK", visible.substring(range.first, range.last + 1))
+    }
+
+    @Test
     fun queryNormalizesWhitespaceAndQuotedPhrase() {
         val query = ThreadSearchQuery("  alpha \"beta gamma\"  ALPHA ")
         assertEquals(2, query.terms.size)

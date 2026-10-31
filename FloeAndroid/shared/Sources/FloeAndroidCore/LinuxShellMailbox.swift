@@ -63,6 +63,7 @@
 //   adapter, never owner IDs.
 import Foundation
 import CoreFoundation
+import Dispatch
 import FloeCore
 import FloeAndroidShellTools
 
@@ -81,7 +82,20 @@ public enum LinuxShellMailboxLimits {
     /// Bounded reply code string.
     public static let maximumCodeChars = 128
     /// Default bounded wait budgets (milliseconds) per operation.
-    public static let startBudgetMillis = 120_000
+    ///
+    /// `preparationBudgetMillis` bounds ONE `shell.start` wait. The engine
+    /// performs whole-runtime recovery, cold rootfs materialization and the
+    /// workspace import BEFORE it admits the command, so this is the explicit
+    /// bounded PREPARATION budget. It is CANCELLABLE: a cancelled or
+    /// timed-out waiter leaves a claimed ticket live (never a fabricated
+    /// settlement) so the trusted host pump can stop the pending start via
+    /// `shouldStop`/`shell.cancel {requestID}`. It is deliberately separate
+    /// from the caller's command timeout, which starts only at real execution
+    /// admission (the start reply) and is enforced by the engine from its own
+    /// spawn and by the backend's poll loop.
+    public static let preparationBudgetMillis = 120_000
+    /// Alias retained for existing call sites and authored tests.
+    public static let startBudgetMillis = preparationBudgetMillis
     public static let pollBudgetMillis = 15_000
     public static let inputBudgetMillis = 30_000
     public static let resizeBudgetMillis = 15_000
@@ -159,12 +173,25 @@ public final class LinuxShellMailbox: @unchecked Sendable {
     private var counters = Counters()
     /// Injectable bounded clock/timer for tests (production uses Task.sleep).
     private let sleeper: @Sendable (UInt64) async -> Void
+    /// Monotonic elapsed-time source for the REAL deadline. The old watchdog
+    /// counted nominal 20 ms sleeps (`waited += 20 ms`), so scheduler
+    /// oversleep under UI/CPU load stretched the 120 s preparation budget
+    /// (actual 2026-10-31 cold run: 6,000 waits took 148.4 s). This clock is
+    /// injectable so the regression can drive oversleep deterministically.
+    private let clock: @Sendable () -> UInt64
 
-    public init(sleeper: (@Sendable (UInt64) async -> Void)? = nil) {
+    public init(sleeper: (@Sendable (UInt64) async -> Void)? = nil,
+                clock: (@Sendable () -> UInt64)? = nil) {
         self.sleeper = sleeper ?? { nanoseconds in try? await Task.sleep(nanoseconds: nanoseconds) }
+        self.clock = clock ?? { DispatchTime.now().uptimeNanoseconds }
     }
 
     private static let waitPollNanos: UInt64 = 20_000_000
+
+    /// One monotonic deadline in nanoseconds, computed ONCE per wait.
+    private func budgetDeadline(_ millis: Int) -> UInt64 {
+        clock() &+ (UInt64(max(1, millis)) &* 1_000_000)
+    }
 
     // MARK: Generation binding (trusted host)
 
@@ -373,14 +400,13 @@ public final class LinuxShellMailbox: @unchecked Sendable {
     /// NOTHING: a budget never fabricates settlement, never stops remote work
     /// and never detaches ownership.
     func awaitTicketReleased(token: Int64, timeoutMillis: Int) async -> Bool {
-        let deadlineNanos = UInt64(max(1, timeoutMillis)) &* 1_000_000
-        var waited: UInt64 = 0
-        while waited < deadlineNanos {
+        let deadline = budgetDeadline(timeoutMillis)
+        while true {
             if ticketState(token: token) != .live { return true }
-            await sleeper(Self.waitPollNanos)
-            waited += Self.waitPollNanos
+            let now = clock()
+            if now >= deadline { return ticketState(token: token) != .live }
+            await sleeper(min(Self.waitPollNanos, deadline - now))
         }
-        return ticketState(token: token) != .live
     }
 
     /// Records the host's real settlement of one claim (under the lock, from
@@ -439,11 +465,12 @@ public final class LinuxShellMailbox: @unchecked Sendable {
     /// Budget watchdog. Amortized polling (never a parked cooperative thread
     /// on a semaphore); the host claim path supplies the real settlement.
     private func expireBudget(token: Int64, millis: Int) async {
-        let deadlineNanos = UInt64(max(1, millis)) &* 1_000_000
-        var waited: UInt64 = 0
-        while waited < deadlineNanos {
-            await sleeper(Self.waitPollNanos)
-            waited += Self.waitPollNanos
+        let deadline = budgetDeadline(millis)
+        while true {
+            let now = clock()
+            if now >= deadline { break }
+            // Charge REAL elapsed time, never the requested nominal interval.
+            await sleeper(min(Self.waitPollNanos, deadline - now))
             if waiterFinished(token) { return }   // settled/fenced/resumed elsewhere
         }
         expireWaiter(token)
@@ -846,7 +873,7 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
         public var inputMillis: Int
         public var resizeMillis: Int
         public var cancelMillis: Int
-        public init(startMillis: Int = LinuxShellMailboxLimits.startBudgetMillis,
+        public init(startMillis: Int = LinuxShellMailboxLimits.preparationBudgetMillis,
                     pollMillis: Int = LinuxShellMailboxLimits.pollBudgetMillis,
                     inputMillis: Int = LinuxShellMailboxLimits.inputBudgetMillis,
                     resizeMillis: Int = LinuxShellMailboxLimits.resizeBudgetMillis,

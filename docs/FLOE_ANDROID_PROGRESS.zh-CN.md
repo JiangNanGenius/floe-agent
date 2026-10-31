@@ -1,5 +1,22 @@
 # Floe Android 分目标实施记录
 
+## 当前推进状态（2026-10-31）
+
+已公开、可安装的参照是 [Alpha20／构建22](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.20)，准确源码 `21b900e397c65c626aaf496e36b8cbf564341df6`。三星已通过公开 Alpha19→20 的应用内增量下载、系统确认安装、摘要与数据保留、运行组件更新、手工终端及一次真实 Agent `exec.shell`；API37／16 KiB 平板模拟器已通过键盘与终端多会话隔离。详见[交付闭合记录](android/FLOE_ANDROID_ALPHA20_CLOSURE_20261031.zh-CN.md)。历史 Alpha17／15 条目保留为当时证据，不代表当前发行状态。
+
+当前执行 **G07.3B，目标 Alpha21／构建23**，先完成连贯代码，再集中验证：
+
+1. 修复聊天可见文本与高亮中的字面下划线标识符，原生与 Android 展示同时对齐。
+2. 离线 PCAP／PCAPNG 导入、统计、过滤、保存与脱敏导出；只读 Agent 工具按实际文件权限和显式共享开放。不实现实时抓包或 TLS 解密。
+3. Wi‑Fi 手动命名采样点、可选平面图、实际信号／缓存年龄与可选探测、保存重开／导出及只读 Agent 摘要；模拟器没有真实射频数据时明确不可测。
+4. 一次、每日、每周、间隔与上游成功后五种 Agent 计划。每次产生独立任务，绑定真实模型、工作区、项目运行环境及原有任务策略；任务中心和主页都有入口。指定时间优先精确闹钟，未获授权显示等待，仅用户明确选择后采用弹性时间，不以画中画保活。
+
+网络与调度服务的首批源码已交回，App 集成和依赖闭合进行中。网络包 53 项独立 JVM 检查通过，另有缓存依赖下的界面模块编译；这不是整包、原生链接、设备或发行验收。Alpha21 尚未发布，统一编译和本轮设备结果须另行记录。
+
+下一步为同批源码冻结、相关 Swift 6 对象／Kotlin 检查、必要变化的原生库、一份实际使用的 Full APK、三星与现有平板模拟器代表性流程，再公开干净阶段包、下载核验和清理。未来阶段留在计划，不提前排入 Worker 队列。
+
+## 历史记录（按各条日期及冻结输入解释）
+
 ## 2026-10-30 — G07.2 已交付 Alpha17／构建19（PUBLISHED_VERIFIED）
 
 [Android Alpha17／构建19](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.17) 已公开，预发布、`latest=false`；三个附件均从公开下载地址重新计数和计算 SHA-256，通过后才记录此状态。iOS latest 读回仍为 `v1.7.64`，没有触发 iOS／Play／官网发布。
@@ -1474,3 +1491,11 @@ Alpha14／code16 已作为 Android 预发布公开：[GitHub Release](https://gi
 - **用户最新优先级**：手机和平板均对照实际iOS核对新建→Office二级菜单→命名、文件/工作区导入、编辑/助手、返回、设置详情及系统栏/键盘避让。已通过的存储和返回路径保留，新增差异合为下一批修复，不预排依赖任务。
 
 下一份APK消费这批代码后统一验证受影响路径。可用候选通过对应设备检查后，才生成最终对应源码附件并发布Android预发布；公开附件仅APK、SHA256SUMS及所需对应源码归档。现有Alpha14标签与附件保持不变。
+
+## 2026-10-31 Alpha20 delivery checkpoint
+
+Alpha20 (22), source `21b900e397c65c626aaf496e36b8cbf564341df6`: actual Samsung public Alpha19-to-20 delta download, system-confirmed installation, exact hash, retained data, corrected post-install state, runtime component upgrade, manual terminal and one agent exec.shell all passed. API37/16KiB tablet IME and separate terminal sessions passed. Literal underscore-bearing search remains a known gap.
+
+iOS baseline remains `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322` (1.7.65/306), with zero subsequent FloeAgent changes through this APK source. Preserve D01-D36. Next G07.3B covers offline PCAP/PCAPNG, Wi-Fi coverage sampling and scheduled tasks; no dependent worker queue is pre-submitted.
+
+[Chinese closure, remaining gaps, next-stage scope and cleanup](android/FLOE_ANDROID_ALPHA20_CLOSURE_20261031.zh-CN.md).

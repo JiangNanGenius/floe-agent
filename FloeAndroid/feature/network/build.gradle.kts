@@ -12,6 +12,7 @@ android {
 }
 dependencies {
     implementation(project(":core:designsystem"))
+    implementation(project(":core:networkmonitor"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.androidx.activity.compose)
     testImplementation(libs.junit)

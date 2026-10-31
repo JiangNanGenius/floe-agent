@@ -70,12 +70,31 @@ final class FakeLinuxShellTransport: LinuxShellTransport, @unchecked Sendable {
 
     private var perSessionPolls: [String: Int] = [:]
     private var released: Set<String> = []
+    /// Deterministic SLOW-PREPARATION stand-in for the engine's cold rootfs
+    /// materialization/import. It is awaited inside `shellStart` BEFORE the
+    /// start is recorded or any reply exists, exactly where the real engine
+    /// spends its preparation time. Tests use hundreds of milliseconds —
+    /// never a real 38 s device sleep.
+    private var startDelayNanos: UInt64 = 0
+
+    func setStartDelay(nanoseconds: UInt64) {
+        lock.lock(); startDelayNanos = nanoseconds; lock.unlock()
+    }
+
+    private func startDelayValue() -> UInt64 {
+        lock.lock(); defer { lock.unlock() }; return startDelayNanos
+    }
 
     func markReleased(_ sessionID: String) {
         lock.lock(); released.insert(sessionID); lock.unlock()
     }
 
     func shellStart(_ request: LinuxShellStartRequest) async throws -> LinuxShellStartReply {
+        // Cancellable preparation delay: a cancelled caller must observe the
+        // cancellation (the real mailbox releases its waiter the same way)
+        // rather than a falsely admitted command.
+        let delay = startDelayValue()
+        if delay > 0 { try await Task.sleep(nanoseconds: delay) }
         let (error, scripted) = startStepLocked(request)
         if let error { throw error }
         if let scripted, let reply = scripted(request) { return reply }

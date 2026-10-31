@@ -1,5 +1,13 @@
 # 安卓与 iOS 主线的增量差异记录
 
+## 当前基线与本批范围（2026-10-31）
+
+最新实际读回公开 `main` 为 `0ef8b11dde2bd474721ab9cbe550cd1f61bb4b16`。相对上次 iOS 基线 `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322`（1.7.65／306），`FloeAgent/` 变更路径为零；这是源码增量核对，不是新的 iOS 编译、设备或发行验收。本批完成前及大目标收尾仍须重新读回主线，不能把进行中的私有 iOS 工作线视为已合入功能。
+
+Android 公开参照为 Alpha20／构建22、源码 `21b900e397c65c626aaf496e36b8cbf564341df6`；保留 IOS-D01..D36 的身份及已有证据。G07.3B 正在实现 D27 相关字面搜索修复、D11 的 Android 五种调度适配和网络离线分析／采样，尚不标记为设备或发布完成。G08、G09、G10 只读 CAD／3D、G11 合同与后续矩阵／视觉精修顺序保持。历史全量审计不重启，新差异按实际源码追加。
+
+## 历史增量记录
+
 本记录随每个安卓大目标的收尾更新，用来调整下一阶段范围与优先级。以最新iOS主线源码为功能参照，保留安卓自身的原生实现方式和既有产品约束；主线新增功能不等于已在安卓实现。
 
 ## 执行规则
@@ -257,3 +265,11 @@ G06以Android Alpha15/code17交付，源码标签`86b20a34a14ebda636213fa480cdf1
 ### G07.2 实际交付收尾（2026-10-30）
 
 冻结源码`6d1e4b09`、候选02与Alpha17公开下载已核验。上述Android三提交未改变iOS产品源；D01..D34保留。原生提问与通知回应归D33／G11，对话可见搜索归D27／G14，关联计划任务归D11／G11。Skill依赖V2的macOS目标声明仅为候选合同；当前Hub生产源仍为V1，不能从iOS候选版本推断Android已支持或升级现有包。下一次大目标关闭从本次公开冻结点增量比较，并在相关目标接入时复核最新实际能力。
+
+## 2026-10-31 Alpha20 delivery checkpoint
+
+Alpha20 (22), source `21b900e397c65c626aaf496e36b8cbf564341df6`: actual Samsung public Alpha19-to-20 delta download, system-confirmed installation, exact hash, retained data, corrected post-install state, runtime component upgrade, manual terminal and one agent exec.shell all passed. API37/16KiB tablet IME and separate terminal sessions passed. Literal underscore-bearing search remains a known gap.
+
+iOS baseline remains `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322` (1.7.65/306), with zero subsequent FloeAgent changes through this APK source. Preserve D01-D36. Next G07.3B covers offline PCAP/PCAPNG, Wi-Fi coverage sampling and scheduled tasks; no dependent worker queue is pre-submitted.
+
+[Chinese closure, remaining gaps, next-stage scope and cleanup](android/FLOE_ANDROID_ALPHA20_CLOSURE_20261031.zh-CN.md).

@@ -10,9 +10,58 @@
 import XCTest
 import FloeCore
 import FloeModels
+import GRDB
 @testable import FloeAndroidCore
 
 final class ThreadSearchVisibleTextTests: XCTestCase {
+
+    func testAssistantIdentifiersKeepSingleAndRepeatedIntrawordUnderscores() {
+        let source = "ALPHA19_NOTE_OK, alpha__beta, 中文_标识, 𐐀_𐐁 and e\u{301}_note"
+        let visible = ThreadSearchText.visibleText(role: "assistant", content: source)
+        XCTAssertEqual(visible, source)
+        for identifier in ["ALPHA19_NOTE_OK", "alpha__beta", "中文_标识", "𐐀_𐐁", "e\u{301}_note"] {
+            XCTAssertTrue(ThreadSearchQuery(raw: identifier).matches(visible))
+        }
+    }
+
+    func testEmphasisCodeAndEscapesKeepIdentifierContent() {
+        let source = #"**ALPHA19_NOTE_OK** / _alpha_beta_ / __alpha__beta__ / ___alpha_beta___ / `a_b` / \_literal\_"#
+        XCTAssertEqual(
+            ThreadSearchText.visibleText(role: "assistant", content: source),
+            "ALPHA19_NOTE_OK / alpha_beta / alpha__beta / alpha_beta / a_b / _literal_"
+        )
+    }
+
+    func testIdentifierHighlightOffsetsAddressOriginalVisibleUnicodeText() throws {
+        let visible = ThreadSearchText.visibleText(
+            role: "assistant", content: "🙂 **ALPHA19_NOTE_OK** 中文_标识")
+        let ranges = ThreadSearchQuery(raw: "alpha19_note_ok").ranges(in: visible)
+        XCTAssertEqual(ranges.count, 1)
+        let range = try XCTUnwrap(ranges.first)
+        let lower = visible.index(visible.startIndex, offsetBy: range.lowerBound)
+        let upper = visible.index(visible.startIndex, offsetBy: range.upperBound)
+        XCTAssertEqual(String(visible[lower..<upper]), "ALPHA19_NOTE_OK")
+    }
+
+    func testNativeSQLitePredicateFindsAssistantIdentifierWithoutHiddenLinkHits() throws {
+        let database = try DatabaseQueue(path: ":memory:")
+        try database.write { db in
+            db.add(function: ThreadSearchQuery.visibleMatchFunction)
+            let identifierHit = try Int.fetchOne(
+                db,
+                sql: "SELECT floe_thread_search_match(?, ?, ?)",
+                arguments: ["assistant", "Result: ALPHA19_NOTE_OK", "ALPHA19_NOTE_OK"]
+            )
+            XCTAssertEqual(identifierHit, 1)
+            let hiddenTargetHit = try Int.fetchOne(
+                db,
+                sql: "SELECT floe_thread_search_match(?, ?, ?)",
+                arguments: ["assistant", "[visible](https://example.test/ALPHA19_NOTE_OK)",
+                            "ALPHA19_NOTE_OK"]
+            )
+            XCTAssertEqual(hiddenTargetHit, 0)
+        }
+    }
 
     func testVisibleProjectionDropsHiddenLinkTargetButKeepsLabel() {
         let source = "Read [docs](https://secret.example/private) and **now**."

@@ -5,6 +5,7 @@ coroutines = "1.9.0"
 compose-bom = "2026.09.00"
 activity = "1.11.0"
 core = "1.17.0"
+workmanager = "2.12.0"
 cupertino = "3.3.1"
 # Official fixed Sora pin; no dynamic version or Apple-restricted assets.
 sora = "0.24.4"
@@ -25,6 +26,7 @@ espresso = "3.7.0"
 
 [libraries]
 androidx-core = { module = "androidx.core:core-ktx", version.ref = "core" }
+androidx-work-runtime = { module = "androidx.work:work-runtime", version.ref = "workmanager" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
 compose-ui = { module = "androidx.compose.ui:ui" }

@@ -59,6 +59,15 @@ import java.util.concurrent.TimeUnit
  * later qualification is always a fresh full re-ingest after an explicit
  * legitimate resume or on a NEW epoch.
  *
+ * App-upgrade peer ordering: an App package update creates a fresh root epoch
+ * while the PREVIOUS embedded component may still be installed. Because
+ * `runtimeUidBoundary` is the one fact that anchors a peer in Core, a stale
+ * component must be refused BEFORE that fact is committed (the same trusted
+ * PackageManager exact-version check the setup surface uses). The first
+ * matching component installation then re-arms through the EXISTING verified
+ * install lifecycle and may anchor/requalify this fresh root without a
+ * force-stop, process kill or epoch reset.
+ *
  * Offline / denied-LAN state is irrelevant here by construction: nothing in
  * this controller or in the preflight round trip touches the network, so a
  * real installed rootfs + live binder keeps local command capability
@@ -71,6 +80,16 @@ class LinuxRuntimeReadinessController(
      *  triggered by a real verified lifecycle event (install completion /
      *  binder loss) and is bounded + cancellable with the generation. */
     private val watchScope: CoroutineScope? = null,
+    /** G03-R3 App-upgrade peer gate: the EXISTING trusted PackageManager
+     *  exact-version authority (same decision as
+     *  `LocalRuntimeSetupHost.componentMatches`), consulted BEFORE a runtime
+     *  connection / any peer fact is committed. Returns null for the exact
+     *  expected embedded component build, a closed token otherwise. Injectable
+     *  only for the same-module JVM decision regression; production always
+     *  uses the real PackageManager authority. */
+    private val componentRefusal: () -> String? = {
+        RuntimeComponentMatch.refusal(context.applicationContext)
+    },
 ) {
 
     private val context = context.applicationContext
@@ -207,6 +226,24 @@ class LinuxRuntimeReadinessController(
     }
 
     private suspend fun ingressPrerequisites(target: Bound) {
+        // G03-R3 App-upgrade fence (fresh App root epoch + OLD component):
+        // a package update replaces the runtime process, but until the
+        // matching component build is installed the PREVIOUS component is
+        // still a valid signed/UID peer and would connect successfully. That
+        // stale peer must NEVER be ingested: `runtimeUidBoundary` is the ONE
+        // fact that anchors the peer in Core, and the later component
+        // replacement would then be an irreducible same-epoch generation
+        // conflict (`peer_generation_drift` / `peerBoundaryConflict`) that
+        // the ORIGINAL guards correctly refuse to re-anchor. This gate runs
+        // BEFORE the connection is created, before any peer identity is
+        // committed and before Core peer.register; a matching component
+        // installation re-arms through the EXISTING verified-install
+        // lifecycle event and may then anchor this same fresh root. The gate
+        // is the SAME trusted PackageManager exact-version authority the
+        // setup surface already uses (never a model/peer payload or label)
+        // and does not touch the current epoch, peer signature, nonce or
+        // lease guards.
+        componentRefusal()?.let { error(it) }
         val client = target.connection ?: RuntimeConnection(context).also { fresh ->
             fresh.connect().get(15, TimeUnit.SECONDS)
             // REAL callback: the actual Binder object death / disconnect of
@@ -761,6 +798,8 @@ class LinuxRuntimeReadinessController(
             "exchangeFailed", "ingress_failed", "peer_boundary_drift",
             "engine_identity_lost", "peer_generation_drift", "rootfs_drift",
             "transport_lost", "preflight_peer_retired",
+            // G03-R3 App-upgrade component gate (RuntimeComponentMatch).
+            "componentUnavailable", "componentVersionStale", "componentIdentityMismatch",
             // Core LinuxReadinessIngress refusal codes (lastRefusal values).
             "epochZero", "epochNotLive", "mailboxClosed", "noLiveAuthority",
             "admissionSuspended", "uidNotDistinct", "certificateMalformed",

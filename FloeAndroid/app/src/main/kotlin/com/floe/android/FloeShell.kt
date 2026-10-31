@@ -40,6 +40,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
@@ -202,6 +203,11 @@ private fun FloeShellContent(
     var inspectorRoute by rememberSaveable { mutableStateOf<String?>(null) }
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
     var drawerOpen by rememberSaveable { mutableStateOf(false) }
+    // One-shot sub-view signal for the Task Center. Incremented ONLY by an
+    // ADMITTED Home→Task Center navigation commit (never by a refused
+    // temporary-session fence), so the schedules surface cannot bypass the
+    // shell's existing route authority.
+    var taskCenterSchedulesToken by rememberSaveable { mutableIntStateOf(0) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
     // G05-R2 Office AI transient launch admission (Main review 2026-10-27):
@@ -484,7 +490,7 @@ private fun FloeShellContent(
         }
         BackHandler(enabled = drawerOpen) { drawerOpen = false }
 
-        val select: (SidebarSelection) -> Unit = { target ->
+        fun navigateTo(target: SidebarSelection, openSchedules: Boolean) {
             officeNavigationGeneration++
             officePreviews?.cancelUnopened()
             val opensSkillsSheet = target is SidebarSelection.More &&
@@ -504,7 +510,8 @@ private fun FloeShellContent(
                 }
                 // Genuine route transition while a temporary session owns the
                 // surface: fence admission BEFORE the transition (TMP-NAV-2);
-                // the async drain continues afterwards.
+                // the async drain continues afterwards. A REFUSED/timeout
+                // fence commits nothing — including no schedule sub-view.
                 runtimeHost != null && currentTemporary != null && leavingConversation -> {
                     val ref = currentTemporary
                     scope.launch {
@@ -513,6 +520,9 @@ private fun FloeShellContent(
                         if (admitted) {
                             runtimeHost?.home?.onNavigation(target)
                             commitVisibleSelection(target)
+                            if (taskCenterSchedulesOpenOnCommit(target, openSchedules)) {
+                                taskCenterSchedulesToken++
+                            }
                             drawerOpen = false
                             inspectorRoute = null
                         }
@@ -521,6 +531,9 @@ private fun FloeShellContent(
                 else -> {
                     runtimeHost?.home?.onNavigation(target)
                     commitVisibleSelection(target)
+                    if (taskCenterSchedulesOpenOnCommit(target, openSchedules)) {
+                        taskCenterSchedulesToken++
+                    }
                     drawerOpen = false
                     // Ordinary navigation (iOS semantics): leaving the visible
                     // conversation surface ends temporary chat; rotation,
@@ -528,6 +541,10 @@ private fun FloeShellContent(
                     inspectorRoute = null
                 }
             }
+        }
+
+        val select: (SidebarSelection) -> Unit = { target ->
+            navigateTo(target, openSchedules = false)
         }
 
         val sidebarBody: @Composable (Boolean) -> Unit = { inDrawer ->
@@ -655,6 +672,19 @@ private fun FloeShellContent(
                     onConversationHolderBound = { boundId, boundHolder ->
                         visibleConversationBinding = boundId to boundHolder
                         runtimeHost?.conversations?.bindPrivacyVisibleHolder(boundHolder)
+                    },
+                    // Home's Scheduled Tasks card asks the SHELL to navigate;
+                    // the token is incremented only after the real commit
+                    // (including temporary-chat fence admission).
+                    onOpenSchedules = {
+                        navigateTo(
+                            SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW),
+                            openSchedules = true,
+                        )
+                    },
+                    taskCenterSchedulesToken = taskCenterSchedulesToken,
+                    onTaskCenterSchedulesHandled = {
+                        taskCenterSchedulesToken = 0
                     },
                 )
             }
@@ -796,6 +826,18 @@ private fun FloeShellContent(
 }
 
 private fun drawerWidthPx(availableDp: Float) = FloeLayout.drawerWidth(availableDp)
+
+/**
+ * Home's Scheduled Tasks card may open the Task Center's schedules sub-view
+ * ONLY when the committed route really is the Task Center. A temporary-chat
+ * fence refusal performs no commit (nothing is opened), and any other target
+ * stays a plain navigation. Pure so the route policy is pinned by a JVM test.
+ */
+internal fun taskCenterSchedulesOpenOnCommit(
+    committed: SidebarSelection?,
+    requestedFromHome: Boolean,
+): Boolean = requestedFromHome &&
+    committed == SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW)
 
 /* --------------------------- selection persistence -------------------------- */
 

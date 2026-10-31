@@ -89,3 +89,11 @@ materials required by the applicable licenses.
 ## Embedded terminal
 
 The selected terminal-emulator sources and TerminalRenderer from termux/termux-app v0.118.3 (5b657c6adf4304e5198951ce815fe0205dcac29c) use the upstream terminal-library Apache-2.0 exception. Full license texts and lineage are in `licenses/terminal` and packaged under `assets/legal/terminal`. Only the documented parser/buffer/renderer subset is reused; Floe owns the execution lifecycle. Source hashes and the two documented patches are recorded in `feature/terminal/PROVENANCE-TERMUX.md`.
+
+### AndroidX WorkManager scheduling
+
+AndroidX WorkManager Runtime is pinned to 2.12.0 for Android schedule wake-up and
+work dispatch. It is published by the Android Open Source Project under the
+Apache License, Version 2.0. Exact resolved transitive dependencies remain
+recorded in the Gradle dependency lockfiles; their upstream notices remain
+controlling. The Gradle coordinate is `androidx.work:work-runtime:2.12.0`.

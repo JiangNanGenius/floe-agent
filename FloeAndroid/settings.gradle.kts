@@ -54,3 +54,4 @@ include(":core:notesmedia", ":feature:notes")
 // G07 phone-native network measurements and shared workbench presentation.
 include(":core:network", ":feature:network")
 include(":core:networkmonitor")
+include(":core:pcap")

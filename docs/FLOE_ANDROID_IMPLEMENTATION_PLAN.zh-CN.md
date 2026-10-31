@@ -1,5 +1,17 @@
 # Floe 安卓完整功能对齐与轻量化实施计划
 
+## 当前执行顺序与验收边界（2026-10-31）
+
+当前公开版本是 [Alpha20／构建22](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.20)，不是下方历史条目的 Alpha17。本批 **G07.3B／计划 Alpha21** 连贯实现字面下划线搜索修复、离线 PCAP／PCAPNG、Wi‑Fi 采样与可选平面图、五种 Agent 定时任务及主页／任务中心入口。代码就绪、组件检查、整包、真实设备和公开可安装分别记录；尚未完成 Alpha21 交付。
+
+指定时间任务优先精确调度：Full 与 Play 采用 `SCHEDULE_EXACT_ALARM`，缺少特别授权时显示等待；只有用户明确选择才切换到弹性 WorkManager 调度。每次运行是独立新任务，使用明确模型、工作区、项目环境及原有权限流程；不自动转借其他任务的会话环境，不静默换模型，不把计划提醒当作执行成功。网络工具与 Office 等 App 原生服务继续在 App 执行；外部脚本／二进制使用实际选定的 Linux 环境。
+
+本批完成后按实际 iOS 主线增量重新核对，再按 G08 手机辅助操作／GitHub ADB 与可选 Root、G09 媒体、**G10 CAD／3D 只读预览**、G11 服务与生命周期合同、G12／G13 兼容矩阵、G14／G15 视觉精修和交付推进。G10 不包含几何编辑、建模或装配；旧扩大范围已被此收敛替代，原需求编号与历史证据保留。完整透明材质、图标、手机全屏文档与 iPad 层级一致性持续跟随功能检查，最终精修仍独立记录。
+
+每批先实现一组连贯代码，再集中相关检查；不逐修复重跑全套测试，不靠 Fast 模型定义快速迭代。只派发输入就绪、写入归属分开且有容量的当前工作，不预排依赖队列。阶段可用后交付干净 GitHub Android Release；未变组件证据复用，公开附件与增量升级需实际读回。完成后清理已无用途的本轮生成物、记录回收空间并保留当前交付及必要回退。
+
+## 历史计划与固定编号
+
 ## 2026-10-30 — G07.2 已交付 Alpha17／构建19（PUBLISHED_VERIFIED）
 
 [Android Alpha17／构建19](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.17) 已公开，预发布、`latest=false`；三个附件均从公开下载地址重新计数和计算 SHA-256，通过后才记录此状态。iOS latest 读回仍为 `v1.7.64`，没有触发 iOS／Play／官网发布。
@@ -1573,7 +1585,7 @@ G02-R8已交付Alpha7，源码与代表性接线收口，末段清理已完成�
 | G07 网络与Wi-Fi完整工作台 | Wi-Fi分析、网络路径、DNS/Ping/TCP/TLS/HTTP、LAN发现、测速/持续监测/报告、按能力可用的高级分析及抓包接口、Agent工具 | 无Root主体真实测量可用；数据源/权限/限流/取消正确；需Root后端的接口先具备明确契约，在G08完成接通。2026-10-30 G07.1与G07.2已分别交付Alpha16／17；无RootLAN／测速／监测／通知／报告已代表性验证，抓包离线分析／覆盖采样等继续G07.3，不以已交付批次关闭整个G07 |
 | G08 手机操作 ADB增强与Root增强 | GitHub版Accessibility观察/动作/停止/接管；默认关闭的Root开关、服务/文件/进程/网络后端与撤销；full-only、用户明确启用的ADB-shell档（普通/ADB-shell/Root三档能力边界，不随重启自动激活，缺档仅相关操作不可用）；Play物理裁剪 | 无Root与拒绝授权正常回退；动作/结果与停止可核对；三档能力的获得、缺档与回退状态可核对；完整APK和Play产物的依赖/Manifest/DEX/资产排除检查通过（含ADB模式客户端与特权服务）；真实Root管理器与ADB-shell覆盖不足明确保留给G13/用户反馈 |
 | G09 画布 设计与媒体 | 画布/素材/引用/修订、设计候选与采纳、云端图像/视频、媒体时间线/字幕/音轨/预览/导出、工程保存恢复 | 画布资产可恢复，媒体样例实际播放/导出；接入基线所需能力及明确的本地/远程依赖，失败不丢原工程 |
-| G10 CAD与3D工程 | 固定几何内核的Android构建、数学/渲染/选择适配、图层/单位/几何命令、建模/装配/绘图、导入导出和工程保存 | 实际几何修改→保存→重开/导出通过；不以只读预览替代建模，不静默损坏未知对象 |
+| G10 CAD与3D只读预览 | 只读导入、视图导航、对象信息与可用格式预览；不提供几何编辑、建模或装配 | 真实文件打开→查看→关闭，未知格式诚实拒绝，原文件不变；源格式范围按实际后端声明 |
 | G11 系统集成与全代码收口 | SSH/VNC及其他基线协议、BLE/USB、邮件/日历/待办/语音、分享/深链、调度与持久通知、重启恢复、系统增强/兼容、备份迁移/升级/反馈；调度平台适配（AlarmManager/WorkManager/精确资格/开机恢复/预算重验）与GitHub应用内更新器（官方feed信任、双校验、会话恢复、安装协调）；跨端数据同步按单独确认范围；补齐全台账剩余实现 | 85个工作包中的全部代码项有真实实现/可达入口/错误路径；两个渠道完整构建通过，关键原生库ABI/页大小适配有检查；调度与更新具备真实执行/等待/失败路径及定向检查（设备矩阵归G12/G13）；全量代码缺口清单为零或具体差异已获用户接受 |
 
 G01承担总台账与全局设计；G02–G11按功能承担各自P1探针和P2–P6中的实现项。通知/权限/兼容/隐私不是G11才首次添加，而是随所属功能一并实现，G11集中查漏和整合。全产品同步更新的共享契约、格式版本与回归样例从G01持续维护；实时数据同步仍按第6/14节单独确认，不默认为已授权重建iOS同步服务。调度与更新的边界自2026-10-18起具体化：调度账本沿用共享Swift权威（G02任务核心不建平行调度存储，实际执行体属G03作业/服务），调度平台适配与GitHub更新器组件归G11，设备行为归G12/G13。2026-10-19追加的阶段Release要求将最小签名/产物/更新元数据交付提前至首版及各轮发布时，G15保留完整候选与渠道整合；这些是范围记录，不改变任何ID、数量或当前状态。
@@ -1694,3 +1706,11 @@ G06继续承担独立手记／PDF／笔迹与触摸防误触；G05只定义其�
 **iOS 增量计划对齐（2026-10-28，83d46e→98fea137）：** 已在差距审计新增 IOS-D30（适用于安卓的完整设置向导与后台资源准备），补强 D19（Skill Hub）、D06（语音）及 D10（浏览器导出）的来源。该开发分支的编译、上传和分发状态未在本审计核对；所查远端 main 仍为 83d46e。G05 Office 范围没有新增阻断。当前 Android 固定输入仍为旧 Hub 谱系，目录缺可信 appVersion 绑定；后续需分别处理安卓商店频道、安装平台、执行环境和安卓版本域，不能冒用 iOS 版本号或假定脚本兼容。详见 IOS 差距审计的同日增量节；不在 G05 中整体刷新共享快照。
 
 **R3 C19 源码冻结与本地三附件检查点（2026-10-29）：** C19 固定源码 `5ed31c1…`（tree `b4f7b81…`）已推送 `origin/main` 并 API 读回，尚无 tag／release；相对上次 iOS 内容基线 `e528e444…` 只有 3 个提交（Feather 标签守护工作流＋两个 `FloeAndroid/` 提交），`FloeAgent/` 的 iOS 源码零差异。实际 Full APK 435,071,701 字节／SHA-256 `b24db2eb…`，内嵌运行组件 33,886,260 字节；对应源码归档 2,610,605 字节／SHA-256 `2f2aafa8…`，`SHA256SUMS` 两行且独立校验通过；本地集只含这三个公开安全附件。C19 实际新跑 12 项定向 JVM（5 冷开策略＋7 权限围栏）并复用 291 项，合计 303 项唯一；18 项原生主机组合复用，Core09 已完成实际 Swift 6 Android ARM64 对象／链接。设备证据限于：G01 冷开策略保留；DOCX 约160秒后台等待后审批、保存副本／独立导出同一 5,135 字节摘要且 ZIP 一致、重开可见；PPTX 第2页写入、发布 ZIP 仅第2页含标记、C19 同包原生 Impress 重开可见（保留 `savedNotOneEditFromBaseline` 限制）；C17 Calc 311.3秒审批与 `00123`、三星单次真实云终端结果沿用；同一 C19 APK 覆盖安装保留 G02 5个会话／16份夹具哈希，终端仍显示 Starting 并转只读诊断，三星启动后保留4条旧会话标题与既有供应商配置、UID／CE 数据标识不变且无新增云调用。更新器 Full 自动／手动检查、下载进度／取消、摘要与包身份校验及系统确认安装（非静默）已接通，Play 合并产物排除；C18 手动检查实际显示“已是最新”（本地 alpha14、远端 alpha13），首次正向升级待发布后用旧 code15 基线验证。Alpha14 尚未发布、G05 未关闭；标签、上传、独立下载读回与最终验收仍归主协调者，183项操作／85个工作包／24项G04操作／IOS-D01..D30 编号不重置。
+
+## 2026-10-31 Alpha20 delivery checkpoint
+
+Alpha20 (22), source `21b900e397c65c626aaf496e36b8cbf564341df6`: actual Samsung public Alpha19-to-20 delta download, system-confirmed installation, exact hash, retained data, corrected post-install state, runtime component upgrade, manual terminal and one agent exec.shell all passed. API37/16KiB tablet IME and separate terminal sessions passed. Literal underscore-bearing search remains a known gap.
+
+iOS baseline remains `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322` (1.7.65/306), with zero subsequent FloeAgent changes through this APK source. Preserve D01-D36. Next G07.3B covers offline PCAP/PCAPNG, Wi-Fi coverage sampling and scheduled tasks; no dependent worker queue is pre-submitted.
+
+[Chinese closure, remaining gaps, next-stage scope and cleanup](android/FLOE_ANDROID_ALPHA20_CLOSURE_20261031.zh-CN.md).

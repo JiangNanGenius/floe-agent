@@ -69,6 +69,8 @@ public enum BridgeV3 {
         // 2026-10-19). Declaring a label never activates a command by itself;
         // the closed matrix below remains the only authority.
         "settings.defaults", "memory", "personalization", "usage", "privacy",
+        // G07.3B: host-owned schedule configuration; not execution authority.
+        "schedule",
     ]
 
     public enum Operation: String, Sendable {
@@ -355,6 +357,34 @@ public enum BridgeV3 {
                     revisionRequired: false),
         CommandRule(command: "workspace.activate", scope: .conversationLifecycle,
                     revisionRequired: false),
+
+        // G07.3B: additive scheduled-task configuration and wake reconciliation.
+        CommandRule(command: "schedule.list", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: false),
+        CommandRule(command: "schedule.get", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: false),
+        CommandRule(command: "schedule.options", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: false),
+        CommandRule(command: "schedule.create", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: true, allowsCreateIntent: true),
+        CommandRule(command: "schedule.update", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: true),
+        CommandRule(command: "schedule.enable", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: true),
+        CommandRule(command: "schedule.disable", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: true),
+        CommandRule(command: "schedule.delete", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: true),
+        CommandRule(command: "schedule.runNow", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: true),
+        CommandRule(command: "schedule.history", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: false),
+        CommandRule(command: "schedule.dispatch", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: false),
+        CommandRule(command: "schedule.rearm", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: false),
+        CommandRule(command: "schedule.dispatchPending", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: false),
     ]
 
     public enum BinderChannel: String, Sendable {

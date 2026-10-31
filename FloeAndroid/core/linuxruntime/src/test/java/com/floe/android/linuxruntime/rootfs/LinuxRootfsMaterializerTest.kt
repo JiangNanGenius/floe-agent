@@ -64,6 +64,59 @@ class LinuxRootfsMaterializerTest {
         assertEquals(0x3FF, (Files.getAttribute(layer.resolve("tmp"), "unix:mode") as Int) and 0xFFF)
     }
 
+    @Test fun durabilityBarrierReceivesTheControlledStageAndRunsOnce() = fixture { _, layer, base ->
+        var calls = 0
+        var stageWasDirectory = false
+        var stageName = ""
+        var stageParent: Path? = null
+        val result = LinuxRootfsMaterializer(durabilityBarrier = { stage ->
+            calls++
+            // Observe DURING the callback: successful publication moves the
+            // stage to the registry path, so it no longer exists afterwards.
+            stageWasDirectory = Files.isDirectory(stage, NOFOLLOW_LINKS)
+            stageName = stage.fileName.toString()
+            stageParent = stage.parent
+        }).prepare(plan(layer, base)) { false }
+        assertFalse(result.reused)
+        assertEquals(1, calls)
+        assertTrue(stageWasDirectory)
+        assertTrue(stageName.startsWith(".floe-rootfs-"))
+        assertTrue(stageName.endsWith(".stage"))
+        assertEquals(layer.parent, stageParent)
+        assertEquals("base", Files.readString(layer.resolve("usr/bin/base-tool")))
+        assertTrue(Files.exists(layer.resolve(".floe-linux-rootfs-v1")))
+    }
+
+    @Test fun progressReportsCopyBarrierAndPublicationWithRealCounts() = fixture { _, layer, base ->
+        val phases = mutableListOf<LinuxRootfsMaterializer.Phase>()
+        val entries = mutableListOf<Long>()
+        val bytes = mutableListOf<Long>()
+        LinuxRootfsMaterializer(progress = { value ->
+            phases.add(value.phase)
+            entries.add(value.entries)
+            bytes.add(value.bytes)
+        }).prepare(plan(layer, base)) { false }
+        assertEquals(listOf(LinuxRootfsMaterializer.Phase.COPY,
+            LinuxRootfsMaterializer.Phase.COPY,
+            LinuxRootfsMaterializer.Phase.BARRIER,
+            LinuxRootfsMaterializer.Phase.PUBLISHED), phases)
+        assertTrue(entries.last() >= 2) // base-tool + directories
+        assertTrue(bytes.last() >= 4L) // "base"
+        assertTrue(bytes.zipWithNext().all { (a, b) -> b >= a })
+    }
+
+    @Test fun failingDurabilityBarrierPublishesNothingAndKeepsOriginalLayer() = fixture { _, layer, base ->
+        Files.writeString(layer.resolve("original"), "keep")
+        val materializer = LinuxRootfsMaterializer(
+            durabilityBarrier = { throw IllegalStateException("syncfs failed") })
+        assertThrows(IllegalStateException::class.java) {
+            materializer.prepare(plan(layer, base)) { false }
+        }
+        assertEquals("keep", Files.readString(layer.resolve("original")))
+        assertFalse(Files.exists(layer.resolve(".floe-linux-rootfs-v1")))
+        assertFalse(Files.exists(layer.resolve("usr/bin/base-tool")))
+    }
+
     @Test fun cannotWriteThroughLowerGuestSymlink() = fixture { home, layer, base ->
         val outside = Files.createDirectory(home.resolve("outside"))
         Files.createSymbolicLink(base.resolve("escape"), outside)

@@ -46,7 +46,7 @@ object BridgeProtocolV3 {
     val STAGED_OPERATIONS = listOf("command.submit", "event.poll", "effect.poll")
 
     /**
-     * Closed host-owned configuration vocabulary (19 declared labels).
+     * Closed host-owned configuration vocabulary (20 declared labels).
      * Active command labels are providers/models/preferences/catalog/skills/
      * mcp/settings.websearch/conversations/capabilities/system/attachmentStaging
      * plus the five additive Settings-domain P0 labels below;
@@ -60,6 +60,8 @@ object BridgeProtocolV3 {
         "attachmentStaging",
         // Settings-domain P0 additive labels (accepted rev3 contract).
         "settings.defaults", "memory", "personalization", "usage", "privacy",
+        // G07.3B: schedule settings are host-owned, not a run-role bypass.
+        "schedule",
     )
 
     val SCOPES = listOf(
@@ -313,6 +315,22 @@ object BridgeV3CommandMatrix {
         rule("question.pending", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
         rule("question.answer", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
         rule("question.cancel", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
+
+        // G07.3B scheduled Agent tasks (APPEND-ONLY): durable occurrence
+        // ledger + exact/flexible platform wake transport stay native.
+        rule("schedule.list", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule"),
+        rule("schedule.get", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule"),
+        rule("schedule.options", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule"),
+        rule("schedule.create", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule", revision = true, create = true),
+        rule("schedule.update", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule", revision = true),
+        rule("schedule.enable", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule", revision = true),
+        rule("schedule.disable", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule", revision = true),
+        rule("schedule.delete", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule", revision = true),
+        rule("schedule.runNow", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule", revision = true),
+        rule("schedule.history", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule"),
+        rule("schedule.dispatch", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule"),
+        rule("schedule.rearm", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule"),
+        rule("schedule.dispatchPending", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule"),
     )
 
     fun entry(command: String, scope: BridgeV3Scope.Kind): BridgeV3CommandRule? =

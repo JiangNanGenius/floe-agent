@@ -2,15 +2,15 @@
   "schema": "floe.bridge-v3-command-matrix.golden/1",
   "wireVersion": 3,
   "authority": "Settings-domain contract rev3 (contract.json), accepted 2026-10-19; SHA256 f3ddecdca061ae17fbe4280b7bfb549d8a1673fd8d9ae6e1ba363332ef5db46c",
-  "note": "Accepted rev3 Settings-domain P0 additive matrix (57 legacy entries first, then the 27 accepted tuples) PLUS the goal-core code batch 2026-10-21 append (plan.accept launch, goal.confirm + conversation.compact conversationLifecycle, MAIN_RUN_CONTROL_CLOSURE_DECISION_20261020.json) PLUS the G04 workspace additive ledger 2026-10-24 (Main decisions D12/D14): workspace.read + workspace.write (closed native payload grammar; opaque per-document revision token governs edits; outer revisionRequired stays false) and workspace.activate (nativeEpoch-only payload; establishes the exact durable ownership binding; never claims a workspace/root/run). Append-only: no existing entry renamed, deleted or relabeled; no child.create; configurationLabels stay 19 and no new label. Entries are data, not a handler or capability claim: only a successful real root-owned workspace extension attach binds these keys. PLUS the G07.3A interaction append (2026-10-31): conversation.messageSearch + conversation.messageWindow + question.pending + question.answer + question.cancel; all conversationLifecycle, revisionRequired=false, no createIntent, CAS fields remain in payload. The Kotlin App ingress and native matrix both contain 95 tuples.",
+  "note": "Accepted rev3 Settings-domain P0 additive matrix (57 legacy entries first, then the 27 accepted tuples) PLUS the goal-core code batch 2026-10-21 append (plan.accept launch, goal.confirm + conversation.compact conversationLifecycle, MAIN_RUN_CONTROL_CLOSURE_DECISION_20261020.json) PLUS the G04 workspace additive ledger 2026-10-24 (Main decisions D12/D14): workspace.read + workspace.write (closed native payload grammar; opaque per-document revision token governs edits; outer revisionRequired stays false) and workspace.activate (nativeEpoch-only payload; establishes the exact durable ownership binding; never claims a workspace/root/run). Append-only: no existing entry renamed, deleted or relabeled; no child.create; configurationLabels stay 19 and no new label. Entries are data, not a handler or capability claim: only a successful real root-owned workspace extension attach binds these keys. PLUS the G07.3A interaction append (2026-10-31): conversation.messageSearch + conversation.messageWindow + question.pending + question.answer + question.cancel; all conversationLifecycle, revisionRequired=false, no createIntent, CAS fields remain in payload. The Kotlin App ingress and native matrix both contain 95 tuples. G07.3B adds 13 schedule.* applicationConfiguration tuples and the schedule label; current Kotlin/native matrices contain108 tuples and20 labels. Existing95 tuples and19 labels are preserved unchanged. Declaration is not registration or a permission grant.",
   "expected": {
-    "entries": 95,
+    "entries": 108,
     "legacyEntries": 57,
-    "additiveEntries": 38,
-    "distinctCommands": 93,
-    "configurationEntries": 55,
-    "configurationLabels": 19,
-    "newLabels": 5,
+    "additiveEntries": 51,
+    "distinctCommands": 106,
+    "configurationEntries": 68,
+    "configurationLabels": 20,
+    "newLabels": 6,
     "reservedLabelsWithoutCommands": 3
   },
   "configurationLabels": [
@@ -32,7 +32,8 @@
     "memory",
     "personalization",
     "usage",
-    "privacy"
+    "privacy",
+    "schedule"
   ],
   "reservedLabels": [
     "credentials",
@@ -796,6 +797,110 @@
       "command": "question.cancel",
       "scope": "conversationLifecycle",
       "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.list",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.get",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.options",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.create",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": true,
+      "allowsCreateIntent": true,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.update",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.enable",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.disable",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.delete",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.runNow",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": true,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.history",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.dispatch",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.rearm",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "schedule.dispatchPending",
+      "scope": "applicationConfiguration",
+      "configurationScope": "schedule",
       "revisionRequired": false,
       "allowsCreateIntent": false,
       "isRunEventPoll": false

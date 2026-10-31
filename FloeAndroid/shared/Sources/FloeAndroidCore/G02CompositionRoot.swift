@@ -475,6 +475,8 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         guard let ownedRunDomain else {
             // No run domain installed for this epoch: nothing of ours to
             // retire (staging retire is still exact-epoch safe below).
+            G073TaskScheduleBindings.uninstall(epoch: epoch)
+            G073TaskScheduleFacade.uninstall(epoch: epoch)
             AttachmentStagingFacade.retire(epoch: epoch)
             return
         }
@@ -485,6 +487,8 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         if stillOurs?.0 === ownedRunDomain {
             RunDomainFacade.uninstall()
         }
+        G073TaskScheduleBindings.uninstall(epoch: epoch)
+        G073TaskScheduleFacade.uninstall(epoch: epoch)
         AttachmentStagingFacade.retire(epoch: epoch)
     }
 
@@ -549,6 +553,8 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         await RunDomainFacade.beginGenerationRetirement(epoch: epoch)
         if ownsEpoch {
             RunDomainFacade.uninstall()
+            G073TaskScheduleBindings.uninstall(epoch: epoch)
+            G073TaskScheduleFacade.uninstall(epoch: epoch)
         }
         AttachmentStagingFacade.retire(epoch: epoch)
         UserQuestionHostAPI.shared.retire(epoch: epoch)

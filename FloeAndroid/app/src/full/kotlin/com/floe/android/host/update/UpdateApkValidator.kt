@@ -113,6 +113,22 @@ internal class ApkIdentityReader(private val context: Context) {
         return ApkValidationPolicy.rejectReason(candidate, installed, Build.VERSION.SDK_INT)
     }
 
+    /**
+     * True when these exact staged bytes are the app that is already installed.
+     *
+     * Only a restore/settlement check may use this: the caller must already
+     * have verified the file's release SHA-256, so a matching historical
+     * download of the version that was just installed is recognized as
+     * consumed instead of being re-admitted as a new update. It never
+     * substitutes for the checksum and never accepts a different
+     * package/version/signer.
+     */
+    fun isInstalledArtifact(apk: File): Boolean {
+        val candidate = read(apk) ?: return false
+        val installed = installed() ?: return false
+        return UpdateSettlementPolicy.isInstalledArtifact(candidate, installed)
+    }
+
     private fun certificateDigests(signatures: Array<android.content.pm.Signature>?): Set<String> {
         if (signatures == null) return emptySet()
         return signatures.mapTo(LinkedHashSet()) { signature ->

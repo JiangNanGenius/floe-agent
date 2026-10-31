@@ -3,6 +3,7 @@ package com.floe.android.host.linux
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -114,6 +115,38 @@ class LinuxRuntimeReadinessControllerTest {
 
     @Test fun workloadContractStringMatchesTheKernelAttestation() {
         assertEquals("floe-single-workload-v1", LinuxRuntimeReadinessController.WORKLOAD_CONTRACT)
+    }
+
+    @Test fun staleComponentBuildIsRefusedBeforeAnyPeerAnchor() {
+        // G03-R3 App-upgrade gate (actual Samsung 19->component21 incident):
+        // a fresh App build with the PREVIOUS embedded component still
+        // installed must NOT be anchored as the fresh root's peer. The
+        // decision is the SAME trusted PackageManager exact-version check the
+        // setup surface uses; here the pure mapping is pinned across all
+        // closed states. No model/peer payload or label can change it.
+        // The actual installed-build comparison: App 22 + still-installed
+        // child 21 is stale; child 22 is the only matching state.
+        assertEquals(RuntimeComponentMatch.State.VERSION_STALE,
+            RuntimeComponentMatch.versionState(ownVersionCode = 22, peerVersionCode = 21))
+        assertEquals(RuntimeComponentMatch.State.MATCHING,
+            RuntimeComponentMatch.versionState(ownVersionCode = 22, peerVersionCode = 22))
+        assertEquals("componentVersionStale",
+            RuntimeComponentMatch.refusalFor(RuntimeComponentMatch.versionState(22, 21)))
+        assertNull(RuntimeComponentMatch.refusalFor(RuntimeComponentMatch.versionState(22, 22)))
+        assertEquals("componentVersionStale",
+            RuntimeComponentMatch.refusalFor(RuntimeComponentMatch.State.VERSION_STALE))
+        assertEquals("componentUnavailable",
+            RuntimeComponentMatch.refusalFor(RuntimeComponentMatch.State.MISSING))
+        assertEquals("componentIdentityMismatch",
+            RuntimeComponentMatch.refusalFor(RuntimeComponentMatch.State.IDENTITY_MISMATCH))
+        // Only the EXACT expected build may proceed to anchor/qualify.
+        assertNull(RuntimeComponentMatch.refusalFor(RuntimeComponentMatch.State.MATCHING))
+        // The refusal tokens stay visible in the bounded diagnostics instead
+        // of collapsing to `redacted`.
+        assertEquals("componentVersionStale",
+            LinuxRuntimeReadinessController.closedStageToken("componentVersionStale"))
+        assertEquals("componentIdentityMismatch",
+            LinuxRuntimeReadinessController.closedStageToken("componentIdentityMismatch"))
     }
 
     @Test fun verifiedInstallLifecycleTransitionsDriveFreshIngressOnly() {

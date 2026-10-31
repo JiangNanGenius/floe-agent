@@ -57,7 +57,13 @@ set_target_properties(FloeAndroidCore PROPERTIES
 # calls the ONE App-owned PhoneNetworkService. Not a V3 command, never
 # model-reachable; all validation/ownership lives in FloeAndroidCore. Additive
 # TU only; all prior wrappers byte-identical.
-add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp floe_run_output_jni.cpp floe_office_ai_jni.cpp floe_network_diagnostics_jni.cpp)
+# G07.3B NETWORK ARTIFACTS (2026-10-31, job-6ceb057501034a00):
+# floe_network_artifact_jni.cpp appended the same way — the trusted-host pump
+# ABI (bind/next/describe/payload/isLive/shouldStop/complete/close/stats/
+# readiness) over the epoch-fenced Swift saved-artifact mailbox. Not a V3
+# command, never model-reachable; all decisions live in FloeAndroidCore and
+# the App-private stores. Additive TU only; all prior wrappers byte-identical.
+add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp floe_run_output_jni.cpp floe_office_ai_jni.cpp floe_network_diagnostics_jni.cpp floe_network_artifact_jni.cpp)
 target_link_libraries(floe_jni PRIVATE FloeAndroidCore)
 target_link_options(floe_jni PRIVATE "-Wl,-z,max-page-size=16384")
 

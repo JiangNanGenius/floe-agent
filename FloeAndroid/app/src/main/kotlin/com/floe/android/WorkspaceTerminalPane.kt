@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -46,6 +47,7 @@ import com.floe.android.design.FloePlainFormField
 import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.FloeText
 import com.floe.android.feature.terminal.G04TerminalView
+import com.floe.android.feature.terminal.TerminalViewportBudget
 import com.floe.android.host.G04TerminalHostController
 import com.floe.android.host.TerminalActionReply
 import com.floe.android.host.TerminalInputIssue
@@ -416,349 +418,364 @@ internal fun WorkspaceTerminalPane(
         }
     }
 
-    Column(modifier.fillMaxSize().background(colors.readingSurface)) {
-        // G07.3A tab strip. A chip is ONE real native PTY session; selecting a
-        // chip switches only the visible emulator/transport. Closing a chip is
-        // an explicit native close for that exact token; dismissing the pane
-        // never does either.
-        if (controller != null && (tabs.isNotEmpty() || terminalReady)) {
+    // The inspector gives this pane its real remaining height. On the tablet
+    // the soft keyboard resizes the window, so that remainder can be a
+    // keyboard-height column. Measure it here: the fixed tab/status/control
+    // chrome must never consume the actual PTY surface, and the explanatory
+    // sync hint is the first line to drop when it would.
+    BoxWithConstraints(modifier.fillMaxSize().background(colors.readingSurface)) {
+        val availableHeightDp = maxHeight.value
+        val compactChrome = TerminalViewportBudget.compact(availableHeightDp)
+        val showLiveHint = TerminalViewportBudget.showsLiveHint(availableHeightDp)
+        Column(Modifier.fillMaxSize()) {
+            // G07.3A tab strip. A chip is ONE real native PTY session; selecting a
+            // chip switches only the visible emulator/transport. Closing a chip is
+            // an explicit native close for that exact token; dismissing the pane
+            // never does either.
+            if (controller != null && (tabs.isNotEmpty() || terminalReady)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 10.dp, vertical = if (compactChrome) 2.dp else 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    tabs.forEach { tab ->
+                        val selected = tab.selected
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (selected) colors.accent else colors.fillTertiary)
+                                .clickable {
+                                    // Pending tabs are selectable too: the pane
+                                    // then shows their own disabled starting
+                                    // surface, never the previous tab's PTY.
+                                    controller?.selectTab(conversationID, tab.tabID)
+                                    snapshot = tab.sessionID?.let { controller?.snapshotFor(it) }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .semantics {
+                                    contentDescription = tab.title
+                                },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            FloeText(
+                                text = tab.title,
+                                style = Floe.typography.metadata,
+                                color = if (selected) Color.White else colors.label,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (tab.isLive) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(Color(0xFF34C759))
+                                        .width(6.dp).height(6.dp),
+                                )
+                            }
+                            if (tab.sessionID != null) {
+                                val closeLabel = stringResource(
+                                    com.floe.android.feature.terminal.R.string.terminal_tab_close)
+                                Box(
+                                    modifier = Modifier
+                                        .clickable {
+                                            val id = tab.sessionID ?: return@clickable
+                                            scope.launch { controller?.closeTab(id) }
+                                        }
+                                        .semantics { contentDescription = closeLabel }
+                                        .padding(horizontal = 2.dp),
+                                ) {
+                                    FloeText("\u00d7",
+                                        style = Floe.typography.metadata,
+                                        color = if (selected) Color.White else colors.secondaryLabel)
+                                }
+                            }
+                        }
+                    }
+                    val newLabel = stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_new)
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(colors.fillTertiary)
+                            .clickable { openNewTab() }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                            .semantics { contentDescription = newLabel },
+                    ) {
+                        FloeText("+", style = Floe.typography.metadata, color = colors.label)
+                    }
+                }
+                if (tabLimitNotice || tabOpenFailure != null) {
+                    FloeText(
+                        text = when {
+                            tabOpenFailure.isEngineSlotBusyRefusal ->
+                                stringResource(R.string.workspace_runtime_slot_busy)
+                            tabOpenFailure != null -> stringResource(
+                                com.floe.android.feature.terminal.R.string.terminal_tab_open_failed)
+                            else -> stringResource(
+                                com.floe.android.feature.terminal.R.string.terminal_tab_limit)
+                        },
+                        style = Floe.typography.metadata,
+                        color = colors.secondaryLabel,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                    )
+                }
+                FloeDivider()
+            }
+            // status strip
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    .height(36.dp)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                tabs.forEach { tab ->
-                    val selected = tab.selected
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (selected) colors.accent else colors.fillTertiary)
-                            .clickable {
-                                // Pending tabs are selectable too: the pane
-                                // then shows their own disabled starting
-                                // surface, never the previous tab's PTY.
-                                controller?.selectTab(conversationID, tab.tabID)
-                                snapshot = tab.sessionID?.let { controller?.snapshotFor(it) }
-                            }
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                            .semantics {
-                                contentDescription = tab.title
-                            },
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        FloeText(
-                            text = tab.title,
-                            style = Floe.typography.metadata,
-                            color = if (selected) Color.White else colors.label,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (tab.isLive) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(50))
-                                    .background(Color(0xFF34C759))
-                                    .width(6.dp).height(6.dp),
-                            )
-                        }
-                        if (tab.sessionID != null) {
-                            val closeLabel = stringResource(
-                                com.floe.android.feature.terminal.R.string.terminal_tab_close)
-                            Box(
-                                modifier = Modifier
-                                    .clickable {
-                                        val id = tab.sessionID ?: return@clickable
-                                        scope.launch { controller?.closeTab(id) }
-                                    }
-                                    .semantics { contentDescription = closeLabel }
-                                    .padding(horizontal = 2.dp),
-                            ) {
-                                FloeText("\u00d7",
-                                    style = Floe.typography.metadata,
-                                    color = if (selected) Color.White else colors.secondaryLabel)
-                            }
-                        }
-                    }
-                }
-                val newLabel = stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_new)
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(colors.fillTertiary)
-                        .clickable { openNewTab() }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                        .semantics { contentDescription = newLabel },
-                ) {
-                    FloeText("+", style = Floe.typography.metadata, color = colors.label)
-                }
-            }
-            if (tabLimitNotice || tabOpenFailure != null) {
                 FloeText(
-                    text = when {
-                        tabOpenFailure.isEngineSlotBusyRefusal ->
-                            stringResource(R.string.workspace_runtime_slot_busy)
-                        tabOpenFailure != null -> stringResource(
-                            com.floe.android.feature.terminal.R.string.terminal_tab_open_failed)
-                        else -> stringResource(
-                            com.floe.android.feature.terminal.R.string.terminal_tab_limit)
-                    },
+                    text = statusText,
                     style = Floe.typography.metadata,
                     color = colors.secondaryLabel,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
-                )
-            }
-            FloeDivider()
-        }
-        // status strip
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(36.dp)
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            FloeText(
-                text = statusText,
-                style = Floe.typography.metadata,
-                color = colors.secondaryLabel,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            val rolledOver = snapshot?.rolledOverBytes ?: 0
-            if (rolledOver > 0) {
-                FloeText(
-                    text = stringResource(
-                        com.floe.android.feature.terminal.R.string.terminal_output_lost, rolledOver),
-                    style = Floe.typography.metadata,
-                    color = colors.destructive,
-                    maxLines = 1,
-                )
-            }
-            // Latest typed input refusal: a short honest message; tapping
-            // opens the diagnostic code (same details idiom as openFailure).
-            // The native phase/fault projection is never touched by this.
-            // An empty tab-era terminal has no owned session, so a refusal
-            // from a removed session is not shown here.
-            val issue = inputIssue.takeUnless { emptyAfterNativeTabs }
-            if (issue != null) {
-                val issueLabel = stringResource(
-                    com.floe.android.feature.terminal.R.string.terminal_input_refused)
-                FloeText(
-                    text = issueLabel,
-                    style = Floe.typography.metadata,
-                    color = colors.destructive,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .clickable { showInputIssueDetails = !showInputIssueDetails }
-                        .semantics { contentDescription = issueLabel },
+                    modifier = Modifier.weight(1f),
                 )
-                if (showInputIssueDetails) {
-                    val suffix = if (issue.count > 1) " ×${issue.count}" else ""
+                val rolledOver = snapshot?.rolledOverBytes ?: 0
+                if (rolledOver > 0) {
                     FloeText(
-                        text = issue.code.take(96)
-                            .filter { it.isLetterOrDigit() || it in "_.-" }
-                            .ifEmpty { "refused" } + suffix,
+                        text = stringResource(
+                            com.floe.android.feature.terminal.R.string.terminal_output_lost, rolledOver),
                         style = Floe.typography.metadata,
-                        color = colors.secondaryLabel,
+                        color = colors.destructive,
                         maxLines = 1,
                     )
                 }
-            }
-        }
-        FloeDivider()
-
-        val qualified = terminalReady
-        if (snapshot?.phase?.isLive() == true) {
-            FloeText(
-                stringResource(R.string.workspace_terminal_sync_hint),
-                style = Floe.typography.metadata,
-                color = colors.secondaryLabel,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            )
-        }
-        val hasSession = snapshot != null && snapshot!!.phase != TerminalSessionPhase.CLOSED
-        // A real tab whose first authoritative status is still in flight is
-        // its OWN starting surface; it must not be mistaken for an
-        // unqualified engine (and never replaced by another tab's screen).
-        val awaitingTabStatus = activeSessionID != null && snapshot == null
-        if (emptyAfterNativeTabs) {
-            // Every native tab was closed: the last session settled and its
-            // screen/status/input are gone. Show the truthful empty pane with
-            // ONE explicit way to start a new tab. No legacy engine, transport,
-            // snapshot, fault or typed refusal from a removed session is used.
-            Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Latest typed input refusal: a short honest message; tapping
+                // opens the diagnostic code (same details idiom as openFailure).
+                // The native phase/fault projection is never touched by this.
+                // An empty tab-era terminal has no owned session, so a refusal
+                // from a removed session is not shown here.
+                val issue = inputIssue.takeUnless { emptyAfterNativeTabs }
+                if (issue != null) {
+                    val issueLabel = stringResource(
+                        com.floe.android.feature.terminal.R.string.terminal_input_refused)
                     FloeText(
-                        stringResource(R.string.workspace_terminal_empty_title),
-                        style = Floe.typography.body,
-                        color = colors.label,
-                    )
-                    FloeText(
-                        stringResource(R.string.workspace_terminal_empty_hint),
+                        text = issueLabel,
                         style = Floe.typography.metadata,
-                        color = colors.secondaryLabel,
+                        color = colors.destructive,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .clickable { showInputIssueDetails = !showInputIssueDetails }
+                            .semantics { contentDescription = issueLabel },
                     )
-                    if (tabOpenFailure != null) {
+                    if (showInputIssueDetails) {
+                        val suffix = if (issue.count > 1) " ×${issue.count}" else ""
                         FloeText(
-                            stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_open_failed),
+                            text = issue.code.take(96)
+                                .filter { it.isLetterOrDigit() || it in "_.-" }
+                                .ifEmpty { "refused" } + suffix,
                             style = Floe.typography.metadata,
-                            color = colors.destructive,
+                            color = colors.secondaryLabel,
+                            maxLines = 1,
                         )
                     }
-                    if (controller != null && terminalReady) {
-                        FloeCapsuleButton(
-                            stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_new),
-                            onClick = openNewTab,
-                        )
-                    } else if (controller != null) {
+                }
+            }
+            FloeDivider()
+
+            val qualified = terminalReady
+            if (snapshot?.phase?.isLive() == true && showLiveHint) {
+                FloeText(
+                    stringResource(R.string.workspace_terminal_sync_hint),
+                    style = Floe.typography.metadata,
+                    color = colors.secondaryLabel,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+            val hasSession = snapshot != null && snapshot!!.phase != TerminalSessionPhase.CLOSED
+            // A real tab whose first authoritative status is still in flight is
+            // its OWN starting surface; it must not be mistaken for an
+            // unqualified engine (and never replaced by another tab's screen).
+            val awaitingTabStatus = activeSessionID != null && snapshot == null
+            if (emptyAfterNativeTabs) {
+                // Every native tab was closed: the last session settled and its
+                // screen/status/input are gone. Show the truthful empty pane with
+                // ONE explicit way to start a new tab. No legacy engine, transport,
+                // snapshot, fault or typed refusal from a removed session is used.
+                Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         FloeText(
-                            stringResource(com.floe.android.feature.terminal.R.string.terminal_engine_unqualified),
+                            stringResource(R.string.workspace_terminal_empty_title),
+                            style = Floe.typography.body,
+                            color = colors.label,
+                        )
+                        FloeText(
+                            stringResource(R.string.workspace_terminal_empty_hint),
+                            style = Floe.typography.metadata,
+                            color = colors.secondaryLabel,
+                        )
+                        if (tabOpenFailure != null) {
+                            FloeText(
+                                stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_open_failed),
+                                style = Floe.typography.metadata,
+                                color = colors.destructive,
+                            )
+                        }
+                        if (controller != null && terminalReady) {
+                            FloeCapsuleButton(
+                                stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_new),
+                                onClick = openNewTab,
+                            )
+                        } else if (controller != null) {
+                            FloeText(
+                                stringResource(com.floe.android.feature.terminal.R.string.terminal_engine_unqualified),
+                                style = Floe.typography.metadata,
+                                color = colors.secondaryLabel,
+                            )
+                        }
+                    }
+                }
+            } else if (pendingSelected) {
+                // The selected tab has no native identity yet. Render a blank,
+                // honest, disabled surface: no emulator, no engine/transport from
+                // another PTY, no input/resize/interrupt/paste/copy fallback.
+                Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FloeText(
+                            stringResource(com.floe.android.feature.terminal.R.string.terminal_starting),
+                            style = Floe.typography.body,
+                            color = colors.secondaryLabel,
+                        )
+                        FloeText(
+                            stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_pending_hint),
                             style = Floe.typography.metadata,
                             color = colors.secondaryLabel,
                         )
                     }
                 }
-            }
-        } else if (pendingSelected) {
-            // The selected tab has no native identity yet. Render a blank,
-            // honest, disabled surface: no emulator, no engine/transport from
-            // another PTY, no input/resize/interrupt/paste/copy fallback.
-            Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FloeText(
-                        stringResource(com.floe.android.feature.terminal.R.string.terminal_starting),
-                        style = Floe.typography.body,
-                        color = colors.secondaryLabel,
-                    )
-                    FloeText(
-                        stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_pending_hint),
-                        style = Floe.typography.metadata,
-                        color = colors.secondaryLabel,
-                    )
-                }
-            }
-        } else if (engine == null || transport == null ||
-            (!hasSession && !startDispatched && !awaitingTabStatus)) {
-            // Honest unavailability: no engine, or the runtime is not
-            // qualified. The guidance text points to the REAL setup surface;
-            // when the ORIGINAL stage authority reports the exact shape of
-            // workspace facts awaiting the frozen first-use producer, it
-            // names that instead of a completed installation.
-            Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    FloeText(
-                        text = when {
-                            controller == null -> stringResource(R.string.inspector_runtime_pending)
-                            snapshot?.phase == TerminalSessionPhase.CLOSED ->
-                                stringResource(R.string.workspace_terminal_closed_hint)
-                            // The run-less first entry in flight: what is
-                            // actually happening, in one short sentence.
-                            preparingWorkspace -> stringResource(
-                                com.floe.android.feature.terminal.R.string.terminal_workspace_preparing)
-                            openFailure != null -> stringResource(
-                                when {
-                                    openFailure.isEngineSlotBusyRefusal ->
-                                        R.string.workspace_runtime_slot_busy
-                                    // A refused run-less preparation says so,
-                                    // instead of blaming a completed install.
-                                    workspaceMappingPending ->
-                                        com.floe.android.feature.terminal.R.string
-                                            .terminal_workspace_prepare_failed
-                                    else ->
-                                        com.floe.android.feature.terminal.R.string
-                                            .terminal_start_failed
-                                })
-                            workspaceMappingPending -> stringResource(
-                                com.floe.android.feature.terminal.R.string.terminal_workspace_mapping_pending)
-                            else -> stringResource(
-                                com.floe.android.feature.terminal.R.string.terminal_engine_unqualified)
-                        },
-                        style = Floe.typography.body,
-                        color = colors.secondaryLabel,
-                    )
-                    if (openFailure != null) {
-                        FloeCapsuleButton(stringResource(R.string.workspace_source_error_details),
-                            onClick = { showFailureDetails = !showFailureDetails })
-                        if (showFailureDetails) {
-                            // The bounded diagnostic token stays in the opened
-                            // details fold: the typed code plus, when native
-                            // answered one, the precise first-use reason.
-                            val code = when (val failure = openFailure) {
-                                is TerminalActionReply.Refused ->
-                                    (failure.code + failure.reason?.let { ":$it" }.orEmpty())
-                                        .take(96)
-                                        .filter { it.isLetterOrDigit() || it in "_.-:" }
-                                        .ifEmpty { "refused" }
-                                TerminalActionReply.TimedOut -> "timedOut"
-                                else -> "unavailable"
+            } else if (engine == null || transport == null ||
+                (!hasSession && !startDispatched && !awaitingTabStatus)) {
+                // Honest unavailability: no engine, or the runtime is not
+                // qualified. The guidance text points to the REAL setup surface;
+                // when the ORIGINAL stage authority reports the exact shape of
+                // workspace facts awaiting the frozen first-use producer, it
+                // names that instead of a completed installation.
+                Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        FloeText(
+                            text = when {
+                                controller == null -> stringResource(R.string.inspector_runtime_pending)
+                                snapshot?.phase == TerminalSessionPhase.CLOSED ->
+                                    stringResource(R.string.workspace_terminal_closed_hint)
+                                // The run-less first entry in flight: what is
+                                // actually happening, in one short sentence.
+                                preparingWorkspace -> stringResource(
+                                    com.floe.android.feature.terminal.R.string.terminal_workspace_preparing)
+                                openFailure != null -> stringResource(
+                                    when {
+                                        openFailure.isEngineSlotBusyRefusal ->
+                                            R.string.workspace_runtime_slot_busy
+                                        // A refused run-less preparation says so,
+                                        // instead of blaming a completed install.
+                                        workspaceMappingPending ->
+                                            com.floe.android.feature.terminal.R.string
+                                                .terminal_workspace_prepare_failed
+                                        else ->
+                                            com.floe.android.feature.terminal.R.string
+                                                .terminal_start_failed
+                                    })
+                                workspaceMappingPending -> stringResource(
+                                    com.floe.android.feature.terminal.R.string.terminal_workspace_mapping_pending)
+                                else -> stringResource(
+                                    com.floe.android.feature.terminal.R.string.terminal_engine_unqualified)
+                            },
+                            style = Floe.typography.body,
+                            color = colors.secondaryLabel,
+                        )
+                        if (openFailure != null) {
+                            FloeCapsuleButton(stringResource(R.string.workspace_source_error_details),
+                                onClick = { showFailureDetails = !showFailureDetails })
+                            if (showFailureDetails) {
+                                // The bounded diagnostic token stays in the opened
+                                // details fold: the typed code plus, when native
+                                // answered one, the precise first-use reason.
+                                val code = when (val failure = openFailure) {
+                                    is TerminalActionReply.Refused ->
+                                        (failure.code + failure.reason?.let { ":$it" }.orEmpty())
+                                            .take(96)
+                                            .filter { it.isLetterOrDigit() || it in "_.-:" }
+                                            .ifEmpty { "refused" }
+                                    TerminalActionReply.TimedOut -> "timedOut"
+                                    else -> "unavailable"
+                                }
+                                FloeText(code, style = Floe.typography.metadata, color = colors.secondaryLabel)
                             }
-                            FloeText(code, style = Floe.typography.metadata, color = colors.secondaryLabel)
+                        }
+                        if (openFailure != null && controller != null && qualified) {
+                            // Explicit user retry — the ONLY way a refused
+                            // opening starts again (never a silent relaunch).
+                            FloeCapsuleButton(
+                                stringResource(com.floe.android.feature.terminal.R.string.terminal_reset),
+                                onClick = {
+                                    val host = controller ?: return@FloeCapsuleButton
+                                    scope.launch {
+                                        openFailure = null
+                                        startDispatched = true
+                                        val opened = host.attachOrOpen(conversationID, null, 80, 24,
+                                            onRefusal = { openFailure = it })
+                                        snapshot = opened
+                                        if (opened == null) startDispatched = false
+                                    }
+                                },
+                            )
+                        }
+                        if (controller != null && !qualified && workspaceMappingPending && !preparingWorkspace) {
+                            // G05-R3: the run-less first entry as an EXPLICIT user
+                            // control. The pane already attempted it once on show;
+                            // this is the honest retry after a refusal or a
+                            // timeout — never a silent relaunch and never a hidden
+                            // loop. It needs no provider, no model and no message:
+                            // native prepares THIS task's workspace under its own
+                            // real operation lease and answers truthfully.
+                            FloeCapsuleButton(
+                                stringResource(
+                                    com.floe.android.feature.terminal.R.string
+                                        .terminal_workspace_prepare_action),
+                                onClick = {
+                                    val host = controller ?: return@FloeCapsuleButton
+                                    scope.launch {
+                                        openFailure = null
+                                        preparingWorkspace = true
+                                        startDispatched = true
+                                        val opened = host.attachOrOpen(conversationID, null, 80, 24,
+                                            onRefusal = { openFailure = it })
+                                        preparingWorkspace = false
+                                        startDispatched = opened != null
+                                        if (opened != null) {
+                                            host.refreshCapabilities()
+                                            terminalReady = host.availability()
+                                                .let { it.qualified && it.workspaceAttached }
+                                        }
+                                        snapshot = host.currentSnapshot(conversationID) ?: snapshot
+                                    }
+                                },
+                            )
+                        }
+                        if (controller != null && qualified) {
+                            FloeCapsuleButton(stringResource(com.floe.android.feature.terminal.R.string.terminal_settings),
+                                onClick = { settingsVisible = true })
                         }
                     }
-                    if (openFailure != null && controller != null && qualified) {
-                        // Explicit user retry — the ONLY way a refused
-                        // opening starts again (never a silent relaunch).
-                        FloeCapsuleButton(
-                            stringResource(com.floe.android.feature.terminal.R.string.terminal_reset),
-                            onClick = {
-                                val host = controller ?: return@FloeCapsuleButton
-                                scope.launch {
-                                    openFailure = null
-                                    startDispatched = true
-                                    val opened = host.attachOrOpen(conversationID, null, 80, 24,
-                                        onRefusal = { openFailure = it })
-                                    snapshot = opened
-                                    if (opened == null) startDispatched = false
-                                }
-                            },
-                        )
-                    }
-                    if (controller != null && !qualified && workspaceMappingPending && !preparingWorkspace) {
-                        // G05-R3: the run-less first entry as an EXPLICIT user
-                        // control. The pane already attempted it once on show;
-                        // this is the honest retry after a refusal or a
-                        // timeout — never a silent relaunch and never a hidden
-                        // loop. It needs no provider, no model and no message:
-                        // native prepares THIS task's workspace under its own
-                        // real operation lease and answers truthfully.
-                        FloeCapsuleButton(
-                            stringResource(
-                                com.floe.android.feature.terminal.R.string
-                                    .terminal_workspace_prepare_action),
-                            onClick = {
-                                val host = controller ?: return@FloeCapsuleButton
-                                scope.launch {
-                                    openFailure = null
-                                    preparingWorkspace = true
-                                    startDispatched = true
-                                    val opened = host.attachOrOpen(conversationID, null, 80, 24,
-                                        onRefusal = { openFailure = it })
-                                    preparingWorkspace = false
-                                    startDispatched = opened != null
-                                    if (opened != null) {
-                                        host.refreshCapabilities()
-                                        terminalReady = host.availability()
-                                            .let { it.qualified && it.workspaceAttached }
-                                    }
-                                    snapshot = host.currentSnapshot(conversationID) ?: snapshot
-                                }
-                            },
-                        )
-                    }
-                    if (controller != null && qualified) {
-                        FloeCapsuleButton(stringResource(com.floe.android.feature.terminal.R.string.terminal_settings),
-                            onClick = { settingsVisible = true })
-                    }
                 }
-            }
-        } else {
-            Box(modifier = Modifier.fillMaxSize().weight(1f)) {
+            } else {
+                // The PTY surface IS the weighted child. Going through an extra
+                // fillMaxSize Box hid the real viewport on the tablet: the box
+                // slot advanced to the control row while the measured canvas and
+                // its focus proxy stayed 635px of it (2026-10-31 evidence); at
+                // IME height the canvas/proxy were not observable at all. Keep
+                // the emulator itself as the flexible child and let the chrome
+                // below take its measured height.
                 G04TerminalView(
                     engine = engine,
                     transport = transport,
@@ -769,103 +786,109 @@ internal fun WorkspaceTerminalPane(
                     ),
                     statusLine = statusText,
                     onCopyTextChanged = { terminalCopyText = it },
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
                 )
-            }
 
-            // Control row (secondary sheet for settings, per the design).
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_interrupt)) {
-                    // Truthful unavailability: no controller, no command. With
-                    // tabs, Ctrl-C goes to the SELECTED native session only.
-                    val id = activeSessionID
-                    scope.launch {
-                        if (id != null) controller?.interruptTab(id)
-                        else controller?.interrupt(conversationID)
-                    }
-                }
-                TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_paste)) {
-                    val text = clipboard.getText()?.text
-                    if (!text.isNullOrEmpty()) engine.pasteText(text)
-                }
-                TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_copy)) {
-                    // Copy the explicit selection, or the current scrolled
-                    // viewport when no selection is active.
-                    val text = terminalCopyText ?: engine.visibleText()
-                    if (text.isNotEmpty()) clipboard.setText(AnnotatedString(text))
-                }
-                TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_settings)) {
-                    settingsVisible = true
-                }
-                if (activeSessionID != null) {
-                    TerminalControlLabel(
-                        stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_rename)) {
-                        renameTargetSession = activeSessionID
-                        renameText = selectedTab?.title.orEmpty()
-                        renameVisible = true
-                    }
-                }
-                val live = snapshot?.phase?.isLive() == true
-                if (live) {
-                    TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_close)) {
+                // Control row (secondary sheet for settings, per the design).
+                // Horizontally scrollable: the inspector is 430dp at its ideal
+                // size, narrower than Ctrl-C/Paste/Copy/settings/rename/close
+                // together, so an unscrollable row silently clipped Close.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 10.dp, vertical = if (compactChrome) 2.dp else 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_interrupt)) {
+                        // Truthful unavailability: no controller, no command. With
+                        // tabs, Ctrl-C goes to the SELECTED native session only.
                         val id = activeSessionID
                         scope.launch {
-                            if (id != null) controller?.closeTab(id)
-                            else controller?.closeSession(conversationID)
+                            if (id != null) controller?.interruptTab(id)
+                            else controller?.interrupt(conversationID)
                         }
                     }
-                } else if (snapshot != null && qualified) {
-                    TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_reset)) {
-                        // Reset only acts through a live controller; an
-                        // unavailable one keeps the session untouched.
-                        val host = controller ?: return@TerminalControlLabel
-                        scope.launch {
-                            // Native close/adoption must settle before a
-                            // new open; separate launches race the old
-                            // token. An accepted close answers BEFORE the
-                            // native settlement completes, so the reopen
-                            // waits for the ACTUAL settled/CLOSED
-                            // projection instead of minting a second
-                            // operation lease against the retiring one
-                            // (that refusal left the pane stuck at
-                            // "Terminal closed" with no start dispatched).
-                            // If the bounded wait expires with the old
-                            // native ownership still live, NO replacement
-                            // is dispatched: that is an honest refusal the
-                            // user can retry explicitly — never a forced
-                            // retire, a second lease against a live one,
-                            // or a silent relaunch after the timeout.
+                    TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_paste)) {
+                        val text = clipboard.getText()?.text
+                        if (!text.isNullOrEmpty()) engine.pasteText(text)
+                    }
+                    TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_copy)) {
+                        // Copy the explicit selection, or the current scrolled
+                        // viewport when no selection is active.
+                        val text = terminalCopyText ?: engine.visibleText()
+                        if (text.isNotEmpty()) clipboard.setText(AnnotatedString(text))
+                    }
+                    TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_settings)) {
+                        settingsVisible = true
+                    }
+                    if (activeSessionID != null) {
+                        TerminalControlLabel(
+                            stringResource(com.floe.android.feature.terminal.R.string.terminal_tab_rename)) {
+                            renameTargetSession = activeSessionID
+                            renameText = selectedTab?.title.orEmpty()
+                            renameVisible = true
+                        }
+                    }
+                    val live = snapshot?.phase?.isLive() == true
+                    if (live) {
+                        TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_close)) {
                             val id = activeSessionID
-                            val closed = if (id != null) host.closeTab(id) else host.closeSession(conversationID)
-                            val settled = if (closed is TerminalActionReply.Success) {
-                                if (id != null) host.awaitTabSettled(id, 20_000)
-                                else host.awaitSessionSettled(conversationID, 20_000)
-                            } else {
-                                true
+                            scope.launch {
+                                if (id != null) controller?.closeTab(id)
+                                else controller?.closeSession(conversationID)
                             }
-                            openFailure = null
-                            if (!settled) {
-                                openFailure = TerminalActionReply.Refused("closeNotSettled", null)
-                                snapshot = null
-                                startDispatched = false
-                            } else {
-                                // Reset opens a FRESH tab (a new native PTY).
-                                if (id != null) {
-                                    val opened = host.openTab(conversationID, null, 80, 24,
-                                        onRefusal = { openFailure = it })
-                                    opened?.sessionID?.let { host.selectTab(conversationID, opened.tabID) }
-                                    snapshot = opened?.sessionID?.let { host.snapshotFor(it) }
-                                    startDispatched = opened != null
-                                    tabs = host.tabs(conversationID)
+                        }
+                    } else if (snapshot != null && qualified) {
+                        TerminalControlLabel(stringResource(com.floe.android.feature.terminal.R.string.terminal_reset)) {
+                            // Reset only acts through a live controller; an
+                            // unavailable one keeps the session untouched.
+                            val host = controller ?: return@TerminalControlLabel
+                            scope.launch {
+                                // Native close/adoption must settle before a
+                                // new open; separate launches race the old
+                                // token. An accepted close answers BEFORE the
+                                // native settlement completes, so the reopen
+                                // waits for the ACTUAL settled/CLOSED
+                                // projection instead of minting a second
+                                // operation lease against the retiring one
+                                // (that refusal left the pane stuck at
+                                // "Terminal closed" with no start dispatched).
+                                // If the bounded wait expires with the old
+                                // native ownership still live, NO replacement
+                                // is dispatched: that is an honest refusal the
+                                // user can retry explicitly — never a forced
+                                // retire, a second lease against a live one,
+                                // or a silent relaunch after the timeout.
+                                val id = activeSessionID
+                                val closed = if (id != null) host.closeTab(id) else host.closeSession(conversationID)
+                                val settled = if (closed is TerminalActionReply.Success) {
+                                    if (id != null) host.awaitTabSettled(id, 20_000)
+                                    else host.awaitSessionSettled(conversationID, 20_000)
                                 } else {
-                                    val opened = host.attachOrOpen(conversationID, null, 80, 24,
-                                        onRefusal = { openFailure = it })
-                                    snapshot = opened
-                                    startDispatched = opened != null
+                                    true
+                                }
+                                openFailure = null
+                                if (!settled) {
+                                    openFailure = TerminalActionReply.Refused("closeNotSettled", null)
+                                    snapshot = null
+                                    startDispatched = false
+                                } else {
+                                    // Reset opens a FRESH tab (a new native PTY).
+                                    if (id != null) {
+                                        val opened = host.openTab(conversationID, null, 80, 24,
+                                            onRefusal = { openFailure = it })
+                                        opened?.sessionID?.let { host.selectTab(conversationID, opened.tabID) }
+                                        snapshot = opened?.sessionID?.let { host.snapshotFor(it) }
+                                        startDispatched = opened != null
+                                        tabs = host.tabs(conversationID)
+                                    } else {
+                                        val opened = host.attachOrOpen(conversationID, null, 80, 24,
+                                            onRefusal = { openFailure = it })
+                                        snapshot = opened
+                                        startDispatched = opened != null
+                                    }
                                 }
                             }
                         }

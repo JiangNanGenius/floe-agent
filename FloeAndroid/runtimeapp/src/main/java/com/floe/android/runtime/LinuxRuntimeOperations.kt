@@ -345,10 +345,31 @@ internal class LinuxRuntimeOperations(
         preflightCancelled.set(false)
         try {
             return RuntimeWorkspacePreflight.execute(
-                PreflightHarness(context, authority, supervisor, census,
+                PreflightHarness(
+                    acquire = authority::acquire,
+                    abandon = authority::abandonUnstarted,
+                    snapshot = census::snapshot,
                     ensureConfigured = { recover(); configure() },
-                    ownedPath = ::ownedPath, heldLease = preflightLease, installID = installID),
-                request.payload, grant) { cancelled() || preflightCancelled.get() }
+                    ownedPath = ::ownedPath,
+                    heldLease = preflightLease,
+                    installID = installID,
+                    openWorkspace = { projectID, runID, workspace ->
+                        val session = RuntimeWorkspaceSession(context, grant, projectID, runID, workspace)
+                        PreflightWorkspace(
+                            importBeforeLaunch = { cancel -> session.importBeforeLaunch(cancel) },
+                            exportAfterQuiescence = { cancel ->
+                                session.exportAfterQuiescence(cancel, faithfulMirror = true)
+                            },
+                            close = { session.close() },
+                        )
+                    },
+                    // SAME authority instance/directory as the live start
+                    // lane; the previous default silently used a SECOND
+                    // File(context.filesDir, "Prepare") root, so invalidation
+                    // and preflight receipts could never agree.
+                    preparation = preparation,
+                ),
+                request.payload) { cancelled() || preflightCancelled.get() }
         } finally {
             activePreflightID.compareAndSet(request.id, null)
             // A failed ORIGINAL release keeps the never-started lease; the
@@ -455,8 +476,36 @@ internal class LinuxRuntimeOperations(
             // after a complete, fsynced, atomic publication; a half-copied tree
             // never carries it. No writable hardlink is ever created across
             // tasks: the copier uses CREATE_NEW + full byte copies.
+            //
+            // Cold-copy durability: the extracted base is 10,206 members (8,014 regular files) /
+            // 221,379,155 bytes. Per-file `force(true)` + per-directory fsync
+            // serialized the copy behind ~9k flush latencies (actual
+            // cold runs: 27.4 s, 38.1 s, still copying after 148 s under load).
+            // One filesystem syncfs(fd) on the controlled stage directory is
+            // the SAME publication rule (marker only after all bytes/metadata
+            // are durable), but reports real errno and avoids ~9k flushes.
             val prepareStart = SystemClock.elapsedRealtime()
-            val materialized = LinuxRootfsMaterializer().prepare(
+            // Use the bulk barrier ONLY where the running kernel actually
+            // reports syncfs writeback errors (>= 5.8). Older/unknown kernels
+            // keep the original per-file fsync failure semantics.
+            val kernel = runCatching { android.system.Os.uname().release }.getOrNull()
+            val syncfsReportsErrors = kernel != null && reportsSyncfsWritebackErrors(kernel)
+            RuntimeExecutionTrace.materializeProgress(
+                if (syncfsReportsErrors) "BARRIER_SYNCFS" else "BARRIER_PER_FILE", 0, 0, 0)
+            val barrier: ((java.nio.file.Path) -> Unit)? = if (syncfsReportsErrors) {
+                { stage ->
+                    // Native opens ONLY this materializer-owned stage path with
+                    // O_DIRECTORY|O_CLOEXEC, syncfs(es) it, and closes it.
+                    PosixBridge.syncfsDirectory(stage.toString())
+                }
+            } else null
+            val materialized = LinuxRootfsMaterializer(
+                durabilityBarrier = barrier,
+                progress = { value ->
+                    RuntimeExecutionTrace.materializeProgress(
+                        value.phase.name, value.entries, value.bytes, value.elapsedMillis)
+                },
+            ).prepare(
                 LinuxRootfsMaterializer.Plan(lease.environmentID, descriptor.getString("baseRevision"),
                     writable, ordered)) { isCancelled() }
             val prepareMillis = SystemClock.elapsedRealtime() - prepareStart
@@ -563,6 +612,14 @@ internal class LinuxRuntimeOperations(
                 is StartOutcome.Accepted -> {
                     latency.mark(LinuxRuntimePhaseTiming.Phase.SPAWN)
                     RuntimeExecutionTrace.mark(Stage.OPS_SPAWN_ACCEPTED)
+                    // REAL EXECUTION ADMISSION. The supervisor accepted the
+                    // spawn here; the caller's command budget begins at this
+                    // monotonic instant and nowhere earlier. Recovery,
+                    // configure, acquire, cold rootfs materialization, the
+                    // workspace import, spec build and spawn are PREPARATION
+                    // bounded by their own phases — they must never consume
+                    // the command timeout.
+                    val admittedAtMillis = SystemClock.elapsedRealtime()
                     safeToAbandon = false
                     val isOwner = !isReuseParticipant
                     // Hand the START's OWN cancellation token to the Running;
@@ -572,7 +629,7 @@ internal class LinuxRuntimeOperations(
                     val startCancellation = checkNotNull(cancelledStarts[request.id]) {
                         "startCancellationMissing"
                     }
-                    val owned = Running(lease, outcome.job, SystemClock.elapsedRealtime() + (seconds * 1000).toLong(),
+                    val owned = Running(lease, outcome.job, executionDeadlineMillis(admittedAtMillis, seconds),
                         scratch, role, projectID, workspace, isOwner, workspaceSession, imported,
                         request.id, startCancellation, latency)
                     owned.startCancelled.set(isCancelled())
@@ -1303,6 +1360,20 @@ internal class LinuxRuntimeOperations(
     companion object {
         /** Hard ceiling: 2 interactive + ONE shared Agent/run execution slot. */
         const val MAX_CONCURRENT_WORKLOADS = 3
+
+        /**
+         * The ONE command-deadline anchor for an admitted workload.
+         * `admittedAtElapsedMillis` is the monotonic [SystemClock.elapsedRealtime]
+         * reading taken when the supervisor ACCEPTED the spawn; the caller's
+         * validated `timeoutSeconds` is added there and nowhere earlier.
+         * Cold rootfs materialization, the workspace import and the launch-spec
+         * build happen before admission and are bounded by their own phases, so
+         * they can never consume the command budget. Pure and clock-injected so
+         * the anchor is regression-tested on the JVM (no device, no spawn).
+         */
+        internal fun executionDeadlineMillis(admittedAtElapsedMillis: Long,
+                                             timeoutSeconds: Double): Long =
+            admittedAtElapsedMillis + (timeoutSeconds * 1000.0).toLong()
 
         /**
          * Pure shell.cancel scope decision (no Android, no org.json): a

@@ -103,3 +103,7 @@ Qualification owner: job-e9482f8e79ff4310 (runtime-runs-native-assembly-qualific
   (log full-01) preserving all 825 parent identities (0 missing) with the
   6 new cases added. nativeQualified=false, productQualified=false; the
   composed native/App/device batch and G03 Linux resolution remain Main's.
+
+## G07.3B scheduled-task atomic mutations (Android overlay)
+
+`shared/Sources/FloePersistence/TaskScheduleStore.swift` adds Android revision-aware save, enable/disable and delete operations inside the existing `DatabaseManager.writer` transaction. The App service uses these operations after awaited validation, so concurrent stale edits cannot overwrite newer schedule or launch state. The original APIs and occurrence history behavior remain; unsupported fixture stores fail closed for the new operations. `TaskScheduleRevisionDigest` keeps the stored-row and App revision encoding identical. This is a narrow Android overlay; no frozen iOS reference or second scheduler database is changed.

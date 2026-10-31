@@ -98,6 +98,17 @@ object PosixBridge {
     /** Close fd. Returns 0 or -errno. */
     external fun closeFd(fd: Int): Int
 
+    /**
+     * Flush the FILESYSTEM containing the directory [path] (syncfs(2), API
+     * 28+, bionic _GNU_SOURCE). The native side opens ONLY this exact staged
+     * directory with O_RDONLY|O_DIRECTORY|O_CLOEXEC, calls syncfs, closes it,
+     * and throws IOException with the real errno on any failure. The path is
+     * the materializer's own `.floe-rootfs-*.stage`, never a model/tool path.
+     * Used only before the rootfs marker is published; a failure keeps the
+     * stage unpublished.
+     */
+    external fun syncfsDirectory(path: String): Int
+
     /** Host page size from sysconf(_SC_PAGESIZE). */
     external fun hostPageSize(): Int
 
