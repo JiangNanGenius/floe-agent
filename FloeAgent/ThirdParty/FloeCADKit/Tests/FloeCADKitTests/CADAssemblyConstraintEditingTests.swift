@@ -257,7 +257,7 @@ final class CADAssemblyConstraintEditingTests: XCTestCase {
         document.close()
         document = try await FloeCADDocument.open(
             at: workDir.appendingPathComponent("editing.floecad"))
-        let reopened = service().handle(action: "report", args: [:])
+        let reopened = self.service().handle(action: "report", args: [:])
         let reopenedRow = try constraintRow(reopened, id: constraintID)
         XCTAssertEqual(reopenedRow["value"] as? Double, 15.0)
         XCTAssertEqual(reopenedRow["pointA"] as? [Double], beforeRow["pointA"] as? [Double])
