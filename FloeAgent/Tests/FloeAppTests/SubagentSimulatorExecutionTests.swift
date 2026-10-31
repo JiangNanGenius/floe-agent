@@ -7008,4 +7008,556 @@ extension SubagentSimulatorExecutionTests {
         }
     }
 }
+
+// ==== Impeccable current signed installation -> real guest acceptance ====
+// Additive opt-in acceptance for the CURRENT signed Skill installation and
+// its descriptor-only runtime component (no generic dependencies.json). This
+// is deliberately separate from `impeccableEngineGuestQualification`, whose
+// frozen manually transported 1.0.0/1.1.1 harness stages a ZIP and passes a
+// custom engine path; that test cannot qualify the production install,
+// activation, cache, staging or probe chain and must not be reused as such.
+//
+// The only path exercised here is the production one:
+//   live installed + enabled curated Skill row
+//   -> references/engine-dependency.json (strict descriptor, no declaration)
+//   -> canonical exec.shell with `skillID` in THIS test's real run
+//   -> live SkillsCenter component-only gate -> live SkillRuntimeComponentCenter
+//      (app-owned cache -> task layer staging -> fixed probe/contract)
+//   -> native environment bindings -> direct launcher execution in the guest
+//   -> exact host readback of the launcher/engine/result bytes.
+//
+// The engine BYTES are supplied as a pinned, hashed input and seeded only into
+// the app-owned component cache (the component center re-hashes them against
+// the signed descriptor on every use). No package/receipt/authority is minted
+// or accepted from the input: the installed row, its curated receipt and the
+// signed descriptor remain the only authority. No host execution, no fake
+// guest, no manually manufactured receipt.
+//
+// Opt-in, fail-closed:
+//   FLOE_IMPECCABLE_CURRENT_GUEST_QUALIFICATION=1
+//   FLOE_IMPECCABLE_CURRENT_INPUTS=<dir containing the three pinned fixtures>
+//   FLOE_IMPECCABLE_PINNED_ENGINE=<verified 5,594,368-byte current engine>
+// A missing flag is reported by Swift Testing as disabled; a selected run with
+// missing/untrusted inputs FAILS and never counts as a pass.
+
+private enum ImpeccableCurrentPins {
+    static let skillID = "impeccable"
+    static let entryVersion = "1.1.1"
+    static let componentID = "impeccable-engine"
+    static let componentVersion = "0.1.17+floe.1.1.1"
+    static let engineBytes = 5_594_368
+    static let engineSHA256 = "774333d30d6e54604342182e49853851c7e0ebfa9e92fc4216f4a68872d00a1a"
+    static let contractSHA256 = "099cd85703a5ec7b7f8bd1d13e091421a09e4faf40a42240138cba9cbbc75bac"
+    static let probeLine = "impeccable-engine 0.1.17+floe.1.1.1"
+    static let launcherBytes = 8_989
+    static let fixtureSnapshotBytes = 18_472
+    static let fixtureSnapshotSHA256 = "4c9fec636a1c0d8a8bc593d963501dbd51aca147cba1e9e25fbd93179944127d"
+    static let fixtureIdentityBytes = 840
+    static let fixtureIdentitySHA256 = "bbcc122bd96c86c395c50a23c47db6d4bd7f7de7da99a83f35ee58a5fa38c08b"
+    static let fixtureFactsBytes = 39_554
+    static let fixtureFactsSHA256 = "a1aca5caaf8166bedd6391365382095ffa926d10949361b8890e3e749908e6df"
+    static let fixtureCaptureID = "cap-fixture-needs-0001"
+    static let needsPoints = 169
+}
+
+private struct ImpeccableCurrentInputs {
+    let snapshot: Data
+    let identity: Data
+    let facts: Data
+    let engine: Data
+
+    static func load() throws -> Self {
+        let environment = ProcessInfo.processInfo.environment
+        guard let directoryPath = environment["FLOE_IMPECCABLE_CURRENT_INPUTS"],
+              !directoryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FloeError.validationFailed(
+                "Impeccable current-guest acceptance requires FLOE_IMPECCABLE_CURRENT_INPUTS pointing at the pinned fixture directory")
+        }
+        guard let enginePath = environment["FLOE_IMPECCABLE_PINNED_ENGINE"],
+              !enginePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FloeError.validationFailed(
+                "Impeccable current-guest acceptance requires FLOE_IMPECCABLE_PINNED_ENGINE pointing at the verified current engine artifact")
+        }
+        let directory = URL(fileURLWithPath: directoryPath, isDirectory: true)
+        let engineURL = URL(fileURLWithPath: enginePath, isDirectory: false)
+        func read(_ name: String, bytes: Int, sha256: String) throws -> Data {
+            let url = directory.appendingPathComponent(name, isDirectory: false)
+            let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            guard values.isRegularFile == true, values.fileSize == bytes else {
+                throw FloeError.validationFailed(
+                    "Pinned Impeccable fixture \(name) is absent or has size \(String(describing: values.fileSize)), expected \(bytes)")
+            }
+            let data = try Data(contentsOf: url)
+            guard FloeDigest.sha256Hex(data) == sha256 else {
+                throw FloeError.validationFailed("Pinned Impeccable fixture \(name) sha256 mismatch")
+            }
+            return data
+        }
+        let engineValues = try engineURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard engineValues.isRegularFile == true, engineValues.fileSize == ImpeccableCurrentPins.engineBytes else {
+            throw FloeError.validationFailed(
+                "Pinned Impeccable engine is absent or has size \(String(describing: engineValues.fileSize)), expected \(ImpeccableCurrentPins.engineBytes)")
+        }
+        let engine = try Data(contentsOf: engineURL)
+        guard FloeDigest.sha256Hex(engine) == ImpeccableCurrentPins.engineSHA256 else {
+            throw FloeError.validationFailed("Pinned Impeccable engine sha256 mismatch")
+        }
+        // Preserve the production download gate's static-ELF check even when
+        // the exact signed bytes are delivered from the pinned host artifact.
+        try SkillRuntimeDependency.verifyStaticRISCVExecELF(engine)
+        return Self(
+            snapshot: try read("snapshot-needs-hit-tests.v1.json",
+                               bytes: ImpeccableCurrentPins.fixtureSnapshotBytes,
+                               sha256: ImpeccableCurrentPins.fixtureSnapshotSHA256),
+            identity: try read("identity-needs.v1.json",
+                               bytes: ImpeccableCurrentPins.fixtureIdentityBytes,
+                               sha256: ImpeccableCurrentPins.fixtureIdentitySHA256),
+            facts: try read("facts-overlay-round2.v1.json",
+                            bytes: ImpeccableCurrentPins.fixtureFactsBytes,
+                            sha256: ImpeccableCurrentPins.fixtureFactsSHA256),
+            engine: engine)
+    }
+}
+
+extension SubagentSimulatorExecutionTests {
+
+    private func impeccableCurrentSkillRoot() throws -> URL {
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true)
+        return support.appendingPathComponent("FloeAgent/Skills", isDirectory: true)
+    }
+
+    /// Delivers the exact signed-descriptor bytes only to an absent cache
+    /// entry, or reuses an already verified entry. Preserve any corrupt or
+    /// linked entry for production diagnosis rather than repairing it here.
+    /// The production component center still re-hashes before every use.
+    private func impeccableCurrentSeedCache(
+        descriptor: SkillRuntimeDependencyDescriptor,
+        engine: Data
+    ) throws -> String {
+        let cacheRoot = try FloeArtifactStore.root()
+            .appendingPathComponent("RuntimeComponents", isDirectory: true)
+        let target = cacheRoot
+            .appendingPathComponent(descriptor.componentID, isDirectory: true)
+            .appendingPathComponent(descriptor.componentVersion, isDirectory: true)
+            .appendingPathComponent(descriptor.target.triple, isDirectory: true)
+            .appendingPathComponent(SkillRuntimeDependency.frozenEngineFileName, isDirectory: false)
+        let existingValues = try? target.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        if existingValues?.isRegularFile == true,
+           existingValues?.isSymbolicLink != true,
+           let existing = try? Data(contentsOf: target),
+           existing.count == descriptor.artifact.size,
+           FloeDigest.sha256Hex(existing) == descriptor.artifact.sha256 {
+            return "verified-existing"
+        }
+        guard existingValues == nil,
+              !FileManager.default.fileExists(atPath: target.path),
+              (try? FileManager.default.destinationOfSymbolicLink(atPath: target.path)) == nil else {
+            throw FloeError.validationFailed(
+                "An existing runtime-component cache entry failed integrity checks; it was preserved for diagnosis")
+        }
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try engine.write(to: target, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: target.path)
+        let readBack = try Data(contentsOf: target)
+        guard readBack.count == descriptor.artifact.size,
+              FloeDigest.sha256Hex(readBack) == descriptor.artifact.sha256 else {
+            throw FloeError.validationFailed("Seeded runtime-component cache did not read back the exact pinned bytes")
+        }
+        return "seeded"
+    }
+
+    private func impeccableCurrentStageInput(_ data: Data, path: String, root: URL) throws {
+        let destination = root.appendingPathComponent(path, isDirectory: false)
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: destination, options: .atomic)
+    }
+
+    private func impeccableCurrentRead(
+        runtime: FloeAgentRuntime,
+        identity: ChildExecutionIdentity,
+        context: ToolContext,
+        tag: String
+    ) async throws -> ManagedSkill {
+        let call = try toolCall(
+            id: tag, toolName: "skill.read",
+            arguments: try Self.json(["id": ImpeccableCurrentPins.skillID]))
+        let result = await runtime.dispatchChildTool(call, identity: identity, childContext: context)
+        try #require(result.status == .ok, "skill.read failed: \(result.outputSummary)")
+        let rows = try JSONDecoder().decode(
+            [ManagedSkill].self, from: Data(result.outputSummary.utf8))
+        let row = try #require(rows.first(where: { $0.id == ImpeccableCurrentPins.skillID }),
+                               "skill.read returned no \(ImpeccableCurrentPins.skillID) row")
+        return row
+    }
+
+    private func impeccableCurrentShell(
+        runtime: FloeAgentRuntime,
+        identity: ChildExecutionIdentity,
+        context: ToolContext,
+        tag: String,
+        command: String,
+        timeout: Int = 600
+    ) async throws -> ToolResult {
+        let call = try toolCall(
+            id: tag, toolName: "exec.shell",
+            arguments: try Self.json([
+                "command": command,
+                "timeout": timeout,
+                "maxOutputBytes": 32_768,
+                "skillID": ImpeccableCurrentPins.skillID,
+            ]))
+        return await runtime.dispatchChildTool(call, identity: identity, childContext: context)
+    }
+
+    @Test(
+        "Impeccable current signed installation activates through exec.shell skillID, prepares the verified engine in the real guest and reads back the launcher result",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_IMPECCABLE_CURRENT_GUEST_QUALIFICATION"] == "1")
+    )
+    func impeccableCurrentSignedSkillGuestQualification() async throws {
+        let inputs = try ImpeccableCurrentInputs.load()
+        let app = try await appQualificationEnvironment()
+        let skillRoot = try impeccableCurrentSkillRoot()
+        let rows = try await app.skillStore.all()
+        guard let persisted = rows.first(where: { $0.id == ImpeccableCurrentPins.skillID }) else {
+            throw FloeError.notFound(
+                "\(ImpeccableCurrentPins.skillID) is not installed on this device; install the current signed 1.1.1 package before running this acceptance")
+        }
+        try #require(persisted.status == "enabled",
+                     "The installed \(ImpeccableCurrentPins.skillID) row is \(persisted.status), not enabled")
+        try #require(persisted.version == ImpeccableCurrentPins.entryVersion,
+                     "Installed \(ImpeccableCurrentPins.skillID) version is \(persisted.version), expected current \(ImpeccableCurrentPins.entryVersion)")
+        let receipt = try #require(SkillsCenter.curatedReceipt(for: persisted),
+                                   "The installed row has no curated receipt; this is not the current signed official installation")
+        try #require(receipt.entryID == ImpeccableCurrentPins.skillID
+                        && receipt.entryVersion == persisted.version
+                        && receipt.contentDigest == persisted.rewrittenDigest,
+                     "Installed row and curated receipt identities differ")
+        try #require(receipt.feedStatus == .production
+                        && receipt.reviewDecision == .approve
+                        && receipt.feedSignatureKeyID == CuratedSkillHub.productionKeyID
+                        && receipt.reviewKeyID == CuratedSkillHub.productionKeyID
+                        && receipt.hubRepository == CuratedSkillHub.hubRepository,
+                     "Installed receipt is not the production signed/approved Hub identity")
+        let installedRoot = skillRoot.appendingPathComponent(ImpeccableCurrentPins.skillID, isDirectory: true)
+        let snapshot = try SkillContentSnapshot(
+            root: installedRoot, expectedDigest: persisted.rewrittenDigest)
+        try #require(snapshot.files[SkillDependency.packagePath] == nil,
+                     "The current signed package unexpectedly carries references/dependencies.json")
+        let descriptorBytes = try #require(
+            snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath],
+            "The installed package has no references/engine-dependency.json")
+        let descriptor = try SkillRuntimeDependency.decode(descriptorBytes)
+        try #require(descriptor.componentID == ImpeccableCurrentPins.componentID
+                        && descriptor.componentVersion == ImpeccableCurrentPins.componentVersion,
+                     "Runtime component identity is \(descriptor.componentID)@\(descriptor.componentVersion)")
+        try #require(descriptor.artifact.size == ImpeccableCurrentPins.engineBytes
+                        && descriptor.artifact.sha256 == ImpeccableCurrentPins.engineSHA256,
+                     "Signed descriptor artifact is not the pinned current engine")
+        try #require(descriptor.captureContract.sha256 == ImpeccableCurrentPins.contractSHA256
+                        && descriptor.captureContract.version == 1,
+                     "Signed descriptor capture contract is not the pinned current contract")
+        let launcherBytes = try #require(snapshot.files["scripts/floe-impeccable.sh"],
+                                         "The installed package has no launcher")
+        try #require(launcherBytes.count == ImpeccableCurrentPins.launcherBytes
+                        && launcherBytes.starts(with: Data("#!/bin/sh".utf8)),
+                     "Installed launcher bytes are not the expected executable script")
+        let launcherSHA256 = FloeDigest.sha256Hex(launcherBytes)
+        let cacheStatus = try impeccableCurrentSeedCache(
+            descriptor: descriptor, engine: inputs.engine)
+        print("FLOE_IMPECCABLE_CURRENT_CACHE=\(cacheStatus) engineSHA256=\(descriptor.artifact.sha256)")
+        print("FLOE_IMPECCABLE_CURRENT_INSTALLED=\(persisted.id)@\(persisted.version) digest=\(persisted.rewrittenDigest) publication=\(receipt.publicationCommit)")
+
+        let root = try makeWorkspaceRoot()
+        var ownedEnvironmentID: String?
+        var parentHold: CancellationToken?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        let conversationID = UUID()
+        let runID = UUID()
+        var recordsCreated = false
+        let fixedIdentity = ChildExecutionIdentity(
+            parentRunID: runID, rootTaskID: conversationID, delegateCallID: "impeccable-current-install")
+        func finish() async {
+            // Preparation can persist the environment before a failed boot.
+            // Recover ONLY the owner bound to this unique test workspace.
+            if ownedEnvironmentID == nil {
+                ownedEnvironmentID = await self.environmentID(
+                    forRoot: root, registry: app.environmentRegistry)
+            }
+            await skillHubCleanup(
+                runtime: ownedRuntime, parentHold: parentHold, parentTask: parentTask,
+                jobs: nil, jobIDs: [], environmentID: ownedEnvironmentID, root: root,
+                conversationID: recordsCreated ? conversationID : nil, app: app)
+            // Remove ONLY this test run's pinned snapshot under the app-owned
+            // skill store. The installed package, its receipt and all other
+            // runs' snapshots are never touched.
+            let runSnapshot = skillRoot
+                .appendingPathComponent(".run-snapshots", isDirectory: true)
+                .appendingPathComponent(runID.uuidString, isDirectory: true)
+            if FileManager.default.fileExists(atPath: runSnapshot.path) {
+                do { try FileManager.default.removeItem(at: runSnapshot) }
+                catch { Issue.record("Could not remove this test's own run snapshot: \(error)") }
+            }
+        }
+        do {
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            try await skillHubCreateRunRows(
+                app: app, conversationID: conversationID, runID: runID,
+                title: "Impeccable current signed guest acceptance",
+                goal: "Production skillID activation, engine staging/probe, launcher execution and exact readback; no model")
+            recordsCreated = true
+            let ceiling: Set<String> = ["exec.shell", "skill.read"]
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task { try await runtime.start(goal: "Qualify the current signed Impeccable installation in the real guest") }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before the current Skill qualification")
+            let context = ToolContext(
+                runID: runID, scope: .local, activeSkillIDs: [ImpeccableCurrentPins.skillID],
+                allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationID)
+            try await requireQualifiedKernel(runtime: runtime, identity: fixedIdentity, context: context)
+
+            // Exact read: this stages the CURRENT task-pinned bundle through
+            // the production stager and reports component authority/state.
+            let readBefore = try await impeccableCurrentRead(
+                runtime: runtime, identity: fixedIdentity, context: context, tag: "current-read-before")
+            let statusBefore = try #require(readBefore.dependencyStatus,
+                                            "skill.read returned no dependencyStatus for the descriptor-only package")
+            try #require(statusBefore.contains("installed=\(ImpeccableCurrentPins.skillID)@\(ImpeccableCurrentPins.entryVersion)"),
+                         "Unexpected installed identity: \(statusBefore)")
+            try #require(statusBefore.contains("componentAuthority=verified"),
+                         "Signed component authority is not verified: \(statusBefore)")
+            try #require(!statusBefore.contains("dependencyAuthority="),
+                         "Descriptor-only package unexpectedly reported a generic dependency authority: \(statusBefore)")
+            try #require(statusBefore.contains("pinnedEngine=\(ImpeccableCurrentPins.componentID)@\(ImpeccableCurrentPins.componentVersion) size=\(ImpeccableCurrentPins.engineBytes) sha256=\(ImpeccableCurrentPins.engineSHA256)"),
+                         "Signed engine pin is not the current artifact: \(statusBefore)")
+            try #require(statusBefore.contains("engineCache=verified"),
+                         "Pinned engine cache is not verified after exact seeding: \(statusBefore)")
+            try #require(statusBefore.contains("taskBundleStaged=true"),
+                         "The current task bundle was not staged: \(statusBefore)")
+            let guestRoot = try #require(readBefore.resources?.guestRoot,
+                                         "skill.read staged no guest root")
+            try #require(guestRoot.hasPrefix("/workspace/.floe/skills/")
+                            && guestRoot.hasSuffix("/.floe/skills/\(ImpeccableCurrentPins.skillID)@\(persisted.rewrittenDigest)"),
+                         "Staged guest root is not the Linux workspace task-pinned tree: \(guestRoot)")
+
+            // Leave the production-staged launcher at legacy 0644 in THIS
+            // test-owned workspace and prove the NEXT skillID activation
+            // repairs the mode via the production stager. Do this on the host
+            // copy so no skillID-less shell dispatch can trigger the component
+            // backend hook before the gate under test.
+            let leaf = try #require(guestRoot.split(separator: "/").last.map { String($0) },
+                                    "Staged guest root has no leaf")
+            let hostLauncher = root
+                .appendingPathComponent(".floe/skills/\(leaf)/scripts/floe-impeccable.sh",
+                                        isDirectory: false)
+            let hostLauncherBytes = try Data(contentsOf: hostLauncher)
+            try #require(FloeDigest.sha256Hex(hostLauncherBytes) == launcherSHA256,
+                         "Host staged launcher bytes do not match the installed launcher")
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o644], ofItemAtPath: hostLauncher.path)
+            let preMode = (try FileManager.default.attributesOfItem(atPath: hostLauncher.path)[.posixPermissions] as? NSNumber)?.intValue ?? 0
+            try #require(preMode & 0o777 == 0o644,
+                         "Could not leave the staged launcher at the legacy 0644 mode")
+            print("FLOE_IMPECCABLE_CURRENT_PRE_ACTIVATION_MODE=644 launcherSHA256=\(launcherSHA256)")
+
+            // First canonical activation: the gate must repair 0755, verify
+            // the signed engine, stage/probe it and export the run bindings.
+            let activation = try await impeccableCurrentShell(
+                runtime: runtime, identity: fixedIdentity, context: context, tag: "current-activation-1",
+                command: """
+                set -eu
+                launcher="$IMPECCABLE_SKILL_DIR/scripts/floe-impeccable.sh"
+                engine="$FLOE_IMPECCABLE_ENGINE"
+                echo "FLOE_CURRENT_SKILL_DIR=$IMPECCABLE_SKILL_DIR"
+                echo "FLOE_CURRENT_ENGINE=$engine"
+                test -x "$launcher"
+                test -x "$engine"
+                echo "FLOE_CURRENT_LAUNCHER_MODE=$(stat -c '%a' "$launcher")"
+                sha256sum "$launcher"
+                sha256sum "$engine"
+                "$launcher" engine-probe
+                echo "FLOE_CURRENT_PROBE_RC=$?"
+                "$launcher" contract | sha256sum
+                """)
+            try #require(activation.status == .ok, "Current skillID activation failed: \(activation.outputSummary)")
+            let activationText = activation.outputSummary
+            try #require(activationText.contains("--- skill dependencies ---")
+                            && activationText.contains("runtimeComponent \(ImpeccableCurrentPins.componentID)@\(ImpeccableCurrentPins.componentVersion) verified and probed in this task's resolved environment"),
+                         "The production dependency gate did not report verified component readiness: \(activationText)")
+            try #require(activationText.contains("exit=0"), "Activation command did not exit 0: \(activationText)")
+            try #require(activationText.contains("FLOE_CURRENT_SKILL_DIR=\(guestRoot)"),
+                         "Launcher did not receive the task-pinned skill root: \(activationText)")
+            let expectedEngineGuestPath = "/floe/env/runtime-components/\(ImpeccableCurrentPins.componentID)/\(ImpeccableCurrentPins.componentVersion)/\(descriptor.target.triple)/\(SkillRuntimeDependency.frozenEngineFileName)"
+            try #require(activationText.contains("FLOE_CURRENT_ENGINE=\(expectedEngineGuestPath)"),
+                         "Launcher did not receive the canonical engine path: \(activationText)")
+            try #require(activationText.contains("FLOE_CURRENT_LAUNCHER_MODE=755"),
+                         "The production stager did not repair the legacy 0644 launcher: \(activationText)")
+            try #require(activationText.contains(launcherSHA256),
+                         "Launcher bytes changed while repairing the executable bit: \(activationText)")
+            try #require(activationText.contains(ImpeccableCurrentPins.engineSHA256),
+                         "The staged engine is not the pinned current artifact: \(activationText)")
+            try #require(activationText.contains(ImpeccableCurrentPins.probeLine),
+                         "The launcher engine-probe handshake is not exact: \(activationText)")
+            try #require(activationText.contains("FLOE_CURRENT_PROBE_RC=0"),
+                         "The launcher engine-probe did not exit 0: \(activationText)")
+            try #require(activationText.contains(ImpeccableCurrentPins.contractSHA256),
+                         "The launcher contract bytes do not match the signed descriptor: \(activationText)")
+
+            let diagnostics1 = await app.skillRuntimeComponents.diagnostics(
+                descriptor: descriptor, environmentID: environmentID)
+            try #require(diagnostics1.cache == "verified" && diagnostics1.staged == "verified"
+                            && diagnostics1.state.probed,
+                         "Component diagnostics after activation are not fully verified: \(diagnostics1)")
+            let generation1 = try #require(diagnostics1.currentLaunchGeneration,
+                                           "The test guest reported no launch generation")
+            try #require(diagnostics1.readinessLaunchGeneration == generation1,
+                         "The component receipt is not bound to the current guest generation")
+            let receipt1 = try #require(await app.skillRuntimeComponents.qualificationReadinessReceipt(
+                environmentID: environmentID, componentID: descriptor.componentID),
+                "No readiness receipt after the first activation")
+            print("FLOE_IMPECCABLE_CURRENT_RECEIPT_1 generation=\(generation1) verifiedAt=\(receipt1.verifiedAt.timeIntervalSince1970)")
+
+            let readAfter = try await impeccableCurrentRead(
+                runtime: runtime, identity: fixedIdentity, context: context, tag: "current-read-after")
+            let statusAfter = try #require(readAfter.dependencyStatus,
+                                           "skill.read returned no dependencyStatus after activation")
+            try #require(statusAfter.contains("plan=bound-to-this-run"),
+                         "The current run plan is not bound after activation: \(statusAfter)")
+            try #require(statusAfter.contains("engineStaged=verified")
+                            && statusAfter.contains("probedEngine=\(ImpeccableCurrentPins.componentVersion)")
+                            && statusAfter.contains("probeGeneration=current"),
+                         "Post-activation component state is not current: \(statusAfter)")
+            try #require(statusAfter.contains("stagedScripts=executable"),
+                         "Post-activation staged scripts are not executable: \(statusAfter)")
+            try #require(statusAfter.contains("taskPinnedDigest=\(persisted.rewrittenDigest)")
+                            && !statusAfter.contains("currentInstalledDigest="),
+                         "The task pin is not exactly the current installed revision: \(statusAfter)")
+
+            // Synthetic current-engine verdict. These fixtures are the current
+            // engine's own contract fixtures; the verdict is synthetic and is
+            // never represented as the user's missing page snapshot.
+            try impeccableCurrentStageInput(
+                inputs.snapshot, path: "synthetic-fixtures/snapshot-needs-hit-tests.v1.json", root: root)
+            try impeccableCurrentStageInput(
+                inputs.identity, path: "synthetic-fixtures/identity-needs.v1.json", root: root)
+            try impeccableCurrentStageInput(
+                inputs.facts, path: "synthetic-fixtures/facts-overlay-round2.v1.json", root: root)
+            let scanCommand = """
+            set -eu
+            mkdir -p synthetic
+            \(impeccableEngineDriver)
+            run_engine current-round1 "$IMPECCABLE_SKILL_DIR/scripts/floe-impeccable.sh" snapshot-scan \
+              --snapshot synthetic-fixtures/snapshot-needs-hit-tests.v1.json \
+              --identity synthetic-fixtures/identity-needs.v1.json \
+              --out synthetic/result.current-round1.v1.json --round 1
+            run_engine current-round2 "$IMPECCABLE_SKILL_DIR/scripts/floe-impeccable.sh" snapshot-scan \
+              --snapshot synthetic-fixtures/snapshot-needs-hit-tests.v1.json \
+              --identity synthetic-fixtures/identity-needs.v1.json \
+              --facts synthetic-fixtures/facts-overlay-round2.v1.json \
+              --out synthetic/result.current-round2.v1.json --round 2
+            """
+            let scan = try await impeccableCurrentShell(
+                runtime: runtime, identity: fixedIdentity, context: context, tag: "current-scans",
+                command: scanCommand)
+            try #require(scan.status == .ok, "Current-engine synthetic scans failed: \(scan.outputSummary)")
+            let round1 = try impeccableParseEngineStats(label: "current-round1", output: scan.outputSummary)
+            let round2 = try impeccableParseEngineStats(label: "current-round2", output: scan.outputSummary)
+            try #require(round1.rc == 3, "Synthetic round 1 must exit 3 needs-facts, got \(round1.rc): \(scan.outputSummary)")
+            try #require(round2.rc == 2, "Synthetic round 2 must exit 2 findings, got \(round2.rc): \(scan.outputSummary)")
+            let result1 = try impeccableReadResult(root, "synthetic/result.current-round1.v1.json")
+            let result2 = try impeccableReadResult(root, "synthetic/result.current-round2.v1.json")
+            try #require(result1.status == "needs-facts"
+                            && result1.needs?.hitTests?.count == ImpeccableCurrentPins.needsPoints,
+                         "Synthetic round 1 verdict mismatch: \(String(describing: result1.status)) needs=\(String(describing: result1.needs?.hitTests?.count))")
+            try #require(result1.identity?.captureId == ImpeccableCurrentPins.fixtureCaptureID,
+                         "Synthetic round 1 identity echo mismatch: \(String(describing: result1.identity))")
+            try #require(result2.status == "complete" && result2.verdict == "findings"
+                            && result2.findings?.counts?.total == 1
+                            && result2.findings?.counts?.byRule?["text-occlusion"] == 1,
+                         "Synthetic round 2 verdict mismatch: \(String(describing: result2.status))/\(String(describing: result2.verdict)) counts=\(String(describing: result2.findings?.counts))")
+            try #require(result2.identity?.captureId == ImpeccableCurrentPins.fixtureCaptureID,
+                         "Synthetic round 2 identity echo mismatch: \(String(describing: result2.identity))")
+
+            // Same environment + same generation: the second activation above
+            // must reuse the exact probe receipt (no re-probe).
+            let receipt2 = try #require(await app.skillRuntimeComponents.qualificationReadinessReceipt(
+                environmentID: environmentID, componentID: descriptor.componentID),
+                "Readiness receipt disappeared after the second activation")
+            try #require(receipt2.launchGeneration == receipt1.launchGeneration
+                            && receipt2.verifiedAt == receipt1.verifiedAt,
+                         "Same-generation second activation did not reuse the readiness receipt")
+            print("FLOE_IMPECCABLE_CURRENT_REUSE generation=\(String(describing: receipt2.launchGeneration)) verifiedAt=\(receipt2.verifiedAt.timeIntervalSince1970)")
+
+            // Restart this SAME test-owned guest: the launch generation must
+            // rotate, the old receipt must not count as current, and the next
+            // activation must re-probe under the new generation.
+            let services = FloePlatformServices.shared
+            await services.stopLinuxGuest(id: environmentID)
+            let stopped = await waitForAsync(timeout: 120) {
+                !(await services.linuxEnvironmentAvailable(id: environmentID))
+            }
+            try #require(stopped, "The test-owned guest did not report stopped before the generation restart")
+            try await services.activateLinuxGuestWithPreparation(
+                id: environmentID, cancellation: CancellationToken())
+            let ready = await waitForAsync(timeout: bootTimeout) {
+                await services.linuxEnvironmentAvailable(id: environmentID)
+            }
+            try #require(ready, "The test-owned guest did not return after the generation restart")
+            let diagnosticsRestart = await app.skillRuntimeComponents.diagnostics(
+                descriptor: descriptor, environmentID: environmentID)
+            let generation2 = try #require(diagnosticsRestart.currentLaunchGeneration,
+                                           "The restarted guest reported no launch generation")
+            try #require(generation2 != generation1,
+                         "The guest restart did not rotate the launch generation")
+            try #require(diagnosticsRestart.readinessLaunchGeneration != generation2,
+                         "The pre-restart probe receipt was still reported as current")
+
+            let reActivation = try await impeccableCurrentShell(
+                runtime: runtime, identity: fixedIdentity, context: context, tag: "current-activation-restarted",
+                command: """
+                set -eu
+                test -x "$IMPECCABLE_SKILL_DIR/scripts/floe-impeccable.sh"
+                test -x "$FLOE_IMPECCABLE_ENGINE"
+                "$IMPECCABLE_SKILL_DIR/scripts/floe-impeccable.sh" engine-probe
+                "$IMPECCABLE_SKILL_DIR/scripts/floe-impeccable.sh" contract | sha256sum
+                """)
+            try #require(reActivation.status == .ok, "Post-restart activation failed: \(reActivation.outputSummary)")
+            try #require(reActivation.outputSummary.contains(ImpeccableCurrentPins.probeLine)
+                            && reActivation.outputSummary.contains(ImpeccableCurrentPins.contractSHA256),
+                         "Post-restart launcher proof failed: \(reActivation.outputSummary)")
+            let receipt3 = try #require(await app.skillRuntimeComponents.qualificationReadinessReceipt(
+                environmentID: environmentID, componentID: descriptor.componentID),
+                "No new readiness receipt after the generation restart")
+            try #require(receipt3.launchGeneration == generation2,
+                         "The new readiness receipt is not bound to the restarted generation")
+            try #require(receipt3.verifiedAt > receipt1.verifiedAt,
+                         "The restarted generation reused the pre-restart probe receipt")
+            print("FLOE_IMPECCABLE_CURRENT_GENERATION old=\(generation1) new=\(generation2) reprobed=\(receipt3.verifiedAt.timeIntervalSince1970)")
+            print("FLOE_IMPECCABLE_CURRENT_SYNTHETIC round1=rc\(round1.rc)/\(ImpeccableCurrentPins.needsPoints)points round2=rc\(round2.rc)/text-occlusion")
+            print("FLOE_IMPECCABLE_CURRENT_GUEST_QUALIFIED skill=\(ImpeccableCurrentPins.skillID)@\(ImpeccableCurrentPins.entryVersion) engine=\(ImpeccableCurrentPins.componentVersion)")
+            await finish()
+        } catch {
+            print("FLOE_IMPECCABLE_CURRENT_GUEST_FAILED=\(String(describing: error).prefix(400))")
+            await finish()
+            throw error
+        }
+    }
+}
+
 #endif

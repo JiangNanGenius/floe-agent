@@ -672,6 +672,20 @@ actor SkillRuntimeComponentCenter {
         states = states.filter { $0.key.environmentID != environmentID }
     }
 
+    #if DEBUG
+    /// Test-only, read-only receipt readback for real-guest qualification.
+    /// It exposes the exact probe receipt identity (including `verifiedAt`)
+    /// already held by this actor so a test can distinguish genuine
+    /// same-generation receipt reuse from a re-probe. It changes no plan,
+    /// state, readiness, staging, probe, authority or export behavior.
+    func qualificationReadinessReceipt(
+        environmentID: String,
+        componentID: String
+    ) -> SkillRuntimeComponentReadiness? {
+        readiness[ReadinessKey(environmentID: environmentID, componentID: componentID)]
+    }
+    #endif
+
     /// Current diagnostic state for one (environment, component).
     func state(environmentID: String, componentID: String) -> SkillRuntimeComponentState {
         states[StateKey(environmentID: environmentID, componentID: componentID)]
