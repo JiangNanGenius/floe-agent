@@ -49,8 +49,8 @@ nonisolated enum CurveLoopFixture {
         let splineID = UUID()
         let center = SIMD2<Double>(60 * s, 0)
         let radius = 25 * s
-        let startAngle = 200 * .pi / 180
-        let endAngle = 340 * .pi / 180
+        let startAngle = 200 * Double.pi / 180
+        let endAngle = 340 * Double.pi / 180
         let start = SketchEntity.arcPoint(center: center, radius: radius, angle: startAngle)
         let end = SketchEntity.arcPoint(center: center, radius: radius, angle: endAngle)
         let mid = SIMD2<Double>((start.x + end.x) / 2, max(start.y, end.y) + 18 * s)
@@ -292,15 +292,15 @@ final class CADCurveConstraintSolvingTests: XCTestCase {
             XCTAssertEqual(center.x, 60 * scale, accuracy: 1e-9 * max(1, abs(center.x)))
             XCTAssertEqual(center.y, 0, accuracy: 1e-9)
             XCTAssertEqual(radius, 25 * scale, accuracy: 1e-9 * max(1, 25 * scale))
-            XCTAssertEqual(startAngle, 200 * .pi / 180, accuracy: 1e-9)
-            XCTAssertEqual(endAngle, 340 * .pi / 180, accuracy: 1e-9)
+            XCTAssertEqual(startAngle, 200 * Double.pi / 180, accuracy: 1e-9)
+            XCTAssertEqual(endAngle, 340 * Double.pi / 180, accuracy: 1e-9)
 
             // A single-arc angle dimension still drives the sweep scalar.
             sketch.dimensions = []
             sketch.constraints = []
             let angle = SketchDimension(
                 kind: .angle, refs: [ConstraintRef(entityID: loop.arcID, role: .whole)],
-                value: 120 * .pi / 180)
+                value: 120 * Double.pi / 180)
             sketch.dimensions = [angle]
             outcome = SketchSolverBridge.solveOutcome(sketch, movingEntity: nil, dragTarget: nil)
             XCTAssertTrue(outcome.converged)
@@ -312,9 +312,9 @@ final class CADCurveConstraintSolvingTests: XCTestCase {
             }
             XCTAssertEqual(solvedRadius, 25 * scale, accuracy: 1e-9 * max(1, 25 * scale))
             XCTAssertEqual(SketchEntity.arcSweep(startAngle: solvedStart, endAngle: solvedEnd),
-                           120 * .pi / 180, accuracy: 1e-7)
+                           120 * Double.pi / 180, accuracy: 1e-7)
             // The start ray is retained (legacy behavior).
-            XCTAssertEqual(solvedStart, 200 * .pi / 180, accuracy: 1e-9)
+            XCTAssertEqual(solvedStart, 200 * Double.pi / 180, accuracy: 1e-9)
         }
     }
 
@@ -327,7 +327,7 @@ final class CADCurveConstraintSolvingTests: XCTestCase {
             loop, constraints: CurveLoopFixture.loopConstraints(loop),
             dimensions: [SketchDimension(
                 kind: .angle, refs: [ConstraintRef(entityID: loop.arcID, role: .whole)],
-                value: 100 * .pi / 180)])
+                value: 100 * Double.pi / 180)])
         let outcome = SketchSolverBridge.solveOutcome(sketch, movingEntity: nil, dragTarget: nil)
         XCTAssertTrue(outcome.converged)
         XCTAssertLessThanOrEqual(outcome.structuralResidual,
@@ -337,7 +337,7 @@ final class CADCurveConstraintSolvingTests: XCTestCase {
             XCTFail("arc missing"); return
         }
         XCTAssertEqual(SketchEntity.arcSweep(startAngle: startAngle, endAngle: endAngle),
-                       100 * .pi / 180, accuracy: 1e-6)
+                       100 * Double.pi / 180, accuracy: 1e-6)
         let m = try XCTUnwrap(CurveLoopFixture.measure(outcome.entities, loop: loop))
         XCTAssertLessThan(m.junctionGapStart, 1e-9)
         XCTAssertLessThan(m.junctionGapEnd, 1e-9)

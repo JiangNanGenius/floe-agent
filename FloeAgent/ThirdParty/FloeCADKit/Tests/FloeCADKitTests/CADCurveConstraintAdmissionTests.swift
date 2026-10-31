@@ -70,7 +70,7 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
         /// relative amount (sin10*cos10), identical at every scale.
         func heldDirectionConflict(scale: Double) -> Sketch {
             let id = UUID()
-            let theta = 10 * .pi / 180
+            let theta = 10 * Double.pi / 180
             let a = SIMD2<Double>(0, 0)
             let b = SIMD2<Double>(100 * scale * cos(theta), 100 * scale * sin(theta))
             let line = SketchEntity.line(id: id, a: a, b: b)
@@ -105,8 +105,8 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
             let splineID = UUID()
             let center = SIMD2<Double>(60 * scale, 0)
             let radius = 25 * scale
-            let start = startDeg * .pi / 180
-            let end = endDeg * .pi / 180
+            let start = startDeg * Double.pi / 180
+            let end = endDeg * Double.pi / 180
             let p0 = SketchEntity.arcPoint(center: center, radius: radius, angle: start)
             let p1 = SketchEntity.arcPoint(center: center, radius: radius, angle: end)
             let mid = SIMD2<Double>((p0.x + p1.x) / 2,
@@ -133,7 +133,7 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
             ]
             let dimension = SketchDimension(
                 kind: .angle, refs: [ConstraintRef(entityID: arcID, role: .whole)],
-                value: angleDimensionDeg * .pi / 180)
+                value: angleDimensionDeg * Double.pi / 180)
             return WrapLoop(arc: arc, spline: spline, arcID: arcID, splineID: splineID,
                             center: center, radius: radius,
                             startAngle: start, endAngle: end,
@@ -646,7 +646,7 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
         let arcID = UUID()
         let line = SketchEntity.line(id: lineID, a: SIMD2(0, 0), b: SIMD2(100, 0))
         let arc = SketchEntity.arc(id: arcID, center: SIMD2(300, 0), radius: 25,
-                                   startAngle: 0, endAngle: .pi)
+                                   startAngle: 0, endAngle: Double.pi)
         let parallel = SketchConstraint(kind: .parallel, refs: [
             ConstraintRef(entityID: lineID, role: .whole),
             ConstraintRef(entityID: arcID, role: .whole)])
@@ -689,7 +689,7 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
         let arcID = UUID()
         let line = SketchEntity.line(id: lineID, a: SIMD2(0, 0), b: SIMD2(100, 0))
         let arc = SketchEntity.arc(id: arcID, center: SIMD2(300, 0), radius: 25,
-                                   startAngle: 0, endAngle: .pi)
+                                   startAngle: 0, endAngle: Double.pi)
         let parallel = SketchConstraint(kind: .parallel, refs: [
             ConstraintRef(entityID: lineID, role: .whole),
             ConstraintRef(entityID: arcID, role: .whole)])
@@ -718,9 +718,9 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
     /// independently from the solved entities.
     func testArcEndpointTangentFallsBackToCircleTangencyAndStaysWelded() throws {
         let arc1 = SketchEntity.arc(id: UUID(), center: SIMD2(0, 0), radius: 25,
-                                    startAngle: .pi, endAngle: 0)
+                                    startAngle: Double.pi, endAngle: 0)
         let arc2 = SketchEntity.arc(id: UUID(), center: SIMD2(50, 0), radius: 25,
-                                    startAngle: .pi, endAngle: 0)
+                                    startAngle: Double.pi, endAngle: 0)
         let j1 = ConstraintRef(entityID: arc1.id, role: .endpointB)
         let j2 = ConstraintRef(entityID: arc2.id, role: .endpointA)
         let sketch = Sketch(
@@ -779,15 +779,15 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
         let circleID = UUID()
         let splineID = UUID()
         let arc = SketchEntity.arc(id: arcID, center: SIMD2(0, 0), radius: 25,
-                                   startAngle: 200 * .pi / 180, endAngle: 340 * .pi / 180)
+                                   startAngle: 200 * Double.pi / 180, endAngle: 340 * Double.pi / 180)
         let ghost = SketchEntity.circle(id: circleID, center: SIMD2(200, 0), radius: 10)
-        let pA = SketchEntity.arcPoint(center: SIMD2(0, 0), radius: 25, angle: 200 * .pi / 180)
+        let pA = SketchEntity.arcPoint(center: SIMD2(0, 0), radius: 25, angle: 200 * Double.pi / 180)
         let openSpline = SketchEntity.spline(
             id: splineID, points: [pA, pA + SIMD2(-30, -40)], closed: false)
         let added = document.executeJSON(Data(#"""
             {"op":"sketch.addEntities","args":{"sketchID":"\#(sketchID)","entities":[
               {"kind":"arc","center":[0,0],"radius":25,
-               "startAngle":\#(200 * .pi / 180),"endAngle":\#(340 * .pi / 180)},
+               "startAngle":\#(200 * Double.pi / 180),"endAngle":\#(340 * Double.pi / 180)},
               {"kind":"circle","center":[200,0],"radius":10},
               {"kind":"spline","points":[[\#(pA.x),\#(pA.y)],[\#(pA.x - 30),\#(pA.y - 40)]],"closed":false}]}}
             """#.utf8))
@@ -827,7 +827,7 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
         let lineID = UUID(), arcID = UUID()
         let line = SketchEntity.line(id: lineID, a: SIMD2(0, 0), b: SIMD2(100, 0))
         let arc = SketchEntity.arc(id: arcID, center: SIMD2(300, 0), radius: 25,
-                                   startAngle: 0, endAngle: .pi)
+                                   startAngle: 0, endAngle: Double.pi)
         let unsupported = SketchConstraint(kind: .parallel, refs: [
             ConstraintRef(entityID: lineID, role: .whole),
             ConstraintRef(entityID: arcID, role: .whole)])
@@ -939,16 +939,16 @@ final class CADCurveConstraintAdmissionTests: XCTestCase {
                 XCTFail("target \(targetDeg): arc missing"); continue
             }
             XCTAssertGreaterThanOrEqual(startAngle, 0)
-            XCTAssertLessThan(startAngle, 2 * .pi, "written start must be normalised")
+            XCTAssertLessThan(startAngle, 2 * Double.pi, "written start must be normalised")
             XCTAssertEqual(SketchEntity.arcSweep(startAngle: startAngle, endAngle: endAngle),
-                           targetDeg * .pi / 180, accuracy: 1e-6,
+                           targetDeg * Double.pi / 180, accuracy: 1e-6,
                            "target \(targetDeg): solved sweep must equal the demanded sweep")
             let solvedEnd = SketchEntity.arcPoint(center: center, radius: radius, angle: endAngle)
             let expectedEnd = SketchEntity.arcPoint(
                 center: loop.center, radius: loop.radius,
-                angle: expectedEndDeg * .pi / 180)
+                angle: expectedEndDeg * Double.pi / 180)
             XCTAssertLessThan(simd_distance(solvedEnd, expectedEnd),
-                              loop.radius * toleranceDeg * .pi / 180 + 1e-9,
+                              loop.radius * toleranceDeg * Double.pi / 180 + 1e-9,
                               "target \(targetDeg): endpoint left its branch")
             // Closure and tangency survive every edit (independent readout).
             let m = try XCTUnwrap(helper.measure(outcome.entities, loop: loop))

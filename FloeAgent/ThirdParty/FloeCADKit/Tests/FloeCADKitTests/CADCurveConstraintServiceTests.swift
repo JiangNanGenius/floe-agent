@@ -112,7 +112,7 @@ final class CADCurveConstraintServiceTests: XCTestCase {
     /// solved geometry.
     func testDimensionEditKeepsLoopClosedThroughUndoRedoAndReopen() async throws {
         for scale in [1e-3, 1.0, 1e3] {
-            let (document, url) = try await makeDocument(name: "Loop-\(scale)")
+            let (document, url) = try await makeDocument("Loop-\(scale)")
             let loop = try makeConnectedLoop(document, scale: scale)
             let service = CADParameterService(document: document)
 
@@ -309,7 +309,7 @@ final class CADCurveConstraintServiceTests: XCTestCase {
     /// 10^3 scale — the least-squares best fit is never written as satisfied.
     func testContradictoryRadiusDimensionsRefusedAtAllScales() async throws {
         for scale in [1e-3, 1.0, 1e3] {
-            let (document, _) = try await makeDocument(name: "Conflict-\(scale)")
+            let (document, _) = try await makeDocument("Conflict-\(scale)")
             let loop = try makeConnectedLoop(document, scale: scale)
             let service = CADParameterService(document: document)
 
