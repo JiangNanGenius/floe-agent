@@ -160,17 +160,17 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         let addView = app.buttons["CADDrawingViewAdd"]
         reveal(addView, in: app)
         addView.tap()
-        XCTAssertTrue(viewCount(5, in: app).waitForExistence(timeout: 15))
+        reveal(viewCount(5, in: app), in: app, scrollingUp: false)
         let remove = app.buttons["CADDrawingViewRemove"]
         reveal(remove, in: app)
         remove.tap()
-        XCTAssertTrue(viewCount(4, in: app).waitForExistence(timeout: 15))
+        reveal(viewCount(4, in: app), in: app, scrollingUp: false)
         close.tap()
 
         let preview = app.buttons["Preview"].firstMatch
         reveal(preview, in: app)
         preview.tap()
-        XCTAssertTrue(app.otherElements["CADDrawingPreview"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["CADDrawingPreview"].waitForExistence(timeout: 10))
         let drawing = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         drawing.name = compact ? "CAD-shared-sheet-narrow-preview" : "CAD-shared-sheet-preview"
         drawing.lifetime = .keepAlways
@@ -185,11 +185,12 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         app.staticTexts.matching(NSPredicate(format: "label ==[c] %@", "\(count) views")).firstMatch
     }
 
-    private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
-        XCTAssertTrue(element.waitForExistence(timeout: 10))
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication, scrollingUp: Bool = true) {
+        // Form creates offscreen sections lazily; requiring existence before
+        // scrolling prevents the driver from reaching real controls below it.
         for _ in 0..<8 {
-            if element.isHittable { return }
-            app.swipeUp()
+            if element.exists && element.isHittable { return }
+            if scrollingUp { app.swipeUp() } else { app.swipeDown() }
         }
         XCTAssertTrue(element.isHittable, "The drawing control must remain reachable")
     }

@@ -162,7 +162,8 @@ final class CADSavePrewarmOwnershipTests: XCTestCase {
         session.brepSerializationSuspensionForTesting = nil
         XCTAssertFalse(refused.succeeded)
         XCTAssertEqual(refused.error, session.writeBlock?.message)
-        XCTAssertEqual(refused.revision, 0, "a refused save must not adopt a commit identity")
+        XCTAssertEqual(refused.revision, revision,
+                       "a refused save reports the last committed identity without advancing it")
         XCTAssertEqual(f.document.revision, revision, "a refused save must not advance the store revision")
         XCTAssertEqual(try CADAssociativeFormatFixture.bytes(f.document.url), bytes,
                        "a refused save must leave every stored byte unchanged")
