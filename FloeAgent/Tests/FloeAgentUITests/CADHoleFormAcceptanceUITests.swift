@@ -166,11 +166,10 @@ private enum CADHoleFormUI {
                       "the real numeric field \(identifier) must exist: \(app.debugDescription)",
                       file: file, line: line)
         let seed = field.value as? String ?? ""
-        // ExpressionValueField uses the same real keypad as History unless
-        // the person selected the system keyboard. A readout deliberately
-        // has no keyboard focus, so sending typeText to it skips the actual
-        // product input path (the original actual86 failure).
-        field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        // A native Form exposes the whole LabeledContent row as this text
+        // field, although the editable rounded box is at its trailing edge.
+        // Tap inside that visible box, not the row's label/empty centre.
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
         let pad = any(app, "NumericKeypad")
         if pad.waitForExistence(timeout: 3) {
             let delete = app.buttons["KeypadDelete"]
