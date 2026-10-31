@@ -335,6 +335,13 @@ private struct HistoryRowView: View {
                             Text(scalar.unit)
                                 .font(.caption2)
                                 .foregroundStyle(.barLabel)
+                                // The unit is part of the parameter's meaning
+                                // (not decoration): expose it so the native UI
+                                // can verify degrees survive save/reopen instead
+                                // of inferring it from a merged row label.
+                                .accessibilityIdentifier(
+                                    primary ? "HistoryDistanceUnit-\(row.name)"
+                                            : "HistoryScalarUnit-\(scalar.key.rawValue)-\(row.name)")
                             Button { commitScalar(scalar.key) } label: {
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 14))

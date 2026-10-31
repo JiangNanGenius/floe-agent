@@ -421,6 +421,18 @@ struct FloeCADEditorView: View {
                 .padding(.vertical, 4)
                 .background(Color.orange, in: Capsule())
                 .accessibilityIdentifier("SketchUnsupportedChip")
+        } else if let status, status.dof > 0 {
+            // The remaining structural DOF is part of the sketch's definition
+            // state, not an error: show it plainly (native "2 DOF remaining")
+            // instead of saying nothing until the sketch happens to be rigid.
+            Text(FloeCADStrings.format("cad.status.dofRemaining", "%d DOF remaining", status.dof))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Color.blue, in: Capsule())
+                .accessibilityIdentifier("SketchDOFChip")
+                .accessibilityValue(String(status.dof))
         } else if let status, status.fullyDefined {
             Text(FloeCADStrings.text("cad.status.fullyDefined", "Fully defined"))
                 .font(.caption.weight(.semibold))

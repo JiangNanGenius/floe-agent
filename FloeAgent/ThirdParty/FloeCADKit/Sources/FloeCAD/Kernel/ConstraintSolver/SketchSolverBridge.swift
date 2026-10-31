@@ -453,6 +453,14 @@ nonisolated enum SketchSolverBridge {
         /// Saved constraints/dimensions that lowered to NO executable row and
         /// are not Locks. Unsupported is neither satisfied nor conflicting.
         var unsupportedRelationIDs: Set<UUID> = []
+        /// Stage-2 attribution for this report's conflict: the actual saved
+        /// constraints/dimensions (and connected-arc coherence entities) whose
+        /// individual rows exceeded admission. Empty when the report is not
+        /// conflicting. Computed from THIS report's own solve with the same
+        /// per-row backward/absolute admission as `conflictAttribution`, so the
+        /// status chip and the red overlays cannot disagree about WHICH saved
+        /// relation failed. A zero-DOF rank result is never conflated with it.
+        var conflictAttribution = ConflictAttribution()
         /// The single status-chip/query predicate. Zero DOF is only a rank
         /// statement; conflicts, failed solves and dropped relations remain
         /// visible instead of being hidden by "fully defined".
@@ -502,10 +510,27 @@ nonisolated enum SketchSolverBridge {
         }
         let conflicting = admissionNorm(structuralNorms(sys.structural, at: solved))
             > overConstraintTolerance
+        var attribution = ConflictAttribution()
+        if conflicting {
+            // The SAME per-row admission the write-back/query gate uses: an
+            // exactly satisfied row is never blamed merely because another row
+            // in the same sketch is. Coherence rows are attributed to the real
+            // connected-arc entity that owns them, never to a phantom relation.
+            for (index, row) in sys.structural.enumerated() {
+                guard admissionNorm(structuralNorms([row], at: solved))
+                        > overConstraintTolerance else { continue }
+                switch sys.structuralSources[index] {
+                case .constraint(let id): attribution.constraintIDs.insert(id)
+                case .dimension(let id): attribution.dimensionIDs.insert(id)
+                case .coherence(let id): attribution.entityIDs.insert(id)
+                }
+            }
+        }
         return DefinitionReport(states: states, dof: analysis.dof,
                                 rectangleEdges: edges, conflicting: conflicting,
                                 converged: solve.converged,
-                                unsupportedRelationIDs: sys.unsupportedRelationIDs)
+                                unsupportedRelationIDs: sys.unsupportedRelationIDs,
+                                conflictAttribution: attribution)
     }
 
     // MARK: - System model

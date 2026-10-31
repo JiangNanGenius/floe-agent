@@ -11935,6 +11935,19 @@ final class EditorViewModel {
     ) {
         definitionInFlight = nil
         definitionMemo = (sketch, report)
+        // Publish the conflict attribution only for the EXACT sketch value
+        // being edited. A held id is not a snapshot: the same row can gain or
+        // lose constraints, dimensions and geometry while a detached solve of
+        // that row is still running, so an older report's ids name old
+        // relations and must not paint unrelated current targets. The active
+        // drag episode also owns the blame while `sketchSolveConflict` is set:
+        // its attribution came from the baseline the user is actually
+        // dragging, so a report computed before/around that gesture cannot
+        // overwrite it — in either the set or the clear branch.
+        if !sketchSolveConflict, let current = activeSketch, current == sketch {
+            sketchConflictAttribution = report.conflicting
+                ? report.conflictAttribution : .init()
+        }
         sketchDefinitionEpoch += 1
         if let next = definitionPending {
             definitionPending = nil

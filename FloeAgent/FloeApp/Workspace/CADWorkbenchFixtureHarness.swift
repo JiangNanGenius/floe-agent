@@ -135,6 +135,96 @@ enum CADQualificationFixture {
         }
     }
 
+    /// M02 native UI fixture: a real closed arc+spline section (welded and
+    /// G1-tangent at both junctions) with one driving radius, a locked arc
+    /// centre and one real Extrude consuming it. This is a saved package built
+    /// through `CADDebugFixtures`, not a UI-only mock; the workbench, solver
+    /// and dependent feature rebuild are the production ones.
+    @MainActor
+    static func openSplineLoop() async throws -> FloeCADDocument {
+        try await openSeededFixture(fileName: "sketch-loop.floecad",
+                                    name: "Spline loop",
+                                    scenario: .closedArcSplineLoop)
+    }
+
+    /// M06 native UI fixture: the same section with two contradictory radius
+    /// dimensions plus one unrelated satisfied line dimension. The conflict is
+    /// a real saved model state; its attribution/highlight is production.
+    @MainActor
+    static func openSplineConflict() async throws -> FloeCADDocument {
+        try await openSeededFixture(fileName: "sketch-conflict.floecad",
+                                    name: "Spline conflict",
+                                    scenario: .conflictingArcSplineLoop)
+    }
+
+    /// M19 native UI fixture: a mesh-only holed loft with a real 30°
+    /// `.rotateFace` feature. `reset` re-seeds the deterministic package; the
+    /// second launch opens the first launch's saved 45° package unchanged.
+    @MainActor
+    static func openFaceRotation(reset: Bool) async throws -> FloeCADDocument {
+        let url = try fixtureURL("face-rotation.floecad")
+        if reset {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+        } else if FileManager.default.fileExists(atPath: url.path) {
+            return try await FloeCADDocument.open(at: url)
+        }
+        guard reset else {
+            throw CADDocumentError(
+                code: "fixture_missing",
+                message: "The saved face-rotation fixture is missing; the first launch must reseed it.")
+        }
+        let document = try await FloeCADDocument.create(at: url, name: "Face rotation")
+        do {
+            try CADDebugFixtures.seed(.meshFaceRotation, in: document)
+            let save = await document.save()
+            guard save.succeeded else {
+                throw CADDocumentError(code: "fixture_save_failed",
+                                       message: save.error ?? "The fixture could not be saved.")
+            }
+            return document
+        } catch {
+            document.close()
+            throw error
+        }
+    }
+
+    @MainActor
+    private static func openSeededFixture(
+        fileName: String, name: String, scenario: CADDebugFixtures.Scenario
+    ) async throws -> FloeCADDocument {
+        let url = try fixtureURL(fileName)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        let document = try await FloeCADDocument.create(at: url, name: name)
+        do {
+            try CADDebugFixtures.seed(scenario, in: document)
+            let save = await document.save()
+            guard save.succeeded else {
+                throw CADDocumentError(code: "fixture_save_failed",
+                                       message: save.error ?? "The fixture could not be saved.")
+            }
+            return document
+        } catch {
+            document.close()
+            throw error
+        }
+    }
+
+    /// Each scenario owns its own fixed synthetic package under the app's
+    /// Application Support; nothing global is reset or shared.
+    @MainActor
+    private static func fixtureURL(_ fileName: String) throws -> URL {
+        let directory = try FileManager.default.url(for: .applicationSupportDirectory,
+                                                    in: .userDomainMask,
+                                                    appropriateFor: nil, create: true)
+            .appendingPathComponent("FloeAgent/CADFixtures", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent(fileName)
+    }
+
     @discardableResult
     @MainActor
     private static func run(_ document: FloeCADDocument, _ json: String) throws -> [String: Any] {
@@ -215,7 +305,17 @@ struct CADWorkbenchFixtureHarness: View {
         .task {
             guard document == nil, error == nil else { return }
             do {
-                document = try await CADQualificationFixture.openPlateHole()
+                let arguments = ProcessInfo.processInfo.arguments
+                if arguments.contains("--ui-test-cad-sketch-loop") {
+                    document = try await CADQualificationFixture.openSplineLoop()
+                } else if arguments.contains("--ui-test-cad-sketch-conflict") {
+                    document = try await CADQualificationFixture.openSplineConflict()
+                } else if arguments.contains("--ui-test-cad-face-rotation") {
+                    document = try await CADQualificationFixture.openFaceRotation(
+                        reset: arguments.contains("--ui-test-cad-face-rotation-reset"))
+                } else {
+                    document = try await CADQualificationFixture.openPlateHole()
+                }
             } catch {
                 self.error = error.localizedDescription
             }

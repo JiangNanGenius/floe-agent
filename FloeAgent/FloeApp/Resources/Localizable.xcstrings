@@ -122094,6 +122094,23 @@
           }
         }
       }
+    },
+    "cad.status.dofRemaining": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d DOF remaining"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "剩余 %d 自由度"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
