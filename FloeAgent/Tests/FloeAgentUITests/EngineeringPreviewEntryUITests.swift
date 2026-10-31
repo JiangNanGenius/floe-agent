@@ -93,6 +93,17 @@ final class EngineeringPreviewEntryUITests: XCTestCase {
 
     func test04WorkspaceTreeUsesSharedEngineeringPreview() throws {
         let app = launch("workspace")
+        // The real inspector restores its last selected file. Actual92's
+        // hierarchy showed that valid preview, so return through its normal
+        // Back action before exercising the file-tree entry again.
+        let restored = app.descendants(matching: .any)["file.preview.engineering"].firstMatch
+        if restored.waitForExistence(timeout: 2) {
+            let back = app.buttons.matching(NSPredicate(format: "label == %@", "Back")).firstMatch
+            XCTAssertTrue(back.waitForExistence(timeout: 10))
+            back.tap()
+            XCTAssertFalse(restored.waitForExistence(timeout: 8),
+                           "Back must clear the restored inspector selection")
+        }
         let row = app.buttons["fileTree.row.EngineeringEntryPlate.glb"].firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 90),
                       "the workspace file tree must list the fixture model")
