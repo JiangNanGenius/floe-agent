@@ -462,6 +462,15 @@ final class DocumentSession {
         }
     }
 
+    /// A refreshed projection changes only derived source fingerprints. It
+    /// must be saved, but cannot consume the user's next undo or erase redo.
+    /// Semantic drawing edits still use SetDrawingsDataCommand.
+    func refreshDrawingProjectionData(_ data: Data) {
+        guard requireWritable(), document.drawingsData != data else { return }
+        document.drawingsData = data
+        didChange()
+    }
+
     // MARK: - Feature graph (Phase D, Task C1)
 
     /// Record a new feature node in the history as its own undoable step.

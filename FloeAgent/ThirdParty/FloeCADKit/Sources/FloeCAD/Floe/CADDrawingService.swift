@@ -490,7 +490,7 @@ public final class CADDrawingService {
                 page.modelRevision = revision
                 updated.pages[index] = page
                 if !document.isReadOnly, !document.session.isSketchPreviewActive {
-                    if let failure = persist(updated) { return failure }
+                    if let failure = persist(updated, projectionCacheOnly: true) { return failure }
                     mutated = true
                 }
             }
@@ -5318,7 +5318,7 @@ public final class CADDrawingService {
     /// drawing edit shares the undo stack and can be composed atomically with
     /// geometry commands (and `save()` mirrors it into the package). A set
     /// written by a NEWER schema is refused rather than downgraded.
-    private func persist(_ set: CADDrawingSet) -> [String: Any]? {
+    private func persist(_ set: CADDrawingSet, projectionCacheOnly: Bool = false) -> [String: Any]? {
         guard set.schemaVersion <= CADDrawingSet.currentSchemaVersion else {
             return fail("unsupported_version",
                         "The drawing set uses schema v\(set.schemaVersion), newer than this build "
@@ -5332,8 +5332,12 @@ public final class CADDrawingService {
         updated.schemaVersion = CADDrawingSet.currentSchemaVersion
         do {
             let data = try updated.encoded()
-            document.session.perform(SetDrawingsDataCommand(
-                before: document.session.document.drawingsData, after: data))
+            if projectionCacheOnly {
+                document.session.refreshDrawingProjectionData(data)
+            } else {
+                document.session.perform(SetDrawingsDataCommand(
+                    before: document.session.document.drawingsData, after: data))
+            }
             return nil
         } catch {
             return fail("encode_failed",

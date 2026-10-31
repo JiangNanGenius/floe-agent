@@ -422,7 +422,10 @@ final class CADDrawingMultiViewAssociativityTests: XCTestCase {
             "radius": 4.0,
         ])
         XCTAssertEqual(radiusEdit["ok"] as? Bool, true, "\(radiusEdit)")
+        let undoCountBeforeProjection = document.session.undoStack.undoCommands.count
         var geometry = service.handle(action: "project", args: ["pageID": pageID])
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoCountBeforeProjection,
+                       "refreshing derived projection data must not consume undo")
         var row = try XCTUnwrap(dimensionRow(geometry, id: dimensionID))
         XCTAssertEqual(row["value"] as? Double ?? 0, 8, accuracy: 1e-6,
                        "the SAME dimension id must display Ø8: \(row)")
@@ -565,7 +568,7 @@ final class CADDrawingMultiViewAssociativityTests: XCTestCase {
         // Deleting the measured hole while the groove remains must keep the
         // dimension dangling (provenance gate), never rematch the groove.
         let deleted = parameters.handle(action: "feature.delete", args: [
-            "feature_id": fixture.holeFeature,
+            "feature_id": fixture.holeFeature, "force": true,
         ])
         XCTAssertEqual(deleted["ok"] as? Bool, true, "\(deleted)")
         geometry = service.handle(action: "project", args: ["pageID": pageID])
@@ -678,7 +681,7 @@ final class CADDrawingMultiViewAssociativityTests: XCTestCase {
         // the provenance gate dangles first; the surviving cylinder is never
         // adopted.
         let deleted = parameters.handle(action: "feature.delete", args: [
-            "feature_id": fixture.holeFeature,
+            "feature_id": fixture.holeFeature, "force": true,
         ])
         XCTAssertEqual(deleted["ok"] as? Bool, true, "\(deleted)")
         geometry = service.handle(action: "project", args: ["pageID": pageID])
@@ -727,13 +730,16 @@ final class CADDrawingMultiViewAssociativityTests: XCTestCase {
     func testAmbiguousHoleAuthorshipIsReportedNotGuessed() async throws {
         let document = try await makeDocument("E15-ambiguity")
         let fixture = try makePlateWithHole(document)
-        // Second same-radius hole only 3.5 mm away (inside the 0.75·r radial
-        // capture band), authored by its own feature/sketch/entity.
+        // At d=0.5 and r=5, each exposed cylindrical arc has radial centroid
+        // 2*r*sqrt(1-(d/(2*r))^2)/(pi+2*asin(d/(2*r))) = 3.081 mm.
+        // Both centres are then inside the 3.75 mm capture band. A 3.5 mm
+        // separation is NOT ambiguous: its opposite-centre distance is
+        // 3.5+2.429=5.929 mm, as the first actual kernel run demonstrated.
         let holeB = try addSketch(
             document, name: "HoleB",
-            entities: #"[{"kind":"circle","center":[50,33.5],"radius":5}]"#)
+            entities: #"[{"kind":"circle","center":[50,30.5],"radius":5}]"#)
         _ = try run(document, """
-        {"op":"feature.extrude","args":{"sketchID":"\(holeB.sketchID)","seedPoint":[50,33.5],
+        {"op":"feature.extrude","args":{"sketchID":"\(holeB.sketchID)","seedPoint":[50,30.5],
          "distance":40,"symmetric":true,"boolean":"subtract","booleanTargets":["\(fixture.bodyID)"]}}
         """)
         let holeBFeature = try featureID(document, sketchID: holeB.sketchID)
@@ -815,8 +821,10 @@ final class CADDrawingMultiViewAssociativityTests: XCTestCase {
         XCTAssertEqual(storedFeature["featureID"] as? String, fixture.holeFeature,
                        "the explicit re-selection must store the named author")
 
-        // Editing the named earlier hole's circle remeasures the dimension:
-        // the identity is genuinely bound, not a geometric coincidence.
+        // Shrinking A to r=4 makes it wholly contained in B (4+0.5<5).
+        // A's cylindrical face is therefore gone. The named dimension must
+        // dangle rather than adopt B's surviving Ø10 cylinder. The separate
+        // non-overlapping-hole tests prove the live Ø10->Ø8 remeasurement.
         let parameters = CADParameterService(document: document)
         let radiusEdit = parameters.handle(action: "updateSketchEntity", args: [
             "sketch_id": fixture.holeSketch,
@@ -826,9 +834,8 @@ final class CADDrawingMultiViewAssociativityTests: XCTestCase {
         XCTAssertEqual(radiusEdit["ok"] as? Bool, true, "\(radiusEdit)")
         let geometry = service.handle(action: "project", args: ["pageID": pageID])
         let row = try XCTUnwrap(dimensionRow(geometry, id: dimensionID))
-        XCTAssertEqual(row["value"] as? Double ?? 0, 8, accuracy: 1e-6,
-                       "the re-selected earlier hole must remeasure to Ø8: \(row)")
-        XCTAssertEqual(row["dangling"] as? Bool, false)
+        XCTAssertEqual(row["dangling"] as? Bool, true)
+        XCTAssertTrue(row["value"] is NSNull, "do not adopt B's cylinder: \(row)")
         document.close()
     }
 
