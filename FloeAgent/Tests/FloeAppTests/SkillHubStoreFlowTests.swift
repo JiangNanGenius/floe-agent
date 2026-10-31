@@ -859,7 +859,7 @@ struct SkillHubCuratedSnapshotCacheTests {
         #expect(restoredOld.layout == .legacy)
         #expect(restoredOld.source.path == "catalog.json")
         #expect(restoredOld.verifiedFeed.catalogSHA256.count == 64)
-        #expect(restoredOld.verifiedFeed.catalogSHA256.allSatisfy(\.isHexDigit))
+        #expect(restoredOld.verifiedFeed.catalogSHA256.allSatisfy { $0.isHexDigit })
 
         // A full snapshot records its layout and revalidates through the
         // fixed full source paths. If the restore path used the legacy
