@@ -142,6 +142,15 @@ public nonisolated struct CADAnimationExportOptions: Sendable, Equatable, Codabl
         case orientation, resolution, frameRate, codec, quality
     }
 
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(orientation.rawValue, forKey: .orientation)
+        try container.encode(resolution.rawValue, forKey: .resolution)
+        try container.encode(frameRate.rawValue, forKey: .frameRate)
+        try container.encode(codec.rawValue, forKey: .codec)
+        try container.encode(quality.rawValue, forKey: .quality)
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         orientation = CADAnimationExportOrientation(
