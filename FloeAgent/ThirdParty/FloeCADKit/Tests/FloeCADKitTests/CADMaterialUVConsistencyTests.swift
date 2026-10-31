@@ -413,7 +413,6 @@ final class CADMaterialGLBOrientationTests: XCTestCase {
 
         // The exported image bufferViews still contain the exact authored
         // bytes; orientation is metadata/UV sampling, not a re-encode.
-        let binary = try glbBinary(glb)
         let views = try XCTUnwrap(json["bufferViews"] as? [[String: Any]])
         let images = try XCTUnwrap(json["images"] as? [[String: Any]])
         var imageBytes = Set<Data>()

@@ -12,6 +12,7 @@ import XCTest
 import simd
 @testable import FloeCAD
 
+@MainActor
 final class CADAssemblyConstraintEditingTests: XCTestCase {
 
     private var workDir: URL!
@@ -146,6 +147,40 @@ final class CADAssemblyConstraintEditingTests: XCTestCase {
     }
 
     // MARK: - E05: edit an existing distance
+
+    func testBooleanArgumentsCannotBecomeDimensionsOrReferenceCoordinates() async throws {
+        let bodyA = try makeBox(min: [0, 0], max: [10, 10], height: 10)
+        let bodyB = try makeBox(min: [20, 20], max: [30, 30], height: 10)
+        let service = service()
+        let a = try addInstance(service, bodyID: bodyA, name: "A")
+        let b = try addInstance(service, bodyID: bodyB, name: "B", position: [10, 0, 0])
+        let added = service.handle(action: "addConstraint", args: [
+            "kind": "distance", "instanceA": a, "instanceB": b, "value": 10.0,
+        ])
+        XCTAssertEqual(added["ok"] as? Bool, true)
+        let id = try XCTUnwrap(added["id"] as? String)
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let packageJSON = workDir.appendingPathComponent("editing.floecad/document.json")
+        let stored = try Data(contentsOf: packageJSON)
+        let before = document.session.document.assemblyData
+        let changeCount = document.session.changeCount
+        let malformed = [
+            (#"{"value":true}"#, "bad_value"),
+            (#"{"expectedValue":true,"value":15}"#, "bad_expected_value"),
+            (#"{"pointA":[true,0,0]}"#, "bad_vector"),
+        ]
+        for (json, code) in malformed {
+            var args = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+            args["id"] = id
+            let reply = service.handle(action: "updateConstraint", args: args)
+            XCTAssertEqual(reply["ok"] as? Bool, false, "\(reply)")
+            XCTAssertEqual(reply["error"] as? String, code, "\(reply)")
+            XCTAssertEqual(document.session.document.assemblyData, before)
+            XCTAssertEqual(document.session.changeCount, changeCount)
+            XCTAssertEqual(try Data(contentsOf: packageJSON), stored)
+        }
+    }
 
     func testEditExistingDistancePreservesIDReferencesUndoRedoAndReopen() async throws {
         let bodyA = try makeBox(min: [0, 0], max: [10, 10], height: 10)

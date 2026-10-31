@@ -4014,6 +4014,7 @@ public final class CADAssemblyService {
     }
 
     private func doubleValue(_ raw: Any?) -> Double? {
+        if let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() { return nil }
         if let value = raw as? Double { return value }
         if let value = raw as? Int { return Double(value) }
         if let value = raw as? Float { return Double(value) }
