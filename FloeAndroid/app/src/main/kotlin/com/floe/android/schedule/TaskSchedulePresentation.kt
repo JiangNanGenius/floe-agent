@@ -135,6 +135,8 @@ internal object TaskScheduleAdmissionPolicy {
 internal class TaskScheduleAdmissionGuard {
     private val acceptedAtomic = java.util.concurrent.atomic.AtomicBoolean(false)
     private val stoppedAtomic = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val stopCancellationClaimed =
+        java.util.concurrent.atomic.AtomicBoolean(false)
     private val terminal = TaskScheduleTerminalSink<TaskScheduleDispatch>()
 
     /** Completes with the REAL terminal exactly once (also when the worker
@@ -152,6 +154,18 @@ internal class TaskScheduleAdmissionGuard {
     }
 
     fun stopRequested(): Boolean = stoppedAtomic.get()
+
+    /**
+     * Claim the ONE canonical cancel for an actually admitted run. A Stop can
+     * arrive while the receipt is unknown and the same attempt can then be
+     * resolved from both the live worker path and the late-terminal path;
+     * only the winner reaches `run.cancel` (exactly once), the other is a
+     * no-op. Returns false when no Stop is pending or a cancel was claimed.
+     */
+    fun claimStopCancellation(): Boolean {
+        if (!stoppedAtomic.get()) return false
+        return stopCancellationClaimed.compareAndSet(false, true)
+    }
 
     fun wasSubmitted(): Boolean = acceptedAtomic.get()
 
@@ -176,6 +190,93 @@ internal class TaskScheduleAdmissionGuard {
             TaskScheduleAdmissionDecision.RELEASE
         } else {
             decision
+        }
+    }
+}
+
+/** What the late-terminal resolver actually did. Testable evidence, not a
+ *  second authority: every side effect still goes through the callbacks. */
+internal enum class TaskScheduleLateAdmissionOutcome {
+    /** The accepted Root generation changed before/at resolution; no old run
+     *  or provisional lease may be re-acquired into the new generation. */
+    FENCED,
+    ADMITTED,
+    ADMITTED_AND_CANCELLED,
+    ADOPTION_FAILED,
+    RELEASED,
+    UNKNOWN_RETAINED,
+}
+
+/**
+ * Resolves ONE submitted-but-unobserved dispatch from its REAL host terminal.
+ *
+ * The caller timeout/cancellation only closed the observation window; it is
+ * not a terminal. This resolver is owned by the Application coordinator
+ * scope, is fenced by the EXACT accepted Root epoch captured at dispatch, and
+ * carries the real attempt [TaskScheduleAdmissionGuard] so a Stop that
+ * arrived while the receipt was unknown still reaches the canonical
+ * `run.cancel` path exactly once after the late ADMIT is adopted.
+ */
+internal class TaskScheduleLateAdmissionResolver(
+    private val guard: TaskScheduleAdmissionGuard,
+    private val dispatchedEpoch: Long,
+    private val liveEpoch: () -> Long?,
+    private val admit: suspend (conversationID: String, runID: String) -> Boolean,
+    private val release: () -> Unit,
+    private val cancelAdmittedRun: (conversationID: String, runID: String) -> Unit,
+    private val notice: (String?) -> Unit,
+) {
+    private fun fenced(): Boolean = liveEpoch() != dispatchedEpoch
+
+    /** Waits for the host's real terminal; never times out and never treats
+     *  an observation gap as a terminal. */
+    suspend fun awaitAndResolve(): TaskScheduleLateAdmissionOutcome =
+        resolve(guard.settled.await())
+
+    suspend fun resolve(
+        terminal: TaskScheduleResult<TaskScheduleDispatch>,
+    ): TaskScheduleLateAdmissionOutcome {
+        if (fenced()) return TaskScheduleLateAdmissionOutcome.FENCED
+        return when (TaskScheduleAdmissionPolicy.decision(terminal)) {
+            TaskScheduleAdmissionDecision.ADMIT -> {
+                val dispatch = (terminal as? TaskScheduleResult.Ok<TaskScheduleDispatch>)?.value
+                val conversationID = dispatch?.conversationID
+                val runID = dispatch?.runID
+                if (conversationID == null || runID == null) {
+                    // A "launched" terminal without both real identities is
+                    // unknown, not a rejection: retain coverage honestly.
+                    notice("foreground_unavailable")
+                    TaskScheduleLateAdmissionOutcome.UNKNOWN_RETAINED
+                } else if (!admit(conversationID, runID)) {
+                    // The authoritative lease could not be attached; keep
+                    // provisional coverage and report honestly.
+                    notice("foreground_unavailable")
+                    TaskScheduleLateAdmissionOutcome.ADOPTION_FAILED
+                } else if (fenced()) {
+                    // The generation retired during adoption. Do not cancel
+                    // or re-acquire the old run into the new generation; the
+                    // Root retirement owns the provisional lease.
+                    TaskScheduleLateAdmissionOutcome.FENCED
+                } else {
+                    notice(null)
+                    if (guard.claimStopCancellation()) {
+                        cancelAdmittedRun(conversationID, runID)
+                        TaskScheduleLateAdmissionOutcome.ADMITTED_AND_CANCELLED
+                    } else {
+                        TaskScheduleLateAdmissionOutcome.ADMITTED
+                    }
+                }
+            }
+            TaskScheduleAdmissionDecision.RELEASE -> {
+                // A real host terminal proved no launch. Safe to release.
+                release()
+                TaskScheduleLateAdmissionOutcome.RELEASED
+            }
+            TaskScheduleAdmissionDecision.RECONCILE -> {
+                // Unknown/malformed terminal: never release on a guess.
+                notice("foreground_unavailable")
+                TaskScheduleLateAdmissionOutcome.UNKNOWN_RETAINED
+            }
         }
     }
 }

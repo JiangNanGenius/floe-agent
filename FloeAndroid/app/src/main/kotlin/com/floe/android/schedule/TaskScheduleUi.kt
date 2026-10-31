@@ -463,14 +463,17 @@ private fun ScheduledTaskRow(
                 )
                 FloeChipMenu(expanded = menu, onDismiss = { menu = false }) {
                     CupertinoMenuEntry(
+                        selected = false,
                         title = stringResource(R.string.schedule_action_run_now),
                         onClick = { menu = false; onRunNow() },
                     )
                     CupertinoMenuEntry(
+                        selected = false,
                         title = stringResource(R.string.schedule_action_history),
                         onClick = { menu = false; onHistory() },
                     )
                     CupertinoMenuEntry(
+                        selected = false,
                         title = stringResource(
                             if (summary.enabled) R.string.schedule_action_pause
                             else R.string.schedule_action_resume),
@@ -478,17 +481,20 @@ private fun ScheduledTaskRow(
                     )
                     if (status == TaskSchedulePresentationStatus.WAITING_PERMISSION) {
                         CupertinoMenuEntry(
+                            selected = false,
                             title = stringResource(R.string.schedule_action_use_flexible),
                             onClick = { menu = false; onUseFlexible() },
                         )
                     }
                     if (flexibleChosen) {
                         CupertinoMenuEntry(
+                            selected = false,
                             title = stringResource(R.string.schedule_action_use_exact),
                             onClick = { menu = false; onUseExact() },
                         )
                     }
                     CupertinoMenuEntry(
+                        selected = false,
                         title = stringResource(R.string.schedule_delete_action),
                         onClick = { menu = false; onDelete() },
                     )

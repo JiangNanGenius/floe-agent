@@ -21,6 +21,30 @@ public protocol TaskScheduleStore: Sendable {
 
     func schedule(id: UUID) async throws -> TaskScheduleRecord?
     func setEnabled(id: UUID, enabled: Bool, at date: Date) async throws
+
+    // MARK: Atomic revision CAS (G07.3B)
+
+    /// Applies a full schedule update ONLY when the row currently stored has
+    /// exactly [expectedRevision]. The comparison, write and the preservation
+    /// of the CURRENT `lastStartedAt` all happen inside ONE DatabaseManager
+    /// writer transaction, so a launch that started while the caller was
+    /// validating can never be lost and two same-base updates cannot both
+    /// succeed. Returns the written record, or nil on a revision mismatch or
+    /// when the row no longer exists.
+    func saveIfUnchanged(_ schedule: TaskScheduleRecord,
+                         expectedRevision: String) async throws -> TaskScheduleRecord?
+
+    /// Enables/disables ONLY when the current row has exactly
+    /// [expectedRevision], inside the same writer transaction. Returns the
+    /// written record, or nil on a revision mismatch/missing row.
+    func setEnabledIfUnchanged(id: UUID, enabled: Bool,
+                               expectedRevision: String,
+                               at date: Date) async throws -> TaskScheduleRecord?
+
+    /// Deletes ONLY when the current row has exactly [expectedRevision],
+    /// inside the same writer transaction. Returns false on a revision
+    /// mismatch or when the row is already gone.
+    func deleteIfUnchanged(id: UUID, expectedRevision: String) async throws -> Bool
     /// Creates (or returns) a pending one-off occurrence for an explicit
     /// user/agent "run now" action. Every explicit invocation gets its own
     /// logical instance (never coalesced with the calendar cadence).
@@ -67,6 +91,29 @@ public protocol TaskScheduleStore: Sendable {
     func recordRunCompletion(
         runID: UUID, succeeded: Bool, cancelled: Bool, summary: String?, at date: Date
     ) async throws -> [UUID]
+}
+
+public extension TaskScheduleStore {
+    /// Old/fixture conformers must fail closed rather than fake a
+    /// check-then-write or a serialized-actor CAS. The real SQLite store
+    /// overrides all three requirements.
+    func saveIfUnchanged(_ schedule: TaskScheduleRecord,
+                         expectedRevision: String) async throws -> TaskScheduleRecord? {
+        throw FloeError.internalError(
+            "TaskScheduleStore does not support atomic schedule revision CAS")
+    }
+
+    func setEnabledIfUnchanged(id: UUID, enabled: Bool,
+                               expectedRevision: String,
+                               at date: Date) async throws -> TaskScheduleRecord? {
+        throw FloeError.internalError(
+            "TaskScheduleStore does not support atomic schedule revision CAS")
+    }
+
+    func deleteIfUnchanged(id: UUID, expectedRevision: String) async throws -> Bool {
+        throw FloeError.internalError(
+            "TaskScheduleStore does not support atomic schedule revision CAS")
+    }
 }
 
 public actor SQLiteTaskScheduleStore: TaskScheduleStore {
@@ -144,39 +191,110 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
         }
     }
 
-    public func setEnabled(id: UUID, enabled: Bool, at date: Date) async throws {
+    public func saveIfUnchanged(_ schedule: TaskScheduleRecord,
+                                expectedRevision: String) async throws
+        -> TaskScheduleRecord? {
         try await database.writer { db in
             guard let row = try Row.fetchOne(
                 db, sql: "SELECT * FROM task_schedules WHERE id = ?",
-                arguments: [id.uuidString]
-            ) else { throw FloeError.notFound("task schedule \(id.uuidString)") }
-            var record = try Self.decode(row)
-            record.isEnabled = enabled
-            record.updatedAt = date
-            if enabled {
-                // Re-arm from the next real fire time at or after now.
-                record.nextExpectedAt = Self.nextExpected(after: date, record: record)
-                    ?? record.scheduledAt
-            } else {
-                record.nextExpectedAt = nil
+                arguments: [schedule.id.uuidString]
+            ) else { return nil }
+            let current = try Self.decode(row)
+            guard TaskScheduleRevisionDigest.digest(current) == expectedRevision else {
+                return nil
             }
+            var record = schedule
+            // The caller read the row before its (awaited) validation. A
+            // launch may have marked `lastStartedAt` meanwhile; the atomic
+            // update must preserve that truth instead of writing the stale
+            // value from the editor snapshot.
+            record.createdAt = current.createdAt
+            record.lastStartedAt = current.lastStartedAt
             try Self.writeRecord(db, record)
-            // A disabled schedule's future occurrences are void; pending
-            // instances are cancelled so a re-enable cannot launch stale
-            // intent. History rows stay.
-            if !enabled {
-                try db.execute(sql: """
-                    UPDATE task_schedule_occurrences
-                    SET state = 'cancelled', finished_at = ?, updated_at = ?,
-                        error_text = 'Schedule was disabled before this occurrence ran'
-                    WHERE schedule_id = ? AND state IN ('pending', 'claimed')
-                    """, arguments: [
-                        PersistenceCodec.encode(date),
-                        PersistenceCodec.encode(date),
-                        id.uuidString
-                    ])
+            // Return the CANONICAL persisted row, not the caller's Date
+            // precision. `PersistenceCodec` writes ISO-8601 fractional
+            // seconds, so an unrounded `dependencies.now()` would make this
+            // revision differ from a subsequent `detail()` read and could not
+            // be reused as the next CAS base.
+            guard let written = try Row.fetchOne(
+                db, sql: "SELECT * FROM task_schedules WHERE id = ?",
+                arguments: [record.id.uuidString]
+            ) else {
+                throw FloeError.storageCorrupted("Task schedule disappeared after update")
             }
+            return try Self.decode(written)
         }
+    }
+
+    public func setEnabled(id: UUID, enabled: Bool, at date: Date) async throws {
+        try await database.writer { db in
+            _ = try Self.applyEnabled(db, id: id, enabled: enabled, date: date,
+                                      expectedRevision: nil)
+        }
+    }
+
+    public func setEnabledIfUnchanged(id: UUID, enabled: Bool,
+                                      expectedRevision: String,
+                                      at date: Date) async throws
+        -> TaskScheduleRecord? {
+        try await database.writer { db in
+            try Self.applyEnabled(db, id: id, enabled: enabled, date: date,
+                                  expectedRevision: expectedRevision)
+        }
+    }
+
+    /// ONE writer transaction for the historical unconditional enable/disable
+    /// and the new revision CAS. Returns the written record, or nil when a
+    /// non-nil [expectedRevision] no longer matches (or the row is gone).
+    private static func applyEnabled(_ db: Database, id: UUID, enabled: Bool,
+                                     date: Date,
+                                     expectedRevision: String?) throws
+        -> TaskScheduleRecord? {
+        guard let row = try Row.fetchOne(
+            db, sql: "SELECT * FROM task_schedules WHERE id = ?",
+            arguments: [id.uuidString]
+        ) else {
+            if expectedRevision != nil { return nil }
+            throw FloeError.notFound("task schedule \(id.uuidString)")
+        }
+        var record = try Self.decode(row)
+        if let expectedRevision,
+           TaskScheduleRevisionDigest.digest(record) != expectedRevision {
+            return nil
+        }
+        record.isEnabled = enabled
+        record.updatedAt = date
+        if enabled {
+            // Re-arm from the next real fire time at or after now.
+            record.nextExpectedAt = Self.nextExpected(after: date, record: record)
+                ?? record.scheduledAt
+        } else {
+            record.nextExpectedAt = nil
+        }
+        try Self.writeRecord(db, record)
+        // A disabled schedule's future occurrences are void; pending
+        // instances are cancelled so a re-enable cannot launch stale
+        // intent. History rows stay.
+        if !enabled {
+            try db.execute(sql: """
+                UPDATE task_schedule_occurrences
+                SET state = 'cancelled', finished_at = ?, updated_at = ?,
+                    error_text = 'Schedule was disabled before this occurrence ran'
+                WHERE schedule_id = ? AND state IN ('pending', 'claimed')
+                """, arguments: [
+                    PersistenceCodec.encode(date),
+                    PersistenceCodec.encode(date),
+                    id.uuidString
+                ])
+        }
+        // Canonical persisted precision, same rationale as saveIfUnchanged.
+        guard let written = try Row.fetchOne(
+            db, sql: "SELECT * FROM task_schedules WHERE id = ?",
+            arguments: [record.id.uuidString]
+        ) else {
+            throw FloeError.storageCorrupted("Task schedule disappeared after update")
+        }
+        return try Self.decode(written)
     }
 
     public func runNow(id: UUID, at date: Date) async throws -> TaskScheduleOccurrence? {
@@ -509,6 +627,24 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
         }
     }
 
+    public func deleteIfUnchanged(id: UUID,
+                                  expectedRevision: String) async throws -> Bool {
+        try await database.writer { db in
+            guard let row = try Row.fetchOne(
+                db, sql: "SELECT * FROM task_schedules WHERE id = ?",
+                arguments: [id.uuidString]
+            ) else { return false }
+            let current = try Self.decode(row)
+            guard TaskScheduleRevisionDigest.digest(current) == expectedRevision else {
+                return false
+            }
+            try db.execute(sql: "DELETE FROM task_schedules WHERE id = ?",
+                           arguments: [id.uuidString])
+            // Occurrence history is retained deliberately (same as delete).
+            return true
+        }
+    }
+
     // MARK: - Internals
 
     private static func nextExpected(after date: Date, record: TaskScheduleRecord) -> Date? {
@@ -607,5 +743,21 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
             createdAt: createdAt,
             updatedAt: updatedAt
         )
+    }
+}
+
+/// The canonical schedule revision token used by every atomic mutation.
+///
+/// This lives beside the persisted record so `SQLiteTaskScheduleStore` can
+/// compare INSIDE the same writer transaction; the App-facing
+/// `G073ScheduleRevision` (FloeAndroidCore) delegates here instead of keeping
+/// a second encoding that could drift.
+public enum TaskScheduleRevisionDigest {
+    public static func digest(_ record: TaskScheduleRecord) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        guard let data = try? encoder.encode(record) else { return "" }
+        return FloeDigest.sha256Hex(data)
     }
 }

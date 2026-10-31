@@ -203,6 +203,10 @@ internal class TaskScheduleCommands(private val host: RuntimeHost) {
         exactAlarmAllowed: Boolean,
         flexibleChosen: Boolean,
         environments: List<TaskScheduleEnvironmentChoice>?,
+        /** EXACT accepted generation captured by the dispatch worker. The
+         *  envelope is refused before submission if the generation changed
+         *  between the worker's decision and this queue handoff. */
+        expectedEpoch: Long? = null,
         onAccepted: (() -> Unit)? = null,
         onSettled: ((TaskScheduleResult<TaskScheduleDispatch>) -> Unit)? = null,
     ): TaskScheduleResult<TaskScheduleDispatch> = execute(
@@ -216,6 +220,7 @@ internal class TaskScheduleCommands(private val host: RuntimeHost) {
                 put("environments", environmentsJson(environments))
             }
         },
+        expectedEpoch = expectedEpoch,
         onAccepted = onAccepted,
         onSettled = onSettled,
     ) { value ->
@@ -262,6 +267,7 @@ internal class TaskScheduleCommands(private val host: RuntimeHost) {
         payload: JsonObject,
         revision: HostRevision? = null,
         createIntent: Boolean = false,
+        expectedEpoch: Long? = null,
         onAccepted: (() -> Unit)? = null,
         onSettled: ((TaskScheduleResult<T>) -> Unit)? = null,
         decode: (JsonElement?) -> T?,
@@ -276,6 +282,14 @@ internal class TaskScheduleCommands(private val host: RuntimeHost) {
             // Proven pre-submit refusal: no envelope exists, no terminal is
             // coming.
             val refusal = TaskScheduleResult.Failure("runtime_unavailable")
+            terminal.deliver(refusal)
+            return refusal
+        }
+        if (expectedEpoch != null && host.nativeRootEpoch() != expectedEpoch) {
+            // A new accepted generation replaced the one this decision was
+            // made in. Nothing was submitted; this is a proven pre-submit
+            // refusal (never a dispatch into the new generation).
+            val refusal = TaskScheduleResult.Failure("superseded")
             terminal.deliver(refusal)
             return refusal
         }

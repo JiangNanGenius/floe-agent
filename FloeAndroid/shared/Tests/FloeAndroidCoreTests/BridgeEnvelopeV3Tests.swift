@@ -142,7 +142,8 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
                        ["config.provider.save", "skills.install", "mcp.connect",
                         "run.startTask", "conversation.create", "temp.start",
                         "memory.add", "memory.delete.bulk", "memory.organize.start",
-                        "memory.organize.apply", "personalization.generate"])
+                        "memory.organize.apply", "personalization.generate",
+                        "schedule.create"])
         XCTAssertEqual(rules.filter { $0.isRunEventPoll }.map { $0.command }, ["event.poll"])
         // The declared vocabulary is the closed 20 labels. Active command
         // labels must match the approved matrix; the three reserved labels are

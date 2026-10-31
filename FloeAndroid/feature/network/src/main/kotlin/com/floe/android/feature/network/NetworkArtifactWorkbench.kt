@@ -27,7 +27,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.floe.android.core.networkmonitor.CoverageLimits
@@ -275,6 +277,16 @@ private fun PcapDetail(
     }
     var filterErrors by remember(analysis.item.analysisID) { mutableStateOf(emptySet<String>()) }
     var confirmDelete by remember(analysis.item.analysisID) { mutableStateOf(false) }
+    var copiedForAssistant by remember(
+        analysis.item.analysisID, analysis.item.agentReadable,
+    ) { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+    val assistantReference = NetworkArtifactReference.pcap(analysis.item.analysisID)
+    val copyInstruction = if (assistantReference != null) {
+        stringResource(R.string.network_artifact_copy_pcap_instruction, assistantReference)
+    } else {
+        null
+    }
     val toggle: (String, Set<String>, (Set<String>) -> Unit) -> Unit = { value, values, apply ->
         apply(if (value in values) values - value else values + value)
     }
@@ -321,6 +333,20 @@ private fun PcapDetail(
                 )
                 FloeText(stringResource(R.string.network_artifact_agent_read_note),
                     style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                if (analysis.item.agentReadable && copyInstruction != null) {
+                    FloeCapsuleButton(
+                        stringResource(R.string.network_artifact_copy_for_assistant),
+                        onClick = {
+                            clipboard.setText(AnnotatedString(copyInstruction))
+                            copiedForAssistant = true
+                        },
+                    )
+                    if (copiedForAssistant) {
+                        FloeText(stringResource(R.string.network_artifact_copy_confirmation),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel)
+                    }
+                }
             }
         }
         item {
@@ -646,6 +672,16 @@ private fun CoverageDetail(
     var allowMetered by rememberSaveable(session.item.sessionID) { mutableStateOf(false) }
     var errors by remember(session.item.sessionID) { mutableStateOf(emptySet<String>()) }
     var confirmDelete by remember(session.item.sessionID) { mutableStateOf(false) }
+    var copiedForAssistant by remember(
+        session.item.sessionID, session.item.agentReadable,
+    ) { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+    val assistantReference = NetworkArtifactReference.coverage(session.item.sessionID)
+    val copyInstruction = if (assistantReference != null) {
+        stringResource(R.string.network_artifact_copy_coverage_instruction, assistantReference)
+    } else {
+        null
+    }
     val kinds = CoverageForm.PROBE_KINDS
     val probe = CoverageProbeRequestUi(
         kind = kinds[probeKindIndex.coerceIn(0, kinds.lastIndex)],
@@ -681,6 +717,20 @@ private fun CoverageDetail(
                 )
                 FloeText(stringResource(R.string.network_artifact_agent_read_note),
                     style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                if (session.item.agentReadable && copyInstruction != null) {
+                    FloeCapsuleButton(
+                        stringResource(R.string.network_artifact_copy_for_assistant),
+                        onClick = {
+                            clipboard.setText(AnnotatedString(copyInstruction))
+                            copiedForAssistant = true
+                        },
+                    )
+                    if (copiedForAssistant) {
+                        FloeText(stringResource(R.string.network_artifact_copy_confirmation),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel)
+                    }
+                }
                 state.failure?.let { ArtifactFailureLine(it) }
                 if (state.missingPermissions.isNotEmpty()) {
                     FloeCapsuleButton(

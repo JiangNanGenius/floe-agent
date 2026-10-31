@@ -368,8 +368,14 @@ object ThreadSearchVisible {
                     index += 2
                     continue
                 }
-                val previousIsWord = index > 0 && source[index - 1].isLetterOrDigit()
-                val nextIsWord = index + 1 < source.length && source[index + 1].isLetterOrDigit()
+                // Match the native projection: `_` itself is word content
+                // for delimiter adjacency, so the remaining marker of a
+                // closing `___`/`__` run is still stripped instead of being
+                // emitted as literal text (`alpha_beta_`).
+                val previousIsWord = index > 0 &&
+                    (source[index - 1].isLetterOrDigit() || source[index - 1] == '_')
+                val nextIsWord = index + 1 < source.length &&
+                    (source[index + 1].isLetterOrDigit() || source[index + 1] == '_')
                 if (previousIsWord || nextIsWord) {
                     index += 1
                     continue

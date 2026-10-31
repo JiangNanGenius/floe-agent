@@ -13,6 +13,7 @@
 //   -106 bufferTooSmall; -107 oversized; -108 descriptor invalid;
 //   -110 not claimed; -901 notInstalled; -902 unavailable;
 //   -903 requestRefused; -904 replyInvalid; -999 internal.
+import FloeTools
 import Foundation
 import FloeCore
 import FloeAndroidNetwork
@@ -198,7 +199,8 @@ public final class G073NetworkArtifactHostMailbox: @unchecked Sendable {
             throw G073NetworkArtifactTransportError.oversized
         }
         guard !cancellation.isCancelled else { throw G073NetworkArtifactTransportError.cancelled }
-        return try await withCheckedThrowingContinuation { continuation in
+        return try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Data, G073NetworkArtifactTransportError>) in
             condition.lock()
             guard !closed, epoch != 0 else {
                 counters.unbound += 1

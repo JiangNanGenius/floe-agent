@@ -391,3 +391,22 @@ object NetworkArtifactFormat {
     fun rate(bitsPerSecond: Double?): String =
         bitsPerSecond?.let(NetworkMeasureFormat::bitsPerSecond).orEmpty()
 }
+
+/**
+ * The exact, bounded Agent tool reference copied by the user. It carries only
+ * the existing opaque artifact UUID and the registered tool name — never a
+ * file path, raw capture, credential, endpoint or floorplan. Invalid/malformed
+ * identifiers produce no reference so the UI cannot mint a fake grant.
+ */
+internal object NetworkArtifactReference {
+    fun pcap(analysisID: String): String? = normalizedUUID(analysisID)?.let { id ->
+        """{"tool":"network.pcapAnalyze","arguments":{"analysisID":"$id"}}"""
+    }
+
+    fun coverage(sessionID: String): String? = normalizedUUID(sessionID)?.let { id ->
+        """{"tool":"network.coverageSummary","arguments":{"sessionID":"$id"}}"""
+    }
+
+    private fun normalizedUUID(raw: String): String? =
+        runCatching { java.util.UUID.fromString(raw).toString() }.getOrNull()
+}

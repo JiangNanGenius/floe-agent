@@ -122,29 +122,48 @@ internal class TaskScheduleCoordinator(
     private val rearmMutex = Mutex()
 
     @Volatile private var host: RuntimeHost? = null
+    /** EXACT accepted Root epoch this coordinator's observer/reconcile jobs
+     *  belong to. The same `RuntimeHost` instance survives generations, so
+     *  identity alone is never a generation proof. */
+    @Volatile private var boundEpoch: Long? = null
     @Volatile private var observer: Job? = null
-    /** Application-scoped late-terminal resolvers; cancelled on root stop so
-     *  a retired generation cannot adopt work after shutdown. */
+    /** Application-scoped late-terminal resolvers; cancelled on root stop or
+     *  an accepted generation replacement so a retired generation cannot
+     *  adopt work after shutdown. */
     private val reconciliations =
         java.util.concurrent.CopyOnWriteArrayList<Job>()
 
     fun bind(host: RuntimeHost) {
-        if (this.host === host && observer?.isActive == true) return
+        // A real bind only follows an accepted Root (`OwnedStoreReady`).
+        // Without a positive epoch there is nothing this generation can own;
+        // the next ready event binds again.
+        val epoch = host.nativeRootEpoch()?.takeIf { it > 0 } ?: return
+        if (this.host === host && observer?.isActive == true && boundEpoch == epoch) {
+            return
+        }
+        // Same instance, new accepted epoch: retire every old observer and
+        // late resolver BEFORE the new generation is observed.
+        retireGeneration()
         this.host = host
-        observer?.cancel()
-        observer = scope.launch { observeOwnedWork(host) }
+        this.boundEpoch = epoch
+        observer = scope.launch { observeOwnedWork(host, epoch) }
         scope.launch { refreshWakeupsOnce(allowPendingDispatch = true) }
+    }
+
+    private fun retireGeneration() {
+        observer?.cancel()
+        observer = null
+        reconciliations.forEach { it.cancel() }
+        reconciliations.clear()
     }
 
     /** Stops observing a retired generation. The coordinator and its choice
      * store stay process-owned; `bind` re-arms for a later accepted epoch. */
     fun unbind(host: RuntimeHost) {
         if (this.host !== host) return
-        observer?.cancel()
-        observer = null
-        reconciliations.forEach { it.cancel() }
-        reconciliations.clear()
+        retireGeneration()
         this.host = null
+        this.boundEpoch = null
     }
 
     fun enqueuePendingDispatch(scheduleID: String) {
@@ -153,11 +172,9 @@ internal class TaskScheduleCoordinator(
     }
 
     fun release() {
-        observer?.cancel()
-        observer = null
-        reconciliations.forEach { it.cancel() }
-        reconciliations.clear()
+        retireGeneration()
         host = null
+        boundEpoch = null
         scope.cancel()
     }
 
@@ -169,6 +186,12 @@ internal class TaskScheduleCoordinator(
         trigger: String,
     ): ListenableWorker.Result {
         val current = waitForHost(HOST_WAIT_MILLIS)
+            ?: return worker.retryOrFail(
+                application, scheduleID, null, "runtime_unavailable")
+        // The EXACT generation this dispatch may launch into. `RuntimeHost`
+        // survives an accepted root replacement, so a live non-null epoch at
+        // a later callback is not proof it is the SAME generation.
+        val epochAtDispatch = current.nativeRootEpoch()
             ?: return worker.retryOrFail(
                 application, scheduleID, null, "runtime_unavailable")
         if (!TaskScheduleAlarmScheduler.notificationsUsable(application)) {
@@ -265,6 +288,12 @@ internal class TaskScheduleCoordinator(
             foreground.agentLaunchDefinitelyNotAdmitted(operationID)
             return ListenableWorker.Result.success()
         }
+        if (current.nativeRootEpoch() != epochAtDispatch) {
+            // The accepted generation changed before the envelope was handed
+            // to the host queue: nothing can have launched for this attempt.
+            foreground.agentLaunchDefinitelyNotAdmitted(operationID)
+            return ListenableWorker.Result.success()
+        }
 
         val result = try {
             TaskScheduleCommands(current).dispatch(
@@ -273,6 +302,7 @@ internal class TaskScheduleCoordinator(
                 exactAlarmAllowed = exactAllowed,
                 flexibleChosen = flexible,
                 environments = environments,
+                expectedEpoch = epochAtDispatch,
                 onAccepted = guard::onAccepted,
                 onSettled = guard::recordSettled,
             )
@@ -283,7 +313,8 @@ internal class TaskScheduleCoordinator(
                 // lease and hand resolution to the coordinator scope. Never
                 // release a receipt that may have produced a run.
                 reconcileAdmission(
-                    current, foreground, scheduleID, operationID, guard.settled)
+                    current, foreground, scheduleID, operationID,
+                    epochAtDispatch, guard)
             } else {
                 // Never admitted by the host queue: no command can launch.
                 foreground.agentLaunchDefinitelyNotAdmitted(operationID)
@@ -296,6 +327,13 @@ internal class TaskScheduleCoordinator(
                 val dispatch = (result as TaskScheduleResult.Ok<TaskScheduleDispatch>).value
                 val runID = dispatch.runID
                 val conversationID = dispatch.conversationID
+                if (current.nativeRootEpoch() != epochAtDispatch) {
+                    // The launch terminal belongs to a generation that is no
+                    // longer accepted. Never re-acquire that old run (or its
+                    // provisional lease) into the new generation; Root
+                    // retirement owns the old lease.
+                    return ListenableWorker.Result.success()
+                }
                 if (runID != null && conversationID != null) {
                     // A launch result that reached us MUST transfer coverage
                     // even if WorkManager cancels this coroutine now: attach
@@ -304,8 +342,14 @@ internal class TaskScheduleCoordinator(
                     val admitted = try {
                         kotlinx.coroutines.withContext(
                             kotlinx.coroutines.NonCancellable) {
-                            foreground.agentLaunchAdmitted(
-                                operationID, conversationID, runID)
+                            // Exact same-generation proof immediately before
+                            // lease adoption.
+                            if (current.nativeRootEpoch() != epochAtDispatch) {
+                                false
+                            } else {
+                                foreground.agentLaunchAdmitted(
+                                    operationID, conversationID, runID)
+                            }
                         }
                     } catch (cancelled: CancellationException) {
                         // NonCancellable should not surface this; if it does,
@@ -313,7 +357,7 @@ internal class TaskScheduleCoordinator(
                         // resolve coverage instead of dropping the run.
                         reconcileAdmission(
                             current, foreground, scheduleID, operationID,
-                            guard.settled)
+                            epochAtDispatch, guard)
                         throw cancelled
                     } catch (_: Throwable) {
                         false
@@ -321,11 +365,13 @@ internal class TaskScheduleCoordinator(
                     if (admitted) {
                         choices.setNotice(scheduleID, null)
                         TaskScheduleNotifications.cancel(application, scheduleID)
-                        if (guard.stopRequested()) {
+                        if (guard.claimStopCancellation()) {
                             // Stop arrived while the launch was in flight. The
                             // run owns its authoritative lease now; cancel
                             // through the EXISTING canonical run path, which
-                            // settles the lease at the real terminal.
+                            // settles the lease at the real terminal. The
+                            // claim makes this exactly once even if the late
+                            // resolver already saw the same Stop.
                             current.conversations.cancelRunFromNotification(
                                 conversationID, runID)
                         }
@@ -336,7 +382,8 @@ internal class TaskScheduleCoordinator(
                         // real work.
                         choices.setNotice(scheduleID, "foreground_unavailable")
                         reconcileAdmission(
-                            current, foreground, scheduleID, operationID, guard.settled)
+                            current, foreground, scheduleID, operationID,
+                            epochAtDispatch, guard)
                     }
                 } else {
                     // A "launched" outcome without both identities is
@@ -344,7 +391,8 @@ internal class TaskScheduleCoordinator(
                     // and let the real terminal/authoritative lease resolve.
                     choices.setNotice(scheduleID, "foreground_unavailable")
                     reconcileAdmission(
-                        current, foreground, scheduleID, operationID, guard.settled)
+                        current, foreground, scheduleID, operationID,
+                        epochAtDispatch, guard)
                 }
                 refreshWakeupsOnce(allowPendingDispatch = true)
                 return ListenableWorker.Result.success()
@@ -387,7 +435,8 @@ internal class TaskScheduleCoordinator(
                 // (claim CAS collapses duplicates) and never replays an
                 // unknown run outcome.
                 reconcileAdmission(
-                    current, foreground, scheduleID, operationID, guard.settled)
+                    current, foreground, scheduleID, operationID,
+                    epochAtDispatch, guard)
                 return worker.retryOrFail(
                     application, scheduleID, "", "dispatch_unconfirmed")
             }
@@ -417,47 +466,46 @@ internal class TaskScheduleCoordinator(
         foreground: com.floe.android.host.RunForegroundBinding,
         scheduleID: String,
         operationID: String,
-        settled: kotlinx.coroutines.CompletableDeferred<
-            TaskScheduleResult<TaskScheduleDispatch>>,
+        epochAtDispatch: Long,
+        guard: TaskScheduleAdmissionGuard,
     ) {
-        if (host !== this.host) return
+        // Same instance is NOT the same generation. The coordinator must own
+        // this host AND the exact epoch captured at dispatch; a new accepted
+        // epoch retires the old resolver before this can adopt anything.
+        if (host !== this.host || boundEpoch != epochAtDispatch) return
         val job = scope.launch {
             try {
                 // Root-lifecycle bounded: this job lives only while the
-                // coordinator does; a Root stop releases all leases and the
-                // generation check below prevents any late re-adoption.
-                val terminal = settled.await()
-                if (host !== this@TaskScheduleCoordinator.host ||
-                    host.nativeRootEpoch() == null) {
-                    return@launch
-                }
-                when (TaskScheduleAdmissionPolicy.decision(terminal)) {
-                    TaskScheduleAdmissionDecision.ADMIT -> {
-                        val dispatch = (terminal as? TaskScheduleResult.Ok<TaskScheduleDispatch>)?.value
-                        val runID = dispatch?.runID
-                        val conversationID = dispatch?.conversationID
-                        if (runID != null && conversationID != null &&
-                            foreground.agentLaunchAdmitted(
-                                operationID, conversationID, runID)) {
-                            choices.setNotice(scheduleID, null)
+                // coordinator does; the exact-epoch check inside the resolver
+                // prevents any late re-adoption across a generation change.
+                val resolver = TaskScheduleLateAdmissionResolver(
+                    guard = guard,
+                    dispatchedEpoch = epochAtDispatch,
+                    liveEpoch = { host.nativeRootEpoch() },
+                    admit = { conversationID, runID ->
+                        // Re-check the exact generation immediately before
+                        // the authoritative lease is attached.
+                        if (host !== this@TaskScheduleCoordinator.host ||
+                            host.nativeRootEpoch() != epochAtDispatch) {
+                            false
                         } else {
-                            // The REAL terminal says a run launched but its
-                            // identity/authoritative lease could not be
-                            // attached. This is unknown, not a rejection:
-                            // retain coverage and report honestly.
-                            choices.setNotice(scheduleID, "foreground_unavailable")
+                            foreground.agentLaunchAdmitted(
+                                operationID, conversationID, runID)
                         }
-                    }
-                    TaskScheduleAdmissionDecision.RELEASE -> {
-                        // A real host terminal proved no launch.
+                    },
+                    release = {
                         foreground.agentLaunchDefinitelyNotAdmitted(operationID)
-                    }
-                    TaskScheduleAdmissionDecision.RECONCILE -> {
-                        // The terminal itself is an unknown/malformed
-                        // observation. Never release real coverage on a guess.
-                        choices.setNotice(scheduleID, "foreground_unavailable")
-                    }
-                }
+                    },
+                    cancelAdmittedRun = { conversationID, runID ->
+                        // The EXISTING canonical run cancel; the guard claim
+                        // guarantees this happens at most once for the
+                        // attempt even across the live/late paths.
+                        host.conversations.cancelRunFromNotification(
+                            conversationID, runID)
+                    },
+                    notice = { code -> choices.setNotice(scheduleID, code) },
+                )
+                resolver.awaitAndResolve()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Throwable) {
@@ -526,14 +574,12 @@ internal class TaskScheduleCoordinator(
      * launch pending occurrences once the runtime is quiescent. Claim CAS
      * handles any overlap with a worker.
      */
-    private suspend fun observeOwnedWork(boundHost: RuntimeHost) {
+    private suspend fun observeOwnedWork(boundHost: RuntimeHost, boundEpoch: Long) {
         var observed = 0L
         while (scope.isActive) {
-            if (host !== boundHost) return
-            if (boundHost.nativeRootEpoch() == null) {
-                delay(1_000)
-                continue
-            }
+            // Exact-generation fence: the same host instance survives an
+            // accepted root replacement, so a non-null epoch is not enough.
+            if (host !== boundHost || boundHost.nativeRootEpoch() != boundEpoch) return
             val changed = try {
                 withContext(Dispatchers.IO) {
                     RunForegroundNative.waitChange(observed, 1_000)
@@ -553,7 +599,7 @@ internal class TaskScheduleCoordinator(
             } ?: continue
             if (!snapshot.storeReady || snapshot.admissionFenced) continue
             if (snapshot.hasLiveRunOwnedWork) continue
-            if (host !== boundHost) return
+            if (host !== boundHost || boundHost.nativeRootEpoch() != boundEpoch) return
             refreshWakeupsOnce(allowPendingDispatch = true)
         }
     }

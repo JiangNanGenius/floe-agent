@@ -284,7 +284,11 @@
     <!-- G07.3B offline capture analysis and Wi-Fi coverage -->
     <string name="network_artifact_title">Captures &amp; coverage</string>
     <string name="network_artifact_agent_read">Allow Agent to read this artifact</string>
-    <string name="network_artifact_agent_read_note">An explicit per-artifact user grant. Agent tools still require a live non-temporary task and never receive a file or network permission. Leave it off to keep analysis local only.</string>
+    <string name="network_artifact_agent_read_note">Allow the assistant to read the redacted summary of this report. When off, it stays on this device only.</string>
+    <string name="network_artifact_copy_for_assistant">Copy for assistant</string>
+    <string name="network_artifact_copy_confirmation">Reference copied. Paste it into a conversation.</string>
+    <string name="network_artifact_copy_pcap_instruction">Use the network.pcapAnalyze tool to read the shared capture summary I selected.\n%1$s</string>
+    <string name="network_artifact_copy_coverage_instruction">Use the network.coverageSummary tool to read the shared Wi-Fi coverage summary I selected.\n%1$s</string>
     <string name="network_artifact_cancel_work">Cancel</string>
     <string name="network_artifact_back">Back</string>
     <string name="network_artifact_captures">Capture analysis</string>

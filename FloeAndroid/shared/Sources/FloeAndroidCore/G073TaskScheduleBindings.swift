@@ -885,8 +885,8 @@ public enum G073TaskScheduleBindings {
             prompt: prompt,
             cadence: cadence,
             scheduledAt: scheduledAt,
-            weekday: weekday,
-            intervalSeconds: interval,
+            weekday: weekday.map(Int.init),
+            intervalSeconds: interval.map(Int.init),
             anchorTimezone: timezone,
             upstreamRunID: upstream,
             workspaceID: workspace,
@@ -1217,7 +1217,7 @@ public struct G073TaskScheduleTool: AgentTool {
         if let cadence = args.cadence.flatMap(TaskScheduleCadence.init(rawValue:)) {
             draft.cadence = cadence
         }
-        if let parsed = try? parseDate(args.scheduledAt), let anchor = parsed {
+        if let anchor = try? parseDate(args.scheduledAt) {
             draft.scheduledAt = anchor
             if draft.cadence == .weekly {
                 draft.weekday = Calendar.current.component(.weekday, from: anchor)

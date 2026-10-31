@@ -8,6 +8,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PcapFilterFormTest {
+
+    @Test
+    fun assistantCopyReferenceIsExactBoundedToolJson() {
+        val id = "11111111-1111-1111-1111-111111111111"
+        assertEquals(
+            """{"tool":"network.pcapAnalyze","arguments":{"analysisID":"$id"}}""",
+            NetworkArtifactReference.pcap(id),
+        )
+        assertEquals(
+            """{"tool":"network.coverageSummary","arguments":{"sessionID":"$id"}}""",
+            NetworkArtifactReference.coverage(id),
+        )
+        assertNull(NetworkArtifactReference.pcap("not-a-uuid"))
+        assertNull(NetworkArtifactReference.coverage(""))
+    }
+
     @Test
     fun parsesTypedFiltersAndConvertsSecondsToMillis() {
         val result = PcapFilterForm.parse(

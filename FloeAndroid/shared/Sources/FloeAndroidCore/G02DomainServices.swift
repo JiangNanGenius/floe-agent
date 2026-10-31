@@ -418,7 +418,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
                     return G073ModelSummary(
                         id: model.id, providerID: provider.id,
                         displayName: model.displayName,
-                        providerName: provider.displayName,
+                        providerName: provider.displayName ?? provider.kind.rawValue,
                         supportsChat: model.supportsChatAgentSurface)
                 },
                 models: {
@@ -433,7 +433,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
                         return G073ModelSummary(
                             id: model.id, providerID: provider.id,
                             displayName: model.displayName,
-                            providerName: provider.displayName,
+                            providerName: provider.displayName ?? provider.kind.rawValue,
                             supportsChat: model.supportsChatAgentSurface)
                     }
                 },
@@ -456,35 +456,45 @@ public final class G02InstalledComposition: @unchecked Sendable {
                     return nil
                 },
                 claimedOccurrences: {
-                    let rows = (try? await database.reader { db in
-                        try Row.fetchAll(db, sql: """
-                            SELECT id, schedule_id, scheduled_for, run_id
-                            FROM task_schedule_occurrences
-                            WHERE state IN ('claimed', 'running')
-                            ORDER BY scheduled_for DESC
-                            LIMIT 200
-                            """)
-                    }) ?? []
-                    let fractional = ISO8601DateFormatter()
-                    fractional.formatOptions = [.withInternetDateTime,
-                                                .withFractionalSeconds]
-                    let plain = ISO8601DateFormatter()
-                    plain.formatOptions = [.withInternetDateTime]
-                    func date(_ raw: String?) -> Date? {
-                        guard let raw else { return nil }
-                        return fractional.date(from: raw) ?? plain.date(from: raw)
-                    }
-                    return rows.compactMap { row in
-                        guard let id = UUID(uuidString: row["id"]),
-                              let scheduleID = UUID(uuidString: row["schedule_id"]),
-                              let scheduledFor = date(row["scheduled_for"]) else {
-                            return nil
+                    // Row is not Sendable: project it into the Sendable DTO
+                    // INSIDE the reader closure instead of crossing the
+                    // DatabaseManager.reader boundary with [Row].
+                    let claimed: [G073ClaimedOccurrence]
+                    do {
+                        claimed = try await database.reader { db in
+                            let rows = try Row.fetchAll(db, sql: """
+                                SELECT id, schedule_id, scheduled_for, run_id
+                                FROM task_schedule_occurrences
+                                WHERE state IN ('claimed', 'running')
+                                ORDER BY scheduled_for DESC
+                                LIMIT 200
+                                """)
+                            let fractional = ISO8601DateFormatter()
+                            fractional.formatOptions = [.withInternetDateTime,
+                                                        .withFractionalSeconds]
+                            let plain = ISO8601DateFormatter()
+                            plain.formatOptions = [.withInternetDateTime]
+                            func date(_ raw: String?) -> Date? {
+                                guard let raw else { return nil }
+                                return fractional.date(from: raw) ?? plain.date(from: raw)
+                            }
+                            return rows.compactMap { row in
+                                guard let id = UUID(uuidString: row["id"]),
+                                      let scheduleID = UUID(uuidString: row["schedule_id"]),
+                                      let scheduledFor = date(row["scheduled_for"]) else {
+                                    return nil
+                                }
+                                return G073ClaimedOccurrence(
+                                    id: id, scheduleID: scheduleID,
+                                    scheduledFor: scheduledFor,
+                                    runID: (row["run_id"] as String?)
+                                        .flatMap(UUID.init(uuidString:)))
+                            }
                         }
-                        return G073ClaimedOccurrence(
-                            id: id, scheduleID: scheduleID,
-                            scheduledFor: scheduledFor,
-                            runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:)))
+                    } catch {
+                        claimed = []
                     }
+                    return claimed
                 },
                 environmentSource: nil,
                 environmentOwnership: environmentOwnership,

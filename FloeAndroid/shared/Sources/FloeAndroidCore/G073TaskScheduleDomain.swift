@@ -224,12 +224,11 @@ public struct RunScheduledLaunchIdentity: Sendable, Equatable {
 /// (sorted keys, millisecond dates) so the App can refuse a stale edit
 /// instead of overwriting a concurrent change.
 public enum G073ScheduleRevision {
+    /// ONE canonical encoding, shared with the persistence CAS so the store can
+    /// compare the expected revision inside the same writer transaction
+    /// (`TaskScheduleRevisionDigest` in FloePersistence).
     public static func digest(_ record: TaskScheduleRecord) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        encoder.dateEncodingStrategy = .millisecondsSince1970
-        guard let data = try? encoder.encode(record) else { return "" }
-        return FloeDigest.sha256Hex(data)
+        TaskScheduleRevisionDigest.digest(record)
     }
 
     public static func resourceID(scheduleID: UUID) -> String {
@@ -413,8 +412,8 @@ public struct G073ScheduleOccurrenceSummary: Sendable, Equatable {
         finishedAt = occurrence.finishedAt
         runID = occurrence.runID
         conversationID = occurrence.conversationID
-        summary = occurrence.summary.map(G073ScheduleText.truncated)
-        errorText = occurrence.errorText.map(G073ScheduleText.truncated)
+        summary = occurrence.summary.map { G073ScheduleText.truncated($0) }
+        errorText = occurrence.errorText.map { G073ScheduleText.truncated($0) }
     }
 }
 
@@ -872,10 +871,17 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
         } catch {
             return .refused(.storeUnavailable, "The schedule could not be saved.")
         }
+        // Align the outer revision with the ACTUAL persisted detail snapshot.
+        // The in-memory `now` can carry sub-millisecond precision the row
+        // encoding does not retain; returning digest(record) would not be
+        // reusable as the next CAS base.
+        guard let detail = await detail(id: record.id) else {
+            return .refused(.storeUnavailable, "The schedule could not be read back.")
+        }
         return G073ScheduleMutationResult(
             accepted: true,
-            detail: await detail(id: record.id),
-            revision: G073ScheduleRevision.digest(record))
+            detail: detail,
+            revision: detail.summary.revision)
     }
 
     public func update(id: UUID, draft: G073ScheduleDraft,
@@ -906,15 +912,28 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
         record.permissionJSON = G073SchedulePolicyCodec.encode(validated.policy)
         record.updatedAt = now
         record.nextExpectedAt = record.isEnabled ? validated.nextExpectedAt : nil
+        // The initial read/check above is UI feedback. The FINAL write is the
+        // real CAS: the store compares the CURRENT durable revision inside one
+        // writer transaction and preserves a `lastStartedAt` written while
+        // this validation was awaiting.
+        let saved: TaskScheduleRecord?
         do {
-            try await store.save(record)
+            saved = try await store.saveIfUnchanged(
+                record, expectedRevision: expectedRevision)
         } catch {
             return .refused(.storeUnavailable, "The schedule could not be saved.")
         }
+        guard let saved else {
+            return .refused(.revisionMismatch,
+                            "The schedule changed since it was opened.")
+        }
+        guard let detail = await detail(id: saved.id) else {
+            return .refused(.storeUnavailable, "The schedule could not be read back.")
+        }
         return G073ScheduleMutationResult(
             accepted: true,
-            detail: await detail(id: record.id),
-            revision: G073ScheduleRevision.digest(record))
+            detail: detail,
+            revision: detail.summary.revision)
     }
 
     public func setEnabled(id: UUID, enabled: Bool,
@@ -925,18 +944,25 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
         guard G073ScheduleRevision.digest(current) == expectedRevision else {
             return .refused(.revisionMismatch, "The schedule changed since it was opened.")
         }
+        let updated: TaskScheduleRecord?
         do {
-            try await store.setEnabled(id: id, enabled: enabled, at: dependencies.now())
+            updated = try await store.setEnabledIfUnchanged(
+                id: id, enabled: enabled, expectedRevision: expectedRevision,
+                at: dependencies.now())
         } catch {
             return .refused(.storeUnavailable, "The schedule could not be updated.")
         }
-        guard let updated = try? await store.schedule(id: id) else {
+        guard updated != nil else {
+            return .refused(.revisionMismatch,
+                            "The schedule changed since it was opened.")
+        }
+        guard let detail = await detail(id: id) else {
             return .refused(.storeUnavailable, "The schedule could not be read back.")
         }
         return G073ScheduleMutationResult(
             accepted: true,
-            detail: await detail(id: id),
-            revision: G073ScheduleRevision.digest(updated))
+            detail: detail,
+            revision: detail.summary.revision)
     }
 
     public func delete(id: UUID, expectedRevision: String) async -> G073ScheduleMutationResult {
@@ -946,10 +972,16 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
         guard G073ScheduleRevision.digest(current) == expectedRevision else {
             return .refused(.revisionMismatch, "The schedule changed since it was opened.")
         }
+        let deleted: Bool
         do {
-            try await store.delete(id: id)
+            deleted = try await store.deleteIfUnchanged(
+                id: id, expectedRevision: expectedRevision)
         } catch {
             return .refused(.storeUnavailable, "The schedule could not be deleted.")
+        }
+        guard deleted else {
+            return .refused(.revisionMismatch,
+                            "The schedule changed since it was opened.")
         }
         return G073ScheduleMutationResult(accepted: true)
     }
@@ -1704,7 +1736,7 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
                              failure: .init(code: .modelUnavailable,
                                             text: "The scheduled model is missing or disabled. Choose an available model."))
         }
-        var environmentMetadata: G073EnvironmentMetadata?
+        var resolvedEnvironmentMetadata: G073EnvironmentMetadata?
         if let environmentID = record.environmentID {
             guard record.workspaceID != nil else {
                 return Preflight(value: nil,
@@ -1725,14 +1757,14 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
                                  failure: .init(code: .environmentUnavailable,
                                                 text: "The scheduled environment is not an active project environment owned by the selected workspace."))
             }
-            environmentMetadata = metadata
+            resolvedEnvironmentMetadata = metadata
         }
         return Preflight(value: ResolvedBinding(
             workspaceID: workspaceBinding,
             providerID: model.providerID,
             modelID: model.id,
             policy: policy,
-            environmentMetadata: environmentMetadata), failure: nil)
+            environmentMetadata: resolvedEnvironmentMetadata), failure: nil)
     }
 
     private struct ValidatedDraft {

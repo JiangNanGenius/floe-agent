@@ -132,13 +132,13 @@ class TaskScheduleHostController internal constructor(
         }
     }
 
-    suspend fun detail(id: String): TaskScheduleResult<TaskScheduleDetail> =
+    internal suspend fun detail(id: String): TaskScheduleResult<TaskScheduleDetail> =
         commands.detail(id)
 
-    suspend fun history(id: String, limit: Int = 50):
+    internal suspend fun history(id: String, limit: Int = 50):
         TaskScheduleResult<TaskScheduleOccurrencePage> = commands.historyPage(id, limit)
 
-    suspend fun save(draft: TaskScheduleDraft): TaskScheduleResult<TaskScheduleMutation> {
+    internal suspend fun save(draft: TaskScheduleDraft): TaskScheduleResult<TaskScheduleMutation> {
         // An environment binding is validated against the host's FRESH
         // authority snapshot inside the native service. Register the same
         // snapshot immediately before the mutation so a long editor session
@@ -158,7 +158,7 @@ class TaskScheduleHostController internal constructor(
         return result
     }
 
-    suspend fun setEnabled(
+    internal suspend fun setEnabled(
         summary: TaskScheduleSummary,
         enabled: Boolean,
     ): TaskScheduleResult<TaskScheduleMutation> {
@@ -167,7 +167,7 @@ class TaskScheduleHostController internal constructor(
         return result
     }
 
-    suspend fun delete(summary: TaskScheduleSummary): TaskScheduleResult<Unit> {
+    internal suspend fun delete(summary: TaskScheduleSummary): TaskScheduleResult<Unit> {
         val result = commands.delete(summary)
         if (result is TaskScheduleResult.Ok) refreshNow()
         return result
@@ -181,7 +181,7 @@ class TaskScheduleHostController internal constructor(
      * The event-driven observer would also pick it up; enqueueing here is an
      * immediate, duplicate-safe nudge (unique work + native claim CAS).
      */
-    suspend fun runNow(summary: TaskScheduleSummary):
+    internal suspend fun runNow(summary: TaskScheduleSummary):
         TaskScheduleResult<TaskScheduleDispatch> {
         if (summary.environmentID != null) {
             when (val fresh = refreshEnvironmentSnapshot()) {

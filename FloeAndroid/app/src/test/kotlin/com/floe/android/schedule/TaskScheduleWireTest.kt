@@ -163,16 +163,18 @@ class TaskScheduleWireTest {
 
     @Test
     fun scheduleListPageDecodesHasMoreAndNextOffset() {
-        val page = TaskScheduleWire.page(obj(
-            """
-            {"schedules":[
-              {"id":"11111111-1111-1111-1111-111111111111","title":"A","cadence":"daily","enabled":true},
-              {"id":"22222222-2222-2222-2222-222222222222","title":"B","cadence":"once","enabled":false}],
-             "count":2,"totalCount":12,"offset":0,"nextOffset":2,
-             "hasMore":true,"truncated":false}
-            """.trimIndent(),
-            0,
-        ))
+        val page = TaskScheduleWire.page(
+            obj(
+                """
+                {"schedules":[
+                  {"id":"11111111-1111-1111-1111-111111111111","title":"A","cadence":"daily","enabled":true},
+                  {"id":"22222222-2222-2222-2222-222222222222","title":"B","cadence":"once","enabled":false}],
+                 "count":2,"totalCount":12,"offset":0,"nextOffset":2,
+                 "hasMore":true,"truncated":false}
+                """.trimIndent(),
+            ),
+            requestedOffset = 0,
+        )
         assertEquals(2, page.schedules.size)
         assertEquals(12, page.totalCount)
         assertEquals(2, page.nextOffset)

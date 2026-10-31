@@ -87,11 +87,11 @@ final class G073NetworkArtifactTests: XCTestCase {
         XCTAssertEqual(request.method, .coverageSummary)
         XCTAssertLessThanOrEqual(request.requestJSON.count, NetworkArtifactLimits.maximumRequestBytes)
         let tool = NetworkCoverageSummaryTool.Arguments(sessionID: "not-a-uuid")
-        XCTAssertThrowsError(try NetworkCoverageSummaryTool(executor: FakeArtifactHost()).validate(tool))
+        XCTAssertThrowsError(try NetworkCoverageSummaryTool(executor: FakeExecuting()).validate(tool))
     }
 
     func testFilterValidationRefusesUnboundedOrWrongValues() {
-        XCTAssertThrowsError(try NetworkArtifactFilters(protocols: ["tcp", "tcp", "tcp", "tcp", "tcp"])
+        XCTAssertThrowsError(try NetworkArtifactFilters(protocols: ["tcp", "udp", "icmp", "icmpv6", "sctp"])
             .validated())
         XCTAssertThrowsError(try NetworkArtifactFilters(protocols: ["sctp"]).validated())
         XCTAssertThrowsError(try NetworkArtifactFilters(address: "http://example.test/x").validated())
@@ -155,13 +155,15 @@ final class G073NetworkArtifactTests: XCTestCase {
         let result = pcapReply()
         XCTAssertEqual(mailbox.complete(claim: claim, status: 0, value: result), 0)
         XCTAssertEqual(mailbox.complete(claim: claim, status: 0, value: result), -101)
-        XCTAssertEqual(try await reply, result)
+        let delivered = try await reply
+        XCTAssertEqual(delivered, result)
     }
 
     func testRebindFencesWaiterAndStaleClaimCannotSettle() async throws {
         let mailbox = G073NetworkArtifactHostMailbox()
         XCTAssertTrue(mailbox.bind(epoch: 11))
         let owner = G073NetworkArtifactOwner(taskID: taskID, runID: runID, epoch: 11)
+        let sessionID = self.sessionID
         async let reply = mailbox.submit(
             request: try .coverageSummary(sessionID: sessionID), owner: owner,
             cancellation: CancellationToken())
@@ -182,6 +184,7 @@ final class G073NetworkArtifactTests: XCTestCase {
         let mailbox = G073NetworkArtifactHostMailbox()
         XCTAssertTrue(mailbox.bind(epoch: 14))
         let owner = G073NetworkArtifactOwner(taskID: taskID, runID: runID, epoch: 14)
+        let sessionID = self.sessionID
         async let reply = mailbox.submit(
             request: try .coverageSummary(sessionID: sessionID), owner: owner,
             cancellation: CancellationToken())
@@ -226,7 +229,7 @@ final class G073NetworkArtifactTests: XCTestCase {
     }
 
     func testExecutorBindsTaskRunEpochAndWorkspaceThenReturnsReply() async throws {
-        let host = FakeArtifactHost(epoch: 22)
+        let host = FakeArtifactHost(epoch: 22, reply: coverageReply())
         let executor = G073NetworkArtifactToolExecutor(host: host, currentEpoch: { 22 })
         let request = try NetworkArtifactToolRequest.coverageSummary(sessionID: sessionID)
         let workspace = URL(fileURLWithPath: "/tmp/floe-artifact-test-workspace")
@@ -243,7 +246,7 @@ final class G073NetworkArtifactTests: XCTestCase {
     }
 
     func testBackgroundTaskWithoutUIHolderStillReachesHostViaTrustedContext() async throws {
-        let host = FakeArtifactHost(epoch: 24)
+        let host = FakeArtifactHost(epoch: 24, reply: coverageReply())
         let executor = G073NetworkArtifactToolExecutor(host: host, currentEpoch: { 24 })
         let request = try NetworkArtifactToolRequest.coverageSummary(sessionID: sessionID)
         // A scheduled/background task has no UI holder in this process. The

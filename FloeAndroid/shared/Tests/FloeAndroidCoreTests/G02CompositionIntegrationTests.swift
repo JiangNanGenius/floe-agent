@@ -639,6 +639,16 @@ final class G02CompositionIntegrationTests: XCTestCase {
         // cleanup is still outstanding, then a NEW generation starts.
         G02RuntimeComposition.shared.resetForTesting()
         AndroidRuntimeBootstrap.resetForTesting()
+        // The process-global job spool is normally unbound by the old root's
+        // REAL close; this test abandons the old generation without one, so
+        // release the test fixture's binding before the newer epoch installs.
+        BackgroundJobOutputSpoolRoot.unbind(epoch: old.epoch)
+        _ = await RuntimeFacadeJobBindings.shared.retire(epoch: old.epoch)
+        // The old generation is intentionally abandoned here (its handle is
+        // still used below to run the stale retirement tail). Do not ask the
+        // normal teardown to shut down a generation that the forced reset
+        // already detached.
+        old.retired = true
 
         let new = try await bootInstalledGeneration()
         XCTAssertNotEqual(new.epoch, old.epoch)
@@ -678,6 +688,11 @@ final class G02CompositionIntegrationTests: XCTestCase {
         // Positive control: the OWNING tail really does release the globals.
         let newHandle = try XCTUnwrap(
             AndroidRuntimeBootstrap.generationHandleForTesting())
+        // The production shutdown order retires the job lane before the RB1
+        // tail. This test invokes the tail directly, so release that test
+        // fixture lane first; the tail's global-release proof is unaffected.
+        _ = await RuntimeFacadeJobBindings.shared.retire(epoch: new.epoch)
+        BackgroundJobOutputSpoolRoot.unbind(epoch: new.epoch)
         XCTAssertTrue(AndroidRuntimeBootstrap.runRetirementTailForTesting(
             gen: newHandle, receipt: newHandle.bootstrapReceipt,
             finalPhase: .stopped))

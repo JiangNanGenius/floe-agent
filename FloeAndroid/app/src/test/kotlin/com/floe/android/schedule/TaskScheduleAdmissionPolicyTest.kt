@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.schedule
 
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -175,6 +180,123 @@ class TaskScheduleAdmissionPolicyTest {
         assertEquals(real, sink.settled.await())
         // A duplicate/late terminal cannot rewrite the first one.
         assertFalse(sink.deliver(TaskScheduleResult.Failure("superseded")))
+    }
+
+    private fun lateResolver(
+        guard: TaskScheduleAdmissionGuard,
+        epoch: Long = 7L,
+        liveEpoch: () -> Long? = { epoch },
+        admitted: MutableList<Pair<String, String>> = CopyOnWriteArrayList(),
+        cancelled: MutableList<Pair<String, String>> = CopyOnWriteArrayList(),
+        released: AtomicInteger = AtomicInteger(0),
+        notices: MutableList<String?> = CopyOnWriteArrayList(),
+    ) = TaskScheduleLateAdmissionResolver(
+        guard = guard,
+        dispatchedEpoch = epoch,
+        liveEpoch = liveEpoch,
+        admit = { conversationID, runID ->
+            admitted += conversationID to runID
+            true
+        },
+        release = { released.incrementAndGet() },
+        cancelAdmittedRun = { conversationID, runID ->
+            cancelled += conversationID to runID
+        },
+        notice = { notices += it },
+    )
+
+    @Test
+    fun aStopThatArrivedWhileTheReceiptWasUnknownCancelsOnceAfterLateAdoption() =
+        runBlocking {
+            val guard = TaskScheduleAdmissionGuard()
+            val admitted = CopyOnWriteArrayList<Pair<String, String>>()
+            val cancelled = CopyOnWriteArrayList<Pair<String, String>>()
+            val notices = CopyOnWriteArrayList<String?>()
+            val resolver = lateResolver(guard, admitted = admitted,
+                cancelled = cancelled, notices = notices)
+
+            // Accepted by the host queue, caller timed out: the Stop is real
+            // while the receipt is still unknown.
+            guard.onAccepted()
+            var outcome: TaskScheduleLateAdmissionOutcome? = null
+            val waiting = launch(Dispatchers.Default) {
+                outcome = resolver.awaitAndResolve()
+            }
+            yield()
+            guard.onStopRequested()
+            val real = TaskScheduleResult.Ok(dispatch("launched", "r1", "c1"))
+            guard.recordSettled(real)
+            waiting.join()
+
+            assertEquals(TaskScheduleLateAdmissionOutcome.ADMITTED_AND_CANCELLED,
+                outcome)
+            assertEquals(listOf("c1" to "r1"), admitted)
+            assertEquals(listOf("c1" to "r1"), cancelled)
+            assertEquals(listOf<String?>(null), notices)
+        }
+
+    @Test
+    fun theLiveAndLatePathsShareOneCancelClaimForTheSameAttempt() {
+        val guard = TaskScheduleAdmissionGuard()
+        guard.onAccepted()
+        guard.onStopRequested()
+        // The live worker path wins the claim and issues the canonical cancel.
+        assertTrue(guard.claimStopCancellation())
+        assertFalse("a second path must not cancel again",
+            guard.claimStopCancellation())
+
+        val cancelled = CopyOnWriteArrayList<Pair<String, String>>()
+        val resolver = lateResolver(guard, cancelled = cancelled)
+        val real = TaskScheduleResult.Ok(dispatch("launched", "r1", "c1"))
+        assertEquals(TaskScheduleLateAdmissionOutcome.ADMITTED,
+            runBlocking { resolver.resolve(real) })
+        assertTrue("no duplicate canonical cancel", cancelled.isEmpty())
+    }
+
+    @Test
+    fun anAcceptedRootGenerationChangeFencesTheLateTerminal() = runBlocking {
+        val guard = TaskScheduleAdmissionGuard()
+        guard.onAccepted()
+        guard.onStopRequested()
+        var epoch = 7L
+        val admitted = CopyOnWriteArrayList<Pair<String, String>>()
+        val cancelled = CopyOnWriteArrayList<Pair<String, String>>()
+        val released = AtomicInteger(0)
+        val notices = CopyOnWriteArrayList<String?>()
+        val resolver = lateResolver(guard, epoch = 7L, liveEpoch = { epoch },
+            admitted = admitted, cancelled = cancelled, released = released,
+            notices = notices)
+
+        epoch = 8L
+        val real = TaskScheduleResult.Ok(dispatch("launched", "r1", "c1"))
+        assertEquals(TaskScheduleLateAdmissionOutcome.FENCED,
+            resolver.resolve(real))
+        assertTrue(admitted.isEmpty())
+        assertTrue(cancelled.isEmpty())
+        assertEquals(0, released.get())
+        assertTrue(notices.isEmpty())
+    }
+
+    @Test
+    fun anUnknownLateTerminalKeepsCoverageAndAProvedRefusalReleases() = runBlocking {
+        val unknownGuard = TaskScheduleAdmissionGuard()
+        unknownGuard.onAccepted()
+        val unknownReleased = AtomicInteger(0)
+        val unknownNotices = CopyOnWriteArrayList<String?>()
+        val unknown = lateResolver(unknownGuard, released = unknownReleased,
+            notices = unknownNotices)
+        assertEquals(TaskScheduleLateAdmissionOutcome.UNKNOWN_RETAINED,
+            unknown.resolve(TaskScheduleResult.Failure("timeout")))
+        assertEquals(0, unknownReleased.get())
+        assertEquals(listOf<String?>("foreground_unavailable"), unknownNotices)
+
+        val refusedGuard = TaskScheduleAdmissionGuard()
+        refusedGuard.onAccepted()
+        val refusedReleased = AtomicInteger(0)
+        val refused = lateResolver(refusedGuard, released = refusedReleased)
+        assertEquals(TaskScheduleLateAdmissionOutcome.RELEASED,
+            refused.resolve(TaskScheduleResult.Failure("occurrenceInFlight")))
+        assertEquals(1, refusedReleased.get())
     }
 
     @Test

@@ -157,7 +157,19 @@ final class G073TaskScheduleTests: XCTestCase {
             .appendingPathComponent("g073-schedule-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         database = try DatabaseManager(path: directory.appendingPathComponent("db.sqlite"))
-        try database.migrate()
+        try await database.migrate()
+        // The real store enforces the workspaces FK. Seed the two project rows
+        // this fixture freezes so schedule saves exercise the real schema.
+        let workspaceIDs = [workspaceID, otherWorkspaceID]
+        try await database.writer { db in
+            for id in workspaceIDs {
+                try db.execute(sql: """
+                    INSERT INTO workspaces (id, name, root_bookmark, created_at, updated_at)
+                    VALUES (?, 'fixture-project', ?, '2026-10-31T00:00:00.000Z',
+                            '2026-10-31T00:00:00.000Z')
+                    """, arguments: [id.uuidString, Data([0x01])])
+            }
+        }
         store = SQLiteTaskScheduleStore(database: database)
         world = G073TestWorld()
         launcher = G073LaunchRecorder()
@@ -406,7 +418,8 @@ final class G073TaskScheduleTests: XCTestCase {
         world.setConversationWorkspace(matchingConversation, workspaceID)
         let accepted = await service.create(draft(
             cadence: .afterSuccess, workspace: workspaceID, upstream: matchingRun))
-        XCTAssertTrue(accepted.accepted)
+        XCTAssertTrue(accepted.accepted,
+                      "code=\(accepted.code?.rawValue ?? "nil") reason=\(accepted.reason ?? "")")
         XCTAssertEqual(accepted.detail?.summary.upstreamRunID, matchingRun)
         XCTAssertEqual(accepted.detail?.summary.workspaceID, workspaceID)
 
@@ -529,7 +542,7 @@ final class G073TaskScheduleTests: XCTestCase {
 
     func testOversizedMutationReportsSuccessWithBoundedSummaryProjection() {
         let summary = wireSummary("Committed schedule")
-        let huge = String(repeating: "\"\\\u{0001}", count: 2_000)
+        let huge = String(repeating: "\"\\\u{0001}", count: 6_000)
         let detail = G073ScheduleDetail(
             summary: summary, prompt: huge, createdAt: fixedNow,
             updatedAt: fixedNow,
@@ -569,7 +582,8 @@ final class G073TaskScheduleTests: XCTestCase {
         XCTAssertEqual(launchesAfterRunNow, 0,
                        "runNow must never launch an Agent itself")
 
-        let stored = try XCTUnwrap(await store.occurrence(id: occurrenceID))
+        let storedOccurrence = try await store.occurrence(id: occurrenceID)
+        let stored = try XCTUnwrap(storedOccurrence)
         XCTAssertEqual(stored.state, .pending)
         XCTAssertTrue(stored.dedupeKey.hasPrefix("manual:"))
 
@@ -614,7 +628,8 @@ final class G073TaskScheduleTests: XCTestCase {
             stopPending: true))
         XCTAssertEqual(stopped.state, .cancelled)
         XCTAssertEqual(stopped.occurrenceID, occurrenceID)
-        let stored = try XCTUnwrap(await store.occurrence(id: occurrenceID))
+        let storedOccurrence = try await store.occurrence(id: occurrenceID)
+        let stored = try XCTUnwrap(storedOccurrence)
         XCTAssertEqual(stored.state, .cancelled)
 
         // The observer/dispatcher can never resurrect that row.
@@ -625,7 +640,8 @@ final class G073TaskScheduleTests: XCTestCase {
 
         // The SCHEDULE and its future cadence are preserved (only the one
         // explicit pending occurrence was cancelled).
-        let afterStop = try XCTUnwrap(await service.detail(id: detail.summary.id))
+        let afterStopDetail = await service.detail(id: detail.summary.id)
+        let afterStop = try XCTUnwrap(afterStopDetail)
         XCTAssertTrue(afterStop.summary.isEnabled)
         XCTAssertNotNil(afterStop.summary.nextFireAt)
 
@@ -684,7 +700,7 @@ final class G073TaskScheduleTests: XCTestCase {
         let first = await dispatchExact(id)
         XCTAssertEqual(first.state, .launched)
         let firstOccurrenceID = try XCTUnwrap(first.occurrenceID)
-        let storedOccurrence = await store.occurrence(id: firstOccurrenceID)
+        let storedOccurrence = try await store.occurrence(id: firstOccurrenceID)
         let occurrence = try XCTUnwrap(storedOccurrence)
         XCTAssertEqual(occurrence.state, .running)
         XCTAssertEqual(occurrence.conversationID, first.conversationID)
@@ -726,7 +742,7 @@ final class G073TaskScheduleTests: XCTestCase {
             runID: runID, succeeded: true, cancelled: false,
             summary: nil, at: fixedNow.addingTimeInterval(10))
         XCTAssertEqual(enqueued.count, 1)
-        let boundStored = await store.occurrence(runID: runID)
+        let boundStored = try await store.occurrence(runID: runID)
         let bound = try XCTUnwrap(boundStored)
         XCTAssertEqual(bound.state, .completed)
 
@@ -768,7 +784,7 @@ final class G073TaskScheduleTests: XCTestCase {
             runID: runID, succeeded: true, cancelled: false,
             summary: nil, at: fixedNow.addingTimeInterval(20))
         XCTAssertTrue(enqueued.isEmpty)
-        let storedOccurrence = await store.occurrence(runID: runID)
+        let storedOccurrence = try await store.occurrence(runID: runID)
         let occurrence = try XCTUnwrap(storedOccurrence)
         XCTAssertEqual(occurrence.state, .cancelled)
         let pending = (try? await store.pendingOccurrences(limit: 10)) ?? []
@@ -789,7 +805,7 @@ final class G073TaskScheduleTests: XCTestCase {
         let settled = await service.reconcileColdStart(
             now: fixedNow.addingTimeInterval(30))
         XCTAssertGreaterThanOrEqual(settled, 1)
-        let storedOccurrence = await store.occurrence(runID: runID)
+        let storedOccurrence = try await store.occurrence(runID: runID)
         let occurrence = try XCTUnwrap(storedOccurrence)
         XCTAssertEqual(occurrence.state, .completed)
     }
@@ -798,7 +814,7 @@ final class G073TaskScheduleTests: XCTestCase {
         let created = await service.create(draft(
             cadence: .once, scheduledAt: fixedNow.addingTimeInterval(-60)))
         let id = try XCTUnwrap(created.detail?.summary.id)
-        let scheduledRecord = await store.schedule(id: id)
+        let scheduledRecord = try await store.schedule(id: id)
         let record = try XCTUnwrap(scheduledRecord)
         let key = TaskSchedulePlanner.dedupeKey(
             for: fixedNow.addingTimeInterval(-60), record: record)
@@ -812,7 +828,7 @@ final class G073TaskScheduleTests: XCTestCase {
         XCTAssertTrue(claimed)
 
         _ = await service.reconcileColdStart(now: fixedNow.addingTimeInterval(5))
-        let storedInterrupted = await store.occurrence(id: occurrenceID)
+        let storedInterrupted = try await store.occurrence(id: occurrenceID)
         let interrupted = try XCTUnwrap(storedInterrupted)
         XCTAssertEqual(interrupted.state, .interrupted)
         let launchCountBefore = await launchCount()
@@ -863,6 +879,8 @@ final class G073TaskScheduleTests: XCTestCase {
         let created = await service.create(draft(
             cadence: .daily, scheduledAt: fixedNow.addingTimeInterval(-60),
             workspace: workspaceID, environment: environmentID))
+        XCTAssertNotNil(created.detail,
+                        "code=\(created.code?.rawValue ?? "nil") reason=\(created.reason ?? "")")
         let id = try XCTUnwrap(created.detail?.summary.id)
         let wrongOwner = G073EnvironmentMetadata(
             id: environmentID, kind: .project,
@@ -910,7 +928,7 @@ final class G073TaskScheduleTests: XCTestCase {
         let rows = (try? await store.occurrences(scheduleID: id, limit: 5)) ?? []
         let occurrence = try XCTUnwrap(rows.first)
         XCTAssertEqual(occurrence.state, .failed)
-        let storedSchedule = await store.schedule(id: id)
+        let storedSchedule = try await store.schedule(id: id)
         let schedule = try XCTUnwrap(storedSchedule)
         XCTAssertNotNil(schedule.lastStartedAt)
         XCTAssertTrue(schedule.isEnabled)
@@ -973,7 +991,9 @@ final class G073TaskScheduleTests: XCTestCase {
             id: "project", kind: .project, ownerID: workspaceID.uuidString,
             state: "active", requiresRebuild: false,
             executionBackend: "linuxPRoot")
-        ownership.registerHostMetadata([session, project], at: fixedNow)
+        // proveEnvironment uses the ownership's default wall-clock freshness;
+        // register this fixture near now, not the schedule's frozen clock.
+        ownership.registerHostMetadata([session, project], at: Date())
 
         let ownSession = await ownership.proveEnvironment(
             "session", conversationID: conversationID, epoch: 1)

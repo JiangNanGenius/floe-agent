@@ -282,7 +282,11 @@
     <!-- G07.3B 离线抓包分析与 Wi-Fi 覆盖 -->
     <string name="network_artifact_title">抓包与覆盖</string>
     <string name="network_artifact_agent_read">允许 Agent 读取此产物</string>
-    <string name="network_artifact_agent_read_note">这是针对单个产物的显式用户授权。Agent 工具仍需活动的非临时任务，且不会获得文件或网络权限。关闭后分析仅保留在本地。</string>
+    <string name="network_artifact_agent_read_note">允许助手读取这份报告的脱敏摘要。关闭后仅保留在本地。</string>
+    <string name="network_artifact_copy_for_assistant">复制给助手</string>
+    <string name="network_artifact_copy_confirmation">引用已复制，可粘贴到对话中。</string>
+    <string name="network_artifact_copy_pcap_instruction">请用 network.pcapAnalyze 工具读取我共享的网络抓包摘要。\n%1$s</string>
+    <string name="network_artifact_copy_coverage_instruction">请用 network.coverageSummary 工具读取我共享的 Wi-Fi 覆盖摘要。\n%1$s</string>
     <string name="network_artifact_cancel_work">取消</string>
     <string name="network_artifact_back">返回</string>
     <string name="network_artifact_captures">抓包分析</string>
