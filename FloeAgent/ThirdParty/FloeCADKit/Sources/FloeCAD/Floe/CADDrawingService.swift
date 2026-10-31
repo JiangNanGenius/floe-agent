@@ -3654,6 +3654,11 @@ public final class CADDrawingService {
         var drawingRadius: Double
     }
 
+    private enum FeatureFaceResolution {
+        case success(ResolvedFeatureFace)
+        case failure(String)
+    }
+
     /// Identity gate for a captured feature reference. While provenance names
     /// the authoring feature, the SAME active feature must still own the
     /// linked source body and the captured sketch links must still exist;
@@ -3718,7 +3723,7 @@ public final class CADDrawingService {
     private func resolveFeatureFace(_ feature: CADDrawingFeatureReference,
                                     page: CADDrawingPage,
                                     context: ResolvedViewContext)
-        -> Result<ResolvedFeatureFace, String> {
+        -> FeatureFaceResolution {
         guard let plane = context.plane else {
             return .failure("The view has no valid projection plane.")
         }

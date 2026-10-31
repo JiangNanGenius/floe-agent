@@ -163,7 +163,7 @@ final class CADDrawingFormatAdmissionTests: XCTestCase {
             "sectionOrigin": [5.0, 1.0, 6.0], "sectionNormal": [0.0, 1.0, 0.0],
         ])
         XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
-        let pageID = try XCTUnwrap((reply["page"] as? [String: Any]).map { $0["id"] as? String })
+        let pageID = try XCTUnwrap((reply["page"] as? [String: Any])?["id"] as? String)
         let save = await document.save()
         XCTAssertTrue(save.succeeded, save.error ?? "")
         let manifest = try manifest(document.url)
