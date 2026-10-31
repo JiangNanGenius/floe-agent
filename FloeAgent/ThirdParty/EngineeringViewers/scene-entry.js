@@ -33,6 +33,27 @@ function clamp(value, minimum, maximum) {
   return Math.min(Math.max(value, minimum), maximum);
 }
 
+// The bundled Draco and KTX2/Basis decoders are loaded through the SAME
+// LoadingManager as model resources. Treat only the exact same-origin local
+// decoder files as loader infrastructure so the block-external-resources
+// rule below cannot turn them into an inert placeholder image. Model
+// resources registered from the package are checked first.
+const BUNDLED_DECODER_FILES = new Set([
+  'draco_decoder.js', 'draco_decoder.wasm', 'draco_wasm_wrapper.js',
+  'basis_transcoder.js', 'basis_transcoder.wasm'
+]);
+
+export function bundledDecoderURL(value) {
+  try {
+    const resolved = new URL(String(value), location.href);
+    if (resolved.origin !== location.origin) return null;
+    const name = resolved.pathname.split('/').pop();
+    return BUNDLED_DECODER_FILES.has(name) ? resolved.href : null;
+  } catch {
+    return null;
+  }
+}
+
 // Report the PNG dimensions that were actually produced instead of copying the
 // requested width/height into the frame metadata.
 function pngDimensions(dataURL) {
@@ -151,12 +172,21 @@ export function createEngineeringScene({container, package: pkg, config = {}, sa
     const normalized = normalizeReference(url);
     const mapped = resourceMap.get(url) || resourceMap.get(normalized);
     if (mapped) return mapped;
+    const decoder = bundledDecoderURL(url);
+    if (decoder) return decoder;
     // Do NOT let three resolve an external/remote URI. Return a local inert
     // data URL and keep the exact reference for the diagnostics contract.
     blockedReferences.add(normalized);
     return TRANSPARENT_PIXEL;
   });
   manager.onError = (url) => {
+    // A decoder asset is loader infrastructure, not a missing model
+    // resource: let the scene load fail explicitly instead of reporting a
+    // model texture/buffer as missing.
+    if (bundledDecoderURL(url)) {
+      publish(true);
+      return;
+    }
     const normalized = normalizeReference(url);
     if (!/^(data|blob):/i.test(normalized)) failedReferences.add(normalized);
     publish(true);

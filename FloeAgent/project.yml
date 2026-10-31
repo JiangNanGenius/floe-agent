@@ -674,6 +674,10 @@ targets:
           - OfficeBridgeStateTests.swift
           - ShellCoreUtilityTests.swift
           - RARFixtures.generated.swift
+      # Owned glTF/GLB scene + decoder fixtures shared with FloeAppTests.
+      - path: Tests/Fixtures/EngineeringScene
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: FloeAgent
     settings:
@@ -982,6 +986,10 @@ targets:
       - path: Tests/FloeAppTests/NativeCADPartReferenceHostTests.swift
       - path: Tests/FloeAppTests/EngineeringWebSessionReparentTests.swift
       - path: Tests/FloeAppTests/EngineeringObservationServiceTests.swift
+      - path: Tests/FloeAppTests/EngineeringSceneResourceWitnessTests.swift
+      - path: Tests/Fixtures/EngineeringScene
+        type: folder
+        buildPhase: resources
       - path: Tests/FloeWorkspaceTests/EngineeringPreviewPackageTests.swift
       - path: Tests/FloeAppTests/NativeCADCapabilityDiscoveryTests.swift
       # K3: App-level default-ask ordinary-document policy regression (real

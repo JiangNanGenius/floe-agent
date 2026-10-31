@@ -1514,10 +1514,11 @@ private struct EngineeringSceneBlockedView: View {
 
 #if DEBUG
 /// UI-qualification only. It reports the LIVE scene state the WebGL page
-/// already publishes (ready flag, parsed object/mesh count, source digest and
-/// backend) so a UI test can distinguish a real renderer/scene load from a
-/// navigation-only title or a Quick Look window. It is not a success label and
-/// is only mounted for `-ui-testing` scene previews.
+/// already publishes (source digest, parsed counts, scenes/cameras/clips and
+/// actual playback progress) so a UI test can distinguish a real renderer and
+/// real native control commands from a navigation-only title, a Quick Look
+/// window or a static first frame. It is not a success label and is only
+/// mounted for `-ui-testing` scene previews.
 private struct EngineeringSceneReadinessProbe: View {
     @ObservedObject var session: EngineeringWebSession
 
@@ -1535,12 +1536,25 @@ private struct EngineeringSceneReadinessProbe: View {
 
     private var readiness: String {
         guard let state = session.sceneState else {
-            return "ready=false source=pending nodes=0 meshes=0 geometry=false backend=pending"
+            return "ready=false source=pending nodes=0 meshes=0 materials=0 "
+                + "textures=0 instanced=0 skinned=0 morph=0 geometry=false "
+                + "backend=pending scenes=0 scene=0 cameras=0 camera=none "
+                + "clips=0 clip=none playing=false loop=repeat speed=1.00 time=0.000"
         }
+        let camera = state.activeCameraIndex.map(String.init) ?? "none"
+        let clip = state.activeClipIndex.map(String.init) ?? "none"
         return "ready=\(state.ready) source=\(state.sourceSHA256) "
             + "nodes=\(state.nodeCount) meshes=\(state.meshCount) "
-            + "materials=\(state.materialCount) backend=\(state.backend) "
-            + "geometry=\(state.meshCount > 0 && state.nodeCount > 0)"
+            + "materials=\(state.materialCount) textures=\(state.textureCount) "
+            + "instanced=\(state.instancedMeshCount) skinned=\(state.skinnedMeshCount) "
+            + "morph=\(state.morphMeshCount) backend=\(state.backend) "
+            + "geometry=\(state.meshCount > 0 && state.nodeCount > 0) "
+            + "scenes=\(state.scenes.count) scene=\(state.activeSceneIndex) "
+            + "cameras=\(state.cameras.count) camera=\(camera) "
+            + "clips=\(state.clips.count) clip=\(clip) "
+            + "playing=\(state.playing) loop=\(state.loopMode) "
+            + "speed=\(String(format: "%.2f", state.speed)) "
+            + "time=\(String(format: "%.3f", state.timeSeconds))"
     }
 }
 #endif

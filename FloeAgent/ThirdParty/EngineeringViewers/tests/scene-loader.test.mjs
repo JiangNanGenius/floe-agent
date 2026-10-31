@@ -228,6 +228,32 @@ test('built scene bundle is importable local ESM', async () => {
   assert.equal(typeof module.createEngineeringScene, 'function');
 });
 
+test('scene URL modifier allows only same-origin bundled decoder assets', async () => {
+  const module = await import(pathToFileURL(path.join(resources, 'scene.js')).href);
+  const previous = globalThis.location;
+  globalThis.location = {
+    href: 'http://127.0.0.1:8765/index.html',
+    origin: 'http://127.0.0.1:8765'
+  };
+  try {
+    // The decoder loaders use the same LoadingManager as model resources; a
+    // blanket external-URL block would replace these with a placeholder PNG
+    // and break Draco/KTX2 without any explicit error.
+    assert.equal(module.bundledDecoderURL('./basis_transcoder.js'),
+      'http://127.0.0.1:8765/basis_transcoder.js');
+    assert.equal(module.bundledDecoderURL('./draco_decoder.wasm'),
+      'http://127.0.0.1:8765/draco_decoder.wasm');
+    assert.equal(module.bundledDecoderURL('basis_transcoder.js'),
+      'http://127.0.0.1:8765/basis_transcoder.js');
+    assert.equal(module.bundledDecoderURL('https://example.com/basis_transcoder.js'), null);
+    assert.equal(module.bundledDecoderURL('textures/quadrants.png'), null);
+    assert.equal(module.bundledDecoderURL('data:image/png;base64,AA'), null);
+  } finally {
+    if (previous === undefined) delete globalThis.location;
+    else globalThis.location = previous;
+  }
+});
+
 test('viewer static source never adds a remote scene fetch', () => {
   const viewer = readFileSync(path.join(resources, 'viewer.js'), 'utf8');
   assert.ok(viewer.includes("import('./scene.js')"));

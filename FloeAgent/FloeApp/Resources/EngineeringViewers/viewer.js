@@ -17,7 +17,7 @@ $('review').onclick=async()=>{
 };
 const urls=[];
 function localURL(blob){const url=URL.createObjectURL(blob);urls.push(url);return url;}
-function fail(error){if(finished)return;finished=true;clearTimeout(timer);destroy();view.replaceChildren();$('error').hidden=false;$('error').textContent=say('无法显示此文件。\n','Unable to display this file.\n')+String(error?.message??error);$('status').textContent=say('加载失败','Failed');window.floeEngineeringResult={ok:false,error:String(error)};}
+function fail(error){if(finished)return;finished=true;clearTimeout(timer);destroy();view.replaceChildren();$('error').hidden=false;$('error').textContent=say('无法显示此文件。\n','Unable to display this file.\n')+String(error?.message??error);$('status').textContent=say('加载失败','Failed');window.floeEngineeringResult={ok:false,error:String(error)};try{window.webkit?.messageHandlers?.floeEngineering?.postMessage({operation:'scene-error',message:String(error?.message??error)}).catch(()=>{});}catch{}}
 function ready(details){if(finished)return;finished=true;clearTimeout(timer);window.webkit?.messageHandlers?.floeEngineering?.postMessage({operation:'complete'}).catch(()=>{});$('status').textContent=details;window.floeEngineeringResult={ok:true,details};$('review').hidden=!config.canReview;}
 $('fit').onclick=()=>fit();
 window.addEventListener('pagehide',()=>{destroy();urls.forEach(URL.revokeObjectURL);});
