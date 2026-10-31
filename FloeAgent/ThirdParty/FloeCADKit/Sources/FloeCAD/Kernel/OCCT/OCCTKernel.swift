@@ -1086,7 +1086,7 @@ nonisolated enum OCCTKernel {
     /// retain the same instance). Nil when the copy fails — callers must NOT
     /// fall back to serializing the live handle off the calling actor.
     static func independentSnapshot(_ handle: BRepHandle) -> BRepHandle? {
-        OCCTBridge.independentCopyForSerialization(handle.shape).map(BRepHandle.init)
+        OCCTBridge.independentCopy(forSerialization: handle.shape).map(BRepHandle.init)
     }
 
     /// Restore a solid from `serialize(_:)`. Nil on any failure — callers keep
