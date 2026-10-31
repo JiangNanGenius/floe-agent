@@ -374,6 +374,56 @@ final class CADParameterCorrectnessTests: XCTestCase {
         XCTAssertEqual(stored.value, .pi / 12, accuracy: 1e-12)
     }
 
+    func testRotateFaceThirtyToFortyFiveDegreesAndContinuedSameFeature() async throws {
+        let document = try await makeDocument()
+        defer { document.close() }
+        let feature = try makeMeshRotation(document, degrees: 30)
+        let initial = try parameter(document, feature: feature, name: "angle")
+        XCTAssertEqual(initial["unit"] as? String, "deg")
+        XCTAssertEqual(initial["value"] as? Double ?? -1, 30, accuracy: 1e-10)
+
+        let before = try body(document).render.localAABB
+        let reply = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": feature.raw.uuidString, "changes": ["angle": 45],
+        ])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        let queried = try parameter(document, feature: feature, name: "angle")
+        XCTAssertEqual(queried["value"] as? Double ?? -1, 45, accuracy: 1e-10)
+        let updated = try XCTUnwrap(document.session.document.features.node(feature))
+        guard case let .rotateFace(_, angle, _) = updated.kind else {
+            return XCTFail("Expected rotation feature")
+        }
+        XCTAssertEqual(angle.value, .pi / 4, accuracy: 1e-12)
+
+        let reference = try await makeDocument()
+        defer { reference.close() }
+        _ = try makeMeshRotation(reference, degrees: 45)
+        let actualBounds = try body(document).render.localAABB
+        let referenceBounds = try body(reference).render.localAABB
+        XCTAssertGreaterThan(simd_length(actualBounds.max - before.max), 0.01)
+        XCTAssertLessThan(simd_length(actualBounds.min - referenceBounds.min), 1e-3)
+        XCTAssertLessThan(simd_length(actualBounds.max - referenceBounds.max), 1e-3)
+        XCTAssertEqual(try volume(document), try volume(reference), accuracy: 0.1)
+
+        document.session.undo()
+        XCTAssertEqual(try parameter(document, feature: feature, name: "angle")["value"]
+                       as? Double ?? -1, 30, accuracy: 1e-10)
+        document.session.redo()
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        XCTAssertEqual(try parameter(reopened, feature: feature, name: "angle")["value"]
+                       as? Double ?? -1, 45, accuracy: 1e-10)
+        guard case let .rotateFace(_, stored, _) = try XCTUnwrap(
+            reopened.session.document.features.node(feature)).kind else {
+            return XCTFail("Reopened rotation missing")
+        }
+        XCTAssertEqual(stored.value, .pi / 4, accuracy: 1e-12)
+    }
+
     func testInPlaceBodyDependenciesUseProducerIdentityForReorderAndDelete() async throws {
         let document = try await makeDocument()
         defer { document.close() }

@@ -980,7 +980,45 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
                      name: "r12-unicode-after-reopen.pdf", type: "com.adobe.pdf")
         retainExport(try reopenedService.exportData(pageID: pageUUID, format: "svg"),
                      name: "r12-unicode-after-reopen.svg", type: "public.svg-image")
+        // E19: keep editing the SAME annotation in the SAME package after
+        // reopen. A readback alone cannot prove continued editability.
+        let revisedText = "复核 " + annotationText
+        let edited = reopenedService.handle(action: "updateAnnotation", args: [
+            "pageID": pageID, "annotationID": annotationID, "text": revisedText,
+            "position": [22.0, -18.0],
+        ])
+        XCTAssertEqual(edited["ok"] as? Bool, true, "\(edited)")
+        let editedRow = try XCTUnwrap(edited["annotation"] as? [String: Any])
+        XCTAssertEqual(editedRow["id"] as? String, annotationID)
+        XCTAssertEqual(editedRow["text"] as? String, revisedText)
+        func annotationRow(_ document: FloeCADDocument) throws -> [String: Any] {
+            let payload = CADDrawingService(document: document).pageGeometry(pageID: pageUUID)
+            let rows = try XCTUnwrap(payload["annotations"] as? [[String: Any]])
+            XCTAssertEqual(rows.count, 1, "editing must not create a replacement annotation")
+            return try XCTUnwrap(rows.first { ($0["id"] as? String) == annotationID })
+        }
+        reopened.session.undo()
+        XCTAssertEqual(try annotationRow(reopened)["text"] as? String, annotationText)
+        reopened.session.redo()
+        XCTAssertEqual(try annotationRow(reopened)["text"] as? String, revisedText)
+        let continuedSave = await reopened.save()
+        XCTAssertTrue(continuedSave.succeeded, continuedSave.error ?? "")
+        let editedDxf = try reopenedService.exportData(pageID: pageUUID, format: "dxf")
+        retainExport(editedDxf, name: "r12-unicode-continued-edit.dxf", type: "public.data")
+        retainExport(try reopenedService.exportData(pageID: pageUUID, format: "pdf"),
+                     name: "r12-unicode-continued-edit.pdf", type: "com.adobe.pdf")
+        XCTAssertTrue(DXFTextCodec.decode(try XCTUnwrap(String(data: editedDxf, encoding: .ascii)))
+            .contains(revisedText))
         reopened.close()
+        let continued = try await FloeCADDocument.open(at: document.url)
+        defer { continued.close() }
+        let continuedRow = try annotationRow(continued)
+        XCTAssertEqual(continuedRow["id"] as? String, annotationID)
+        XCTAssertEqual(continuedRow["text"] as? String, revisedText)
+        XCTAssertEqual(continuedRow["localPosition"] as? [Double], [22.0, -18.0])
+        XCTAssertEqual(try CADDrawingService(document: continued).exportData(
+            pageID: pageUUID, format: "dxf"), editedDxf,
+            "the continued edit must remain byte-identical after another real reopen")
     }
 
     // MARK: - Service edit contracts
