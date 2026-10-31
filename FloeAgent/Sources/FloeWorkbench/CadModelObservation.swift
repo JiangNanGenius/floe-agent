@@ -2,6 +2,13 @@
 import Foundation
 import FloeCore
 
+/// Projection requested for a read-only capture. Nil keeps the viewer's
+/// actual current camera type, so existing callers keep their behaviour.
+public enum CadModelObservationProjection: String, Codable, Sendable, CaseIterable {
+    case perspective
+    case orthographic
+}
+
 /// Read-only observation of an original model file. It does not import the
 /// model into a CAD package or turn image coordinates into topological IDs.
 public struct CadModelObservationRequest: Codable, Sendable, Equatable {
@@ -32,6 +39,9 @@ public struct CadModelObservationRequest: Codable, Sendable, Equatable {
     public var cameraIndex: Int?
     public var clipIndex: Int?
     public var timeSeconds: Double?
+    /// Optional perspective/orthographic override for actual capture pixels.
+    /// Nil preserves the live viewer's current camera type.
+    public var projection: CadModelObservationProjection?
     public var expectedSourceSHA256: String?
     public var maximumSourceBytes: Int
     public var maximumResources: Int
@@ -45,6 +55,7 @@ public struct CadModelObservationRequest: Codable, Sendable, Equatable {
                                 .init(azimuthDegrees: 305, elevationDegrees: 20)],
                 width: Int = 1024, height: Int = 768, sceneIndex: Int? = nil,
                 cameraIndex: Int? = nil, clipIndex: Int? = nil, timeSeconds: Double? = nil,
+                projection: CadModelObservationProjection? = nil,
                 expectedSourceSHA256: String? = nil,
                 maximumSourceBytes: Int = 20 * 1024 * 1024, maximumResources: Int = 32,
                 includeImages: Bool = true, nodeOffset: Int = 0, nodeLimit: Int = 200) {
@@ -55,6 +66,7 @@ public struct CadModelObservationRequest: Codable, Sendable, Equatable {
         self.cameraIndex = cameraIndex
         self.clipIndex = clipIndex
         self.timeSeconds = timeSeconds
+        self.projection = projection
         self.expectedSourceSHA256 = expectedSourceSHA256
         self.maximumSourceBytes = maximumSourceBytes
         self.maximumResources = maximumResources
@@ -65,7 +77,7 @@ public struct CadModelObservationRequest: Codable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case views, width, height, sceneIndex, cameraIndex, clipIndex, timeSeconds
-        case expectedSourceSHA256, maximumSourceBytes, maximumResources
+        case projection, expectedSourceSHA256, maximumSourceBytes, maximumResources
         case includeImages, nodeOffset, nodeLimit
     }
 
@@ -79,6 +91,7 @@ public struct CadModelObservationRequest: Codable, Sendable, Equatable {
         cameraIndex = try c.decodeIfPresent(Int.self, forKey: .cameraIndex)
         clipIndex = try c.decodeIfPresent(Int.self, forKey: .clipIndex)
         timeSeconds = try c.decodeIfPresent(Double.self, forKey: .timeSeconds)
+        projection = try c.decodeIfPresent(CadModelObservationProjection.self, forKey: .projection)
         expectedSourceSHA256 = try c.decodeIfPresent(String.self, forKey: .expectedSourceSHA256)
         maximumSourceBytes = try c.decodeIfPresent(Int.self, forKey: .maximumSourceBytes) ?? defaults.maximumSourceBytes
         maximumResources = try c.decodeIfPresent(Int.self, forKey: .maximumResources) ?? defaults.maximumResources

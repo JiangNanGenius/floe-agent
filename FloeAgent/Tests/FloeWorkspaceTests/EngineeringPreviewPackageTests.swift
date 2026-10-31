@@ -157,6 +157,24 @@ struct EngineeringPreviewPackageTests {
         }
     }
 
+    @Test func siblingResourceChangeAltersProvenanceButNotSourceIdentity() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = Data(#"{"asset":{"version":"2.0"},"buffers":[{"uri":"part.bin"}],"meshes":[]}"#.utf8)
+        try source.write(to: root.appendingPathComponent("scene.gltf"))
+        try Data([1, 2, 3, 4]).write(to: root.appendingPathComponent("part.bin"))
+        let service = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root))
+        let first = try EngineeringPreviewPackage.load(path: "scene.gltf", service: service)
+        try Data([9, 8, 7, 6]).write(to: root.appendingPathComponent("part.bin"))
+        let second = try EngineeringPreviewPackage.load(path: "scene.gltf", service: service)
+        #expect(first.provenance.sourceSHA256 == second.provenance.sourceSHA256)
+        #expect(first.provenance != second.provenance)
+        #expect(first.provenance.resources != second.provenance.resources)
+        #expect(first.provenance.resources.count == 2)
+        #expect(second.provenance.resources.count == 2)
+    }
+
     @Test func glbPreflightParsesJSONChunkAndRejectsTruncation() throws {
         let json = #"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"A"}],"meshes":[],"images":[{"uri":"sibling.png"}]}"#
         let glb = makeGLB(json: json)
@@ -258,6 +276,37 @@ struct EngineeringPreviewPackageTests {
         let partial = EngineeringSceneCaptureResult(
             frames: [frame], failures: [.init(viewIndex: 3, reason: "test")])
         #expect(partial.isPartial)
+    }
+
+    @Test func sceneCaptureProjectionIsTypedAndReported() throws {
+        #expect(EngineeringSceneProjection(rawValue: "perspective") == .perspective)
+        #expect(EngineeringSceneProjection(rawValue: "orthographic") == .orthographic)
+        #expect(EngineeringSceneProjection(rawValue: "isometric") == nil)
+        let request = EngineeringSceneCaptureRequest(
+            views: [.init(azimuthDegrees: 0, elevationDegrees: 20)],
+            width: 320, height: 240, clipIndex: nil, timeSeconds: nil,
+            projection: .orthographic, maximumFrames: 2,
+            maximumPNGBytes: 1024, maximumTotalBytes: 4096)
+        #expect(request.projection == .orthographic)
+        let encoded = try #require(request.jsonString())
+        #expect(encoded.contains("\"projection\":\"orthographic\""))
+
+        let defaultRequest = EngineeringSceneCaptureRequest(
+            views: [.init(azimuthDegrees: 0, elevationDegrees: 20)],
+            width: 320, height: 240, clipIndex: nil, timeSeconds: nil,
+            maximumFrames: 2, maximumPNGBytes: 1024, maximumTotalBytes: 4096)
+        #expect(defaultRequest.projection == nil)
+        #expect(try #require(defaultRequest.jsonString()).contains("\"projection\":null"))
+
+        let frame = EngineeringSceneCaptureFrame(
+            pngData: Data([1, 2, 3]), width: 64, height: 64, viewIndex: 0,
+            azimuthDegrees: 0, elevationDegrees: 20, timeSeconds: 0,
+            clipIndex: nil, sourceSHA256: "source", state: nil,
+            projection: .orthographic, renderer: "online3DViewer")
+        #expect(frame.projection == .orthographic)
+        #expect(frame.renderer == "online3DViewer")
+        #expect(frame.receipt.contains("projection=orthographic"))
+        #expect(frame.receipt.contains("renderer=online3DViewer"))
     }
 
     private func makeGLB(json: String) -> Data {

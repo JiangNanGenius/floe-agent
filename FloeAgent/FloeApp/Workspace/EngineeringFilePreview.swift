@@ -920,6 +920,17 @@ final class CadLiveDraftRegistry {
             let state = (frame["state"] as? [String: Any]).flatMap { object in
                 EngineeringSceneState.decode(fromJSONObject: object)
             }
+            // Actual projection/renderer are required evidence, not inferred
+            // from the request. A page that omits them cannot be treated as a
+            // successful frame.
+            guard let projectionRaw = frame["projection"] as? String,
+                  let projection = EngineeringSceneProjection(rawValue: projectionRaw),
+                  let renderer = frame["renderer"] as? String,
+                  !renderer.isEmpty else {
+                failureOutput.append(.init(viewIndex: viewIndex,
+                    reason: "frame is missing actual projection/renderer metadata"))
+                continue
+            }
             output.append(EngineeringSceneCaptureFrame(
                 pngData: png, width: width, height: height, viewIndex: viewIndex,
                 azimuthDegrees: (frame["azimuthDegrees"] as? NSNumber)?.doubleValue ?? 0,
@@ -927,7 +938,7 @@ final class CadLiveDraftRegistry {
                 timeSeconds: (frame["timeSeconds"] as? NSNumber)?.doubleValue ?? 0,
                 clipIndex: (frame["clipIndex"] as? NSNumber)?.intValue,
                 sourceSHA256: frame["sourceSHA256"] as? String ?? "",
-                state: state))
+                state: state, projection: projection, renderer: renderer))
         }
         return EngineeringSceneCaptureResult(frames: output, failures: failureOutput)
     }

@@ -2178,7 +2178,35 @@ struct CadOriginalSceneObservationTests {
         #expect(request.includeImages)
         #expect(request.nodeOffset == 0)
         #expect(request.nodeLimit == 200)
+        #expect(request.projection == nil)
         #expect(CadDocumentTool.parametersJSON.contains("nextOffset"))
+        #expect(CadDocumentTool.parametersJSON.contains("projection?:perspective|orthographic"))
+        let projected = try JSONDecoder().decode(CadModelObservationRequest.self,
+            from: Data(#"{"projection":"orthographic"}"#.utf8))
+        #expect(projected.projection == .orthographic)
+    }
+
+    @Test("all existing static mesh and CAD-surface originals are accepted; imported/native/2D formats are not")
+    func observableOriginalPaths() throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        let accepted = [
+            "part.stl", "part.obj", "part.ply", "part.off", "part.3ds",
+            "part.dae", "part.fbx", "part.3mf", "part.amf", "part.wrl",
+            "part.bim", "part.step", "part.stp", "part.iges", "part.igs",
+            "part.brep", "part.glb", "part.gltf",
+        ]
+        for path in accepted {
+            try tool.validate(arguments(path: path))
+        }
+        let refused = [
+            "part.floecad", "part.dxf", "part.dwg", "part.gbr",
+            "part.fcstd", "part.ifc", "part.3dm", "part.dgn",
+        ]
+        for path in refused {
+            #expect(throws: (any Error).self) {
+                try tool.validate(arguments(path: path))
+            }
+        }
     }
 
     @Test("invalid projections, dimensions, pages and stale identity shapes are refused before rendering")
@@ -2194,6 +2222,10 @@ struct CadOriginalSceneObservationTests {
         request = .init(); request.expectedSourceSHA256 = "not-a-hash"; invalid.append(request)
         request = .init(); request.maximumSourceBytes = 65 * 1024 * 1024; invalid.append(request)
         for value in invalid { #expect(throws: (any Error).self) { try value.validate() } }
+        #expect(throws: (any Error).self) {
+            _ = try JSONDecoder().decode(CadModelObservationRequest.self,
+                from: Data(#"{"projection":"isometric"}"#.utf8))
+        }
         let tool = CadDocumentTool(host: FakeCadHost())
         #expect(throws: (any Error).self) {
             try tool.validate(arguments(path: "part.floecad"))

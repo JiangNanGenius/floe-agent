@@ -979,6 +979,7 @@ targets:
       - path: Tests/FloeAppTests/NativeCADPartReferenceHostTests.swift
       - path: Tests/FloeAppTests/EngineeringWebSessionReparentTests.swift
       - path: Tests/FloeAppTests/EngineeringObservationServiceTests.swift
+      - path: Tests/FloeWorkspaceTests/EngineeringPreviewPackageTests.swift
       - path: Tests/FloeAppTests/NativeCADCapabilityDiscoveryTests.swift
       # K3: App-level default-ask ordinary-document policy regression (real
       # runtime + production PDF/media tool hosts). Registering the file here

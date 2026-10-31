@@ -12,6 +12,7 @@ import {RoomEnvironment} from 'three/examples/jsm/environments/RoomEnvironment.j
 const MAX_NODES = 200;
 const MAX_CAPTURE_FRAMES = 8;
 const TRANSPARENT_PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+const PNG_PREFIX = 'data:image/png;base64,';
 
 function decodeBytes(file) {
   const binary = atob(file.base64);
@@ -30,6 +31,37 @@ function normalizeReference(value) {
 
 function clamp(value, minimum, maximum) {
   return Math.min(Math.max(value, minimum), maximum);
+}
+
+// Report the PNG dimensions that were actually produced instead of copying the
+// requested width/height into the frame metadata.
+function pngDimensions(dataURL) {
+  if (typeof dataURL !== 'string' || !dataURL.startsWith(PNG_PREFIX)) return null;
+  let binary;
+  try {
+    // Only the 24-byte PNG signature/IHDR prefix is needed; do not decode the
+    // whole (possibly multi-megabyte) frame just to read its dimensions.
+    const payload = dataURL.slice(PNG_PREFIX.length);
+    binary = atob(payload.slice(0, Math.min(payload.length, 64)));
+  } catch {
+    return null;
+  }
+  if (binary.length < 24) return null;
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  for (let index = 0; index < signature.length; index += 1) {
+    if (binary.charCodeAt(index) !== signature[index]) return null;
+  }
+  if (binary.charCodeAt(12) !== 0x49 || binary.charCodeAt(13) !== 0x48
+      || binary.charCodeAt(14) !== 0x44 || binary.charCodeAt(15) !== 0x52) return null;
+  const readUInt32 = (offset) => (
+    (binary.charCodeAt(offset) << 24)
+    | (binary.charCodeAt(offset + 1) << 16)
+    | (binary.charCodeAt(offset + 2) << 8)
+    | binary.charCodeAt(offset + 3)
+  ) >>> 0;
+  const width = readUInt32(16);
+  const height = readUInt32(20);
+  return width > 0 && height > 0 ? {width, height} : null;
 }
 
 export function createEngineeringScene({container, package: pkg, config = {}, say, onState, onProgress, onReady, onError}) {
@@ -673,6 +705,17 @@ export function createEngineeringScene({container, package: pkg, config = {}, sa
     const maximumTotalBytes = clamp(Number(request.maximumTotalBytes) || 32 * 1024 * 1024, 1024, 32 * 1024 * 1024);
     const requestedClip = request.clipIndex === null || request.clipIndex === undefined ? null : Number(request.clipIndex);
     const requestedTime = request.timeSeconds === null || request.timeSeconds === undefined ? null : Number(request.timeSeconds);
+    const requestedProjection = request.projection === null || request.projection === undefined
+      ? null : String(request.projection);
+    if (requestedProjection !== null && !['perspective', 'orthographic'].includes(requestedProjection)) {
+      return JSON.stringify({
+        frames: [],
+        failures: views.map((_, index) => ({viewIndex: index, reason: 'unsupported projection'})),
+        sourceSHA256: pkg.provenance?.sourceSHA256 || ''
+      });
+    }
+    const savedProjection = camera.isOrthographicCamera ? 'orthographic' : 'perspective';
+    const savedFov = camera.isPerspectiveCamera ? camera.fov : 45;
     const saved = {
       camera,
       aspect: camera.aspect,
@@ -726,34 +769,61 @@ export function createEngineeringScene({container, package: pkg, config = {}, sa
             Math.cos(elevationRadians) * Math.sin(azimuthRadians),
             Math.sin(elevationRadians),
             Math.cos(elevationRadians) * Math.cos(azimuthRadians));
-          const distance = camera.isPerspectiveCamera
-            ? radius / Math.sin(THREE.MathUtils.degToRad(camera.fov) / 2) * 1.35 * distanceScale
-            : radius * 3 * distanceScale;
-          camera.position.copy(viewTarget).addScaledVector(direction, distance);
-          if (camera.isPerspectiveCamera) {
-            camera.aspect = width / height;
+          const projection = requestedProjection || savedProjection;
+          const useTemporaryCamera = projection !== savedProjection;
+          let renderCamera = camera;
+          if (useTemporaryCamera) {
+            // Explicit projection is rendered with a disposable camera; the
+            // scene's active camera/controls/playback authority is untouched.
+            const near = Math.max(radius / 10_000, 0.000001);
+            const far = Math.max(radius * 10_000, 100);
+            const boundingDistance = radius
+              / Math.sin(THREE.MathUtils.degToRad(savedFov) / 2) * 1.35 * distanceScale;
+            if (projection === 'perspective') {
+              renderCamera = new THREE.PerspectiveCamera(savedFov, width / height, near, far);
+            } else {
+              const halfHeight = boundingDistance * Math.tan(THREE.MathUtils.degToRad(savedFov) / 2);
+              const halfWidth = halfHeight * (width / height);
+              renderCamera = new THREE.OrthographicCamera(
+                -halfWidth, halfWidth, halfHeight, -halfHeight, near, far);
+            }
+            renderCamera.position.copy(viewTarget).addScaledVector(direction, boundingDistance);
+            renderCamera.up.set(0, 1, 0);
+            renderCamera.lookAt(viewTarget);
+            renderCamera.updateProjectionMatrix();
           } else {
-            const heightSize = radius * 2.4 * distanceScale;
-            camera.top = heightSize / 2;
-            camera.bottom = -heightSize / 2;
-            camera.left = -heightSize * (width / height) / 2;
-            camera.right = heightSize * (width / height) / 2;
-            camera.zoom = 1;
+            const distance = camera.isPerspectiveCamera
+              ? radius / Math.sin(THREE.MathUtils.degToRad(camera.fov) / 2) * 1.35 * distanceScale
+              : radius * 3 * distanceScale;
+            camera.position.copy(viewTarget).addScaledVector(direction, distance);
+            if (camera.isPerspectiveCamera) {
+              camera.aspect = width / height;
+            } else {
+              const heightSize = radius * 2.4 * distanceScale;
+              camera.top = heightSize / 2;
+              camera.bottom = -heightSize / 2;
+              camera.left = -heightSize * (width / height) / 2;
+              camera.right = heightSize * (width / height) / 2;
+              camera.zoom = 1;
+            }
+            camera.near = Math.max(radius / 10_000, 0.000001);
+            camera.far = Math.max(radius * 10_000, 100);
+            camera.updateProjectionMatrix();
+            camera.lookAt(viewTarget);
           }
-          camera.near = Math.max(radius / 10_000, 0.000001);
-          camera.far = Math.max(radius * 10_000, 100);
-          camera.updateProjectionMatrix();
-          camera.lookAt(viewTarget);
-          renderer.render(scene, camera);
+          renderer.render(scene, renderCamera);
           const dataURL = renderer.domElement.toDataURL('image/png');
+          const dimensions = pngDimensions(dataURL);
+          if (!dimensions) throw new Error('the renderer did not return a PNG frame');
           const byteEstimate = Math.ceil(dataURL.length * 3 / 4);
           if (byteEstimate > maximumPNGBytes) throw new Error('png exceeds frame limit');
           if (totalBytes + byteEstimate > maximumTotalBytes) throw new Error('capture exceeds total limit');
           totalBytes += byteEstimate;
           const frameState = stateObject();
           frames.push({
-            dataURL, width, height, viewIndex: index,
+            dataURL, width: dimensions.width, height: dimensions.height, viewIndex: index,
             azimuthDegrees: azimuth, elevationDegrees: elevation,
+            projection, renderer: 'threeGLTF',
             timeSeconds, clipIndex: clip,
             sourceSHA256: pkg.provenance?.sourceSHA256 || '',
             state: frameState

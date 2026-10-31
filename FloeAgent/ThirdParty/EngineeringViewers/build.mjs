@@ -6,7 +6,11 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 const root=path.dirname(fileURLToPath(import.meta.url));
-const out=path.resolve(root,'../../FloeApp/Resources/EngineeringViewers');
+// Maintainer-only override so a private qualification build can be staged
+// without touching the checked-in resource directory. Normal builds keep the
+// existing default output.
+const configuredOut=process.env.FLOE_ENGINEERING_VIEWERS_OUT;
+const out=configuredOut?path.resolve(configuredOut):path.resolve(root,'../../FloeApp/Resources/EngineeringViewers');
 await mkdir(out,{recursive:true});
 // dxf-viewer 1.0.48 was built against three 0.161. Keep its entry pinned to
 // that exact nested package even though the scene viewer needs r176; otherwise
@@ -15,7 +19,11 @@ const dxfThree=path.join(root,'node_modules/dxf-viewer/node_modules/three');
 for(const [entry,name,options] of [
  ['dxf-entry.js','dxf.js',{alias:{three:dxfThree}}],
  ['mesh-entry.js','mesh.js',{}],
- ['scene-entry.js','scene.js',{}]
+ ['scene-entry.js','scene.js',{}],
+ // Static Online3DViewer adapter. It receives the already bundled OV
+ // namespace from viewer.js, so this bundle never embeds a second three.js or
+ // a remote dependency.
+ ['static-scene-entry.js','static-scene.js',{}]
 ]){
  await esbuild.build({absWorkingDir:root,entryPoints:[entry],outfile:path.join(out,name),bundle:true,format:'esm',target:'es2022',minify:true,legalComments:'linked',...options});
 }

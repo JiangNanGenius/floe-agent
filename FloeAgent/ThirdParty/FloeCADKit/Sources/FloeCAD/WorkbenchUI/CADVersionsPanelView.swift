@@ -619,6 +619,7 @@ struct CADVersionsPanelView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CADVersionCompareResult")
     }
 

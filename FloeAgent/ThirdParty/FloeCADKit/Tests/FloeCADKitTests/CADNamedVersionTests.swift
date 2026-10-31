@@ -654,14 +654,10 @@ final class CADNamedVersionTests: XCTestCase {
     // MARK: - Interrupted-commit recovery carries versions or warns
 
     func testInterruptedRecoveryCarriesVersionsOrWarns() async throws {
-        print("E34_RECOVERY_TRACE create cancelled=\(Task.isCancelled)")
         let (document, url) = try await makeDocument("Recovery")
         addTriangle(document, name: "Solid")
-        print("E34_RECOVERY_TRACE save cancelled=\(Task.isCancelled)")
         try await save(document)
-        print("E34_RECOVERY_TRACE checkpoint cancelled=\(Task.isCancelled)")
         _ = try await document.createNamedVersion(name: "Keep")
-        print("E34_RECOVERY_TRACE close-original cancelled=\(Task.isCancelled)")
         document.close()
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: url.appendingPathComponent("previous/manifest.json").path))
@@ -670,16 +666,18 @@ final class CADNamedVersionTests: XCTestCase {
         // the last complete commit is under previous/. The current root still
         // carries versions, which recovery must carry forward.
         try FileManager.default.removeItem(at: url.appendingPathComponent("manifest.json"))
-        print("E34_RECOVERY_TRACE open-recovery cancelled=\(Task.isCancelled)")
         let recovered = try await FloeCADDocument.open(at: url)
-        print("E34_RECOVERY_TRACE list-recovery cancelled=\(Task.isCancelled)")
         let recoveredRows = try await recovered.namedVersions()
         XCTAssertEqual(recoveredRows.map(\.name), ["Keep"])
         let recoveredFloor = try XCTUnwrap(try manifestObject(url)["schemaVersion"] as? Int)
         XCTAssertGreaterThanOrEqual(recoveredFloor, CADDocumentFormat.namedVersionFormatVersion,
                                     "carrying versions forward must keep the floor")
         XCTAssertFalse(recovered.session.loadWarning?.contains("named versions") == true)
-        print("E34_RECOVERY_TRACE close-recovery cancelled=\(Task.isCancelled)")
+        // Recovery consumed the previous snapshot. A second interrupted
+        // commit must follow a real new save, which creates its own backup.
+        addTriangle(recovered, name: "After recovery", offset: 30)
+        try await save(recovered)
+        XCTAssertEqual(recovered.summary().bodyCount, 2)
         recovered.close()
 
         // Now make the carry fail. Opening still recovers the document, but
@@ -689,23 +687,15 @@ final class CADNamedVersionTests: XCTestCase {
             throw NSError(domain: "FloeCADVersionTest", code: 30,
                           userInfo: [NSLocalizedDescriptionKey: "injected version carry failure"])
         }
-        print("E34_RECOVERY_TRACE open-with-carry-failure cancelled=\(Task.isCancelled)")
         let hasPrevious = FileManager.default.fileExists(
             atPath: url.appendingPathComponent("previous/manifest.json").path)
-        print("E34_RECOVERY_TRACE second-open previous=\(hasPrevious)")
         XCTAssertTrue(hasPrevious, "an interrupted recovery needs a real previous commit")
-        let recoveredWithoutVersions: FloeCADDocument
-        do {
-            recoveredWithoutVersions = try await FloeCADDocument.open(at: url)
-        } catch {
-            let detail = error as NSError
-            print("E34_RECOVERY_TRACE second-open-error type=\(String(reflecting: type(of: error))) domain=\(detail.domain) code=\(detail.code) cancelled=\(Task.isCancelled)")
-            throw error
-        }
+        let recoveredWithoutVersions = try await FloeCADDocument.open(at: url)
         CADDocumentFaultInjection.beforeVersionRecoveryCarry = nil
-        print("E34_RECOVERY_TRACE list-after-carry-failure cancelled=\(Task.isCancelled)")
         let missingCarryRows = try await recoveredWithoutVersions.namedVersions()
         XCTAssertEqual(missingCarryRows.count, 0)
+        XCTAssertEqual(recoveredWithoutVersions.summary().bodyCount, 1,
+                       "recovery must use the previous complete commit")
         XCTAssertTrue(recoveredWithoutVersions.session.loadWarning?
             .contains("named versions") == true,
             "a failed version carry must be surfaced, not silently reported as recovered")

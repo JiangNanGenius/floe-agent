@@ -214,20 +214,36 @@ async function load(pkg){
    });
    modelFiles=[new File([converted.buffer],'display.stl')];surfaceInfo=converted.info;
   }
-  const OV=await import('./mesh.js');
+  // The static model adapter consumes the OV namespace and imported model that
+  // this page already owns. It does not import a second three.js copy and it
+  // registers on the SAME typed scene bridge as the glTF path.
+  const [{createEngineeringStaticScene},OV]=await Promise.all([import('./static-scene.js'),import('./mesh.js')]);
+  const publishScene=state=>window.webkit?.messageHandlers?.floeEngineering?.postMessage({operation:'scene-state',state}).catch(()=>{});
+  let staticScene=null;
   const embedded=new OV.EmbeddedViewer(view,{
    backgroundColor:new OV.RGBAColor(...(config.dark?[24,30,40,255]:[245,246,248,255])),
    defaultColor:new OV.RGBColor(120,165,190),
    onModelLoaded:()=>{
     const model=embedded.GetModel();if(!model||model.MeshCount()===0){fail(say('文件没有可显示的网格。','No renderable meshes.'));return;}
-    reviewContext=()=>({type:'mesh',sourceCAD:surfaceInfo,meshCount:model.MeshCount(),vertexCount:model.VertexCount?.(),triangleCount:model.TriangleCount?.(),
-     bounds:embedded.GetViewer().GetBoundingSphere(()=>true),missingReferences:pkg.missingReferences,
-     limitations:'Rendered meshes only. Dimensions, material properties, tolerances and manufacturing validity are not verified.'});
+    try{
+     staticScene=createEngineeringStaticScene({
+      OV,viewer:embedded.GetViewer(),model,package:pkg,
+      backend:pkg.kind==='cadSurface'?'occt':'online3DViewer',
+      conversion:surfaceInfo??null,
+      onState:state=>publishScene(state),
+      say
+     });
+     window.floeEngineeringSceneCommand=json=>staticScene.command(json);
+     window.floeEngineeringSceneCapture=json=>staticScene.capture(json);
+     window.floeEngineeringSceneState=()=>staticScene.state();
+     publishScene(staticScene.stateObject());
+     reviewContext=()=>staticScene.reviewContext();
+    }catch(error){fail(error);return;}
     ready(missing?say('部分外部资源缺失','Some referenced resources are missing'):say('三维模型','3D model'));
    },onModelLoadFailed:()=>fail(say('格式、压缩方式不受支持，或文件已损坏。','Unsupported format/compression, or a damaged file.'))
   });
   const observer=new ResizeObserver(()=>embedded.Resize());observer.observe(view);
-  destroy=()=>{observer.disconnect();embedded.Destroy();};
+  destroy=()=>{observer.disconnect();staticScene?.dispose();embedded.Destroy();};
   fit=()=>{const v=embedded.GetViewer();const sphere=v.GetBoundingSphere(()=>true);if(sphere)v.FitSphereToWindow(sphere,false);};
   embedded.LoadModelFromFileList(modelFiles);
   $('hint').textContent=say('单指旋转 · 双指缩放和平移 · 只读预览','Drag to rotate · Two fingers to zoom and pan · Read only');

@@ -898,6 +898,13 @@ public enum EngineeringSceneCommand: Sendable, Equatable {
     }
 }
 
+/// Explicit read-only capture projection. Nil in a request keeps the actual
+/// current camera type; every frame still reports the projection it used.
+public enum EngineeringSceneProjection: String, Codable, Sendable, CaseIterable {
+    case perspective
+    case orthographic
+}
+
 public struct EngineeringSceneCaptureView: Codable, Sendable, Equatable {
     public var azimuthDegrees: Double
     public var elevationDegrees: Double
@@ -930,6 +937,10 @@ public struct EngineeringSceneCaptureRequest: Sendable, Equatable {
     public var height: Int
     public var clipIndex: Int?
     public var timeSeconds: Double?
+    /// Nil preserves the actual current projection; a value renders the
+    /// temporary capture camera in that projection without changing the
+    /// viewer's saved scene/camera/playback authority.
+    public var projection: EngineeringSceneProjection?
     public var maximumFrames: Int
     public var maximumPNGBytes: Int
     public var maximumTotalBytes: Int
@@ -941,14 +952,16 @@ public struct EngineeringSceneCaptureRequest: Sendable, Equatable {
         maximumTotalBytes: 32 * 1024 * 1024)
 
     public init(views: [EngineeringSceneCaptureView], width: Int, height: Int,
-                clipIndex: Int?, timeSeconds: Double?, maximumFrames: Int,
-                maximumPNGBytes: Int, maximumTotalBytes: Int) {
+                clipIndex: Int?, timeSeconds: Double?,
+                projection: EngineeringSceneProjection? = nil,
+                maximumFrames: Int, maximumPNGBytes: Int, maximumTotalBytes: Int) {
         let frameLimit = min(max(maximumFrames, 1), 8)
         self.views = Array(views.prefix(frameLimit))
         self.width = min(max(width, 64), 2048)
         self.height = min(max(height, 64), 2048)
         self.clipIndex = clipIndex
         self.timeSeconds = timeSeconds.map { max(0, $0) }
+        self.projection = projection
         self.maximumFrames = frameLimit
         self.maximumPNGBytes = min(max(maximumPNGBytes, 1024), 16 * 1024 * 1024)
         self.maximumTotalBytes = min(max(maximumTotalBytes, 1024), 32 * 1024 * 1024)
@@ -974,6 +987,7 @@ public struct EngineeringSceneCaptureRequest: Sendable, Equatable {
         ]
         payload["clipIndex"] = clipIndex.map { $0 } ?? NSNull()
         payload["timeSeconds"] = timeSeconds ?? NSNull()
+        payload["projection"] = projection?.rawValue ?? NSNull()
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
         return String(data: data, encoding: .utf8)
@@ -1001,11 +1015,18 @@ public struct EngineeringSceneCaptureFrame: Sendable, Equatable {
     public let clipIndex: Int?
     public let sourceSHA256: String
     public let state: EngineeringSceneState?
+    /// Projection actually used to render this frame, independent of whether
+    /// the request overrode the live camera type.
+    public let projection: EngineeringSceneProjection
+    /// Renderer that produced the pixels (`threeGLTF` or `online3DViewer`).
+    public let renderer: String
 
     public init(pngData: Data, width: Int, height: Int, viewIndex: Int,
                 azimuthDegrees: Double, elevationDegrees: Double,
                 timeSeconds: Double, clipIndex: Int?, sourceSHA256: String,
-                state: EngineeringSceneState?) {
+                state: EngineeringSceneState?,
+                projection: EngineeringSceneProjection = .perspective,
+                renderer: String = "threeGLTF") {
         self.pngData = pngData
         self.width = width
         self.height = height
@@ -1016,6 +1037,8 @@ public struct EngineeringSceneCaptureFrame: Sendable, Equatable {
         self.clipIndex = clipIndex
         self.sourceSHA256 = sourceSHA256
         self.state = state
+        self.projection = projection
+        self.renderer = renderer
     }
 
     public var mimeType: String { "image/png" }
@@ -1028,7 +1051,8 @@ public struct EngineeringSceneCaptureFrame: Sendable, Equatable {
     /// Compact evidence line for a persisted `EngineeringObservations` entry.
     public var receipt: String {
         "sourceSHA256=\(sourceSHA256) imageSHA256=\(pngSHA256) "
-            + "view=\(viewIndex) time=\(timeSeconds) clip=\(clipIndex.map(String.init) ?? "none")"
+            + "view=\(viewIndex) time=\(timeSeconds) clip=\(clipIndex.map(String.init) ?? "none") "
+            + "projection=\(projection.rawValue) renderer=\(renderer)"
     }
 }
 
