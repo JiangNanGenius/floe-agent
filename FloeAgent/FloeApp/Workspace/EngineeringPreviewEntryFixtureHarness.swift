@@ -216,6 +216,17 @@ enum EngineeringPreviewEntryFixture {
         try asset.data.write(to: attachmentURL, options: .atomic)
         let bookmark = try modelURL.bookmarkData(
             options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        // The real store requires the message before its attachment, and the
+        // attachment before its file part. Create the parent first, then use
+        // appendMessage's existing upsert after the attachment is saved.
+        let messagesBeforeAttachment = try await conversationStore.messages(
+            conversationID: conversationID)
+        if !messagesBeforeAttachment.contains(where: { $0.id == messageID }) {
+            try await conversationStore.appendMessage(PersistedMessage(
+                id: messageID, conversationID: conversationID, role: "user",
+                content: "Preview the attached fixture model.",
+                createdAt: Date(), parts: [], runID: nil))
+        }
         let attachment = AttachmentRef(
             id: attachmentID,
             conversationID: conversationID,
@@ -233,7 +244,11 @@ enum EngineeringPreviewEntryFixture {
 
         let existingMessages = (try? await conversationStore.messages(
             conversationID: conversationID)) ?? []
-        if !existingMessages.contains(where: { $0.id == messageID }) {
+        if !existingMessages.contains(where: { message in
+            message.id == messageID && message.parts.contains(where: {
+                $0.attachmentID == attachmentID
+            })
+        }) {
             try await conversationStore.appendMessage(PersistedMessage(
                 id: messageID,
                 conversationID: conversationID,
@@ -300,7 +315,7 @@ enum EngineeringPreviewEntryFixture {
             schemaVersion: 1,
             generatedAt: ISO8601DateFormatter().string(from: Date()),
             route: route.rawValue,
-            fixtureOrigin: "Local/Private/providers-cad-20261030/qa/unit-20261029T192524Z/native-artifacts/plate-workflow-hole8-fillet.glb (existing FloeCAD GLB export)",
+            fixtureOrigin: "Owned asymmetric plate exported by FloeCAD; content digest pinned in the UI fixture asset.",
             fixtureSHA256: asset.sha256,
             fixtureByteCount: asset.data.count,
             modelAbsolutePath: modelURL.path,
@@ -539,6 +554,7 @@ struct EngineeringPreviewEntryFixtureHarness: View {
             }
         }
         .accessibilityIdentifier("engineeringEntryFixture")
+        .accessibilityValue(store.error != nil ? "failed" : (store.seeded ? "ready" : "loading"))
     }
 
     @ViewBuilder

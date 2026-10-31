@@ -66,10 +66,10 @@ final class EngineeringPreviewEntryUITests: XCTestCase {
 
     func test03FilesRecentRowUsesSharedEngineeringPreview() throws {
         let app = launch("files")
-        var menu = app.buttons["files.row.menu"].firstMatch
-        if !menu.waitForExistence(timeout: 10) {
-            menu = app.buttons["More"].firstMatch
-        }
+        let fixtureRow = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "files.row."))
+            .containing(.staticText, identifier: "EngineeringEntryPlate.glb").firstMatch
+        let menu = fixtureRow.buttons["files.row.menu"].firstMatch
         XCTAssertTrue(menu.waitForExistence(timeout: 90),
                       "the Files recent row menu must be reachable")
         menu.tap()
@@ -142,8 +142,16 @@ final class EngineeringPreviewEntryUITests: XCTestCase {
         let fixture = app.descendants(matching: .any)["engineeringEntryFixture"].firstMatch
         XCTAssertTrue(fixture.waitForExistence(timeout: 60),
                       "the engineering entry fixture must launch")
+        let prepared = NSPredicate { object, _ in
+            guard let element = object as? XCUIElement,
+                  let value = element.value as? String else { return false }
+            return value == "ready" || value == "failed"
+        }
+        let preparedExpectation = XCTNSPredicateExpectation(predicate: prepared, object: fixture)
+        XCTAssertEqual(XCTWaiter.wait(for: [preparedExpectation], timeout: 60), .completed,
+                       "fixture preparation must finish before an entry is exercised")
         let failure = app.descendants(matching: .any)["engineeringEntryFixture.error"].firstMatch
-        if failure.waitForExistence(timeout: 3) {
+        if (fixture.value as? String) == "failed" || failure.exists {
             XCTFail("engineering entry fixture failed: \(failure.label)")
         }
         return app
