@@ -1027,6 +1027,164 @@ final class EngineeringSceneResourceWitnessTests: XCTestCase {
         ], name: "scene-resource-refusal-manifest")
     }
 
+    // These two clauses need actual pixels as well as preflight counters:
+    // sparse accessors must not silently become zero-filled geometry, and
+    // supported non-triangle primitives must not disappear from the view.
+    func testSparsePositionsRenderTheSameTriangleAsDensePositions() async throws {
+        let root = try makeWorkspace([])
+        let positions: [Float] = [-1, -1, 0, 1, -1, 0, 0, 1, 0]
+        let denseBytes = floatBytes(positions)
+        var sparseBytes = Data([0, 1, 2, 0]) // Three u8 indices, then f32 alignment.
+        sparseBytes.append(denseBytes)
+        let sparseAccessor: [String: Any] = [
+            "componentType": 5126, "count": 3, "type": "VEC3",
+            "min": [-1, -1, 0], "max": [1, 1, 0],
+            // An omitted base bufferView is an initially zero-filled accessor.
+            // Only the three real sparse replacements can produce the triangle.
+            "sparse": ["count": 3,
+                       "indices": ["bufferView": 0, "componentType": 5121],
+                       "values": ["bufferView": 1]],
+        ]
+        let sparseJSON = try primitiveScene(
+            mode: 4, accessor: sparseAccessor,
+            bufferViews: [["buffer": 0, "byteOffset": 0, "byteLength": 3],
+                          ["buffer": 0, "byteOffset": 4, "byteLength": denseBytes.count]],
+            bufferName: "sparse.bin", byteCount: sparseBytes.count)
+        let denseJSON = try primitiveScene(
+            mode: 4,
+            accessor: ["bufferView": 0, "componentType": 5126, "count": 3,
+                       "type": "VEC3", "min": [-1, -1, 0], "max": [1, 1, 0]],
+            bufferViews: [["buffer": 0, "byteOffset": 0, "byteLength": denseBytes.count]],
+            bufferName: "dense.bin", byteCount: denseBytes.count)
+        let originals = ["sparse.gltf": sparseJSON, "sparse.bin": sparseBytes,
+                         "dense.gltf": denseJSON, "dense.bin": denseBytes]
+        for (name, bytes) in originals { try write(bytes, named: name, in: root) }
+        let package = try EngineeringPreviewPackage.load(
+            fileURL: root.appendingPathComponent("sparse.gltf"),
+            includeSiblingResources: true, limits: .standard)
+        XCTAssertTrue(package.diagnostics.isScenePreviewAvailable)
+        XCTAssertEqual(package.diagnostics.sparseAccessorCount, 1)
+        let request = CadModelObservationRequest(
+            views: [.init(azimuthDegrees: 0, elevationDegrees: 0)],
+            width: 480, height: 360, cameraIndex: 0)
+        let sparse = try await observe("sparse.gltf", in: root, request)
+        let dense = try await observe("dense.gltf", in: root, request)
+        assertComplete(try json(sparse.summaryJSON))
+        assertComplete(try json(dense.summaryJSON))
+        let sparsePNG = try XCTUnwrap(sparse.frames.first).pngData
+        let densePNG = try XCTUnwrap(dense.frames.first).pngData
+        let sparsePixels = try Pixels.decode(sparsePNG)
+        let densePixels = try Pixels.decode(densePNG)
+        XCTAssertGreaterThan(sparsePixels.foreground().count, 5_000,
+                             "zero-filled or omitted sparse positions cannot pass as a triangle")
+        let center = sparsePixels.rgb(sparsePixels.width / 2, sparsePixels.height / 2)
+        XCTAssertGreaterThan(center.0, center.1 * 2)
+        XCTAssertGreaterThan(center.0, center.2 * 2)
+        XCTAssertLessThan(try sparsePixels.differenceFraction(from: densePixels), 0.005,
+                          "sparse replacements must render the same actual geometry as dense data")
+        for (name, bytes) in originals {
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(name)), bytes)
+        }
+        attachPNG(sparsePNG, name: "scene-sparse-positions")
+        attachPNG(densePNG, name: "scene-dense-control")
+        attachManifest([
+            "witness": "sparse-only positions equal real dense triangle pixels",
+            "sparseSourceSHA256": FloeDigest.sha256Hex(sparseJSON),
+            "sparseBufferSHA256": FloeDigest.sha256Hex(sparseBytes),
+            "foregroundPixels": sparsePixels.foreground().count,
+            "sparseState": try json(sparse.summaryJSON)["state"] ?? NSNull(),
+        ], name: "scene-sparse-manifest")
+    }
+
+    func testNonTrianglePointsAndLineLoopProduceActualPixels() async throws {
+        let root = try makeWorkspace([])
+        let loop: [Float] = [-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]
+        var points: [Float] = []
+        for y in 0...6 {
+            for x in 0...6 {
+                points += [Float(x) / 3 - 1, Float(y) / 3 - 1, 0]
+            }
+        }
+        var receipts: [[String: Any]] = []
+        for (name, mode, expectedMode, positions) in [
+            ("line-loop", 2, "LINE_LOOP", loop),
+            ("points", 0, "POINTS", points),
+        ] {
+            let binary = floatBytes(positions)
+            let source = try primitiveScene(
+                mode: mode,
+                accessor: ["bufferView": 0, "componentType": 5126,
+                           "count": positions.count / 3, "type": "VEC3",
+                           "min": [-1, -1, 0], "max": [1, 1, 0]],
+                bufferViews: [["buffer": 0, "byteOffset": 0, "byteLength": binary.count]],
+                bufferName: "\(name).bin", byteCount: binary.count)
+            try write(source, named: "\(name).gltf", in: root)
+            try write(binary, named: "\(name).bin", in: root)
+            let package = try EngineeringPreviewPackage.load(
+                fileURL: root.appendingPathComponent("\(name).gltf"),
+                includeSiblingResources: true, limits: .standard)
+            XCTAssertTrue(package.diagnostics.isScenePreviewAvailable)
+            XCTAssertEqual(package.diagnostics.primitiveModeCounts[expectedMode], 1)
+            let result = try await observe("\(name).gltf", in: root, .init(
+                views: [.init(azimuthDegrees: 0, elevationDegrees: 0)],
+                width: 480, height: 360, cameraIndex: 0,
+                expectedSourceSHA256: FloeDigest.sha256Hex(source)))
+            let summary = try json(result.summaryJSON)
+            assertComplete(summary)
+            let png = try XCTUnwrap(result.frames.first).pngData
+            let pixels = try Pixels.decode(png)
+            var redPixels = 0
+            for index in stride(from: 0, to: pixels.rgba.count, by: 4) {
+                let red = Int(pixels.rgba[index])
+                let green = Int(pixels.rgba[index + 1])
+                let blue = Int(pixels.rgba[index + 2])
+                if red > 120 && red > green * 2 && red > blue * 2 { redPixels += 1 }
+            }
+            XCTAssertGreaterThan(redPixels, 16,
+                                 "\(expectedMode) must draw actual coloured pixels, not an empty scene")
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("\(name).gltf")), source)
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("\(name).bin")), binary)
+            attachPNG(png, name: "scene-nontriangle-\(name)")
+            receipts.append(["mode": expectedMode, "redPixels": redPixels,
+                             "sourceSHA256": FloeDigest.sha256Hex(source),
+                             "state": summary["state"] ?? NSNull()])
+        }
+        attachManifest(["witness": "non-triangle primitives render rather than disappearing",
+                        "cases": receipts], name: "scene-nontriangle-manifest")
+    }
+
+    private func floatBytes(_ values: [Float]) -> Data {
+        var data = Data()
+        for value in values {
+            var bits = value.bitPattern.littleEndian
+            withUnsafeBytes(of: &bits) { data.append(contentsOf: $0) }
+        }
+        return data
+    }
+
+    private func primitiveScene(mode: Int, accessor: [String: Any],
+                                bufferViews: [[String: Any]], bufferName: String,
+                                byteCount: Int) throws -> Data {
+        let document: [String: Any] = [
+            "asset": ["version": "2.0", "generator": "Floe owned primitive witness"],
+            "extensionsUsed": ["KHR_materials_unlit"],
+            "scene": 0, "scenes": [["nodes": [0, 1]]],
+            "nodes": [["name": "Primitive", "mesh": 0],
+                      ["name": "SourceCamera", "camera": 0, "translation": [0, 0, 5]]],
+            "cameras": [["type": "perspective",
+                         "perspective": ["yfov": 0.7, "znear": 0.01, "zfar": 100]]],
+            "meshes": [["primitives": [["attributes": ["POSITION": 0],
+                                        "mode": mode, "material": 0]]]],
+            "materials": [["doubleSided": true,
+                           "extensions": ["KHR_materials_unlit": [String: Any]()],
+                           "pbrMetallicRoughness": ["baseColorFactor": [1.0, 0.03, 0.03, 1.0],
+                                                    "metallicFactor": 0, "roughnessFactor": 1]]],
+            "accessors": [accessor], "bufferViews": bufferViews,
+            "buffers": [["uri": bufferName, "byteLength": byteCount]],
+        ]
+        return try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+    }
+
     // MARK: - 9. Explicit 64 MiB / 128-file App route
 
     func testExplicit64MiB128FileRouteLoadsAndRendersAndOverflowIsRefused() async throws {
