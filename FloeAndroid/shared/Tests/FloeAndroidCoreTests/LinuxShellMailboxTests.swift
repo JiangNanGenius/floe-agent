@@ -11,7 +11,7 @@
 // cold rootfs materialization/import, so its wait is a PREPARATION budget;
 // the caller's command timeout is a separate budget that starts only at real
 // execution admission. These tests drive the raw mailbox (claim/complete/
-// shouldStop) with a millisecond sleeper: no runtime component, no Binder, no
+// shouldStop) with its real bounded waiter clock: no runtime component, no Binder, no
 // device and no provider call.
 import XCTest
 import Foundation
@@ -21,10 +21,10 @@ import FloeAndroidShellTools
 final class LinuxShellMailboxPreparationBudgetTests: XCTestCase {
 
     private func makeMailbox() -> LinuxShellMailbox {
-        LinuxShellMailbox(sleeper: { nanoseconds in
-            // Keep the bounded-wait loops fast and deterministic on the host.
-            try? await Task.sleep(nanoseconds: min(nanoseconds, 1_000_000))
-        })
+        // Use the real bounded waiter clock: shortening each sleep while the
+        // watchdog charges the full poll interval would expire the budget
+        // before the real preparation delay in this regression.
+        LinuxShellMailbox()
     }
 
     private func claim(_ mailbox: LinuxShellMailbox,

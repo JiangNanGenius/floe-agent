@@ -329,7 +329,8 @@ class CoverageSessionStoreTest {
             val reopened = store.load(upper)
             assertNotNull(reopened)
             assertEquals(lower, reopened!!.sessionID)
-            assertEquals("coverage-$lower", reopened.sessionFile.parentFile!!.name)
+            assertEquals(listOf("coverage-$lower"),
+                root.listFiles().orEmpty().filter { it.isDirectory }.map { it.name })
             assertEquals(lower, store.list().single().sessionID)
             assertTrue(store.delete(upper))
             assertNull(store.load(lower))
