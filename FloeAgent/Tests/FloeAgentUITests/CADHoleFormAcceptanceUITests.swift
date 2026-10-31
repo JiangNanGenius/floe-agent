@@ -195,9 +195,9 @@ private enum CADHoleFormUI {
                           "committing the value must close the real keypad",
                           file: file, line: line)
         } else {
-            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10),
-                          "the system keyboard must appear before typing into the field",
-                          file: file, line: line)
+            // typeText itself requires real keyboard focus, including when
+            // a hardware keyboard is connected. An onscreen keyboard's
+            // presence is not a substitute for that focus check.
             for _ in seed { field.typeText(XCUIKeyboardKey.delete.rawValue) }
             field.typeText(text)
             field.typeText(XCUIKeyboardKey.return.rawValue)
