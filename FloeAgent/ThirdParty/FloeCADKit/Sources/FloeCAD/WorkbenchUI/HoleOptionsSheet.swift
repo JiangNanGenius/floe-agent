@@ -175,6 +175,7 @@ struct HoleOptionsSheet: View {
                         "If the plane normal points out of the part, choose Opposite normal."))
                 }
             }
+            .accessibilityIdentifier("HoleOptionsForm")
             .navigationTitle(viewModel.editingHoleFeatureID == nil
                 ? FloeCADStrings.text("cad.hole.title", "Hole")
                 : FloeCADStrings.text("cad.hole.edit", "Edit Hole"))

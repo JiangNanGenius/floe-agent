@@ -169,7 +169,10 @@ private enum CADHoleFormUI {
         // A native Form exposes the whole LabeledContent row as this text
         // field, although the editable rounded box is at its trailing edge.
         // Tap inside that visible box, not the row's label/empty centre.
-        field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        // The final four points are beyond the trailing text's native inset,
+        // placing the caret after the existing value rather than before it.
+        field.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+            .withOffset(CGVector(dx: -4, dy: 0)).tap()
         let pad = any(app, "NumericKeypad")
         if pad.waitForExistence(timeout: 3) {
             let delete = app.buttons["KeypadDelete"]
@@ -201,17 +204,27 @@ private enum CADHoleFormUI {
             field.typeText(text)
             field.typeText(XCUIKeyboardKey.return.rawValue)
         }
+        XCTAssertTrue(waitForValue(field, text, timeout: 5),
+                      "the real numeric input must replace its previous value with \(text)",
+                      file: file, line: line)
     }
 
     static func oppositeNormalSegment(_ app: XCUIApplication,
                                       file: StaticString = #filePath,
                                       line: UInt = #line) -> XCUIElement {
         let segment = app.segmentedControls.buttons["Opposite normal"]
-        if segment.waitForExistence(timeout: 10) {
-            return segment
-        }
         let button = app.buttons["Opposite normal"]
-        XCTAssertTrue(button.waitForExistence(timeout: 5),
+        let form = any(app, "HoleOptionsForm")
+        for _ in 0..<4 {
+            if segment.exists && segment.isHittable { return segment }
+            if button.exists && button.isHittable { return button }
+            guard form.waitForExistence(timeout: 5) else { break }
+            // Scroll the actual modal Form. Its lower sections are virtualized;
+            // waiting for an offscreen segment cannot make it appear, and an
+            // app-wide swipe can instead move the background tool palette.
+            form.swipeUp()
+        }
+        XCTAssertTrue(button.exists && button.isHittable,
                       "the real drill-direction control must offer Opposite normal: \(app.debugDescription)",
                       file: file, line: line)
         return button
@@ -221,11 +234,6 @@ private enum CADHoleFormUI {
                                      file: StaticString = #filePath,
                                      line: UInt = #line) {
         let segment = oppositeNormalSegment(app, file: file, line: line)
-        if !segment.isHittable {
-            for _ in 0..<3 where !segment.isHittable {
-                app.swipeUp()
-            }
-        }
         XCTAssertTrue(segment.isHittable,
                       "the direction control must be reachable in the form", file: file, line: line)
         segment.tap()
