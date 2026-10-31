@@ -11,6 +11,11 @@
 // the two default separated occurrences with three real occurrences for the
 // native interference inspector UI flow (A/B overlap, C separate).
 //
+// `--ui-test-cad-hole-form` reuses this host for H1 native hole FORM acceptance:
+// the FloeCAD fixture seeds a real unconsumed placement circle and arms the
+// production create/tap route, so the shipped HoleOptionsSheet and the real
+// History edit/save/reopen path are what the UI test exercises.
+//
 
 #if DEBUG && canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -306,7 +311,16 @@ struct CADWorkbenchFixtureHarness: View {
             guard document == nil, error == nil else { return }
             do {
                 let arguments = ProcessInfo.processInfo.arguments
-                if arguments.contains("--ui-test-cad-sketch-loop") {
+                if arguments.contains("--ui-test-cad-hole-form") {
+                    // H1 mechanical-hole FORM acceptance. The FloeCAD fixture
+                    // seeds a real unconsumed placement circle, arms the real
+                    // `beginCreate(.hole)` + viewport-tap route, and presents
+                    // the production HoleOptionsSheet. A package that already
+                    // contains the saved hole opens without arming a new draft,
+                    // so the same test can reopen it through History.
+                    document = try await CADHoleFormFixture.open(
+                        reset: arguments.contains("--ui-test-cad-hole-form-reset"))
+                } else if arguments.contains("--ui-test-cad-sketch-loop") {
                     document = try await CADQualificationFixture.openSplineLoop()
                 } else if arguments.contains("--ui-test-cad-sketch-conflict") {
                     document = try await CADQualificationFixture.openSplineConflict()

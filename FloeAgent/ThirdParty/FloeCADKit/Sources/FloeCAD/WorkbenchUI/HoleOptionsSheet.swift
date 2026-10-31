@@ -65,9 +65,14 @@ struct HoleOptionsSheet: View {
                 Section {
                     Picker(FloeCADStrings.text("cad.hole.type", "Type"), selection: $type) {
                         ForEach(HoleSpec.Kind.allCases, id: \.self) { kind in
-                            Text(typeLabel(kind)).tag(kind)
+                            Text(typeLabel(kind))
+                                .tag(kind)
+                                // Stable qualification selectors; the visible
+                                // form, layout and copy are unchanged.
+                                .accessibilityIdentifier("HoleTypeOption-\(kind.rawValue)")
                         }
                     }
+                    .accessibilityIdentifier("HoleTypePicker")
                     if bodies.isEmpty {
                         Text(FloeCADStrings.text(
                             "cad.hole.noTarget", "Add a body to drill into first."))
@@ -153,9 +158,13 @@ struct HoleOptionsSheet: View {
                     Picker(FloeCADStrings.text("cad.hole.direction", "Drill direction"),
                            selection: $reversed) {
                         Text(FloeCADStrings.text(
-                            "cad.hole.directionNormal", "Along plane normal")).tag(false)
+                            "cad.hole.directionNormal", "Along plane normal"))
+                            .tag(false)
+                            .accessibilityIdentifier("HoleDirectionNormal")
                         Text(FloeCADStrings.text(
-                            "cad.hole.directionReversed", "Opposite normal")).tag(true)
+                            "cad.hole.directionReversed", "Opposite normal"))
+                            .tag(true)
+                            .accessibilityIdentifier("HoleDirectionReversed")
                     }
                     .pickerStyle(.segmented)
                 } header: {
