@@ -680,7 +680,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
                         token: String,
                         expectedGeneration: UInt64,
                         lease: UUID?) -> Bool {
-        guard stage != nil, let scene = currentScene,
+        guard let stage, let scene = currentScene,
               renderGeneration == expectedGeneration else { return false }
         if let animationLease, lease != animationLease { return false }
         if animationRestoreCamera == nil { animationRestoreCamera = camera }
