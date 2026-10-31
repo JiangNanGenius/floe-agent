@@ -2,9 +2,9 @@
 
 ## 当前基线与本批范围（2026-10-31）
 
-最新实际读回公开 `main` 为 `0ef8b11dde2bd474721ab9cbe550cd1f61bb4b16`。相对上次 iOS 基线 `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322`（1.7.65／306），`FloeAgent/` 变更路径为零；这是源码增量核对，不是新的 iOS 编译、设备或发行验收。本批完成前及大目标收尾仍须重新读回主线，不能把进行中的私有 iOS 工作线视为已合入功能。
+最新实际读回公开 main 为 `352c590d3fb2472dfbe3141ee4c16980d3282277`（tree `16b7622c0c986572d40c7c83f22c41e8dabe092e`）。相对上次 iOS 基线 `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322`（1.7.65／306）为 13 个提交、143 个变更路径：FloeAndroid 139（新增 74／修改 65，+27,250/−689）、文档 4（新增 1／修改 3，+100/−1）；`FloeAgent` 变更路径及提交均为零。这是源码增量核对，未声称新增 iOS 编译或运行验收。
 
-Android 公开参照为 Alpha20／构建22、源码 `21b900e397c65c626aaf496e36b8cbf564341df6`；保留 IOS-D01..D36 的身份及已有证据。G07.3B 正在实现 D27 相关字面搜索修复、D11 的 Android 五种调度适配和网络离线分析／采样，尚不标记为设备或发布完成。G08、G09、G10 只读 CAD／3D、G11 合同与后续矩阵／视觉精修顺序保持。历史全量审计不重启，新差异按实际源码追加。
+Android 已公开 Alpha21／构建23（[发布页](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.21)），五份附件公开字节与 SHA-256 已读回。平板冷准备与系统闹钟变更已实际通过；三星公开 Alpha20→21 应用内增量更新、code23 运行组件与暖终端已实际通过，实际 RF 有限验证为 1 个命名点、真实缓存扫描 127 ms（明确标注缓存）、−21 dBm／信道 11，强制停止重启后保留，Agent 读取关闭；未声称完整 RF 矩阵。主负责人最终清理也已完成：2,829,467,648 字节（约 2.635 GiB）为多个非重叠 allocated／package-df 指标合计，不是单一卷可用空间增量；设备夹具按精确哈希移除，Samsung RF 夹具经 App 删除，Samsung 与平板模拟器已安全收尾，无待清理／RF／设备 slot。保留 IOS-D01..D36 及原有证据，D35／D36 与 Hub 全目录端口仍归 G11。full feed 已另行发布，但 Android 仍是 legacy schema 1／2 四 first-party 消费者，不是 schema 3 全目录消费者，客户端端口／信任／安装／回退未完成。
 
 ## 历史增量记录
 
@@ -273,3 +273,22 @@ Alpha20 (22), source `21b900e397c65c626aaf496e36b8cbf564341df6`: actual Samsung 
 iOS baseline remains `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322` (1.7.65/306), with zero subsequent FloeAgent changes through this APK source. Preserve D01-D36. Next G07.3B covers offline PCAP/PCAPNG, Wi-Fi coverage sampling and scheduled tasks; no dependent worker queue is pre-submitted.
 
 [Chinese closure, remaining gaps, next-stage scope and cleanup](android/FLOE_ANDROID_ALPHA20_CLOSURE_20261031.zh-CN.md).
+
+## 2026-10-31 G07.3B Alpha21 收尾增量（`4b72b1ba` → `9a9b444d`）
+
+- **读回与区间：** `git ls-remote origin refs/heads/main` 读回 `9a9b444d86e3ccc28ae6e2be523da4c567eb69c5`（tree `443ac26a6df58b9dd1e0ec44df07de040860c8f6`，提交时间 2026-10-31T16:51:22+11:00），本地对象一致；基线 `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322`（tree `8a980b93c277e23ff83af45484c75d853825319d`，1.7.65／306）。祖先关系成立，区间 10 个提交、128 个变更路径；触及 `FloeAgent` 的提交为 0。
+- **分类：**
+
+| 范围 | 路径数 | 状态 | 行数 |
+| --- | --- | --- | --- |
+| `FloeAgent/`（`FloeApp`／`Sources`／`Tests`／`ThirdParty`／`Vendor`／`Qualification`） | 0 | — | 0 |
+| `FloeAndroid/` | 124 | 69 新增／55 修改 | +25,671／−661 |
+| `docs/`（Android 文档） | 4 | 3 修改／1 新增 | +100／−1 |
+| 其他 | 0 | — | 0 |
+| 合计 | 128 | 70 新增／58 修改 | +25,771／−662 |
+
+新增文档为 `docs/android/FLOE_ANDROID_ALPHA20_CLOSURE_20261031.zh-CN.md`，其余三份为 Android 计划／进度／差异记录；均不属于 iOS 代码。没有 `FloeAgent` 功能、界面、接口或测试差异，因此不新增差异编号；`IOS-D01..D36` 的身份、归属和历史证据全部保留，`IOS-D35`（按对话固定执行目标与可恢复迁移）与 `IOS-D36`（长上下文连续性与工具结果恢复）继续归 G11，本批不重开审计。
+
+- **本批 Android 状态：** Alpha21／code23 已从 S2 `9a9b444d…` 产出实际签名 APK 与五份附件；本轮 89 项 JVM（56＋16＋12＋5）与 124 项主机 XCTest（8 套件）实际通过，46 项既有网络分组只保留为原独立证据；平板已完成 parent／组件 23 安装与部分网络／覆盖／精确权限检查，三星仍为公开 Alpha20，截至本稿，17:46 后台计划发生尚无已核对结果，Linux 执行未证明，Alpha21 未公开。不能把这些写成最终验收或发行。
+- **Hub 未来兼容（G11，不改变当前 APK）：** Android 当前合同为 `skill-hub/catalog.json`＋`catalog.sig`，接受 schema 1／2，官方 first-party 恰为 `floe-pdf`、`floe-office`、`floe-network`、`floe-video` 四个；canonical 共享源没有 planNumber 1..43 上限，也没有 iOS curated schema 3／43 的模型与装载器。未来 full-catalog 合同（独立 full 路径／`android/` 变体）仍待确认，必须真实完成客户端端口、信任、安装与回退；不把 44＋条目放入 legacy 43 feed，不以版本下限绕过整体解码／schema 拒绝，也不据此声明当前 feed 兼容。保留 D19／D20。
+- **下一步：** 从 `9a9b444d…` 之后的实际 `FloeAgent/FloeApp`、`FloeAgent/Sources` 与 `FloeAgent/Tests` 增量继续；下一次大目标收尾只补查该点之后的增量，不重启全量审计，也不把进行中的私有 iOS 工作线当作公共 main 或已发布版本。以上均为源码／元数据静态比对与已交接的组件／设备回执，不代表本审计运行过 iOS 编译、测试、设备或发布。

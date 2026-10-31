@@ -8,7 +8,7 @@
 
 [![Release](https://img.shields.io/github/v/release/JiangNanGenius/floe-agent?include_prereleases&label=release)](https://github.com/JiangNanGenius/floe-agent/releases)
 [![iOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
-[![Android 9+ ARM64 测试版](https://img.shields.io/badge/Android-9%2B%20ARM64%20alpha-3DDC84)](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.17)
+[![Android 9+ ARM64 测试版](https://img.shields.io/badge/Android-9%2B%20ARM64%20alpha-3DDC84)](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.21)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
 [安装](#开始使用) · [功能](#主要功能) · [演示](#看看-floe-如何工作) · [文档](#文档导航) · [开发](#从源码构建) · [参与贡献](#贡献与许可证)
@@ -40,7 +40,7 @@ https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json
 | iOS / iPadOS · TestFlight | 需要有效测试资格；可安装构建与到期时间以 TestFlight 为准。 |
 | iOS / iPadOS · Feather / AltStore | 先安装对应 App，点击上方按钮添加源，再按自己的签名方式安装。 |
 | iOS / iPadOS · GitHub IPA | 从发布页下载 IPA 和校验文件；IPA 未签名，需要自行签名。 |
-| Android 测试版 | Android 9+（ARM64）。从 [Android 发布页](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.17) 下载签名 APK 与校验文件并手动安装；GitHub版会自动检查更新，并引导下载、校验与系统安装。当前测试版已支持使用自备云端 Key（BYOK）的 AI 对话与任务、历史与附件、服务商与凭据管理、MCP 连接、设备端 Linux 环境与终端／作业、文件工作区、带补全与运行输出的代码 IDE、Git、浏览器，以及内置 Office 查看和 DOCX／XLSX／PPTX 基础编辑。Alpha15 已加入手记基础工作区（文本/页面、图片/PDF、笔迹、思维导图、Office 关联与导入导出）；Alpha16 加入手机网络工作台（Wi‑Fi 扫描、信道与信号变化、DNS、Ping、TCP、HTTPS 与六个共用 Agent 工具），以及列表优先的手机文件、文本／代码全窗口和 PDF／图片只读全窗口。Alpha17／构建19 加入局域网发现、有上限的 HTTPS 测速、带前台通知的持续监测和默认脱敏的 JSON／Markdown 报告；已在三星API33真机和API37／16KiB平板模拟器验证，并完成三个公开附件的下载校验。安卓不提供本地大语言模型；抓包文件分析、覆盖采样、画布、语音与 Skill Hub 商店继续按路线图推进。 |
+| Android 测试版 | Android 9+（ARM64）。从 [Android 发布页](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.21) 安装签名 APK；GitHub 版会检查更新，引导下载、校验和系统安装，有补丁时可减少下载量。当前支持自备云端 Key 的 AI 任务、历史与附件、服务商与凭据设置、MCP、设备端 Linux 终端与作业、文件、代码 IDE、Git、浏览器、内置 Office 查看与基础编辑，以及手记基础工作区。网络工作台包含 Wi-Fi、局域网发现、DNS、Ping、TCP、HTTPS、测速、监测与脱敏报告。Alpha21 加入离线 PCAP／PCAPNG 分析、可选平面图的 Wi-Fi 覆盖点记录，以及在独立对话中执行的定时 Agent 任务；精确时间需要系统授权，弹性时间需主动选择。安卓不提供本地模型推理，语音、只读 CAD／3D 与完整 Skill Hub 客户端仍在计划中。实际测试设备与限制见发布说明。 |
 
 iOS / iPadOS 首次使用：**安装 → 配置模型 → 新建任务 → 打开成果**。核心手记、文件整理和画布无需 AI 服务商；AI 功能使用你配置的服务商或设备支持的本地模型。Android 首次使用：**安装 → 添加云端模型 Key → 开始对话**；手记基础编辑无需配置模型；AI功能使用自备云端服务。Office 文档、文件工作区、Linux 终端、代码 IDE 和网络工作台已在当前测试版中可用。
 
@@ -50,7 +50,7 @@ iOS 设置向导提供四种推荐配置，帮助预填模型、搜索、语音�
 
 ## 主要功能
 
-下表介绍 Floe 的核心工作流程，具体可用性因平台与发布版本而异；Android 测试版现状请见上方安装说明与 [Android 发布记录](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.17)。
+下表介绍 Floe 的核心工作流程，具体可用性因平台与发布版本而异；Android 测试版现状请见上方安装说明与 [Android 发布记录](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.21)。
 
 | 工作方式 | 在 Floe 中做什么 | 操作指南 |
 | --- | --- | --- |

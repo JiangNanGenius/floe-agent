@@ -1,6 +1,6 @@
-<!-- docs-updated: 2026-10-30 -->
+<!-- docs-updated: 2026-10-31 -->
 
-> 本指南主要介绍iOS/iPadOS。Android Alpha17／构建19 是当前公开预发布，加入局域网发现、有上限的 HTTPS 测速、持续监测与默认脱敏的 JSON／Markdown 报告；已完成三星真机与API37平板模拟器代表性检查和公开下载校验。打开 **更多 → 网络** 开始检查；只有在你选择“允许访问”后，应用才请求实际需要的系统权限（验证版本为定位），授权后不会自动重放检查，请再次开始。文件中的文本／代码可展开为全窗口编辑器，PDF 与常见栅格图片以只读全窗口预览打开。新任务首次使用 Linux 终端可能需要准备运行环境，同一任务稍后进入会复用。手记仍从“任务列表 → 手记 → 新建”进入；基础编辑无需配置模型，AI 助手使用自备云端配置。Android 网络工具见[第 12 章](#12-远程设备桌面与网络诊断)。安装、平台差异与当前验证边界见[Android发布说明](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.17)和[安装说明](../README.zh-CN.md#开始使用)。
+> 本指南主要介绍 iOS/iPadOS。Android Alpha21／构建23 加入离线 PCAP／PCAPNG 分析、Wi-Fi 覆盖点记录和定时 Agent 任务。打开 **更多 → 网络 → 抓包与覆盖** 导入抓包，或选择 Wi-Fi 覆盖创建会话、添加可选平面图并记录命名采样点；需要时才申请系统授权，授权后请再次开始检查。打开 **任务中心 → 定时任务** 设置指令、模型、工作区、审批方式和时间；每次运行建立独立对话，计划本身不扩大工具权限。精确时间在缺少系统授权时等待，弹性时间需主动选择。新工作区首次使用 Linux 可能需要准备环境，稍后进入会复用。GitHub 更新位于 **设置 → 诊断与关于**，安装需要 Android 系统确认。安卓使用自备云端服务商，不提供本地模型推理。实际验证与限制见 [Android 发布说明](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.21)。
 
 <!-- doc-anchor: section-1 -->
 # Floe Agent 使用手册
