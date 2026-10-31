@@ -198,6 +198,7 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
         /// (tangent Y) reversal swings the wrapped half-Lambert term through
         /// its full range. Applied through the production appearance command
         /// (the environment inspector's own path); document-local.
+        @MainActor
         static func applyWitnessLight(to document: FloeCADDocument) {
             var appearance = CADViewAppearance.default
             appearance.studio = CADViewEnvironmentSettings(
