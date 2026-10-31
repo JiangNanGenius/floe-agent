@@ -75,11 +75,17 @@ public nonisolated struct CADCommandOutcome: Sendable {
 public nonisolated struct CADDocumentError: Error, LocalizedError, Sendable {
     public var code: String
     public var message: String
+    /// Optional machine-readable context for a refusal (for example a BOM
+    /// table overflow's `actualRows`, `capacity` and `nextAction`). It is
+    /// deliberately string-valued so the error stays Sendable; callers that
+    /// need JSON numbers convert the documented keys.
+    public var details: [String: String]
     public var errorDescription: String? { message }
 
-    public init(code: String, message: String) {
+    public init(code: String, message: String, details: [String: String] = [:]) {
         self.code = code
         self.message = message
+        self.details = details
     }
 }
 

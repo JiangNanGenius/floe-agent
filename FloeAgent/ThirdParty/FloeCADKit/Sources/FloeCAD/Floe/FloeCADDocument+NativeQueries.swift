@@ -869,14 +869,22 @@ public extension FloeCADDocument {
                 return text
             }.joined(separator: "; ")
             return failure(first.code, details)
-        case "pdf", "svg", "dxf":
+        case "pdf", "svg", "dxf", "csv":
             guard let pageID else {
                 return failure("page_required",
                                "A \(format.uppercased()) drawing export needs a drawing page id.")
             }
             do {
                 let data = try CADDrawingService(document: self).exportData(pageID: pageID, format: format)
-                return .success((data, "real projected 2D drawing geometry (\(format.uppercased()))"))
+                let note = format == "csv"
+                    ? "complete BOM table as UTF-8 CSV (RFC 4180), all rows and columns"
+                    : "real projected 2D drawing geometry (\(format.uppercased()))"
+                return .success((data, note))
+            } catch let error as CADDocumentError {
+                // Preserve the service's exact refusal (for example
+                // `bom_output_incomplete` with actualRows/capacity/nextAction)
+                // instead of flattening every drawing failure into one code.
+                return .failure(error)
             } catch {
                 return failure("drawing_export_failed",
                                "The \(format.uppercased()) drawing export failed: \(error.localizedDescription)")
@@ -904,13 +912,15 @@ public extension FloeCADDocument {
             do {
                 let data = try CADDrawingService(document: self).exportData(pageID: page.id, format: "png")
                 return .success((data, "offscreen raster of the projected drawing page (PNG, 1024pt)"))
+            } catch let error as CADDocumentError {
+                return .failure(error)
             } catch {
                 return failure("drawing_export_failed",
                                "The PNG drawing export failed: \(error.localizedDescription)")
             }
         default:
             return failure("unsupported_format",
-                           "Native export supports step, stl, obj, 3mf, glb, usdz and drawing pdf/svg/dxf/png.")
+                           "Native export supports step, stl, obj, 3mf, glb, usdz and drawing pdf/svg/dxf/csv/png.")
         }
     }
 

@@ -27,7 +27,7 @@ nonisolated enum CADDocumentFormatError: Error, LocalizedError, Equatable, Senda
 }
 
 nonisolated enum CADDocumentFormat {
-    static let supportedVersion = 4
+    static let supportedVersion = 5
     static let legacyVersion = 1
     static let associativeVersion = 2
     /// First format that can store a typed mechanical hole. Ordinary format
@@ -39,13 +39,21 @@ nonisolated enum CADDocumentFormat {
     /// would drop the hierarchy/reference semantics on its next save. A real
     /// nested/reference document therefore raises the package manifest to 4,
     /// which every older build opens read-only. Ordinary flat documents keep
-    /// their format-1/2/3 floor.
-    ///
-    /// Merge note for M13: if its feature also needs a non-additive floor,
-    /// add its own feature constant/check to `requiredFormat` and `assess`
-    /// below, and let `supportedVersion` be the maximum. Do not treat codable
-    /// tolerance as compatibility; do not lower this floor when merging.
+    /// their format-1/2/3 floor. Saved exploded views are already decoded and
+    /// preserved by the released reader, so they do not raise this floor.
     static let nestedAssemblyVersion = 4
+    /// First format that can store engineering part metadata. This is a NEW
+    /// association relative to the already-released format 4, so it needs its
+    /// own floor: a format-4 writer knows neither `CADPartMetadata` nor the new
+    /// action and would decode the record away on its next save. Only documents
+    /// that actually store a record are raised to 5; the format-4
+    /// hierarchy/reference floor and every older floor stay intact.
+    ///
+    /// Merge note: if another feature also needs a non-additive floor, add its
+    /// own feature constant/check to `requiredFormat` and `assess` below, and
+    /// let `supportedVersion` be the maximum. Do not treat codable tolerance as
+    /// compatibility; do not lower an existing floor.
+    static let partMetadataVersion = 5
     /// First drawing-JSON schema whose shared-sheet intent a pre-v4 build
     /// cannot represent. Frozen older readers decode away `sheetViews`,
     /// read the deliberately empty page-level `sourceBodyIDs` of a
@@ -80,6 +88,9 @@ nonisolated enum CADDocumentFormat {
         var required = legacyVersion
         if assemblyRequiresNestedFormat(document.assemblyData) {
             required = max(required, nestedAssemblyVersion)
+        }
+        if assemblyRequiresPartMetadataFormat(document.assemblyData) {
+            required = max(required, partMetadataVersion)
         }
         required = max(required, drawingRequiredVersion(document.drawingsData))
         if document.features.nodes.contains(where: {
@@ -130,6 +141,15 @@ nonisolated enum CADDocumentFormat {
         return assembly.requiresNestedFormat
     }
 
+    /// True when the persisted assembly actually carries engineering part
+    /// metadata. The floor is feature-based, not stamped: an empty/legacy
+    /// assembly keeps its existing lower floor.
+    static func assemblyRequiresPartMetadataFormat(_ data: Data?) -> Bool {
+        guard let data, !data.isEmpty else { return false }
+        guard let assembly = try? CADAssembly.decode(from: data) else { return true }
+        return assembly.requiresPartMetadataFormat
+    }
+
     /// Existing save diffs preserve unreadable legacy rows, but a new
     /// association must never be silently skipped by a try?-encode fallback.
     static func validateLiveAssociations(_ document: DesignDocument) throws {
@@ -178,6 +198,9 @@ nonisolated enum CADDocumentFormat {
         var result = Assessment()
         if assemblyRequiresNestedFormat(assembly) {
             result.requiredVersion = max(result.requiredVersion, nestedAssemblyVersion)
+        }
+        if assemblyRequiresPartMetadataFormat(assembly) {
+            result.requiredVersion = max(result.requiredVersion, partMetadataVersion)
         }
         result.requiredVersion = max(result.requiredVersion,
                                      drawingRequiredVersion(drawings))

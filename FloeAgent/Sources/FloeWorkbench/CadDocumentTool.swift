@@ -751,9 +751,22 @@ public struct CadDocumentArguments: Decodable, Sendable {
     /// host refuses a proposal drafted against a different revision.
     public var revision: Int64?
     /// `export`: optional drawing page id for the native PDF/SVG/DXF drawing
-    /// exports (`query` with kind `drawings` lists the page ids). Kept as the
-    /// raw string so the approved-call digest re-derives byte-identically.
+    /// exports and the complete BOM CSV table export (`query` with kind
+    /// `drawings` lists the page ids). Kept as the raw string so the
+    /// approved-call digest re-derives byte-identically.
     public var pageID: String?
+    /// `export`: exact document bodies for scope=part. Empty/absent selects
+    /// every body (the historical default). Strings stay raw until validated.
+    public var bodyIDs: [String]?
+    /// `export`: exact placed occurrences for scope=assembly. Empty/absent
+    /// selects every visible placed part. Selecting a subassembly includes its
+    /// visible descendants.
+    public var instanceIDs: [String]?
+    /// `export`: explicit acknowledgement that the coverage receipt is not
+    /// complete. Never inferred.
+    public var acceptPartial: Bool?
+    /// `export`: return the coverage receipt without writing a file.
+    public var dryRun: Bool?
 
     enum CodingKeys: String, CodingKey {
         case action, path, summary, operations, kind, points, handles, tolerance, scope, layer, text, offset, limit, output, op, args, payload, revision
@@ -772,6 +785,10 @@ public struct CadDocumentArguments: Decodable, Sendable {
         case unitScale = "unit_scale"
         case name = "name"
         case pageID = "page_id"
+        case bodyIDs = "body_ids"
+        case instanceIDs = "instance_ids"
+        case acceptPartial = "accept_partial"
+        case dryRun = "dry_run"
     }
 
     public init(from decoder: Decoder) throws {
@@ -816,6 +833,10 @@ public struct CadDocumentArguments: Decodable, Sendable {
         unitScale = try container.decodeIfPresent(Double.self, forKey: .unitScale)
         name = try container.decodeIfPresent(String.self, forKey: .name)
         pageID = try container.decodeIfPresent(String.self, forKey: .pageID)
+        bodyIDs = try container.decodeIfPresent([String].self, forKey: .bodyIDs)
+        instanceIDs = try container.decodeIfPresent([String].self, forKey: .instanceIDs)
+        acceptPartial = try container.decodeIfPresent(Bool.self, forKey: .acceptPartial)
+        dryRun = try container.decodeIfPresent(Bool.self, forKey: .dryRun)
         // The revision pin is lenient about its JSON spelling; a value that is
         // neither a number nor a numeric string stays absent, which only ever
         // makes the automatic binding refuse (it never widens authority).
@@ -835,6 +856,12 @@ public struct CadDocumentTool: AgentTool {
 
     public static let name = "cad.document"
     public static let toolDescription = """
+    Export native CAD with action "export": scope=part keeps the historical \
+    selected/all document-body behaviour; scope=assembly writes the saved \
+    placed occurrences (nested subassemblies, exact occurrence ids/paths and \
+    world transforms), never a flattened document.bodies copy. Add dry_run=true \
+    for the coverage receipt only; an incomplete receipt (for example STEP with \
+    mesh-only objects) writes nothing unless accept_partial=true is explicit. \
     Observe an original GLB/glTF scene with action "observe" without importing \
     or modifying it: choose finite views/time/camera in payload and consume \
     real image artifacts plus source/resource hashes. A screenshot does not \
@@ -953,6 +980,7 @@ public struct CadDocumentTool: AgentTool {
         "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
         "task_id": { "type": "string", "description": "Durable native task id (status reports one task; cancel requires it)." },
         "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|planes|variables|materials|assembly|drawings|scene|detail|snapshot|selection|animation. selection returns the current live workbench bodies/faces/edges/sketch/instances with document revision and change_count; query it for deictic edits such as this face, then resolve exact face/edge query tokens before modifying. Features carry typed parameters/units/dependencies/actions; sketches carry entityRows with stable entity ids and each circle's current radius/diameter (the addressable source of an existing hole); faces/edges carry stable-matching indices, signatures and query_token/generation (revision, change_count, mesh_revision) required for index-based edits, and face rows identify planar/cylindrical kind with the actual radiusMM for a cylinder. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind). capabilities: pass drawing|assembly|script|mesh to get that service's exact operations with arguments and examples." },
+        "scope": { "type": "string", "enum": ["part", "assembly"], "description": "export: part = selected/all document bodies (historical default); assembly = saved placed occurrences, including nested subassemblies and visible instances of hidden definitions. Hidden instances are excluded. Assembly export supports step, glb and usdz." },
         "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points: 2D distance exactly 2, angle exactly 3, area 3+; snap point (first row). Native distance exactly 2 [x,y,z] rows." },
         "handles": { "type": "array", "items": { "type": "string" }, "description": "2D entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+. Native: one handle per action, body:<uuid> / face:<uuid>:<index> / edge:<uuid>:<index>; body, mesh and bounds accept body:<uuid> (a bare body UUID is also accepted); bounds takes one or more body handles." },
         "tolerance": { "type": "number", "description": "snap/check tolerance in drawing units; native interference tolerance in mm." },
@@ -961,8 +989,12 @@ public struct CadDocumentTool: AgentTool {
         "text": { "type": "string", "description": "2D query filter: text content contains." },
         "offset": { "type": "integer", "minimum": 0, "description": "query pagination offset." },
         "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "query pagination size." },
-        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf; the path must stay inside the workspace. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings)." },
-        "page_id": { "type": "string", "format": "uuid", "description": "export: the native drawing page id for pdf/svg/dxf exports, exactly as query with kind=drawings returned it." },
+        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf, csv; the path must stay inside the workspace. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings). A csv export writes the COMPLETE BOM table for that drawing page (all rows and columns, UTF-8 RFC 4180) and also needs page_id and a .csv output path. With scope=assembly use .step, .glb or .usdz: placed occurrences are resolved from the saved assembly, not flattened document bodies." },
+        "page_id": { "type": "string", "format": "uuid", "description": "export: the native drawing page id for pdf/svg/dxf drawing exports and the complete BOM CSV table export, exactly as query with kind=drawings returned it." },
+        "body_ids": { "type": "array", "maxItems": 512, "items": { "type": "string", "format": "uuid" }, "description": "export scope=part: exact document body ids. Omit/empty to export every body (historical default)." },
+        "instance_ids": { "type": "array", "maxItems": 512, "items": { "type": "string", "format": "uuid" }, "description": "export scope=assembly: exact placed occurrence ids from query kind=assembly/report. Omit/empty for every visible placed part. A subassembly id includes its visible descendant parts." },
+        "accept_partial": { "type": "boolean", "description": "export: explicit acknowledgement that the coverage receipt is incomplete (for example STEP with mesh-only objects). Without it an incomplete plan returns coverage_incomplete and writes nothing." },
+        "dry_run": { "type": "boolean", "description": "export: return the coverage receipt only (counts, included/excluded occurrence ids and reasons); no file is written. Requires an explicit scope." },
         "op": { "type": "string", "description": "Native typed operation name at the TOP LEVEL beside action and path, never inside args. Native propose requires it; native measure may use it to name the measurement kind. Exact vocabulary (also reported by capabilities as operation_names): sketch.create, sketch.addEntities, sketch.addText, feature.extrude, feature.revolve, feature.hole, feature.pattern, feature.mirror, feature.transform, feature.boolean, feature.fillet, feature.chamfer, feature.shell, feature.sweep, feature.loft, feature.pushPull, feature.moveFace, feature.scaleFace, feature.rotateFace, feature.deleteFace, feature.replaceFace, feature.draftFace, body.setMaterial, item.setHidden." },
         "args": { "type": "string", "description": "JSON object STRING containing ONLY the typed operation's arguments, not an {op,args} envelope. Send op separately at the top level. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:\"line\",a:[x,y],b:[x,y]} | {kind:\"circle\",center:[x,y],radius} | {kind:\"arc\",center:[x,y],radius,startAngle,endAngle} | {kind:\"spline\",points:[[x,y],...],closed?} | {kind:\"rect\",min:[x,y],max:[x,y]} | {kind:\"polygon\",center:[x,y],radius,sides,rotation?} | {kind:\"ellipse\",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; sketch.addText {sketchID, text, height (cap height, mm), fontName? (installed family or PostScript name; default Helvetica), origin?[x,y] (baseline start in sketch-plane mm; default [0,0])} creates closed line loops for the glyphs as ordinary sketch entities (counter loops are holes) in ONE undo step; the reply reports entityCount, glyphCount, outlineLoopCount, boundsMM, advanceWidthMM, heightMM, resolvedFontNames, fallbackFontNames, units:\"mm\" and undoSteps. This is the native text-sketch route; this service has no standalone mesh.text operation. A missing font or a visible character without a real vector outline refuses with unsupported_font / unsupported_glyphs and adds nothing; entity ids stay available through query kind=sketches. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"text\":\"O\",\"height\":20,\"origin\":[10,5]}. feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:\"throughAll\"|\"upToNext\"|\"blind\", boolean?:\"newBody\"|\"union\"|\"subtract\"|\"intersect\", booleanTargets?:[bodyID]}. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"seedPoint\":[40,20],\"distance\":10}. feature.hole {sketchID, seedPoint:[x,y] inside the SINGLE locating circle, targetBodyID, type:\"throughAll\"|\"blind\"|\"counterbore\"|\"countersink\", depth? (blind, mm, flat bottom), counterboreDiameter?/counterboreDepth? (counterbore, mm; diameter > pilot), countersinkDiameter?/countersinkAngle? (countersink, mm; included angle 30…170 degrees; diameter > pilot), reversed? (drills along -plane.normal; a face sketch plane normal is the source face outward normal)}; the placement circle owns position and pilot diameter (edit it with updateSketchEntity, never the hole), through/counterbore/countersink pilots are through-all, and the target must be an analytic B-rep body. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet {bodyID,radius,edges,query_token?} / feature.chamfer {bodyID,setback,edges,query_token?}, feature.shell {bodyID,thickness,openFaces,query_token?}, feature.pattern {bodyID,kind,count,...}); Face/edge index operations require query_token from query kind=faces/edges (or the row's stable face signature/edge midpoint); index existence alone is rejected with requery_required because a rebuild can reuse an index for a different face/edge. measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild)." },
         "payload": { "type": "string", "description": "JSON object string for the native workbench services (three_d_assembly / three_d_drawing) and the material/parameters/capture/animation actions. Animation actions: list|query|evaluate (real timeline data), createClip|updateClip|deleteClip|setActiveClip, addTrack|deleteTrack, setKeyframe|setCameraKeyframe|setPartKeyframe|deleteKeyframe, preset {kind:turntable|explodeReturn}, undo|redo, capture {clip_id?,time?|frame?,fps?,width?,height?,format?}, export {output? (workspace .mp4),width?,height?,fps?,codec?,bitrate?,overwrite?,poster?}. Animation edits are ordinary undoable document commands; capture returns a real animated native frame, export returns a verified MP4 with task_id and publishes it through RunOutput. Material actions: list|read|create|update|remove|apply|applyFaces|reassignFaces|mapping|textures|unresolved|libraryExport|libraryImport|libraryList|undo|redo; create/update/apply accept color [r,g,b(,a)] 0…1 (or #RRGGBB[AA]), metallic/roughness/opacity, emissive + emissive_strength, uv_mapping {source:mesh|planarProjection|boxProjection, axis:x|y|z, scale_mm:[u,v], rotation_degrees, offset:[u,v], flip_u, flip_v}, textures [{slot:baseColor|metallic|roughness|normal|emissive|opacity, asset_path? or asset_base64?, color_space?, orientation?}]. Parameter actions: list|update|updateSketchEntity|deleteSketchEntity|setSketchDimension|removeSketchDimension|variable.create|variable.update|variable.delete|feature.setExpression|datum.offsetPlane.create|datum.offsetPlane.update|datum.offsetPlane.delete|sketch.setSupport|sketch.clearSupport|feature.suppress|feature.delete|feature.move|undo|redo; update {feature_id, changes:{distance|angle|taper_angle|radius|setback|thickness|factor|count|spacing|total_angle|symmetric|rotate_instances|hole_type|depth|counterbore_diameter|counterbore_depth|countersink_diameter|countersink_angle|reversed:...}} uses the units query kind=features reports; updateSketchEntity {sketch_id, entity_id, a?, b? | min?, max?, center?, width?, height? | center?, radius?, diameter? | center?, radius?, diameter?, start_angle_deg?, end_angle_deg?, sweep_angle_deg? | center?, radius_x?, radius_y?, rotation_deg? | points? or point_index? + point?, expected_*} edits one existing line/rect/circle/arc/ellipse/spline by stable id and updates matching circle/arc radius or arc sweep dimensions in the same undo step (angles are degrees; an arc stores a CCW sweep under 360 degrees; spline point_index is the zero-based fit-point identity; refused as locked_entity for a Lock, dependent_reference for unsupported referenced geometry, or constraint_conflict if the saved sketch would become unsatisfied; polygon remains query-only); deleteSketchEntity {sketch_id, entity_id, remove_shared_references?, remove_pattern_link?} deletes exactly one entity by stable id in one undo step: references that only name it are removed and reported, a reference that also anchors another entity refuses with shared_references unless the explicit flag is true, and a pattern link refuses unless remove_pattern_link:true while every instance keeps its id; setSketchDimension {sketch_id, entity_id|entity_ids|refs, kind:length|distance|angle|diameter|radius|width|height, value, expected_value?, dimension_id?} creates or updates one driving value, solves with the existing solver and commits one undo step (angle is degrees; length is a line's distance; width/height store as horizontal/vertical); removeSketchDimension {sketch_id, dimension_id}; variable.create {name, expression} creates a named unitless scalar; variable.update {variable_id, name?, expression?, expected_expression?} edits/renames one variable and rewrites every variable/feature/sketch formula reference by identifier token (never substring); variable.delete {variable_id} refuses with exact dependent variable/feature/dimension ids while the name is still referenced; both create and update validate names, functions, references and cycles BEFORE commit, and one variable edit plus every dependent feature/sketch rebuild is ONE undo/redo transaction. feature.setExpression {feature_id, parameter, expression, expected_expression?} binds a formula to a parameter query kind=features reports with expression_action=feature.setExpression; expression is written in the PUBLIC unit (deg/mm/unitless) and a radian-persisted public-degree parameter stores an explicit radians(...) conversion rather than an unconverted degree value; expected_expression fences the exact stored `formula` row (radian-valued for a radian-persisted angle), not public_expression; parameters without a formula-capable Expr refuse unsupported_parameter instead of a value-only edit. feature.suppress {feature_id, suppressed}; feature.delete {feature_id, force?} refuses when later features consume its bodies unless forced and always rolls back a broken rebuild; feature.move {feature_id, to_index} verifies body dependency order before moving. datum.offsetPlane.create {body_id, face_index, query_token, expression, size?} creates an associative offset plane in mm from one exact named planar OCCT face; face_index is the kernel index from query kind=faces, never a render triangle. datum.offsetPlane.update {plane_id, expression?, expected_expression?, body_id?, face_index?, query_token?, size?} edits the same plane; source re-selection requires the complete fresh face triple. datum.offsetPlane.delete {plane_id} refuses while referenced. sketch.setSupport {sketch_id, plane_id} rehosts local sketch geometry on that construction plane; sketch.clearSupport {sketch_id} detaches at its current frame. All five operations are ordinary atomic undoable edits; invalid references/formulas refuse before commit. Discover exact ids/formulas/units/dependencies with query kind=planes/sketches/variables/constraints/features. Observe (original GLB/glTF): {views?:[{azimuthDegrees,elevationDegrees,distanceScale?}],width?,height?,sceneIndex?,cameraIndex?,clipIndex?,timeSeconds?,expectedSourceSHA256?,maximumSourceBytes?,maximumResources?,includeImages?,nodeOffset?,nodeLimit?}; defaults to four real camera views. The full original hierarchy remains pageable: use includeImages:false and nodeOffset=nextOffset with the same expectedSourceSHA256 to read later pages (nodeLimit 1...1000); no hidden tail is discarded. It preserves source/resource hashes and reports missing resources/partial frames; it does not create CAD topology or authorize file writes. Capture: {width?,height?} returns a real viewport PNG artifact with renderer=presentation only while Present is active, otherwise renderer=engineering; it is bound to revision/change_count and image_sha256 is separate from content_sha256. applyFaces/reassignFaces require query_token from query kind=faces or face_signatures; index-only edits are refused with requery_required (query tokens are generation proof, not permission). Workbench service payloads MUST name one operation via payload.action or legacy payload.op; mutating workbench services still use propose→apply, while material/parameter edits are ordinary authorized undoable document commands. A global libraryExport/libraryImport uses the single app-owned personal library (libraryList reads it with global:true); global export writes a file so it is refused in temporary/read-only contexts. Never contains file paths other than the guarded asset_path/output/import fields above." }
@@ -1203,6 +1235,54 @@ public struct CadDocumentTool: AgentTool {
                 guard native else {
                     throw FloeError.validationFailed(
                         "page_id addresses a native .floecad drawing page; the 2D engine exports the drawing itself")
+                }
+            }
+            if args.action == .export {
+                let scope = args.scope?
+                    .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if let scope, !scope.isEmpty {
+                    guard ["part", "assembly"].contains(scope) else {
+                        throw FloeError.validationFailed(
+                            "export scope must be part or assembly")
+                    }
+                }
+                if let ids = args.bodyIDs {
+                    guard ids.count <= 512 else {
+                        throw FloeError.validationFailed("body_ids is limited to 512 ids")
+                    }
+                    for id in ids {
+                        guard UUID(uuidString: id) != nil else {
+                            throw FloeError.validationFailed("body_ids contains a non-UUID value")
+                        }
+                    }
+                }
+                if let ids = args.instanceIDs {
+                    guard ids.count <= 512 else {
+                        throw FloeError.validationFailed("instance_ids is limited to 512 ids")
+                    }
+                    for id in ids {
+                        guard UUID(uuidString: id) != nil else {
+                            throw FloeError.validationFailed("instance_ids contains a non-UUID value")
+                        }
+                    }
+                }
+                let explicitScope = !(scope?.isEmpty ?? true)
+                if !explicitScope,
+                   (args.bodyIDs?.isEmpty == false || args.instanceIDs?.isEmpty == false
+                    || args.acceptPartial == true || args.dryRun == true) {
+                    throw FloeError.validationFailed(
+                        "body_ids, instance_ids, accept_partial and dry_run require export scope=part|assembly")
+                }
+                if scope == "part", args.instanceIDs?.isEmpty == false {
+                    throw FloeError.validationFailed("scope=part selects document bodies; use body_ids, not instance_ids")
+                }
+                if scope == "assembly", args.bodyIDs?.isEmpty == false {
+                    throw FloeError.validationFailed("scope=assembly selects placed occurrences; use instance_ids, not body_ids")
+                }
+                if args.dryRun == true {
+                    guard native else {
+                        throw FloeError.validationFailed("dry_run coverage is available for native .floecad exports only")
+                    }
                 }
             }
         case .status:
@@ -1858,6 +1938,10 @@ public struct CadDocumentTool: AgentTool {
         if let name = args.name { object["name"] = name }
         if let revision = args.revision { object["revision"] = revision }
         if let pageID = args.pageID { object["page_id"] = pageID }
+        if let ids = args.bodyIDs { object["body_ids"] = ids }
+        if let ids = args.instanceIDs { object["instance_ids"] = ids }
+        if let accept = args.acceptPartial { object["accept_partial"] = accept }
+        if let dryRun = args.dryRun { object["dry_run"] = dryRun }
         guard JSONSerialization.isValidJSONObject(object) else {
             throw FloeError.validationFailed("cad.document approved arguments could not be canonicalized")
         }
@@ -2447,6 +2531,15 @@ public struct CadDocumentTool: AgentTool {
                 if let raw = args.pageID?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
                     payload["page_id"] = raw
                 }
+                if let raw = args.scope?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !raw.isEmpty {
+                    payload["scope"] = raw.lowercased()
+                }
+                if let ids = args.bodyIDs { payload["body_ids"] = ids }
+                if let ids = args.instanceIDs { payload["instance_ids"] = ids }
+                if let accept = args.acceptPartial { payload["accept_partial"] = accept }
+                if let dryRun = args.dryRun { payload["dry_run"] = dryRun }
+                if let revision = args.revision { payload["expected_revision"] = Int(revision) }
                 let request = try jsonString(["kind": "export", "payload": payload])
                 let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                         access: access)
@@ -2942,6 +3035,7 @@ public struct CadDocumentTool: AgentTool {
         case "dwg": return "image/vnd.dwg"
         case "pdf": return "application/pdf"
         case "svg": return "image/svg+xml"
+        case "csv": return "text/csv"
         default: return "application/octet-stream"
         }
     }

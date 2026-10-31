@@ -142,7 +142,7 @@ public enum OrdinaryDocumentActionProfile {
                 let reads: Set<String> = action == "three_d_assembly"
                     ? ["report", "instances", "dof", "interference", "reference", "referenceCandidates",
                        "explodedViews", "previewExplodedView", "resetExplodedView",
-                       "hierarchy", "references", "referenceDiagnostics"]
+                       "partMetadata", "hierarchy", "references", "referenceDiagnostics"]
                     : ["pages", "project", "dimensions", "export"]
                 // Preview/reset affect only display state, not the stored CAD
                 // model. Persistent service changes still use propose/apply.

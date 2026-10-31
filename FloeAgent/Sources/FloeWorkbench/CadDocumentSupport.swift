@@ -455,9 +455,11 @@ public enum NativeCADPolicy: Sendable {
         ["step", "stp", "iges", "igs", "stl", "obj", "glb", "gltf"]
 
     /// Formats the native kernel exports (the host validates against the
-    /// output extension; IGES export is not available in this build).
+    /// output extension; IGES export is not available in this build). PDF,
+    /// SVG, DXF and the complete BOM CSV are page-scoped drawing exports and
+    /// need `page_id`; CSV is a table, not a body-geometry exchange.
     public static let exportExtensions: Set<String> =
-        ["step", "stp", "stl", "obj", "3mf", "glb", "usdz", "pdf", "svg", "dxf"]
+        ["step", "stp", "stl", "obj", "3mf", "glb", "usdz", "pdf", "svg", "dxf", "csv"]
 }
 
 /// Per-format capability matrix advertised by the native `.floecad` surface.
@@ -836,7 +838,7 @@ public enum CadServiceOperationCatalog: Sendable {
                     + "or replace it with explicit entries.",
                   arguments: [
                       arg("pageID", "uuid", required: true, note: "alias id"),
-                      arg("entries", "[object]", note: "explicit rows [{itemNumber, name, bodyID, instanceIDs?, partNumber?, quantity?, id?}]; omit to derive"),
+                      arg("entries", "[object]", note: "explicit rows [{itemNumber, name, bodyID, instanceIDs?, partNumber?, material?, version?, partDefinitionID?, quantity?, id?}]; omit to derive"),
                       arg("showBOM", "boolean", note: "default true"),
                   ],
                   examples: [#"{"pageID":"<page uuid>"}"#,
@@ -947,13 +949,14 @@ public enum CadServiceOperationCatalog: Sendable {
                   arguments: [arg("pageID", "uuid", required: true, note: "alias id")],
                   examples: [#"{"pageID":"<page uuid>"}"#]),
         Operation(kind: "drawing", action: "export", mutating: false,
-                  summary: "Vector export of one page as pdf, svg or dxf (base64 + sha256 in the reply).",
+                  summary: "Export one page as pdf/svg/dxf vector, png raster, or the COMPLETE BOM table as UTF-8 RFC 4180 CSV (base64 + sha256 in the reply).",
                   arguments: [
                       arg("pageID", "uuid", required: true, note: "alias id"),
-                      arg("format", "string", required: true, note: "pdf | svg | dxf"),
+                      arg("format", "string", required: true, note: "pdf | svg | dxf | png | csv"),
                   ],
                   examples: [#"{"pageID":"<page uuid>","format":"pdf"}"#,
-                             #"{"pageID":"<page uuid>","format":"dxf"}"#]),
+                             #"{"pageID":"<page uuid>","format":"dxf"}"#,
+                             #"{"pageID":"<page uuid>","format":"csv"}"#]),
     ]
 
     private static let assemblyOperations: [Operation] = [
@@ -1104,6 +1107,26 @@ public enum CadServiceOperationCatalog: Sendable {
         Operation(kind: "assembly", action: "resetExplodedView", mutating: false,
                   summary: "Clear the transient exploded preview and return every instance to its saved placement.",
                   arguments: [], examples: ["{}"]),
+        Operation(kind: "assembly", action: "partMetadata", mutating: false,
+                  summary: "Engineering part number/material/version for each stable part definition. "
+                    + "Shared instances resolve one record; an explicit independent copy has its own.",
+                  arguments: [
+                      arg("instanceID", "uuid", note: "limit to the part definition this live instance places"),
+                      arg("definitionID", "uuid", note: "stable part-definition id; alias partID"),
+                  ],
+                  examples: ["{}", #"{"instanceID":"<instance uuid>"}"#]),
+        Operation(kind: "assembly", action: "setPartMetadata", mutating: true,
+                  summary: "Set the shared engineering record for one part definition (part number, "
+                    + "engineering material, explicit version) as ONE undoable assembly command; an "
+                    + "independent copy keeps its own record.",
+                  arguments: [
+                      arg("instanceID", "uuid", note: "target the definition this live instance places; alias id"),
+                      arg("definitionID", "uuid", note: "alternative stable part-definition id; alias partID"),
+                      arg("partNumber", "string", note: "<= 64 characters; empty clears"),
+                      arg("material", "string", note: "engineering material, not PBR appearance; <= 64; empty clears"),
+                      arg("version", "string", note: "explicit revision label; <= 32; empty clears"),
+                  ],
+                  examples: [#"{"instanceID":"<instance uuid>","partNumber":"PN-100","material":"6061-T6","version":"A"}"#]),
         Operation(kind: "assembly", action: "report", mutating: false,
                   summary: "Instances, constraints, stale-source and stale-reference state, "
                     + "exploded-preview state and totals.",

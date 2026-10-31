@@ -262,6 +262,7 @@ struct CADAssemblyPanelView: View {
     @State private var busy = false
     @State private var showPlaceSheet = false
     @State private var editingInstance: CADAssemblyReport.Instance?
+    @State private var editingPartInfo: CADAssemblyReport.Instance?
     @State private var showConstraintSheet = false
     @State private var editingConstraint: CADAssemblyReport.Constraint?
     @State private var showExplodedSheet = false
@@ -377,6 +378,16 @@ struct CADAssemblyPanelView: View {
         }
         .sheet(item: $editingInstance) { instance in
             CADInstanceTransformSheet(
+                document: document,
+                instance: instance,
+                busy: $busy,
+                onApplied: { reply in
+                    outcome = reply
+                    if reply["ok"] as? Bool == true { refresh() }
+                })
+        }
+        .sheet(item: $editingPartInfo) { instance in
+            CADPartInfoSheet(
                 document: document,
                 instance: instance,
                 busy: $busy,
@@ -546,12 +557,24 @@ struct CADAssemblyPanelView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("CADAssemblyInstanceSelect-\(instance.id)")
-                        panelHitTarget(Button(FloeCADStrings.label("cad.workbench.assembly.editInstance", "Edit transform")) {
-                            editingInstance = instance
+                        HStack(spacing: 8) {
+                            panelHitTarget(Button(FloeCADStrings.label(
+                                "cad.workbench.assembly.editInstance", "Edit transform")) {
+                                editingInstance = instance
+                            }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small))
+                            .accessibilityIdentifier("CADAssemblyInstanceEdit-\(instance.id)")
+                            if !instance.isSubassembly {
+                                panelHitTarget(Button(FloeCADStrings.label(
+                                    "cad.workbench.assembly.partInfo", "Part info")) {
+                                    editingPartInfo = instance
+                                }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small))
+                                .accessibilityIdentifier("CADAssemblyInstancePart-\(instance.id)")
+                            }
                         }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small))
-                        .accessibilityIdentifier("CADAssemblyInstanceEdit-\(instance.id)")
                     }
                     .padding(.leading, CGFloat(instance.depth) * 12)
                     .padding(.vertical, 2)
@@ -562,6 +585,11 @@ struct CADAssemblyPanelView: View {
                         }
                         Button(FloeCADStrings.label("cad.workbench.assembly.editInstance", "Edit transform")) {
                             editingInstance = instance
+                        }
+                        if !instance.isSubassembly {
+                            Button(FloeCADStrings.label("cad.workbench.assembly.partInfo", "Part info")) {
+                                editingPartInfo = instance
+                            }
                         }
                         Button(instance.hidden
                                ? FloeCADStrings.text("cad.workbench.assembly.show", "Show")
@@ -1083,6 +1111,112 @@ private struct CADAssemblyPlaceSheet: View {
 }
 
 // MARK: - Instance transform sheet
+
+/// Engineering part record for one definition. Shared instances all read the
+/// same record; an explicit independent copy reads and writes its own. The
+/// fields are plain text with natural iPad control sizes; the version is an
+/// explicit label, never inferred from geometry or the App version.
+private struct CADPartInfoSheet: View {
+    let document: FloeCADDocument
+    let instance: CADAssemblyReport.Instance
+    @Binding var busy: Bool
+    let onApplied: ([String: Any]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var partNumber = ""
+    @State private var material = ""
+    @State private var version = ""
+    @State private var canApply = false
+    @State private var errorText: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(FloeCADStrings.text("cad.workbench.assembly.partInfo", "Part info")) {
+                    TextField(FloeCADStrings.text("cad.workbench.assembly.partNumber",
+                                                  "Part number"), text: $partNumber)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("CADPartNumber")
+                    TextField(FloeCADStrings.text("cad.workbench.assembly.partMaterial",
+                                                  "Material"), text: $material)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("CADPartMaterial")
+                    TextField(FloeCADStrings.text("cad.workbench.assembly.partVersion",
+                                                  "Version"), text: $version)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("CADPartVersion")
+                }
+                Section {
+                    Text(instance.independentCopy
+                         ? FloeCADStrings.text(
+                            "cad.workbench.assembly.partInfoIndependentHint",
+                            "This independent copy has its own part record; changes do not affect the shared source.")
+                         : FloeCADStrings.text(
+                            "cad.workbench.assembly.partInfoSharedHint",
+                            "Every shared instance of this part uses this part number, engineering material and version; an independent copy keeps its own record."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let errorText {
+                    Section { Text(errorText).font(.callout).foregroundStyle(.red) }
+                }
+            }
+            .navigationTitle(instance.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(FloeCADStrings.text("cad.ui.common.apply", "Apply")) { apply() }
+                        .disabled(!canApply || busy)
+                        .accessibilityIdentifier("CADPartInfoApply")
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .task { load() }
+    }
+
+    private func load() {
+        let reply = CADAssemblyService(document: document)
+            .handle(action: "partMetadata", args: ["instanceID": instance.id])
+        guard reply["ok"] as? Bool == true,
+              let row = (reply["parts"] as? [[String: Any]])?.first else {
+            errorText = reply["message"] as? String
+                ?? FloeCADStrings.text("cad.workbench.assembly.partInfoLoadFailed",
+                                        "The part record could not be read.")
+            return
+        }
+        partNumber = row["partNumber"] as? String ?? ""
+        material = row["material"] as? String ?? ""
+        version = row["version"] as? String ?? ""
+        canApply = true
+    }
+
+    private func apply() {
+        guard canApply, !busy else { return }
+        busy = true
+        errorText = nil
+        Task { @MainActor in
+            let service = CADAssemblyService(document: document)
+            let reply = service.handle(action: "setPartMetadata", args: [
+                "instanceID": instance.id,
+                "partNumber": partNumber,
+                "material": material,
+                "version": version,
+            ])
+            if reply["mutated"] as? Bool == true { _ = await document.save() }
+            busy = false
+            onApplied(reply)
+            if reply["ok"] as? Bool == true {
+                dismiss()
+            } else {
+                errorText = reply["message"] as? String
+            }
+        }
+    }
+}
 
 private struct CADInstanceTransformSheet: View {
     let document: FloeCADDocument

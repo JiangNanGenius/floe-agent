@@ -153,6 +153,11 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     private var buildTask: Task<Void, Never>?
     private var environmentTask: Task<Void, Never>?
     private(set) var currentBounds: CADPresentationBounds?
+    /// Bounds the ground is currently dressed against. This is normally the
+    /// static scene bounds; during playback/export it follows the animated
+    /// transforms so the floor never cuts a transient pose. It is separate
+    /// from `currentBounds` because Fit should still frame the document pose.
+    private var floorBounds: CADPresentationBounds?
     private(set) var issues: [CADPresentationIssue] = []
     /// Bumped whenever the stage is replaced or released. Playback and export
     /// capture it before touching the entities and refuse to apply a frame to
@@ -281,6 +286,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             stage = result.stage
             bodyEntities = result.bodyEntities
             pickTargets = result.pickTargets
+            floorBounds = scene.bounds
             selectionDecorations.removeAll()
             lastSelectionState = nil
             originalMaterials.removeAll()
@@ -351,6 +357,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         cache.dispose()
         buildKey = nil
         currentScene = nil
+        floorBounds = nil
         issues = []
         handle?.setIssues([])
         handle?.markReady(false)
@@ -369,6 +376,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         environmentTask = Task { [weak self] in
             guard let self, let stage = self.stage else { return }
             await self.builder.applyEnvironment(environment, to: stage,
+                                                bounds: self.floorBounds,
                                                 cache: self.cache)
             await self.applyBackground(environment)
             if let resource = await self.cache.environment(for: environment) {
@@ -682,6 +690,13 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             nodes.parent.transform = Transform(
                 matrix: instanceTransforms[body.id] ?? body.transform)
         }
+        // The ground follows the pose actually drawn. Without this an animated
+        // part moving below its static minimum would still be cut by a floor
+        // placed from the document baseline.
+        let animatedBounds = CADPresentationFloorPlacement.bounds(
+            for: scene, transforms: instanceTransforms)
+        floorBounds = animatedBounds
+        CADPresentationEntityBuilder.updateFloor(in: stage, bounds: animatedBounds)
         animationToken = token
         applyCamera()
         return true
@@ -696,6 +711,11 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         if let scene = currentScene {
             for body in scene.bodies {
                 bodyEntities[body.id]?.parent.transform = Transform(matrix: body.transform)
+            }
+            floorBounds = scene.bounds
+            if let stage {
+                CADPresentationEntityBuilder.updateFloor(in: stage,
+                                                         bounds: scene.bounds)
             }
         }
         if let restore = animationRestoreCamera {

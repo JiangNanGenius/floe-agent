@@ -46,6 +46,28 @@ nonisolated enum CADImagePackingLimits {
     static let maximumDecodedBytes = 64 * 1024 * 1024
 }
 
+/// One node in an assembly-preserving glTF scene graph. `bodyIndex` points at
+/// the `bodies` array passed to `GLBExporter.glb`; nil makes a container node.
+/// `matrix` is a column-major 4x4 in millimetres relative to the parent (nil =
+/// identity). Geometry stays body-local, so the single root 0.001 scale is the
+/// only unit conversion and no placement is baked twice.
+nonisolated struct GLBSceneNode {
+    var name: String
+    var bodyIndex: Int?
+    var matrix: [Double]?
+    var children: [GLBSceneNode]
+    var extras: [String: Any]
+
+    init(name: String, bodyIndex: Int? = nil, matrix: [Double]? = nil,
+         children: [GLBSceneNode] = [], extras: [String: Any] = [:]) {
+        self.name = name
+        self.bodyIndex = bodyIndex
+        self.matrix = matrix
+        self.children = children
+        self.extras = extras
+    }
+}
+
 nonisolated enum GLBExporter {
 
     // GLB container constants (glTF 2.0 §4: Binary glTF layout).
@@ -84,12 +106,15 @@ nonisolated enum GLBExporter {
 
     static func glb(bodies: [Body],
                     faceTables: [BodyID: FaceTable] = [:],
-                    faceTableRevisions: [BodyID: UInt64] = [:]) -> Data {
+                    faceTableRevisions: [BodyID: UInt64] = [:],
+                    sceneGraph: [GLBSceneNode]? = nil,
+                    rootExtras: [String: Any] = [:]) -> Data {
         var bin = Data()
         var bufferViews = [[String: Any]]()
         var accessors = [[String: Any]]()
         var meshes = [[String: Any]]()
         var nodes = [[String: Any]]()
+        var meshIndexByBodyIndex: [Int: Int] = [:]
         var images = [[String: Any]]()
         var textures = [[String: Any]]()
         var materialsJSON = [[String: Any]]()
@@ -200,8 +225,13 @@ nonisolated enum GLBExporter {
             return (accessor, uvs)
         }
 
-        for body in bodies where !body.render.positions.isEmpty && !body.render.indices.isEmpty {
-            let transform = body.transform
+        for (bodyIndex, body) in bodies.enumerated()
+        where !body.render.positions.isEmpty && !body.render.indices.isEmpty {
+            // A scene graph carries local placement on its nodes. Geometry
+            // must stay body-local there or the node matrix would be applied
+            // twice. The flat historical path keeps baking body.transform so
+            // its existing output bytes/semantics are unchanged.
+            let transform = sceneGraph == nil ? body.transform : Transform3D.identity
             var positions = [SIMD3<Float>]()
             positions.reserveCapacity(body.render.positions.count)
             var lo = SIMD3<Double>(repeating: .infinity)
@@ -427,11 +457,40 @@ nonisolated enum GLBExporter {
             }
             let meshIndex = meshes.count
             meshes.append(meshObject)
-            let node: [String: Any] = [
-                "name": body.name,
-                "mesh": meshIndex,
-            ]
+            meshIndexByBodyIndex[bodyIndex] = meshIndex
+            if sceneGraph == nil {
+                let node: [String: Any] = [
+                    "name": body.name,
+                    "mesh": meshIndex,
+                ]
+                nodes.append(node)
+            }
+        }
+
+        // Append one scene-graph node (and its children) and return its glTF
+        // node index. Containers with neither a mesh nor surviving children
+        // are dropped rather than emitted as meaningless empty objects.
+        func appendGraphNode(_ source: GLBSceneNode) -> Int? {
+            var childIndices: [Int] = []
+            for child in source.children {
+                if let index = appendGraphNode(child) { childIndices.append(index) }
+            }
+            var node: [String: Any] = ["name": source.name]
+            var hasMesh = false
+            if let bodyIndex = source.bodyIndex,
+               let meshIndex = meshIndexByBodyIndex[bodyIndex] {
+                node["mesh"] = meshIndex
+                hasMesh = true
+            }
+            if let matrix = source.matrix, matrix.count == 16 {
+                node["matrix"] = matrix
+            }
+            if !childIndices.isEmpty { node["children"] = childIndices }
+            if !source.extras.isEmpty { node["extras"] = source.extras }
+            guard hasMesh || !childIndices.isEmpty else { return nil }
+            let index = nodes.count
             nodes.append(node)
+            return index
         }
 
         // glTF 2.0 is METRES with +Y up. The model is Y-up already; a single
@@ -439,18 +498,24 @@ nonisolated enum GLBExporter {
         // conversion at the root (instead of editing vertices) also makes the
         // unit contract inspectable in the JSON and reversible on import.
         var sceneRoots: [Int] = []
-        if !nodes.isEmpty {
+        let graphRoots = sceneGraph?.compactMap { appendGraphNode($0) } ?? []
+        let rootChildren = sceneGraph == nil ? Array(0..<nodes.count) : graphRoots
+        if !rootChildren.isEmpty {
             let rootIndex = nodes.count
+            var extras: [String: Any] = [
+                "floe_source_units": "millimetres",
+                "floe_source_up_axis": "+Y",
+                "gltf_units": "metres",
+                "gltf_up_axis": "+Y",
+            ]
+            for (key, value) in rootExtras {
+                extras[key] = value
+            }
             nodes.append([
                 "name": "FloeRoot",
-                "children": Array(0..<rootIndex),
+                "children": rootChildren,
                 "scale": [0.001, 0.001, 0.001],
-                "extras": [
-                    "floe_source_units": "millimetres",
-                    "floe_source_up_axis": "+Y",
-                    "gltf_units": "metres",
-                    "gltf_up_axis": "+Y",
-                ] as [String: Any],
+                "extras": extras,
             ])
             sceneRoots = [rootIndex]
         }
@@ -945,6 +1010,13 @@ nonisolated enum GLBExporter {
         var width: Int
         var height: Int
         var image: CGImage
+    }
+
+    /// True when the bytes are a bounded PNG/JPEG this exporter can embed
+    /// unchanged. The assembly coverage receipt calls the same predicate so
+    /// preflight and the writer agree on what a missing/invalid texture is.
+    static func textureCanBeEmbedded(_ data: Data) -> Bool {
+        MaterialImageSniffer.mimeType(of: data) != nil && imageHeaderDimensions(data) != nil
     }
 
     /// Header-only bounds check; no bitmap is allocated. Used both before

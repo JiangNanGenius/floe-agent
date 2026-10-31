@@ -444,6 +444,49 @@ public nonisolated struct CADAssemblyConstraint: Codable, Sendable, Equatable, I
     }
 }
 
+// MARK: - Engineering part metadata
+
+/// Durable engineering identity for one part DEFINITION, keyed by the same
+/// stable `bomIdentity` used by assembly occurrences and BOM rows.
+///
+/// Shared instances of one body (or one external part reference) resolve the
+/// SAME record, so a part-number/material edit reaches every shared instance.
+/// An explicit independent copy owns a duplicated body, has its own
+/// `bomIdentity` and therefore its own record; its version is explicit and is
+/// never overwritten by a shared-source edit.
+///
+/// `material` is the ENGINEERING material name (for example `6061-T6`), not
+/// `BodyMaterialSpec`: the PBR appearance on `Body.material` remains a separate
+/// concern and is never read or written here.
+public nonisolated struct CADPartMetadata: Codable, Sendable, Equatable, Identifiable {
+    /// Stable part-definition identity (`CADAssemblyOccurrence.bomIdentity`).
+    public var id: UUID
+    public var partNumber: String
+    public var material: String
+    /// Explicit revision label, shared by the definition's shared instances
+    /// and independently assignable on an explicit copy.
+    public var version: String
+    public var updatedAt: Date
+
+    public init(id: UUID,
+                partNumber: String = "",
+                material: String = "",
+                version: String = "",
+                updatedAt: Date = Date()) {
+        self.id = id
+        self.partNumber = partNumber
+        self.material = material
+        self.version = version
+        self.updatedAt = updatedAt
+    }
+
+    /// True when no engineering field is set; such a record is removed instead
+    /// of being persisted as an empty association.
+    public var isEmpty: Bool {
+        partNumber.isEmpty && material.isEmpty && version.isEmpty
+    }
+}
+
 // MARK: - Exploded views
 
 /// One instance's override inside an exploded view. A nil direction/distance
@@ -591,19 +634,26 @@ public nonisolated struct CADAssembly: Codable, Sendable, Equatable {
     /// Additive durable external part references. Missing in older assembly
     /// JSON; empty for every flat document.
     public var partReferences: [CADPartReference]
+    /// Engineering part metadata keyed by stable part-definition identity.
+    /// Missing in older assembly JSON; defaults to empty. A document that
+    /// actually stores a record raises its package floor (see
+    /// `requiresPartMetadataFormat`), so an older writer cannot drop it.
+    public var partMetadata: [CADPartMetadata]
 
     public init(instances: [CADAssemblyInstance] = [],
                 constraints: [CADAssemblyConstraint] = [],
                 explodedViews: [CADExplodedView] = [],
-                partReferences: [CADPartReference] = []) {
+                partReferences: [CADPartReference] = [],
+                partMetadata: [CADPartMetadata] = []) {
         self.instances = instances
         self.constraints = constraints
         self.explodedViews = explodedViews
         self.partReferences = partReferences
+        self.partMetadata = partMetadata
     }
 
     enum CodingKeys: String, CodingKey {
-        case instances, constraints, explodedViews, partReferences
+        case instances, constraints, explodedViews, partReferences, partMetadata
     }
 
     public init(from decoder: Decoder) throws {
@@ -616,6 +666,8 @@ public nonisolated struct CADAssembly: Codable, Sendable, Equatable {
                                                       forKey: .explodedViews) ?? []
         partReferences = try container.decodeIfPresent([CADPartReference].self,
                                                        forKey: .partReferences) ?? []
+        partMetadata = try container.decodeIfPresent([CADPartMetadata].self,
+                                                      forKey: .partMetadata) ?? []
     }
 
     public static func decode(from data: Data?) throws -> CADAssembly {
@@ -659,13 +711,34 @@ public nonisolated struct CADAssembly: Codable, Sendable, Equatable {
     /// to preserve: durable part references and any nested subassembly tree.
     /// Used by `CADDocumentFormat.requiredFormat` to raise ONLY these
     /// documents to format 4. Ordinary flat documents keep their older floor.
+    /// Saved exploded views already exist in the released format-1/3 reader, so
+    /// they deliberately do not raise this floor on their own.
     public var requiresNestedFormat: Bool {
         if !partReferences.isEmpty { return true }
         return instances.contains { $0.requiresNestedFormat }
     }
 
+    /// True when engineering part metadata is stored. That association is
+    /// additive JSON but non-additive for an older writer (it would decode
+    /// unknown keys away on re-save), so the package admits the coordinated
+    /// next floor. Ordinary/nested/reference/exploded documents keep their
+    /// existing lower floors.
+    public var requiresPartMetadataFormat: Bool {
+        !partMetadata.isEmpty
+    }
+
     public func explodedView(_ id: UUID) -> CADExplodedView? {
         explodedViews.first { $0.id == id }
+    }
+
+    /// Engineering metadata for one stable part-definition identity.
+    public func partMetadataRecord(_ id: UUID) -> CADPartMetadata? {
+        partMetadata.first { $0.id == id }
+    }
+
+    /// Engineering metadata for the definition this occurrence places.
+    public func partMetadataRecord(for instance: CADAssemblyInstance) -> CADPartMetadata? {
+        partMetadataRecord(instance.bomIdentity)
     }
 
     public func constraint(_ id: UUID) -> CADAssemblyConstraint? {
@@ -801,6 +874,15 @@ public nonisolated struct CADAssembly: Codable, Sendable, Equatable {
                     kind: "missing_staged_body", referenceID: reference.id,
                     message: "Part reference '\(reference.name)' has no staged local body; "
                         + "cached geometry is unavailable but the pin is retained."))
+            }
+        }
+
+        var seenMetadata = Set<UUID>()
+        for metadata in partMetadata {
+            if !seenMetadata.insert(metadata.id).inserted {
+                issues.append(CADAssemblyIntegrityIssue(
+                    kind: "duplicate_part_metadata",
+                    message: "Part metadata \(metadata.id.uuidString) appears more than once."))
             }
         }
 

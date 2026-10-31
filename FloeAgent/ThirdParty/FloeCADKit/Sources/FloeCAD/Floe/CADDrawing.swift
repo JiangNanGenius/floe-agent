@@ -413,8 +413,19 @@ public nonisolated struct CADDrawingBOMEntry: Codable, Sendable, Equatable, Iden
     public var itemNumber: Int
     public var name: String
     public var partNumber: String
-    /// The part definition this item groups (the shared source body, or an
-    /// independent copy's own body).
+    /// Stable part-definition identity this row groups, when known. For a
+    /// shared external reference this is the reference id; for an ordinary
+    /// shared body or an independent copy it is that body id. Nil only on
+    /// legacy rows written before engineering metadata existed; readers fall
+    /// back to `bodyID` without merging distinct definitions.
+    public var partDefinitionID: UUID?
+    /// Engineering material captured when the row was derived (never the PBR
+    /// appearance). Live reports prefer the assembly's current record.
+    public var material: String?
+    /// Explicit engineering revision captured for this definition.
+    public var version: String?
+    /// The part definition's shared source body. Kept for the existing body
+    /// picker/missing-body diagnostics and legacy rows.
     public var bodyID: UUID
     /// The assembly instances that make up this item. Shared instances of one
     /// body are one row with a quantity; an independent copy is its own row.
@@ -425,15 +436,25 @@ public nonisolated struct CADDrawingBOMEntry: Codable, Sendable, Equatable, Iden
 
     public init(id: UUID = UUID(), itemNumber: Int, name: String,
                 partNumber: String = "", bodyID: UUID,
-                instanceIDs: [UUID] = [], quantity: Int = 1) {
+                instanceIDs: [UUID] = [], quantity: Int = 1,
+                partDefinitionID: UUID? = nil, material: String? = nil,
+                version: String? = nil) {
         self.id = id
         self.itemNumber = itemNumber
         self.name = name
         self.partNumber = partNumber
+        self.partDefinitionID = partDefinitionID
+        self.material = material
+        self.version = version
         self.bodyID = bodyID
         self.instanceIDs = instanceIDs
         self.quantity = quantity
     }
+
+    /// The identity used to match this row to live occurrences. Legacy rows
+    /// resolve their old body-id key; the fallback never guesses by name or
+    /// geometry.
+    public var resolvedPartDefinitionID: UUID { partDefinitionID ?? bodyID }
 }
 
 public nonisolated struct CADDrawingBOM: Codable, Sendable, Equatable {
@@ -449,6 +470,11 @@ public nonisolated struct CADDrawingBOM: Codable, Sendable, Equatable {
 
     public func entry(id: UUID) -> CADDrawingBOMEntry? {
         entries.first { $0.id == id }
+    }
+
+    /// Row bound to one stable part definition, if the page already has one.
+    public func entry(partDefinitionID: UUID) -> CADDrawingBOMEntry? {
+        entries.first { $0.resolvedPartDefinitionID == partDefinitionID }
     }
 }
 

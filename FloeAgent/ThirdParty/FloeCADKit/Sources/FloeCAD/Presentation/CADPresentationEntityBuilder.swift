@@ -108,7 +108,8 @@ final class CADPresentationEntityBuilder {
         }
 
         try Task.checkCancellation()
-        addFloor(to: stage, environment: scene.environment)
+        addFloor(to: stage, environment: scene.environment,
+                 bounds: scene.bounds)
         addLights(to: stage, environment: scene.environment)
 
         // A corrupt image is a real missing resource: report the exact image
@@ -132,14 +133,17 @@ final class CADPresentationEntityBuilder {
 
     /// Environment/lighting changes reuse the same body entities: only the
     /// floor, lights and background are replaced. This keeps camera and
-    /// selection stable when switching Studio/Daylight/Dark.
+    /// selection stable when switching Studio/Daylight/Dark. `bounds` must be
+    /// the bounds of what is actually visible now (including a transient
+    /// animation frame), so the rebuilt ground still sits below the model.
     func applyEnvironment(_ environment: CADPresentationEnvironment,
                           to stage: Entity,
+                          bounds: CADPresentationBounds?,
                           cache: CADPresentationResourceCache) async {
         stage.children.filter { $0.name.hasPrefix("CADPresentationLight")
             || $0.name.hasPrefix("CADPresentationFloor") }
             .forEach { $0.removeFromParent() }
-        addFloor(to: stage, environment: environment)
+        addFloor(to: stage, environment: environment, bounds: bounds)
         addLights(to: stage, environment: environment)
         _ = await cache.environment(for: environment)
     }
@@ -484,7 +488,8 @@ final class CADPresentationEntityBuilder {
 
     // MARK: Floor / lights
 
-    private func addFloor(to stage: Entity, environment: CADPresentationEnvironment) {
+    private func addFloor(to stage: Entity, environment: CADPresentationEnvironment,
+                          bounds: CADPresentationBounds?) {
         guard environment.floorVisible else { return }
         let size = min(max(environment.floorSizeMM / CADPresentationAxes.millimetresPerMeter,
                            0.02), 500)
@@ -499,10 +504,24 @@ final class CADPresentationEntityBuilder {
         floorMaterial.metallic = 0.0
         let floor = ModelEntity(mesh: mesh, materials: [floorMaterial])
         floor.name = "CADPresentationFloor"
-        floor.position = SIMD3(0, -0.0005, 0)
+        // The ground is derived from the actual transformed model, not from an
+        // assumed origin. A fixed Y=0 offset cuts any geometry whose minimum
+        // lies below zero (for example a 100 mm slab centred on the origin).
+        floor.position = CADPresentationFloorPlacement.position(for: bounds)
         floor.components.set(GroundingShadowComponent(
             castsShadow: false, receivesShadow: environment.shadowsEnabled))
         stage.addChild(floor)
+    }
+
+    /// Move the already-built ground for a new visible-bounds value without
+    /// rebuilding its mesh/material or changing its authored size/visibility.
+    /// Used by animation frames and by any caller that re-dresses the scene
+    /// while a transient pose is applied.
+    static func updateFloor(in stage: Entity, bounds: CADPresentationBounds?) {
+        guard let floor = stage.children.first(where: {
+            $0.name == "CADPresentationFloor"
+        }) else { return }
+        floor.position = CADPresentationFloorPlacement.position(for: bounds)
     }
 
     private func addLights(to stage: Entity, environment: CADPresentationEnvironment) {

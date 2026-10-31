@@ -56,6 +56,12 @@
 //    CENTERLINES, ANNOTATIONS (manual dimensions/balloons/text), BOM (sheet
 //    table) and TITLE (sheet frame + title block + text). DXF is R12 ASCII,
 //    `$INSUNITS` = 4 (mm), with a real LAYER table and TEXT entities.
+//  * BOM output completeness: `exportData(format:"csv")` is the complete
+//    UTF-8 RFC 4180 table (every BOM row and engineering column, exact text).
+//    A vector BOM table must fit every row and required engineering column;
+//    otherwise PDF/SVG/DXF/PNG refuse `bom_output_incomplete` with actualRows,
+//    capacity and nextAction before emitting bytes. The page preview may show
+//    a clearly labelled continuation; the CSV remains the full artifact.
 //  * Bounds: ≤ 64 pages per set, ≤ 12 source bodies per page. Mutating actions
 //    only edit `Project.drawingsData` and return `"mutated": true`; the host
 //    commits with `document.save()`. Expected errors are returned as
@@ -137,10 +143,12 @@ public final class CADDrawingService {
         return projectionPayload(page: page, projection: projection, mutated: false)
     }
 
-    /// Real 2D vector export bytes. `format` is "pdf", "svg", "dxf" or "png".
-    /// PNG is the one raster format: it is the same projected vector geometry
-    /// drawn into a white CoreGraphics bitmap (never a viewport screenshot),
-    /// intended for Canvas node assets.
+    /// Real 2D vector export bytes. `format` is "pdf", "svg", "dxf", "png" or
+    /// "csv". PDF/SVG/DXF render the same projected vector geometry; PNG is
+    /// the one raster format (the same geometry drawn into a white CoreGraphics
+    /// bitmap, never a viewport screenshot); CSV is the complete BOM table for
+    /// the selected page/view as UTF-8 RFC 4180 rows, with every BOM row and
+    /// every engineering column (no vector-table row cap).
     public func exportData(pageID: UUID, format: String) throws -> Data {
         let set: CADDrawingSet
         do {
@@ -152,6 +160,37 @@ public final class CADDrawingService {
         }
         guard let page = set.pages.first(where: { $0.id == pageID }) else {
             throw CADDocumentError(code: "unknown_page", message: "No drawing page with that id.")
+        }
+        // A page bound to a named exploded view must never silently export the
+        // base placement when that view was deleted. The persisted id is the
+        // authority; the transient viewport preview is not consulted here.
+        if pageMissingExplodedView(page) {
+            throw CADDocumentError(
+                code: "missing_exploded_view",
+                message: "The page's exploded view no longer exists. Select another view "
+                    + "or clear the page's exploded view before exporting.")
+        }
+        let normalizedFormat = format.lowercased()
+        guard ["pdf", "svg", "dxf", "png", "csv"].contains(normalizedFormat) else {
+            throw CADDocumentError(code: "unknown_format",
+                                   message: "format must be pdf, svg, dxf, png or csv.")
+        }
+        // The BOM table export is data, not projected vector geometry: it does
+        // not depend on a section's analytic/mesh completeness. It still uses
+        // the SAME page, selected named view and revision as the vector sheet,
+        // and a missing named view is refused above for every format.
+        if normalizedFormat == "csv" {
+            return try bomCSVData(page: page)
+        }
+        // The vector BOM is all-or-nothing. A page that cannot show every row
+        // and every required engineering column refuses vector output instead
+        // of drawing a partial table as if it were complete. CSV above remains
+        // the usable full-table artifact for exactly this limit.
+        if page.showBOM, let bom = page.bom, !bom.entries.isEmpty {
+            let layout = bomTableLayout(page: page, rowCount: bom.entries.count)
+            if !layout.complete {
+                throw bomOutputIncomplete(rowCount: bom.entries.count, layout: layout)
+            }
         }
         let projection = projectPage(page)
         if projection.outputBlocked || projection.sectionIncomplete
@@ -167,14 +206,16 @@ public final class CADDrawingService {
                     + "rather than presenting a partial section as a complete drawing.")
         }
         let graphics = renderGraphics(page: page, projection: projection)
-        switch format.lowercased() {
+        switch normalizedFormat {
         case "pdf": return try pdfData(page: page, graphics: graphics)
         case "svg": return svgData(page: page, graphics: graphics)
         case "dxf": return dxfData(page: page, graphics: graphics)
         case "png": return try pngData(page: page, graphics: graphics)
         default:
+            // The guard above makes this unreachable; keep the compiler's
+            // exhaustive switch honest if a future format is added.
             throw CADDocumentError(code: "unknown_format",
-                                   message: "format must be pdf, svg, dxf or png.")
+                                   message: "format must be pdf, svg, dxf, png or csv.")
         }
     }
 
@@ -198,7 +239,9 @@ public final class CADDrawingService {
             row["viewCount"] = page.effectiveSheetViews.count
             row["isMultiView"] = page.isMultiViewSheet
             row["sectionIncomplete"] = pageSectionIncomplete(page)
-            row["outputBlocked"] = pageSectionIncomplete(page)
+            row["missingExplodedView"] = pageMissingExplodedView(page)
+            row["outputBlocked"] = pageSectionIncomplete(page) || pageMissingExplodedView(page)
+            row["vectorOutputBlocked"] = row["outputBlocked"] as? Bool ?? false
             if let revision = maxMeshRevision(for: page) { row["liveRevision"] = revision }
             if !missing.isEmpty {
                 row["missingBodyIDs"] = missing.map(\.uuidString)
@@ -210,6 +253,15 @@ public final class CADDrawingService {
                 row["missingInstanceIDs"] = binding.missingInstanceIDs
             }
             if page.showBOM { row["bomCount"] = page.bom?.entries.count ?? 0 }
+            if let bom = page.bom, !bom.entries.isEmpty {
+                let output = bomOutputStatus(page: page, rowCount: bom.entries.count)
+                row["bomOutput"] = output
+                row["bomTotalRows"] = bom.entries.count
+                row["bomVectorComplete"] = output["vectorComplete"] ?? false
+                row["bomVectorCapacity"] = output["capacity"] ?? 0
+                row["vectorOutputBlocked"] = (row["vectorOutputBlocked"] as? Bool ?? false)
+                    || !(output["vectorComplete"] as? Bool ?? false)
+            }
             rows.append(row)
         }
         return ["ok": true, "count": rows.count, "maxPages": Self.maxPages, "pages": rows]
@@ -1211,7 +1263,7 @@ public final class CADDrawingService {
             return fail("bad_page_id", "pageID must be a drawing page UUID string.")
         }
         guard let format = (args["format"] as? String)?.lowercased() else {
-            return fail("missing_format", "format must be pdf, svg or dxf.")
+            return fail("missing_format", "format must be pdf, svg, dxf, png or csv.")
         }
         do {
             let data = try exportData(pageID: id, format: format)
@@ -1228,11 +1280,32 @@ public final class CADDrawingService {
                 "noRasterization": true,
             ]
         } catch let error as CADDocumentError {
-            return fail(error.code, error.message)
+            return failurePayload(error)
         } catch {
             return fail("export_failed",
                         "The \(format) export failed: \(error.localizedDescription)")
         }
+    }
+
+    /// JSON-safe refusal with the service's exact code plus optional
+    /// machine-readable context. Numeric context keys stay JSON numbers so a
+    /// caller can distinguish "9 rows" from "capacity 6" without parsing the
+    /// human-readable message.
+    private func failurePayload(_ error: CADDocumentError) -> [String: Any] {
+        var payload: [String: Any] = [
+            "ok": false,
+            "error": error.code,
+            "message": error.message,
+        ]
+        for (key, value) in error.details {
+            if ["actualRows", "capacity", "requiredRows", "requiredColumns"].contains(key),
+               let number = Int(value) {
+                payload[key] = number
+            } else {
+                payload[key] = value
+            }
+        }
+        return payload
     }
 
     // MARK: - Assembly sheet
@@ -1336,6 +1409,11 @@ public final class CADDrawingService {
         }
         var page = set.pages[index]
         let assembly = loadAssemblyValue()
+        func cleanedText(_ value: Any?) -> String? {
+            guard let text = value as? String else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
         if let rawEntries = args["entries"] as? [[String: Any]] {
             var entries: [CADDrawingBOMEntry] = []
             var numbers = Set<Int>()
@@ -1354,6 +1432,7 @@ public final class CADDrawingService {
                     return fail("unknown_body", "Every BOM entry bodyID must reference a live body.")
                 }
                 var instanceIDs: [UUID] = []
+                var seenInstances = Set<UUID>()
                 if let rawIDs = raw["instanceIDs"] as? [String] {
                     for text in rawIDs {
                         guard let instanceID = UUID(uuidString: text),
@@ -1361,21 +1440,54 @@ public final class CADDrawingService {
                             return fail("unknown_instance",
                                         "BOM entry instanceIDs must reference live instances.")
                         }
-                        instanceIDs.append(instance.id)
+                        if seenInstances.insert(instance.id).inserted {
+                            instanceIDs.append(instance.id)
+                        }
                     }
+                }
+                let instanceIdentities = Set(instanceIDs.compactMap {
+                    assembly?.instance($0)?.bomIdentity
+                })
+                guard instanceIdentities.count <= 1 else {
+                    return fail("mixed_part_instances",
+                                "One BOM row must not mix instances of different part definitions.")
+                }
+                var partDefinitionID = uuidValue(raw["partDefinitionID"] ?? raw["definitionID"])
+                if let requested = partDefinitionID {
+                    let live = Set((assembly?.occurrences(includeHidden: true) ?? [])
+                        .filter { !$0.instance.isSubassembly }
+                        .map(\.bomIdentity))
+                    guard live.contains(requested) else {
+                        return fail("unknown_part",
+                                    "partDefinitionID must name a live part definition.")
+                    }
+                    if !instanceIdentities.isEmpty,
+                       instanceIdentities != Set([requested]) {
+                        return fail("part_definition_mismatch",
+                                    "partDefinitionID does not match the supplied instances.")
+                    }
+                } else {
+                    partDefinitionID = instanceIdentities.first
                 }
                 let quantity = intValue(raw["quantity"]) ?? max(instanceIDs.count, 1)
                 guard quantity > 0 else {
                     return fail("bad_quantity", "BOM quantity must be positive.")
                 }
+                let metadata = partDefinitionID.flatMap {
+                    assembly?.partMetadataRecord($0)
+                }
                 entries.append(CADDrawingBOMEntry(
                     id: uuidValue(raw["id"]) ?? UUID(),
                     itemNumber: number,
                     name: name,
-                    partNumber: (raw["partNumber"] as? String) ?? "",
+                    partNumber: (raw["partNumber"] as? String)
+                        ?? metadata?.partNumber ?? "",
                     bodyID: bodyID,
                     instanceIDs: instanceIDs,
-                    quantity: quantity))
+                    quantity: quantity,
+                    partDefinitionID: partDefinitionID,
+                    material: cleanedText(raw["material"]) ?? metadata?.material,
+                    version: cleanedText(raw["version"]) ?? metadata?.version))
             }
             entries.sort { $0.itemNumber < $1.itemNumber }
             page.bom = CADDrawingBOM(entries: entries)
@@ -1392,28 +1504,37 @@ public final class CADDrawingService {
             return fail("empty_assembly", "There is no assembly data to derive a BOM from.")
         }
         let filter = Set(page.sourceBodyIDs)
-        // Explicit BOMs may intentionally list one body twice (different
-        // items); keep the first row as the stable id/number source instead of
-        // trapping on duplicate dictionary keys.
+        // Stable row identity/numbers survive a re-derive. New rows key on the
+        // part definition; legacy rows without one also retain their old
+        // body-id key so a shared external reference's staged body can still
+        // adopt the original row instead of renumbering it.
+        var oldByPart: [UUID: CADDrawingBOMEntry] = [:]
         var oldByBody: [UUID: CADDrawingBOMEntry] = [:]
-        for old in page.bom?.entries ?? [] where oldByBody[old.bodyID] == nil {
-            oldByBody[old.bodyID] = old
+        for old in page.bom?.entries ?? [] {
+            if oldByPart[old.resolvedPartDefinitionID] == nil {
+                oldByPart[old.resolvedPartDefinitionID] = old
+            }
+            if oldByBody[old.bodyID] == nil { oldByBody[old.bodyID] = old }
         }
-        var groups: [(bodyID: UUID, instances: [CADAssemblyInstance])] = []
-        var indexByBody: [UUID: Int] = [:]
+        var groups: [(identity: UUID, bodyID: UUID, instances: [CADAssemblyInstance])] = []
+        var indexByIdentity: [UUID: Int] = [:]
         // Nested subassembly leaves participate in the BOM exactly like flat
-        // instances. The staged body ID of a shared external reference is
-        // stable across an explicit source update, so the existing entry id /
-        // item number / instance ids are retained by `oldByBody` below.
+        // instances. Grouping uses the occurrence's stable `bomIdentity`, not
+        // a name or geometry match: shared instances of one definition count
+        // together, and an independent copy (different identity) stays its own
+        // row even when its source geometry is identical.
         for occurrence in assembly.occurrences(includeHidden: false) {
             guard occurrence.isDrawablePart, let bodyID = occurrence.effectiveBodyID else { continue }
             let instance = occurrence.instance
             guard filter.isEmpty || filter.contains(bodyID) else { continue }
-            if let existing = indexByBody[bodyID] {
-                groups[existing].instances.append(instance)
+            let identity = occurrence.bomIdentity
+            if let existing = indexByIdentity[identity] {
+                if !groups[existing].instances.contains(where: { $0.id == instance.id }) {
+                    groups[existing].instances.append(instance)
+                }
             } else {
-                indexByBody[bodyID] = groups.count
-                groups.append((bodyID, [instance]))
+                indexByIdentity[identity] = groups.count
+                groups.append((identity, bodyID, [instance]))
             }
         }
         guard !groups.isEmpty else {
@@ -1426,7 +1547,12 @@ public final class CADDrawingService {
         for group in groups {
             let bodyName = body(for: group.bodyID)?.name
             let name = bodyName ?? group.instances.first?.name ?? "Part"
-            let old = oldByBody[group.bodyID]
+            let old = oldByPart[group.identity] ?? oldByBody[group.bodyID]
+            let metadata = assembly.partMetadataRecord(group.identity)
+            // Legacy explicit rows keep their captured values; a row that
+            // already binds a definition follows the live record (including a
+            // cleared record) instead of resurrecting old text.
+            let carryLegacyFields = old?.partDefinitionID == nil
             var number = old?.itemNumber ?? 0
             if number <= 0 {
                 while usedNumbers.contains(nextNumber) { nextNumber += 1 }
@@ -1437,10 +1563,16 @@ public final class CADDrawingService {
                 id: old?.id ?? UUID(),
                 itemNumber: number,
                 name: name,
-                partNumber: old?.partNumber ?? "",
+                partNumber: metadata?.partNumber
+                    ?? (carryLegacyFields ? old?.partNumber : nil) ?? "",
                 bodyID: group.bodyID,
                 instanceIDs: group.instances.map(\.id),
-                quantity: group.instances.count))
+                quantity: group.instances.count,
+                partDefinitionID: group.identity,
+                material: metadata?.material
+                    ?? (carryLegacyFields ? old?.material : nil),
+                version: metadata?.version
+                    ?? (carryLegacyFields ? old?.version : nil)))
         }
         entries.sort { $0.itemNumber < $1.itemNumber }
         page.bom = CADDrawingBOM(entries: entries)
@@ -2524,7 +2656,8 @@ public final class CADDrawingService {
         let view = page.explodedViewID.flatMap { assembly.explodedView($0) }
         if let id = page.explodedViewID, view == nil {
             result.notes.append("Exploded view \(page.explodedViewName ?? id.uuidString) no longer exists; "
-                                + "the base placements were projected instead.")
+                                + "the base placements were projected for display, but vector output is "
+                                + "blocked until a live view is selected.")
         }
         result.explodedViewID = view?.id
         result.explodedViewName = view?.name ?? page.explodedViewName
@@ -3559,8 +3692,18 @@ public final class CADDrawingService {
                 target = target ?? sheetAnchor + SIMD2(10, 10)
             }
             if let entry {
-                let liveCount = entry.instanceIDs.compactMap { assembly?.instance($0) }
-                    .filter { effectiveBodyID($0) == entry.bodyID }.count
+                let live = entry.instanceIDs.compactMap { assembly?.instance($0) }
+                let matching: [CADAssemblyInstance]
+                if let identity = entry.partDefinitionID {
+                    matching = live.filter { $0.bomIdentity == identity }
+                } else {
+                    matching = live.filter { effectiveBodyID($0) == entry.bodyID }
+                }
+                var seen = Set<UUID>()
+                var liveCount = 0
+                for instance in matching where seen.insert(instance.id).inserted {
+                    liveCount += 1
+                }
                 if liveCount != entry.quantity {
                     stale = true
                     reasons.append("The item quantity differs from the captured BOM.")
@@ -4133,25 +4276,75 @@ public final class CADDrawingService {
         for entry in page.bom?.entries ?? [] {
             let liveInstances = entry.instanceIDs.compactMap { assembly?.instance($0) }
             let missing = entry.instanceIDs.filter { assembly?.instance($0) == nil }
-            let matching = liveInstances.filter { effectiveBodyID($0) == entry.bodyID }
-            let liveQuantity = matching.count
+            // New rows bind the exact part definition. Legacy rows keep their
+            // historical body-id match; neither path falls back to a name or
+            // geometry match, so a new similarly named instance is never
+            // silently substituted for a deleted one.
+            let matching: [CADAssemblyInstance]
+            if let identity = entry.partDefinitionID {
+                matching = liveInstances.filter { $0.bomIdentity == identity }
+            } else {
+                matching = liveInstances.filter { effectiveBodyID($0) == entry.bodyID }
+            }
+            var seenInstances = Set<UUID>()
+            var uniqueMatching: [CADAssemblyInstance] = []
+            for instance in matching where seenInstances.insert(instance.id).inserted {
+                uniqueMatching.append(instance)
+            }
+            let liveQuantity = uniqueMatching.count
             let body = body(for: entry.bodyID)
-            let stale = !missing.isEmpty || liveQuantity != entry.quantity
+            let metadata = entry.partDefinitionID.flatMap {
+                assembly?.partMetadataRecord($0)
+            }
+            // A new row is authoritative on its definition record: clearing
+            // the record is a live change too. A legacy row without an
+            // identity keeps its captured explicit values.
+            let livePartNumber: String
+            let liveMaterial: String
+            let liveVersion: String
+            if entry.partDefinitionID != nil {
+                livePartNumber = metadata?.partNumber ?? ""
+                liveMaterial = metadata?.material ?? ""
+                liveVersion = metadata?.version ?? ""
+            } else {
+                livePartNumber = entry.partNumber
+                liveMaterial = entry.material ?? ""
+                liveVersion = entry.version ?? ""
+            }
+            let metadataChanged = livePartNumber != entry.partNumber
+                || liveMaterial != (entry.material ?? "")
+                || liveVersion != (entry.version ?? "")
+            let stale = !missing.isEmpty || liveQuantity != entry.quantity || metadataChanged
             var row: [String: Any] = [
                 "id": entry.id.uuidString,
                 "itemNumber": entry.itemNumber,
                 "name": body?.name ?? entry.name,
-                "partNumber": entry.partNumber,
+                "partNumber": livePartNumber,
+                "material": liveMaterial,
+                "version": liveVersion,
                 "bodyID": entry.bodyID.uuidString,
                 "instanceIDs": entry.instanceIDs.map(\.uuidString),
+                "liveInstanceIDs": uniqueMatching.map(\.id.uuidString),
                 "quantity": liveQuantity,
                 "capturedQuantity": entry.quantity,
+                "capturedPartNumber": entry.partNumber,
+                "capturedMaterial": entry.material ?? "",
+                "capturedVersion": entry.version ?? "",
+                "metadataChanged": metadataChanged,
                 "stale": stale,
                 "missingInstanceIDs": missing.map(\.uuidString),
                 "missingBody": body == nil,
             ]
+            if let identity = entry.partDefinitionID {
+                row["partDefinitionID"] = identity.uuidString
+            } else {
+                row["resolvedPartDefinitionID"] = entry.bodyID.uuidString
+            }
             if !missing.isEmpty {
                 issues.append("BOM item \(entry.itemNumber) is missing \(missing.count) instance(s).")
+            }
+            if metadataChanged {
+                issues.append("BOM item \(entry.itemNumber) has updated part data; re-derive the BOM to capture it.")
             }
             rows.append(row)
         }
@@ -4163,8 +4356,120 @@ public final class CADDrawingService {
             "entryCount": rows.count,
             "issues": issues,
         ]
+        if !rows.isEmpty {
+            payload["bomOutput"] = bomOutputStatus(page: page, rowCount: rows.count,
+                                                   rows: rows)
+        }
         if page.bom == nil { payload["bom"] = NSNull() }
         return payload
+    }
+
+    // MARK: - Complete BOM table export
+
+    /// Every column the complete BOM table exposes. The per-row page/view
+    /// columns keep each row correlated with the selected named view and the
+    /// revision the sheet was projected from; the live revision is included
+    /// separately so a stale capture is visible rather than silently replaced.
+    private static let bomCSVHeader: [String] = [
+        "sheet", "pageID", "viewName", "viewID", "pageRevision", "liveRevision",
+        "bomItemID", "itemNumber", "partDefinitionID", "name", "partNumber",
+        "material", "version", "quantity", "instanceIDs", "liveInstanceIDs",
+        "stale", "missingInstanceIDs", "capturedQuantity", "capturedPartNumber",
+        "capturedMaterial", "capturedVersion", "metadataChanged", "missingBody",
+    ]
+
+    /// Complete UTF-8 RFC 4180 table for one drawing page. There is no row or
+    /// column cap: every entry the live BOM reports is written, with its exact
+    /// text (Chinese, commas, quotes and embedded newlines included). The
+    /// vector sheet may have to shorten a cell visually, but this artifact does
+    /// not.
+    ///
+    /// Values are written literally. A spreadsheet that auto-evaluates a
+    /// leading `=`, `+`, `-` or `@` must import the field as text; Floe has no
+    /// existing CSV formula-neutralization policy, so this export never
+    /// rewrites an engineering value to a different literal.
+    private func bomCSVData(page: CADDrawingPage) throws -> Data {
+        let reply = bomReply(page: page, assembly: loadAssemblyValue())
+        let rows = (reply["entries"] as? [[String: Any]]) ?? []
+        guard !rows.isEmpty else {
+            throw CADDocumentError(
+                code: "empty_bom",
+                message: "This page has no BOM rows. Derive a BOM from the live assembly first.",
+                details: ["nextAction": "Derive the BOM with drawing.setBOM, then export format=csv."])
+        }
+        let sheet = page.name
+        let pageID = page.id.uuidString
+        let viewName = page.explodedViewName ?? ""
+        let viewID = page.explodedViewID?.uuidString ?? ""
+        let pageRevision = page.modelRevision.map { String($0) } ?? ""
+        let liveRevision = maxMeshRevision(for: page).map { String($0) } ?? ""
+        var lines: [String] = []
+        lines.reserveCapacity(rows.count + 1)
+        lines.append(Self.bomCSVHeader.map(csvField).joined(separator: ","))
+        for row in rows {
+            let partDefinitionID = (row["partDefinitionID"] as? String)
+                ?? (row["resolvedPartDefinitionID"] as? String) ?? ""
+            let values: [String] = [
+                sheet,
+                pageID,
+                viewName,
+                viewID,
+                pageRevision,
+                liveRevision,
+                csvText(row["id"]),
+                csvText(row["itemNumber"]),
+                partDefinitionID,
+                csvText(row["name"]),
+                csvText(row["partNumber"]),
+                csvText(row["material"]),
+                csvText(row["version"]),
+                csvText(row["quantity"]),
+                csvList(row["instanceIDs"]),
+                csvList(row["liveInstanceIDs"]),
+                csvText(row["stale"]),
+                csvList(row["missingInstanceIDs"]),
+                csvText(row["capturedQuantity"]),
+                csvText(row["capturedPartNumber"]),
+                csvText(row["capturedMaterial"]),
+                csvText(row["capturedVersion"]),
+                csvText(row["metadataChanged"]),
+                csvText(row["missingBody"]),
+            ]
+            guard values.count == Self.bomCSVHeader.count else {
+                throw CADDocumentError(
+                    code: "csv_row_width",
+                    message: "The BOM table row does not match its documented columns; nothing was written.")
+            }
+            lines.append(values.map(csvField).joined(separator: ","))
+        }
+        let text = lines.joined(separator: "\r\n") + "\r\n"
+        guard let data = text.data(using: .utf8) else {
+            throw CADDocumentError(
+                code: "csv_encode_failed",
+                message: "The BOM table could not be encoded as UTF-8; nothing was written.")
+        }
+        return data
+    }
+
+    private func csvText(_ raw: Any?) -> String {
+        guard let raw, !(raw is NSNull) else { return "" }
+        if let text = raw as? String { return text }
+        if let number = raw as? Int { return String(number) }
+        if let flag = raw as? Bool { return flag ? "true" : "false" }
+        return String(describing: raw)
+    }
+
+    private func csvList(_ raw: Any?) -> String {
+        (raw as? [String])?.joined(separator: ";") ?? ""
+    }
+
+    private func csvField(_ value: String) -> String {
+        let needsQuotes = value.contains(",") || value.contains("\"")
+            || value.contains("\n") || value.contains("\r")
+            || value.hasPrefix(" ") || value.hasSuffix(" ")
+            || value.hasPrefix("\t") || value.hasSuffix("\t")
+        guard needsQuotes else { return value }
+        return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
     private func pageBindingReport(page: CADDrawingPage,
@@ -4417,13 +4722,15 @@ public final class CADDrawingService {
         }
         let sectionIncomplete = projection.sectionIncomplete
             || projection.sectionCoverage.contains(where: { !$0.included })
+        let missingExplodedView = pageMissingExplodedView(page)
         var payload: [String: Any] = [
             "ok": true,
             "mutated": mutated,
             "noRasterization": true,
             "page": pagePayload(page),
             "sectionComplete": !sectionIncomplete,
-            "outputBlocked": projection.outputBlocked || sectionIncomplete,
+            "missingExplodedView": missingExplodedView,
+            "outputBlocked": projection.outputBlocked || sectionIncomplete || missingExplodedView,
             "counts": counts,
             "entities": graphics.entities.map(entityPayload),
             "texts": graphics.texts.map(textPayload),
@@ -4725,100 +5032,299 @@ public final class CADDrawingService {
                                      position: SIMD2(blockMin.x + 72, blockMin.y + 4),
                                      height: 3.5, layer: "title"))
         }
+        if let viewID = page.explodedViewID,
+           let view = loadAssemblyValue()?.explodedView(viewID) {
+            texts.append(DrawingText(
+                text: "Exploded: \(view.name)",
+                position: SIMD2(frameMin.x + 2, frameMax.y - 6),
+                height: 3.0, layer: "title"))
+        }
+        if let revision = page.modelRevision {
+            texts.append(DrawingText(
+                text: "Rev \(revision)",
+                position: SIMD2(max(frameMin.x + 2, frameMax.x - 34), frameMax.y - 6),
+                height: 3.0, layer: "title"))
+        }
         if page.showBOM, let bom = page.bom, !bom.entries.isEmpty {
-            let table = bomTableGraphics(page: page, bom: bom,
-                                         frameMin: frameMin, frameMax: frameMax,
-                                         titleBlockWidth: blockWidth)
+            let table = bomTableGraphics(page: page)
             entities.append(contentsOf: table.entities)
             texts.append(contentsOf: table.texts)
         }
         return RenderGraphics(entities: entities, texts: texts)
     }
 
-    /// Vector BOM table in the free bottom-left sheet area. Shared instances
-    /// group by part definition; the quantity is the LIVE count, so a stale
-    /// captured quantity is visible in the row rather than silently reused.
-    private func bomTableGraphics(page: CADDrawingPage,
-                                  bom: CADDrawingBOM,
-                                  frameMin: SIMD2<Double>,
-                                  frameMax: SIMD2<Double>,
-                                  titleBlockWidth: Double) -> RenderGraphics {
+    /// Vector BOM table. Shared instances group by part definition; the
+    /// quantity is the LIVE count, so a stale captured quantity is visible in
+    /// the row rather than silently reused. The table either carries every row
+    /// and every required engineering column or `exportData` refuses before any
+    /// bytes are produced. The preview path may draw a clearly labelled
+    /// continuation instead; that partial table is never an exported artifact.
+    private func bomTableGraphics(page: CADDrawingPage) -> RenderGraphics {
         let reply = bomReply(page: page, assembly: loadAssemblyValue())
         let rows = (reply["entries"] as? [[String: Any]]) ?? []
         guard !rows.isEmpty else { return RenderGraphics(entities: [], texts: []) }
-        let available = frameMax.x - frameMin.x - titleBlockWidth - 14
-        let tableWidth = min(132, max(64, available))
-        let rowHeight = 5.0
-        let maxRows = 8
-        let displayRows = Array(rows.prefix(maxRows))
-        let tableHeight = rowHeight * Double(displayRows.count + 1)
-        let minPoint = SIMD2(frameMin.x + 2, frameMin.y + 2)
-        let maxPoint = SIMD2(minPoint.x + tableWidth, minPoint.y + tableHeight)
-        var entities = rectangleEntities(min: minPoint, max: maxPoint, layer: "bom")
+        let layout = bomTableLayout(page: page, rowCount: rows.count)
+        guard layout.requiredColumnsFit else {
+            return RenderGraphics(entities: [], texts: [])
+        }
+        // An incomplete preview needs one data row, the header and a labelled
+        // continuation row; if there is no room for that, draw no table at all.
+        if !layout.complete, layout.capacity < 2 {
+            return RenderGraphics(entities: [], texts: [])
+        }
+        let displayRows = layout.complete
+            ? rows
+            : Array(rows.prefix(layout.visibleRows))
+        let maxPoint = layout.maxPoint
+        var entities = rectangleEntities(min: layout.minPoint, max: maxPoint, layer: "bom")
         var texts: [DrawingText] = []
-        let partWidth: Double = tableWidth >= 110 ? 40 : 0
-        let itemWidth = 10.0
-        let quantityWidth = 12.0
-        let nameWidth = tableWidth - itemWidth - quantityWidth - partWidth
-        let itemX = minPoint.x
-        let nameX = itemX + itemWidth
-        let quantityX = nameX + nameWidth
-        let partX = quantityX + quantityWidth
-        entities.append(ProjectedEntity(
-            shape: .line(SIMD2(nameX, minPoint.y), SIMD2(nameX, maxPoint.y)),
-            layer: "bom"))
-        entities.append(ProjectedEntity(
-            shape: .line(SIMD2(quantityX, minPoint.y), SIMD2(quantityX, maxPoint.y)),
-            layer: "bom"))
-        if partWidth > 0 {
+        let separators: [Double] = [layout.nameX, layout.partX,
+                                    layout.materialX, layout.versionX,
+                                    layout.quantityX]
+        for x in separators {
+            guard x > layout.minPoint.x, x < maxPoint.x else { continue }
             entities.append(ProjectedEntity(
-                shape: .line(SIMD2(partX, minPoint.y), SIMD2(partX, maxPoint.y)),
+                shape: .line(SIMD2(x, layout.minPoint.y), SIMD2(x, maxPoint.y)),
                 layer: "bom"))
         }
-        for rowIndex in 0...displayRows.count {
-            let y = maxPoint.y - rowHeight * Double(rowIndex)
+        let nameLimit = max(1, Int((layout.nameWidth - 2) / 1.5))
+        let partLimit = max(1, Int((layout.partWidth - 2) / 1.5))
+        let materialLimit = max(1, Int((layout.materialWidth - 2) / 1.5))
+        let versionLimit = max(1, Int((layout.versionWidth - 2) / 1.5))
+        let lastRowIndex = max(0, layout.totalRows - 1)
+        for rowIndex in 0...lastRowIndex {
+            let y = maxPoint.y - layout.rowHeight * Double(rowIndex)
             if rowIndex > 0 {
                 entities.append(ProjectedEntity(
-                    shape: .line(SIMD2(minPoint.x, y), SIMD2(maxPoint.x, y)),
+                    shape: .line(SIMD2(layout.minPoint.x, y), SIMD2(maxPoint.x, y)),
                     layer: "bom"))
             }
-            let baseline = y - rowHeight + 1.4
+            let baseline = y - layout.rowHeight + 1.4
             if rowIndex == 0 {
-                texts.append(DrawingText(text: "#", position: SIMD2(itemX + 1, baseline),
+                let partHeader = layout.partWidth >= 18 ? "Part no." : "P/N"
+                let materialHeader = layout.materialWidth >= 18 ? "Material" : "Mat."
+                texts.append(DrawingText(text: "#",
+                                         position: SIMD2(layout.itemX + 1, baseline),
                                          height: 2.8, layer: "bom"))
-                texts.append(DrawingText(text: "Part", position: SIMD2(nameX + 1, baseline),
+                texts.append(DrawingText(text: "Part",
+                                         position: SIMD2(layout.nameX + 1, baseline),
                                          height: 2.8, layer: "bom"))
-                texts.append(DrawingText(text: "Qty", position: SIMD2(quantityX + 1, baseline),
+                texts.append(DrawingText(text: "Qty",
+                                         position: SIMD2(layout.quantityX + 1, baseline),
                                          height: 2.8, layer: "bom"))
-                if partWidth > 0 {
-                    texts.append(DrawingText(text: "Part no.",
-                                             position: SIMD2(partX + 1, baseline),
-                                             height: 2.8, layer: "bom"))
-                }
-            } else {
+                texts.append(DrawingText(text: partHeader,
+                                         position: SIMD2(layout.partX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+                texts.append(DrawingText(text: materialHeader,
+                                         position: SIMD2(layout.materialX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+                texts.append(DrawingText(text: "Rev",
+                                         position: SIMD2(layout.versionX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+            } else if rowIndex <= displayRows.count {
                 let row = displayRows[rowIndex - 1]
                 let item = row["itemNumber"] as? Int ?? rowIndex
-                let name = (row["name"] as? String) ?? "—"
+                let name = bomCellText((row["name"] as? String) ?? "—",
+                                       limit: nameLimit)
+                let part = bomCellText((row["partNumber"] as? String) ?? "",
+                                       limit: partLimit)
+                let material = bomCellText((row["material"] as? String) ?? "",
+                                           limit: materialLimit)
+                let version = bomCellText((row["version"] as? String) ?? "",
+                                           limit: versionLimit)
                 let quantity = row["quantity"] as? Int ?? 0
                 texts.append(DrawingText(text: "\(item)",
-                                         position: SIMD2(itemX + 1, baseline),
+                                         position: SIMD2(layout.itemX + 1, baseline),
                                          height: 2.8, layer: "bom"))
-                texts.append(DrawingText(text: String(name.prefix(40)),
-                                         position: SIMD2(nameX + 1, baseline),
+                texts.append(DrawingText(text: name,
+                                         position: SIMD2(layout.nameX + 1, baseline),
                                          height: 2.8, layer: "bom"))
                 texts.append(DrawingText(text: "\(quantity)",
-                                         position: SIMD2(quantityX + 1, baseline),
+                                         position: SIMD2(layout.quantityX + 1, baseline),
                                          height: 2.8, layer: "bom"))
-                if partWidth > 0 {
-                    let part = (row["partNumber"] as? String) ?? ""
-                    texts.append(DrawingText(text: String(part.prefix(24)),
-                                             position: SIMD2(partX + 1, baseline),
-                                             height: 2.8, layer: "bom"))
-                }
+                texts.append(DrawingText(text: part,
+                                         position: SIMD2(layout.partX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+                texts.append(DrawingText(text: material,
+                                         position: SIMD2(layout.materialX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+                texts.append(DrawingText(text: version,
+                                         position: SIMD2(layout.versionX + 1, baseline),
+                                         height: 2.8, layer: "bom"))
+            } else {
+                let shown = displayRows.count
+                let range = shown == 0 ? "0" : "1–\(shown)"
+                let footer = "Rows \(range) of \(rows.count) · CSV: full table"
+                texts.append(DrawingText(
+                    text: bomCellText(footer,
+                                      limit: max(1, Int((layout.tableWidth - 2) / 1.4))),
+                    position: SIMD2(layout.minPoint.x + 2, baseline),
+                    height: 2.6, layer: "bom"))
             }
         }
         return RenderGraphics(entities: entities, texts: texts)
     }
+
+    /// Sheet-space geometry and capacity for the complete BOM table. The
+    /// table normally uses the free bottom-left area; if that is too narrow
+    /// for the six required columns it moves above the title block and uses
+    /// the full frame width. If even that cannot fit, every vector format
+    /// refuses with `bom_output_incomplete`.
+    private func bomTableLayout(page: CADDrawingPage, rowCount: Int) -> BOMTableLayout {
+        let width = max(page.paperWidthMM, 40)
+        let height = max(page.paperHeightMM, 40)
+        let margin = 8.0
+        let frameMin = SIMD2(margin, margin)
+        let frameMax = SIMD2(width - margin, height - margin)
+        let titleBlockWidth = min(120.0, frameMax.x - frameMin.x)
+        let rowHeight = 5.0
+        let minimumColumnsWidth = 80.0
+        let bottomAvailable = frameMax.x - frameMin.x - titleBlockWidth - 14
+        let fullAvailable = frameMax.x - frameMin.x - 4
+        var placedAboveTitleBlock = false
+        var available = bottomAvailable
+        var minY = frameMin.y + 2
+        if available < minimumColumnsWidth {
+            guard fullAvailable >= minimumColumnsWidth else {
+                let minPoint = SIMD2(frameMin.x + 2, frameMin.y + 2)
+                return BOMTableLayout(
+                    tableWidth: minimumColumnsWidth, rowHeight: rowHeight,
+                    minPoint: minPoint, maxPoint: minPoint,
+                    itemWidth: 8, nameWidth: 24, partWidth: 18,
+                    materialWidth: 14, versionWidth: 8, quantityWidth: 8,
+                    itemX: minPoint.x, nameX: minPoint.x,
+                    partX: minPoint.x, materialX: minPoint.x,
+                    versionX: minPoint.x, quantityX: minPoint.x,
+                    capacity: 0, requiredColumnsFit: false, complete: false,
+                    visibleRows: 0, totalRows: 0,
+                    placedAboveTitleBlock: false)
+            }
+            placedAboveTitleBlock = true
+            available = fullAvailable
+            // Clear the 22 mm title block plus a small gap.
+            minY = frameMin.y + 26
+        }
+        let tableWidth = min(230.0, max(minimumColumnsWidth, available))
+        let itemWidth = 8.0
+        let quantityWidth = 8.0
+        let extra = max(0, tableWidth - minimumColumnsWidth)
+        let nameWidth = 24.0 + extra * 0.50
+        let partWidth = 18.0 + extra * 0.22
+        let materialWidth = 14.0 + extra * 0.20
+        let versionWidth = 8.0 + extra * 0.08
+        let itemX = frameMin.x + 2
+        let nameX = itemX + itemWidth
+        let partX = nameX + nameWidth
+        let materialX = partX + partWidth
+        let versionX = materialX + materialWidth
+        let quantityX = versionX + versionWidth
+        let minPoint = SIMD2(itemX, minY)
+        let topLimit = frameMax.y - 2
+        let capacity = max(0, Int(floor((topLimit - minY) / rowHeight)) - 1)
+        let complete = rowCount > 0 && rowCount <= capacity
+        let visibleRows = complete ? rowCount : max(0, capacity - 2)
+        let totalRows = complete ? rowCount + 1 : visibleRows + 2
+        let maxPoint = SIMD2(minPoint.x + tableWidth,
+                             minPoint.y + rowHeight * Double(totalRows))
+        return BOMTableLayout(
+            tableWidth: tableWidth, rowHeight: rowHeight,
+            minPoint: minPoint, maxPoint: maxPoint,
+            itemWidth: itemWidth, nameWidth: nameWidth, partWidth: partWidth,
+            materialWidth: materialWidth, versionWidth: versionWidth,
+            quantityWidth: quantityWidth, itemX: itemX, nameX: nameX,
+            partX: partX, materialX: materialX, versionX: versionX,
+            quantityX: quantityX, capacity: capacity,
+            requiredColumnsFit: true, complete: complete,
+            visibleRows: visibleRows, totalRows: totalRows,
+            placedAboveTitleBlock: placedAboveTitleBlock)
+    }
+
+    /// Vector cells are text, not an unbounded column. Newlines become spaces
+    /// and overlong values get one visible ellipsis; the CSV artifact above
+    /// always retains the exact value.
+    private func bomCellText(_ text: String, limit: Int) -> String {
+        let flattened = text
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        guard flattened.count > limit else { return flattened }
+        guard limit > 1 else { return String(flattened.prefix(max(0, limit))) }
+        return String(flattened.prefix(limit - 1)) + "…"
+    }
+
+    private func bomOutputStatus(page: CADDrawingPage, rowCount: Int,
+                                 rows: [[String: Any]]? = nil) -> [String: Any] {
+        let layout = bomTableLayout(page: page, rowCount: rowCount)
+        var output: [String: Any] = [
+            "totalRows": rowCount,
+            "capacity": layout.capacity,
+            "vectorComplete": layout.complete,
+            "requiredColumnsFit": layout.requiredColumnsFit,
+            "tableZone": layout.placedAboveTitleBlock ? "aboveTitleBlock" : "bottomLeft",
+            "fullTableFormat": "csv",
+        ]
+        if let rows {
+            output["vectorTextComplete"] = !bomVectorTextTruncated(rows: rows,
+                                                                   layout: layout)
+        }
+        if !layout.complete {
+            output["previewRows"] = layout.visibleRows
+            output["nextAction"] = Self.bomFullTableNextAction
+        }
+        return output
+    }
+
+    private func bomVectorTextTruncated(rows: [[String: Any]],
+                                        layout: BOMTableLayout) -> Bool {
+        let limits: [(String, Int)] = [
+            ("name", max(1, Int((layout.nameWidth - 2) / 1.5))),
+            ("partNumber", max(1, Int((layout.partWidth - 2) / 1.5))),
+            ("material", max(1, Int((layout.materialWidth - 2) / 1.5))),
+            ("version", max(1, Int((layout.versionWidth - 2) / 1.5))),
+        ]
+        for row in rows {
+            for (key, limit) in limits {
+                let value = (row[key] as? String) ?? ""
+                let flattened = value
+                    .replacingOccurrences(of: "\r\n", with: " ")
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .replacingOccurrences(of: "\r", with: " ")
+                if value.contains("\n") || value.contains("\r")
+                    || flattened.count > limit {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private func bomOutputIncomplete(rowCount: Int,
+                                     layout: BOMTableLayout) -> CADDocumentError {
+        let reason: String
+        if !layout.requiredColumnsFit {
+            reason = "the sheet is too narrow for the required item, name, part number, "
+                + "material, revision and quantity columns"
+        } else {
+            reason = "the sheet can show at most \(layout.capacity) of \(rowCount) rows"
+        }
+        let message = "Vector BOM output is incomplete: \(reason). "
+            + Self.bomFullTableNextAction
+        return CADDocumentError(
+            code: "bom_output_incomplete",
+            message: message,
+            details: [
+                "actualRows": String(rowCount),
+                "capacity": String(layout.capacity),
+                "requiredColumns": "6",
+                "requiredColumnsFit": layout.requiredColumnsFit ? "true" : "false",
+                "fullTableFormat": "csv",
+                "nextAction": Self.bomFullTableNextAction,
+            ])
+    }
+
+    private static let bomFullTableNextAction =
+        "Export the complete table as CSV with drawing.export format=csv "
+        + "(cad.document export output=\"<name>.csv\" page_id=<page>)."
 
     private func rectangleEntities(min: SIMD2<Double>, max: SIMD2<Double>,
                                    layer: String) -> [ProjectedEntity] {
@@ -5362,6 +5868,14 @@ public final class CADDrawingService {
         page.assemblyMode || page.kind == .exploded || page.explodedViewID != nil
     }
 
+    /// A persisted page can outlive the named view it references. That is a
+    /// visible binding error, never a silent switch to the base placement for
+    /// output.
+    private func pageMissingExplodedView(_ page: CADDrawingPage) -> Bool {
+        guard let id = page.explodedViewID else { return false }
+        return loadAssemblyValue()?.explodedView(id) == nil
+    }
+
     /// True when a section view on this page would omit a source (mesh-only,
     /// missing body or missing instance). Vector export must be blocked rather
     /// than presenting the partial section as a complete drawing.
@@ -5391,9 +5905,13 @@ public final class CADDrawingService {
         let pageSourceIDs = page.effectiveSourceBodyIDs
         if pageIsAssemblyAware(page) {
             let filter = Set(pageSourceIDs)
-            for instance in loadAssemblyValue()?.instances ?? [] where !instance.isHidden {
-                let id = effectiveBodyID(instance)
-                guard filter.isEmpty || filter.contains(id),
+            // Traverse the SAME nested occurrences the projection and BOM use;
+            // looking only at top-level instances skips every leaf under a
+            // subassembly and would leave a nested sheet without a revision.
+            for occurrence in loadAssemblyValue()?.occurrences(includeHidden: false) ?? []
+            where occurrence.isDrawablePart {
+                guard let id = occurrence.effectiveBodyID,
+                      filter.isEmpty || filter.contains(id),
                       let source = body(for: id) else { continue }
                 revision = max(revision ?? 0, source.meshRevision)
             }
@@ -5558,6 +6076,34 @@ public final class CADDrawingService {
 }
 
 // MARK: - File-private value types
+
+/// One deterministic sheet-space placement for the complete BOM table.
+/// `capacity` counts data rows (the header is extra); `totalRows` includes the
+/// header and, for an incomplete preview, one explicit continuation row.
+private nonisolated struct BOMTableLayout {
+    let tableWidth: Double
+    let rowHeight: Double
+    let minPoint: SIMD2<Double>
+    let maxPoint: SIMD2<Double>
+    let itemWidth: Double
+    let nameWidth: Double
+    let partWidth: Double
+    let materialWidth: Double
+    let versionWidth: Double
+    let quantityWidth: Double
+    let itemX: Double
+    let nameX: Double
+    let partX: Double
+    let materialX: Double
+    let versionX: Double
+    let quantityX: Double
+    let capacity: Int
+    let requiredColumnsFit: Bool
+    let complete: Bool
+    let visibleRows: Int
+    let totalRows: Int
+    let placedAboveTitleBlock: Bool
+}
 
 private nonisolated struct CADDrawingServiceError: Error {
     let code: String

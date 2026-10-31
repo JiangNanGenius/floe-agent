@@ -214,9 +214,12 @@ final class CADAssemblyHierarchyReferenceTests: XCTestCase {
         XCTAssertEqual(document.summary().schemaVersion,
                        CADDocumentFormat.nestedAssemblyVersion,
                        "a nested document must be marked newer than an old writer")
-        XCTAssertEqual(CADDocumentFormat.supportedVersion,
-                       CADDocumentFormat.nestedAssemblyVersion,
-                       "this writer must admit the floor it emits")
+        XCTAssertGreaterThanOrEqual(CADDocumentFormat.supportedVersion,
+                                    CADDocumentFormat.nestedAssemblyVersion,
+                                    "this writer must admit every floor it can emit")
+        XCTAssertGreaterThanOrEqual(CADDocumentFormat.supportedVersion,
+                                    CADDocumentFormat.partMetadataVersion,
+                                    "the coordinated next floor is admitted by this writer")
 
         document.close()
         document = try await FloeCADDocument.open(

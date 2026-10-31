@@ -706,6 +706,14 @@ struct CADDrawingVectorPreview: View {
                             }
                         }
                     }
+                    if preview.bomRows.count > 8 {
+                        Text(FloeCADStrings.format(
+                            "cad.workbench.drawing.bomRowsShown",
+                            "Showing %d of %d BOM rows",
+                            8, preview.bomRows.count))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             if !preview.notes.isEmpty {
@@ -1507,6 +1515,16 @@ private struct CADDrawingBOMSheet: View {
                                         .font(.callout)
                                     if let part = row["partNumber"] as? String, !part.isEmpty {
                                         Text(part).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    if let material = row["material"] as? String, !material.isEmpty {
+                                        Text(material).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    if let version = row["version"] as? String, !version.isEmpty {
+                                        Text(FloeCADStrings.format(
+                                            "cad.workbench.drawing.bomVersion",
+                                            "Rev %@", version))
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
                                     }
                                 }
                                 Spacer(minLength: 4)

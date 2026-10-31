@@ -573,6 +573,14 @@ final class FloeCAD3DBridge {
             "material_actions": CADMaterialService.actions,
             "parameter_actions": CADParameterService.actions,
             "scene_snapshot_schema": FloeCADDocument.sceneSnapshotSchemaVersion,
+            "export": [
+                "scopes": ["part", "assembly"],
+                "coverage": true,
+                "dry_run": true,
+                "assembly_formats": ["step", "glb", "usdz"],
+                "selection": ["body_ids", "instance_ids"],
+                "partial": "requires accept_partial=true; the receipt is never reported complete",
+            ],
             "viewport_capture": ["formats": ["png"], "min_size": 64, "max_size": 4096],
             "assembly_actions": CadServiceOperationCatalog.actionNames(forKind: "assembly"),
             "drawing_actions": CadServiceOperationCatalog.actionNames(forKind: "drawing"),
@@ -953,9 +961,18 @@ final class FloeCAD3DBridge {
     // MARK: Native export / import (host-guarded callers)
 
     struct NativeExportResult: Sendable {
-        let data: Data
+        /// Nil for a dry-run coverage receipt or a receipt that needs an
+        /// explicit partial-export choice. Never a half-written file.
+        let data: Data?
         let note: String
         let revision: Int
+        let changeCount: Int
+        let contentSHA256: String
+        /// JSON-encoded `CADExchangeCoverage` (empty for the legacy
+        /// part-export call, which has no assembly receipt).
+        let coverageJSON: String
+        let complete: Bool
+        let requiresConfirmation: Bool
     }
 
     /// Exact/format export bytes for the open document. Runs on the main
@@ -965,10 +982,67 @@ final class FloeCAD3DBridge {
         let document = try await document(at: url)
         switch document.nativeExportData(format: format, pageID: pageID) {
         case .success(let (data, note)):
-            return NativeExportResult(data: data, note: note, revision: document.revision)
+            return NativeExportResult(data: data, note: note,
+                                      revision: document.revision,
+                                      changeCount: document.exchangeChangeCount,
+                                      contentSHA256: document.contentSHA256,
+                                      coverageJSON: "",
+                                      complete: true,
+                                      requiresConfirmation: false)
         case .failure(let error):
             throw error
         }
+    }
+
+    /// Placed-assembly exchange export (E24/E25). The same core plan/call the
+    /// UI uses; bytes are returned only when the coverage is complete or the
+    /// caller explicitly accepted a partial receipt. The host still owns
+    /// staging, digest verification and atomic promotion.
+    func exportNativeData(at url: URL, format: String, pageID: UUID?,
+                          selection: CADExchangeSelection,
+                          dryRun: Bool) async throws -> NativeExportResult {
+        let document = try await document(at: url)
+        switch document.nativeExchangeExport(format: format, pageID: pageID,
+                                             selection: selection, dryRun: dryRun) {
+        case let .success(data, note, coverage):
+            return NativeExportResult(data: data, note: note,
+                                      revision: coverage.documentRevision,
+                                      changeCount: coverage.changeCount,
+                                      contentSHA256: coverage.contentSHA256,
+                                      coverageJSON: coverage.jsonString(),
+                                      complete: coverage.complete,
+                                      requiresConfirmation: coverage.requiresConfirmation)
+        case let .coverageRequired(coverage):
+            return NativeExportResult(data: nil, note: "coverage incomplete; explicit choice required",
+                                      revision: coverage.documentRevision,
+                                      changeCount: coverage.changeCount,
+                                      contentSHA256: coverage.contentSHA256,
+                                      coverageJSON: coverage.jsonString(),
+                                      complete: coverage.complete,
+                                      requiresConfirmation: true)
+        case let .coverage(coverage):
+            return NativeExportResult(data: nil, note: "coverage preview",
+                                      revision: coverage.documentRevision,
+                                      changeCount: coverage.changeCount,
+                                      contentSHA256: coverage.contentSHA256,
+                                      coverageJSON: coverage.jsonString(),
+                                      complete: coverage.complete,
+                                      requiresConfirmation: coverage.requiresConfirmation)
+        case let .failure(error):
+            throw error
+        }
+    }
+
+    /// Re-check the exact live identity immediately before file promotion.
+    /// An edit (saved or unsaved), a close/reopen with committed changes, or a
+    /// different selection/fence makes the staged export stale; nothing is
+    /// written and the previous target is preserved.
+    func exportFenceMatches(at url: URL, revision: Int, changeCount: Int,
+                            contentSHA256: String) async -> Bool {
+        guard let live = try? await document(at: url) else { return false }
+        return live.revision == revision
+            && live.exchangeChangeCount == changeCount
+            && live.contentSHA256 == contentSHA256
     }
 
     func discard(proposalID: UUID) {

@@ -325,6 +325,8 @@ struct FloeCADEditorView: View {
     @State private var pendingExportItems: [ExportFileItem]?
     /// Per-body temp files currently offered by `.fileExporter(items:)`.
     @State private var exportItems: [ExportFileItem]?
+    /// Part/assembly exchange export with a pre-flight coverage receipt.
+    @State private var showAssemblyExportSheet = false
 
     /// Draft name for the Make Symbol prompt (plan §B16).
     @State private var symbolNameDraft = ""
@@ -985,19 +987,12 @@ struct FloeCADEditorView: View {
                     )
                 }
             }
-            // STEP (spec §12.2): the only export here that stays EXACT — a
-            // cylinder opens as a cylinder in the receiving CAD, not as a
-            // prism. Mesh-only bodies are skipped, with a notice naming them.
-            Button("STEP") {
-                if let data = viewModel.exportSTEP() {
-                    exportDocument = ExportDocument(
-                        data: data,
-                        contentType: ExportDocument.stepType,
-                        fileExtension: "step"
-                    )
-                }
+            // The exact-solid exchange path always previews included/excluded
+            // parts before writing; the old STEP shortcut skipped mesh bodies.
+            Button(FloeCADStrings.label("cad.ui.export.exchange", "Export Model…")) {
+                showAssemblyExportSheet = true
             }
-            .accessibilityIdentifier("ExportSTEP")
+            .accessibilityIdentifier("ExportExchange")
             Divider()
             // Full-fidelity FloeCAD project package: sketches, features,
             // variables, assembly and drawings. Mesh exports above are
@@ -2149,6 +2144,19 @@ struct FloeCADEditorView: View {
                         transparentBackground: transparent,
                         showGrid: showGrid
                     )
+                }
+            }
+            .sheet(
+                isPresented: $showAssemblyExportSheet,
+                onDismiss: {
+                    if let staged = pendingExport {
+                        pendingExport = nil
+                        exportDocument = staged
+                    }
+                }
+            ) {
+                CADAssemblyExportSheet(document: document) { staged in
+                    pendingExport = staged
                 }
             }
             .sheet(

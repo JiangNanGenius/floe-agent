@@ -85,6 +85,8 @@ public final class CADAssemblyService {
         case "removeExplodedView": return removeExplodedViewAction(args)
         case "previewExplodedView": return previewExplodedViewAction(args)
         case "resetExplodedView": return resetExplodedViewAction(args)
+        case "partMetadata": return partMetadataAction(args)
+        case "setPartMetadata": return setPartMetadataAction(args)
         default:
             return fail("unknown_action", "Unknown assembly action '\(action)'.")
         }
@@ -362,6 +364,10 @@ public final class CADAssemblyService {
                     entry["effectiveBodyID"] = NSNull()
                 }
                 entry["bomIdentity"] = occurrence.bomIdentity.uuidString
+                if !instance.isSubassembly,
+                   let metadata = assembly.partMetadataRecord(occurrence.bomIdentity) {
+                    entry["partMetadata"] = partMetadataJSON(metadata)
+                }
                 entry["dof"] = localDOF[instance.id] ?? dof.perInstance[instance.id] ?? 0
                 if instance.isSubassembly {
                     entry["kind"] = "subassembly"
@@ -507,6 +513,8 @@ public final class CADAssemblyService {
                 "subassemblyCount": occurrences.filter { $0.subassemblyID != nil }.count,
                 "referenceCount": assembly.partReferences.count,
                 "references": referencesPayload(assembly),
+                "partMetadataCount": assembly.partMetadata.count,
+                "parts": partMetadataRows(assembly),
                 "constraintCount": assembly.constraints.count,
                 "totalConstraintCount": constraintEntries.count,
                 "instances": instanceEntries,
@@ -571,6 +579,10 @@ public final class CADAssemblyService {
                 payload["path"] = occurrence.path.map(\.uuidString)
                 payload["depth"] = occurrence.depth
                 payload["bomIdentity"] = occurrence.bomIdentity.uuidString
+                if !occurrence.instance.isSubassembly,
+                   let metadata = assembly.partMetadataRecord(occurrence.bomIdentity) {
+                    payload["partMetadata"] = partMetadataJSON(metadata)
+                }
                 if let effectiveBodyID = occurrence.effectiveBodyID {
                     payload["effectiveBodyID"] = effectiveBodyID.uuidString
                 } else {
@@ -2594,6 +2606,225 @@ public final class CADAssemblyService {
             return row
         }
         return payload
+    }
+
+    // MARK: - Engineering part metadata
+
+    /// Read engineering part definitions. A live part without a stored record
+    /// is still returned (empty fields, `hasRecord:false`) so the inspector can
+    /// create the first record without a separate lookup.
+    private func partMetadataAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        var filter: UUID?
+        if let raw = args["instanceID"] ?? args["id"], !(raw is NSNull) {
+            guard let id = uuidValue(raw), let instance = assembly.instance(id) else {
+                return fail("unknown_instance", "instanceID must reference a live assembly instance.")
+            }
+            guard !instance.isSubassembly else {
+                return fail("subassembly_has_no_part",
+                            "A subassembly container has no part metadata; edit its placed parts.")
+            }
+            filter = instance.bomIdentity
+        } else if let raw = args["definitionID"] ?? args["partID"], !(raw is NSNull) {
+            guard let id = uuidValue(raw) else {
+                return fail("bad_definition_id", "definitionID must be a part-definition UUID string.")
+            }
+            filter = id
+        }
+        let rows = partMetadataRows(assembly, filter: filter)
+        guard filter == nil || !rows.isEmpty else {
+            return fail("unknown_part", "No stored or live part uses that definition.")
+        }
+        var payload: [String: Any] = ["ok": true, "count": rows.count, "parts": rows]
+        if let filter { payload["definitionID"] = filter.uuidString }
+        return payload
+    }
+
+    /// Set the shared engineering record for one part definition. The target
+    /// is resolved through the SAME `bomIdentity` used by BOM rows: every
+    /// shared instance behind that identity reads the new values, while an
+    /// explicit independent copy has its own identity and is untouched.
+    private func setPartMetadataAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        let identity: UUID
+        switch parsePartIdentity(args, assembly: assembly) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let resolved): identity = resolved
+        }
+        var record = assembly.partMetadataRecord(identity) ?? CADPartMetadata(id: identity)
+        let before = record
+        let fields: [(name: String, limit: Int)] = [
+            ("partNumber", 64), ("material", 64), ("version", 32),
+        ]
+        for field in fields where args.keys.contains(field.name) {
+            switch parsePartMetadataValue(args[field.name],
+                                          field: field.name,
+                                          limit: field.limit) {
+            case .failure(let error):
+                return fail(error.code, error.message)
+            case .success(let value):
+                switch field.name {
+                case "partNumber": record.partNumber = value
+                case "material": record.material = value
+                default: record.version = value
+                }
+            }
+        }
+        let changed = record.partNumber != before.partNumber
+            || record.material != before.material
+            || record.version != before.version
+        guard changed else {
+            return ["ok": true, "mutated": false,
+                    "part": partMetadataRows(assembly, filter: identity).first ?? [:]]
+        }
+        var updated = assembly
+        if record.isEmpty {
+            updated.partMetadata.removeAll { $0.id == identity }
+        } else {
+            record.updatedAt = Date()
+            if let index = updated.partMetadata.firstIndex(where: { $0.id == identity }) {
+                updated.partMetadata[index] = record
+            } else {
+                updated.partMetadata.append(record)
+            }
+        }
+        if let failure = persist(updated) { return failure }
+        var payload: [String: Any] = [
+            "ok": true,
+            "mutated": true,
+            "definitionID": identity.uuidString,
+            "part": partMetadataRows(updated, filter: identity).first ?? [:],
+            "partMetadataCount": updated.partMetadata.count,
+        ]
+        if record.isEmpty { payload["removed"] = true }
+        return payload
+    }
+
+    private func parsePartIdentity(_ args: [String: Any], assembly: CADAssembly)
+        -> Result<UUID, CADAssemblyServiceError> {
+        if let raw = args["instanceID"] ?? args["id"], !(raw is NSNull) {
+            guard let id = uuidValue(raw), let instance = assembly.instance(id) else {
+                return .failure(CADAssemblyServiceError(
+                    code: "unknown_instance",
+                    message: "instanceID must reference a live assembly instance."))
+            }
+            guard !instance.isSubassembly else {
+                return .failure(CADAssemblyServiceError(
+                    code: "subassembly_has_no_part",
+                    message: "A subassembly container has no part metadata; edit its placed parts."))
+            }
+            return .success(instance.bomIdentity)
+        }
+        if let raw = args["definitionID"] ?? args["partID"], !(raw is NSNull) {
+            guard let id = uuidValue(raw) else {
+                return .failure(CADAssemblyServiceError(
+                    code: "bad_definition_id",
+                    message: "definitionID must be a part-definition UUID string."))
+            }
+            let live = Set(assembly.occurrences(includeHidden: true)
+                .filter { !$0.instance.isSubassembly }
+                .map(\.bomIdentity))
+            guard live.contains(id) else {
+                return .failure(CADAssemblyServiceError(
+                    code: "unknown_part",
+                    message: "definitionID does not name a live part definition."))
+            }
+            return .success(id)
+        }
+        return .failure(CADAssemblyServiceError(
+            code: "missing_part",
+            message: "Supply instanceID or definitionID for the part to edit."))
+    }
+
+    private func parsePartMetadataValue(_ raw: Any?, field: String, limit: Int)
+        -> Result<String, CADAssemblyServiceError> {
+        guard let raw else { return .success("") }
+        if raw is NSNull { return .success("") }
+        guard let text = raw as? String else {
+            return .failure(CADAssemblyServiceError(
+                code: "bad_part_metadata",
+                message: "\(field) must be a string; an empty string clears it."))
+        }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.count <= limit else {
+            return .failure(CADAssemblyServiceError(
+                code: "part_metadata_too_long",
+                message: "\(field) is bounded to \(limit) characters."))
+        }
+        return .success(value)
+    }
+
+    private func partMetadataRows(_ assembly: CADAssembly,
+                                  filter: UUID? = nil) -> [[String: Any]] {
+        var identities: [UUID] = []
+        var occurrencesByIdentity: [UUID: [CADAssemblyOccurrence]] = [:]
+        for occurrence in assembly.occurrences(includeHidden: true)
+        where !occurrence.instance.isSubassembly {
+            let identity = occurrence.bomIdentity
+            if occurrencesByIdentity[identity] == nil {
+                identities.append(identity)
+            }
+            occurrencesByIdentity[identity, default: []].append(occurrence)
+        }
+        for metadata in assembly.partMetadata where occurrencesByIdentity[metadata.id] == nil {
+            identities.append(metadata.id)
+            occurrencesByIdentity[metadata.id] = []
+        }
+        return identities.compactMap { identity -> [String: Any]? in
+            guard filter == nil || filter == identity else { return nil }
+            return partMetadataRow(identity: identity,
+                                   occurrences: occurrencesByIdentity[identity] ?? [],
+                                   assembly: assembly)
+        }
+    }
+
+    private func partMetadataRow(identity: UUID,
+                                 occurrences: [CADAssemblyOccurrence],
+                                 assembly: CADAssembly) -> [String: Any] {
+        let metadata = assembly.partMetadataRecord(identity)
+        var row: [String: Any] = [
+            "definitionID": identity.uuidString,
+            "partNumber": metadata?.partNumber ?? "",
+            "material": metadata?.material ?? "",
+            "version": metadata?.version ?? "",
+            "hasRecord": metadata != nil,
+            "instanceCount": occurrences.count,
+            "instanceIDs": occurrences.map { $0.instance.id.uuidString },
+            "sharedInstanceCount": occurrences.filter { !$0.instance.isIndependentCopy }.count,
+            "independentCopyCount": occurrences.filter { $0.instance.isIndependentCopy }.count,
+            "referenced": !occurrences.isEmpty,
+        ]
+        if let first = occurrences.first {
+            if let bodyID = first.effectiveBodyID {
+                row["bodyID"] = bodyID.uuidString
+            }
+            row["name"] = first.instance.name
+            row["path"] = first.path.map(\.uuidString)
+            if let referenceID = first.sourceReferenceID {
+                row["referenceID"] = referenceID.uuidString
+            }
+        }
+        if let updatedAt = metadata?.updatedAt {
+            row["updatedAt"] = ISO8601DateFormatter().string(from: updatedAt)
+        }
+        return row
+    }
+
+    private func partMetadataJSON(_ metadata: CADPartMetadata) -> [String: Any] {
+        [
+            "definitionID": metadata.id.uuidString,
+            "partNumber": metadata.partNumber,
+            "material": metadata.material,
+            "version": metadata.version,
+        ]
     }
 
     private func explodedPreviewPayload(view: CADExplodedView,

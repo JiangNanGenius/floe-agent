@@ -700,74 +700,235 @@ actor CadDocumentCenter: CadDocumentHost {
         guard let output = payload["output"] as? String, !output.isEmpty else {
             throw FloeError.validationFailed("native export requires payload.output (a workspace path).")
         }
-        let format = ((payload["format"] as? String) ?? (output as NSString).pathExtension).lowercased()
-        let supported: Set<String> = ["step", "stp", "stl", "obj", "3mf", "glb", "usdz", "pdf", "svg", "dxf"]
+        var format = ((payload["format"] as? String) ?? (output as NSString).pathExtension).lowercased()
+        if format == "stp" { format = "step" }
+        let supported: Set<String> = ["step", "stl", "obj", "3mf", "glb", "usdz", "pdf", "svg", "dxf", "csv"]
         guard supported.contains(format) else {
             throw FloeError.validationFailed(
-                "native export format '\(format)' is not supported (step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf).")
+                "native export format '\(format)' is not supported (step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf, csv).")
         }
         guard format != "iges" && format != "igs" else {
             throw FloeError.validationFailed("IGES export is not available in this build.")
         }
         let pageID = (payload["page_id"] as? String).flatMap(UUID.init(uuidString:))
+
+        func uuidList(_ key: String) throws -> [UUID] {
+            guard let raw = payload[key] else { return [] }
+            guard let values = raw as? [String] else {
+                throw FloeError.validationFailed("payload.\(key) must be an array of UUID strings.")
+            }
+            guard values.count <= 512 else {
+                throw FloeError.validationFailed("payload.\(key) is limited to 512 ids.")
+            }
+            var result: [UUID] = []
+            for value in values {
+                guard let id = UUID(uuidString: value) else {
+                    throw FloeError.validationFailed("payload.\(key) contains a non-UUID value.")
+                }
+                result.append(id)
+            }
+            return result
+        }
+
+        let scopeRaw = (payload["scope"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let explicitScope: CADExchangeScope?
+        switch scopeRaw {
+        case nil, "":
+            explicitScope = nil
+        case "part":
+            explicitScope = .part
+        case "assembly":
+            explicitScope = .assembly
+        default:
+            throw FloeError.validationFailed("payload.scope must be part or assembly.")
+        }
+        func intValue(_ value: Any?) -> Int? {
+            if let value = value as? Int { return value }
+            if let value = value as? NSNumber { return value.intValue }
+            return nil
+        }
+        let selectedBodies = try uuidList("body_ids")
+        let selectedInstances = try uuidList("instance_ids")
+        let selection = CADExchangeSelection(
+            scope: explicitScope ?? .part,
+            bodyIDs: selectedBodies,
+            instanceIDs: selectedInstances,
+            acceptPartial: (payload["accept_partial"] as? Bool) ?? false,
+            expectedRevision: intValue(payload["expected_revision"]),
+            expectedChangeCount: intValue(payload["expected_change_count"]))
+        let dryRun = (payload["dry_run"] as? Bool) ?? false
+        if explicitScope == nil,
+           (!selection.bodyIDs.isEmpty || !selection.instanceIDs.isEmpty
+            || selection.acceptPartial || dryRun) {
+            throw FloeError.validationFailed(
+                "body_ids, instance_ids, accept_partial and dry_run require an explicit scope=part|assembly.")
+        }
+
         let taskID = await NativeCADTaskRegistry.shared.begin(
             kind: "export",
             ownership: NativeCADTaskRegistry.Ownership(access: access, documentPath: resolved.id))
-        if await NativeCADTaskRegistry.shared.isCancellationRequested(id: taskID) {
-            throw FloeError.cancelled
-        }
-        let exported: FloeCAD3DBridge.NativeExportResult
         do {
-            exported = try await FloeCAD3DBridge.shared.exportNativeData(at: documentURL,
-                                                                         format: format, pageID: pageID)
-        } catch let error as CADDocumentError {
-            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
-                                                      detail: error.message)
-            return Self.encodeNativeJSON([
-                "ok": false,
-                "error": error.code,
-                "message": error.message,
-                "task_id": taskID.uuidString,
-            ])
-        }
-        if Task.isCancelled {
-            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .cancelled, detail: nil)
-            throw FloeError.cancelled
-        }
-        let bytes = exported.data
-        let note = exported.note
-        var relative = output
-        if relative.hasPrefix("/") {
-            guard relative.hasPrefix(resolved.root.path + "/") else {
-                await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
-                                                          detail: "output outside workspace")
-                throw FloeError.validationFailed("Native export path must be inside the workspace.")
+            if await NativeCADTaskRegistry.shared.isCancellationRequested(id: taskID) {
+                throw FloeError.cancelled
             }
-            relative = String(relative.dropFirst(resolved.root.path.count + 1))
+            let exported: FloeCAD3DBridge.NativeExportResult
+            do {
+                if let explicitScope {
+                    exported = try await FloeCAD3DBridge.shared.exportNativeData(
+                        at: documentURL, format: format, pageID: pageID,
+                        selection: selection, dryRun: dryRun)
+                } else {
+                    exported = try await FloeCAD3DBridge.shared.exportNativeData(
+                        at: documentURL, format: format, pageID: pageID)
+                }
+            } catch let error as CADDocumentError {
+                await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
+                                                          detail: error.message)
+                var refusal: [String: Any] = [
+                    "ok": false,
+                    "error": error.code,
+                    "message": error.message,
+                    "task_id": taskID.uuidString,
+                ]
+                for (key, value) in error.details {
+                    if ["actualRows", "capacity", "requiredRows", "requiredColumns"].contains(key),
+                       let number = Int(value) {
+                        refusal[key] = number
+                    } else {
+                        refusal[key] = value
+                    }
+                }
+                return Self.encodeNativeJSON(refusal)
+            }
+            if Task.isCancelled {
+                await NativeCADTaskRegistry.shared.finish(id: taskID, state: .cancelled, detail: nil)
+                throw FloeError.cancelled
+            }
+            if await NativeCADTaskRegistry.shared.isCancellationRequested(id: taskID) {
+                await NativeCADTaskRegistry.shared.finish(id: taskID, state: .cancelled,
+                                                          detail: "cancelled before export promotion")
+                throw FloeError.cancelled
+            }
+
+            let coverage = (try? JSONSerialization.jsonObject(
+                with: Data(exported.coverageJSON.utf8))) as? [String: Any]
+            if dryRun {
+                await NativeCADTaskRegistry.shared.finish(id: taskID, state: .completed,
+                                                          detail: "coverage preview")
+                var reply: [String: Any] = [
+                    "ok": true,
+                    "dry_run": true,
+                    "task_id": taskID.uuidString,
+                    "format": format,
+                    "scope": explicitScope?.rawValue ?? "part",
+                    "coverage": coverage ?? [:],
+                ]
+                reply["complete"] = exported.complete
+                reply["requires_confirmation"] = exported.requiresConfirmation
+                return Self.encodeNativeJSON(reply)
+            }
+            guard exported.data != nil else {
+                await NativeCADTaskRegistry.shared.finish(
+                    id: taskID, state: .failed,
+                    detail: "coverage incomplete; explicit partial choice required")
+                return Self.encodeNativeJSON([
+                    "ok": false,
+                    "error": "coverage_incomplete",
+                    "message": exported.requiresConfirmation
+                        ? "The export receipt is incomplete. Review the excluded objects and retry with accept_partial=true if that partial result is intended."
+                        : "The export produced no bytes; nothing was written.",
+                    "task_id": taskID.uuidString,
+                    "format": format,
+                    "scope": explicitScope?.rawValue ?? "part",
+                    "coverage": coverage ?? [:],
+                    "requires_confirmation": exported.requiresConfirmation,
+                ])
+            }
+
+            // Re-check the exact live identity immediately before promotion. The
+            // bytes were produced from one live snapshot; an edit/close that
+            // happens while the host is staging them must not be overwritten.
+            if explicitScope != nil {
+                let fresh = await FloeCAD3DBridge.shared.exportFenceMatches(
+                    at: documentURL,
+                    revision: exported.revision,
+                    changeCount: exported.changeCount,
+                    contentSHA256: exported.contentSHA256)
+                guard fresh else {
+                    await NativeCADTaskRegistry.shared.finish(
+                        id: taskID, state: .failed,
+                        detail: "document changed before export promotion")
+                    return Self.encodeNativeJSON([
+                        "ok": false,
+                        "error": "stale_export",
+                        "message": "The document changed while the export was running; nothing was written.",
+                        "task_id": taskID.uuidString,
+                        "coverage": coverage ?? [:],
+                    ])
+                }
+            }
+
+            guard let bytes = exported.data else {
+                await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
+                                                          detail: "no export bytes")
+                throw FloeError.storageCorrupted("Native CAD export produced no bytes.")
+            }
+            let note = exported.note
+            var relative = output
+            if relative.hasPrefix("/") {
+                guard relative.hasPrefix(resolved.root.path + "/") else {
+                    await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
+                                                              detail: "output outside workspace")
+                    throw FloeError.validationFailed("Native export path must be inside the workspace.")
+                }
+                relative = String(relative.dropFirst(resolved.root.path.count + 1))
+            }
+            try resolved.service.guardResolver.assertWritableSize(bytes: bytes.count)
+            let receipt = try resolved.service.createBinaryFile(relative, data: bytes)
+            let written = try Data(contentsOf: resolved.service.guardResolver.resolve(relative))
+            let digest = FloeDigest.sha256Hex(written)
+            guard digest == receipt.sha256, digest == FloeDigest.sha256Hex(bytes) else {
+                await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
+                                                          detail: "written bytes failed verification")
+                throw FloeError.storageCorrupted("Native CAD export verification failed; the source document is unchanged.")
+            }
+            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .completed,
+                                                      detail: "\(format) \(written.count) bytes")
+            var reply: [String: Any] = [
+                "ok": true,
+                "task_id": taskID.uuidString,
+                "output": relative,
+                "format": format,
+                "byte_count": written.count,
+                "sha256": digest,
+                "note": note,
+                "source_revision": exported.revision,
+                "coverage_complete": exported.complete,
+                "partial": !exported.complete,
+                "reparse_verification": format == "dxf" ? "same-engine reparse not run for native exports"
+                    : "not applicable to this format",
+            ]
+            if let explicitScope {
+                reply["scope"] = explicitScope.rawValue
+                reply["coverage"] = coverage ?? [:]
+            }
+            return Self.encodeNativeJSON(reply)
+        } catch {
+            let state: NativeCADTaskRegistry.State
+            if Task.isCancelled || error is CancellationError {
+                state = .cancelled
+            } else if case FloeError.cancelled = error {
+                state = .cancelled
+            } else {
+                state = .failed
+            }
+            // Every writer/verification error must end the owned export job.
+            // The registry preserves a cancellation that already won the race.
+            await NativeCADTaskRegistry.shared.finish(
+                id: taskID, state: state, detail: error.localizedDescription)
+            throw error
         }
-        try resolved.service.guardResolver.assertWritableSize(bytes: bytes.count)
-        let receipt = try resolved.service.createBinaryFile(relative, data: bytes)
-        let written = try Data(contentsOf: resolved.service.guardResolver.resolve(relative))
-        let digest = FloeDigest.sha256Hex(written)
-        guard digest == receipt.sha256, digest == FloeDigest.sha256Hex(bytes) else {
-            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
-                                                      detail: "written bytes failed verification")
-            throw FloeError.storageCorrupted("Native CAD export verification failed; the source document is unchanged.")
-        }
-        await NativeCADTaskRegistry.shared.finish(id: taskID, state: .completed,
-                                                  detail: "\(format) \(written.count) bytes")
-        return Self.encodeNativeJSON([
-            "ok": true,
-            "task_id": taskID.uuidString,
-            "output": relative,
-            "format": format,
-            "byte_count": written.count,
-            "sha256": digest,
-            "note": note,
-            "source_revision": exported.revision,
-            "reparse_verification": format == "dxf" ? "same-engine reparse not run for native exports"
-                : "not applicable to this format",
-        ])
     }
 
     /// App-owned external native part reference loop for `cad.document

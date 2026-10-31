@@ -9,9 +9,10 @@
 //  the classifier the host uses to refuse direct mutating payload calls.
 //
 //  Read-only service actions (reports, pages, dimensions, assembly references,
-//  exploded-view queries and the transient preview/reset, script list/status/
-//  preview, mesh boundary) stay directly callable; every mutating action name
-//  is listed here so the host never has to guess.
+//  exploded-view queries, engineering part-metadata reads and the transient
+//  preview/reset, script list/status/preview, mesh boundary) stay directly
+//  callable; every mutating action name is listed here so the host never has
+//  to guess.
 //
 //  SPDX-License-Identifier: MPL-2.0
 //
@@ -52,6 +53,10 @@ public nonisolated enum CADServiceOperations {
         "addConstraint", "updateConstraint", "removeConstraint", "suppressConstraint",
         "solve", "sourceUpdate", "clear",
         "addExplodedView", "updateExplodedView", "removeExplodedView",
+        // E17 engineering part metadata is definition-scoped data on the
+        // assembly record; it uses the same one-command persist path as the
+        // other assembly edits.
+        "setPartMetadata",
         // E01/E02 additive hierarchy/reference actions. Each persists
         // assemblyData or a staged body through ONE undoable command.
         "addSubassembly", "placePartReference", "moveInstance",

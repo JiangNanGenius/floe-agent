@@ -209,6 +209,7 @@ struct CadServiceOperationCatalogTests {
                                           "reference", "referenceCandidates", "explodedViews",
                                           "addExplodedView", "updateExplodedView", "removeExplodedView",
                                           "previewExplodedView", "resetExplodedView",
+                                          "partMetadata", "setPartMetadata",
                                           "report", "instances", "dof", "interference",
                                           "hierarchy", "references", "referenceDiagnostics",
                                           "addSubassembly", "placePartReference", "moveInstance",
@@ -218,6 +219,7 @@ struct CadServiceOperationCatalogTests {
                                                         "setTransform", "setVisible", "removeConstraint",
                                                         "suppressConstraint", "solve", "sourceUpdate", "clear",
                                                         "addExplodedView", "updateExplodedView", "removeExplodedView",
+                                                        "setPartMetadata",
                                                         "addSubassembly", "placePartReference", "moveInstance",
                                                         "removePartReference", "makeIndependent"]
 
@@ -253,6 +255,17 @@ struct CadServiceOperationCatalogTests {
         #expect(CadServiceOperationCatalog.suggestion(for: "drawing.createPage") == "addPage")
     }
 
+    @Test("drawing export advertises the complete BOM CSV table")
+    func drawingExportAdvertisesBOMCSV() throws {
+        let operation = try #require(
+            CadServiceOperationCatalog.operation(kind: "drawing", action: "export"))
+        #expect(operation.summary.contains("BOM"))
+        #expect(operation.summary.contains("CSV"))
+        let format = try #require(operation.arguments.first { $0.name == "format" })
+        #expect(format.note.contains("csv"))
+        #expect(operation.examples.contains { $0.contains("\"format\":\"csv\"") })
+    }
+
     @Test("no metadata-only external re-pin action is advertised")
     func metadataOnlyRePinIsNotAdvertised() {
         // A caller-supplied hash/revision/name must never become verification
@@ -284,6 +297,8 @@ struct CadServiceOperationCatalogTests {
             "removeExplodedView": ["id"],
             "previewExplodedView": ["id"],
             "resetExplodedView": [],
+            "partMetadata": ["instanceID", "definitionID"],
+            "setPartMetadata": ["instanceID", "definitionID", "partNumber", "material", "version"],
             "addConstraint": ["kind", "instanceA", "instanceB",
                               "referenceA", "referenceB", "faceA", "edgeA", "faceB", "edgeB",
                               "pointA", "pointB", "directionA", "directionB", "value"],
@@ -378,7 +393,7 @@ struct CadServiceOperationCatalogTests {
         // document state, so they stay direct-callable. Every persistent
         // assembly-sheet/BOM/annotation route must require propose → apply.
         for action in ["reference", "referenceCandidates", "explodedViews",
-                       "previewExplodedView", "resetExplodedView"] {
+                       "previewExplodedView", "resetExplodedView", "partMetadata"] {
             #expect(CadServiceOperationCatalog.isMutating(kind: "assembly", action: action) == false,
                     "assembly.\(action) must stay a direct read/transient")
         }
