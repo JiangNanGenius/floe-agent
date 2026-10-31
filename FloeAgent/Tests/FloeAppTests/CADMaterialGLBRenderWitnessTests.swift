@@ -62,8 +62,8 @@ final class CADMaterialGLBRenderWitnessTests: XCTestCase {
             case a, b, c
             var rows: [[UInt8]] {
                 switch self {
-                case .a: return [Fixture.rowTop, Fixture.rowBottom]
-                case .b, .c: return [Fixture.rowBottom, Fixture.rowTop]
+                case .a: return Fixture.rowTop + Fixture.rowBottom
+                case .b, .c: return Fixture.rowBottom + Fixture.rowTop
                 }
             }
             var orientation: MaterialTextureOrientation {

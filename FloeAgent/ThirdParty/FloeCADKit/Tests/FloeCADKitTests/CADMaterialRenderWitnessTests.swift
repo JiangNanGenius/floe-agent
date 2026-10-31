@@ -71,10 +71,8 @@ private enum MaterialRenderWitnessFixture {
         /// the declared origin differs, which is the discriminant.
         var rows: [[UInt8]] {
             switch self {
-            case .a: return [MaterialRenderWitnessFixture.rowTop,
-                             MaterialRenderWitnessFixture.rowBottom]
-            case .b, .c: return [MaterialRenderWitnessFixture.rowBottom,
-                                 MaterialRenderWitnessFixture.rowTop]
+            case .a: return MaterialRenderWitnessFixture.rowTop + MaterialRenderWitnessFixture.rowBottom
+            case .b, .c: return MaterialRenderWitnessFixture.rowBottom + MaterialRenderWitnessFixture.rowTop
             }
         }
 

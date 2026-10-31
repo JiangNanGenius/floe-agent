@@ -258,8 +258,8 @@ final class CADTextSketchTests: XCTestCase {
         XCTAssertEqual(hi[0] - lo[0], 20, accuracy: 3.0)
         // The requested origin is applied EXACTLY: the identical outline
         // shaped at (0,0) translates by precisely (10,5).
-        let shapedAtZero = TextSketch.shape(text: "O", height: 20,
-                                            fontName: "Helvetica", at: .zero)
+        let shapedAtZero = TextSketch.shape(text: "O", fontName: "Helvetica",
+                                            height: 20, at: .zero)
         let zeroBounds = try XCTUnwrap(shapedAtZero.bounds)
         XCTAssertEqual(lo[0], zeroBounds.min.x + 10, accuracy: 1e-9)
         XCTAssertEqual(lo[1], zeroBounds.min.y + 5, accuracy: 1e-9)
