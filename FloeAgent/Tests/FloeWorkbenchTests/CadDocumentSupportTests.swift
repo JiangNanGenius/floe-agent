@@ -316,7 +316,7 @@ struct CadServiceOperationCatalogTests {
             "setPartMetadata": ["instanceID", "definitionID", "partNumber", "material", "version"],
             "addConstraint": ["kind", "instanceA", "instanceB",
                               "referenceA", "referenceB", "faceA", "edgeA", "faceB", "edgeB",
-                              "pointA", "pointB", "directionA", "directionB", "value"],
+                              "pointA", "pointB", "directionA", "directionB", "value", "parentID"],
             "updateConstraint": ["id", "value", "expectedValue",
                                  "pointA", "directionA", "pointB", "directionB",
                                  "referenceA", "referenceB", "faceA", "edgeA", "faceB", "edgeB"],
@@ -349,8 +349,8 @@ struct CadServiceOperationCatalogTests {
             "updateBalloon": ["pageID", "balloonID", "anchor", "target", "text", "itemNumber", "instanceID"],
             "removeBalloon": ["pageID", "balloonID"],
             "addDimension": ["pageID", "kind", "instanceID", "viewID", "drawingPoints",
-                             "modelPoints", "feature", "textPosition", "text"],
-            "updateDimension": ["pageID", "dimensionID", "textPosition", "text"],
+                             "modelPoints", "feature", "textPosition", "text", "tolerance"],
+            "updateDimension": ["pageID", "dimensionID", "textPosition", "text", "tolerance"],
             "removeDimension": ["pageID", "dimensionID"],
             "addAnnotation": ["pageID", "text", "position", "heightMM", "instanceID", "viewID"],
             "updateAnnotation": ["pageID", "annotationID", "text", "position", "heightMM"],
@@ -602,7 +602,7 @@ struct CadServiceOperationCatalogTests {
         #expect(argsDescription.contains("sketch.addText"))
         #expect(argsDescription.contains("unsupported_font"))
         #expect(argsDescription.contains("unsupported_glyphs"))
-        #expect(argsDescription.contains("mesh.text is unavailable"))
+        #expect(argsDescription.contains("no standalone mesh.text operation"))
         #expect(CadDocumentTool.toolDescription.contains("sketch.addText"))
 
         let bigEngineReply = #"{"ok":true,"padding":"\#(String(repeating: "x", count: 3700))"}"#

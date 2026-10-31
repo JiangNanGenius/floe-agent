@@ -391,6 +391,16 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
     }
 
     private func reveal(_ element: XCUIElement, in app: XCUIApplication, scrollingUp: Bool = true) {
+        // A lower form row can be laid out underneath the real software
+        // keyboard. Dismiss it through its native control before scrolling;
+        // a whole-view swipe there would type keys into the focused field.
+        let keyboard = app.keyboards.firstMatch
+        if keyboard.exists {
+            let hide = app.buttons["Hide keyboard"].firstMatch
+            XCTAssertTrue(hide.waitForExistence(timeout: 5))
+            hide.tap()
+            XCTAssertTrue(keyboard.waitForNonExistence(timeout: 5))
+        }
         // Form creates offscreen sections lazily; requiring existence before
         // scrolling prevents the driver from reaching real controls below it.
         for _ in 0..<8 {
@@ -398,8 +408,7 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
             // Scope the gesture to the active native Form/ScrollView.
             // Swiping the entire app can hit the uncovered workbench or
             // dismiss an inspector instead of scrolling its contents.
-            let scrollable = [app.collectionViews.firstMatch, app.scrollViews.firstMatch]
-                .first { $0.exists && $0.isHittable }
+            let scrollable = activeDrawingScrollView(in: app)
             let target = scrollable ?? app
             if scrollingUp { target.swipeUp() } else { target.swipeDown() }
         }
@@ -412,6 +421,27 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         screen.lifetime = .keepAlways
         add(screen)
         XCTAssertTrue(element.isHittable, "The drawing control must remain reachable")
+    }
+
+    private func activeDrawingScrollView(in app: XCUIApplication) -> XCUIElement? {
+        // The workbench and the presenting Tools sheet remain in the AX tree.
+        // Match the front native inspector's horizontal bounds so its Form is
+        // scrolled instead of the still-hittable background tool palette.
+        let bar = ["GD&T", "Templates", "Dimensions", "Drawing views", "CAD Tools"]
+            .map { app.navigationBars[$0] }
+            .first { $0.exists && $0.isHittable }
+        let candidates = app.collectionViews.allElementsBoundByIndex
+            + app.scrollViews.allElementsBoundByIndex
+        if let bar {
+            let bounds = bar.frame
+            return candidates.filter {
+                $0.exists && $0.isHittable && $0.frame.height > 100
+                    && $0.frame.minX >= bounds.minX - 2
+                    && $0.frame.maxX <= bounds.maxX + 2
+                    && $0.frame.width >= bounds.width * 0.85
+            }.min { abs($0.frame.width - bounds.width) < abs($1.frame.width - bounds.width) }
+        }
+        return candidates.first { $0.exists && $0.isHittable && $0.frame.height > 100 }
     }
 }
 #endif

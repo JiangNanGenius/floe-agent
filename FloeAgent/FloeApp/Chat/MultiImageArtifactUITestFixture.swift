@@ -137,14 +137,8 @@ enum MultiImageArtifactUITestFixture {
                 createdAt: Date(),
                 updatedAt: Date()
             ))
-            try await conversationStore.appendMessage(PersistedMessage(
-                id: userMessageID,
-                conversationID: conversationID,
-                role: "user",
-                content: "请展示两张本地候选图片。",
-                createdAt: Date(),
-                runID: runID
-            ))
+            // messages.run_id references runs.id in the real SQLite schema.
+            // Create the owned run before its first bound message.
             try await runStore.saveRun(RunRecord(
                 id: runID,
                 conversationID: conversationID,
@@ -152,6 +146,14 @@ enum MultiImageArtifactUITestFixture {
                 goal: "展示两张本地候选图片",
                 startedAt: Date().addingTimeInterval(-30),
                 endedAt: Date()
+            ))
+            try await conversationStore.appendMessage(PersistedMessage(
+                id: userMessageID,
+                conversationID: conversationID,
+                role: "user",
+                content: "请展示两张本地候选图片。",
+                createdAt: Date(),
+                runID: runID
             ))
             try await appendFixtureEvents(runStore: runStore, references: references)
         }
