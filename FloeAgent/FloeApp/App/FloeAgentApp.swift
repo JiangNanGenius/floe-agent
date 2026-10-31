@@ -177,6 +177,13 @@ struct FloeAgentApp: App {
                     // explicit "Open CAD workbench" entry acceptance.
                     CanvasCADEntryFixtureHarness()
                 } else if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+                          ProcessInfo.processInfo.arguments.contains(
+                            EngineeringPreviewEntryFixture.launchArgument) {
+                    // Six real engineering-preview entry surfaces over ONE
+                    // owned CAD GLB. The route is chosen by launch argument;
+                    // no product navigation is replaced.
+                    EngineeringPreviewEntryFixtureHarness()
+                } else if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                           ProcessInfo.processInfo.arguments.contains(IDERunWebPreviewFixture.launchArgument),
                           let previewURL = IDERunWebPreviewFixture.previewURL {
                     // Native acceptance for the IDE web-service terminal only:

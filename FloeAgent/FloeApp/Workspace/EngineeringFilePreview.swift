@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import Foundation
 import WebKit
 import FloeWorkspace
 import FloeWorkbench
@@ -1158,6 +1159,12 @@ struct EngineeringFilePreview: View {
                     if isSceneDocument {
                         EngineeringSceneControlBar(session: activeSession, package: package)
                     }
+                    #if DEBUG
+                    if isSceneDocument,
+                       ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                        EngineeringSceneReadinessProbe(session: activeSession)
+                    }
+                    #endif
                 }
             }
         }
@@ -1504,6 +1511,39 @@ private struct EngineeringSceneBlockedView: View {
         EngineeringSceneIssueText.describe(issue)
     }
 }
+
+#if DEBUG
+/// UI-qualification only. It reports the LIVE scene state the WebGL page
+/// already publishes (ready flag, parsed object/mesh count, source digest and
+/// backend) so a UI test can distinguish a real renderer/scene load from a
+/// navigation-only title or a Quick Look window. It is not a success label and
+/// is only mounted for `-ui-testing` scene previews.
+private struct EngineeringSceneReadinessProbe: View {
+    @ObservedObject var session: EngineeringWebSession
+
+    var body: some View {
+        Text("3D")
+            .font(.system(size: 1))
+            .foregroundStyle(.secondary)
+            .frame(width: 4, height: 4)
+            .allowsHitTesting(false)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("engineering.scene.readiness")
+            .accessibilityIdentifier("engineering.scene.readiness")
+            .accessibilityValue(readiness)
+    }
+
+    private var readiness: String {
+        guard let state = session.sceneState else {
+            return "ready=false source=pending nodes=0 meshes=0 geometry=false backend=pending"
+        }
+        return "ready=\(state.ready) source=\(state.sourceSHA256) "
+            + "nodes=\(state.nodeCount) meshes=\(state.meshCount) "
+            + "materials=\(state.materialCount) backend=\(state.backend) "
+            + "geometry=\(state.meshCount > 0 && state.nodeCount > 0)"
+    }
+}
+#endif
 
 /// Native product controls over the WebGL scene. The web page owns rendering
 /// and the mixer; this bar owns the user-facing chrome so controls stay native
@@ -1896,6 +1936,7 @@ struct EngineeringPreviewURLView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("action.done") { dismiss() }
+                        .accessibilityIdentifier("engineering.preview.done")
                 }
             }
         }

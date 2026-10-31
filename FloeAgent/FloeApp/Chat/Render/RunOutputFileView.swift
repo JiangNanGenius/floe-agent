@@ -216,6 +216,7 @@ struct RunOutputFileView: View {
             }
         }
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.runOutput.\(receipt.outputID)")
     }
 
     private var fileRow: some View {
@@ -264,6 +265,7 @@ struct RunOutputFileView: View {
                     key: "chat.run_output_file_view.preview",
                     en: "Preview \(receipt.displayName)",
                     zh: "预览 \(receipt.displayName)")))
+                .accessibilityIdentifier("chat.runOutput.preview")
                 Button {
                     activate(.share)
                 } label: {
@@ -275,6 +277,7 @@ struct RunOutputFileView: View {
                     key: "chat.run_output_file_view.share",
                     en: "Share \(receipt.displayName)",
                     zh: "分享 \(receipt.displayName)")))
+                .accessibilityIdentifier("chat.runOutput.share")
             }
             .font(.body)
             .foregroundStyle(FloeTheme.primary)

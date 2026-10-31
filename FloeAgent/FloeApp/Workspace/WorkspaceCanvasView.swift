@@ -3900,6 +3900,15 @@ private struct CanvasDrawingEditorPresentation: Identifiable {
     let documentID: UUID
 }
 
+/// Read-only shared engineering preview for one canvas file node. The
+/// presentation carries the already-resolved app-owned asset URL; opening it
+/// never rewrites the node, its asset or the canvas project.
+private struct CanvasEngineeringPreviewPresentation: Identifiable {
+    let id = UUID()
+    let url: URL
+    let displayName: String
+}
+
 /// One live CAD editing session per canvas drawing node. Sessions survive the
 /// editor sheet closing so unsaved drafts are never discarded and reopening
 /// resumes the same live `EngineeringWebSession`; they are torn down when a
@@ -5776,6 +5785,7 @@ struct WorkspaceCanvasView: View {
     @State private var imageEditorPresentation: CanvasImageEditorPresentation?
     @State private var videoEditorPresentation: CanvasVideoEditorPresentation?
     @State private var drawingEditorPresentation: CanvasDrawingEditorPresentation?
+    @State private var engineeringPreview: CanvasEngineeringPreviewPresentation?
     @State private var nativeCADPresentation: CanvasNativeCADPresentation?
     @StateObject private var drawingSessions = CanvasDrawingSessionRegistry()
     @State private var importedVideoExports = Set<URL>()
@@ -6029,6 +6039,17 @@ struct WorkspaceCanvasView: View {
                 }
             )
             .environmentObject(environment)
+        }
+        // Read-only uniform engineering preview for a canvas-owned file
+        // asset. It presents the SAME controlled package/WebView as
+        // workspace, IDE, Files, attachments and run outputs; the node and
+        // its asset are not rewritten.
+        .sheet(item: $engineeringPreview) { presentation in
+            EngineeringPreviewURLView(source: EngineeringPreviewSource(
+                url: presentation.url,
+                displayName: presentation.displayName,
+                includeSiblingResources: false,
+                startsSecurityScope: false))
         }
         .sheet(isPresented: $showsMediaJobs) {
             CanvasMediaJobCenter(
@@ -7504,6 +7525,7 @@ struct WorkspaceCanvasView: View {
                 onOpenCAD: CADCanvasNodePlanner.isNativeCADNode(node) ? {
                     openUnified3DEditor(node)
                 } : nil,
+                onPreviewEngineering: engineeringPreviewAction(for: node),
                 onConfigureGeneration: node.kind == .generationTask ? {
                     handleGenerationAction(for: node)
                 } : nil,
@@ -8725,6 +8747,16 @@ struct WorkspaceCanvasView: View {
                                     editingNodeID = nodeID
                                 }
                             }
+                        } else if node.kind == .file,
+                                  let preview = engineeringPreviewAction(for: node) {
+                            // Read-only uniform preview. The canvas file
+                            // asset is not edited, moved or imported into
+                            // another document.
+                            Button(canvasLocalized("预览工程文件", "Preview engineering file"),
+                                   systemImage: "eye") {
+                                preview()
+                            }
+                            .accessibilityIdentifier("canvas.toolbar.previewEngineering")
                         } else if node.supportsInlineEditing, !node.isLocked {
                             Button("workspace.workspace_canvas_view.edit", systemImage: "pencil") { editingNodeID = nodeID }
                         }
@@ -9261,6 +9293,34 @@ struct WorkspaceCanvasView: View {
         Task { await CanvasDrawingDraftRecoveryCenter.shared.retryAll() }
         drawingEditorPresentation = CanvasDrawingEditorPresentation(
             id: node.id, documentID: store.project.selectedDocumentID)
+    }
+
+    /// One read-only engineering preview action for a canvas file node whose
+    /// format the shared viewer recognizes. Resolution uses the same guarded
+    /// local-asset path as rendering; an absent/unsafe asset never opens a
+    /// blank preview and the action is omitted instead.
+    private func engineeringPreviewAction(for node: FloeCanvasNode) -> (() -> Void)? {
+        guard node.kind == .file,
+              let relativePath = node.asset?.localRelativePath,
+              let kind = EngineeringPreviewKind.identify(relativePath),
+              kind != .unsupported,
+              case .file(let url) = CanvasAssetNodeContent.resolveLocal(for: node)
+        else { return nil }
+        return {
+            let ext = url.pathExtension
+            let base = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayName: String
+            if base.isEmpty {
+                displayName = url.lastPathComponent
+            } else if ext.isEmpty || base.lowercased().hasSuffix(".\(ext.lowercased())") {
+                displayName = base
+            } else {
+                displayName = "\(base).\(ext)"
+            }
+            engineeringPreview = CanvasEngineeringPreviewPresentation(
+                url: url,
+                displayName: displayName)
+        }
     }
 
     /// ONE 3D opener for every 3D node:
@@ -10640,6 +10700,10 @@ private struct CanvasNodeCard: View {
     /// Nil for non-CAD nodes; routes through the SAME document binding as
     /// double tap.
     let onOpenCAD: (() -> Void)?
+    /// Read-only shared engineering preview for a canvas file node whose
+    /// format the viewer recognizes. Nil when no local/preparable asset or
+    /// the file is not an engineering format.
+    let onPreviewEngineering: (() -> Void)?
     let onConfigureGeneration: (() -> Void)?
     let onRetryAsset: (() -> Void)?
     let onBeginEditing: () -> Void
@@ -10683,6 +10747,12 @@ private struct CanvasNodeCard: View {
         }
         .shadow(color: node.kind == .group ? .clear : .black.opacity(0.08), radius: 8, y: 3)
         .contextMenu {
+            if let onPreviewEngineering, !node.isLocked {
+                Button(canvasLocalized("预览工程文件", "Preview engineering file"),
+                       systemImage: "eye", action: onPreviewEngineering)
+                    .accessibilityIdentifier("canvas.context.previewEngineering")
+                Divider()
+            }
             if let onConfigureGeneration {
                 Button(
                     node.metadata["generationState"] == "failed" ? "workspace.workspace_canvas_view.retry_generation" : "workspace.workspace_canvas_view.generation_configuration",

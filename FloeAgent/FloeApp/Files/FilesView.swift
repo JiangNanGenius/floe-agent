@@ -151,6 +151,7 @@ struct FilesView: View {
                         } label: {
                             Label("files.preview", systemImage: "eye")
                         }
+                        .accessibilityIdentifier("files.row.preview")
                         if attachment.kind == .image {
                             Button {
                                 viewModel.openImageEditor(attachment)
@@ -169,9 +170,12 @@ struct FilesView: View {
                         Image(systemName: "ellipsis.circle")
                             .foregroundStyle(.secondary)
                     }
+                    .accessibilityLabel(Text("workspace.workspace_canvas_view.more"))
+                    .accessibilityIdentifier("files.row.menu")
                     .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("files.row.\(attachment.id.uuidString)")
             }
             .onDelete { offsets in
                 let targets = offsets.map { viewModel.recentFiles[$0] }

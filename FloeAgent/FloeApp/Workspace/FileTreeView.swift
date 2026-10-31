@@ -633,6 +633,7 @@ private struct FileTreeRow: View {
         // satisfies the 44pt minimum target on compact layouts.
         .frame(minHeight: FloeTheme.minimumTarget)
         .accessibilityLabel(node.name)
+        .accessibilityIdentifier("fileTree.row.\(node.name)")
         .accessibilityAddTraits(node.isDirectory ? [] : .isButton)
     }
 }

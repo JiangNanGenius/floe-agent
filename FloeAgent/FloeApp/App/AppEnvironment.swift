@@ -2751,6 +2751,14 @@ final class AppEnvironment: ObservableObject {
                ProcessInfo.processInfo.arguments.contains(TaskLifecycleUITestFixture.launchArgument) {
                 await TaskLifecycleUITestFixture.seedIfRequested(environment: self)
             }
+            // Engineering preview entry qualification: one owned CAD GLB,
+            // seeded into synthetic task/Files/run-output/canvas identities
+            // through the production stores. The REAL route surfaces are
+            // mounted by the DEBUG harness after this returns.
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains(EngineeringPreviewEntryFixture.launchArgument) {
+                await EngineeringPreviewEntryFixture.seedIfRequested(environment: self)
+            }
             #endif
             #if !targetEnvironment(simulator)
             do {

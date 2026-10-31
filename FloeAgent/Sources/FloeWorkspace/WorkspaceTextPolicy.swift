@@ -24,7 +24,7 @@ public enum WorkspaceFileKind: String, Sendable, CaseIterable {
     case office
     /// Fixed-layout documents.
     case pdf
-    /// Engineering drawings.
+    /// Engineering drawings and read-only 3D mesh/scene assets.
     case cad
     /// Raster/vector images.
     case image
@@ -79,6 +79,11 @@ public enum WorkspaceTextPolicy {
 
     public static let cadExtensions: Set<String> = [
         "dxf", "dwg", "step", "stp", "iges", "igs", "stl", "obj",
+        // Read-only engineering mesh/scene formats share the controlled
+        // engineering preview surface. They are binary/mesh documents and
+        // must never fall through to the text/code workbench.
+        "glb", "gltf", "ply", "off", "3ds", "dae", "fbx", "3mf",
+        "amf", "wrl", "bim",
         // Native FloeCAD document package (directory): parametric history +
         // B-rep, opened by the FloeCAD workbench, never as text.
         "floecad"
