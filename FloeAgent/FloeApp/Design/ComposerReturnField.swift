@@ -104,13 +104,22 @@ final class HardwareReturnTextView: UITextView {
     /// Re-read the current selection after UIKit lays out this edit, rather
     /// than scrolling using the previous text layout or a stale captured range.
     func revealCurrentCaretAfterLayout() {
-        guard !caretRevealPending else { return }
+        guard selectedRange.length == 0, !caretRevealPending else { return }
         caretRevealPending = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.caretRevealPending = false
-            guard self.isFirstResponder, self.isScrollEnabled else { return }
+            // Native selection gestures and their edit menu own a selected
+            // range. Scrolling that range from its delegate can interrupt
+            // the gesture or dismiss the menu before it is presented.
+            guard self.isFirstResponder, self.isScrollEnabled,
+                  self.selectedRange.length == 0,
+                  !self.isTracking, !self.isDragging else { return }
             self.layoutIfNeeded()
+            guard let selection = self.selectedTextRange, selection.isEmpty else { return }
+            let caret = self.caretRect(for: selection.end)
+            let viewport = self.bounds.inset(by: self.adjustedContentInset)
+            guard !caret.isNull, !caret.isEmpty, !viewport.contains(caret) else { return }
             self.scrollRangeToVisible(self.selectedRange)
         }
     }
@@ -156,7 +165,7 @@ final class HardwareReturnTextView: UITextView {
             textContainer.heightTracksTextView = !scrolls
         }
         if scrolls, revealCaret {
-            scrollRangeToVisible(selectedRange)
+            revealCurrentCaretAfterLayout()
         }
     }
 
@@ -849,8 +858,11 @@ struct ComposerReturnField: UIViewRepresentable {
             textView.invalidateIntrinsicContentSize()
             placeholderLabel(of: textView)?.isHidden = !textView.text.isEmpty
             if textView.isScrollEnabled {
-                textView.scrollRangeToVisible(textView.selectedRange)
-                (textView as? HardwareReturnTextView)?.revealCurrentCaretAfterLayout()
+                if let hardware = textView as? HardwareReturnTextView {
+                    hardware.revealCurrentCaretAfterLayout()
+                } else if textView.selectedRange.length == 0 {
+                    textView.scrollRangeToVisible(textView.selectedRange)
+                }
             }
             // The keystroke itself is the freshest possible overflow truth:
             // re-derive at the laid-out width so deleting back under the cap
@@ -872,8 +884,11 @@ struct ComposerReturnField: UIViewRepresentable {
             // Hardware-arrow navigation past the cap must keep the caret
             // visible even when the text itself did not change.
             if textView.isScrollEnabled {
-                textView.scrollRangeToVisible(textView.selectedRange)
-                (textView as? HardwareReturnTextView)?.revealCurrentCaretAfterLayout()
+                if let hardware = textView as? HardwareReturnTextView {
+                    hardware.revealCurrentCaretAfterLayout()
+                } else if textView.selectedRange.length == 0 {
+                    textView.scrollRangeToVisible(textView.selectedRange)
+                }
             }
             reportSelectionIfChanged(textView)
         }
