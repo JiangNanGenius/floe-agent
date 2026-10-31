@@ -1415,7 +1415,7 @@ private struct CADDrawingViewsSheet: View {
             onChanged(reply)
             if reply["ok"] as? Bool == true {
                 views = (reply["page"] as? [String: Any])?["views"] as? [[String: Any]] ?? views
-                selectedID = views.first?["id"] as? String
+                self.selectedID = views.first?["id"] as? String
                 loadSelected()
             } else {
                 errorText = reply["message"] as? String
