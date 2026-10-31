@@ -20,6 +20,7 @@ struct NativeCADCapabilityDiscoveryTests {
             #expect(exposed == CadServiceOperationCatalog.actionNames(forKind: kind))
         }
         #expect(!(capabilities["mesh_actions"] as? [String] ?? []).contains("text"))
+        #expect((capabilities["operation_names"] as? [String] ?? []).contains("sketch.addText"))
     }
 }
 #endif

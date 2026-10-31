@@ -562,9 +562,9 @@ public final class CADMeshService {
     private func text(_ args: [String: Any]) -> [String: Any] {
         _ = args
         return Self.fail("text_mesh_unavailable",
-                         "Text outlines are produced as sketch entities (TextSketch) and become "
-                         + "solids through the sketch → extrude pipeline; this mesh service has "
-                         + "no standalone text-to-mesh path.")
+                         "This service creates text through the native sketch route: propose sketch.addText (text outlines as "
+                         + "ordinary sketch entities), apply, then feature.extrude the closed profiles. "
+                         + "This mesh service has no standalone text-to-mesh path.")
     }
 
     // MARK: image

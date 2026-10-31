@@ -512,7 +512,27 @@ struct CadServiceOperationCatalogTests {
         #expect(mergedObject["drawing_actions"] as? [String]
             == CadServiceOperationCatalog.actionNames(forKind: "drawing"))
         #expect(!(mergedObject["mesh_actions"] as? [String] ?? []).contains("text"))
-        #expect(mergedObject["unavailable_actions"] != nil)
+        let unavailable = try #require(mergedObject["unavailable_actions"] as? [String: Any])
+        let meshText = try #require(unavailable["mesh.text"] as? [String: Any])
+        #expect(meshText["code"] as? String == "text_mesh_unavailable")
+        #expect(meshText["alternative_op"] as? String == "sketch.addText")
+        #expect((meshText["message"] as? String)?.contains("sketch.addText") == true)
+        #expect((meshText["message"] as? String)?.contains("feature.extrude") == true)
+
+        // Tool schema parity: the exact runnable contract is discoverable from
+        // the every-turn schema, not only from capabilities.
+        let schema = try #require(
+            (try? JSONSerialization.jsonObject(with: Data(CadDocumentTool.parametersJSON.utf8)))
+                as? [String: Any])
+        let properties = try #require(schema["properties"] as? [String: Any])
+        let opDescription = try #require((properties["op"] as? [String: Any])?["description"] as? String)
+        #expect(opDescription.contains("sketch.addText"))
+        let argsDescription = try #require((properties["args"] as? [String: Any])?["description"] as? String)
+        #expect(argsDescription.contains("sketch.addText"))
+        #expect(argsDescription.contains("unsupported_font"))
+        #expect(argsDescription.contains("unsupported_glyphs"))
+        #expect(argsDescription.contains("mesh.text is unavailable"))
+        #expect(CadDocumentTool.toolDescription.contains("sketch.addText"))
 
         let bigEngineReply = #"{"ok":true,"padding":"\#(String(repeating: "x", count: 3700))"}"#
         let detailReply = CadServiceOperationCatalog.mergingCapabilities(

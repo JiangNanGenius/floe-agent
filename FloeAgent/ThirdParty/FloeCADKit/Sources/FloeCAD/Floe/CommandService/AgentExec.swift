@@ -65,6 +65,14 @@ nonisolated enum AgentExecOp: Sendable, Equatable {
     /// menu would. `fileName` overrides the name the parts are labelled with.
     case importFile(path: String, fileName: String?, unitScale: Double?)
     case addEntities(sketch: SketchID, entities: [SketchEntity], constructionIndices: Set<Int>)
+    /// The native TextSketch → sketch → extrude route (X07). `text` becomes
+    /// Core Text glyph outlines on `sketch`, scaled so the primary font's cap
+    /// height equals `height` mm, anchored at `origin` (plane-local baseline
+    /// start). This is the same native geometry path as the interactive Text
+    /// tool — it is NOT a mesh/text action and never a raster substitute.
+    /// Unsupported fonts/glyphs refuse in the executor before any command.
+    case addText(sketch: SketchID, text: String, height: Double,
+                 origin: SIMD2<Double>, fontName: String?)
     /// `taperDegrees` ≠ 0 makes this a DRAFT extrude (the profile lofts to an
     /// offset copy, walls sloped by the angle — cast/mould release); 0 is a
     /// plain straight prism. Positive contracts the section along the extrude.
@@ -160,7 +168,7 @@ nonisolated enum AgentExec {
     /// Every op this build accepts, for `/v1/commands`-style discovery and for
     /// naming the alternatives in an `unknown_op` message.
     static let opNames = [
-        "sketch.create", "sketch.addEntities",
+        "sketch.create", "sketch.addEntities", "sketch.addText",
         "feature.extrude", "feature.revolve", "feature.hole",
         "feature.pattern", "feature.mirror", "feature.transform", "feature.boolean",
         "feature.fillet", "feature.chamfer", "feature.shell",
@@ -188,6 +196,7 @@ nonisolated enum AgentExec {
         case "sketch.create":      return parseCreateSketch(args)
         case "document.import":    return parseImportFile(args)
         case "sketch.addEntities": return parseAddEntities(args)
+        case "sketch.addText":     return parseAddText(args)
         case "feature.extrude":    return parseExtrude(args)
         case "feature.revolve":    return parseRevolve(args)
         case "feature.hole":       return parseHole(args)
@@ -280,6 +289,50 @@ nonisolated enum AgentExec {
             }
             let construction = Set((a["construction"] as? [Int] ?? []).filter { $0 >= 0 && $0 < entities.count })
             return .success(.addEntities(sketch: sketch, entities: entities, constructionIndices: construction))
+        } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
+    }
+
+    /// `sketch.addText {sketchID, text, height, fontName?, origin?}` — the
+    /// typed route onto the SAME native TextSketch path as the interactive
+    /// text tool. Parsing is pure JSON validation (this file stays free of
+    /// shaping): font/glyph failures are reported by the executor from
+    /// `TextSketch.shape`, so the refusal names the actual font and code
+    /// points instead of a guessed parse error.
+    private static func parseAddText(_ a: [String: Any]) -> Result<AgentExecOp, AgentExecError> {
+        do {
+            let sketch = SketchID(raw: try uuid(a, "sketchID"))
+            guard let text = a["text"] as? String else {
+                return .failure(.init(code: "missing_text",
+                                      message: #"args.text is required (the string to outline on the sketch)."#))
+            }
+            guard !text.isEmpty else {
+                return .failure(.init(code: "empty_text",
+                                      message: #"args.text must not be empty."#))
+            }
+            guard text.utf16.count <= TextSketch.maximumTextUTF16Count else {
+                return .failure(.init(code: "invalid_text",
+                                      message: "args.text is \(text.utf16.count) UTF-16 units; the supported route handles at most \(TextSketch.maximumTextUTF16Count)."))
+            }
+            let height = try double(a, "height")
+            guard height > 0, height <= 1e6 else {
+                return .failure(.init(code: "bad_height",
+                                      message: #"args.height is the cap height in millimetres; it must be > 0 and <= 1e6."#))
+            }
+            let origin = try a["origin"] == nil ? SIMD2<Double>.zero : vector2(a, "origin")
+            var fontName: String? = nil
+            if let raw = a["fontName"] {
+                guard let name = raw as? String else {
+                    return .failure(.init(code: "bad_font",
+                                          message: #"args.fontName must be a string (an installed family or PostScript name)."#))
+                }
+                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    return .failure(.init(code: "bad_font", message: #"args.fontName must not be blank."#))
+                }
+                fontName = trimmed
+            }
+            return .success(.addText(sketch: sketch, text: text, height: height,
+                                     origin: origin, fontName: fontName))
         } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
     }
 

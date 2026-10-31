@@ -1496,7 +1496,12 @@ public enum CadServiceOperationCatalog: Sendable {
         for kind in kinds { merged["\(kind)_actions"] = actionNames(forKind: kind) }
         merged["unavailable_actions"] = ["mesh.text": [
             "code": "text_mesh_unavailable",
-            "message": "No standalone mesh-text operation. The native editor supports text outlines in a sketch followed by extrusion; an Agent text-sketch command is not yet available."
+            "alternative_op": "sketch.addText",
+            "message": "This service has no standalone text-to-mesh operation. Its native text route is: propose "
+                + "sketch.addText {sketchID,text,height,fontName?,origin?} → apply, then propose "
+                + "feature.extrude on the resulting closed profiles. Text outlines are real native "
+                + "sketch geometry (counter loops become holes) with ordinary revision, undo, save "
+                + "and reopen."
         ]]
         if let text = encoded(merged), text.count <= budget { return text }
         // The engine reply alone is already at the budget: dropping the summary

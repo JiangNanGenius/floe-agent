@@ -179,6 +179,88 @@ final class CADCommandExecutor {
                 "undoSteps": steps,
             ])
 
+        case let .addText(sketchID, text, height, origin, fontName):
+            guard session.document.sketches.contains(where: { $0.id == sketchID }) else {
+                return execMissing("sketch", sketchID.raw.uuidString)
+            }
+            // One shared native shaping pass: the same Core Text outlines the
+            // interactive Text tool commits, plus the font/glyph diagnostics an
+            // Agent reply must name precisely. A partial word is never added.
+            let shaped = TextSketch.shape(
+                text: text, fontName: fontName, height: height, at: origin)
+            if let unsupported = shaped.unsupportedFontName {
+                let resolved = shaped.resolvedFontNames.first ?? "?"
+                return .failure(422, "Unprocessable Entity", error: "unsupported_font",
+                                message: "Font '\(unsupported)' is not installed; the system substitute "
+                                    + "'\(resolved)' was NOT used and nothing was added. Pass an installed "
+                                    + "family or PostScript name (for example Helvetica, Avenir Next, "
+                                    + "Georgia, or PingFang SC).")
+            }
+            if shaped.tooComplex {
+                return .failure(422, "Unprocessable Entity", error: "text_too_complex",
+                                message: "The text would exceed \(TextSketch.maximumOutlineEntities) outline "
+                                    + "segments; nothing was added. Use shorter text.")
+            }
+            if !shaped.missingCharacters.isEmpty {
+                let list = missingGlyphList(shaped.missingCharacters)
+                let primary = shaped.resolvedFontNames.first ?? "?"
+                let fallbacks = shaped.fallbackFontNames.isEmpty
+                    ? "no fallback fonts used"
+                    : shaped.fallbackFontNames.joined(separator: ", ")
+                return .failure(422, "Unprocessable Entity", error: "unsupported_glyphs",
+                                message: "No real vector outline for \(list) (primary font '\(primary)'; "
+                                    + "fallbacks: \(fallbacks)); nothing was added. Unsupported, missing or "
+                                    + "colour/bitmap-only glyphs are refused — a placeholder is never added.")
+            }
+            guard !shaped.entities.isEmpty else {
+                return .failure(422, "Unprocessable Entity", error: "empty_text",
+                                message: "The text has no visible glyph outlines; nothing was added.")
+            }
+            // Ordinary revision/undo/save path: one AddSketchEntitiesCommand,
+            // atomically with any dependent-feature rebuild.
+            let command = AddSketchEntitiesCommand(
+                sketchID: sketchID, entities: shaped.entities, title: "Text")
+            guard session.performWithSketchRebuild(command, sketchID: sketchID) else {
+                let detail = session.lastRebuildRejection.isEmpty
+                    ? "the text edit could not be applied."
+                    : "adding the text would break an existing associative feature; the document was left unchanged."
+                return .failure(422, "Unprocessable Entity", error: "rebuild_failed",
+                                message: "Text was refused: \(detail)")
+            }
+            var payload: [String: Any] = [
+                "action": "sketch.addText",
+                "sketchID": sketchID.raw.uuidString,
+                "entityCount": shaped.entities.count,
+                "glyphCount": shaped.glyphCount,
+                "outlineLoopCount": shaped.outlineLoopCount,
+                "advanceWidthMM": shaped.advanceWidthMM,
+                "heightMM": shaped.heightMM,
+                "origin": [origin.x, origin.y],
+                "units": "mm",
+                "requestedFontName": shaped.requestedFontName ?? NSNull(),
+                "resolvedFontNames": shaped.resolvedFontNames,
+                "fallbackFontNames": shaped.fallbackFontNames,
+                "undoSteps": 1,
+                // Honest discovery: this is sketch outline geometry, not a mesh
+                // text action and not a raster/external-mesh substitute.
+                "meshText": false,
+            ]
+            if let bounds = shaped.bounds {
+                payload["boundsMM"] = [[bounds.min.x, bounds.min.y],
+                                       [bounds.max.x, bounds.max.y]]
+            }
+            // Keep every tool result bounded. Stable ids remain queryable from
+            // the sketch query, exactly like every other entity edit.
+            if shaped.entities.count <= 64 {
+                payload["entityIDs"] = shaped.entities.map { $0.id.uuidString }
+            } else {
+                payload["entityIDsOmitted"] = true
+                payload["entityIDsAvailableVia"] = shaped.entities.count <= 512
+                    ? "query kind=sketches (entityRows)"
+                    : "query kind=sketches (entityRows; page with offset/limit)"
+            }
+            return execOK(viewModel, payload)
+
         case let .extrude(sketchID, seed, requested, symmetric, taperDegrees, booleanOp, targets, end):
             guard let sketch = session.document.sketches.first(where: { $0.id == sketchID }) else {
                 return execMissing("sketch", sketchID.raw.uuidString)
@@ -507,6 +589,13 @@ final class CADCommandExecutor {
     private func execMissing(_ what: String, _ id: String) -> AgentResponse {
         .failure(404, "Not Found", error: "unknown_\(what)",
                  message: "No \(what) with id \(id) in this document. GET /v1/state for what exists.")
+    }
+
+    private static func missingGlyphList(_ characters: [String]) -> String {
+        let shown = characters.prefix(16).joined(separator: " ")
+        return characters.count > 16
+            ? "\(shown)… (and \(characters.count - 16) more code points)"
+            : shown
     }
 
     /// Every exec reply carries the post-op state, so an agent never needs a

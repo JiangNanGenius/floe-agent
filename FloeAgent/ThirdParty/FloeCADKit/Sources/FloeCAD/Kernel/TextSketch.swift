@@ -7,6 +7,12 @@
 //  (the hole in 'O') come out as separate closed loops; ProfileDetector's
 //  nesting turns them into holes, so the result extrudes like any sketch.
 //
+//  X07 (2026-10-31): `shape` is the one native text-outline source shared by
+//  the interactive Text sheet and the typed `sketch.addText` Agent command.
+//  It reports the real font runs and any visible character with no vector
+//  outline instead of silently substituting a font or skipping a glyph.
+//  `glyphEntities` remains the legacy outline-only entry point.
+//
 
 import Foundation
 import CoreGraphics
@@ -15,20 +21,82 @@ import simd
 
 nonisolated enum TextSketch {
 
+    /// Bounds of the emitted outlines in sketch-plane millimetres.
+    struct Bounds: Sendable, Equatable {
+        var min: SIMD2<Double>
+        var max: SIMD2<Double>
+
+        var width: Double { max.x - min.x }
+        var height: Double { max.y - min.y }
+    }
+
+    /// One shaped string. `entities` are closed line loops only. Callers MUST
+    /// refuse when `unsupportedFontName != nil`, `missingCharacters` is
+    /// non-empty or `tooComplex` is true: a partial word is never committed.
+    struct ShapedText: Sendable {
+        var entities: [SketchEntity] = []
+        var requestedFontName: String?
+        var resolvedFontNames: [String] = []
+        var fallbackFontNames: [String] = []
+        var unsupportedFontName: String?
+        var missingCharacters: [String] = []
+        var glyphCount: Int = 0
+        var outlineLoopCount: Int = 0
+        var advanceWidthMM: Double = 0
+        var bounds: Bounds?
+        var heightMM: Double = 0
+        var origin: SIMD2<Double> = .zero
+        var tooComplex: Bool = false
+        var maximumEntityCount: Int = 0
+    }
+
+    /// Bounded so a hostile/accidental model request cannot spend minutes
+    /// tessellating an enormous string. The interactive sheet reaches the
+    /// same limit through `tooComplex` (it may type longer text than an Agent
+    /// request, so the kernel itself remains the final bound).
+    static let maximumTextUTF16Count = 256
+    static let maximumOutlineEntities = 40_000
+
     /// Sketch entities (closed line loops) for `text`, laid out on the
-    /// baseline starting at `origin` and scaled so the font's cap height
-    /// equals `height`. `fontName` nil falls back to Helvetica. Curves are
-    /// subdivided to roughly `0.02 * height` chords.
+    /// baseline starting at `origin` and scaled so the primary font's cap
+    /// height equals `height` millimetres. `fontName` nil means Helvetica.
+    /// Curves are subdivided to roughly `0.02 * height` chords.
+    ///
+    /// This legacy entry point does not refuse unsupported glyphs; new
+    /// callers use `shape` and inspect its diagnostics.
     static func glyphEntities(
         text: String,
         fontName: String? = nil,
         height: Double,
         at origin: SIMD2<Double> = .zero
     ) -> [SketchEntity] {
-        guard !text.isEmpty, height > 1e-9 else { return [] }
+        shape(text: text, fontName: fontName, height: height, at: origin).entities
+    }
 
+    /// Native outlines flattened to sketch lines, with font/glyph diagnostics.
+    /// Font sizes and the input `height` are millimetres.
+    static func shape(
+        text: String,
+        fontName: String? = nil,
+        height: Double,
+        at origin: SIMD2<Double> = .zero
+    ) -> ShapedText {
+        var result = ShapedText(heightMM: height, origin: origin,
+                                maximumEntityCount: maximumOutlineEntities)
+        let trimmedName = fontName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestedName = (trimmedName?.isEmpty == false) ? trimmedName : nil
+        result.requestedFontName = requestedName
+        guard !text.isEmpty, height.isFinite, height > 1e-9 else { return result }
+
+        let selection = resolveFont(requestedName ?? "Helvetica")
+        result.resolvedFontNames = selection.names
+        guard selection.matched else {
+            result.unsupportedFontName = requestedName ?? "Helvetica"
+            return result
+        }
+
+        let font = selection.font
         let fontSize: CGFloat = 100
-        let font = CTFontCreateWithName((fontName ?? "Helvetica") as CFString, fontSize, nil)
         var capHeight = Double(CTFontGetCapHeight(font))
         if capHeight <= 1e-9 { capHeight = Double(fontSize) * 0.7 }
         let scale = height / capHeight
@@ -43,35 +111,200 @@ nonisolated enum TextSketch {
             attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]
         )
         let line = CTLineCreateWithAttributedString(attributed)
-        guard let runs = CTLineGetGlyphRuns(line) as? [CTRun] else { return [] }
+        let runs = (CTLineGetGlyphRuns(line) as? [CTRun]) ?? []
+        result.advanceWidthMM = Double(CTLineGetTypographicBounds(line, nil, nil, nil)) * scale
 
+        var missingUTF16 = Set<Int>()
+        var runFontNames = Set<String>([selection.primaryName])
+        var fallbackNames = Set<String>()
+        var runRanges: [Range<Int>] = []
         var entities: [SketchEntity] = []
-        for run in runs {
+        var loopCount = 0
+        var minPoint = SIMD2<Double>(.infinity, .infinity)
+        var maxPoint = SIMD2<Double>(-.infinity, -.infinity)
+        var tooComplex = false
+
+        runLoop: for run in runs {
             let glyphCount = CTRunGetGlyphCount(run)
+            let runRange = CTRunGetStringRange(run)
+            if runRange.length > 0 {
+                let start = Int(runRange.location)
+                runRanges.append(start..<(start + Int(runRange.length)))
+            }
             guard glyphCount > 0 else { continue }
             var glyphs = [CGGlyph](repeating: 0, count: glyphCount)
             var positions = [CGPoint](repeating: .zero, count: glyphCount)
+            var stringIndices = [CFIndex](repeating: 0, count: glyphCount)
             CTRunGetGlyphs(run, CFRangeMake(0, 0), &glyphs)
             CTRunGetPositions(run, CFRangeMake(0, 0), &positions)
+            CTRunGetStringIndices(run, CFRangeMake(0, 0), &stringIndices)
 
             // The run's font can differ from the requested one (fallback
             // substitution); glyph IDs are only valid against the run font.
             let runFont = runFontAttribute(of: run) ?? font
+            let runName = postScriptName(runFont)
+            runFontNames.insert(runName)
+            if !sameFont(runName, selection.primaryName) {
+                fallbackNames.insert(runName)
+            }
+            // CoreText's LastResort face draws a visible placeholder box, not
+            // the requested character. Treat it exactly like a missing glyph.
+            let placeholderFont = isLastResort(runName) || isLastResort(familyName(runFont))
 
             for g in 0..<glyphCount {
+                let stringIndex = Int(stringIndices[g])
+                if glyphs[g] == 0 || placeholderFont {
+                    missingUTF16.insert(stringIndex)
+                    continue
+                }
                 guard let path = CTFontCreatePathForGlyph(runFont, glyphs[g], nil) else {
-                    continue // whitespace and empty glyphs
+                    // A visible character with no vector path (colour emoji,
+                    // bitmap glyph) has no CAD outline.
+                    missingUTF16.insert(stringIndex)
+                    continue
                 }
                 let advance = SIMD2(Double(positions[g].x), Double(positions[g].y))
                 for loop in flatten(path, maxChord: chordFont) {
                     let planeLoop = loop.map { origin + ($0 + advance) * scale }
+                    loopCount += 1
+                    for point in planeLoop {
+                        minPoint = simd_min(minPoint, point)
+                        maxPoint = simd_max(maxPoint, point)
+                    }
                     entities.append(contentsOf: lineEntities(
                         closedLoop: planeLoop, weldTolerance: weldTolerance
                     ))
+                    if entities.count > maximumOutlineEntities {
+                        tooComplex = true
+                        break runLoop
+                    }
                 }
             }
         }
-        return entities
+
+        if !tooComplex {
+            // A visible character CoreText drops entirely has no glyph index
+            // and no run coverage. Report it instead of letting it vanish.
+            let text16 = text as NSString
+            var cluster = 0
+            while cluster < text16.length {
+                let range = text16.rangeOfComposedCharacterSequence(at: cluster)
+                let value = text16.substring(with: range)
+                if isVisibleCluster(value) {
+                    let clusterRange = range.location..<(range.location + range.length)
+                    if !runRanges.contains(where: { $0.overlaps(clusterRange) }) {
+                        missingUTF16.insert(range.location)
+                    }
+                }
+                cluster = range.location + range.length
+            }
+        }
+
+        result.entities = entities
+        result.glyphCount = runs.reduce(0) { $0 + Int(CTRunGetGlyphCount($1)) }
+        result.outlineLoopCount = loopCount
+        result.missingCharacters = missingLabels(text: text, indices: missingUTF16)
+        result.resolvedFontNames = runFontNames.sorted()
+        result.fallbackFontNames = fallbackNames.sorted()
+        result.tooComplex = tooComplex
+        if entities.isEmpty {
+            result.bounds = nil
+        } else {
+            result.bounds = Bounds(min: minPoint, max: maxPoint)
+        }
+        return result
+    }
+
+    // MARK: - Font resolution / diagnostics
+
+    private struct FontSelection {
+        let font: CTFont
+        let primaryName: String
+        let names: [String]
+        let matched: Bool
+    }
+
+    /// Refuse a name CoreText silently substituted. An installed family,
+    /// full name or PostScript name is honoured; `NoSuchFont` must not become
+    /// Helvetica while the reply still claims the requested font.
+    private static func resolveFont(_ requested: String) -> FontSelection {
+        let font = CTFontCreateWithName(requested as CFString, 100, nil)
+        let postScript = postScriptName(font)
+        let family = familyName(font)
+        let full = fullName(font)
+        let normalized = normalizeFontName(requested)
+        let matchesResolved = [postScript, family, full].contains {
+            normalizeFontName($0) == normalized
+        }
+        let matchesInstalledFamily = installedFontFamilies().contains(normalized)
+        var names = [postScript, family, full]
+        var seen = Set<String>()
+        names = names.filter { seen.insert($0).inserted }
+        return FontSelection(font: font, primaryName: postScript, names: names,
+                             matched: matchesResolved || matchesInstalledFamily)
+    }
+
+    private static func installedFontFamilies() -> Set<String> {
+        let names = (CTFontManagerCopyAvailableFontFamilyNames() as NSArray? as? [String]) ?? []
+        return Set(names.map(normalizeFontName))
+    }
+
+    private static func normalizeFontName(_ value: String) -> String {
+        value.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func sameFont(_ a: String, _ b: String) -> Bool {
+        normalizeFontName(a) == normalizeFontName(b)
+    }
+
+    private static func postScriptName(_ font: CTFont) -> String {
+        CTFontCopyPostScriptName(font) as String
+    }
+
+    private static func familyName(_ font: CTFont) -> String {
+        CTFontCopyFamilyName(font) as String
+    }
+
+    private static func fullName(_ font: CTFont) -> String {
+        CTFontCopyFullName(font) as String
+    }
+
+    private static func isLastResort(_ name: String) -> Bool {
+        name.range(of: "lastresort", options: .caseInsensitive) != nil
+    }
+
+    /// U+XXXX labels for visible characters without a real vector outline.
+    /// Whitespace/control/format/mark-only clusters are not text glyphs and
+    /// are deliberately not reported.
+    private static func missingLabels(text: String, indices: Set<Int>) -> [String] {
+        let text16 = text as NSString
+        guard text16.length > 0 else { return [] }
+        var labels = Set<String>()
+        for index in indices.sorted() {
+            let safe = min(max(index, 0), text16.length - 1)
+            let range = text16.rangeOfComposedCharacterSequence(at: safe)
+            let value = text16.substring(with: range)
+            guard isVisibleCluster(value) else { continue }
+            for scalar in value.unicodeScalars {
+                labels.insert(String(format: "U+%04X", scalar.value))
+            }
+        }
+        return labels.sorted()
+    }
+
+    private static func isVisibleCluster(_ value: String) -> Bool {
+        for scalar in value.unicodeScalars {
+            let properties = scalar.properties
+            if properties.isWhitespace { continue }
+            switch properties.generalCategory {
+            case .control, .format, .nonspacingMark, .enclosingMark,
+                 .lineSeparator, .paragraphSeparator, .spaceSeparator:
+                continue
+            default:
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - Path flattening

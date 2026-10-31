@@ -895,6 +895,18 @@ ground plane. Exact argument names (unknown fields are refused by the kernel):
   `{"kind":"rect",min:[x,y],max:[x,y]}` |
   `{"kind":"polygon",center:[x,y],radius,sides,rotation?}` |
   `{"kind":"ellipse",center:[x,y],radiusX,radiusY,rotation?}`.
+- `sketch.addText` `{sketchID, text, height (cap height, mm), fontName?
+  (installed family or PostScript name; default Helvetica), origin?[x,y]
+  (baseline start in sketch-plane mm; default [0,0])}` — the supported text
+  route. It creates closed line loops for the glyphs as ordinary sketch
+  entities (counter loops become holes) in ONE undo step; the reply reports
+  `entityCount`, `glyphCount`, `outlineLoopCount`, `boundsMM`, `advanceWidthMM`,
+  `heightMM`, `resolvedFontNames`, `fallbackFontNames`, `units:"mm"` and
+  `undoSteps`. The geometry is real native outline geometry, never a raster
+  image or an external/Python mesh. `mesh.text` remains unavailable: a missing
+  font or a visible character without a real vector outline refuses with
+  `unsupported_font` / `unsupported_glyphs` and adds nothing.
+  Example: `{"sketchID":"<uuid>","text":"O","height":20,"origin":[10,5]}`.
 - `feature.extrude` `{sketchID, seedPoint:[x,y] (inside the closed profile),
   distance (mm, non-zero; optional only with `end`), symmetric?,
   taperDegrees? (|t|<89, 0 = straight), end?:"throughAll"|"upToNext"|"blind",
@@ -917,6 +929,10 @@ ground plane. Exact argument names (unknown fields are refused by the kernel):
   (rect [0,0]–[80,40])` → `apply` → `propose feature.extrude {sketchID,
   seedPoint [40,20], distance 10}` → `apply` → `measure` `{"op":"body",
   "handles":["body:<UUID>"]}` → `export output=part.export.step|.stl|.glb`.
+  Text uses the same native chain: `propose sketch.addText {sketchID, text:"O",
+  height 20, origin [10,5]}` → `apply` → `propose feature.extrude {sketchID,
+  seedPoint inside a stroke of the letter, distance 10}` → `apply` → `measure`;
+  there is no `mesh.text` substitute.
 - Measurement addressing: `query` `{"kind":"bodies"}` returns each row's `id`,
   `analyticBRep`, `volumeMM3`, `triangles` and `bounds`
   (`[[x,y,z],[x,y,z]]`). `measure` `{"op":"body"|"mesh","handles":["body:<UUID>"]}`
@@ -927,7 +943,7 @@ ground plane. Exact argument names (unknown fields are refused by the kernel):
   measures one or more bodies (`bodyIDs`). The alias form is
   `three_d_measure op=body args={"bodyID":"<UUID>"}`.
 - Operation vocabulary (`capabilities.operation_names`): `sketch.create`,
-  `sketch.addEntities`, `feature.extrude`, `feature.revolve`, `feature.hole`,
+  `sketch.addEntities`, `sketch.addText`, `feature.extrude`, `feature.revolve`, `feature.hole`,
   `feature.pattern`,
   `feature.mirror`, `feature.transform`, `feature.boolean`, `feature.fillet`,
   `feature.chamfer`, `feature.shell`, `feature.sweep`, `feature.loft`,
@@ -935,6 +951,12 @@ ground plane. Exact argument names (unknown fields are refused by the kernel):
   `feature.rotateFace`, `feature.deleteFace`, `feature.replaceFace`,
   `feature.draftFace`, `body.setMaterial`, `item.setHidden`.
 - 中文：单位为毫米与度；`sketch.create` 默认使用地面平面，返回 `sketchID`；
+  文字请走原生文字草图链：`sketch.addText {sketchID,text,height,fontName?,origin?}`
+  （height 为字帽高度毫米；origin 为基线起点，默认 [0,0]）在一次撤销步骤内把字形轮廓
+  变成普通草图实体（“O” 的反白环成为真实孔洞），回复含 `entityCount`、`outlineLoopCount`、
+  `boundsMM`、`advanceWidthMM`、字体回退与 `units:"mm"`；`mesh.text` 仍不可用，
+  字体不存在或字形无真实矢量轮廓会精确拒绝（`unsupported_font`/`unsupported_glyphs`）且
+  不产生部分文字。随后用 `feature.extrude` 挤出即可。
   `feature.extrude` 需要 `sketchID`、闭合轮廓内的 `seedPoint` 与非零 `distance`
   （使用 `end` 时 distance 可省略），可选 `symmetric`、`taperDegrees`（|t|<89）、
   `end`、`boolean` 与 `booleanTargets`。完整可运行链路：create → propose
@@ -949,7 +971,9 @@ ground plane. Exact argument names (unknown fields are refused by the kernel):
   `countersinkAngle`（30…170 度），可选 `reversed` 反向法向。位置与孔径只由定位圆
   决定（用 `updateSketchEntity` 编辑该圆），通孔/沉头/锥沉的导孔均为通孔；目标必须是
   解析 B-rep 实体，不做网格降级；回复包含 `featureID`、`targetBodyID`、
-  `pilotDiameter`、`type` 与 `parameters`。
+  `pilotDiameter`、`type` 与 `parameters`。文字链同样可运行：propose sketch.addText（如
+  `text:"O", height:20, origin:[10,5]`）→ apply → propose feature.extrude（seedPoint 放在
+  笔画内部）→ apply → measure；不存在 mesh.text 替代路径。
 
 ### Document names / 文档名称
 

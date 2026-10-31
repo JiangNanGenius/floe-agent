@@ -12954,7 +12954,8 @@ final class EditorViewModel {
 
     /// Commit from the text dialog: glyph outlines as one undo step. The
     /// resulting closed loops are ordinary sketch entities, so their profiles
-    /// fill and extrude like any other.
+    /// fill and extrude like any other. Font/glyph failures refuse before any
+    /// command (the same TextSketch diagnostics the Agent route reports).
     func commitText(content: String, height: Double, fontName: String?) {
         guard case .sketching(let sketchID, _) = mode else {
             textPlacement = nil
@@ -12962,19 +12963,41 @@ final class EditorViewModel {
         }
         let origin = textPlacement ?? .zero
         textPlacement = nil
-        let entities = TextSketch.glyphEntities(
+        let shaped = TextSketch.shape(
             text: content, fontName: fontName, height: height, at: origin
         )
-        guard !entities.isEmpty else {
-            errorMessage = "No outlines for that text — try different content or a larger height."
+        if shaped.unsupportedFontName != nil {
+            errorMessage = FloeCADStrings.text("cad.text.font_unavailable",
+                                               "This font is unavailable. Choose another font.")
             return
         }
-        session.perform(CompositeCommand(
-            title: "Text",
-            commands: [AddSketchEntitiesCommand(
-                sketchID: sketchID, entities: entities, title: "Text"
-            )]
-        ))
+        if shaped.tooComplex {
+            errorMessage = FloeCADStrings.text("cad.text.too_complex",
+                                               "This text is too detailed. Try a shorter phrase.")
+            return
+        }
+        if !shaped.missingCharacters.isEmpty {
+            errorMessage = FloeCADStrings.text("cad.text.unsupported_characters",
+                                               "Some characters cannot be drawn with this font. Choose another font or change the text.")
+            return
+        }
+        guard !shaped.entities.isEmpty else {
+            errorMessage = FloeCADStrings.text("cad.text.no_outlines",
+                                               "No outlines were found. Change the text or font.")
+            return
+        }
+        // One undo step, atomically with any dependent-feature rebuild — the
+        // same revision/undo/save engine as every other sketch edit.
+        let applied = session.performWithSketchRebuild(
+            AddSketchEntitiesCommand(
+                sketchID: sketchID, entities: shaped.entities, title: "Text"
+            ),
+            sketchID: sketchID
+        )
+        if !applied {
+            errorMessage = FloeCADStrings.text("cad.text.rebuild_failed",
+                                               "This text conflicts with an existing feature. Check the sketch and try again.")
+        }
     }
 
     // MARK: - Project (plan §B8, spec §1.13 v1: unlinked body → sketch plane)
