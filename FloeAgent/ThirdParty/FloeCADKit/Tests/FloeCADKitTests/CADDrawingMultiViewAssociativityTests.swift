@@ -544,18 +544,36 @@ final class CADDrawingMultiViewAssociativityTests: XCTestCase {
                        "the SAME dimension id must remeasure to Ø8: \(row)")
         XCTAssertEqual(row["dangling"] as? Bool, false)
 
-        // A second coaxial cylinder at the SAME axial station: a
-        // counterbore-like groove around the measured hole, authored by its
-        // OWN sketch/feature, which consumes the hole's band at the captured
-        // station. The anchor now geometrically matches only the groove, but
-        // the provenance entity (Ø8) does not describe that cylinder.
+        // A full-depth foreign bore has the SAME mid-thickness station as
+        // the captured face. A symmetric cut about the sketch's y=0 plane
+        // would only cut the first 2 mm of this plate and test a different
+        // station instead. The live Ø8 provenance must reject this Ø20 bore.
         let groove = try addSketch(
             document, name: "Groove",
             entities: #"[{"kind":"circle","center":[50,30],"radius":10}]"#)
         _ = try run(document, """
         {"op":"feature.extrude","args":{"sketchID":"\(groove.sketchID)","seedPoint":[50,30],
-         "distance":4,"symmetric":true,"boolean":"subtract","booleanTargets":["\(fixture.bodyID)"]}}
+         "distance":10,"boolean":"subtract","booleanTargets":["\(fixture.bodyID)"]}}
         """)
+        // Independent kernel witness: the surviving foreign cylinder really
+        // shares the captured station, so this exercises provenance refusal
+        // rather than the simpler no-cylinder-at-this-station path.
+        let foreignBody = try XCTUnwrap(document.session.document.bodies.first {
+            $0.id.raw.uuidString == fixture.bodyID
+        })
+        let foreignBRep = try XCTUnwrap(foreignBody.brep)
+        let foreignFace = try XCTUnwrap(OCCTKernel.faceInfo(foreignBRep).first {
+            guard let signature = $0.signature,
+                  case let .cylindrical(radius) = signature.kind else { return false }
+            return abs(radius - 10) < 1e-6
+        })
+        let foreignSignature = try XCTUnwrap(foreignFace.signature)
+        let capturedAnchor = try XCTUnwrap(reference["anchor"] as? [String: Any])
+        let capturedCentroid = try XCTUnwrap(capturedAnchor["centroid"] as? [Double])
+        XCTAssertEqual(capturedCentroid.count, 3)
+        XCTAssertEqual(foreignSignature.centroid.x, capturedCentroid[0], accuracy: 1e-6)
+        XCTAssertEqual(foreignSignature.centroid.y, capturedCentroid[1], accuracy: 1e-6)
+        XCTAssertEqual(foreignSignature.centroid.z, capturedCentroid[2], accuracy: 1e-6)
         geometry = service.handle(action: "project", args: ["pageID": pageID])
         row = try XCTUnwrap(dimensionRow(geometry, id: dimensionID))
         XCTAssertEqual(row["dangling"] as? Bool, true,

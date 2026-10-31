@@ -754,7 +754,11 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         XCTAssertTrue(dxfDecoded.contains("M6×1.0-6H"))
         XCTAssertTrue(dxfDecoded.contains("CBORE Ø11"))
         XCTAssertTrue(dxfDecoded.contains("HOLE 5.000–5.012"))
-        XCTAssertTrue(dxfDecoded.contains("SCALE 1:1 · mm"))
+        // This legacy, unsnapshotted sheet uses the short scale footer;
+        // its actual length unit is declared by the DXF header.
+        XCTAssertTrue(dxfDecoded.contains("SCALE 1:1"))
+        XCTAssertTrue(dxfText.contains("9\n$INSUNITS\n70\n4\n"),
+                      "the independent reader must see millimetre units")
         XCTAssertTrue(dxfText.contains("0\nPOLYLINE\n"))
         XCTAssertTrue(dxfText.contains("0\nCIRCLE\n"))
         XCTAssertTrue(dxfText.contains("0\nLINE\n"))
@@ -919,6 +923,10 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         let annotationID = try XCTUnwrap(annotation["id"] as? String)
         XCTAssertEqual(annotation["text"] as? String, annotationText)
 
+        // Compare the same committed revision. A first save legitimately
+        // adds its revision to the title block; a draft is a different state.
+        let baselineSave = await document.save()
+        XCTAssertTrue(baselineSave.succeeded, baselineSave.error ?? "")
         let pageUUID = try XCTUnwrap(UUID(uuidString: pageID))
         let dxf = try service.exportData(pageID: pageUUID, format: "dxf")
         retainExport(dxf, name: "r12-unicode-before-reopen.dxf", type: "public.data")
@@ -942,8 +950,11 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         XCTAssertTrue(decoded.contains(#"C:\U+0041"#))
         XCTAssertTrue(decoded.contains("Ra 1.6"))
 
-        let save = await document.save()
-        XCTAssertTrue(save.succeeded, save.error ?? "")
+        retainExport(try service.exportData(pageID: pageUUID, format: "pdf"),
+                     name: "r12-unicode-before-reopen.pdf", type: "com.adobe.pdf")
+        retainExport(try service.exportData(pageID: pageUUID, format: "svg"),
+                     name: "r12-unicode-before-reopen.svg", type: "public.svg-image")
+        // Read-only exports must not introduce a second save/revision.
         document.close()
         let reopened = try await FloeCADDocument.open(at: document.url)
         let reopenedService = CADDrawingService(document: reopened)
@@ -957,6 +968,10 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         XCTAssertEqual(reopenedDxf, dxf,
                        "the same ids/annotations must export byte-identical R12 DXF")
         retainExport(reopenedDxf, name: "r12-unicode-after-reopen.dxf", type: "public.data")
+        retainExport(try reopenedService.exportData(pageID: pageUUID, format: "pdf"),
+                     name: "r12-unicode-after-reopen.pdf", type: "com.adobe.pdf")
+        retainExport(try reopenedService.exportData(pageID: pageUUID, format: "svg"),
+                     name: "r12-unicode-after-reopen.svg", type: "public.svg-image")
         reopened.close()
     }
 
