@@ -141,6 +141,14 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         app.buttons["CADWorkbenchToolsButton"].tap()
         XCTAssertTrue(app.otherElements["CADWorkbenchToolsPanel"].waitForExistence(timeout: 15))
         app.buttons["Drawings"].tap()
+        // Expand the frontmost native inspector before reaching the later
+        // drawing actions. The background ToolPalette is also a hittable
+        // ScrollView; scrolling that first match never moves this sheet.
+        let inspectorBar = app.navigationBars["CAD Tools"]
+        XCTAssertTrue(inspectorBar.waitForExistence(timeout: 10))
+        inspectorBar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1,
+                   thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)))
         let bom = app.buttons["BOM"].firstMatch
         reveal(bom, in: app)
         bom.tap()
