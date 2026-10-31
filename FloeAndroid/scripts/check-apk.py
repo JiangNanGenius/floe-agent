@@ -10,8 +10,14 @@ class tables and the packaged ELF headers directly, and asks the Android SDK's
   play-only negative result cannot be vacuous);
 * the play APK contains no class from the full-only ``phonecontrol`` or
   ``rootsystem`` packages;
-* neither APK declares an AccessibilityService, a root/daemon service, or a
+* the play APK declares no AccessibilityService, root/daemon component or
   forbidden elevated permission;
+* the full APK admits only the two exact, reviewed G08 protected components
+  (the PhoneControl AccessibilityService and the Floe system provider), each
+  with its exact class, permission, export, authority, action/meta or
+  multiprocess/URI-grant shape, and rejects every other accessibility, root or
+  Shizuku declaration. The explicit ``legacy`` Full profile keeps the pre-G08
+  strict boundary and admits neither component;
 * both APKs carry the Swift core, the JNI bridge and the Swift runtime;
 * the Full channel requires package-manager extraction
   (``extractNativeLibs=true``) for its embedded starter, allows deflated ZIP
@@ -32,6 +38,8 @@ Usage:
 Optional:
     --aapt2 PATH            aapt2 executable (default: newest SDK build-tools)
     --native-manifest PATH  native-manifest.json recorded by native-manifest.py
+    --full-manifest-profile {g08,legacy}
+                            Full protected-component contract (default: g08)
     --compact               emit single-line JSON
 
 Signing continuity is opt-in (the default boundary report keeps signatures out
@@ -91,10 +99,33 @@ FORBIDDEN_PERMISSION_PATTERNS = (
     re.compile(r"SUPERUSER", re.IGNORECASE),
 )
 FORBIDDEN_SERVICE_NAME = re.compile(
-    r"(accessibility|rootsystem|rootdaemon|root_daemon|superuser)", re.IGNORECASE
+    r"(accessibility|rootsystem|rootdaemon|root_daemon|superuser|shizuku)",
+    re.IGNORECASE,
 )
 ACCESSIBILITY_ACTION = "android.accessibilityservice.AccessibilityService"
 ACCESSIBILITY_META = "android.accessibilityservice"
+# The only two protected components admitted to the current G08 Full channel.
+# Each exception is bound to the exact reviewed class and manifest shape below;
+# there is no package-, filename- or label-wide bypass.
+G08_FULL_ACCESSIBILITY_SERVICE = (
+    "com.floe.android.phonecontrol.PhoneControlAccessibilityService"
+)
+G08_FULL_ACCESSIBILITY_PERMISSION = "android.permission.BIND_ACCESSIBILITY_SERVICE"
+G08_FULL_PROVIDER = "com.floe.android.rootsystem.ipc.FloeSystemProvider"
+G08_FULL_PROVIDER_PERMISSION = "android.permission.INTERACT_ACROSS_USERS_FULL"
+G08_FULL_PROVIDER_AUTHORITY_SUFFIX = ".floe.system"
+FORBIDDEN_COMPONENT_PERMISSIONS = {
+    G08_FULL_ACCESSIBILITY_PERMISSION,
+    G08_FULL_PROVIDER_PERMISSION,
+}
+# Exact application identities produced by the real "distribution" flavor and
+# the debug applicationIdSuffix. Channel decisions use the merged manifest's
+# actual package, never the APK filename or a display label.
+CHANNEL_PACKAGES = {
+    "full": ("com.floe.agent.full", "com.floe.agent.full.dev"),
+    "play": ("com.floe.agent", "com.floe.agent.dev"),
+}
+FULL_MANIFEST_PROFILES = ("g08", "legacy")
 PAGE_16K = 16384
 ELF_PT_LOAD = 1
 ELF_PT_DYNAMIC = 2
@@ -142,6 +173,60 @@ def sha256_file(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+TRUE_BOOLEAN_LITERALS = frozenset({"true", "1", "0x1"})
+FALSE_BOOLEAN_LITERALS = frozenset({"false", "0", "0x0"})
+
+
+def typed_boolean(value):
+    """Return the literal boolean for an aapt2 typed value, else ``None``.
+
+    ``aapt2 dump xmltree`` renders literal booleans as ``true``/``false`` and
+    leaves resource references unresolved. ``bool("false")`` is true, so the
+    contract never relies on Python truthiness for these attributes: an absent,
+    referenced or otherwise non-literal value stays ``None`` and fails an exact
+    boolean requirement.
+    """
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized in TRUE_BOOLEAN_LITERALS:
+        return True
+    if normalized in FALSE_BOOLEAN_LITERALS:
+        return False
+    return None
+
+
+def package_channel(package):
+    """Return the channel whose exact application ID matches ``package``."""
+    for channel, packages in CHANNEL_PACKAGES.items():
+        if package in packages:
+            return channel
+    return None
+
+
+def channel_identity_problems(channel, facts):
+    """Check that the merged manifest package is the exact requested channel."""
+    if channel not in CHANNEL_PACKAGES:
+        raise CheckError("unknown application channel: {}".format(channel))
+    package = facts.get("package") or ""
+    actual = package_channel(package)
+    if actual is None:
+        return [
+            "manifest package {!r} is not a known Floe {} channel identity "
+            "(expected one of {})".format(
+                package, channel, ", ".join(CHANNEL_PACKAGES[channel])
+            )
+        ]
+    if actual != channel:
+        return [
+            "manifest package {!r} is the {} channel identity but the {} slot "
+            "was checked".format(package, actual, channel)
+        ]
+    return []
 
 
 def find_aapt2(explicit):
@@ -448,6 +533,77 @@ def walk(node):
             yield descendant
 
 
+def intent_filter_facts(node):
+    """Describe one ``<intent-filter>`` and its direct children."""
+    actions = []
+    categories = []
+    data_count = 0
+    other_children = []
+    for child in node["children"]:
+        if child["tag"] == "action":
+            action = child["attrs"].get("name")
+            if action:
+                actions.append(action)
+        elif child["tag"] == "category":
+            category = child["attrs"].get("name")
+            if category:
+                categories.append(category)
+        elif child["tag"] == "data":
+            data_count += 1
+        else:
+            other_children.append(child["tag"])
+    return {
+        "actions": actions,
+        "categories": categories,
+        "dataCount": data_count,
+        "otherChildren": other_children,
+    }
+
+
+def meta_data_facts(node):
+    attrs = node["attrs"]
+    return {
+        "name": attrs.get("name") or "",
+        "resource": attrs.get("resource"),
+        "value": attrs.get("value"),
+    }
+
+
+def component_facts(node):
+    """Retain the manifest shape needed by the exact component contract."""
+    attrs = node["attrs"]
+    details = {
+        "tag": node["tag"],
+        "name": attrs.get("name") or "",
+        "permission": attrs.get("permission"),
+        "exported": attrs.get("exported"),
+        "enabled": attrs.get("enabled"),
+        "childTags": [child["tag"] for child in node["children"]],
+        "intentFilters": [
+            intent_filter_facts(child)
+            for child in node["children"]
+            if child["tag"] == "intent-filter"
+        ],
+        "metaData": [
+            meta_data_facts(child)
+            for child in node["children"]
+            if child["tag"] == "meta-data"
+        ],
+    }
+    if node["tag"] == "provider":
+        authorities = attrs.get("authorities") or ""
+        details["authorities"] = [
+            authority.strip()
+            for authority in authorities.split(";")
+            if authority.strip()
+        ]
+        details["multiprocess"] = attrs.get("multiprocess")
+        details["grantUriPermissions"] = attrs.get("grantUriPermissions")
+        details["readPermission"] = attrs.get("readPermission")
+        details["writePermission"] = attrs.get("writePermission")
+    return details
+
+
 def manifest_facts(aapt2, apk):
     proc = subprocess.run(
         [aapt2, "dump", "xmltree", "--file", "AndroidManifest.xml", str(apk)],
@@ -468,8 +624,11 @@ def manifest_facts(aapt2, apk):
     activities = []
     providers = []
     receivers = []
+    components = []
     actions = []
     meta_data = []
+    accessibility_action_count = 0
+    accessibility_meta_count = 0
     for node in nodes:
         tag = node["tag"]
         name = node["attrs"].get("name")
@@ -479,23 +638,25 @@ def manifest_facts(aapt2, apk):
             permissions.append(name)
         elif tag == "permission" and name:
             declared_permissions.append(name)
-        elif tag == "service":
-            services.append(
-                {
-                    "name": name or "",
-                    "permission": node["attrs"].get("permission"),
-                }
-            )
-        elif tag == "activity":
-            activities.append(name or "")
-        elif tag == "provider":
-            providers.append(name or "")
-        elif tag == "receiver":
-            receivers.append(name or "")
+        elif tag in ("service", "activity", "provider", "receiver"):
+            details = component_facts(node)
+            components.append(details)
+            if tag == "service":
+                services.append(details)
+            elif tag == "activity":
+                activities.append(details)
+            elif tag == "provider":
+                providers.append(details)
+            else:
+                receivers.append(details)
         elif tag == "action" and name:
             actions.append(name)
+            if name == ACCESSIBILITY_ACTION:
+                accessibility_action_count += 1
         elif tag == "meta-data" and name:
             meta_data.append(name)
+            if name == ACCESSIBILITY_META:
+                accessibility_meta_count += 1
     application = next((n for n in nodes if n["tag"] == "application"), None)
     uses_sdk = next((n for n in nodes if n["tag"] == "uses-sdk"), None)
     return {
@@ -510,11 +671,14 @@ def manifest_facts(aapt2, apk):
         "permissions": sorted(set(permissions)),
         "declaredPermissions": sorted(set(declared_permissions)),
         "services": services,
-        "activities": sorted(activities),
-        "providers": sorted(providers),
-        "receivers": sorted(receivers),
+        "activities": activities,
+        "providers": providers,
+        "receivers": receivers,
+        "components": components,
         "actions": sorted(set(actions)),
         "metaData": sorted(set(meta_data)),
+        "accessibilityActionCount": accessibility_action_count,
+        "accessibilityMetaCount": accessibility_meta_count,
     }
 
 
@@ -528,21 +692,326 @@ def forbidden_permissions(facts):
     return sorted(set(found))
 
 
-def forbidden_components(facts):
+def _accessibility_occurrence_count(facts, count_key, list_key, name):
+    """Return the parsed occurrence count, falling back to a manual facts set."""
+    if facts.get(count_key) is not None:
+        try:
+            parsed = int(facts[count_key])
+        except (TypeError, ValueError):
+            parsed = 1
+    else:
+        parsed = 0
+    # A manually built facts dict may only expose the name set; never let an
+    # inconsistent zero count hide a declared accessibility name.
+    return max(parsed, 1 if name in (facts.get(list_key) or []) else 0)
+
+
+def _protected_service_problems(service, package):
+    """Validate the exact reviewed G08 PhoneControl AccessibilityService."""
     problems = []
-    for service in facts["services"]:
-        name = service["name"]
+    name = service.get("name") or ""
+    prefix = "protected AccessibilityService {}".format(name)
+    if service.get("permission") != G08_FULL_ACCESSIBILITY_PERMISSION:
+        problems.append(
+            "{} must declare android:permission={} (found {!r})".format(
+                prefix, G08_FULL_ACCESSIBILITY_PERMISSION, service.get("permission")
+            )
+        )
+    if typed_boolean(service.get("exported")) is not True:
+        problems.append(
+            "{} must declare android:exported=true (found {!r})".format(
+                prefix, service.get("exported")
+            )
+        )
+    filters = service.get("intentFilters") or []
+    if len(filters) != 1:
+        problems.append(
+            "{} must declare exactly one intent-filter (found {})".format(
+                prefix, len(filters)
+            )
+        )
+    else:
+        intent_filter = filters[0]
+        if intent_filter.get("actions") != [ACCESSIBILITY_ACTION]:
+            problems.append(
+                "{} intent-filter actions must be exactly ['{}'] (found {})".format(
+                    prefix, ACCESSIBILITY_ACTION, intent_filter.get("actions")
+                )
+            )
+        if intent_filter.get("categories"):
+            problems.append(
+                "{} intent-filter must not declare categories (found {})".format(
+                    prefix, intent_filter.get("categories")
+                )
+            )
+        if intent_filter.get("dataCount"):
+            problems.append(
+                "{} intent-filter must not declare data elements (found {})".format(
+                    prefix, intent_filter.get("dataCount")
+                )
+            )
+        if intent_filter.get("otherChildren"):
+            problems.append(
+                "{} intent-filter has unexpected child elements: {}".format(
+                    prefix, intent_filter.get("otherChildren")
+                )
+            )
+    meta_data = service.get("metaData") or []
+    if len(meta_data) != 1:
+        problems.append(
+            "{} must declare exactly one meta-data (found {})".format(
+                prefix, len(meta_data)
+            )
+        )
+    else:
+        meta = meta_data[0]
+        if meta.get("name") != ACCESSIBILITY_META:
+            problems.append(
+                "{} meta-data name must be exactly {} (found {!r})".format(
+                    prefix, ACCESSIBILITY_META, meta.get("name")
+                )
+            )
+        resource = meta.get("resource")
+        if (
+            not isinstance(resource, str)
+            or not resource.startswith("@")
+            or resource in ("@null", "@empty")
+        ):
+            problems.append(
+                "{} meta-data must declare a non-null android:resource reference "
+                "(found {!r})".format(prefix, resource)
+            )
+    expected_children = ["intent-filter", "meta-data"]
+    if sorted(service.get("childTags") or []) != sorted(expected_children):
+        problems.append(
+            "{} must declare exactly one intent-filter and one meta-data; "
+            "child elements: {}".format(prefix, service.get("childTags") or [])
+        )
+    return problems
+
+
+def _protected_provider_problems(provider, package):
+    """Validate the exact reviewed G08 Floe system provider."""
+    problems = []
+    name = provider.get("name") or ""
+    prefix = "protected provider {}".format(name)
+    if provider.get("permission") != G08_FULL_PROVIDER_PERMISSION:
+        problems.append(
+            "{} must declare android:permission={} (found {!r})".format(
+                prefix, G08_FULL_PROVIDER_PERMISSION, provider.get("permission")
+            )
+        )
+    if typed_boolean(provider.get("exported")) is not True:
+        problems.append(
+            "{} must declare android:exported=true (found {!r})".format(
+                prefix, provider.get("exported")
+            )
+        )
+    if typed_boolean(provider.get("multiprocess")) is not False:
+        problems.append(
+            "{} must explicitly declare android:multiprocess=false "
+            "(found {!r})".format(prefix, provider.get("multiprocess"))
+        )
+    expected_authority = "{}{}".format(package, G08_FULL_PROVIDER_AUTHORITY_SUFFIX)
+    authorities = provider.get("authorities") or []
+    if authorities != [expected_authority]:
+        problems.append(
+            "{} authorities must be exactly ['{}'] (found {})".format(
+                prefix, expected_authority, authorities
+            )
+        )
+    # Per-operation overrides can replace the protected provider permission.
+    # The reviewed Full provider declares neither override; admit no looser
+    # shape merely because android:permission itself still looks correct.
+    for attribute in ("readPermission", "writePermission"):
+        if provider.get(attribute) is not None:
+            problems.append(
+                "{} must not override android:{} (found {!r})".format(
+                    prefix, attribute, provider.get(attribute)
+                )
+            )
+    grant_uri_permissions = provider.get("grantUriPermissions")
+    if typed_boolean(grant_uri_permissions) is True:
+        problems.append(
+            "{} must not grant URI permissions "
+            "(android:grantUriPermissions={!r})".format(
+                prefix, grant_uri_permissions
+            )
+        )
+    elif grant_uri_permissions is not None and typed_boolean(grant_uri_permissions) is None:
+        problems.append(
+            "{} android:grantUriPermissions must be a literal boolean "
+            "(found {!r})".format(prefix, grant_uri_permissions)
+        )
+    if provider.get("childTags"):
+        problems.append(
+            "{} must not declare child elements: {}".format(
+                prefix, provider.get("childTags")
+            )
+        )
+    return problems
+
+
+def protected_components_problems(facts, profile="g08"):
+    """Return the exact-shape problems for the current Full protected contract.
+
+    The ``legacy`` profile preserves the pre-G08 strict Full boundary: these
+    components are not required there, and ``forbidden_components`` never
+    admits them. There is no implicit broad-allow profile.
+    """
+    if profile not in FULL_MANIFEST_PROFILES:
+        raise CheckError("unknown Full manifest profile: {}".format(profile))
+    if profile == "legacy":
+        return []
+    package = facts.get("package") or ""
+    problems = list(channel_identity_problems("full", facts))
+    services = [
+        service
+        for service in facts.get("services") or []
+        if (service.get("name") or "") == G08_FULL_ACCESSIBILITY_SERVICE
+    ]
+    if len(services) != 1:
+        problems.append(
+            "G08 Full contract requires exactly one protected AccessibilityService "
+            "{} (found {})".format(G08_FULL_ACCESSIBILITY_SERVICE, len(services))
+        )
+    else:
+        problems.extend(_protected_service_problems(services[0], package))
+    providers = [
+        provider
+        for provider in facts.get("providers") or []
+        if (provider.get("name") or "") == G08_FULL_PROVIDER
+    ]
+    if len(providers) != 1:
+        problems.append(
+            "G08 Full contract requires exactly one protected provider {} "
+            "(found {})".format(G08_FULL_PROVIDER, len(providers))
+        )
+    else:
+        problems.extend(_protected_provider_problems(providers[0], package))
+    return problems
+
+
+def forbidden_components(facts, channel="play", full_profile="g08"):
+    """Return every forbidden component/permission-definition problem.
+
+    Play is always strict. Full admits only the two reviewed protected
+    components when ``channel`` is ``full``, the merged manifest package is the
+    exact full application ID, the ``g08`` profile is active and each component
+    matches its complete reviewed shape. The exemption is per exact component,
+    never a package-wide skip. Any extra accessibility action/meta-data
+    occurrence (including on another unprotected service) keeps failing.
+    """
+    if channel not in CHANNEL_PACKAGES:
+        raise CheckError("unknown application channel: {}".format(channel))
+    if full_profile not in FULL_MANIFEST_PROFILES:
+        raise CheckError("unknown Full manifest profile: {}".format(full_profile))
+    problems = []
+    package = facts.get("package") or ""
+    exact_service_name = None
+    exact_provider_name = None
+    if (
+        channel == "full"
+        and full_profile == "g08"
+        and package_channel(package) == "full"
+    ):
+        services = facts.get("services") or []
+        candidates = [
+            service
+            for service in services
+            if (service.get("name") or "") == G08_FULL_ACCESSIBILITY_SERVICE
+        ]
+        if len(candidates) == 1 and not _protected_service_problems(
+            candidates[0], package
+        ):
+            exact_service_name = G08_FULL_ACCESSIBILITY_SERVICE
+        providers = facts.get("providers") or []
+        candidates = [
+            provider
+            for provider in providers
+            if (provider.get("name") or "") == G08_FULL_PROVIDER
+        ]
+        if len(candidates) == 1 and not _protected_provider_problems(
+            candidates[0], package
+        ):
+            exact_provider_name = G08_FULL_PROVIDER
+
+    for service in facts.get("services") or []:
+        name = service.get("name") or ""
+        if name == exact_service_name:
+            continue
         if FORBIDDEN_SERVICE_NAME.search(name):
             problems.append("forbidden service name: {}".format(name))
-        if service.get("permission") == "android.permission.BIND_ACCESSIBILITY_SERVICE":
-            problems.append("AccessibilityService permission on {}".format(name))
-    if ACCESSIBILITY_ACTION in facts["actions"]:
-        problems.append("manifest declares {}".format(ACCESSIBILITY_ACTION))
-    if ACCESSIBILITY_META in facts["metaData"]:
-        problems.append("manifest declares accessibilityservice meta-data")
-    for name in facts["activities"] + facts["providers"] + facts["receivers"]:
+        permission = service.get("permission")
+        if permission in FORBIDDEN_COMPONENT_PERMISSIONS:
+            problems.append(
+                "protected component permission {} on service {}".format(
+                    permission, name
+                )
+            )
+
+    reserved_authority = (
+        package + G08_FULL_PROVIDER_AUTHORITY_SUFFIX if package else None
+    )
+    for provider in facts.get("providers") or []:
+        name = provider.get("name") or ""
+        if name == exact_provider_name:
+            continue
         if FORBIDDEN_SERVICE_NAME.search(name):
             problems.append("forbidden platform component: {}".format(name))
+        permission = provider.get("permission")
+        if permission in FORBIDDEN_COMPONENT_PERMISSIONS:
+            problems.append(
+                "protected component permission {} on provider {}".format(
+                    permission, name
+                )
+            )
+        if reserved_authority and reserved_authority in (
+            provider.get("authorities") or []
+        ):
+            problems.append(
+                "authority {} is reserved for the exact Full provider; "
+                "declared by {}".format(reserved_authority, name)
+            )
+
+    for kind, components in (
+        ("activity", facts.get("activities") or []),
+        ("receiver", facts.get("receivers") or []),
+    ):
+        for component in components:
+            name = component.get("name") or ""
+            if FORBIDDEN_SERVICE_NAME.search(name):
+                problems.append("forbidden platform component: {}".format(name))
+            permission = component.get("permission")
+            if permission in FORBIDDEN_COMPONENT_PERMISSIONS:
+                problems.append(
+                    "protected component permission {} on {} {}".format(
+                        permission, kind, name
+                    )
+                )
+
+    allowed_accessibility_actions = 1 if exact_service_name else 0
+    accessibility_actions = _accessibility_occurrence_count(
+        facts, "accessibilityActionCount", "actions", ACCESSIBILITY_ACTION
+    )
+    if accessibility_actions != allowed_accessibility_actions:
+        problems.append(
+            "manifest declares {} {} occurrence(s); only the exact protected "
+            "Full service may declare one".format(
+                accessibility_actions, ACCESSIBILITY_ACTION
+            )
+        )
+    allowed_accessibility_meta = 1 if exact_service_name else 0
+    accessibility_meta = _accessibility_occurrence_count(
+        facts, "accessibilityMetaCount", "metaData", ACCESSIBILITY_META
+    )
+    if accessibility_meta != allowed_accessibility_meta:
+        problems.append(
+            "manifest declares {} accessibilityservice meta-data occurrence(s); "
+            "only the exact protected Full service may declare one".format(
+                accessibility_meta
+            )
+        )
     return problems
 
 
@@ -690,15 +1159,16 @@ def native_packaging_checks(variant, native_libraries, extract_native_libs):
         if not bad_elf
         else "non-16 KiB ELF LOAD segments: " + "; ".join(bad_elf),
     )
-    expected_extraction = policy["extractNativeLibs"]
+    expected_extraction = policy["extractNativeLibs"] == "true"
+    actual_extraction = typed_boolean(extract_native_libs)
     add_check(
         checks,
         "{}.native.extractNativeLibs{}".format(
-            variant, "True" if expected_extraction == "true" else "False"
+            variant, "True" if expected_extraction else "False"
         ),
-        str(extract_native_libs).lower() == expected_extraction,
+        actual_extraction is expected_extraction,
         "android:extractNativeLibs={} (expected {})".format(
-            extract_native_libs, expected_extraction
+            extract_native_libs, str(expected_extraction).lower()
         ),
     )
     if variant == "full":
@@ -728,6 +1198,13 @@ def main(argv=None):
     parser.add_argument(
         "--native-manifest",
         help="native-manifest.json recording packaged library hashes",
+    )
+    parser.add_argument(
+        "--full-manifest-profile",
+        choices=FULL_MANIFEST_PROFILES,
+        default="g08",
+        help="Full protected-component contract (default: g08; legacy keeps the "
+        "pre-G08 strict Full boundary and admits neither protected component)",
     )
     parser.add_argument("--compact", action="store_true", help="single-line JSON")
     parser.add_argument(
@@ -762,6 +1239,11 @@ def main(argv=None):
         "packaging, not execution on a 16 KiB-page kernel/device.",
         "aapt2's merged manifest is inspected; runtime permission state, component "
         "enablement and behaviour are not evaluated.",
+        "The Full protected-component contract is a static manifest-shape check. "
+        "Binder caller UID/signature/nonce verification and actual provider "
+        "authority remain runtime/device gates and are not proven here.",
+        "Full protected components are admitted only under the explicit g08 profile "
+        "with the exact full application ID; the legacy Full profile rejects them.",
         "Dependency lockfiles and verification metadata are Gradle inputs and are "
         "not derivable from the APK; they are checked by the Gradle build, not here.",
         (
@@ -944,17 +1426,30 @@ def main(argv=None):
             if not forbidden_permission
             else "forbidden permissions: " + ", ".join(forbidden_permission),
         )
-        component_problems = forbidden_components(data["manifest"])
+        component_problems = forbidden_components(
+            data["manifest"], variant, args.full_manifest_profile
+        )
         add_check(
             checks,
             "{}.manifest.forbiddenComponents".format(variant),
             not component_problems,
-            "no accessibility/root services; services declared: {}".format(
-                len(data["manifest"]["services"])
-            )
+            "no forbidden accessibility/root/Shizuku components; services "
+            "declared: {}".format(len(data["manifest"]["services"]))
             if not component_problems
             else "; ".join(component_problems),
         )
+        if variant == "full" and args.full_manifest_profile == "g08":
+            protected_problems = protected_components_problems(data["manifest"])
+            add_check(
+                checks,
+                "full.manifest.protectedComponents",
+                not protected_problems,
+                "exact reviewed G08 protected components present: {} and {}".format(
+                    G08_FULL_ACCESSIBILITY_SERVICE, G08_FULL_PROVIDER
+                )
+                if not protected_problems
+                else "; ".join(protected_problems),
+            )
         package = data["manifest"]["package"] or ""
         add_check(
             checks,
@@ -965,6 +1460,17 @@ def main(argv=None):
                 data["manifest"]["versionCode"],
                 data["manifest"]["versionName"],
             ),
+        )
+        identity_problems = channel_identity_problems(
+            variant, data["manifest"]
+        )
+        add_check(
+            checks,
+            "{}.package.channelIdentity".format(variant),
+            not identity_problems,
+            "package={} matches the {} flavor identity".format(package, variant)
+            if not identity_problems
+            else "; ".join(identity_problems),
         )
 
     add_check(
@@ -1039,6 +1545,7 @@ def main(argv=None):
         "ok": not failures,
         "checker": "FloeAndroid G01 APK boundary checker",
         "aapt2": aapt2,
+        "fullManifestProfile": args.full_manifest_profile,
         "nativeManifest": manifest_path,
         "signing": signing_report,
         "full": {
