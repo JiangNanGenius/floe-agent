@@ -402,6 +402,11 @@ public extension FloeCADDocument {
         let clip = clipID.flatMap { state.animation.clip(withID: $0) }
             ?? state.animation.activeClip
         guard let clip else { throw CADAnimationExportError.noClip }
+        // Freeze the live generation alongside the clip value. The async run
+        // may start (and settle persistence) after this call returns; an edit
+        // in that window must abort the frozen export rather than combine the
+        // old duration/frame plan with newer document animation data.
+        let sourceChangeCount = liveChangeCount
         let documentKey = url.standardizedFileURL.path
         guard !CADAnimationExportCenter.shared.hasActiveJob(
             documentKey: documentKey) else {
@@ -416,8 +421,8 @@ public extension FloeCADDocument {
                                  progress: progress)
         let task = Task { @MainActor in
             let status = await self.runAnimationExport(
-                id: id, clip: clip, destination: destination,
-                settings: cleanSettings)
+                id: id, clip: clip, sourceChangeCount: sourceChangeCount,
+                destination: destination, settings: cleanSettings)
             center.finish(id, status: status)
         }
         center.attach(task: task, to: id)
@@ -525,6 +530,7 @@ public extension FloeCADDocument {
             throw CADAnimationExportError.invalidSettings(
                 "Frame width must be between 64 and 4096 pixels.")
         }
+        let sourceChangeCount = liveChangeCount
         let state = animationLoadState()
         let clip = clipID.flatMap { state.animation.clip(withID: $0) }
             ?? state.animation.activeClip
@@ -537,9 +543,25 @@ public extension FloeCADDocument {
             throw CADAnimationExportError.invalidSettings(
                 "Frame height must be between 64 and 4096 pixels.")
         }
+        // Same stale-identity defect class as the MP4 export: settle routine
+        // pending/in-flight saves before pinning the committed identity so a
+        // legitimate autosave of unchanged content cannot trip the stale fence
+        // during the snapshot await below. The settle is async and
+        // cancellation-aware; a REAL edit/generation move aborts instead of
+        // combining the frozen clip with newer document data.
+        try await prepareAnimationIdentity(
+            sourceChangeCount: sourceChangeCount)
+        try Task.checkCancellation()
+        try requireUnchangedAnimationClip(
+            clip, sourceChangeCount: sourceChangeCount)
         let session = try await acquireAnimationRenderSession(
             width: width, height: height)
         defer { session.release() }
+        try Task.checkCancellation()
+        // Acquiring the lease awaits; re-validate the frozen source before
+        // pinning the identity the returned frame reports.
+        try requireUnchangedAnimationClip(
+            clip, sourceChangeCount: sourceChangeCount)
         let controller = session.controller
         let handle = session.handle
         let lease = session.lease
@@ -605,6 +627,50 @@ public extension FloeCADDocument {
             note: "Actual animated RealityKit frame (live Present or service render host); the document and assembly baseline were not changed.")
     }
 
+    // MARK: Identity preparation
+
+    /// Run the session's async identity settle, translating its typed result
+    /// into the export surface: a real source change aborts (`.stale`, the
+    /// existing "document changed" meaning) and a save refusal surfaces its
+    /// actual error instead of silently exporting undurable state.
+    private func prepareAnimationIdentity(
+        sourceChangeCount: Int
+    ) async throws {
+        let result = try await session.settleSaveStateBeforeIdentityPin(
+            expectingChangeCount: sourceChangeCount)
+        // Closing revokes the store and is a cancellation, not a data error —
+        // even if a concurrent commit happened to fail against the revoked
+        // store while the settle was suspended.
+        guard !isClosed else { throw CADAnimationExportError.cancelled }
+        switch result {
+        case .ready:
+            return
+        case .sourceChanged:
+            throw CADAnimationExportError.stale
+        case .saveFailed(let message):
+            throw CADAnimationExportError.verification(
+                "The document could not be saved before export: \(message)")
+        }
+    }
+
+    /// Validate the exact clip value frozen at export/capture creation. The
+    /// same id with different duration/tracks/keyframes is still a source
+    /// change: the playback model resolves clips by id and would otherwise
+    /// remix the frozen frame plan with newer animation data.
+    private func requireUnchangedAnimationClip(
+        _ clip: CADAnimationClip,
+        sourceChangeCount: Int
+    ) throws {
+        guard !isClosed else { throw CADAnimationExportError.cancelled }
+        guard liveChangeCount == sourceChangeCount else {
+            throw CADAnimationExportError.stale
+        }
+        guard let current = animationLoadState().animation.clip(withID: clip.id) else {
+            throw CADAnimationExportError.noClip
+        }
+        guard current == clip else { throw CADAnimationExportError.stale }
+    }
+
     // MARK: Render session
 
     /// Use the visible Present when it is showing this document; otherwise
@@ -661,6 +727,7 @@ public extension FloeCADDocument {
     private func runAnimationExport(
         id: UUID,
         clip: CADAnimationClip,
+        sourceChangeCount: Int,
         destination: URL,
         settings: CADAnimationExportSettings
     ) async -> CADAnimationExportStatus {
@@ -675,9 +742,6 @@ public extension FloeCADDocument {
                     "The animation exceeds the \(CADAnimationExportSettings.maximumFrames)-frame export bound.").localizedDescription)
         }
         let documentKey = url.standardizedFileURL.path
-        let documentRevision = self.revision
-        let documentChangeCount = self.liveChangeCount
-        let documentContentSHA = self.contentSHA256
         var posterPNG: Data?
         var writer: AVAssetWriter?
         var stagingDirectory: URL?
@@ -693,9 +757,35 @@ public extension FloeCADDocument {
 
         do {
             guard !isClosed else { throw CADAnimationExportError.cancelled }
+            // Settle routine persistence BEFORE pinning identity or taking the
+            // render lease: a pending debounced autosave (or a save already in
+            // flight) would otherwise advance the committed revision/SHA
+            // mid-render even though every drawn frame is exact, and the
+            // per-frame fence below would discard the video as stale. The
+            // settle is the async canonical writer, never a synchronous save.
+            try await prepareAnimationIdentity(
+                sourceChangeCount: sourceChangeCount)
+            try Task.checkCancellation()
+            // Re-verify the frozen source across the settle await. The exact
+            // clip VALUE must be unchanged — the playback model looks the clip
+            // up by id, so an edited clip with the same id would otherwise
+            // silently replace the frozen duration/frame plan with newer data.
+            try requireUnchangedAnimationClip(
+                clip, sourceChangeCount: sourceChangeCount)
+            let documentRevision = self.revision
+            let documentChangeCount = self.liveChangeCount
+            let documentContentSHA = self.contentSHA256
             let session = try await acquireAnimationRenderSession(
                 width: settings.width, height: settings.height)
             renderSession = session
+            // The lease acquisition awaits too: an edit/close there must abort
+            // before any frame or staging artifact is produced.
+            try Task.checkCancellation()
+            try requireUnchangedAnimationClip(
+                clip, sourceChangeCount: sourceChangeCount)
+            guard liveChangeCount == documentChangeCount else {
+                throw CADAnimationExportError.stale
+            }
             let controller = session.controller
             let exportLease = session.lease
             let generation = session.generation

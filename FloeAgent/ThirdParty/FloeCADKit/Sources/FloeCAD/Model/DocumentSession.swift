@@ -10,6 +10,17 @@
 import Foundation
 import Observation
 
+/// Typed outcome of preparing the committed save identity before a long
+/// animation render pins it. `.sourceChanged` is a REAL live edit (the
+/// generation moved), not the routine debounce this preparation neutralizes;
+/// the caller must abort the frozen export and let ordinary autosave keep
+/// ownership of the edit. `.saveFailed` carries the actual save error.
+enum AnimationIdentitySettleResult: Sendable, Equatable {
+    case ready
+    case sourceChanged
+    case saveFailed(String)
+}
+
 @MainActor
 @Observable
 final class DocumentSession {
@@ -63,7 +74,11 @@ final class DocumentSession {
 
     /// Bumped on every document mutation; the editor observes this to rebuild
     /// the viewport scene.
-    private(set) var changeCount = 0
+    private(set) var changeCount = 0 {
+        didSet {
+            if oldValue != changeCount { wakeIdentityPreparationsForSourceChange() }
+        }
+    }
     /// Dirty/save identity only. Preview epochs still advance changeCount for
     /// runtime/query fencing without making an unchanged baseline need a save.
     private(set) var persistenceChangeCount = 0
@@ -272,6 +287,16 @@ final class DocumentSession {
 
     private var saveTask: Task<Void, Never>?
     private var inFlightSaveCount = 0
+    /// Identity-pin preparations suspended on the current writer. Resumed when
+    /// the writer count returns to zero (or by their own cancellation), so the
+    /// settle never polls or blocks the main actor on file locks. Pure
+    /// synchronization state, not observable document state.
+    @ObservationIgnored
+    private var inFlightSaveWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+    @ObservationIgnored
+    private var identitySaveWaiters: [UUID: (
+        generation: Int, continuation: CheckedContinuation<CADSaveOutcome?, Error>
+    )] = [:]
     private var lastSaveErrorIsWriteBlock = false
     var saveFailureRequiresRetry: Bool { lastSaveError != nil && !lastSaveErrorIsWriteBlock }
     var hasUncommittedPersistenceChanges: Bool {
@@ -305,6 +330,12 @@ final class DocumentSession {
     var saveFailureForTesting: String?
     var committedIdentityDeliveryForTesting: (@MainActor (CADSaveOutcome) async -> Void)?
     var hasPendingAutosaveForTesting: Bool { saveTask != nil }
+    /// Read-only observation of the identity-pin waiters, for deterministic
+    /// race tests. Never replaces the writer, store or wait itself.
+    var inFlightSaveWaiterCountForTesting: Int { inFlightSaveWaiters.count }
+    /// Read-only observation of the canonical async writer count.
+    var inFlightSaveCountForTesting: Int { inFlightSaveCount }
+    var identitySaveWaiterCountForTesting: Int { identitySaveWaiters.count }
     #endif
 
     /// One native sketch gesture may preview only its source sketch. The
@@ -1735,6 +1766,207 @@ final class DocumentSession {
         save()
     }
 
+    /// Settle routine persistence before a caller pins the committed identity
+    /// for a long render (animation export/capture).
+    ///
+    /// A legitimate debounced autosave of the unchanged live content would
+    /// otherwise commit mid-render, advance the committed revision/SHA and
+    /// trip the caller's stale fence even though every drawn frame is exact
+    /// (run-11). This preparation waits out a save already in flight and, only
+    /// when real uncommitted work remains, commits it through the SAME async
+    /// writer (`saveWithIdentityAsync`: off-main prewarm + JSON + hash + IO).
+    /// It never calls the synchronous `save()`, never blocks the main actor on
+    /// a file lock, and never suppresses a save error.
+    ///
+    /// The wait is cancellation-aware. Cancelling an export stops observing
+    /// the writer but does not cancel it: an autosave started for another
+    /// owner is independent durability work and must finish.
+    ///
+    /// - Parameter expectedChangeCount: the live generation frozen when the
+    ///   caller selected its clip. If a real edit moved the document before or
+    ///   during preparation, this returns `.sourceChanged` and the caller must
+    ///   abort the frozen export; the edit keeps its normal autosave. The
+    ///   settle never chases edits with an unbounded retry, and a clean,
+    ///   written-out document is a no-op.
+    func settleSaveStateBeforeIdentityPin(
+        expectingChangeCount expectedChangeCount: Int
+    ) async throws -> AnimationIdentitySettleResult {
+        try Task.checkCancellation()
+        let startingChangeCount = changeCount
+        guard startingChangeCount == expectedChangeCount else {
+            return .sourceChanged
+        }
+
+        // 1. An already-running writer may adopt a newer committed identity.
+        //    Wait for it asynchronously (cancellation-aware, no busy spin) and
+        //    stop immediately if a real edit moves the frozen generation.
+        let stillCurrent = try await waitForInFlightSavesToFinish(
+            whileGenerationIs: startingChangeCount)
+        guard stillCurrent else { return .sourceChanged }
+
+        if hasUncommittedPersistenceChanges {
+            // 2. Real pending/dirty work: commit through the one async writer.
+            //    No other writer is in flight at this instant, and because the
+            //    check and the call run in the same main-actor segment the
+            //    writer cannot be replaced between them.
+            try Task.checkCancellation()
+            let saved = try await saveForIdentityPreparation(
+                expectingChangeCount: startingChangeCount)
+            try Task.checkCancellation()
+            guard let outcome = saved else {
+                return .sourceChanged
+            }
+            if let error = outcome.error {
+                return .saveFailed(error)
+            }
+            // Re-check after the commit: the payload is built after prewarm,
+            // so an edit can have landed while this save flew.
+            guard changeCount == startingChangeCount else { return .sourceChanged }
+        } else if saveTask != nil {
+            // A debounce for content that is already durable is redundant. It
+            // would otherwise commit an unchanged revision mid-render — the
+            // exact run-11 stale failure. Dropping it keeps a clean document
+            // a true no-op (no extra commit).
+            saveTask?.cancel()
+            saveTask = nil
+        }
+
+        // 3. Another writer may have started while the commit above awaited
+        //    (or a concurrent clean debounce may have fired). Check the frozen
+        //    generation first so a real edit aborts without chasing its save;
+        //    otherwise wait it out and require a settled writer-free state.
+        guard changeCount == startingChangeCount else { return .sourceChanged }
+        let stillSettled = try await waitForInFlightSavesToFinish(
+            whileGenerationIs: startingChangeCount)
+        guard stillSettled else { return .sourceChanged }
+        if saveTask != nil {
+            if hasUncommittedPersistenceChanges {
+                // Uncommitted work scheduled without a generation move is not
+                // a settled identity; abort instead of looping on saves.
+                if saveFailureRequiresRetry, let error = lastSaveError {
+                    return .saveFailed(error)
+                }
+                return .sourceChanged
+            }
+            saveTask?.cancel()
+            saveTask = nil
+        }
+        if hasUncommittedPersistenceChanges {
+            if saveFailureRequiresRetry, let error = lastSaveError {
+                return .saveFailed(error)
+            }
+            return .sourceChanged
+        }
+        try Task.checkCancellation()
+        guard changeCount == startingChangeCount else { return .sourceChanged }
+        guard inFlightSaveCount == 0 else { return .sourceChanged }
+        return .ready
+    }
+
+    /// Wait until no save is writing while the caller's frozen generation is
+    /// still current. Returns false as soon as a real edit moves the
+    /// generation (so an aborted export never chases the newer autosave).
+    /// Cancellation wakes this wait promptly and leaves the running save
+    /// untouched.
+    private func waitForInFlightSavesToFinish(
+        whileGenerationIs expectedChangeCount: Int
+    ) async throws -> Bool {
+        try Task.checkCancellation()
+        while inFlightSaveCount > 0 {
+            try Task.checkCancellation()
+            guard changeCount == expectedChangeCount else { return false }
+            try await waitForInFlightSaveChange()
+        }
+        try Task.checkCancellation()
+        return changeCount == expectedChangeCount
+    }
+
+    /// Suspend until the writer count changes. A checked continuation resumed
+    /// by `finishInFlightSave()` (count reached zero) or by the cancellation
+    /// handler (owning task cancelled); whichever runs first removes the
+    /// waiter, so a continuation is never resumed twice.
+    private func waitForInFlightSaveChange() async throws {
+        let waiterID = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation {
+                (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled {
+                    continuation.resume()
+                } else {
+                    inFlightSaveWaiters[waiterID] = continuation
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelInFlightSaveWaiter(waiterID)
+            }
+        }
+        try Task.checkCancellation()
+    }
+
+    private func cancelInFlightSaveWaiter(_ waiterID: UUID) {
+        inFlightSaveWaiters.removeValue(forKey: waiterID)?.resume()
+    }
+
+    /// Observe a necessary commit without making the export its durability
+    /// owner. Cancellation or a source edit releases only this observer; the
+    /// existing writer still commits (or refuses its revoked store) normally.
+    private func saveForIdentityPreparation(
+        expectingChangeCount generation: Int
+    ) async throws -> CADSaveOutcome? {
+        let waiterID = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                guard changeCount == generation else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                identitySaveWaiters[waiterID] = (generation, continuation)
+                // Reserve the writer before yielding to its task. A second
+                // preparation must wait rather than enqueue another commit
+                // in the interval before saveWithIdentityAsync starts.
+                inFlightSaveCount += 1
+                Task { @MainActor [self] in
+                    defer { finishInFlightSave() }
+                    let outcome = await saveWithIdentityAsync()
+                    identitySaveWaiters.removeValue(forKey: waiterID)?
+                        .continuation.resume(returning: outcome)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.identitySaveWaiters.removeValue(forKey: waiterID)?
+                    .continuation.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    /// A real edit invalidates a frozen export even while a writer is held.
+    /// Waking its observer cannot cancel, replay or take ownership of the save.
+    private func wakeIdentityPreparationsForSourceChange() {
+        let waiting = inFlightSaveWaiters
+        inFlightSaveWaiters.removeAll()
+        for continuation in waiting.values { continuation.resume() }
+        let invalidated = identitySaveWaiters.filter { $0.value.generation != changeCount }
+        for (id, _) in invalidated {
+            identitySaveWaiters.removeValue(forKey: id)?.continuation.resume(returning: nil)
+        }
+    }
+
+    /// One writer left the canonical async save path. Wake every identity-pin
+    /// preparation when the session becomes writer-free.
+    private func finishInFlightSave() {
+        inFlightSaveCount -= 1
+        guard inFlightSaveCount == 0, !inFlightSaveWaiters.isEmpty else { return }
+        let waiters = inFlightSaveWaiters
+        inFlightSaveWaiters.removeAll()
+        for continuation in waiters.values { continuation.resume() }
+    }
+
     private func scheduleAutosave() {
         saveTask?.cancel()
         saveTask = Task { [weak self] in
@@ -1780,7 +2012,7 @@ final class DocumentSession {
             return failedSaveOutcome(block.message)
         }
         inFlightSaveCount += 1
-        defer { inFlightSaveCount -= 1 }
+        defer { finishInFlightSave() }
         await prewarmBrepSerialization()
         // Preserve owner acquisition and local-error fences across the await.
         if let block = writeBlock {
