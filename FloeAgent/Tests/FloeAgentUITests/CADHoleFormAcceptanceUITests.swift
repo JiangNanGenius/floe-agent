@@ -165,13 +165,43 @@ private enum CADHoleFormUI {
         XCTAssertTrue(field.waitForExistence(timeout: 10),
                       "the real numeric field \(identifier) must exist: \(app.debugDescription)",
                       file: file, line: line)
-        field.tap()
         let seed = field.value as? String ?? ""
-        for _ in seed {
-            field.typeText(XCUIKeyboardKey.delete.rawValue)
+        // ExpressionValueField uses the same real keypad as History unless
+        // the person selected the system keyboard. A readout deliberately
+        // has no keyboard focus, so sending typeText to it skips the actual
+        // product input path (the original actual86 failure).
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let pad = any(app, "NumericKeypad")
+        if pad.waitForExistence(timeout: 3) {
+            let delete = app.buttons["KeypadDelete"]
+            XCTAssertTrue(delete.waitForExistence(timeout: 10),
+                          "the real numeric keypad must expose Delete",
+                          file: file, line: line)
+            for _ in seed { delete.tap() }
+            for character in text {
+                let token = character == "-" ? "−" : String(character)
+                let key = app.buttons["Keypad-" + token]
+                XCTAssertTrue(key.waitForExistence(timeout: 10),
+                              "the real numeric keypad must expose \(token)",
+                              file: file, line: line)
+                key.tap()
+            }
+            let commit = app.buttons["KeypadCommit"]
+            XCTAssertTrue(commit.waitForExistence(timeout: 10),
+                          "the real numeric keypad must expose its commit action",
+                          file: file, line: line)
+            commit.tap()
+            XCTAssertTrue(waitForAbsence(pad, timeout: 10),
+                          "committing the value must close the real keypad",
+                          file: file, line: line)
+        } else {
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10),
+                          "the system keyboard must appear before typing into the field",
+                          file: file, line: line)
+            for _ in seed { field.typeText(XCUIKeyboardKey.delete.rawValue) }
+            field.typeText(text)
+            field.typeText(XCUIKeyboardKey.return.rawValue)
         }
-        field.typeText(text)
-        field.typeText(XCUIKeyboardKey.return.rawValue)
     }
 
     static func oppositeNormalSegment(_ app: XCUIApplication,
