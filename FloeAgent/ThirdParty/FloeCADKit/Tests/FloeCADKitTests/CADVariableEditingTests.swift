@@ -16,6 +16,11 @@
 //      stores an explicit radians(...) conversion, never degrees as radians;
 //    * query kind=variables/features exposes ids, formulas, resolved values,
 //      unit contracts and dependencies;
+//    * the PUBLIC setSketchDimension expression route binds a real hole's
+//      placement diameter and an extrusion to one width variable, then drives
+//      both (one undo) with no package-JSON splicing or private helper;
+//    * a public angle expression keeps its degree source while fan-out stores
+//      the solved dimension in radians exactly once;
 //    * failed edits preserve the document AND the redo stack, and save/reopen
 //      persists the formula source and resolved geometry.
 //
@@ -102,6 +107,62 @@ final class CADVariableEditingTests: XCTestCase {
         }
         try run(document, "sketch.addEntities", ["sketchID": id, "entities": entities])
         return id
+    }
+
+    @discardableResult
+    private func addCircleSketch(_ document: FloeCADDocument, center: (Double, Double),
+                                 radius: Double,
+                                 y: Double = 0) throws -> (sketchID: String, entityID: String) {
+        let created = try run(document, "sketch.create", [
+            "origin": [0, y, 0], "xAxis": [1, 0, 0], "yAxis": [0, 0, -1],
+        ])
+        let id = try XCTUnwrap(created["sketchID"] as? String)
+        let added = try run(document, "sketch.addEntities", [
+            "sketchID": id,
+            "entities": [["kind": "circle",
+                          "center": [center.0, center.1],
+                          "radius": radius]],
+        ])
+        let entityID = try XCTUnwrap((added["entityIDs"] as? [String])?.first)
+        return (id, entityID)
+    }
+
+    private func addLinesSketch(_ document: FloeCADDocument)
+        throws -> (sketchID: String, lineA: String, lineB: String) {
+        let created = try run(document, "sketch.create", [
+            "origin": [0, 0, 0], "xAxis": [1, 0, 0], "yAxis": [0, 0, -1],
+        ])
+        let id = try XCTUnwrap(created["sketchID"] as? String)
+        let added = try run(document, "sketch.addEntities", [
+            "sketchID": id,
+            "entities": [
+                ["kind": "line", "a": [0, 0], "b": [10, 0]],
+                ["kind": "line", "a": [0, 0], "b": [0, 10]],
+            ],
+        ])
+        let ids = try XCTUnwrap(added["entityIDs"] as? [String])
+        let lineA = try XCTUnwrap(ids.first)
+        let lineB = try XCTUnwrap(ids.dropFirst().first)
+        return (id, lineA, lineB)
+    }
+
+    private func dimensionRow(_ document: FloeCADDocument, sketchID: String,
+                              _ dimensionID: String) throws -> [String: Any] {
+        try XCTUnwrap(try rows(document, "constraints").first {
+            ($0["id"] as? String) == dimensionID
+                && ($0["sketchID"] as? String) == sketchID
+                && ($0["row_kind"] as? String) == "dimension"
+        })
+    }
+
+    private func circleRadius(_ document: FloeCADDocument, sketchID: String,
+                              entityID: String) throws -> Double {
+        let sketch = try XCTUnwrap(try rows(document, "sketches").first {
+            ($0["id"] as? String) == sketchID
+        })
+        let entityRows = try XCTUnwrap(sketch["entityRows"] as? [[String: Any]])
+        let circle = try XCTUnwrap(entityRows.first { ($0["id"] as? String) == entityID })
+        return try XCTUnwrap(circle["radius"] as? Double)
     }
 
     @discardableResult
@@ -703,6 +764,203 @@ final class CADVariableEditingTests: XCTestCase {
                                              dimensionID: dimensionID),
                            60, accuracy: 1e-6)
         }
+    }
+
+    // MARK: - Public sketch-dimension formula drives a real hole
+
+    /// The M11 caller gap: an LLM can create `width`, bind the extrusion and the
+    /// hole's placement diameter through the PUBLIC command service, then move
+    /// `width` once. No package JSON is spliced and no private test helper
+    /// attaches the dimension formula: `setSketchDimension` receives the
+    /// expression and stores it on the dimension. ONE variable edit rebuilds
+    /// the sketch, hole and extruded body as one undo step; save/reopen keeps
+    /// the formula and the real B-Rep volume.
+    func testPublicDimensionExpressionBindsHoleDiameterAndExtrusionInOneUndo() async throws {
+        let document = try await makeDocument()
+        defer { document.close() }
+        let plateSketch = try addRectangleSketch(document)
+        try run(document, "feature.extrude", [
+            "sketchID": plateSketch, "seedPoint": [5, 5], "distance": 10,
+        ])
+        let extrusion = try XCTUnwrap(document.session.document.features.nodes.last)
+        let bodyID = try body(document).id.raw.uuidString
+        let circle = try addCircleSketch(document, center: (10, 10), radius: 2.5)
+        let holeReply = try run(document, "feature.hole", [
+            "sketchID": circle.sketchID,
+            "seedPoint": [10, 10],
+            "targetBodyID": bodyID,
+            "type": "throughAll",
+        ])
+        let holeID = try XCTUnwrap(holeReply["featureID"] as? String)
+
+        let initialRemoval = Double.pi * 2.5 * 2.5 * 10
+        XCTAssertEqual(try volume(document), 8_000 - initialRemoval, accuracy: 1e-3)
+
+        let service = CADParameterService(document: document)
+        let width = try createVariable(service, name: "width", expression: "40")
+        _ = setExpression(service, feature: extrusion.id, parameter: "distance",
+                          expression: "width / 4")
+
+        // The public tool caller binds the hole diameter without touching the
+        // package or invoking the private attachFormula helper.
+        let bound = service.handle(action: "setSketchDimension", args: [
+            "sketch_id": circle.sketchID,
+            "entity_id": circle.entityID,
+            "kind": "diameter",
+            "expression": "width / 8",
+            "expected_expression": "",
+        ])
+        XCTAssertEqual(bound["ok"] as? Bool, true, "\(bound)")
+        let dimension = try XCTUnwrap(bound["dimension"] as? [String: Any])
+        let dimensionID = try XCTUnwrap(dimension["id"] as? String)
+        XCTAssertEqual(dimension["value"] as? Double ?? .nan, 5, accuracy: 1e-9)
+        XCTAssertEqual(dimension["stored_value"] as? Double ?? .nan, 5, accuracy: 1e-9)
+        XCTAssertEqual(dimension["unit"] as? String, "mm")
+        XCTAssertEqual(dimension["formula"] as? String, "width / 8")
+        XCTAssertEqual(dimension["formula_unit"] as? String, "mm")
+        XCTAssertEqual(dimension["created"] as? Bool, true)
+        XCTAssertTrue((bound["dependent_feature_ids"] as? [String] ?? []).contains(holeID))
+        let catalogReply = service.handle(action: "list", args: [:])
+        let catalog = try XCTUnwrap(catalogReply["sketch_dimension_update"] as? [String: Any])
+        XCTAssertEqual(catalog["action"] as? String, "setSketchDimension")
+        XCTAssertTrue((catalog["fields"] as? [String] ?? [])
+            .contains { $0.contains("value|expression") })
+        XCTAssertEqual(try circleRadius(document, sketchID: circle.sketchID,
+                                        entityID: circle.entityID), 2.5, accuracy: 1e-6)
+        var row = try dimensionRow(document, sketchID: circle.sketchID, dimensionID)
+        XCTAssertEqual(row["formula"] as? String, "width / 8")
+        XCTAssertEqual(row["formula_unit"] as? String, "mm")
+        XCTAssertEqual(row["display_value"] as? Double ?? .nan, 5, accuracy: 1e-9)
+
+        // One variable edit drives BOTH owners: depth 10 -> 15, pilot
+        // diameter 5 -> 7.5, so the removal grows from 62.5π to 210.9375π.
+        let updatedRemoval = Double.pi * 3.75 * 3.75 * 15
+        let update = service.handle(action: "variable.update", args: [
+            "variable_id": width, "expression": "60", "expected_expression": "40",
+        ])
+        XCTAssertEqual(update["ok"] as? Bool, true, "\(update)")
+        XCTAssertEqual(try volume(document), 12_000 - updatedRemoval, accuracy: 1e-3)
+        XCTAssertEqual(try parameterRow(document, feature: extrusion.id, "distance")["value"]
+                       as? Double ?? .nan, 15, accuracy: 1e-9)
+        XCTAssertEqual(try circleRadius(document, sketchID: circle.sketchID,
+                                        entityID: circle.entityID), 3.75, accuracy: 1e-6)
+        row = try dimensionRow(document, sketchID: circle.sketchID, dimensionID)
+        XCTAssertEqual(row["formula"] as? String, "width / 8")
+        XCTAssertEqual(row["display_value"] as? Double ?? .nan, 7.5, accuracy: 1e-9)
+
+        // ONE undo restores the variable, both formulas' values and the body.
+        document.session.undo()
+        XCTAssertEqual(try volume(document), 8_000 - initialRemoval, accuracy: 1e-3)
+        XCTAssertEqual(try variableRow(document, width)["value"] as? Double, 40)
+        XCTAssertEqual(try parameterRow(document, feature: extrusion.id, "distance")["value"]
+                       as? Double ?? .nan, 10, accuracy: 1e-9)
+        let undone = try dimensionRow(document, sketchID: circle.sketchID, dimensionID)
+        XCTAssertEqual(undone["display_value"] as? Double ?? .nan, 5, accuracy: 1e-9)
+
+        // Malformed/ambiguous formulas refuse BEFORE commit and preserve redo.
+        let changeCount = document.session.changeCount
+        let undoCount = document.session.undoStack.undoCommands.count
+        let revision = document.revision
+        XCTAssertTrue(document.session.undoStack.canRedo)
+        let baseArgs: [String: Any] = [
+            "sketch_id": circle.sketchID,
+            "entity_id": circle.entityID,
+            "kind": "diameter",
+        ]
+        let refusals: [([String: Any], String)] = [
+            (["expression": "missing + 1"], "unresolved_reference"),
+            (["expression": "nope(width)"], "unknown_function"),
+            (["expression": "width / 0"], "divided_by_zero"),
+            (["expression": "0"], "bad_value"),
+            (["value": 5, "expression": "width / 8"], "ambiguous_value"),
+            (["expression": "width / 8", "expected_expression": "wrong"],
+             "expression_mismatch"),
+            (["expression": "width / 8", "expected_expression": 4],
+             "bad_expected_expression"),
+        ]
+        for (extra, code) in refusals {
+            var args = baseArgs
+            for (key, value) in extra { args[key] = value }
+            let reply = service.handle(action: "setSketchDimension", args: args)
+            XCTAssertEqual(reply["ok"] as? Bool, false, "\(args) -> \(reply)")
+            XCTAssertEqual(reply["error"] as? String, code, "\(args) -> \(reply)")
+            XCTAssertEqual(document.session.changeCount, changeCount, "\(args)")
+            XCTAssertEqual(document.session.undoStack.undoCommands.count, undoCount, "\(args)")
+            XCTAssertTrue(document.session.undoStack.canRedo, "\(args)")
+            let refused = try dimensionRow(document, sketchID: circle.sketchID,
+                                           dimensionID)
+            XCTAssertEqual(refused["formula"] as? String, "width / 8")
+            XCTAssertEqual(document.revision, revision, "\(args)")
+            XCTAssertEqual(try volume(document), 8_000 - initialRemoval,
+                           accuracy: 1e-3, "\(args)")
+        }
+        document.session.redo()
+        XCTAssertEqual(try volume(document), 12_000 - updatedRemoval, accuracy: 1e-3)
+
+        // The formula source AND the real geometry survive save/reopen.
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        openDocuments.append(reopened)
+        XCTAssertEqual(try volume(reopened), 12_000 - updatedRemoval, accuracy: 1e-3)
+        let persisted = try dimensionRow(reopened, sketchID: circle.sketchID, dimensionID)
+        XCTAssertEqual(persisted["formula"] as? String, "width / 8")
+        XCTAssertEqual(persisted["formula_unit"] as? String, "mm")
+        XCTAssertEqual(persisted["display_value"] as? Double ?? .nan, 7.5, accuracy: 1e-9)
+        XCTAssertEqual(try parameterRow(reopened, feature: extrusion.id, "distance")["formula"]
+                       as? String, "width / 4")
+    }
+
+    /// A sketch angle dimension is authored in PUBLIC DEGREES. Its stored
+    /// `SketchDimension.formula` is the degree source (not the feature
+    /// `rotateFace` explicit `radians(...)` Expr contract), and
+    /// `DocumentSession.variableFanOutPlan` applies the degree -> radian
+    /// conversion exactly once. This guards the contract against a
+    /// double-conversion or a degree value persisted as radians.
+    func testPublicAngleExpressionStaysInDegreesAndFanOutConvertsOnce() async throws {
+        let document = try await makeDocument()
+        defer { document.close() }
+        let lines = try addLinesSketch(document)
+        let service = CADParameterService(document: document)
+        let angle = try createVariable(service, name: "ang", expression: "30")
+
+        let bound = service.handle(action: "setSketchDimension", args: [
+            "sketch_id": lines.sketchID,
+            "entity_ids": [lines.lineA, lines.lineB],
+            "kind": "angle",
+            "expression": "ang",
+            "expected_expression": "",
+        ])
+        XCTAssertEqual(bound["ok"] as? Bool, true, "\(bound)")
+        let dimension = try XCTUnwrap(bound["dimension"] as? [String: Any])
+        let dimensionID = try XCTUnwrap(dimension["id"] as? String)
+        XCTAssertEqual(dimension["value"] as? Double ?? .nan, 30, accuracy: 1e-9)
+        XCTAssertEqual(dimension["stored_value"] as? Double ?? .nan, .pi / 6,
+                       accuracy: 1e-12)
+        XCTAssertEqual(dimension["unit"] as? String, "deg")
+        XCTAssertEqual(dimension["stored_unit"] as? String, "rad")
+        XCTAssertEqual(dimension["formula"] as? String, "ang")
+        XCTAssertEqual(dimension["formula_unit"] as? String, "deg")
+        var row = try dimensionRow(document, sketchID: lines.sketchID, dimensionID)
+        XCTAssertEqual(row["display_value"] as? Double ?? .nan, 30, accuracy: 1e-6)
+        XCTAssertEqual(row["value"] as? Double ?? .nan, .pi / 6, accuracy: 1e-9)
+
+        let update = service.handle(action: "variable.update", args: [
+            "variable_id": angle, "expression": "45", "expected_expression": "30",
+        ])
+        XCTAssertEqual(update["ok"] as? Bool, true, "\(update)")
+        row = try dimensionRow(document, sketchID: lines.sketchID, dimensionID)
+        XCTAssertEqual(row["formula"] as? String, "ang")
+        XCTAssertEqual(row["display_value"] as? Double ?? .nan, 45, accuracy: 1e-6)
+        XCTAssertEqual(row["value"] as? Double ?? .nan, .pi / 4, accuracy: 1e-9,
+                       "45 degrees must be stored as radians, not as a degree value")
+
+        document.session.undo()
+        row = try dimensionRow(document, sketchID: lines.sketchID, dimensionID)
+        XCTAssertEqual(row["display_value"] as? Double ?? .nan, 30, accuracy: 1e-6)
+        XCTAssertEqual(row["value"] as? Double ?? .nan, .pi / 6, accuracy: 1e-9)
     }
 
     // MARK: - Query discovery is executable and unit-truthful

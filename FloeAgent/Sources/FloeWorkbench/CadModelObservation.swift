@@ -125,7 +125,8 @@ public struct CadModelObservationRequest: Codable, Sendable, Equatable {
     }
 
     public func validate() throws {
-        guard (1...4).contains(views.count), (64...2048).contains(width), (64...2048).contains(height),
+        let minimumViews = includeImages ? 1 : 0
+        guard (minimumViews...4).contains(views.count), (64...2048).contains(width), (64...2048).contains(height),
               views.allSatisfy({ $0.azimuthDegrees.isFinite && $0.elevationDegrees.isFinite
                   && (-90...90).contains($0.elevationDegrees) && $0.distanceScale.isFinite
                   && (0.1...5).contains($0.distanceScale) }),
@@ -133,7 +134,7 @@ public struct CadModelObservationRequest: Codable, Sendable, Equatable {
               timeSeconds.map({ $0.isFinite && $0 >= 0 }) ?? true,
               (1...64 * 1024 * 1024).contains(maximumSourceBytes), (1...128).contains(maximumResources),
               nodeOffset >= 0, (1...1000).contains(nodeLimit) else {
-            throw FloeError.validationFailed("observe requires 1...4 finite views, 64...2048 pixels, non-negative scene/camera/clip/time, and at most 64 MiB/128 resources.")
+            throw FloeError.validationFailed("observe requires 1...4 finite views for images (0...4 for metadata only), 64...2048 pixels, non-negative scene/camera/clip/time, and at most 64 MiB/128 resources.")
         }
         if let expectedSourceSHA256 {
             guard expectedSourceSHA256.count == 64,

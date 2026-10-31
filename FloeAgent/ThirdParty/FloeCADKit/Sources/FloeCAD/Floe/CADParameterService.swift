@@ -169,13 +169,28 @@ public final class CADParameterService {
                 "supported_kinds": ["length", "distance", "angle", "diameter", "radius", "width", "height"],
                 "fields": [
                     "sketch_id", "entity_id (or entity_ids for an angle between two lines)",
-                    "kind", "value", "expected_value", "dimension_id (optional existing dimension)",
+                    "kind",
+                    "value (exactly one of value|expression; positive finite number in the public unit)",
+                    "expression (exactly one of value|expression; formula in the public unit)",
+                    "expected_value",
+                    "expected_expression (exact stored formula; empty string means none)",
+                    "dimension_id (optional existing dimension)",
                     "refs (optional explicit [{entity_id, role}])",
                 ],
                 "units": ["length": "mm", "distance": "mm", "radius": "mm",
                           "diameter": "mm", "width": "mm", "height": "mm", "angle": "degrees"],
+                "example": "{action:setSketchDimension, sketch_id:<sketch>, "
+                    + "entity_id:<placement circle>, kind:diameter, "
+                    + "expression:\"width / 8\", expected_expression:\"\"}",
+                "expression": "A formula is authored in the SAME public unit as value "
+                    + "(mm; degrees for angle) and stored on the dimension's existing formula "
+                    + "field. An angle's formula text stays in public degrees while the solved "
+                    + "value is persisted in radians, so variable fan-out converts it exactly "
+                    + "once. Sending both value and expression refuses ambiguous_value; a "
+                    + "resolved value outside the numeric bounds refuses without mutation.",
                 "remove": "removeSketchDimension {sketch_id, dimension_id}",
-                "discover": "query kind=constraints -> rows[] (editable dimensions carry update_action)",
+                "discover": "query kind=constraints -> rows[] (editable dimensions carry update_action, "
+                    + "formula, formula_unit and formula_reference_names)",
             ],
             "feature_actions": [
                 "feature.suppress": "{feature_id, suppressed: true|false}",
@@ -1888,12 +1903,27 @@ public final class CADParameterService {
     /// The model-facing `length` kind is a line's point-to-point `.distance`.
     /// `angle` is entered in DEGREES and stored in radians; every other kind is
     /// millimetres (diameter stores the diameter, not the radius).
+    ///
+    /// A dimension may be driven by exactly one of `value` (a positive finite
+    /// number in the public unit) or `expression` (the same public unit). The
+    /// expression is evaluated against the document's live variables through
+    /// the SAME evaluator `feature.setExpression` uses, then solved/committed
+    /// exactly like a numeric edit. Its source text is stored on the existing
+    /// `SketchDimension.formula`; variable fan-out already re-evaluates that
+    /// field. Unlike feature.rotateFace.angle (whose stored Expr formula is the
+    /// explicit `radians(...)` source), a sketch angle formula is persisted in
+    /// PUBLIC DEGREES because DocumentSession.variableFanOutPlan multiplies the
+    /// evaluated angle by pi/180 exactly once; the solved dimension value stays
+    /// persisted radians. No new unit convention is introduced.
+    /// `expected_expression` fences that exact stored formula (empty string =
+    /// no formula), mirroring `feature.setExpression`.
     private func setSketchDimension(_ args: [String: Any]) -> [String: Any] {
         let allowed: Set<String> = [
             "action", "revision", "expected_revision",
             "sketch_id", "sketchID", "sketch",
             "entity_id", "entityID", "id", "entity_ids", "entityIDs",
-            "kind", "value", "expected_value", "dimension_id",
+            "kind", "value", "expression", "expected_value", "expected_expression",
+            "dimension_id",
             "refs",
         ]
         let unknown = args.keys.filter { !allowed.contains($0) }.sorted()
@@ -1928,9 +1958,42 @@ public final class CADParameterService {
         case "height": storedKindName = "vertical"
         default: storedKindName = requestedKind
         }
-        guard let rawValue = args["value"],
-              let value = CADMaterialService.number(rawValue), value.isFinite else {
-            return Self.fail("bad_value", "setSketchDimension needs a finite numeric value.")
+        let rawValue = args["value"]
+        let rawExpression = args["expression"]
+        guard !(rawValue != nil && rawExpression != nil) else {
+            return Self.fail(
+                "ambiguous_value",
+                "setSketchDimension accepts value or expression, not both. Send exactly one.")
+        }
+        let expression: String?
+        let publicValue: Double
+        if let rawExpression {
+            guard let text = CADMaterialService.string(rawExpression) else {
+                return Self.fail("bad_expression",
+                                 "setSketchDimension expression must be a formula string.")
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                return Self.fail("bad_expression",
+                                 "setSketchDimension expression must not be empty.")
+            }
+            switch Self.evaluateExpression(trimmed,
+                                           values: document.session.variableValues()) {
+            case .failure(let failure):
+                return Self.fail(failure.code, failure.message)
+            case .success(let value):
+                publicValue = value
+            }
+            expression = trimmed
+        } else {
+            guard let rawValue,
+                  let value = CADMaterialService.number(rawValue), value.isFinite else {
+                return Self.fail(
+                    "bad_value",
+                    "setSketchDimension needs a finite numeric value or a formula expression.")
+            }
+            publicValue = value
+            expression = nil
         }
 
         let explicitRefs: [ConstraintRef]?
@@ -2072,17 +2135,17 @@ public final class CADParameterService {
         let storedValue: Double
         let displayUnit: String
         if requestedKind == "angle" {
-            guard value > 0, value < (refs.count == 1 ? 360 : 180) else {
+            guard publicValue > 0, publicValue < (refs.count == 1 ? 360 : 180) else {
                 return Self.fail("bad_value",
                                  "Angle must be in (0, \(refs.count == 1 ? 360 : 180)) degrees.")
             }
-            storedValue = value * .pi / 180
+            storedValue = publicValue * .pi / 180
             displayUnit = "deg"
         } else {
-            guard value > 1e-6 else {
+            guard publicValue > 1e-6 else {
                 return Self.fail("bad_value", "\(requestedKind) must be greater than 0 mm.")
             }
-            storedValue = value
+            storedValue = publicValue
             displayUnit = "mm"
         }
 
@@ -2110,6 +2173,24 @@ public final class CADParameterService {
             }
         }
 
+        let currentFormula = existingIndex.flatMap { sketch.dimensions[$0].formula } ?? ""
+        if let rawExpectedExpression = args["expected_expression"] {
+            guard let expected = CADMaterialService.string(rawExpectedExpression) else {
+                return Self.fail(
+                    "bad_expected_expression",
+                    "expected_expression must be the current stored formula string "
+                        + "(empty string when the dimension has no formula).")
+            }
+            guard expected == currentFormula else {
+                return Self.fail(
+                    "expression_mismatch",
+                    "The dimension currently has formula "
+                        + (currentFormula.isEmpty ? "(none)" : "\"\(currentFormula)\"")
+                        + ", not the expected \"\(expected)\". "
+                        + "Re-query kind=constraints before editing it.")
+            }
+        }
+
         if let existingIndex {
             let before = sketch.dimensions[existingIndex]
             let currentDisplay = requestedKind == "angle" ? before.value * 180 / .pi : before.value
@@ -2121,23 +2202,32 @@ public final class CADParameterService {
                     "The dimension currently reads \(currentDisplay) \(displayUnit), not the expected "
                         + "\(expected) \(displayUnit). Re-query kind=constraints before editing it.")
             }
-            if abs(before.value - storedValue) <= 1e-9 && before.formula == nil {
+            if expression == nil,
+               abs(before.value - storedValue) <= 1e-9 && before.formula == nil {
                 return Self.fail("no_change", "The dimension already has that value.")
             }
         }
 
+        let previousFormula = existingIndex.flatMap { sketch.dimensions[$0].formula }
         var candidate: SketchDimension
         let isNew: Bool
         if let existingIndex {
             candidate = sketch.dimensions[existingIndex]
             candidate.value = storedValue
-            candidate.formula = nil
+            // Public-unit source (mm; degrees for angle). Sketch fan-out
+            // converts an angle result to radians exactly once.
+            candidate.formula = expression
             candidate.displayExpression = nil
             isNew = false
         } else {
             candidate = SketchDimension(kind: DimensionKind(rawValue: storedKindName) ?? .distance,
-                                        refs: refs, value: storedValue)
+                                        refs: refs, value: storedValue,
+                                        formula: expression)
             isNew = true
+        }
+        if let existingIndex, candidate == sketch.dimensions[existingIndex] {
+            return Self.fail("no_change",
+                             "The dimension already has that value and expression.")
         }
 
         var proposed = sketch
@@ -2165,10 +2255,12 @@ public final class CADParameterService {
         let solved = SketchSolverBridge.solveDimensionEdit(
             proposed, dimension: candidate, tolerance: Self.overConstraintTolerance)
         guard solved.converged, solved.structuralResidual <= Self.overConstraintTolerance else {
+            let target = expression.map {
+                "\(requestedKind) = \($0) (\(publicValue) \(displayUnit))"
+            } ?? "\(requestedKind) = \(publicValue) \(displayUnit)"
             return Self.fail(
                 "solve_failed",
-                "The solver could not make the sketch satisfy \(requestedKind) = \(value) \(displayUnit); "
-                    + "nothing was changed.")
+                "The solver could not make the sketch satisfy \(target); nothing was changed.")
         }
         let changedEntities = zip(sketch.entities, solved.entities).compactMap { before, after in
             before == after ? nil : (before: before, after: after)
@@ -2207,6 +2299,12 @@ public final class CADParameterService {
         let dependents = document.session.document.features.nodes
             .filter { $0.referencedSketchIDs.contains(sketchID) }
             .map { $0.id.raw.uuidString }
+        let replacedFormula: Any
+        if let previousFormula, previousFormula != expression {
+            replacedFormula = previousFormula
+        } else {
+            replacedFormula = NSNull()
+        }
         return Self.ok([
             "action": "setSketchDimension",
             "mutated": true,
@@ -2216,10 +2314,15 @@ public final class CADParameterService {
                 "kind": candidate.kind.rawValue,
                 "requested_kind": rawKind,
                 "refs": candidate.refs.map { ["entity_id": $0.entityID.uuidString, "role": $0.role.rawValue] },
-                "value": value,
+                "value": publicValue,
                 "unit": displayUnit,
                 "stored_value": candidate.value,
                 "stored_unit": candidate.kind == .angle ? "rad" : "mm",
+                "formula": candidate.formula ?? NSNull(),
+                "formula_unit": displayUnit,
+                "display_expression": candidate.displayExpression ?? NSNull(),
+                "expression": expression ?? NSNull(),
+                "replaced_formula": replacedFormula,
                 "created": isNew,
             ],
             "solved_entity_ids": changedEntities.map { $0.after.id.uuidString },
@@ -4159,7 +4262,8 @@ public final class CADParameterService {
             if let sketch = document.sketches.first(where: { $0.id == profileRef.sketchID }),
                let circle = HoleKit.circle(in: sketch, matching: profileRef) {
                 add("pilot_diameter", "mm", circle.radius * 2, editable: false,
-                    note: "Derived from the placement circle; edit that circle to resize the hole.")
+                    note: "Derived from the placement circle; resize it with updateSketchEntity "
+                        + "or bind a diameter formula with setSketchDimension.")
                 add("position_u", "mm", circle.center.x, editable: false,
                     note: "Derived from the placement circle.")
                 add("position_v", "mm", circle.center.y, editable: false,

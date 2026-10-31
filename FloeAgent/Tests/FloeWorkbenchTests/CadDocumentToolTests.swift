@@ -1860,6 +1860,57 @@ struct CadNativeEditToolTests {
         }
     }
 
+    @Test("sketch-dimension expression is a value alternative and validated before the host")
+    func sketchDimensionExpressionRoutesAndValidates() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"mutated":true,"revision":9,"change_count":6}"#)
+        let tool = CadDocumentTool(host: host)
+        let sketch = UUID().uuidString
+        let entity = UUID().uuidString
+        func request(_ payload: [String: Any]) throws -> String {
+            let encoded = String(decoding: try JSONSerialization.data(withJSONObject: payload),
+                                 as: UTF8.self)
+            return String(decoding: try JSONSerialization.data(withJSONObject: [
+                "action": "parameters", "path": "part.floecad", "payload": encoded,
+            ]), as: UTF8.self)
+        }
+
+        _ = try await execute(tool, try request([
+            "action": "setSketchDimension", "sketch_id": sketch, "entity_id": entity,
+            "kind": "diameter", "expression": "width / 8", "expected_expression": "",
+        ]), context: makeContext())
+        let requests = await host.threeDRequests
+        let last = try #require(requests.last)
+        let routed = try #require(
+            try JSONSerialization.jsonObject(with: Data(last.utf8)) as? [String: Any])
+        #expect(routed["kind"] as? String == "parameters")
+        let fields = try #require(routed["payload"] as? [String: Any])
+        #expect(fields["expression"] as? String == "width / 8")
+        #expect(fields["expected_expression"] as? String == "")
+
+        let base: [String: Any] = [
+            "action": "setSketchDimension", "sketch_id": sketch,
+            "entity_id": entity, "kind": "diameter",
+        ]
+        let invalid: [[String: Any]] = [
+            base,
+            base.merging(["value": 5, "expression": "width / 8"]) { $1 },
+            base.merging(["expression": " "]) { $1 },
+            base.merging(["expression": 4]) { $1 },
+            base.merging(["expression": "width / 8", "expected_expression": 4]) { $1 },
+        ]
+        for payload in invalid {
+            let args = try decode(try request(payload))
+            #expect(throws: FloeError.self) { try tool.validate(args) }
+        }
+
+        let schema = CadDocumentTool.parametersJSON
+        for token in ["value|expression", "ambiguous_value",
+                      "formula_reference_names", "expected_expression"] {
+            #expect(schema.contains(token), "schema must advertise \(token)")
+        }
+    }
+
     @Test("datum and support edits route to parameters and validate complete source selections")
     func datumActionsRouteAndValidate() async throws {
         let host = FakeCadHost()
@@ -2213,6 +2264,37 @@ struct CadOriginalSceneObservationTests {
                 try tool.validate(arguments(path: path))
             }
         }
+    }
+
+    @Test("metadata-only observation permits no views while retaining view and resource bounds")
+    func metadataOnlyObservationAllowsNoViews() async throws {
+        var request = CadModelObservationRequest()
+        request.includeImages = false
+        request.views = []
+        try request.validate()
+        let tool = CadDocumentTool(host: FakeCadHost())
+        let args = try arguments(path: "model.glb", payload: #"{"includeImages":false,"views":[]}"#)
+        try tool.validate(args)
+        let context = ToolContext(
+            runID: UUID(), toolCallID: "metadata-no-views", scope: .local,
+            workspaceRootURL: URL(fileURLWithPath: "/tmp/workspace"),
+            cancellation: CancellationToken(), conversationID: UUID())
+        let support = try FileManager.default.url(for: .applicationSupportDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: true)
+        defer { try? FileManager.default.removeItem(at: support.appendingPathComponent(
+            "FloeAgent/EngineeringObservations/\(context.runID.uuidString)")) }
+        let output = try await tool.execute(args, context: context)
+        #expect(output.artifacts.isEmpty)
+        #expect(output.summary.contains("sourceSHA256"))
+
+        request.includeImages = true
+        #expect(throws: (any Error).self) { try request.validate() }
+        request.includeImages = false
+        request.views = Array(repeating: CadModelObservationRequest().views[0], count: 5)
+        #expect(throws: (any Error).self) { try request.validate() }
+        request.views.removeLast()
+        request.views[0].distanceScale = .infinity
+        #expect(throws: (any Error).self) { try request.validate() }
     }
 
     @Test("invalid projections, dimensions, pages and stale identity shapes are refused before rendering")

@@ -24,7 +24,7 @@ import Foundation
 
 @MainActor
 final class EngineeringPreviewSceneControlUITests: XCTestCase {
-    private let attachmentID = "E1A6C0DE-7E31-4A10-9E8D-3A2B6C4D5E03"
+    private var attachmentID = ""
     private let assetEnvironmentKey = "FLOE_ENGINEERING_ENTRY_GLB_B64"
     private let assetSHAEnvironmentKey = "FLOE_ENGINEERING_ENTRY_GLB_SHA256"
     private var app: XCUIApplication?
@@ -41,6 +41,13 @@ final class EngineeringPreviewSceneControlUITests: XCTestCase {
     func testSceneControlsDriveRealPlaybackClipSceneAndFit() throws {
         let bytes = try fixtureBytes()
         let digest = sha256(bytes)
+        let identityBytes = Array(SHA256.hash(data: Data(
+            "floe-engineering-entry|\(digest)|3".utf8)))
+        attachmentID = UUID(uuid: (
+            identityBytes[0], identityBytes[1], identityBytes[2], identityBytes[3],
+            identityBytes[4], identityBytes[5], identityBytes[6], identityBytes[7],
+            identityBytes[8], identityBytes[9], identityBytes[10], identityBytes[11],
+            identityBytes[12], identityBytes[13], identityBytes[14], identityBytes[15])).uuidString
         guard let packedNS = try? (bytes as NSData).compressed(using: .zlib) else {
             XCTFail("the owned scene fixture could not be compressed for the launch environment")
             return
@@ -145,6 +152,7 @@ final class EngineeringPreviewSceneControlUITests: XCTestCase {
         ]
         app.launchEnvironment[assetEnvironmentKey] = packedBase64
         app.launchEnvironment[assetSHAEnvironmentKey] = digest
+        app.launchEnvironment["FLOE_ENGINEERING_ENTRY_ISOLATE_ASSET"] = "1"
         app.launch()
         self.app = app
         let fixture = app.descendants(matching: .any)["engineeringEntryFixture"].firstMatch
@@ -161,7 +169,7 @@ final class EngineeringPreviewSceneControlUITests: XCTestCase {
         if (fixture.value as? String) == "failed" {
             let failure = app.descendants(matching: .any)["engineeringEntryFixture.error"]
                 .firstMatch
-            XCTFail("engineering entry fixture failed: \(failure.label)")
+            XCTFail("engineering entry fixture failed: \(failure.exists ? failure.label : app.debugDescription)")
         }
         return app
     }

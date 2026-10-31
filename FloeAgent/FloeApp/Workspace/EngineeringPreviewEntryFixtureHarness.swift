@@ -65,15 +65,39 @@ enum EngineeringPreviewEntryFixture {
     static let assetEnvironmentKey = "FLOE_ENGINEERING_ENTRY_GLB_B64"
     static let assetSHAEnvironmentKey = "FLOE_ENGINEERING_ENTRY_GLB_SHA256"
 
-    // Fixed synthetic identities. They never overlap ordinary user records.
-    static let conversationID = UUID(uuidString: "E1A6C0DE-7E31-4A10-9E8D-3A2B6C4D5E01")!
-    static let messageID = UUID(uuidString: "E1A6C0DE-7E31-4A10-9E8D-3A2B6C4D5E02")!
-    static let attachmentID = UUID(uuidString: "E1A6C0DE-7E31-4A10-9E8D-3A2B6C4D5E03")!
-    static let runID = UUID(uuidString: "E1A6C0DE-7E31-4A10-9E8D-3A2B6C4D5E04")!
-    static let callID = "call-fixture-engineering-preview"
+    // Preserve the original six-route fixture identities. Additional assets
+    // opt into a content-bound namespace instead of replacing a sealed output
+    // under the same call/slot. The production conflict check remains intact.
+    private static var isolatesAsset: Bool {
+        ProcessInfo.processInfo.environment["FLOE_ENGINEERING_ENTRY_ISOLATE_ASSET"] == "1"
+    }
+
+    private static func fixtureIdentity(_ ordinal: Int) -> UUID {
+        guard isolatesAsset,
+              let source = ProcessInfo.processInfo.environment[assetSHAEnvironmentKey],
+              source.count == 64, source.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
+            return UUID(uuidString: String(
+                format: "E1A6C0DE-7E31-4A10-9E8D-3A2B6C4D5E%02X", ordinal))!
+        }
+        let bytes = Array(SHA256.hash(data: Data(
+            "floe-engineering-entry|\(source.lowercased())|\(ordinal)".utf8)))
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3],
+                           bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11],
+                           bytes[12], bytes[13], bytes[14], bytes[15]))
+    }
+
+    static var conversationID: UUID { fixtureIdentity(1) }
+    static var messageID: UUID { fixtureIdentity(2) }
+    static var attachmentID: UUID { fixtureIdentity(3) }
+    static var runID: UUID { fixtureIdentity(4) }
+    static var callID: String {
+        isolatesAsset ? "call-fixture-engineering-\(fixtureIdentity(7).uuidString)"
+            : "call-fixture-engineering-preview"
+    }
     static let toolName = "ui.fixture.engineeringPreview"
-    static let canvasID = UUID(uuidString: "E1A6C0DE-7E31-4A10-9E8D-3A2B6C4D5E05")!
-    static let canvasNodeID = UUID(uuidString: "E1A6C0DE-7E31-4A10-9E8D-3A2B6C4D5E06")!
+    static var canvasID: UUID { fixtureIdentity(5) }
+    static var canvasNodeID: UUID { fixtureIdentity(6) }
 
     static let conversationTitle = "Engineering preview entry fixture"
     static let displayName = "EngineeringEntryPlate.glb"
@@ -349,8 +373,9 @@ enum EngineeringPreviewEntryFixture {
     /// Returns the resolved staging URL for the manifest.
     private static func registerFilesFixture(environment: AppEnvironment,
                                              modelURL: URL) async throws -> URL? {
+        let digest = try sha256(of: modelURL)
         if let existing = environment.filesCenter.recentFiles.first(where: {
-            $0.displayName == displayName
+            $0.displayName == displayName && $0.sha256 == digest
         }) {
             return try? environment.filesCenter.resolveURL(for: existing)
         }
@@ -359,7 +384,6 @@ enum EngineeringPreviewEntryFixture {
         // FilesCenter stages the picked bytes but does not recompute the
         // digest. The fixture records the real source identity on its OWN
         // recent row so the Files entry is not an unverifiable label.
-        let digest = try sha256(of: modelURL)
         if let index = environment.filesCenter.recentFiles.firstIndex(where: {
             $0.id == attachment.id
         }) {
