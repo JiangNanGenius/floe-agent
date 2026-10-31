@@ -2463,9 +2463,24 @@ actor CadDocumentCenter: CadDocumentHost {
             throw CADDocumentError(code: "transient_preview_active",
                                    message: frameReadiness.refusalMessage)
         }
+        // Actual scene membership is derived from the same value-copy scene
+        // the renderer consumes, at this generation. It is query/identity data:
+        // it never renders and never changes display, selection or the model.
+        let membership = document.observationSceneMembership()
+        guard membership.revision == identity.revision,
+              membership.changeCount == identity.changeCount,
+              membership.contentSHA256 == identity.contentSHA256 else {
+            throw CADDocumentError(
+                code: "document_changed",
+                message: "The native document changed while its scene membership was read; "
+                    + "nothing was published. Observe the current generation again.")
+        }
+        let membershipPage = nativeObservationMembershipPage(
+            membership, offset: request.nodeOffset, limit: request.nodeLimit)
         let hierarchy = try nativeObservationHierarchy(
             document: document, offset: request.nodeOffset, limit: request.nodeLimit,
-            identity: identity)
+            identity: identity, membership: membership,
+            membershipPage: membershipPage)
         let frames: [CADObservationFrame]
         if request.includeImages {
             frames = try document.captureObservationViews(
@@ -2514,6 +2529,17 @@ actor CadDocumentCenter: CadDocumentHost {
             frameFence["detail"] = frameReadiness.detail
             frameFence["guidance"] = frameReadiness.guidance
         }
+        let displayMembership: [String: Any] = [
+            "included_body_count": membership.includedBodyCount,
+            "omitted_body_count": membership.omittedBodyCount,
+            "included_instance_count": membership.includedInstanceCount,
+            "omitted_instance_count": membership.omittedInstanceCount,
+            "editor_preview_count": membership.editorPreviewCount,
+            "total": membership.members.count,
+            "page_offset": membershipPage["offset"] as? Int ?? 0,
+            "page_returned": membershipPage["returned"] as? Int ?? 0,
+            "next_offset": membershipPage["next_offset"] ?? NSNull(),
+        ]
         var summary: [String: Any] = [
             "ok": true,
             "action": "observe",
@@ -2557,7 +2583,7 @@ actor CadDocumentCenter: CadDocumentHost {
                         + "These pixels are not the live RealityKit Present and the user's "
                         + "camera/selection are never changed."
                     : "includeImages=false: no renderer ran; this reply is the committed/live "
-                        + "identity and the native object query only.",
+                        + "identity, current scene membership and the native object query only.",
             ],
             "views": frames.map { frame -> [String: Any] in
                 [
@@ -2583,10 +2609,14 @@ actor CadDocumentCenter: CadDocumentHost {
                 "display_mode": displayState.displayMode,
                 "hidden_edges": displayState.hiddenEdges,
                 "ground_shadow": displayState.groundShadow,
+                "scene_membership": displayMembership,
                 "note": "Transient workbench display aids read for this observation; "
                     + "observation did not change them. Section/isolate states, sketch/measure "
                     + "overlays and inserted reference images can appear in the frames but do "
-                    + "not change the queried body geometry.",
+                    + "not change the queried body geometry. scene_membership reports actual "
+                    + "model-body, placed-instance and separate editor-preview identities; "
+                    + "pattern ghosts are reported on their body. The paged identities are in "
+                    + "hierarchy.scene_membership.",
             ],
             "identity_recheck": [
                 "unchanged": true,
@@ -2601,7 +2631,8 @@ actor CadDocumentCenter: CadDocumentHost {
                     + "topology from image coordinates. Only a vision-capable model may inspect "
                     + "the frames; otherwise use query/measure values."
                 : "includeImages=false: no frame was requested or rendered; this reply is the "
-                    + "identity, frame-fence status and native body query only.",
+                    + "identity, frame-fence status, current scene membership and native body "
+                    + "query only. No pixel visibility is claimed.",
             "limitations": [
                 "Pixels come from the offscreen Metal engineering renderer, not the live "
                     + "RealityKit Present; the user's camera, selection, saved appearance, "
@@ -2610,8 +2641,25 @@ actor CadDocumentCenter: CadDocumentHost {
                     + "identifies the live in-memory generation. An unsaved draft is described "
                     + "by change_count, never by a hash of its unsaved mesh.",
                 "Native object rows come from the deterministic body query at this exact "
-                    + "generation; placed assembly occurrences remain available through "
-                    + "query kind=assembly.",
+                    + "generation. Each row's scene block reports whether that body contributes "
+                    + "drawable geometry to the current scene, how many drawables reuse its id, "
+                    + "and the omission reason. hierarchy.scene_membership adds placed assembly "
+                    + "occurrence ids with their resolved source body ids; query kind=assembly "
+                    + "remains the full occurrence-detail route.",
+                "scene_membership describes drawable membership, not pixel visibility: "
+                    + "occlusion, section clipping, display mode, transparency and framing can "
+                    + "hide pixels of an included object. An omitted body/instance names hidden, "
+                    + "outside_isolate, source_body_missing, unplaceable_transform, "
+                    + "replaced_by_editor_preview or not_in_scene; observation never changes "
+                    + "those states.",
+                "Body visibility and instance visibility are separate: a placed assembly "
+                    + "instance is its own drawable, so a hidden source body can be omitted "
+                    + "while a visible instance of it remains included. scene_membership reports "
+                    + "both identities separately.",
+                "Isolate is applied by the scene's body loop. Placed assembly instances are "
+                    + "separate drawables and remain included unless the instance or an ancestor "
+                    + "is hidden; scene_membership reports that actual result instead of assuming "
+                    + "isolate hides every identity.",
                 "Body selection state, gizmo, pull-arrow and plane-picker overlays are removed "
                     + "from the observation copy. Face/sketch/measure highlights and "
                     + "section/isolate display aids can remain and are reported here; the "
@@ -2642,6 +2690,20 @@ actor CadDocumentCenter: CadDocumentHost {
                 "imageSHA256": frame.imageSHA256,
                 "renderer": frame.renderer,
                 "presentPixels": false,
+                "scene": [
+                    "display_mode": displayState.displayMode,
+                    "sectioned": displayState.sectioned,
+                    "isolated": displayState.isolated,
+                    "included_body_count": membership.includedBodyCount,
+                    "omitted_body_count": membership.omittedBodyCount,
+                    "included_instance_count": membership.includedInstanceCount,
+                    "omitted_instance_count": membership.omittedInstanceCount,
+                    "editor_preview_count": membership.editorPreviewCount,
+                    "membership_total": membership.members.count,
+                    "membership_offset": membershipPage["offset"] as? Int ?? 0,
+                    "membership_returned": membershipPage["returned"] as? Int ?? 0,
+                    "membership_next_offset": membershipPage["next_offset"] ?? NSNull(),
+                ],
                 "projection": frame.projection,
                 "width": frame.width,
                 "height": frame.height,
@@ -2662,19 +2724,37 @@ actor CadDocumentCenter: CadDocumentHost {
                 pngData: frame.pngData,
                 metadataJSON: try nativeObservationJSON(receipt))
         }
-        return CadModelObservationResult(
-            summaryJSON: try nativeObservationJSON(summary),
-            frames: receipts)
+        let summaryJSON = try nativeObservationJSON(summary)
+        // The tool publishes the one-line summary plus per-frame receipt lines
+        // with a 24,000-character model-visible cap. Refuse a complete reply
+        // that would be cut instead of returning truncated JSON; the caller
+        // can reduce nodeLimit, page with nodeOffset or request fewer views.
+        // Each receipt adds the tool's imageSHA256/artifact prefix around
+        // metadataJSON; 256 characters per frame is a safe upper bound.
+        let receiptText = receipts.map { $0.metadataJSON }.joined(separator: "\n")
+        let completeCharacters = "cad.document observe: ".count + summaryJSON.count + 1
+            + (receipts.isEmpty ? 0 : receiptText.count + receipts.count * 256)
+        guard completeCharacters <= 24_000 else {
+            throw CADDocumentError(
+                code: "observation_budget_exceeded",
+                message: "The complete observation reply would exceed the 24,000-character "
+                    + "model-visible budget. Reduce nodeLimit, page with nodeOffset, or request "
+                    + "fewer views; no partial JSON was returned.")
+        }
+        return CadModelObservationResult(summaryJSON: summaryJSON, frames: receipts)
     }
 
     /// One bounded, pageable page of REAL native objects (the existing
-    /// deterministic body query) at the observation's exact generation. The
-    /// page is additionally byte-bounded so the model-visible summary cannot
-    /// be truncated mid-JSON; `next_offset` continues exactly where it stopped.
+    /// deterministic body query) plus the actual scene-membership page at the
+    /// observation's exact generation. Both pages are byte-bounded so the
+    /// model-visible summary cannot be truncated mid-JSON; each `next_offset`
+    /// continues exactly where that page stopped.
     @MainActor
     private static func nativeObservationHierarchy(
         document: FloeCADDocument, offset: Int, limit: Int,
-        identity: CADObservationIdentity
+        identity: CADObservationIdentity,
+        membership: CADObservationSceneMembership,
+        membershipPage: [String: Any]
     ) throws -> [String: Any] {
         // 64 rows is the per-page work bound (each body row measures volume
         // and carries typed tokens); the caller pages with next_offset.
@@ -2690,9 +2770,30 @@ actor CadDocumentCenter: CadDocumentHost {
         }
         let rows = object["rows"] as? [[String: Any]] ?? []
         let total = object["total"] as? Int ?? rows.count
+        var bodyStates: [UUID: CADObservationSceneMember] = [:]
+        for member in membership.members where member.kind == .body {
+            if let id = member.bodyID { bodyStates[id] = member }
+        }
         var kept: [[String: Any]] = []
         var keptBytes = 0
         for row in rows {
+            var row = row
+            if let idString = row["id"] as? String,
+               let id = UUID(uuidString: idString),
+               let state = bodyStates[id] {
+                // Per-row membership: actual scene inclusion of this model
+                // body, with the honest reason when it is not drawn. This is
+                // not pixel visibility; section/occlusion can still hide it.
+                var scene: [String: Any] = [
+                    "included": state.included,
+                    "drawable_count": state.drawableCount,
+                ]
+                if let reason = state.reason { scene["reason"] = reason.rawValue }
+                if let previewKind = state.previewKind {
+                    scene["preview_kind"] = previewKind
+                }
+                row["scene"] = scene
+            }
             let size = (try? JSONSerialization.data(withJSONObject: row))?.count ?? 0
             if !kept.isEmpty, keptBytes + size > 10 * 1024 { break }
             kept.append(row)
@@ -2710,11 +2811,17 @@ actor CadDocumentCenter: CadDocumentHost {
             "content_sha256": identity.contentSHA256,
             "has_assembly": identity.hasAssembly,
             "rows": kept,
+            "scene_membership": membershipPage,
             "note": "Deterministic native body rows at this exact generation. Each row carries "
-                + "its stable id, bounds and query_token/generation. Pages are capped at 64 rows "
-                + "and additionally byte-bounded; continue with next_offset and the SAME "
-                + "generation pins. Placed assembly occurrences remain available through query "
-                + "kind=assembly.",
+                + "its stable id, bounds and query_token/generation, plus a scene block with "
+                + "actual drawable inclusion and any omission reason. scene_membership is the "
+                + "separately paged inventory of model bodies, placed assembly leaf occurrences "
+                + "and transient editor preview drawables. Assembly instance ids are occurrence "
+                + "identities, not body ids; query kind=assembly returns full occurrence detail. "
+                + "Both pages are capped at 64 rows and byte-bounded; they share nodeOffset/"
+                + "nodeLimit but each has its own total/next_offset, so continue both with the "
+                + "smaller non-null next_offset and the SAME generation pins (repeated body "
+                + "rows are harmless).",
         ]
         if served < total {
             page["next_offset"] = served
@@ -2722,6 +2829,97 @@ actor CadDocumentCenter: CadDocumentHost {
             page["next_offset"] = NSNull()
         }
         return page
+    }
+
+    /// One bounded page over the current scene's actual drawable identities.
+    /// The page is capped at 64 rows and 2 KiB of rows so it cannot silently
+    /// consume the observation summary or per-frame receipt budget;
+    /// `next_offset` continues.
+    private static func nativeObservationMembershipPage(
+        _ membership: CADObservationSceneMembership,
+        offset: Int, limit: Int
+    ) -> [String: Any] {
+        let pageLimit = min(max(limit, 1), 64)
+        let start = min(max(offset, 0), membership.members.count)
+        let end = min(start + pageLimit, membership.members.count)
+        var kept: [[String: Any]] = []
+        var keptBytes = 0
+        for member in membership.members[start..<end] {
+            let row = nativeObservationMembershipRow(member)
+            let size = (try? JSONSerialization.data(withJSONObject: row))?.count ?? 0
+            if !kept.isEmpty, keptBytes + size > 2 * 1024 { break }
+            kept.append(row)
+            keptBytes += size
+        }
+        let served = start + kept.count
+        var page: [String: Any] = [
+            "offset": offset,
+            "requested_limit": limit,
+            "returned": kept.count,
+            "total": membership.members.count,
+            "included_body_count": membership.includedBodyCount,
+            "omitted_body_count": membership.omittedBodyCount,
+            "included_instance_count": membership.includedInstanceCount,
+            "omitted_instance_count": membership.omittedInstanceCount,
+            "editor_preview_count": membership.editorPreviewCount,
+            "assembly_present": membership.assemblyPresent,
+            "assembly_decoded": membership.assemblyDecoded,
+            "subassembly_container_count": membership.subassemblyContainerCount,
+            "revision": membership.revision,
+            "change_count": membership.changeCount,
+            "content_sha256": membership.contentSHA256,
+            "rows": kept,
+            "note": "One bounded page over the actual current engineering scene: every "
+                + "document body in document order (included or omitted), then leaf assembly "
+                + "occurrences (included or omitted), then transient editor preview drawables. "
+                + "included means the object contributes "
+                + "drawable geometry to this scene; it is NOT pixel visibility (occlusion, "
+                + "section clipping, display mode and framing can hide included pixels). Omitted "
+                + "bodies/instances name hidden, outside_isolate, source_body_missing, "
+                + "unplaceable_transform, replaced_by_editor_preview or not_in_scene. "
+                + "editor_preview_count counts separate editor_preview drawables; pattern "
+                + "ghosts reuse a body id and are reported as drawable_count>1 with "
+                + "preview_kind=pattern_preview. An assembly_instance_id is an occurrence "
+                + "identity, not a body id. Classification uses the current "
+                + "display state; observation does not change it. This page uses the same "
+                + "nodeOffset/nodeLimit request fields but has its own total/next_offset; "
+                + "continue with next_offset and the same generation pins. Keep the reported "
+                + "display/isolate/frame-fence state unchanged while paging, or restart at "
+                + "offset 0; a display-only isolate/preview change does not advance changeCount.",
+        ]
+        if served < membership.members.count {
+            page["next_offset"] = served
+        } else {
+            page["next_offset"] = NSNull()
+        }
+        if membership.assemblyPresent, !membership.assemblyDecoded {
+            page["assembly_note"] = "The assembly data could not be decoded; the current scene "
+                + "also skipped placed instances. Body membership is still reported, but "
+                + "occurrence membership is unavailable."
+        }
+        return page
+    }
+
+    private static func nativeObservationMembershipRow(
+        _ member: CADObservationSceneMember
+    ) -> [String: Any] {
+        var row: [String: Any] = [
+            "kind": member.kind.rawValue,
+            "included": member.included,
+            "drawable_count": member.drawableCount,
+        ]
+        if let bodyID = member.bodyID { row["body_id"] = bodyID.uuidString }
+        if let instanceID = member.assemblyInstanceID {
+            row["assembly_instance_id"] = instanceID.uuidString
+        }
+        if let sourceID = member.sourceBodyID {
+            row["source_body_id"] = sourceID.uuidString
+        }
+        if let reason = member.reason { row["reason"] = reason.rawValue }
+        if let previewKind = member.previewKind {
+            row["preview_kind"] = previewKind
+        }
+        return row
     }
 
     private static func nativeObservationPins(

@@ -172,6 +172,72 @@ final class CadNativeObservationTests: XCTestCase {
         return (url, document, bodyID)
     }
 
+    /// Adds one real separate rectangular body through the production typed
+    /// vocabulary. The fixture's first body owns the hole/notch; these bodies
+    /// are independent extrusions used to exercise scene membership/paging.
+    private func addRectBody(_ document: FloeCADDocument, name: String,
+                             min: (Double, Double), max: (Double, Double),
+                             distance: Double) throws -> String {
+        let sketchPayload: [String: Any] = [
+            "op": "sketch.create", "args": ["name": name],
+        ]
+        let sketch = try XCTUnwrap(
+            run(document, try payloadString(sketchPayload))["sketchID"] as? String)
+        let entitiesPayload: [String: Any] = [
+            "op": "sketch.addEntities",
+            "args": [
+                "sketchID": sketch,
+                "entities": [[
+                    "kind": "rect",
+                    "min": [min.0, min.1],
+                    "max": [max.0, max.1],
+                ]],
+            ],
+        ]
+        _ = try run(document, try payloadString(entitiesPayload))
+        let extrudePayload: [String: Any] = [
+            "op": "feature.extrude",
+            "args": [
+                "sketchID": sketch,
+                "seedPoint": [(min.0 + max.0) / 2, (min.1 + max.1) / 2],
+                "distance": distance,
+                "boolean": "newBody",
+            ],
+        ]
+        let extruded = try run(document, try payloadString(extrudePayload))
+        XCTAssertNotEqual(extruded["failed"] as? Bool, true,
+                          "the additional body must extrude cleanly")
+        return try XCTUnwrap((extruded["producedBodyIDs"] as? [String])?.first)
+    }
+
+    /// Query-only observation plus its parsed hierarchy and membership page.
+    /// The complete summary is checked against the tool's 24k character cap so
+    /// a paged membership block can never silently truncate the JSON.
+    private func observeQueryOnly(
+        _ tool: CadDocumentTool, context: ToolContext,
+        offset: Int = 0, limit: Int = 10
+    ) async throws -> (summary: [String: Any],
+                       hierarchy: [String: Any],
+                       membership: [String: Any]) {
+        let output = try await observe(tool, context: context, payload: [
+            "includeImages": false,
+            "nodeOffset": offset,
+            "nodeLimit": limit,
+        ])
+        let summary = try observeSummary(output)
+        XCTAssertLessThan(output.summary.utf8.count, 24_000,
+                          "the complete observation summary must not hit the tool cap")
+        let hierarchy = try XCTUnwrap(summary["hierarchy"] as? [String: Any])
+        let membership = try XCTUnwrap(hierarchy["scene_membership"] as? [String: Any])
+        return (summary, hierarchy, membership)
+    }
+
+    private func bodyRow(_ hierarchy: [String: Any], id: String) throws -> [String: Any] {
+        let rows = try XCTUnwrap(hierarchy["rows"] as? [[String: Any]])
+        return try XCTUnwrap(rows.first { $0["id"] as? String == id },
+                             "missing body row \(id)")
+    }
+
     // MARK: - Parsing
 
     private func observeSummary(_ output: ToolExecutionOutput) throws -> [String: Any] {
@@ -828,6 +894,361 @@ final class CadNativeObservationTests: XCTestCase {
         XCTAssertEqual(document.session.undoStack.undoCommands.count, undoDepth)
         XCTAssertEqual(document.session.undoStack.redoCommands.count, redoDepth)
         XCTAssertNil(model.cameraControl)
+    }
+
+    // MARK: - Scene membership
+
+    /// Two real bodies: persisted hidden and transient isolate are reported as
+    /// scene-membership omissions, with the SAME body ids the body query
+    /// returns. Observation reads the current display state and leaves it
+    /// untouched; it never claims pixel visibility.
+    func testSceneMembershipReportsHiddenAndIsolatedBodies() async throws {
+        let center = makeCenter()
+        let tool = CadDocumentTool(host: center)
+        let context = makeContext()
+        let fixture = try await createFixture(tool: tool, context: context)
+        let document = fixture.document
+        let model = document.viewModel()
+
+        let secondID = try addRectBody(document, name: "Spacer",
+                                       min: (200, 0), max: (240, 40),
+                                       distance: 8)
+        XCTAssertNotEqual(secondID, fixture.bodyID)
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let settle = try await document.session.settleSaveStateBeforeIdentityPin(
+            expectingChangeCount: document.liveChangeCount)
+        XCTAssertEqual(settle, .ready)
+
+        // Baseline: both real bodies contribute drawable geometry.
+        var observation = try await observeQueryOnly(tool, context: context, limit: 10)
+        var membership = observation.membership
+        XCTAssertEqual(membership["total"] as? Int, 2)
+        XCTAssertEqual(membership["included_body_count"] as? Int, 2)
+        XCTAssertEqual(membership["omitted_body_count"] as? Int, 0)
+        XCTAssertEqual(membership["included_instance_count"] as? Int, 0)
+        XCTAssertEqual(membership["editor_preview_count"] as? Int, 0)
+        let baselineRows = try XCTUnwrap(membership["rows"] as? [[String: Any]])
+        XCTAssertEqual(Set(baselineRows.compactMap { $0["body_id"] as? String }),
+                       Set([fixture.bodyID, secondID]))
+        for row in baselineRows {
+            XCTAssertEqual(row["kind"] as? String, "body")
+            XCTAssertEqual(row["included"] as? Bool, true)
+            XCTAssertEqual(row["drawable_count"] as? Int, 1)
+        }
+        for id in [fixture.bodyID, secondID] {
+            let row = try bodyRow(observation.hierarchy, id: id)
+            let scene = try XCTUnwrap(row["scene"] as? [String: Any])
+            XCTAssertEqual(scene["included"] as? Bool, true)
+            XCTAssertEqual(scene["drawable_count"] as? Int, 1)
+            XCTAssertNil(scene["reason"])
+        }
+        let display = try XCTUnwrap(observation.summary["display"] as? [String: Any])
+        let displayMembership = try XCTUnwrap(
+            display["scene_membership"] as? [String: Any])
+        XCTAssertEqual(displayMembership["total"] as? Int, 2)
+
+        // Persisted hidden body: the scene omits it with the honest reason.
+        let secondUUID = try XCTUnwrap(UUID(uuidString: secondID))
+        model.setItemHidden(.body(BodyID(raw: secondUUID)), hidden: true)
+        let hiddenSettle = try await document.session.settleSaveStateBeforeIdentityPin(
+            expectingChangeCount: document.liveChangeCount)
+        XCTAssertEqual(hiddenSettle, .ready)
+        let hiddenIdentity = document.observationIdentity()
+        observation = try await observeQueryOnly(tool, context: context, limit: 10)
+        membership = observation.membership
+        XCTAssertEqual(membership["included_body_count"] as? Int, 1)
+        XCTAssertEqual(membership["omitted_body_count"] as? Int, 1)
+        XCTAssertEqual(membership["revision"] as? Int, hiddenIdentity.revision)
+        XCTAssertEqual(membership["change_count"] as? Int, hiddenIdentity.changeCount)
+        XCTAssertEqual((membership["content_sha256"] as? String)?.lowercased(),
+                       hiddenIdentity.contentSHA256.lowercased())
+        let hiddenScene = try XCTUnwrap(
+            (try bodyRow(observation.hierarchy, id: secondID))["scene"]
+                as? [String: Any])
+        XCTAssertEqual(hiddenScene["included"] as? Bool, false)
+        XCTAssertEqual(hiddenScene["reason"] as? String, "hidden")
+        XCTAssertEqual(hiddenScene["drawable_count"] as? Int, 0)
+        let hiddenEntry = try XCTUnwrap(
+            (membership["rows"] as? [[String: Any]])?.first(where: {
+                $0["body_id"] as? String == secondID
+            }))
+        XCTAssertEqual(hiddenEntry["included"] as? Bool, false)
+        XCTAssertEqual(hiddenEntry["reason"] as? String, "hidden")
+        let visibleScene = try XCTUnwrap(
+            (try bodyRow(observation.hierarchy, id: fixture.bodyID))["scene"]
+                as? [String: Any])
+        XCTAssertEqual(visibleScene["included"] as? Bool, true)
+
+        // Restore visibility, then isolate the first body. Isolate is a
+        // transient display override; observation must read it, not change it.
+        model.setItemHidden(.body(BodyID(raw: secondUUID)), hidden: false)
+        let restoredSettle = try await document.session.settleSaveStateBeforeIdentityPin(
+            expectingChangeCount: document.liveChangeCount)
+        XCTAssertEqual(restoredSettle, .ready)
+        let firstBodyID = try XCTUnwrap(
+            document.session.document.bodies.first {
+                $0.id.raw.uuidString == fixture.bodyID
+            }?.id)
+        model.selection = [firstBodyID]
+        model.enterIsolate()
+        XCTAssertTrue(model.isIsolateActive)
+        let isolatedIdentity = document.observationIdentity()
+        let selectionBefore = model.selection
+        let cameraEpochBefore = model.cameraEpoch
+        let undoBefore = document.session.undoStack.undoCommands.count
+        let redoBefore = document.session.undoStack.redoCommands.count
+        let packageBefore = try packageDigest(fixture.url)
+
+        observation = try await observeQueryOnly(tool, context: context, limit: 10)
+        membership = observation.membership
+        let isolatedDisplay = try XCTUnwrap(
+            observation.summary["display"] as? [String: Any])
+        XCTAssertEqual(isolatedDisplay["isolated"] as? Bool, true)
+        XCTAssertEqual(membership["total"] as? Int, 2)
+        XCTAssertEqual(membership["included_body_count"] as? Int, 1)
+        XCTAssertEqual(membership["omitted_body_count"] as? Int, 1)
+        XCTAssertEqual(membership["revision"] as? Int, isolatedIdentity.revision)
+        XCTAssertEqual(membership["change_count"] as? Int, isolatedIdentity.changeCount)
+        let isolatedEntry = try XCTUnwrap(
+            (membership["rows"] as? [[String: Any]])?.first(where: {
+                $0["body_id"] as? String == secondID
+            }))
+        XCTAssertEqual(isolatedEntry["included"] as? Bool, false)
+        XCTAssertEqual(isolatedEntry["reason"] as? String, "outside_isolate")
+        let isolatedScene = try XCTUnwrap(
+            (try bodyRow(observation.hierarchy, id: secondID))["scene"]
+                as? [String: Any])
+        XCTAssertEqual(isolatedScene["included"] as? Bool, false)
+        XCTAssertEqual(isolatedScene["reason"] as? String, "outside_isolate")
+        let includedScene = try XCTUnwrap(
+            (try bodyRow(observation.hierarchy, id: fixture.bodyID))["scene"]
+                as? [String: Any])
+        XCTAssertEqual(includedScene["included"] as? Bool, true)
+
+        // The same isolate state is allowed to render a frame. The per-frame
+        // receipt must carry the actual scene membership context, and
+        // observation must not reset isolate merely to produce pixels.
+        let framed = try await observe(tool, context: context, payload: [
+            "views": [["azimuthDegrees": 35.0, "elevationDegrees": 20.0,
+                       "distanceScale": 1.0]],
+            "width": 320, "height": 240, "includeImages": true,
+        ])
+        let framedSummary = try observeSummary(framed)
+        XCTAssertEqual(framedSummary["completed_frames"] as? Int, 1)
+        XCTAssertEqual(framed.artifacts.count, 1)
+        let framedFence = try XCTUnwrap(framedSummary["frame_fence"] as? [String: Any])
+        XCTAssertEqual(framedFence["ready"] as? Bool, true)
+        let framedDisplay = try XCTUnwrap(framedSummary["display"] as? [String: Any])
+        XCTAssertEqual(framedDisplay["isolated"] as? Bool, true)
+        let framedReceipts = try observeReceipts(framed)
+        XCTAssertEqual(framedReceipts.count, 1)
+        let framedScene = try XCTUnwrap(framedReceipts[0]["scene"] as? [String: Any])
+        XCTAssertEqual(framedScene["isolated"] as? Bool, true)
+        XCTAssertEqual(framedScene["sectioned"] as? Bool, false)
+        XCTAssertEqual(framedScene["included_body_count"] as? Int, 1)
+        XCTAssertEqual(framedScene["omitted_body_count"] as? Int, 1)
+        XCTAssertEqual(framedScene["membership_total"] as? Int, 2)
+
+        XCTAssertTrue(model.isIsolateActive,
+                      "observation must not reset the user's isolate state")
+        XCTAssertEqual(model.selection, selectionBefore)
+        XCTAssertEqual(model.cameraEpoch, cameraEpochBefore)
+        XCTAssertNil(model.cameraControl)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore)
+        XCTAssertEqual(document.session.undoStack.redoCommands.count, redoBefore)
+        XCTAssertEqual(try packageDigest(fixture.url), packageBefore)
+        XCTAssertEqual(document.observationIdentity(), isolatedIdentity)
+        model.exitIsolate()
+    }
+
+    /// A real assembly places two instances of the fixture body and hides one.
+    /// The paged membership must identify the occurrence ids, keep the source
+    /// body id separate, and report the hidden occurrence honestly. The body
+    /// query page and the membership page share exact generation pins.
+    func testSceneMembershipReportsAssemblyInstancesAndPages() async throws {
+        let center = makeCenter()
+        let tool = CadDocumentTool(host: center)
+        let context = makeContext()
+        let fixture = try await createFixture(tool: tool, context: context)
+        let document = fixture.document
+        let bodyUUID = try XCTUnwrap(UUID(uuidString: fixture.bodyID))
+        let service = CADAssemblyService(document: document)
+        let first = service.handle(action: "addInstance", args: [
+            "bodyID": bodyUUID.uuidString, "name": "First",
+        ])
+        XCTAssertEqual(first["ok"] as? Bool, true, first["message"] as? String ?? "")
+        let firstInstanceID = try XCTUnwrap(first["id"] as? String)
+        let second = service.handle(action: "addInstance", args: [
+            "bodyID": bodyUUID.uuidString, "name": "Second",
+        ])
+        XCTAssertEqual(second["ok"] as? Bool, true, second["message"] as? String ?? "")
+        let secondInstanceID = try XCTUnwrap(second["id"] as? String)
+        let hidden = service.handle(action: "setVisible", args: [
+            "id": secondInstanceID, "hidden": true,
+        ])
+        XCTAssertEqual(hidden["ok"] as? Bool, true, hidden["message"] as? String ?? "")
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let settle = try await document.session.settleSaveStateBeforeIdentityPin(
+            expectingChangeCount: document.liveChangeCount)
+        XCTAssertEqual(settle, .ready)
+        let identity = document.observationIdentity()
+        let packageBefore = try packageDigest(fixture.url)
+
+        let page0 = try await observeQueryOnly(tool, context: context,
+                                               offset: 0, limit: 1)
+        var membership = page0.membership
+        XCTAssertEqual(membership["total"] as? Int, 3)
+        XCTAssertEqual(membership["offset"] as? Int, 0)
+        XCTAssertEqual(membership["requested_limit"] as? Int, 1)
+        XCTAssertEqual(membership["returned"] as? Int, 1)
+        XCTAssertEqual(membership["next_offset"] as? Int, 1)
+        XCTAssertEqual(membership["included_body_count"] as? Int, 1)
+        XCTAssertEqual(membership["omitted_body_count"] as? Int, 0)
+        XCTAssertEqual(membership["included_instance_count"] as? Int, 1)
+        XCTAssertEqual(membership["omitted_instance_count"] as? Int, 1)
+        XCTAssertEqual(membership["assembly_present"] as? Bool, true)
+        XCTAssertEqual(membership["assembly_decoded"] as? Bool, true)
+        XCTAssertEqual(membership["revision"] as? Int, identity.revision)
+        XCTAssertEqual(membership["change_count"] as? Int, identity.changeCount)
+        XCTAssertEqual((membership["content_sha256"] as? String)?.lowercased(),
+                       identity.contentSHA256.lowercased())
+        var rows = try XCTUnwrap(membership["rows"] as? [[String: Any]])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0]["kind"] as? String, "body")
+        XCTAssertEqual(rows[0]["body_id"] as? String, fixture.bodyID)
+        XCTAssertEqual(rows[0]["included"] as? Bool, true)
+        XCTAssertNil(rows[0]["assembly_instance_id"])
+        XCTAssertNil(rows[0]["source_body_id"])
+
+        let page1 = try await observeQueryOnly(tool, context: context,
+                                               offset: 1, limit: 1)
+        membership = page1.membership
+        XCTAssertEqual(membership["offset"] as? Int, 1)
+        XCTAssertEqual(membership["returned"] as? Int, 1)
+        XCTAssertEqual(membership["next_offset"] as? Int, 2)
+        XCTAssertNil(page1.hierarchy["next_offset"] as? Int,
+                     "the body page is exhausted while occurrence membership continues")
+        rows = try XCTUnwrap(membership["rows"] as? [[String: Any]])
+        XCTAssertEqual(rows[0]["kind"] as? String, "assembly_instance")
+        XCTAssertEqual(rows[0]["assembly_instance_id"] as? String, firstInstanceID)
+        XCTAssertEqual(rows[0]["source_body_id"] as? String, fixture.bodyID)
+        XCTAssertEqual(rows[0]["included"] as? Bool, true)
+        XCTAssertEqual(rows[0]["drawable_count"] as? Int, 1)
+        XCTAssertNil(rows[0]["body_id"])
+        XCTAssertNotEqual(rows[0]["assembly_instance_id"] as? String, fixture.bodyID)
+
+        let page2 = try await observeQueryOnly(tool, context: context,
+                                               offset: 2, limit: 1)
+        membership = page2.membership
+        XCTAssertEqual(membership["offset"] as? Int, 2)
+        XCTAssertEqual(membership["returned"] as? Int, 1)
+        XCTAssertNil(membership["next_offset"] as? Int)
+        rows = try XCTUnwrap(membership["rows"] as? [[String: Any]])
+        XCTAssertEqual(rows[0]["kind"] as? String, "assembly_instance")
+        XCTAssertEqual(rows[0]["assembly_instance_id"] as? String, secondInstanceID)
+        XCTAssertEqual(rows[0]["source_body_id"] as? String, fixture.bodyID)
+        XCTAssertEqual(rows[0]["included"] as? Bool, false)
+        XCTAssertEqual(rows[0]["reason"] as? String, "hidden")
+        XCTAssertEqual(rows[0]["drawable_count"] as? Int, 0)
+
+        // Both paged views carry the same exact generation on every page.
+        for (hierarchy, membershipPage) in [
+            (page0.hierarchy, page0.membership),
+            (page1.hierarchy, page1.membership),
+            (page2.hierarchy, page2.membership),
+        ] {
+            XCTAssertEqual(hierarchy["revision"] as? Int, identity.revision)
+            XCTAssertEqual(hierarchy["change_count"] as? Int, identity.changeCount)
+            XCTAssertEqual((hierarchy["content_sha256"] as? String)?.lowercased(),
+                           identity.contentSHA256.lowercased())
+            XCTAssertEqual(membershipPage["revision"] as? Int, identity.revision)
+            XCTAssertEqual(membershipPage["change_count"] as? Int, identity.changeCount)
+            XCTAssertEqual((membershipPage["content_sha256"] as? String)?.lowercased(),
+                           identity.contentSHA256.lowercased())
+        }
+
+        XCTAssertEqual(document.observationIdentity(), identity)
+        XCTAssertEqual(try packageDigest(fixture.url), packageBefore)
+        XCTAssertNil(document.viewModel().cameraControl)
+    }
+
+    /// Six real bodies page through the body query and the membership block
+    /// with nodeLimit=2. Every page parses completely, carries the same
+    /// generation pins, and the union of pages covers every body exactly.
+    func testSceneMembershipPagesManyBodiesCompletely() async throws {
+        let center = makeCenter()
+        let tool = CadDocumentTool(host: center)
+        let context = makeContext()
+        let fixture = try await createFixture(tool: tool, context: context)
+        let document = fixture.document
+        var expectedIDs = Set([fixture.bodyID])
+        for index in 0..<5 {
+            let x = 300.0 + Double(index) * 60
+            let id = try addRectBody(document, name: "Block \(index + 1)",
+                                     min: (x, 0), max: (x + 40, 40),
+                                     distance: 6)
+            expectedIDs.insert(id)
+        }
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let settle = try await document.session.settleSaveStateBeforeIdentityPin(
+            expectingChangeCount: document.liveChangeCount)
+        XCTAssertEqual(settle, .ready)
+        let identity = document.observationIdentity()
+        let packageBefore = try packageDigest(fixture.url)
+        let query = try queryRows(document, "bodies")
+        XCTAssertEqual(query.count, 6)
+        XCTAssertEqual(Set(query.compactMap { $0["id"] as? String }), expectedIDs)
+
+        var offset = 0
+        var pages = 0
+        var collectedBodies = Set<String>()
+        var collectedMembershipBodies = Set<String>()
+        while true {
+            let observation = try await observeQueryOnly(
+                tool, context: context, offset: offset, limit: 2)
+            let hierarchy = observation.hierarchy
+            let membership = observation.membership
+            XCTAssertEqual(membership["total"] as? Int, 6)
+            XCTAssertEqual(membership["offset"] as? Int, offset)
+            XCTAssertEqual(membership["requested_limit"] as? Int, 2)
+            XCTAssertLessThanOrEqual((membership["returned"] as? Int) ?? 99, 2)
+            XCTAssertEqual(membership["revision"] as? Int, identity.revision)
+            XCTAssertEqual(membership["change_count"] as? Int, identity.changeCount)
+            XCTAssertEqual((membership["content_sha256"] as? String)?.lowercased(),
+                           identity.contentSHA256.lowercased())
+            let bodyRows = try XCTUnwrap(hierarchy["rows"] as? [[String: Any]])
+            XCTAssertLessThanOrEqual(bodyRows.count, 2)
+            for row in bodyRows {
+                let id = try XCTUnwrap(row["id"] as? String)
+                collectedBodies.insert(id)
+                let scene = try XCTUnwrap(row["scene"] as? [String: Any])
+                XCTAssertEqual(scene["included"] as? Bool, true)
+                XCTAssertEqual(scene["drawable_count"] as? Int, 1)
+            }
+            let membershipRows = try XCTUnwrap(membership["rows"] as? [[String: Any]])
+            XCTAssertLessThanOrEqual(membershipRows.count, 2)
+            for row in membershipRows {
+                XCTAssertEqual(row["kind"] as? String, "body")
+                if let id = row["body_id"] as? String {
+                    collectedMembershipBodies.insert(id)
+                }
+                XCTAssertEqual(row["included"] as? Bool, true)
+            }
+            pages += 1
+            XCTAssertLessThan(pages, 10)
+            guard let next = membership["next_offset"] as? Int else { break }
+            XCTAssertGreaterThan(next, offset)
+            offset = next
+        }
+        XCTAssertEqual(pages, 3)
+        XCTAssertEqual(collectedBodies, expectedIDs)
+        XCTAssertEqual(collectedMembershipBodies, expectedIDs)
+        XCTAssertEqual(document.observationIdentity(), identity)
+        XCTAssertEqual(try packageDigest(fixture.url), packageBefore)
+        XCTAssertNil(document.viewModel().cameraControl)
     }
 
     // MARK: - Generation pins

@@ -18,6 +18,11 @@
 //      an unsaved draft).
 //  `contentSHA256` is never described as a digest of unsaved mesh bytes.
 //
+//  The same reply reports the actual current scene's body/instance membership
+//  (included and omitted, with hidden/isolate/preview reasons) from the SAME
+//  value-copy scene the renderer consumes. It is drawable membership, never a
+//  claim about pixels that occlusion or section clipping may hide.
+//
 //  This is the engineering offscreen renderer, not the live RealityKit
 //  Present. A frame always reports `renderer: engineering` and
 //  `present_pixels: false`; it never pretends to be a Present capture.
@@ -166,6 +171,100 @@ public nonisolated struct CADObservationDisplayState: Sendable, Equatable {
     }
 }
 
+/// One actual drawable identity in the current engineering scene. Body entries
+/// carry a model body id; assembly entries carry an occurrence id and, when it
+/// resolves, that occurrence's source body id. The two identities are separate
+/// on purpose: an assembly instance id is never reported as a body id.
+public nonisolated enum CADObservationSceneMemberKind: String, Sendable, Equatable {
+    case body
+    case assemblyInstance = "assembly_instance"
+    case editorPreview = "editor_preview"
+}
+
+/// Why a model body or drawable leaf occurrence does not contribute geometry
+/// to the current scene. These are scene-membership reasons, not pixel
+/// visibility results: an included object can still be occluded or sectioned.
+public nonisolated enum CADObservationSceneOmissionReason: String, Sendable, Equatable {
+    case hidden
+    case outsideIsolate = "outside_isolate"
+    case sourceBodyMissing = "source_body_missing"
+    case unplaceableTransform = "unplaceable_transform"
+    case replacedByEditorPreview = "replaced_by_editor_preview"
+    case notInScene = "not_in_scene"
+}
+
+/// One bounded scene-membership row. `drawableCount` is the number of actual
+/// drawables that reuse a body identity (0 when omitted, 1 for an ordinary
+/// included body, and >1 for display-only drawables such as pattern ghosts).
+public nonisolated struct CADObservationSceneMember: Sendable, Equatable {
+    public var kind: CADObservationSceneMemberKind
+    public var bodyID: UUID?
+    public var assemblyInstanceID: UUID?
+    public var sourceBodyID: UUID?
+    public var included: Bool
+    public var reason: CADObservationSceneOmissionReason?
+    public var drawableCount: Int
+    /// Transient kind for an editor-preview entry, or "pattern_preview" on a
+    /// model body whose drawable_count includes display-only ghost drawables.
+    public var previewKind: String?
+
+    public init(kind: CADObservationSceneMemberKind, bodyID: UUID? = nil,
+                assemblyInstanceID: UUID? = nil, sourceBodyID: UUID? = nil,
+                included: Bool, reason: CADObservationSceneOmissionReason? = nil,
+                drawableCount: Int, previewKind: String? = nil) {
+        self.kind = kind
+        self.bodyID = bodyID
+        self.assemblyInstanceID = assemblyInstanceID
+        self.sourceBodyID = sourceBodyID
+        self.included = included
+        self.reason = reason
+        self.drawableCount = drawableCount
+        self.previewKind = previewKind
+    }
+}
+
+/// The current engineering scene's actual body/instance membership, bound to
+/// the same revision/change count/content SHA used by the observation. The
+/// members array is complete for one synchronous snapshot; callers page it
+/// before publishing so model-visible JSON stays bounded.
+public nonisolated struct CADObservationSceneMembership: Sendable, Equatable {
+    public var revision: Int
+    public var changeCount: Int
+    public var contentSHA256: String
+    public var assemblyPresent: Bool
+    public var assemblyDecoded: Bool
+    public var subassemblyContainerCount: Int
+    public var members: [CADObservationSceneMember]
+    public var includedBodyCount: Int
+    public var omittedBodyCount: Int
+    public var includedInstanceCount: Int
+    public var omittedInstanceCount: Int
+    public var editorPreviewCount: Int
+
+    public var total: Int { members.count }
+
+    public init(revision: Int, changeCount: Int, contentSHA256: String,
+                assemblyPresent: Bool, assemblyDecoded: Bool,
+                subassemblyContainerCount: Int,
+                members: [CADObservationSceneMember],
+                includedBodyCount: Int, omittedBodyCount: Int,
+                includedInstanceCount: Int, omittedInstanceCount: Int,
+                editorPreviewCount: Int) {
+        self.revision = revision
+        self.changeCount = changeCount
+        self.contentSHA256 = contentSHA256
+        self.assemblyPresent = assemblyPresent
+        self.assemblyDecoded = assemblyDecoded
+        self.subassemblyContainerCount = subassemblyContainerCount
+        self.members = members
+        self.includedBodyCount = includedBodyCount
+        self.omittedBodyCount = omittedBodyCount
+        self.includedInstanceCount = includedInstanceCount
+        self.omittedInstanceCount = omittedInstanceCount
+        self.editorPreviewCount = editorPreviewCount
+    }
+}
+
 /// One actual observation frame. The pose fields describe the camera that
 /// really rendered the pixels; `requested*` and `effective*` differ only by
 /// the degree→radian round trip (and an exact pole frame is labelled).
@@ -247,6 +346,191 @@ public extension FloeCADDocument {
             displayMode: model.displayMode.rawValue,
             hiddenEdges: model.showHiddenEdges,
             groundShadow: model.groundShadowEnabled)
+    }
+
+    /// The actual current engineering scene's body/instance membership. It is
+    /// derived from the SAME `viewModel().scene` value the renderer consumes,
+    /// at this document generation; it never renders, mutates, or infers a
+    /// face/topology identity from pixels. Scene drawables that are transient
+    /// editor previews are labelled instead of being passed off as model
+    /// bodies. Drawable leaf assembly occurrences carry both their instance id
+    /// and their resolved source body id.
+    func observationSceneMembership() -> CADObservationSceneMembership {
+        let model = viewModel()
+        let document = session.document
+        let scene = model.scene
+        let identity = observationIdentity()
+
+        // Transient preview bodies are display-only. A replacement preview can
+        // reuse its source body id (blend/shell/delete/replace-face), so match
+        // on the live preview values rather than only on "not a document body".
+        var previewKinds: [UUID: String] = [:]
+        var previewSourceIDs: [UUID: UUID] = [:]
+        var replacedBodyIDs = Set<UUID>()
+        if let context = model.toolContext, let preview = context.preview {
+            previewKinds[preview.id.raw] = "tool_preview"
+            if context.previewReplacesSource, let source = context.sourceBody {
+                replacedBodyIDs.insert(source.raw)
+                previewSourceIDs[preview.id.raw] = source.raw
+            }
+        }
+        if let preview = model.blendPreview {
+            previewKinds[preview.id.raw] = "blend_preview"
+            if let source = model.blendBodyID {
+                replacedBodyIDs.insert(source.raw)
+                previewSourceIDs[preview.id.raw] = source.raw
+            }
+        }
+        if let preview = model.shellPreview {
+            previewKinds[preview.id.raw] = "shell_preview"
+            if let source = model.shellBodyID {
+                replacedBodyIDs.insert(source.raw)
+                previewSourceIDs[preview.id.raw] = source.raw
+            }
+        }
+        if let preview = model.deleteFacePreview {
+            previewKinds[preview.id.raw] = "delete_face_preview"
+            if let source = model.deleteFaceBodyID {
+                replacedBodyIDs.insert(source.raw)
+                previewSourceIDs[preview.id.raw] = source.raw
+            }
+        }
+        if let preview = model.replaceFacePreview {
+            previewKinds[preview.id.raw] = "replace_face_preview"
+            if let source = model.replaceFaceBodyID {
+                replacedBodyIDs.insert(source.raw)
+                previewSourceIDs[preview.id.raw] = source.raw
+            }
+        }
+
+        let documentBodyIDs = Set(document.bodies.map(\.id.raw))
+        var bodyDrawableCounts: [UUID: Int] = [:]
+        var includedInstanceIDs = Set<UUID>()
+        var previewDrawableIDs: [UUID] = []
+        var seenPreviewIDs = Set<UUID>()
+        for drawable in scene.bodies {
+            let id = drawable.id.raw
+            if let instanceID = drawable.assemblyInstanceID {
+                includedInstanceIDs.insert(instanceID)
+            } else if previewKinds[id] != nil {
+                if seenPreviewIDs.insert(id).inserted { previewDrawableIDs.append(id) }
+            } else if documentBodyIDs.contains(id) {
+                bodyDrawableCounts[id, default: 0] += 1
+            } else if seenPreviewIDs.insert(id).inserted {
+                // A scene-only body that is not one of the named previews is
+                // still transient; label it honestly rather than as a model
+                // body. It is never given a face or topology identity.
+                previewDrawableIDs.append(id)
+            }
+        }
+
+        var members: [CADObservationSceneMember] = []
+        var includedBodyCount = 0
+        var omittedBodyCount = 0
+        let isolated = model.isolatedBodyIDs
+        for body in document.bodies {
+            let id = body.id.raw
+            let drawableCount = bodyDrawableCounts[id] ?? 0
+            let included = drawableCount > 0
+            var reason: CADObservationSceneOmissionReason?
+            if included {
+                includedBodyCount += 1
+            } else {
+                // Same exclusion order as `EditorViewModel.scene`: persisted
+                // hidden, a replacement preview, then transient isolate.
+                if body.isHidden {
+                    reason = .hidden
+                } else if replacedBodyIDs.contains(id) {
+                    reason = .replacedByEditorPreview
+                } else if let isolated, !isolated.contains(body.id) {
+                    reason = .outsideIsolate
+                } else {
+                    reason = .notInScene
+                }
+                omittedBodyCount += 1
+            }
+            var previewKind: String?
+            if included, drawableCount > 1, model.patternState?.bodyID == body.id {
+                previewKind = "pattern_preview"
+            }
+            members.append(CADObservationSceneMember(
+                kind: .body, bodyID: id, included: included, reason: reason,
+                drawableCount: drawableCount, previewKind: previewKind))
+        }
+
+        var assembly: CADAssembly?
+        var assemblyDecoded = true
+        if let data = document.assemblyData {
+            do {
+                assembly = try CADAssembly.decode(from: data)
+            } catch {
+                assemblyDecoded = false
+            }
+        }
+        let previewViewID = assembly.flatMap { assembly in
+            CADExplodedViewPreview.current(for: session)?.resolvedViewID(in: assembly)
+        }
+        let occurrences = assembly?.occurrences(viewID: previewViewID,
+                                                includeHidden: true) ?? []
+        var includedInstanceCount = 0
+        var omittedInstanceCount = 0
+        var subassemblyContainerCount = 0
+        for occurrence in occurrences {
+            guard occurrence.subassemblyID == nil else {
+                // A subassembly container is structural, never a drawable part.
+                subassemblyContainerCount += 1
+                continue
+            }
+            let instanceID = occurrence.instance.id
+            let sourceBodyID = occurrence.effectiveBodyID
+            let included = includedInstanceIDs.contains(instanceID)
+            var reason: CADObservationSceneOmissionReason?
+            if included {
+                includedInstanceCount += 1
+            } else {
+                if !occurrence.isVisible {
+                    reason = .hidden
+                } else if sourceBodyID == nil {
+                    reason = .sourceBodyMissing
+                } else if let sourceBodyID, !documentBodyIDs.contains(sourceBodyID) {
+                    reason = .sourceBodyMissing
+                } else if !(occurrence.explodedWorldTransform
+                                ?? occurrence.worldTransform).isPlaceable {
+                    reason = .unplaceableTransform
+                } else {
+                    reason = .notInScene
+                }
+                omittedInstanceCount += 1
+            }
+            members.append(CADObservationSceneMember(
+                kind: .assemblyInstance, assemblyInstanceID: instanceID,
+                sourceBodyID: sourceBodyID, included: included, reason: reason,
+                drawableCount: included ? 1 : 0))
+        }
+
+        for id in previewDrawableIDs {
+            let sourceID: UUID? = previewSourceIDs[id].flatMap { source in
+                source == id ? nil : source
+            }
+            members.append(CADObservationSceneMember(
+                kind: .editorPreview, bodyID: id, sourceBodyID: sourceID,
+                included: true, drawableCount: 1,
+                previewKind: previewKinds[id] ?? "unknown_preview"))
+        }
+
+        return CADObservationSceneMembership(
+            revision: identity.revision,
+            changeCount: identity.changeCount,
+            contentSHA256: identity.contentSHA256,
+            assemblyPresent: document.assemblyData != nil,
+            assemblyDecoded: assemblyDecoded,
+            subassemblyContainerCount: subassemblyContainerCount,
+            members: members,
+            includedBodyCount: includedBodyCount,
+            omittedBodyCount: omittedBodyCount,
+            includedInstanceCount: includedInstanceCount,
+            omittedInstanceCount: omittedInstanceCount,
+            editorPreviewCount: previewDrawableIDs.count)
     }
 
     /// The ONE derived, read-only status for frame publication. The editor
