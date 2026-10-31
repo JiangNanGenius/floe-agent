@@ -376,11 +376,19 @@ internal class RootSystemControllerImpl(
         clearStaleActiveStatus()
 
         if (resolution == PublishedResolution.Current) {
-            if (adoptBinder(BinderProtocol.MODE_ADB, 0)) {
-                return AccessActionResult.Ok
+            when (val adoption = adoptBinderDetailed(BinderProtocol.MODE_ADB, 0)) {
+                Adoption.Adopted -> return AccessActionResult.Ok
+                is Adoption.Refused -> return AccessActionResult.Failed(adoption.code)
+                Adoption.NotPublished -> {
+                    setAdb(
+                        AdbStatus.Error(
+                            "existing ADB service identity could not be adopted",
+                            "identity",
+                        ),
+                    )
+                    return AccessActionResult.Failed("service_identity")
+                }
             }
-            setAdb(AdbStatus.Error("existing ADB service identity could not be adopted", "identity"))
-            return AccessActionResult.Failed("service_identity")
         }
 
         val token = randomToken()
@@ -447,12 +455,18 @@ internal class RootSystemControllerImpl(
             setAdb(AdbStatus.Paired(port))
             return AccessActionResult.Failed(connectFailure)
         }
-        if (adoptBinder(BinderProtocol.MODE_ADB, 12_000)) {
+        val adoption = adoptBinderDetailed(BinderProtocol.MODE_ADB, 12_000)
+        if (adoption is Adoption.Adopted) {
             // Keep the launch token: a same-token republish by this verified
             // server is accepted, while an older helper's token is rejected.
             return AccessActionResult.Ok
         }
         BinderHub.clearExpectedToken(BinderProtocol.MODE_ADB)
+        if (adoption is Adoption.Refused) {
+            // failAdoption already published the precise identity/verdict
+            // reason. Never collapse it into the publication-wait outcome.
+            return AccessActionResult.Failed(adoption.code)
+        }
         setAdb(AdbStatus.Error("Floe service did not publish its binder", "binder_timeout"))
         return AccessActionResult.Failed("binder_timeout")
     }
@@ -982,6 +996,19 @@ internal class RootSystemControllerImpl(
         data class Refused(val code: String) : PublishedResolution
     }
 
+    private sealed interface Adoption {
+        data object Adopted : Adoption
+
+        /** No publication became visible within the bounded wait. */
+        data object NotPublished : Adoption
+
+        /**
+         * A visible publication was refused or needs replacement. The exact
+         * reason has already been published to [AdbStatus]/[RootStatus].
+         */
+        data class Refused(val code: String) : Adoption
+    }
+
     private data class InspectedPublished(
         val record: BinderHub.Published,
         val client: FloeBinderClient,
@@ -1110,19 +1137,22 @@ internal class RootSystemControllerImpl(
     }
 
     private suspend fun adoptBinder(mode: String, waitMillis: Long): Boolean =
+        adoptBinderDetailed(mode, waitMillis) is Adoption.Adopted
+
+    private suspend fun adoptBinderDetailed(mode: String, waitMillis: Long): Adoption =
         withContext(Dispatchers.IO) {
-            if (closed.get()) return@withContext false
+            if (closed.get()) return@withContext Adoption.NotPublished
             if (mode == binderMode &&
                 binderClient?.let { runCatching { it.isAlive() }.getOrDefault(false) } == true
             ) {
-                return@withContext true
+                return@withContext Adoption.Adopted
             }
             val record = (if (waitMillis > 0) BinderHub.await(mode, waitMillis) else BinderHub.peek(mode))
-                ?: return@withContext false
+                ?: return@withContext Adoption.NotPublished
             val client = FloeBinderClient(record.binder)
             val described = client.describe() ?: run {
                 failAdoption(mode, "describe")
-                return@withContext false
+                return@withContext Adoption.Refused("describe")
             }
             val verdict = BackendOwnershipPolicy.classifyPublishedHelper(
                 helper = publishedHelper(record, described),
@@ -1136,11 +1166,11 @@ internal class RootSystemControllerImpl(
                 BackendOwnershipPolicy.PublishedVerdict.Current -> Unit
                 is BackendOwnershipPolicy.PublishedVerdict.Replace -> {
                     failAdoption(mode, "restart_required", restartRequired = true)
-                    return@withContext false
+                    return@withContext Adoption.Refused("restart_required")
                 }
                 is BackendOwnershipPolicy.PublishedVerdict.Refused -> {
                     failAdoption(mode, verdict.code)
-                    return@withContext false
+                    return@withContext Adoption.Refused(verdict.code)
                 }
             }
             val previousOwner = currentOwner()
@@ -1150,7 +1180,7 @@ internal class RootSystemControllerImpl(
                 // Root->ADB must go through the explicit bounded stop in
                 // startAdbService; a refresh/adopt must never downgrade Root.
                 setAdb(AdbStatus.Error("root backend is still active", "owner"))
-                return@withContext false
+                return@withContext Adoption.Refused("owner")
             }
 
             // One owner at a time: fence every grant/operation of the previous
@@ -1165,7 +1195,10 @@ internal class RootSystemControllerImpl(
             }
             clearBinder()
             val serverPid = described.getInt(BinderProtocol.KEY_SERVER_PID, -1)
-            val serverUid = AccessPolicy.uidForMode(mode) ?: return@withContext false
+            val serverUid = AccessPolicy.uidForMode(mode) ?: run {
+                failAdoption(mode, "mode")
+                return@withContext Adoption.Refused("mode")
+            }
             binderClient = client
             binderMode = mode
             binderPid = serverPid
@@ -1177,7 +1210,7 @@ internal class RootSystemControllerImpl(
             // publish a dead helper as the active owner.
             if (!runCatching { client.isAlive() }.getOrDefault(false)) {
                 onServiceDied(mode, generation)
-                return@withContext false
+                return@withContext Adoption.Refused("binder_died")
             }
             adoptedRestartRequired = false
             if (mode == BinderProtocol.MODE_ADB) {
@@ -1193,7 +1226,7 @@ internal class RootSystemControllerImpl(
                 rootGrantVerified = true
                 publish(adbStandbyStatus(), RootStatus.Enabled(serverUid))
             }
-            true
+            Adoption.Adopted
         }
 
     private fun failAdoption(mode: String, code: String, restartRequired: Boolean = false) {

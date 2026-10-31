@@ -97,28 +97,33 @@ class DeviceAccessToolCatalogTest {
         )
         assertTrue(DeviceAccessToolCatalog.PHONE_OBSERVE in phone)
         assertTrue(DeviceAccessToolCatalog.PHONE_ACT in phone)
-        assertFalse("screenshot needs an explicit screen scope", DeviceAccessToolCatalog.PHONE_SCREENSHOT in phone)
+        assertFalse(
+            "discovery follows the platform's real capture support, not a task grant",
+            DeviceAccessToolCatalog.PHONE_SCREENSHOT in phone,
+        )
 
-        val scopedButNoConsent = DeviceAccessToolCatalog.availableNames(
+        // Discovery is the POTENTIAL capability: the device supports capture.
+        // Whether THIS task may see the screen is checked on every invocation
+        // (screen_scope_off / whole_screen_consent_required) and never changes
+        // what the live run was offered, so a grant made mid-run cannot make
+        // the frozen catalog disagree with the provider request.
+        val captureCapable = DeviceAccessToolCatalog.availableNames(
             DeviceAccessToolCatalog.Availability(
                 accessibilityConnected = true,
                 targetPackagesSelected = true,
-                screenScopeEnabled = true,
-                windowScreenshotCapable = false,
-                wholeScreenCaptureConsent = false,
+                screenCaptureSupported = true,
             ),
         )
-        assertFalse(DeviceAccessToolCatalog.PHONE_SCREENSHOT in scopedButNoConsent)
+        assertTrue(DeviceAccessToolCatalog.PHONE_SCREENSHOT in captureCapable)
 
-        val windowCapable = DeviceAccessToolCatalog.availableNames(
+        val noTarget = DeviceAccessToolCatalog.availableNames(
             DeviceAccessToolCatalog.Availability(
                 accessibilityConnected = true,
-                targetPackagesSelected = true,
-                screenScopeEnabled = true,
-                windowScreenshotCapable = true,
+                targetPackagesSelected = false,
+                screenCaptureSupported = true,
             ),
         )
-        assertTrue(DeviceAccessToolCatalog.PHONE_SCREENSHOT in windowCapable)
+        assertFalse(DeviceAccessToolCatalog.PHONE_SCREENSHOT in noTarget)
     }
 
     @Test
@@ -164,9 +169,7 @@ class DeviceAccessToolCatalogTest {
             DeviceAccessToolCatalog.Availability(
                 accessibilityConnected = true,
                 targetPackagesSelected = true,
-                screenScopeEnabled = true,
-                wholeScreenCaptureConsent = true,
-                windowScreenshotCapable = true,
+                screenCaptureSupported = true,
                 systemServiceAlive = true,
                 fileRootsSelected = true,
                 fileWritesAllowed = true,

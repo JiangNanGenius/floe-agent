@@ -2031,9 +2031,13 @@ internal class DeviceAccessHost(
             DeviceAccessToolCatalog.Availability(
                 accessibilityConnected = phoneServiceUsable(),
                 targetPackagesSelected = state.targets.selectedPackages.isNotEmpty(),
-                screenScopeEnabled = state.screenScope != DeviceAccessScreenScopeUi.OFF,
-                wholeScreenCaptureConsent = state.targets.wholeScreenConsent,
-                windowScreenshotCapable = Build.VERSION.SDK_INT >= 34,
+                // Potential capability only: mirrors
+                // PhoneControlPolicy.screenshotSupport (display capture on
+                // API 30+, the preferred window capture on API 34+). The
+                // task's live screen scope, arm and whole-screen consent are
+                // checked by phoneScreenshot at invocation, so granting them
+                // while a run is live never changes this run's offer.
+                screenCaptureSupported = Build.VERSION.SDK_INT >= 30,
                 systemServiceAlive = systemServiceAlive(),
                 fileRootsSelected = effectiveSelectedRoots().isNotEmpty(),
                 fileWritesAllowed = state.targets.fileWritesAllowed,

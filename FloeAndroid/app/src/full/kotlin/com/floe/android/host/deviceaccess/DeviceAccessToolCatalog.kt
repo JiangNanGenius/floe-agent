@@ -53,9 +53,18 @@ internal object DeviceAccessToolCatalog {
     data class Availability(
         val accessibilityConnected: Boolean = false,
         val targetPackagesSelected: Boolean = false,
-        val screenScopeEnabled: Boolean = false,
-        val wholeScreenCaptureConsent: Boolean = false,
-        val windowScreenshotCapable: Boolean = false,
+        /**
+         * The phone module can capture at all on this platform (API 30+).
+         *
+         * This is the POTENTIAL capability, not the task's screen consent:
+         * like task arming for [PHONE_OBSERVE]/[PHONE_ACT], the per-call task
+         * screen scope, whole-screen consent, observation/window fence and
+         * arm state are all enforced by the host when the tool is invoked.
+         * Discovery must not depend on those mutable grants: the runtime
+         * freezes what the run was offered, so a grant made while a run is
+         * live would otherwise offer a name the frozen catalog refuses.
+         */
+        val screenCaptureSupported: Boolean = false,
         val systemServiceAlive: Boolean = false,
         val fileRootsSelected: Boolean = false,
         val fileWritesAllowed: Boolean = false,
@@ -73,10 +82,12 @@ internal object DeviceAccessToolCatalog {
         if (phone) {
             result += PHONE_OBSERVE
             result += PHONE_ACT
-            if (availability.screenScopeEnabled &&
-                (availability.windowScreenshotCapable ||
-                    availability.wholeScreenCaptureConsent)
-            ) {
+            // Potential capability, not a task grant. The device's capture
+            // support alone decides discoverability; the host refuses the
+            // call with screen_scope_off / whole_screen_consent_required /
+            // window_screenshot_unsupported / phone_arm_required unless the
+            // live task really holds that authority.
+            if (availability.screenCaptureSupported) {
                 result += PHONE_SCREENSHOT
             }
         }

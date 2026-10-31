@@ -38,7 +38,10 @@ internal class ServerIdentity(
         AccessPolicy.callerAllowed(callerUid, callerPid, appUid)
 
     fun describe(generation: Long, capabilities: List<String>): android.os.Bundle =
-        android.os.Bundle().apply {
+        // describe() is a normal success reply and must carry the same closed
+        // KEY_OK marker as every other successful typed reply. The App's
+        // strict adoption gate checks this marker with BinderProtocol.isOk.
+        BinderProtocol.ok().apply {
             putInt(BinderProtocol.KEY_PROTOCOL, BinderProtocol.VERSION)
             putInt(BinderProtocol.KEY_SERVER_UID, serverUid)
             putInt(BinderProtocol.KEY_SERVER_PID, serverPid)
