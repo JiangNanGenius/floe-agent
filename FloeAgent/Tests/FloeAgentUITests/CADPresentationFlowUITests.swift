@@ -167,10 +167,13 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         reveal(viewCount(4, in: app), in: app, scrollingUp: false)
         close.tap()
 
-        let preview = app.buttons["Preview"].firstMatch
+        // The existing localized product action is "View" (the source's
+        // fallback says "Preview"); exercise the label actually shown.
+        let preview = app.buttons["View"].firstMatch
         reveal(preview, in: app)
         preview.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["CADDrawingPreview"].waitForExistence(timeout: 10))
+        let canvas = app.descendants(matching: .any)["CADDrawingPreview"]
+        reveal(canvas, in: app, scrollingUp: false)
         let drawing = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         drawing.name = compact ? "CAD-shared-sheet-narrow-preview" : "CAD-shared-sheet-preview"
         drawing.lifetime = .keepAlways
@@ -190,8 +193,22 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         // scrolling prevents the driver from reaching real controls below it.
         for _ in 0..<8 {
             if element.exists && element.isHittable { return }
-            if scrollingUp { app.swipeUp() } else { app.swipeDown() }
+            // Scope the gesture to the active native Form/ScrollView.
+            // Swiping the entire app can hit the uncovered workbench or
+            // dismiss an inspector instead of scrolling its contents.
+            let scrollable = [app.collectionViews.firstMatch, app.scrollViews.firstMatch]
+                .first { $0.exists && $0.isHittable }
+            let target = scrollable ?? app
+            if scrollingUp { target.swipeUp() } else { target.swipeDown() }
         }
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "CAD-drawing-unreachable-control-hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        let screen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screen.name = "CAD-drawing-unreachable-control"
+        screen.lifetime = .keepAlways
+        add(screen)
         XCTAssertTrue(element.isHittable, "The drawing control must remain reachable")
     }
 }
