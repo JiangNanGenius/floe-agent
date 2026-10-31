@@ -703,6 +703,7 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/ConversationContextFeedbackTests.swift
       - path: Tests/FloeAgentRuntimeTests/SQLiteRunCheckpointStoreTests.swift
       - path: Tests/FloeAgentRuntimeTests/ContextCompactionDegradeTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ModelContextSummarizerTests.swift
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
       - path: Tests/FloeAppTests/BackgroundWorkSessionTests.swift
       - path: Tests/FloeAppTests/BackgroundDownloadSettlementTests.swift

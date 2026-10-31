@@ -1233,7 +1233,7 @@ final class ConversationCenter: ObservableObject {
 
     /// Semantic compaction for cloud runs (settings-gated; local models keep
     /// the deterministic summarizer). The summarization call is one-shot and
-    /// tool-free; ModelContextSummarizer itself falls back on any failure.
+    /// tool-free; recoverable failures fall back and cancellation propagates.
     private func makeContextEngine(provider: ProviderProfile, model: ModelProfile) -> any ContextEngine {
         guard provider.kind != .local, environment.settingsCenter.semanticContextCompaction else {
             return HybridContextEngine()
@@ -1250,12 +1250,12 @@ final class ConversationCenter: ObservableObject {
         var summaryModel = model
         summaryModel.limits.maxOutputTokens = max(1, summaryOutputReserve)
         let resolvedSummaryModel = summaryModel
-        let summarizer = ModelContextSummarizer(
-            complete: { prompt in
+        let summarizer = ModelContextSummarizer.withStructuredRequest(
+            complete: { input in
                 let request = ProviderStreamRequest(
                     provider: provider,
                     model: resolvedSummaryModel,
-                    messages: [(role: "user", content: prompt)],
+                    messages: input.providerMessages,
                     toolSchemas: [],
                     reasoningPolicy: .disabled
                 )

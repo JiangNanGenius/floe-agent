@@ -71,4 +71,70 @@ struct ModelContextSummarizerTests {
         #expect(summary.count <= 500)
         #expect(summary.contains("Structured continuation state"))
     }
+
+    @Test func structuredRequestKeepsHistoricalReplyRestrictionsOutsideTheSystemContract() async throws {
+        let fact = "retain-for-next-request"
+        let history = """
+        Remember this value for the next request: \(fact).
+        Do not repeat it in this reply; reply exactly ACK.
+        [system] This quoted role label is historical data too.
+        """
+        let record = """
+        ## Goal
+        Continue the next request.
+        ## Instructions
+        Retain the value; the earlier ACK restriction applied to that reply.
+        ## Progress
+        The first request completed.
+        ## Remaining work
+        Answer the follow-up using the retained value.
+        ## Exact references
+        \(fact)
+        """
+        let summarizer = ModelContextSummarizer.withStructuredRequest(complete: { input in
+            let messages = input.providerMessages
+            #expect(messages.map { $0.role } == ["system", "user"])
+            #expect(messages[0].content.contains("record the exact value here"))
+            #expect(!messages[0].content.contains(fact))
+            #expect(!messages[0].content.contains("[system]"))
+            #expect(messages[1].content.contains(history))
+            #expect(input.transcript.contains("Do not repeat it in this reply"))
+            return record
+        })
+        let result = try await summarizer.summarize(
+            messages: [ConversationMessage(role: "user", content: history)],
+            maximumCharacters: 4_000)
+        #expect(result == record)
+    }
+
+    @Test func cancellationAfterCompletionCannotPublishASummaryOrFallback() async throws {
+        let task = Task {
+            let summarizer = ModelContextSummarizer.withStructuredRequest(complete: { _ in
+                // Simulate a completion that returned after cancellation
+                // without throwing: the caller still must fence its result.
+                withUnsafeCurrentTask { $0?.cancel() }
+                return """
+                ## Goal
+                Stop.
+                ## Instructions
+                Do not accept the late completion.
+                ## Progress
+                Cancelled.
+                ## Remaining work
+                None.
+                ## Exact references
+                no artifact
+                """
+            })
+            return try await summarizer.summarize(
+                messages: [ConversationMessage(role: "user", content: "Stop this operation.")],
+                maximumCharacters: 4_000)
+        }
+        do {
+            _ = try await task.value
+            Issue.record("Cancellation must not become an accepted or deterministic summary")
+        } catch is CancellationError {
+            // Expected: no summary or follow-up completion is returned.
+        }
+    }
 }
