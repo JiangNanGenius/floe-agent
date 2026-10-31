@@ -1168,6 +1168,7 @@ struct EngineeringFilePreview: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("file.preview.engineering")
     }
 }
@@ -1599,6 +1600,7 @@ private struct EngineeringSceneControlBar: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 10)
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("engineering.scene.controls")
             } else {
                 HStack(spacing: 10) {
