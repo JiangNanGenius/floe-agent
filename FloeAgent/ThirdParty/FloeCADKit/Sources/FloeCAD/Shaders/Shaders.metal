@@ -106,10 +106,12 @@ static float sampleScalarMap(texture2d<float> map, float2 uv, bool srgb) {
     return saturate(scalarLuminance(c));
 }
 
-// Tangent-space normal from screen-space derivatives of the ACTUAL sampling
-// UV (so a bottom-up map's V flip is part of the tangent basis, keeping the
-// sampled xyz consistent with the geometry). Degenerate/constant UVs fall back
-// to a stable arbitrary orthonormal frame instead of NaN.
+// Tangent-space normal from screen-space derivatives of the shared mesh UV.
+// A map's declared vertical origin changes only the sampled texel (nuv),
+// never the tangent frame: a bottom-up normal map and a top-left colour map
+// must share one surface basis, exactly as Present's mesh tangents do.
+// Degenerate/constant UVs fall back to a stable arbitrary orthonormal frame
+// instead of NaN.
 static float3 sampleNormalMap(texture2d<float> map,
                               float3 worldPosition,
                               float3 geometricNormal,
@@ -119,8 +121,8 @@ static float3 sampleNormalMap(texture2d<float> map,
     float2 nuv = orientedUV(uv, flipV);
     float3 dp1 = dfdx(worldPosition);
     float3 dp2 = dfdy(worldPosition);
-    float2 duv1 = dfdx(nuv);
-    float2 duv2 = dfdy(nuv);
+    float2 duv1 = dfdx(uv);
+    float2 duv2 = dfdy(uv);
 
     float3 dp2perp = cross(dp2, geometricNormal);
     float3 dp1perp = cross(geometricNormal, dp1);

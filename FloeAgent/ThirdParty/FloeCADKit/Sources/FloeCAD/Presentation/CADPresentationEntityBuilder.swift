@@ -366,7 +366,8 @@ final class CADPresentationEntityBuilder {
         let resolved = CADPresentationMaterialResolver.resolve(
             spec: spec, bodyID: bodyID, bodyName: bodyName,
             hasMeshUVs: hasUVs,
-            hasProjectedUVs: spec.uvMapping?.source != .mesh)
+            // A nil mapping means the authored mesh UV set, not a projection.
+            hasProjectedUVs: (spec.uvMapping?.source ?? .mesh) != .mesh)
         var imagesByID: [String: CADPresentationImage] = [:]
         for image in resolved.images { imagesByID[image.id] = image }
         var issues: [CADPresentationIssue] = []

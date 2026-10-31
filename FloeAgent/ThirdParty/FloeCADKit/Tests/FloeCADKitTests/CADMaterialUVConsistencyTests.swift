@@ -19,8 +19,10 @@ import simd
 
 #if canImport(SwiftUI) && canImport(RealityKit) && canImport(UIKit)
 import CoreGraphics
+import ImageIO
 import RealityKit
 import UIKit
+import UniformTypeIdentifiers
 #endif
 
 @testable import FloeCAD
@@ -100,7 +102,52 @@ private func glbBinary(_ glb: Data) throws -> Data {
         }
         offset = start + length
     }
-    throw XCTSkip("GLB has no binary chunk")
+    XCTFail("Generated GLB must contain its geometry binary chunk")
+    throw CocoaError(.fileReadCorruptFile)
+}
+
+/// Read a tightly packed float32 VEC3/VEC4 accessor from a GLB binary chunk.
+/// Returns rows of `components` floats so tests can assert the actual wire
+/// values without going through the production accessor helpers twice.
+private func glbAccessorFloats(_ json: [String: Any], _ binary: Data,
+                               index: Int, components: Int) throws -> [[Float]] {
+    let accessors = try XCTUnwrap(json["accessors"] as? [[String: Any]])
+    guard index < accessors.count else {
+        XCTFail("accessor \(index) missing")
+        return []
+    }
+    let accessor = accessors[index]
+    XCTAssertEqual(accessor["componentType"] as? Int, 5126)
+    XCTAssertEqual(accessor["type"] as? String, components == 4 ? "VEC4" : "VEC3")
+    let count = try XCTUnwrap(accessor["count"] as? Int)
+    let viewIndex = try XCTUnwrap(accessor["bufferView"] as? Int)
+    let views = try XCTUnwrap(json["bufferViews"] as? [[String: Any]])
+    guard viewIndex < views.count else {
+        XCTFail("bufferView \(viewIndex) missing")
+        return []
+    }
+    let view = views[viewIndex]
+    let viewOffset = (view["byteOffset"] as? Int) ?? 0
+    let accessorOffset = (accessor["byteOffset"] as? Int) ?? 0
+    let stride = (view["byteStride"] as? Int) ?? components * 4
+    var rows: [[Float]] = []
+    rows.reserveCapacity(count)
+    for row in 0..<count {
+        var values: [Float] = []
+        values.reserveCapacity(components)
+        for column in 0..<components {
+            let offset = viewOffset + accessorOffset + row * stride + column * 4
+            guard offset + 4 <= binary.count else {
+                XCTFail("accessor read out of range")
+                return rows
+            }
+            values.append(binary.withUnsafeBytes {
+                $0.loadUnaligned(fromByteOffset: offset, as: Float.self)
+            })
+        }
+        rows.append(values)
+    }
+    return rows
 }
 
 // MARK: - Core UV / orientation
@@ -206,6 +253,76 @@ final class CADMaterialUVSourceContractTests: XCTestCase {
         let definition = CADMaterialDefinition(spec: spec)
         XCTAssertEqual(definition.texture(for: .normal)?.orientation, .topLeft)
     }
+
+    /// An imported/texture-only spec with NO explicit mapping must keep its
+    /// authored mesh UVs. `CADMaterialDefinition(spec:)` fills the optional
+    /// with the `.mesh` source (authored UVs), never a default projection; a
+    /// projected source must only exist when the caller chose one.
+    func testTextureOnlyNilMappingPreservesAuthoredMeshUVs() {
+        let positions = [SIMD3<Float>(0, 0, 0),
+                         SIMD3<Float>(10, 0, 0),
+                         SIMD3<Float>(0, 20, 0)]
+        let normals = [SIMD3<Float>(0, 0, 1),
+                       SIMD3<Float>(0, 0, 1),
+                       SIMD3<Float>(0, 0, 1)]
+        let indices: [UInt32] = [0, 1, 2]
+        let authored = [SIMD2<Float>(0.1, 0.2), SIMD2<Float>(0.6, 0.2),
+                        SIMD2<Float>(0.1, 0.9)]
+        let base = MaterialUVFixtures.red1x1
+        let spec = BodyMaterialSpec(
+            baseColorTexture: base,
+            textureMetadata: [MaterialUVFixtures.metadata(
+                slot: .baseColor, data: base,
+                colorSpace: .srgb, orientation: .topLeft)])
+        XCTAssertNil(spec.uvMapping)
+        XCTAssertFalse(spec.usesProjectedUVs)
+
+        let definition = CADMaterialDefinition(spec: spec)
+        XCTAssertEqual(definition.uvMapping.source, .mesh)
+        let applied = definition.bodyMaterialSpec()
+        XCTAssertEqual(applied.uvMapping?.source, .mesh)
+        XCTAssertFalse(applied.usesProjectedUVs,
+                       "a nil mapping must not become a default projection")
+        assertUVs(MaterialUVProjector.effectiveUVs(
+            meshTexcoords: authored, positions: positions,
+            normals: normals, indices: indices, mapping: applied.uvMapping),
+            authored)
+
+        // The same default survives a second library round trip.
+        let reopened = CADMaterialDefinition(spec: applied)
+        XCTAssertEqual(reopened.uvMapping.source, .mesh)
+        XCTAssertEqual(reopened.bodyMaterialSpec().uvMapping?.source, .mesh)
+    }
+
+    /// Orientation is a sampling attribute, not a tangent-basis change. The
+    /// Metal normal-map shader must sample the flipped coordinate but derive
+    /// its tangent frame from the shared mesh UV; folding the flip into the
+    /// derivatives would silently mirror the world-space normal relative to
+    /// Present and to the exported glTF tangent contract.
+    func testNormalMapTangentFrameComesFromSharedUVNotRowOrigin() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let shaderURL = testFile
+            .deletingLastPathComponent() // FloeCADKitTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // FloeCADKit
+            .deletingLastPathComponent() // ThirdParty
+            .deletingLastPathComponent() // FloeAgent
+            .appendingPathComponent("Sources/FloeCAD/Shaders/Shaders.metal")
+        let source = try String(contentsOf: shaderURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "static float3 sampleNormalMap"))
+        let end = try XCTUnwrap(source.range(
+            of: "// MARK: - Background gradient",
+            range: start.upperBound..<source.endIndex))
+        let block = source[start.lowerBound..<end.lowerBound]
+        XCTAssertTrue(block.contains("float2 nuv = orientedUV(uv, flipV);"))
+        XCTAssertTrue(block.contains("map.sample(kMaterialSampler, nuv)"),
+                      "sampling must use the per-map origin")
+        XCTAssertTrue(block.contains("float2 duv1 = dfdx(uv);"))
+        XCTAssertTrue(block.contains("float2 duv2 = dfdy(uv);"))
+        XCTAssertFalse(block.contains("dfdx(nuv)"),
+                       "row origin must not become part of the tangent basis")
+        XCTAssertFalse(block.contains("dfdy(nuv)"))
+    }
 }
 
 // MARK: - GLB orientation re-read
@@ -260,6 +377,28 @@ final class CADMaterialGLBOrientationTests: XCTestCase {
         XCTAssertEqual(transform["scale"] as? [Double], [1, -1])
         XCTAssertTrue((json["extensionsUsed"] as? [String] ?? [])
             .contains("KHR_texture_transform"))
+
+        // The normal-mapped primitive carries an explicit glTF TANGENT whose
+        // handedness is derived from the SAME pre-transform TEXCOORD_0 that
+        // Present and the engineering viewport use. Without it, three.js and
+        // other derivative-based consumers would fold the KHR V flip into the
+        // bitangent and mirror the world-space normal.
+        let binary = try glbBinary(glb)
+        let meshes = try XCTUnwrap(json["meshes"] as? [[String: Any]])
+        let primitive = try XCTUnwrap((meshes.first?["primitives"]
+            as? [[String: Any]])?.first)
+        let attributes = try XCTUnwrap(primitive["attributes"] as? [String: Any])
+        let tangentIndex = try XCTUnwrap(attributes["TANGENT"] as? Int)
+        let tangents = try glbAccessorFloats(json, binary, index: tangentIndex,
+                                             components: 4)
+        XCTAssertEqual(tangents.count, 3)
+        for tangent in tangents {
+            XCTAssertEqual(tangent[3], 1, accuracy: 1e-6,
+                           "upright positive-winding UVs must give handedness +1")
+        }
+        XCTAssertEqual(tangents[0][0], 1, accuracy: 1e-5)
+        XCTAssertEqual(tangents[0][1], 0, accuracy: 1e-5)
+        XCTAssertEqual(tangents[0][2], 0, accuracy: 1e-5)
 
         // Re-read the actual exported GLB: the two maps keep opposite
         // declarations while sharing the same mesh UV set.
@@ -627,6 +766,218 @@ final class CADPresentationSamplingTests: XCTestCase {
             positions: positions, normals: normals, uvs: mirrored,
             indices: indices)
         XCTAssertEqual(mirroredTangent[0].x, -1, accuracy: 1e-6)
+    }
+}
+
+// MARK: - Normal-map TBN interop (Present / exported GLB / Metal contract)
+
+@MainActor
+final class CADMaterialNormalBasisInteropTests: XCTestCase {
+    private let positions = [SIMD3<Float>(0, 0, 0), SIMD3<Float>(10, 0, 0),
+                             SIMD3<Float>(10, 10, 0), SIMD3<Float>(0, 10, 0)]
+    private let normals = [SIMD3<Float>](repeating: SIMD3(0, 0, 1), count: 4)
+    private let indices: [UInt32] = [0, 1, 2, 0, 2, 3]
+    private let uvs = [SIMD2<Float>(0, 0), SIMD2<Float>(1, 0),
+                       SIMD2<Float>(1, 1), SIMD2<Float>(0, 1)]
+
+    func testExportedTangentHandednessUsesActualShadingNormals() throws {
+        for normalZ in [Float(1), Float(-1)] {
+            for mirroredU in [false, true] {
+                let shadingNormals = [SIMD3<Float>](
+                    repeating: SIMD3(0, 0, normalZ), count: positions.count)
+                let coordinates = uvs.map { SIMD2<Float>(mirroredU ? 1 - $0.x : $0.x, $0.y) }
+                var body = Body(id: BodyID(), name: "Tangent handedness", transform: .identity,
+                                primitive: nil,
+                                render: RenderMesh(positions: positions, normals: shadingNormals,
+                                                   indices: indices, texcoords: coordinates),
+                                revision: 1)
+                body.material = BodyMaterialSpec(
+                    baseColor: SIMD4(1, 1, 1, 1),
+                    normalTexture: MaterialUVFixtures.red1x1, uvMapping: .mesh)
+                let glb = GLBExporter.glb(bodies: [body])
+                let json = try glbJSON(glb)
+                let binary = try glbBinary(glb)
+                let meshes = try XCTUnwrap(json["meshes"] as? [[String: Any]])
+                let primitives = try XCTUnwrap(meshes.first?["primitives"] as? [[String: Any]])
+                let attributes = try XCTUnwrap(primitives.first?["attributes"] as? [String: Any])
+                let index = try XCTUnwrap(attributes["TANGENT"] as? Int)
+                let tangents = try glbAccessorFloats(json, binary, index: index, components: 4)
+                XCTAssertEqual(tangents.count, positions.count)
+                for row in tangents {
+                    let tangent = SIMD3<Float>(row[0], row[1], row[2])
+                    XCTAssertEqual(tangent.x, mirroredU ? -1 : 1, accuracy: 1e-5)
+                    XCTAssertEqual(tangent.y, 0, accuracy: 1e-5)
+                    XCTAssertEqual(tangent.z, 0, accuracy: 1e-5)
+                    XCTAssertEqual(row[3], normalZ * (mirroredU ? -1 : 1), accuracy: 1e-5)
+                    // The known surface derivative dP/dv is +Y for all four cases.
+                    let bitangent = simd_cross(SIMD3<Float>(0, 0, normalZ), tangent) * row[3]
+                    XCTAssertEqual(bitangent.x, 0, accuracy: 1e-5)
+                    XCTAssertEqual(bitangent.y, 1, accuracy: 1e-5)
+                    XCTAssertEqual(bitangent.z, 0, accuracy: 1e-5)
+                }
+            }
+        }
+    }
+
+    private func makePNG(rows: [[UInt8]], width: Int) throws -> Data {
+        var bytes: [UInt8] = []
+        for row in rows { bytes.append(contentsOf: row) }
+        let provider = try XCTUnwrap(CGDataProvider(data: Data(bytes) as CFData))
+        let image = try XCTUnwrap(CGImage(
+            width: width, height: rows.count, bitsPerComponent: 8,
+            bitsPerPixel: 32, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false,
+            intent: .defaultIntent))
+        let output = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(
+            output, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return output as Data
+    }
+
+    private func cgImage(_ data: Data) throws -> CGImage {
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
+        return try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+    }
+
+    private func pixels(_ image: CGImage) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        bytes.withUnsafeMutableBytes { raw in
+            guard let context = CGContext(
+                data: raw.baseAddress, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return }
+            context.interpolationQuality = .none
+            context.draw(image, in: CGRect(x: 0, y: 0,
+                                           width: image.width, height: image.height))
+        }
+        return bytes
+    }
+
+    /// Nearest-texel sample at column 0; row indices measure the top-left row
+    /// order the samplers use.
+    private func encodedNormal(_ pixels: [UInt8], width: Int, height: Int,
+                               v: Float) -> SIMD3<Float> {
+        let row = min(max(Int((v * Float(height)).rounded(.down)), 0), height - 1)
+        let base = row * width * 4
+        return SIMD3(Float(pixels[base]) / 255 * 2 - 1,
+                     Float(pixels[base + 1]) / 255 * 2 - 1,
+                     Float(pixels[base + 2]) / 255 * 2 - 1)
+    }
+
+    /// Asymmetric non-flat normal map: image top row tilts toward +Y, bottom
+    /// row toward -Y. Present samples a per-image row-normalized map with the
+    /// shared mesh-UV basis; a real glTF consumer samples the untouched bytes
+    /// through KHR_texture_transform and must use the explicit TANGENT basis
+    /// instead of re-deriving a bitangent from the transformed UV. Both paths
+    /// must yield the SAME world-space normal; the pre-fix behaviour (no
+    /// TANGENT, derivative basis from the transformed UV) mirrors Y and is
+    /// caught by the sign assertions below.
+    func testNormalMapWorldSpaceNormalMatchesPresentAcrossOrigins() throws {
+        let rows: [[UInt8]] = [[128, 204, 255, 255], [128, 51, 255, 255]]
+        let normalPNG = try makePNG(rows: rows, width: 1)
+        let v: Float = 0.75
+        let n = normals[0]
+
+        for orientation in [MaterialTextureOrientation.topLeft, .bottomLeft] {
+            var body = Body(id: BodyID(), name: "Basis", transform: .identity,
+                            primitive: nil,
+                            render: RenderMesh(positions: positions, normals: normals,
+                                               indices: indices, texcoords: uvs),
+                            revision: 1)
+            body.material = BodyMaterialSpec(
+                baseColor: SIMD4(1, 1, 1, 1),
+                normalTexture: normalPNG,
+                uvMapping: .mesh,
+                textureMetadata: [MaterialUVFixtures.metadata(
+                    slot: .normal, data: normalPNG,
+                    colorSpace: .linear, orientation: orientation)])
+            let glb = GLBExporter.glb(bodies: [body])
+            let json = try glbJSON(glb)
+            let binary = try glbBinary(glb)
+
+            // Source document pixels are not modified by export.
+            XCTAssertEqual(body.material?.normalTexture, normalPNG)
+
+            let materials = try XCTUnwrap(json["materials"] as? [[String: Any]])
+            let normalInfo = try XCTUnwrap(materials.first?["normalTexture"]
+                as? [String: Any])
+            let hasFlip = ((normalInfo["extensions"] as? [String: Any])?[
+                "KHR_texture_transform"] as? [String: Any]) != nil
+            XCTAssertEqual(hasFlip, orientation == .bottomLeft)
+
+            // The embedded image is still the exact authored byte string.
+            let imageViews = try XCTUnwrap(json["images"] as? [[String: Any]])
+            let views = try XCTUnwrap(json["bufferViews"] as? [[String: Any]])
+            let imageData = try imageViews.map { image -> Data in
+                let viewIndex = try XCTUnwrap(image["bufferView"] as? Int)
+                let view = views[viewIndex]
+                let offset = (view["byteOffset"] as? Int) ?? 0
+                let length = try XCTUnwrap(view["byteLength"] as? Int)
+                return binary.subdata(in: offset..<(offset + length))
+            }
+            XCTAssertTrue(imageData.contains(normalPNG))
+
+            // glTF consumer path: explicit TANGENT + KHR-transformed sampling.
+            let meshes = try XCTUnwrap(json["meshes"] as? [[String: Any]])
+            let primitive = try XCTUnwrap((meshes.first?["primitives"]
+                as? [[String: Any]])?.first)
+            let attributes = try XCTUnwrap(primitive["attributes"] as? [String: Any])
+            let tangentIndex = try XCTUnwrap(attributes["TANGENT"] as? Int)
+            let tangentRow = try glbAccessorFloats(json, binary, index: tangentIndex,
+                                                   components: 4)[0]
+            XCTAssertEqual(tangentRow[3], 1, accuracy: 1e-6,
+                           "positive-winding UVs must give handedness +1")
+            let t = SIMD3<Float>(tangentRow[0], tangentRow[1], tangentRow[2])
+            XCTAssertEqual(t.x, 1, accuracy: 1e-5)
+            XCTAssertEqual(t.y, 0, accuracy: 1e-5)
+            let b = simd_cross(n, t) * tangentRow[3]
+
+            let sourcePixels = pixels(try cgImage(normalPNG))
+            let glbEncoded = encodedNormal(sourcePixels, width: 1, height: 2,
+                                           v: hasFlip ? 1 - v : v)
+            let glbWorld = simd_normalize(t * glbEncoded.x + b * glbEncoded.y
+                                          + n * glbEncoded.z)
+
+            // Present path: per-image row normalization with the shared basis.
+            let sourceImage = try cgImage(normalPNG)
+            let presentImage: CGImage
+            if orientation == .bottomLeft {
+                presentImage = try XCTUnwrap(
+                    CADPresentationResourceCache.verticallyFlipped(sourceImage))
+            } else {
+                presentImage = sourceImage
+            }
+            let presentEncoded = encodedNormal(
+                pixels(presentImage), width: presentImage.width,
+                height: presentImage.height, v: v)
+            let presentT = CADPresentationResourceCache.tangents(
+                positions: positions, normals: normals, uvs: uvs,
+                indices: indices)[0]
+            let duv1 = uvs[1] - uvs[0], duv2 = uvs[2] - uvs[0]
+            let det = duv1.x * duv2.y - duv2.x * duv1.y
+            let presentB = simd_cross(n, presentT) * (det < 0 ? -1 : 1)
+            let presentWorld = simd_normalize(
+                presentT * presentEncoded.x + presentB * presentEncoded.y
+                + n * presentEncoded.z)
+
+            // Both paths fetch the same authored texel ...
+            XCTAssertEqual(glbEncoded.y, presentEncoded.y, accuracy: 1e-5,
+                           "\(orientation): sampling position must match")
+            // ... and, on the fixed +dP/dv basis, keep its sign in world Y.
+            XCTAssertGreaterThan(abs(glbEncoded.y), 1e-3,
+                                 "\(orientation): fixture must be asymmetric")
+            XCTAssertEqual(glbWorld.y > 0, glbEncoded.y > 0,
+                           "\(orientation): the tangent frame must not mirror the normal")
+            XCTAssertEqual(glbWorld.x, presentWorld.x, accuracy: 1e-4)
+            XCTAssertEqual(glbWorld.y, presentWorld.y, accuracy: 1e-4)
+            XCTAssertEqual(glbWorld.z, presentWorld.z, accuracy: 1e-4)
+        }
     }
 }
 

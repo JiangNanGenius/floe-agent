@@ -48,6 +48,12 @@ nonisolated enum MaterialTextureColorSpace: String, Codable, Sendable {
 /// Where (0,0) of the encoded image is. Metal's convention is top-left;
 /// glTF's UV convention is top-left too (v grows down), while an image whose
 /// rows were authored bottom-up must be marked explicitly.
+///
+/// Orientation is a SAMPLING attribute only: it changes which texel is
+/// fetched for a surface UV, never the tangent frame. Every renderer (Edit,
+/// Present, exported GLB/USDZ) derives the normal-map basis from the shared
+/// mesh UV set, so a bottom-up normal map and a top-left colour map use one
+/// surface basis.
 nonisolated enum MaterialTextureOrientation: String, Codable, Sendable {
     case topLeft
     case bottomLeft

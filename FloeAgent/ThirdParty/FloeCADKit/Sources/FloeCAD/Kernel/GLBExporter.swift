@@ -16,8 +16,12 @@
 //  Declared map colour space is mapped to glTF's fixed slot semantics
 //  (baseColor/emissive sRGB, scalar/normal linear); a bottom-up authored map
 //  uses KHR_texture_transform. Packed opacity/MR maps are normalised to
-//  top-left and combine straight-alpha RGB without a colour shift. A texture
-//  never changes body geometry or its persisted `RenderMesh`.
+//  top-left and combine straight-alpha RGB without a colour shift. Normal-mapped
+//  primitives also carry explicit TANGENT attributes: derivative-based glTF
+//  consumers build the bitangent from the same UV set, before any per-texture
+//  KHR_texture_transform, so a bottom-up normal map can never rotate the
+//  tangent frame. A texture never changes body geometry or its persisted
+//  `RenderMesh`.
 //
 //  Units/axes: FloeCAD model space is millimetres with +Y up (the ground plane
 //  is XZ). glTF 2.0 is metres with +Y up, so the exported scene carries a root
@@ -164,8 +168,10 @@ nonisolated enum GLBExporter {
         /// and Present: an explicit non-mesh mapping WINS even when the mesh
         /// has authored UVs; otherwise mesh UVs are used. A textured material
         /// with neither gets a deterministic export-only box projection so the
-        /// map is sampleable without changing geometry.
-        func uvAccessor(for body: Body, material: BodyMaterialSpec?) -> Int? {
+        /// map is sampleable without changing geometry. The same array is
+        /// returned with the accessor so a normal-mapped primitive can derive
+        /// its glTF TANGENT from exactly the TEXCOORD_0 it samples with.
+        func uvAccessor(for body: Body, material: BodyMaterialSpec?) -> (index: Int, uvs: [SIMD2<Float>])? {
             var uvs = MaterialUVProjector.effectiveUVs(
                 meshTexcoords: body.render.texcoords,
                 positions: body.render.positions,
@@ -191,7 +197,7 @@ nonisolated enum GLBExporter {
                 "count": uvs.count,
                 "type": "VEC2",
             ])
-            return accessor
+            return (accessor, uvs)
         }
 
         for body in bodies where !body.render.positions.isEmpty && !body.render.indices.isEmpty {
@@ -345,7 +351,36 @@ nonisolated enum GLBExporter {
                     "NORMAL": normalAccessor,
                 ]
                 if let uv = uvAccessor(for: body, material: material) {
-                    attributes["TEXCOORD_0"] = uv
+                    attributes["TEXCOORD_0"] = uv.index
+                    // A normal map needs a deterministic tangent-space basis.
+                    // glTF lets consumers fall back to MikkTSpace on the
+                    // normal texture's associated TEXCOORD_0, but
+                    // derivative-based engines such as three.js build that
+                    // basis from the TRANSFORMED normal-map UV when
+                    // KHR_texture_transform is present, which would flip the
+                    // bitangent for a bottom-up map. Emit explicit TANGENTs
+                    // from the pre-transform TEXCOORD_0 instead: every
+                    // consumer then uses B = cross(N, T) * W on the same basis
+                    // Present and the engineering viewport use, independent of
+                    // sampling orientation.
+                    if material.normalTexture != nil {
+                        let tangents = Self.vertexTangents(
+                            positions: positions, normals: normals,
+                            uvs: uv.uvs, indices: indices)
+                        if tangents.count == positions.count {
+                            let tangentView = appendView(
+                                packed(tangents), to: &bin, views: &bufferViews,
+                                target: targetArrayBuffer)
+                            let tangentAccessor = accessors.count
+                            accessors.append([
+                                "bufferView": tangentView,
+                                "componentType": componentFloat,
+                                "count": tangents.count,
+                                "type": "VEC4",
+                            ])
+                            attributes["TANGENT"] = tangentAccessor
+                        }
+                    }
                 }
                 return [
                     "attributes": attributes,
@@ -610,6 +645,77 @@ nonisolated enum GLBExporter {
             withUnsafeBytes(of: v.x) { data.append(contentsOf: $0) }
             withUnsafeBytes(of: v.y) { data.append(contentsOf: $0) }
             withUnsafeBytes(of: v.z) { data.append(contentsOf: $0) }
+        }
+        return data
+    }
+
+    /// Per-vertex glTF TANGENT values (XYZ normalized, W = handedness) for a
+    /// normal-mapped primitive. The basis is derived from the primitive's
+    /// TEXCOORD_0 and NORMAL before any per-texture KHR_texture_transform, so
+    /// a bottom-up map's sampling flip cannot rotate the tangent frame. The
+    /// sign is measured against the supplied shading normal and the UV
+    /// derivative bitangent: consumers reconstruct B = cross(N, T) * W.
+    private static func vertexTangents(positions: [SIMD3<Float>],
+                                       normals: [SIMD3<Float>],
+                                       uvs: [SIMD2<Float>],
+                                       indices: [UInt32]) -> [SIMD4<Float>] {
+        guard positions.count == normals.count, positions.count == uvs.count,
+              !positions.isEmpty else { return [] }
+        var tangentSum = [SIMD3<Float>](repeating: .zero, count: positions.count)
+        var bitangentSum = [SIMD3<Float>](repeating: .zero, count: positions.count)
+        var triangle = 0
+        while triangle + 2 < indices.count {
+            let i0 = Int(indices[triangle]), i1 = Int(indices[triangle + 1]),
+                i2 = Int(indices[triangle + 2])
+            triangle += 3
+            guard i0 < positions.count, i1 < positions.count, i2 < positions.count else { continue }
+            let p0 = positions[i0], p1 = positions[i1], p2 = positions[i2]
+            let uv0 = uvs[i0], uv1 = uvs[i1], uv2 = uvs[i2]
+            let edge1 = p1 - p0, edge2 = p2 - p0
+            let duv1 = uv1 - uv0, duv2 = uv2 - uv0
+            let determinant = duv1.x * duv2.y - duv2.x * duv1.y
+            guard determinant.isFinite, abs(determinant) > 1e-12 else { continue }
+            let inverse = 1 / determinant
+            let tangent = (edge1 * duv2.y - edge2 * duv1.y) * inverse
+            let bitangent = (edge2 * duv1.x - edge1 * duv2.x) * inverse
+            guard tangent.x.isFinite, tangent.y.isFinite, tangent.z.isFinite else { continue }
+            guard bitangent.x.isFinite, bitangent.y.isFinite, bitangent.z.isFinite else { continue }
+            // Weight by triangle area so tiny/degenerate slivers cannot
+            // dominate a shared vertex.
+            let weight = simd_length(simd_cross(edge1, edge2)) * 0.5
+            guard weight.isFinite, weight > 0 else { continue }
+            for index in [i0, i1, i2] {
+                tangentSum[index] += tangent * weight
+                bitangentSum[index] += bitangent * weight
+            }
+        }
+        return positions.indices.map { index in
+            let n = simd_length_squared(normals[index]) > 0
+                ? simd_normalize(normals[index]) : SIMD3<Float>(0, 0, 1)
+            var t = tangentSum[index]
+            t -= n * simd_dot(n, t)
+            let lengthSquared = simd_length_squared(t)
+            let unitT: SIMD3<Float>
+            if lengthSquared > 1e-20, lengthSquared.isFinite {
+                unitT = t / sqrt(lengthSquared)
+            } else {
+                let reference: SIMD3<Float> = abs(n.y) < 0.99 ? SIMD3(0, 1, 0) : SIMD3(1, 0, 0)
+                unitT = simd_normalize(simd_cross(reference, n))
+            }
+            let handedness: Float = simd_dot(simd_cross(n, unitT), bitangentSum[index]) < 0 ? -1 : 1
+            return SIMD4(unitT.x, unitT.y, unitT.z, handedness)
+        }
+    }
+
+    /// SIMD4<Float> has 16-byte stride; it is already tight, but write
+    /// components explicitly to keep the wire layout obvious.
+    private static func packed(_ vectors: [SIMD4<Float>]) -> Data {
+        var data = Data(capacity: vectors.count * 16)
+        for v in vectors {
+            withUnsafeBytes(of: v.x) { data.append(contentsOf: $0) }
+            withUnsafeBytes(of: v.y) { data.append(contentsOf: $0) }
+            withUnsafeBytes(of: v.z) { data.append(contentsOf: $0) }
+            withUnsafeBytes(of: v.w) { data.append(contentsOf: $0) }
         }
         return data
     }
