@@ -74,15 +74,40 @@ final class CanvasCADEntryUITests: XCTestCase {
         let workbenchDone = app.buttons["canvas.nativeCAD.done"]
         XCTAssertTrue(workbenchDone.waitForExistence(timeout: 30),
                       "the explicit CAD action must open the native workbench")
-        XCTAssertTrue(app.buttons["CADWorkbenchToolsButton"].waitForExistence(timeout: 20),
-                      "the opened surface is the real CAD workbench (tools entry present)")
+        XCTAssertTrue(app.segmentedControls["CADWorkbenchMode"].waitForExistence(timeout: 10),
+                      "the opened surface must expose the native Edit/Present modes")
         let workbench = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        workbench.name = "Canvas CAD node in the native workbench"
+        workbench.name = "Canvas CAD node in the native workbench before tools"
         workbench.lifetime = .keepAlways
         add(workbench)
+
+        // The native iPad toolbar moves trailing actions into More in a
+        // portrait or narrower window. Follow that real route instead of
+        // requiring every action to remain drawn in the navigation bar.
+        var tools = app.buttons["CADWorkbenchToolsButton"].firstMatch
+        if !tools.exists || !tools.isHittable {
+            let nativeBar = app.navigationBars.containing(
+                .button, identifier: "canvas.nativeCAD.done").firstMatch
+            let overflow = nativeBar.buttons["OverflowBarButtonItem"].firstMatch
+            XCTAssertTrue(overflow.waitForExistence(timeout: 5),
+                          "the native toolbar must keep its overflow entry reachable")
+            overflow.tap()
+            if !tools.exists { tools = app.buttons["CAD Tools"].firstMatch }
+        }
+        XCTAssertTrue(tools.waitForExistence(timeout: 10),
+                      "the native CAD tools action must remain reachable")
+        tools.tap()
+        XCTAssertTrue(app.otherElements["CADWorkbenchToolsPanel"].waitForExistence(timeout: 15),
+                      "the actual tools panel must open from this Canvas-owned document")
+        let closeTools = app.buttons["CADToolsSheetCloseButton"]
+        XCTAssertTrue(closeTools.waitForExistence(timeout: 5))
+        closeTools.tap()
+        XCTAssertTrue(workbenchDone.isHittable,
+                      "closing tools must return to the same native workbench")
         workbenchDone.tap()
-        XCTAssertTrue(toolbar.waitForExistence(timeout: 10),
-                      "closing the workbench returns to the canvas node")
+        XCTAssertTrue(toolbar.waitForExistence(timeout: 10))
+        XCTAssertTrue(toolbar.isHittable,
+                      "closing the workbench returns to the selected canvas node")
     }
 }
 #endif
