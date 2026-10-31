@@ -3159,7 +3159,9 @@
         "stage": "D",
         "status": "partial",
         "source_changes": [
-          "b281bb0c91f6e50ecd6e40da015490a2cb00e710"
+          "b281bb0c91f6e50ecd6e40da015490a2cb00e710",
+          "104659a08243375ba35b9acb0da5531f4bf1192e",
+          "5108bce080496894f1c854b4ebd5244f8e5e7430"
         ],
         "verification": [
           {
@@ -3170,11 +3172,30 @@
             "skipped": 0,
             "observed": "50实例全部1225对、完整结果及尾部、精确体积阈值、中空网格间隙、取消/关闭/陈旧结果回收通过。",
             "failure": "旋转用例原预期漏算1mm另一轴偏移；解析距离为sqrt(101)mm。保留原失败，补正预期并追加见证点验证，待实际重跑。"
+          },
+          {
+            "kind": "actual_App_behavior",
+            "source": "104659a08243375ba35b9acb0da5531f4bf1192e",
+            "selector": "CADAssemblyInterferenceClosureTests/testTriangleIntersectionContactAndTransformedSeparation",
+            "passed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "observed": "解析距离 sqrt(101) mm 及两个实际世界坐标见证点通过。",
+            "original_failure": "保留最初漏算另一轴偏移的预期及原始失败；未放宽误差。"
+          },
+          {
+            "kind": "actual_native_UI",
+            "source": "5108bce080496894f1c854b4ebd5244f8e5e7430",
+            "selector": "CADAssemblyInterferenceUITests/testRealInspectorDefaultSelectionSubsetAndActualResult",
+            "passed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "observed": "真实三实例选择、子集配对数、恢复与执行；结果为3/3对、1对穿透、2对分离、0接触和0未决，逐项核对实际组件名称。原生截图已人工核对。"
           }
         ],
         "limitations": [
-          "原生干涉选择与结果界面仍待实际验收。",
-          "源码及部分通过的检查不代表本项全部完成。"
+          "已有50实例全部1225对及独立子集检查通过；补充同一50实例文档中非连续5实例子集的严格验收，待下一批实际执行。",
+          "不宣称物理设备大型装配性能已验收。"
         ]
       },
       "alignment_review": {
@@ -3236,9 +3257,11 @@
       "package": "engineering",
       "implementation": {
         "stage": "D",
-        "status": "partial",
+        "status": "verified",
         "source_changes": [
-          "b281bb0c91f6e50ecd6e40da015490a2cb00e710"
+          "b281bb0c91f6e50ecd6e40da015490a2cb00e710",
+          "104659a08243375ba35b9acb0da5531f4bf1192e",
+          "5108bce080496894f1c854b4ebd5244f8e5e7430"
         ],
         "verification": [
           {
@@ -3249,15 +3272,34 @@
             "skipped": 0,
             "observed": "50实例全部1225对、完整结果及尾部、精确体积阈值、中空网格间隙、取消/关闭/陈旧结果回收通过。",
             "failure": "旋转用例原预期漏算1mm另一轴偏移；解析距离为sqrt(101)mm。保留原失败，补正预期并追加见证点验证，待实际重跑。"
+          },
+          {
+            "kind": "actual_App_behavior",
+            "source": "104659a08243375ba35b9acb0da5531f4bf1192e",
+            "selector": "CADAssemblyInterferenceClosureTests/testTriangleIntersectionContactAndTransformedSeparation",
+            "passed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "observed": "解析距离 sqrt(101) mm 及两个实际世界坐标见证点通过。",
+            "original_failure": "保留最初漏算另一轴偏移的预期及原始失败；未放宽误差。"
+          },
+          {
+            "kind": "actual_native_UI",
+            "source": "5108bce080496894f1c854b4ebd5244f8e5e7430",
+            "selector": "CADAssemblyInterferenceUITests/testRealInspectorDefaultSelectionSubsetAndActualResult",
+            "passed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "observed": "真实三实例选择、子集配对数、恢复与执行；结果为3/3对、1对穿透、2对分离、0接触和0未决，逐项核对实际组件名称。原生截图已人工核对。"
           }
         ],
         "limitations": [
-          "原生干涉选择与结果界面仍待实际验收。",
-          "源码及部分通过的检查不代表本项全部完成。"
+          "网格间隙依据三角形几何，明确报告精度和毫米单位；不伪造BRep体积。",
+          "本项完成不代表所有106项或最终发版完成。"
         ]
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "verified",
         "existing": "基线已有：有BRep精确体积相交；无BRep时返回exact:false及AABB重叠量。",
         "remaining": "复用成熟碰撞/距离后端补网格三角级碰撞、真实间隙和接触语义，避免把AABB当实体相交。",
         "evidence": [
@@ -3284,8 +3326,8 @@
         ],
         "notes": [],
         "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "中空嵌套网格不误判实体相交，报告真实最小距离并明确精度和单位。"
+        "verified_delta": "实际中空网格间隙3/2mm及壁内嵌套、接触和变换见证点通过；补齐真实原生选择与结果界面验收。",
+        "acceptance_pending": false
       }
     },
     {
@@ -8230,6 +8272,12 @@
       "skipped": 0,
       "scope": "目录、参数、显式路由、批次与工具名；未新增付费图片生成。"
     },
-    "production_release_performed": false
+    "production_release_performed": false,
+    "original_observation": {
+      "source": "5108bce080496894f1c854b4ebd5244f8e5e7430",
+      "actual_STEP": "真实OCCT导出STEP，原始文件与资源摘要、不同视角PNG及源变化拒绝通过。",
+      "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
+      "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
+    }
   }
 }

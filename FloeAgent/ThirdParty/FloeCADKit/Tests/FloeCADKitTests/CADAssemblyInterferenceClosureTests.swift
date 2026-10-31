@@ -236,6 +236,37 @@ final class CADAssemblyInterferenceClosureTests: XCTestCase {
         XCTAssertEqual(probe.lastProcessed, 1225)
         XCTAssertTrue(probe.monotonic)
         XCTAssertTrue(probe.sawOffMain, "the pair work must run off the main actor")
+
+        // Exercise the original large-assembly acceptance literally: choose
+        // non-contiguous occurrences from the same fifty-instance document.
+        // The first run above proves the full tail; this run proves that all
+        // forty-five unselected occurrences stay out of the result.
+        CADAssemblyService.testInterferencePairProbe = nil
+        let subset = [ids[0], ids[9], ids[10], ids[24], ids[49]]
+        let subsetReply = await service.handleAsync(action: "interference", args: [
+            "instanceIDs": subset,
+            "toleranceMM": 1e-6,
+        ])
+        XCTAssertEqual(subsetReply["ok"] as? Bool, true, "\(subsetReply)")
+        XCTAssertEqual(subsetReply["selectedInstanceCount"] as? Int, 5)
+        XCTAssertEqual(subsetReply["pairCount"] as? Int, 10)
+        XCTAssertEqual(subsetReply["processedPairCount"] as? Int, 10)
+        XCTAssertEqual(subsetReply["detailsComplete"] as? Bool, true)
+        let subsetRows = rows(subsetReply, "clearances")
+        XCTAssertEqual(subsetRows.count, 10)
+        let actualSubsetPairs = pairSet(subsetRows)
+        var expectedSubsetPairs = Set<String>()
+        for first in subset.indices {
+            for second in subset.indices where second > first {
+                expectedSubsetPairs.insert([subset[first], subset[second]]
+                    .sorted().joined(separator: "|"))
+            }
+        }
+        XCTAssertEqual(actualSubsetPairs, expectedSubsetPairs)
+        let subsetProgress = try XCTUnwrap(subsetReply["progress"] as? [String: Any])
+        XCTAssertEqual(subsetProgress["phase"] as? String, "completed")
+        XCTAssertEqual(subsetProgress["requestedPairCount"] as? Int, 10)
+        XCTAssertEqual(subsetProgress["processedPairCount"] as? Int, 10)
     }
 
     // MARK: Correction — cubic volume threshold and complete details
