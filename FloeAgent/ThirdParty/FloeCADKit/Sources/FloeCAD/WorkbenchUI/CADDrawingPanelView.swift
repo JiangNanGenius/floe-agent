@@ -490,12 +490,14 @@ struct CADDrawingPanelView: View {
     private func showGeometry(_ page: [String: Any]) {
         guard let id = page["id"] as? String, let uuid = UUID(uuidString: id) else { return }
         let service = CADDrawingService(document: document)
-        let reply = service.pageGeometry(pageID: uuid)
+        // The explicit View action refreshes the derived projection identity
+        // through the same service used by the assistant. This is cache
+        // metadata, not an extra user edit/undo step.
+        let reply = service.handle(action: "project", args: ["pageID": uuid.uuidString])
         outcome = reply
         if reply["ok"] as? Bool == true {
-            var loaded = CADDrawingPreview(reply: reply)
-            loaded.stale = page["stale"] as? Bool ?? loaded.stale
-            preview = loaded
+            preview = CADDrawingPreview(reply: reply)
+            if reply["mutated"] as? Bool == true { refresh() }
         }
     }
 
@@ -604,6 +606,7 @@ struct CADDrawingVectorPreview: View {
                 if preview.stale {
                     PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.stale", "stale"),
                                tint: .orange)
+                        .accessibilityIdentifier("CADDrawingPreviewStale")
                 }
                 Spacer()
                 Button(FloeCADStrings.text("cad.ui.common.close", "Close")) { onClose() }
@@ -676,11 +679,12 @@ struct CADDrawingVectorPreview: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
             .accessibilityIdentifier("CADDrawingPreview")
 
-            HStack(spacing: 8) {
-                ForEach(preview.counts.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
-                    PanelBadge(text: "\(localizedDrawingCount(key)) \(value)")
+            DisclosureGroup(FloeCADStrings.text("action.details", "Details")) {
+                ForEach(preview.counts.filter { $0.value > 0 }.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
+                    LabeledContent(localizedDrawingCount(key), value: "\(value)")
                 }
             }
+            .font(.caption)
             if !preview.bomRows.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(FloeCADStrings.text("cad.workbench.drawing.bom", "BOM"))

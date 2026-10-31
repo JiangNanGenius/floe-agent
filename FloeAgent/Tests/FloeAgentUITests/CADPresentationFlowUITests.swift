@@ -167,18 +167,30 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         reveal(viewCount(4, in: app), in: app, scrollingUp: false)
         close.tap()
 
+        // Expand the actual native inspector via its visible navigation bar
+        // before inspecting the whole drawing, as a user can do.
+        let bar = app.navigationBars["CAD Tools"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 10))
+        bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1,
+                   thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)))
+
         // The existing localized product action is "View" (the source's
         // fallback says "Preview"); exercise the label actually shown.
         let preview = app.buttons["View"].firstMatch
         reveal(preview, in: app)
         preview.tap()
         let canvas = app.descendants(matching: .any)["CADDrawingPreview"]
-        reveal(canvas, in: app, scrollingUp: false)
+        fullyReveal(canvas, in: app)
+        XCTAssertFalse(app.descendants(matching: .any)["CADDrawingPreviewStale"].exists,
+                       "a projection just refreshed by View must not show its old stale marker")
         let drawing = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         drawing.name = compact ? "CAD-shared-sheet-narrow-preview" : "CAD-shared-sheet-preview"
         drawing.lifetime = .keepAlways
         add(drawing)
-        app.buttons["CADDrawingPreviewClose"].tap()
+        let previewClose = app.buttons["CADDrawingPreviewClose"]
+        reveal(previewClose, in: app, scrollingUp: false)
+        previewClose.tap()
         XCTAssertTrue(app.buttons["CADToolsSheetCloseButton"].isHittable)
         app.buttons["CADToolsSheetCloseButton"].tap()
         XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 10))
@@ -186,6 +198,23 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
 
     private func viewCount(_ count: Int, in app: XCUIApplication) -> XCUIElement {
         app.staticTexts.matching(NSPredicate(format: "label ==[c] %@", "\(count) views")).firstMatch
+    }
+
+    private func fullyReveal(_ element: XCUIElement, in app: XCUIApplication) {
+        XCTAssertTrue(element.waitForExistence(timeout: 10))
+        for _ in 0..<8 {
+            let scrollable = [app.collectionViews.firstMatch, app.scrollViews.firstMatch]
+                .first { $0.exists && $0.isHittable }
+            let bounds = scrollable?.frame.intersection(app.frame) ?? app.frame
+            let frame = element.frame
+            let visible = frame.intersection(bounds)
+            if element.isHittable && !visible.isNull
+                && visible.width >= frame.width * 0.95
+                && visible.height >= frame.height * 0.95 { return }
+            let target = scrollable ?? app
+            if frame.maxY > bounds.maxY { target.swipeUp() } else { target.swipeDown() }
+        }
+        XCTFail("The whole drawing preview must fit inside the expanded native inspector")
     }
 
     private func reveal(_ element: XCUIElement, in app: XCUIApplication, scrollingUp: Bool = true) {
