@@ -1023,7 +1023,7 @@ public extension FloeCADDocument {
     func compareNamedVersion(_ id: UUID,
                              against otherVersionID: UUID? = nil,
                              offset: Int = 0,
-                             limit: Int = CADNamedVersionComparisonBuilder.maximumDifferences,
+                             limit: Int = CADNamedVersionComparison.defaultPageLimit,
                              pins: CADNamedVersionComparisonPins? = nil) async throws
     -> CADNamedVersionComparison {
         try await CADNamedVersionService(document: self).compare(

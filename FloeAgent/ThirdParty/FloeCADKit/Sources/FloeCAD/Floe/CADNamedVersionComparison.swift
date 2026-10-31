@@ -17,7 +17,7 @@ import Foundation
 nonisolated struct CADNamedVersionComparisonBuilder {
     /// Page size for the default/visible summary. The caller can request a
     /// different bounded page and every remaining difference is reachable.
-    static let maximumDifferences = 240
+    static let maximumDifferences = CADNamedVersionComparison.defaultPageLimit
     /// Hard upper bound for one requested comparison page. A client can page
     /// through an arbitrarily large diff in bounded chunks.
     static let maximumPageLimit = 240

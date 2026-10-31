@@ -354,6 +354,9 @@ public nonisolated struct CADNamedVersionDifference: Codable, Sendable, Equatabl
 }
 
 public nonisolated struct CADNamedVersionComparison: Codable, Sendable, Equatable {
+    /// Default bounded page size for the public comparison API.
+    public static let defaultPageLimit = 240
+
     public var from: CADNamedVersionReference
     public var to: CADNamedVersionReference
     /// Canonical whole-model identity comparison (preview excluded).
