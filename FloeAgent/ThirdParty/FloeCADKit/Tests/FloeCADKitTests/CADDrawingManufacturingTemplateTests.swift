@@ -34,6 +34,18 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         if let workDir { try? FileManager.default.removeItem(at: workDir) }
     }
 
+    /// Retain the production exports before the fixture is removed so the
+    /// integration owner can inspect them in independent PDF/DXF readers.
+    private func retainExport(_ data: Data, name: String, type: String,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(data.isEmpty, "The actual export must not be empty.",
+                       file: file, line: line)
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: type)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     // MARK: - Fixtures
 
     private func makeDocument(_ name: String) async throws -> FloeCADDocument {
@@ -464,6 +476,7 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         // the thread/counterbore text is present in the SAME annotation layer.
         let svg = try service.exportData(pageID: UUID(uuidString: sheet.pageID)!,
                                          format: "svg")
+        retainExport(svg, name: "e16-manufacturing.svg", type: "public.svg-image")
         let svgText = try XCTUnwrap(String(data: svg, encoding: .utf8))
         let annotationGroup = try XCTUnwrap(svgGroup(svgText, id: "ANNOTATIONS"))
         XCTAssertTrue(annotationGroup.contains("<line"))
@@ -479,6 +492,7 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
 
         let dxf = try service.exportData(pageID: UUID(uuidString: sheet.pageID)!,
                                          format: "dxf")
+        retainExport(dxf, name: "e16-manufacturing.dxf", type: "public.data")
         let dxfText = try XCTUnwrap(String(data: dxf, encoding: .utf8))
         XCTAssertTrue(dxfText.contains("ANNOTATIONS"))
         XCTAssertTrue(dxfText.contains("0\nTEXT\n"))
@@ -491,6 +505,7 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
 
         let pdf = try service.exportData(pageID: UUID(uuidString: sheet.pageID)!,
                                          format: "pdf")
+        retainExport(pdf, name: "e16-manufacturing.pdf", type: "com.adobe.pdf")
         XCTAssertEqual(String(data: Data(pdf.prefix(5)), encoding: .ascii), "%PDF-")
         let provider = try XCTUnwrap(CGDataProvider(data: pdf as CFData))
         let pdfDocument = try XCTUnwrap(CGPDFDocument(provider))
@@ -661,6 +676,9 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         XCTAssertTrue(dxfA.contains("3 dp"))
         XCTAssertTrue(dxfA.contains("0\nTEXT\n"))
         let pdfA = try service.exportData(pageID: pageAUUID, format: "pdf")
+        retainExport(Data(svgA.utf8), name: "e18-before-reopen.svg", type: "public.svg-image")
+        retainExport(Data(dxfA.utf8), name: "e18-before-reopen.dxf", type: "public.data")
+        retainExport(pdfA, name: "e18-before-reopen.pdf", type: "com.adobe.pdf")
         XCTAssertEqual(String(data: Data(pdfA.prefix(5)), encoding: .ascii), "%PDF-")
 
         // Save/reopen: same layout/revision/precision and byte-identical SVG.
@@ -680,6 +698,13 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
             encoding: .utf8))
         XCTAssertEqual(reopenedSvgA, svgA,
                        "the saved/reopened sheet must render the same vector layout")
+        let reopenedDxfA = try reopenedService.exportData(pageID: pageAUUID, format: "dxf")
+        XCTAssertEqual(reopenedDxfA, Data(dxfA.utf8),
+                       "saved/reopened DXF must retain the actual geometry and annotations")
+        let reopenedPdfA = try reopenedService.exportData(pageID: pageAUUID, format: "pdf")
+        retainExport(Data(reopenedSvgA.utf8), name: "e18-after-reopen.svg", type: "public.svg-image")
+        retainExport(reopenedDxfA, name: "e18-after-reopen.dxf", type: "public.data")
+        retainExport(reopenedPdfA, name: "e18-after-reopen.pdf", type: "com.adobe.pdf")
 
         // Deleting the library record does not change the applied page.
         let deleted = reopenedService.handle(action: "deleteTemplate", args: [
