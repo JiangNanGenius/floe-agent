@@ -13,20 +13,29 @@
 //  the live RealityKit render (nil/inactive Present can never count, and a
 //  stale capture throws instead of falling back).
 //
-//  Fixture: the exact same A/B/C slab and 2x2 asymmetric, steep normal map as the
-//  Metal witness (see that file and checks/witness_fixture_check.py):
+//  Fixture: the exact same A/B/C slab and 2x2 asymmetric normal map as the
+//  Metal witness (see that file; derivation and deterministic oracle in
+//  Local/Private/cad106-native-closure-20261031/material-render-control-review/):
 //    A = topLeft bytes; B = row-inverted bytes declared bottomLeft
 //      (identical physical normals -> identical lighting);
 //    C = SAME bytes as B declared topLeft (green reversed -> different
 //      lighting). B and C byte-identical origin discriminant kills cached /
 //      stale-texture fakes.
 //
-//  RealityKit PBR/image-based lighting is not closed-form oracleable, so the
-//  A/B bound is a justified numerical tolerance (same stage, same camera fit,
-//  same environment, same normalized texture resource) and the A/C bound is
-//  required to dominate it by an order of magnitude.
+//  The witness document additionally authors the PRODUCTION studio
+//  environment light direction through the public-inside-module
+//  `applyViewAppearance` (the same command the environment inspector uses):
+//  [0.35, 0.55, 0.75] -> [0.2, 0.9, 0.35]. Both the Metal headlight and the
+//  studio key are +Y/+Z dominated, and aligning the key with the map's
+//  green (tangent Y) axis maximises the wrapped half-Lambert swing of the
+//  negative control (base dot ~0.36, ny = +/-1 tilts saturate both sides).
 //
-//  Environment: requires the App-hosted UIKit test target with a foreground
+//  RealityKit has no closed-form lighting oracle here. Actual A/B renders
+//  must match, and all original whole-frame A/C gates remain enforced.
+//  Coverage, changed-region and border checks add independent controls for
+//  narrow highlights, cached images and scene drift; they replace no gate.
+//
+// //  Environment: requires the App-hosted UIKit test target with a foreground
 //  window scene (the pane needs a real UIWindowScene to build its ARView
 //  stage). Hostless runs have no window scene; they SKIP here rather than
 //  fake a render — no artifact is fabricated either way.
@@ -86,8 +95,11 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
     // MARK: Fixture (constants pinned with the Metal witness + the checker)
 
     private enum Fixture {
-        static let rowTop: [[UInt8]] = [[112, 249, 164, 255], [144, 249, 164, 255]]
-        static let rowBottom: [[UInt8]] = [[112, 6, 164, 255], [144, 6, 164, 255]]
+        // Green 255 / 0 gives maximal endpoint tangent-Y variation
+        // under row reversal; red 96 / 160 per column. Pinned with the
+        // Metal witness and the deterministic fixture oracle.
+        static let rowTop: [[UInt8]] = [[96, 255, 164, 255], [160, 255, 164, 255]]
+        static let rowBottom: [[UInt8]] = [[96, 0, 164, 255], [160, 0, 164, 255]]
 
         enum Variant {
             case a, b, c
@@ -176,10 +188,23 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
                 colorSpace: .linear, orientation: orientation,
                 sha256: CADMaterialTexture.digest(png), byteCount: png.count)
             body.material = BodyMaterialSpec(
-                baseColor: SIMD4(0.18, 0.18, 0.20, 1), metallic: 0, roughness: 0.5,
+                baseColor: SIMD4(0.6, 0.6, 0.66, 1), metallic: 0, roughness: 0.8,
                 normalTexture: png, uvMapping: .mesh,
                 textureMetadata: [metadata])
             return body
+        }
+
+        /// Physics-chosen studio key direction: mostly +Y so the green
+        /// (tangent Y) reversal swings the wrapped half-Lambert term through
+        /// its full range. Applied through the production appearance command
+        /// (the environment inspector's own path); document-local.
+        static func applyWitnessLight(to document: FloeCADDocument) {
+            var appearance = CADViewAppearance.default
+            appearance.studio = CADViewEnvironmentSettings(
+                lightIntensity: 1.0,
+                lightDirection: [0.2, 0.9, 0.35],
+                backgroundColor: [0.12, 0.14, 0.18])
+            document.applyViewAppearance(appearance)
         }
     }
 
@@ -211,6 +236,54 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
             var max: Int
             var exactFraction: Double
             var p95: Int
+        }
+
+        /// Region statistics over the pixels that actually changed, plus
+        /// the frame border: changed fraction, mean delta inside the
+        /// changed region, and the border maximum. See the file header for
+        /// why the negative control is qualified regionally (RealityKit's
+        /// compressed dark display range makes whole-frame means
+        /// dimensionally inappropriate) and how the gates kill
+        /// flat/cached/stale/drifted fakes.
+        struct RegionStats {
+            var changedFraction: Double
+            var changedMean: Double
+            var borderMax: Int
+        }
+
+        static func regionDiff(_ lhs: WitnessPixels, _ rhs: WitnessPixels,
+                               noiseFloor: Int = 4,
+                               borderFraction: Double = 0.01) -> RegionStats {
+            let count = lhs.width * lhs.height
+            var changed = 0
+            var changedTotal = 0
+            let border = max(8, Int(Double(min(lhs.width, lhs.height)) * borderFraction))
+            var borderMax = 0
+            for pixel in 0..<count {
+                let base = pixel * 4
+                var dmax = 0
+                for channel in 0..<3 {
+                    dmax = max(dmax, abs(Int(lhs.rgba[base + channel])
+                                         - Int(rhs.rgba[base + channel])))
+                }
+                let x = pixel % lhs.width, y = pixel / lhs.width
+                if x < border || y < border
+                    || x >= lhs.width - border || y >= lhs.height - border {
+                    borderMax = max(borderMax, dmax)
+                    continue
+                }
+                if dmax >= noiseFloor {
+                    changed += 1
+                    for channel in 0..<3 {
+                        changedTotal += abs(Int(lhs.rgba[base + channel])
+                                            - Int(rhs.rgba[base + channel]))
+                    }
+                }
+            }
+            return RegionStats(
+                changedFraction: Double(changed) / Double(count),
+                changedMean: changed > 0 ? Double(changedTotal) / Double(changed * 3) : 0,
+                borderMax: borderMax)
         }
 
         static func diff(_ lhs: WitnessPixels, _ rhs: WitnessPixels) throws -> DiffStats {
@@ -281,6 +354,11 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
         document.session.perform(AddBodyCommand(
             body: Fixture.slabBody(normalPNG: png, orientation: variant.orientation),
             title: "Add witness slab"))
+        // Before the pane mounts: same authored studio key light for every
+        // variant (see Fixture.applyWitnessLight). The engineering Metal
+        // viewport keeps its headlight rig and is unaffected by the
+        // presentation appearance, so the two witnesses stay independent.
+        Fixture.applyWitnessLight(to: document)
 
         let store = CADPresentationSceneStore(document: document)
         let handle = CADPresentationHandle()
@@ -434,13 +512,35 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(ab.exactFraction, 0.95)
         XCTAssertLessThanOrEqual(ab.max, 24, "A/B max delta \(ab.max)")
 
-        // Negative control: reversed green must dominate by an order of
-        // magnitude; anything less means flat/cached frames faked parity.
+        // Preserve every original whole-frame control. Regional statistics
+        // below are additive, never a substitute for a failed old gate.
         XCTAssertGreaterThanOrEqual(ac.mean, 8.0,
                                     "A/C mean delta \(ac.mean) in Present")
+        XCTAssertGreaterThanOrEqual(ac.mean, 4 * max(ab.mean, 0.5),
+                                    "the negative control must dominate numerical noise")
+        let acRegion = WitnessPixels.regionDiff(a.pixels, c.pixels)
+        XCTAssertGreaterThanOrEqual(acRegion.changedFraction, 0.06,
+                                    "A/C changed fraction "
+                                    + "\(acRegion.changedFraction) in Present: "
+                                    + "the reversed green must manifest "
+                                    + "across the textured face")
+        XCTAssertLessThanOrEqual(acRegion.changedFraction, 0.60,
+                                 "A/C changed fraction "
+                                 + "\(acRegion.changedFraction) in Present: "
+                                 + "more than the object changed")
+        XCTAssertGreaterThanOrEqual(acRegion.changedMean, 20.0,
+                                    "A/C changed-region mean "
+                                    + "\(acRegion.changedMean) in Present: "
+                                    + "the negative control must be strong "
+                                    + "where it manifests")
+        XCTAssertLessThanOrEqual(acRegion.borderMax, 4,
+                                 "A/C border max \(acRegion.borderMax) in "
+                                 + "Present: the background must be identical "
+                                 + "across variants (stale/drifted frame?)")
         XCTAssertGreaterThanOrEqual(ac.p95, 32)
         XCTAssertGreaterThanOrEqual(ac.max, 48, "A/C max delta \(ac.max)")
-        XCTAssertGreaterThanOrEqual(ac.mean, 4 * max(ab.mean, 0.5),
+        XCTAssertGreaterThanOrEqual(acRegion.changedMean,
+                                    4 * max(ab.mean, 0.5),
                                     "the negative control must dominate "
                                     + "numerical noise")
     }

@@ -11,25 +11,34 @@
 //  `FloeCADDocument.captureViewportPNG` (offscreen `Renderer` over the live
 //  scene; no drawing-page renderer, no fabricated image, no fallback).
 //
-//  Fixture oracle (A/B/C):
+//  Fixture oracle (A/B/C) — physics-derived (see
+//  Local/Private/cad106-native-closure-20261031/material-render-control-review/
+//  HANDOFF.md; the deterministic replica is analysis/fixture_oracle.py):
 //    * One closed 100x100x12 mm slab, identical authored mesh UVs, one
-//      2x2 tangent-space normal map with an asymmetric green channel
-//      (memory top row green 204 => +0.60 Y, bottom row green 51 => -0.60 Y)
-//      and per-column red variation (96/160).
+//      2x2 tangent-space normal map whose green channel is green=255
+//      (tangent +Y, memory top row) and green=0 (tangent -Y, memory bottom
+//      row), with per-column red variation (96/160). This maximises the
+//      endpoint tilt. Bilinear interpolation still crosses zero at the
+//      midpoint; the brighter albedo, roughness and framing provide the
+//      broad visible response, which must be proved by actual captures.
 //    * A = the authored bytes, declared `topLeft`.
 //    * B = the EXACT lossless row inversion of A's bytes, declared
 //      `bottomLeft`. A and B describe the SAME physical normals; with the
 //      fixed per-map-origin sampling (flip only the sampled coordinate,
 //      derive the TBN from the shared mesh UV) the two renders must match
-//      to GPU-numerical tolerance. `checks/metal_lighting_oracle.py`
-//      evaluates the identical shader math in exact arithmetic: A/B are
-//      identical (delta 0.0).
+//      to GPU-numerical tolerance. The deterministic oracle evaluates the
+//      identical shader math in exact arithmetic: A/B are identical
+//      (delta 0.0 at every UV).
 //    * C = the SAME bytes as B but declared `topLeft`, i.e. the green
 //      channel is deliberately reversed relative to A at every memory
 //      position. C is the negative control: its lighting MUST differ
-//      clearly (oracle: max channel delta 81 code values). Because B and C
-//      are byte-identical and differ only in the declared origin, a stale
-//      or cached texture cannot fake B==A while C!=A.
+//      clearly (oracle: whole-frame mean ~14, p95 ~79, max ~127 code
+//      values at 1024x1024). Because B and C are byte-identical and differ
+//      only in the declared origin, a stale or cached texture cannot fake
+//      B==A while C!=A.
+//    * The albedo (0.6 linear) and roughness (0.8) are chosen so the
+//      half-Lambert diffuse swing stays clear of target clipping; the
+//      oracle predicts zero clipped object pixels.
 //
 //  Every attachment binds the rendered pixels to the source document
 //  (revision, change count, content SHA-256) and to the normal-map bytes
@@ -56,13 +65,15 @@ import MetalKit
 
 // MARK: - Shared witness fixture (duplicated per witness file on purpose:
 // each witness must stay independently readable; the constants are pinned
-// here and by checks/witness_fixture_check.py).
+// across all three witnesses and validated by the deterministic fixture
+// oracle described in the file header).
 
 private enum MaterialRenderWitnessFixture {
-    /// 2x2 RGBA rows, memory top -> bottom. Green is asymmetric between
-    /// rows (+0.95 / -0.95); red varies per column (112 / 144).
-    static let rowTop: [[UInt8]] = [[112, 249, 164, 255], [144, 249, 164, 255]]
-    static let rowBottom: [[UInt8]] = [[112, 6, 164, 255], [144, 6, 164, 255]]
+    /// 2x2 RGBA rows, memory top -> bottom. Green is +1.0 / -1.0 tangent Y
+    /// (255 / 0; interpolation still crosses zero at the midpoint); red
+    /// varies per column (96 / 160).
+    static let rowTop: [[UInt8]] = [[96, 255, 164, 255], [160, 255, 164, 255]]
+    static let rowBottom: [[UInt8]] = [[96, 0, 164, 255], [160, 0, 164, 255]]
 
     enum Variant {
         case a, b, c
@@ -157,7 +168,7 @@ private enum MaterialRenderWitnessFixture {
             colorSpace: .linear, orientation: orientation,
             sha256: CADMaterialTexture.digest(png), byteCount: png.count)
         body.material = BodyMaterialSpec(
-            baseColor: SIMD4(0.18, 0.18, 0.20, 1), metallic: 0, roughness: 0.5,
+            baseColor: SIMD4(0.6, 0.6, 0.66, 1), metallic: 0, roughness: 0.8,
             normalTexture: png, uvMapping: .mesh,
             textureMetadata: [metadata])
         return body
@@ -202,6 +213,56 @@ private struct WitnessPixels {
         var p95: Int
         var distinctA: Int
         var distinctB: Int
+    }
+
+    /// Region statistics over the pixels that actually changed, plus the
+    /// frame border. Whole-frame means are diluted by the unchanged
+    /// background (~75% of the frame), so the negative control is
+    /// additionally qualified by: (a) the fraction of frame pixels that
+    /// changed (a flat/cached texture changes ~0%; a narrow specular streak
+    /// stays small; the reversed map must manifest across the textured
+    /// face), (b) the mean delta inside that changed region (dilution-free
+    /// strength), and (c) the border staying exact (a stale frame, exposure
+    /// drift or background change would move the border too).
+    struct RegionStats {
+        var changedFraction: Double
+        var changedMean: Double
+        var borderMax: Int
+    }
+
+    static func regionDiff(_ lhs: WitnessPixels, _ rhs: WitnessPixels,
+                           noiseFloor: Int = 4,
+                           borderFraction: Double = 0.01) -> RegionStats {
+        let count = lhs.width * lhs.height
+        var changed = 0
+        var changedTotal = 0
+        let border = max(8, Int(Double(min(lhs.width, lhs.height)) * borderFraction))
+        var borderMax = 0
+        for pixel in 0..<count {
+            let base = pixel * 4
+            var dmax = 0
+            for channel in 0..<3 {
+                dmax = max(dmax, abs(Int(lhs.rgba[base + channel])
+                                     - Int(rhs.rgba[base + channel])))
+            }
+            let x = pixel % lhs.width, y = pixel / lhs.width
+            if x < border || y < border
+                || x >= lhs.width - border || y >= lhs.height - border {
+                borderMax = max(borderMax, dmax)
+                continue
+            }
+            if dmax >= noiseFloor {
+                changed += 1
+                for channel in 0..<3 {
+                    changedTotal += abs(Int(lhs.rgba[base + channel])
+                                        - Int(rhs.rgba[base + channel]))
+                }
+            }
+        }
+        return RegionStats(
+            changedFraction: Double(changed) / Double(count),
+            changedMean: changed > 0 ? Double(changedTotal) / Double(changed * 3) : 0,
+            borderMax: borderMax)
     }
 
     static func diff(_ lhs: WitnessPixels, _ rhs: WitnessPixels,
@@ -296,7 +357,11 @@ final class CADMaterialRenderWitnessTests: XCTestCase {
                                                 title: "Add witness slab"))
         // The actual engineering capture: offscreen Metal renderer over the
         // live scene; throws (never fabricates) when the GPU path is missing.
-        let result = try document.captureViewportPNG(width: 1024, height: 768)
+        // Square capture: the fitted camera frames the slab's bounding
+        // sphere with the same margin in both axes, so the textured face
+        // covers ~1.3x more of the frame than 1024x768 and the whole-frame
+        // contrast statistics measure the material, not the background.
+        let result = try document.captureViewportPNG(width: 1024, height: 1024)
         XCTAssertEqual(result.renderer, "engineering",
                        "the capture must name the actual renderer")
         XCTAssertFalse(result.pngData.isEmpty)
@@ -399,8 +464,8 @@ final class CADMaterialRenderWitnessTests: XCTestCase {
         let ab = try WitnessPixels.diff(a.pixels, b.pixels)
         let ac = try WitnessPixels.diff(a.pixels, c.pixels)
 
-        // A and B describe identical physical normals. The lighting oracle
-        // (checks/metal_lighting_oracle.py) evaluates this shader's math in
+        // A and B describe identical physical normals. The deterministic
+        // oracle (see the file header) evaluates this shader's math in
         // exact arithmetic and gets delta 0.0; the small slack here covers
         // GPU sampler rounding only.
         XCTAssertLessThanOrEqual(ab.mean, 1.0,
@@ -412,7 +477,9 @@ final class CADMaterialRenderWitnessTests: XCTestCase {
         XCTAssertLessThanOrEqual(ab.max, 12, "A/B max delta \(ab.max)")
 
         // Negative control: C reverses the green channel, so its lighting
-        // must differ clearly. Oracle: 81 code values per band.
+        // must differ clearly. Oracle (deterministic exact-arithmetic
+        // replica of this shader/camera): whole-frame mean ~14, p95 ~79,
+        // max ~127 code values at 1024x1024.
         XCTAssertGreaterThanOrEqual(ac.mean, 8.0,
                                     "A/C mean delta \(ac.mean): the reversed "
                                     + "green must change the lighting visibly")
@@ -422,5 +489,32 @@ final class CADMaterialRenderWitnessTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(ac.mean, 6 * max(ab.mean, 0.25),
                                     "the negative control must dominate any "
                                     + "numerical noise")
+
+        // Region gates (dilution-free): the changed region must cover a
+        // substantial fraction of the frame (oracle: ~23%; a flat or cached
+        // texture changes ~0%, a narrow streak stays far below), the mean
+        // delta inside it must stay high (oracle: ~60), and the frame
+        // border must be exact (a stale capture or lighting/exposure drift
+        // would move the background too).
+        let acRegion = WitnessPixels.regionDiff(a.pixels, c.pixels)
+        XCTAssertGreaterThanOrEqual(acRegion.changedFraction, 0.06,
+                                    "A/C changed fraction "
+                                    + "\(acRegion.changedFraction): the "
+                                    + "reversed green must manifest across "
+                                    + "the textured face")
+        XCTAssertLessThanOrEqual(acRegion.changedFraction, 0.60,
+                                 "A/C changed fraction "
+                                 + "\(acRegion.changedFraction): more than "
+                                 + "the object changed (background/stale "
+                                 + "frame?)")
+        XCTAssertGreaterThanOrEqual(acRegion.changedMean, 24.0,
+                                    "A/C changed-region mean "
+                                    + "\(acRegion.changedMean): the "
+                                    + "negative control must be strong "
+                                    + "where it manifests")
+        XCTAssertLessThanOrEqual(acRegion.borderMax, 4,
+                                 "A/C border max \(acRegion.borderMax): the "
+                                 + "background must be identical across "
+                                 + "variants (stale/drifted frame?)")
     }
 }

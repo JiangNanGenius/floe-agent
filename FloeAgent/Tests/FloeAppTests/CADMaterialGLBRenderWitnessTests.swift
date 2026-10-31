@@ -55,8 +55,11 @@ final class CADMaterialGLBRenderWitnessTests: XCTestCase {
     // MARK: Fixture (constants pinned with the native witnesses)
 
     private enum Fixture {
-        static let rowTop: [[UInt8]] = [[112, 249, 164, 255], [144, 249, 164, 255]]
-        static let rowBottom: [[UInt8]] = [[112, 6, 164, 255], [144, 6, 164, 255]]
+        // Pinned with the Metal/Present witnesses and the deterministic
+        // fixture (green 255/0 gives maximal endpoint tangent-Y variation
+        // under row reversal; red 96/160 per column).
+        static let rowTop: [[UInt8]] = [[96, 255, 164, 255], [160, 255, 164, 255]]
+        static let rowBottom: [[UInt8]] = [[96, 0, 164, 255], [160, 0, 164, 255]]
 
         enum Variant: String {
             case a, b, c
@@ -145,7 +148,7 @@ final class CADMaterialGLBRenderWitnessTests: XCTestCase {
                 colorSpace: .linear, orientation: orientation,
                 sha256: CADMaterialTexture.digest(png), byteCount: png.count)
             body.material = BodyMaterialSpec(
-                baseColor: SIMD4(0.18, 0.18, 0.20, 1), metallic: 0, roughness: 0.5,
+                baseColor: SIMD4(0.6, 0.6, 0.66, 1), metallic: 0, roughness: 0.8,
                 normalTexture: png, uvMapping: .mesh,
                 textureMetadata: [metadata])
             return body
