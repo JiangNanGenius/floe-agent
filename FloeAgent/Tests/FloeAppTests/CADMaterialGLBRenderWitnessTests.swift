@@ -119,7 +119,10 @@ final class CADMaterialGLBRenderWitnessTests: XCTestCase {
         }
 
         static func normalPNG(_ variant: Variant) throws -> Data {
-            try png(width: 2, height: 2, rows: variant.rows)
+            try png(width: 2, height: 2, rows: [
+                Array(variant.rows.prefix(2).joined()),
+                Array(variant.rows.suffix(2).joined()),
+            ])
         }
 
         /// Closed 100x100x12 mm slab shared by the normal and colour
