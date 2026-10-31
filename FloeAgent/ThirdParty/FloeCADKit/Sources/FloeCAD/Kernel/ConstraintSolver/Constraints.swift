@@ -465,3 +465,109 @@ nonisolated struct PointProjectionConstraint: ConstraintResidual {
         [simd_dot(point(vars, p) - origin, direction)]
     }
 }
+
+// MARK: - Connected arcs (M02)
+
+/// Connected-arc coherence: an exposed arc endpoint stays on its own circle
+/// (|e − c| − r = 0). Lowered automatically for every arc whose endpoints are
+/// solver slots (see `SketchSolverBridge`); without it a solved endpoint could
+/// drift off the arc and the written-back angles would describe a different
+/// curve than the one the constraints were solved on. Residual in mm — the
+/// bridge's row normalization divides by the sketch's characteristic length.
+nonisolated struct ArcEndpointOnCircleConstraint: ConstraintResidual {
+    let endpoint: Int
+    let center: Int
+    let radiusVar: Int
+    init(endpoint: Int, center: Int, radiusVar: Int) {
+        self.endpoint = endpoint; self.center = center; self.radiusVar = radiusVar
+    }
+
+    var variableIndices: [Int] {
+        pointIndices(endpoint) + pointIndices(center) + [radiusVar]
+    }
+    var residualCount: Int { 1 }
+    func residuals(_ vars: [Double]) -> [Double] {
+        [simd_length(point(vars, endpoint) - point(vars, center)) - vars[radiusVar]]
+    }
+}
+
+/// Which end of an open spline a junction tangency addresses.
+nonisolated enum ArcSplineTangentEnd: Sendable {
+    case start
+    case end
+}
+
+/// G1 tangent continuity between an arc and an open fit spline at their
+/// shared (welded/coincident) junction: the spline's RENDERED end tangent is
+/// perpendicular to the arc radius at the junction
+/// (dot(normalize(P − c), normalize(tangent)) = 0). The tangent is the exact
+/// centripetal Catmull–Rom end derivative (`CatmullRomBezier`), recomputed each
+/// evaluation with the solved junction point substituted for the end fit
+/// point, so a satisfied residual is true G1 continuity of the drawn curve —
+/// not a chord approximation. Interior fit points are constants here (they are
+/// not solver variables), which is exactly why a tangency can be satisfied by
+/// sliding the junction along the arc. Unitless (a cosine); never NaN — a
+/// degenerate zero-length tangent span carries no direction and reports the
+/// junction unsatisfied instead of dividing by zero.
+nonisolated struct ArcSplineTangentConstraint: ConstraintResidual {
+    let center: Int
+    let point: Int
+    /// Full current fit-point array; the addressed end is replaced by the
+    /// solved junction point on every evaluation.
+    let splinePoints: [SIMD2<Double>]
+    let end: ArcSplineTangentEnd
+
+    init(center: Int, point: Int, splinePoints: [SIMD2<Double>], end: ArcSplineTangentEnd) {
+        self.center = center
+        self.point = point
+        self.splinePoints = splinePoints
+        self.end = end
+    }
+
+    var variableIndices: [Int] { pointIndices(center) + pointIndices(point) }
+    var residualCount: Int { 1 }
+    func residuals(_ vars: [Double]) -> [Double] {
+        guard splinePoints.count >= 2 else { return [0] }
+        var points = splinePoints
+        // Read the global helper's value directly: the `point` property would
+        // otherwise shadow that helper under Swift 6 object compilation.
+        let junction = SIMD2<Double>(vars[2 * self.point], vars[2 * self.point + 1])
+        switch end {
+        case .start: points[0] = junction
+        case .end: points[points.count - 1] = junction
+        }
+        let spanIndex = end == .start ? 0 : points.count - 2
+        let span = CatmullRomBezier.spans(points, closed: false)[spanIndex]
+        let tangent = CatmullRomBezier.derivative(span, end == .start ? 0 : 1)
+        let tLen = simd_length(tangent)
+        let radius = junction - SIMD2<Double>(vars[2 * center], vars[2 * center + 1])
+        let rLen = simd_length(radius)
+        guard tLen > 1e-12, rLen > 1e-12 else { return [0] }
+        return [simd_dot(radius / rLen, tangent / tLen)]
+    }
+}
+
+/// Connected-arc sweep dimension: the CCW sweep between the rays from the
+/// arc center to its (connected) endpoints equals `sweep` radians. Replaces
+/// the free sweep scalar (`ArcSweepConstraint`) for arcs whose endpoints are
+/// solver slots — those arcs carry no sweep variable; the endpoints define
+/// the sweep. Unitless (radians) and scale-free.
+nonisolated struct ArcEndpointSweepConstraint: ConstraintResidual {
+    let endA: Int
+    let endB: Int
+    let center: Int
+    let sweep: Double
+    init(endA: Int, endB: Int, center: Int, sweep: Double) {
+        self.endA = endA; self.endB = endB; self.center = center; self.sweep = sweep
+    }
+
+    var variableIndices: [Int] { pointIndices(endA) + pointIndices(endB) + pointIndices(center) }
+    var residualCount: Int { 1 }
+    func residuals(_ vars: [Double]) -> [Double] {
+        let a = point(vars, endA) - point(vars, center)
+        let b = point(vars, endB) - point(vars, center)
+        let actual = SketchEntity.arcSweep(
+            startAngle: atan2(a.y, a.x), endAngle: atan2(b.y, b.x))
+        return [wrapAngle(actual - sweep)]
+    }
+}

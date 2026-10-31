@@ -11864,13 +11864,17 @@ final class EditorViewModel {
         return session.document.sketches.first { $0.id == id }
     }
 
-    /// Definition state of the active sketch for the status chip (plan §C4):
-    /// remaining structural DOF and whether the sketch is fully defined
-    /// (0 DOF). `nil` when not sketching or the sketch has no geometry yet.
-    var sketchDefinitionStatus: (dof: Int, fullyDefined: Bool)? {
+    /// Definition state of the active sketch for the status chip (plan §C4).
+    /// Zero DOF is only a rank result; failed solves, conflicts and relations
+    /// the solver did not apply remain explicit states, never green status.
+    var sketchDefinitionStatus: (
+        dof: Int, fullyDefined: Bool, converged: Bool,
+        conflicting: Bool, unsupportedCount: Int
+    )? {
         guard let sketch = activeSketch, !sketch.entities.isEmpty,
               let report = sketchDefinitionReport(for: sketch) else { return nil }
-        return (report.dof, report.dof == 0)
+        return (report.dof, report.isFullyDefined, report.converged,
+                report.conflicting, report.unsupportedRelationIDs.count)
     }
 
     // MARK: - Definition state (memoised, solved off the main thread)

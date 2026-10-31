@@ -434,7 +434,8 @@ public final class CADParameterService {
             switch Self.arcEditPlan(
                 args: args, id: entityUUID, center: center, radius: radius,
                 startAngle: startAngle, endAngle: endAngle,
-                dimensions: sketch.dimensions) {
+                dimensions: sketch.dimensions,
+                endpointConnected: Self.arcIsEndpointConnected(entityUUID, in: sketch)) {
             case .success(let value): plan = value
             case .failure(let error): return Self.fail(error.code, error.message)
             }
@@ -777,7 +778,46 @@ public final class CADParameterService {
             let rejected: Bool
             switch entity {
             case .arc:
-                rejected = refs.contains { $0.role == .endpointA || $0.role == .endpointB }
+                // M02: connected arcs solve their endpoints. Endpoint refs are
+                // editable for exactly the constraint vocabulary the solver
+                // truthfully lowers with arc endpoints — connection (coincident
+                // weld), junction tangency, and Lock. Chord-based relations
+                // (parallel/perpendicular/equal-length/concentric) stay refused:
+                // an arc's chord is not its direction.
+                if refs.contains(where: { $0.role == .endpointA || $0.role == .endpointB }) {
+                    switch constraint.kind {
+                    case .coincident:
+                        // R1 review: allow only counterparts the bridge
+                        // truthfully lowers — another point role, or the whole
+                        // of a line-like entity (a `linePair`). A whole
+                        // circle/arc/ellipse/polygon (or a closed spline) has
+                        // no such lowering; approving the edit would leave a
+                        // ghost weld the solve silently drops.
+                        rejected = !constraint.refs
+                            .filter { $0.entityID != entityID }
+                            .allSatisfy { Self.executableArcEndpointCounterpart($0, in: sketch) }
+                    case .fixed:
+                        rejected = false
+                    case .tangent:
+                        // Junction G1 exists only between this arc endpoint and
+                        // an OPEN spline end; anything else (another arc, a
+                        // circle, a closed spline) has no executable lowering.
+                        let others = constraint.refs.filter { $0.entityID != entityID }
+                        rejected = !(others.count == 1
+                                     && (others[0].role == .endpointA || others[0].role == .endpointB)
+                                     && {
+                                        if case let .spline(_, _, closed)? =
+                                            sketch.entities.first(where: { $0.id == others[0].entityID }) {
+                                            return !closed
+                                        }
+                                        return false
+                                     }())
+                    default:
+                        rejected = true
+                    }
+                } else {
+                    rejected = false
+                }
             case .ellipse:
                 // A point-based relationship on the centre is validated by the
                 // production solve. Tangency/equal-radius needs ellipse radius
@@ -802,7 +842,30 @@ public final class CADParameterService {
             let rejected: Bool
             switch entity {
             case .arc:
-                rejected = refs.contains { $0.role == .endpointA || $0.role == .endpointB }
+                // M02: point-to-point driving dimensions (distance and the
+                // axis distances) lower truthfully onto arc endpoints. Radius/
+                // diameter/angle dimensions keep their center/whole semantics
+                // and stay refused when addressed at an endpoint role.
+                if refs.contains(where: { $0.role == .endpointA || $0.role == .endpointB }) {
+                    switch dimension.kind {
+                    case .distance:
+                        // R1 review: point-to-point, or point-to-(whole
+                        // line-like), lower truthfully; any other whole
+                        // counterpart is a ghost the solve silently drops.
+                        rejected = !dimension.refs
+                            .filter { $0.entityID != entityID }
+                            .allSatisfy { Self.executableArcEndpointCounterpart($0, in: sketch) }
+                    case .horizontal, .vertical:
+                        // Lowered strictly point-to-point.
+                        rejected = !dimension.refs
+                            .filter { $0.entityID != entityID }
+                            .allSatisfy { $0.role == .endpointA || $0.role == .endpointB }
+                    default:
+                        rejected = true
+                    }
+                } else {
+                    rejected = false
+                }
             case .ellipse:
                 // Only radius/diameter dimensions assume an ellipse radius
                 // scalar; point/distance dimensions are checked by the
@@ -1299,7 +1362,8 @@ public final class CADParameterService {
     /// like a circle's radius/diameter dimension.
     private static func arcEditPlan(
         args: [String: Any], id: UUID, center: SIMD2<Double>, radius: Double,
-        startAngle: Double, endAngle: Double, dimensions: [SketchDimension]
+        startAngle: Double, endAngle: Double, dimensions: [SketchDimension],
+        endpointConnected: Bool
     ) -> Result<SketchEntityEditPlan, SketchEditFailure> {
         if let failure = rejectUnsupportedFields(
             args,
@@ -1499,9 +1563,28 @@ public final class CADParameterService {
             || startDegrees != nil || endDegrees != nil || sweepDegrees != nil
         let heldRefs: [ConstraintRef]
         if touchedShape {
-            // Arc radius/sweep have no role-level ref; a whole ref holds the
-            // requested scalar(s) and the center they are measured from.
-            heldRefs = [ConstraintRef(entityID: id, role: .whole)]
+            if endpointConnected {
+                // M02 connected arc: the endpoints are solver variables that
+                // must stay free to find the tangency-consistent junctions.
+                // Holding `.whole` would pin them at the naive derived
+                // positions and every tangency edit would refuse as a
+                // conflict. Hold exactly the requested scalars instead: the
+                // center for a center edit, and the transient `radiusOnly`
+                // anchor for a radius/diameter edit (the solved write-back
+                // still reports the actual, tangency-consistent angles).
+                var refs: [ConstraintRef] = []
+                if radiusValue != nil || diameterValue != nil {
+                    refs.append(ConstraintRef(entityID: id, role: .radiusOnly))
+                }
+                if centerValue != nil {
+                    refs.append(ConstraintRef(entityID: id, role: .center))
+                }
+                heldRefs = refs
+            } else {
+                // Arc radius/sweep have no role-level ref; a whole ref holds the
+                // requested scalar(s) and the center they are measured from.
+                heldRefs = [ConstraintRef(entityID: id, role: .whole)]
+            }
         } else if centerValue != nil {
             heldRefs = [ConstraintRef(entityID: id, role: .center)]
         } else {
@@ -1847,7 +1930,22 @@ public final class CADParameterService {
                       sketch.entities.contains(where: { $0.id == uuid }) else {
                     return Self.fail("bad_refs", "Every ref needs an existing entity_id.")
                 }
-                let role = CADMaterialService.string(row["role"]).flatMap(PointRole.init(rawValue:)) ?? .whole
+                let role: PointRole
+                if let rawRole = CADMaterialService.string(row["role"]) {
+                    // Explicit roles are admitted here, BEFORE any trial solve
+                    // or document command. An omitted role keeps the legacy
+                    // `.whole` default; an unknown or solver-local role never
+                    // silently acquires another meaning.
+                    guard let parsed = PointRole(rawValue: rawRole), parsed.isPersistable else {
+                        return Self.fail(
+                            "bad_refs",
+                            "Unsupported ref role '\(rawRole)'. Use endpointA, endpointB, center or whole; "
+                                + "radiusOnly is transient and cannot be saved.")
+                    }
+                    role = parsed
+                } else {
+                    role = .whole
+                }
                 refs.append(ConstraintRef(entityID: uuid, role: role))
             }
             explicitRefs = refs
@@ -3641,11 +3739,20 @@ public final class CADParameterService {
         }
         let outcome = SketchSolverBridge.solveOutcome(
             solvedSketch, movingEntity: nil, dragTarget: nil)
-        guard outcome.structuralResidual <= overConstraintTolerance else {
+        // Final admission: per-equation backward error AND absolute product
+        // precision (see SketchSolverBridge.structuralNorms), AND a converged
+        // solve. Small-scale contradictions cannot hide under display
+        // precision; a best fit or failed solve leaves every byte unchanged.
+        guard outcome.converged,
+              outcome.structuralResidual <= overConstraintTolerance else {
             let blame = SketchSolverBridge.conflictAttribution(
                 solvedSketch, tolerance: overConstraintTolerance)
-            let rows = blame.constraintIDs.map(\.uuidString).sorted()
+            var rows = blame.constraintIDs.map(\.uuidString).sorted()
                 + blame.dimensionIDs.map(\.uuidString).sorted()
+            // M02/M06: connected-arc coherence failures attribute to the arc
+            // entity itself — name it as geometry, never as a phantom
+            // constraint id.
+            rows += blame.entityIDs.map { "geometry:\($0.uuidString)" }.sorted()
             return .failure(SketchEditFailure(
                 code: "constraint_conflict",
                 message: "The \(entityKindName(edited)) edit cannot satisfy the saved constraints and "
@@ -3782,6 +3889,49 @@ public final class CADParameterService {
             if updated != entity { proposed.entities[index] = updated }
         }
         return .success(proposed)
+    }
+
+    /// M02: the arc takes part in the connected-endpoint vocabulary — some
+    /// saved constraint or dimension references it at an endpoint role, so the
+    /// solver exposes the arc's endpoints as variables. The transient edit
+    /// anchors must then leave the endpoints free (see `arcEditPlan`).
+    private static func arcIsEndpointConnected(_ id: UUID, in sketch: Sketch) -> Bool {
+        sketch.constraints.contains { constraint in
+            constraint.refs.contains {
+                $0.entityID == id
+                    && ($0.role == .endpointA || $0.role == .endpointB)
+            }
+        } || sketch.dimensions.contains { dimension in
+            dimension.refs.contains {
+                $0.entityID == id
+                    && ($0.role == .endpointA || $0.role == .endpointB)
+            }
+        }
+    }
+
+    /// R1 review: exactly the operand vocabulary the bridge truthfully lowers
+    /// against an arc endpoint — another point role (a weld or a
+    /// point-to-point dimension), or the whole of a line-like entity
+    /// (line/rect/open spline) that resolves to a `linePair`. Whole
+    /// circles/arcs/ellipses/polygons and closed splines have no such
+    /// lowering: a saved relation against one would be silently dropped by
+    /// the solve while still gating edits — a ghost the edit gate must
+    /// refuse instead.
+    private static func executableArcEndpointCounterpart(
+        _ ref: ConstraintRef, in sketch: Sketch
+    ) -> Bool {
+        if ref.role == .endpointA || ref.role == .endpointB { return true }
+        guard ref.role == .whole,
+              let entity = sketch.entities.first(where: { $0.id == ref.entityID })
+        else { return false }
+        switch entity {
+        case .line, .rect:
+            return true
+        case let .spline(_, _, closed):
+            return !closed
+        case .circle, .arc, .ellipse, .polygon:
+            return false
+        }
     }
 
     /// A stored Lock that pins this exact point: a whole-entity `.fixed`, or a

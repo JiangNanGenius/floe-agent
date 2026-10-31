@@ -22,10 +22,24 @@
 //
 //  Scope notes (v1):
 //   - Arc sweep is a scalar; its starting direction stays fixed. Ellipse angles
-//     and radii are not solve variables. Arc endpoints are still not welded
-//     (documented limitation).
+//     and radii are not solve variables.
 //   - `.coincident` between two points welds them; `.coincident` of a point to a
 //     whole line is lowered to a `ColinearPointConstraint` (point-on-line).
+//
+//  M02 (connected arcs): an arc whose endpoints are referenced by a saved
+//  constraint or dimension gains endpoint solver slots. The endpoints stay on
+//  the arc through an automatic `ArcEndpointOnCircleConstraint`, so a closed
+//  profile built from arcs and splines (welded junctions + junction tangency)
+//  survives driving-dimension edits without splitting. Such an arc carries no
+//  sweep variable — its endpoints define the sweep — and an angle dimension
+//  lowers to `ArcEndpointSweepConstraint`. Arcs with no endpoint references
+//  keep the legacy center+sweep model and solve exactly as before.
+//
+//  M06 (scale-consistent diagnostics): normalized rows condition LM/DOF.
+//  Admission separately requires per-equation backward error AND the legacy
+//  absolute precision at the solved state, so the same conflict has the same
+//  verdict at 10^-3, 1 and 10^3 scale. Transient pointer/edit preferences are
+//  not saved structural equations and a best fit is never success by omission.
 //
 //  nonisolated + Double math to match the kernel.
 //
@@ -49,10 +63,19 @@ nonisolated enum SketchSolverBridge {
         /// LM converged on the system it was given (INCLUDING any transient
         /// drag pull — a stretched drag legitimately leaves this false).
         var converged: Bool
-        /// Norm of the STRUCTURAL residuals (constraints + dimensions only,
-        /// no drag) at the solved state. Above tolerance = the constraint
-        /// system itself is conflicting; hold the baseline, don't write.
+        /// Gate-equivalent STRUCTURAL admission score (saved constraints +
+        /// dimensions + automatic coherence only; never transient intent).
+        /// `overConstraintTolerance` remains the public threshold. The score
+        /// combines per-SCALAR backward error with the historical raw norm;
+        /// see `structuralNorms` and `admissionNorm`. It is a verdict score,
+        /// not a millimetre measurement.
         var structuralResidual: Double
+        /// Worst per-scalar residual divided by its own equation scale. This
+        /// is scale-invariant and cannot be hidden by a product display floor.
+        var structuralBackwardError: Double = 0
+        /// Historical natural-unit L2 norm (mm/rad stacked), retained as the
+        /// independent absolute product-precision gate.
+        var structuralRawResidual: Double = 0
     }
 
     /// Solve the sketch. When `movingEntity`/`dragTarget` are supplied, the
@@ -90,13 +113,6 @@ nonisolated enum SketchSolverBridge {
         )
         var solved = result.variables
         var converged = result.converged
-        func structuralResidual(_ variables: [Double]) -> Double {
-            var sumSquares = 0.0
-            for constraint in sys.structural {
-                for r in constraint.residuals(variables) { sumSquares += r * r }
-            }
-            return sumSquares.squareRoot()
-        }
         // A pointer target is a preference, not another saved constraint.
         // When it is off the allowed motion (e.g. a horizontal line with one
         // endpoint locked), first pull toward it, then project the compromise
@@ -104,7 +120,17 @@ nonisolated enum SketchSolverBridge {
         // rejected as a conflict merely because the pointer moved diagonally.
         // Genuine structural contradictions still report their residual below.
         if movingEntity != nil, dragTarget != nil,
-           structuralResidual(solved) > 1e-6 {
+           admissionNorm(structuralNorms(sys.structural, at: solved)) > 1e-6 {
+            let projected = ConstraintSolver.solve(
+                initial: solved, fixed: sys.fixed, constraints: sys.structural)
+            solved = projected.variables
+            converged = projected.converged
+        }
+        // Direction/projection preferences are candidate-shaping intent, not
+        // saved equations. Project their compromise back onto the real system
+        // before admission; if the preference is incompatible, saved geometry
+        // wins exactly as the existing fallback path intends.
+        if preservingLineDirection != nil || preservingTangentCircle != nil {
             let projected = ConstraintSolver.solve(
                 initial: solved, fixed: sys.fixed, constraints: sys.structural)
             solved = projected.variables
@@ -112,9 +138,13 @@ nonisolated enum SketchSolverBridge {
         }
         let dof = knownDOF ?? nullSpaceAnalysis(sys, at: solved).dof
         let newEntities = writeBack(sketch.entities, sys: sys, vars: solved)
+        let norms = structuralNorms(sys.structural, at: solved)
         return Outcome(entities: newEntities, dof: dof,
                        converged: converged,
-                       structuralResidual: structuralResidual(solved))
+                       structuralResidual: admissionNorm(norms),
+                       structuralBackwardError: norms.backward,
+                       structuralRawResidual: norms.raw)
+
     }
 
     /// Move/Rotate line targets are transient pointer intent. Build from the
@@ -141,9 +171,10 @@ nonisolated enum SketchSolverBridge {
                 refs: [.init(entityID: id, role: .whole)]))
         }
         let sys = buildSystem(from: anchored, movingEntity: nil, dragTarget: nil)
+        let connected = connectedArcIDs(in: anchored)
         var pulls = sys.structural
         for entity in targets {
-            for slot in mutableSlots(entity) {
+            for slot in mutableSlots(entity, connectedArcEndpoints: connected.contains(entity.id)) {
                 guard let index = sys.pointIndex[SlotKey(entityID: slot.entityID, role: slot.role)]
                 else { return nil }
                 pulls.append(FixedPointConstraint(p: index, target: slot.position))
@@ -152,8 +183,7 @@ nonisolated enum SketchSolverBridge {
         let pulled = ConstraintSolver.solve(initial: sys.initial, fixed: sys.fixed, constraints: pulls)
         let projected = ConstraintSolver.solve(initial: pulled.variables, fixed: sys.fixed,
                                                constraints: sys.structural)
-        let residual = sys.structural.flatMap { $0.residuals(projected.variables) }
-            .reduce(0.0) { $0 + $1 * $1 }.squareRoot()
+        let residual = admissionNorm(structuralNorms(sys.structural, at: projected.variables))
         guard projected.converged, residual <= 1e-5 else { return nil }
         let wholeLocked = Set(sketch.constraints.filter { $0.kind == .fixed }
             .flatMap { $0.refs }.filter { $0.role == .whole }.map { $0.entityID })
@@ -187,8 +217,7 @@ nonisolated enum SketchSolverBridge {
         pulls.append(FixedPointConstraint(p: b, target: hi + delta))
         let pulled = ConstraintSolver.solve(initial: sys.initial, fixed: sys.fixed, constraints: pulls)
         let projected = ConstraintSolver.solve(initial: pulled.variables, fixed: sys.fixed, constraints: rigid)
-        let residual = rigid.flatMap { $0.residuals(projected.variables) }
-            .reduce(0.0) { $0 + $1 * $1 }.squareRoot()
+        let residual = admissionNorm(structuralNorms(rigid, at: projected.variables))
         guard projected.converged, residual <= 1e-5 else { return nil }
         if zip(projected.variables, sys.initial).allSatisfy({ abs($0 - $1) < 1e-8 }) {
             return sketch.entities // Refused movement must not add a numerical-noise undo step.
@@ -223,8 +252,7 @@ nonisolated enum SketchSolverBridge {
         }
         let pulled = ConstraintSolver.solve(initial: sys.initial, fixed: sys.fixed, constraints: pulls)
         let projected = ConstraintSolver.solve(initial: pulled.variables, fixed: sys.fixed, constraints: sys.structural)
-        let residual = sys.structural.flatMap { $0.residuals(projected.variables) }
-            .reduce(0.0) { $0 + $1 * $1 }.squareRoot()
+        let residual = admissionNorm(structuralNorms(sys.structural, at: projected.variables))
         guard projected.converged, residual <= 1e-5 else { return nil }
         return writeBack(sketch.entities, sys: sys, vars: projected.variables)
     }
@@ -298,15 +326,17 @@ nonisolated enum SketchSolverBridge {
     struct ConflictAttribution: Equatable, Sendable {
         var constraintIDs: Set<UUID> = []
         var dimensionIDs: Set<UUID> = []
-        var isEmpty: Bool { constraintIDs.isEmpty && dimensionIDs.isEmpty }
+        /// Geometry whose automatic coherence row failed (connected arcs whose
+        /// endpoint cannot stay on the circle). Real, visible ids only.
+        var entityIDs: Set<UUID> = []
+        var isEmpty: Bool { constraintIDs.isEmpty && dimensionIDs.isEmpty && entityIDs.isEmpty }
     }
 
-    /// Attribute a conflicting sketch's unsatisfied residual rows to their
-    /// source constraint/dimension UUIDs. Solves the STRUCTURAL system only
-    /// (no drag), evaluates each lowered residual at the solution, and
-    /// reports every source whose row norm exceeds `tolerance` — the same
-    /// scale as `EditorViewModel.overConstraintTolerance`, and subject to the
-    /// same mixed-units caveat until residual normalization lands.
+    /// Attribute unsatisfied rows to their real source UUIDs. Solves only the
+    /// saved/coherence system (no drag or edit preference), then applies the
+    /// same per-row backward-error AND raw-precision admission as writeback.
+    /// A row that is exactly satisfied at the best fit is not blamed; every
+    /// reported ID belongs to an actual saved relation or coherence entity.
     static func conflictAttribution(
         _ sketch: Sketch, tolerance: Double = 1e-3
     ) -> ConflictAttribution {
@@ -321,12 +351,12 @@ nonisolated enum SketchSolverBridge {
         ).variables
         var out = ConflictAttribution()
         for (i, constraint) in sys.structural.enumerated() {
-            var sumSquares = 0.0
-            for r in constraint.residuals(solved) { sumSquares += r * r }
-            guard sumSquares.squareRoot() > tolerance else { continue }
+            let row = admissionNorm(structuralNorms([constraint], at: solved))
+            guard row > tolerance else { continue }
             switch sys.structuralSources[i] {
             case .constraint(let id): out.constraintIDs.insert(id)
             case .dimension(let id): out.dimensionIDs.insert(id)
+            case .coherence(let id): out.entityIDs.insert(id)
             }
         }
         return out
@@ -373,20 +403,23 @@ nonisolated enum SketchSolverBridge {
         return out.isEmpty ? attributionFallback() : out
     }
 
-    /// Residual norm of the sketch's structural constraint/dimension system at
-    /// its solved state. ~0 means every constraint is mutually satisfiable; a
-    /// value above a small tolerance signals a CONFLICTING (over-constrained)
-    /// system the solver cannot satisfy. Used to refuse an over-constraining
-    /// edit before it corrupts the sketch. Ignores any transient drag target.
+    /// Gate-equivalent structural admission score at the solved state (see
+    /// `structuralNorms`). Below the threshold means every equation satisfies
+    /// BOTH backward-error and absolute precision; nonconvergence returns
+    /// infinity so scalar add-time gates cannot mistake a best fit for success.
+    /// Transient drag/edit intent never enters this system.
     static func residualNorm(_ sketch: Sketch) -> Double {
         let sys = buildSystem(from: sketch, movingEntity: nil, dragTarget: nil)
         guard !sys.initial.isEmpty, !sys.structural.isEmpty else { return 0 }
-        let result = ConstraintSolver.solve(
+        let solve = ConstraintSolver.solve(
             initial: sys.initial,
             fixed: sys.fixed,
             constraints: sys.structural
         )
-        return result.residualNorm
+        // Add-time gates call this scalar API directly. A non-converged best
+        // fit is not satisfaction even when its residual happens to be small.
+        guard solve.converged else { return .infinity }
+        return admissionNorm(structuralNorms(sys.structural, at: solve.variables))
     }
 
     /// Per-entity fully-defined state: `true` when every variable the entity
@@ -407,20 +440,52 @@ nonisolated enum SketchSolverBridge {
         var dof: Int
         /// Supporting-line determinacy in axisEdge order; length may remain free.
         var rectangleEdges: [UUID: [Bool]] = [:]
+        /// TRUE when saved/coherence equations exceed structural admission.
+        /// This is independent of LM convergence: a best fit can converge and
+        /// still conflict, while a non-converged high-residual state can be
+        /// both non-converged and conflicting.
+        var conflicting: Bool = false
+        /// Actual LM state for the report's solve. DOF/rank alone is not proof
+        /// of satisfaction and must never turn a failed solve green.
+        var converged: Bool = true
+        /// Saved constraints/dimensions that lowered to NO executable row and
+        /// are not Locks. Unsupported is neither satisfied nor conflicting.
+        var unsupportedRelationIDs: Set<UUID> = []
+        /// The single status-chip/query predicate. Zero DOF is only a rank
+        /// statement; conflicts, failed solves and dropped relations remain
+        /// visible instead of being hidden by "fully defined".
+        var isFullyDefined: Bool {
+            dof == 0 && converged && !conflicting && unsupportedRelationIDs.isEmpty
+        }
     }
+
+    /// Public threshold for the gate-equivalent admission score. The two
+    /// physical/numerical tolerances below remain explicit rather than being
+    /// hidden inside a unitless loss value.
+    static let overConstraintTolerance: Double = 1e-3
+    /// Maximum per-scalar backward error. 1e-7 is above the central-
+    /// difference/LM noise floor yet far below the reviewed 2.5e-4 per-
+    /// dimension contradiction. It applies equally at 10^-3, 1 and 10^3.
+    static let relativeSatisfactionTolerance: Double = 1e-7
+    /// Historical absolute product precision, in natural residual units.
+    /// This is an ADDITIONAL gate, never a reason to excuse a structurally
+    /// contradictory equation merely because its sketch is small.
+    static let absoluteSatisfactionTolerance: Double = 1e-3
 
     static func definitionReport(_ sketch: Sketch) -> DefinitionReport {
         var states: [UUID: Bool] = [:]
         let sys = buildSystem(from: sketch, movingEntity: nil, dragTarget: nil)
         guard !sys.initial.isEmpty else {
             for e in sketch.entities { states[e.id] = true }
-            return DefinitionReport(states: states, dof: 0)
+            return DefinitionReport(states: states, dof: 0,
+                                    unsupportedRelationIDs: sys.unsupportedRelationIDs)
         }
-        let solved = ConstraintSolver.solve(
+        let solve = ConstraintSolver.solve(
             initial: sys.initial,
             fixed: sys.fixed,
             constraints: sys.solveConstraints
-        ).variables
+        )
+        let solved = solve.variables
         let analysis = nullSpaceAnalysis(sys, at: solved)
         for e in sketch.entities {
             states[e.id] = entityDetermined(e, sys: sys, determined: analysis.determined)
@@ -433,7 +498,12 @@ nonisolated enum SketchSolverBridge {
             // endpoint may slide along a determined supporting line.
             edges[id] = [2*a+1, 2*b, 2*b+1, 2*a].map { analysis.determined[$0] }
         }
-        return DefinitionReport(states: states, dof: analysis.dof, rectangleEdges: edges)
+        let conflicting = admissionNorm(structuralNorms(sys.structural, at: solved))
+            > overConstraintTolerance
+        return DefinitionReport(states: states, dof: analysis.dof,
+                                rectangleEdges: edges, conflicting: conflicting,
+                                converged: solve.converged,
+                                unsupportedRelationIDs: sys.unsupportedRelationIDs)
     }
 
     // MARK: - System model
@@ -452,10 +522,22 @@ nonisolated enum SketchSolverBridge {
 
     /// Which document object a lowered residual came from — the provenance
     /// that lets a conflict be attributed back to something the user can see
-    /// and delete (stage 2 of conflict diagnosis).
+    /// and act on (stage 2 of conflict diagnosis). `.coherence` rows are the
+    /// automatic connected-arc "endpoint stays on its circle" guards; they are
+    /// attributed to the ARC's entity id, never to a phantom constraint.
     private enum ConflictSource {
         case constraint(UUID)
         case dimension(UUID)
+        case coherence(UUID)
+
+        /// R2 review: the saved relation this source stands for (nil for the
+        /// automatic coherence rows, which have no document object).
+        var relationID: UUID? {
+            switch self {
+            case .constraint(let id), .dimension(let id): return id
+            case .coherence: return nil
+            }
+        }
     }
 
     /// The lowered numeric problem plus the maps needed to write results back
@@ -467,7 +549,17 @@ nonisolated enum SketchSolverBridge {
         var pointIndex: [SlotKey: Int]
         var radiusVar: [UUID: Int]
         var arcSweepVar: [UUID: Int]
+        /// Arcs whose endpoints are solver slots (referenced by a saved
+        /// constraint/dimension), mapped to their endpoint point indices.
+        var arcEndpoints: [UUID: (start: Int, end: Int)] = [:]
+        /// The sketch's characteristic length: bbox diagonal plus radii,
+        /// floored at a denormal guard. Divides every length residual so the
+        /// system's condition number and all verdict tolerances are
+        /// scale-consistent (M06).
+        var characteristicLength: Double = 1
         /// Residuals for constraints + dimensions ONLY (no transient drag).
+        /// Every row is NORMALIZED by its natural scale (length rows by
+        /// `characteristicLength`, angle rows by 1) — see `NormalizedResidual`.
         var structural: [any ConstraintResidual]
         /// Source object per `structural` entry (same indices). A constraint
         /// that lowers to several residuals repeats its source.
@@ -475,11 +567,152 @@ nonisolated enum SketchSolverBridge {
         /// `structural` plus the transient drag constraint (used for the solve).
         var solveConstraints: [any ConstraintResidual]
         var entityPoints: [UUID: [Int]]
+        /// R2 review: saved constraints/dimensions that produced NO structural
+        /// row and are not Locks — relations the solve silently ignored. The
+        /// verdict norms say nothing about them; the definition report
+        /// surfaces them as unsupported instead of counting them satisfied.
+        var unsupportedRelationIDs: Set<UUID> = []
+    }
+
+    /// A residual whose rows are divided by a constant natural scale. Length
+    /// rows are measured in mm but angle rows (parallel/perpendicular/tangent/
+    /// sweep) are unitless; stacking them raw made the LM conditioning and the
+    /// conflict/attribution tolerances drift with sketch size (the reproduced
+    /// M06 normalization gap). Normalizing length rows by the characteristic
+    /// length makes every residual dimensionless, so one absolute tolerance
+    /// is scale-consistent and rank/DOF analysis (invariant under nonzero row
+    /// scaling) is unchanged.
+    private struct NormalizedResidual: ConstraintResidual {
+        let base: any ConstraintResidual
+        let scale: Double
+        var variableIndices: [Int] { base.variableIndices }
+        var residualCount: Int { base.residualCount }
+        func residuals(_ vars: [Double]) -> [Double] {
+            base.residuals(vars).map { $0 / scale }
+        }
+    }
+
+    /// Diagnostics for one solved state. Normalized rows still drive LM/DOF;
+    /// admission additionally measures each scalar equation's backward error.
+    /// Driving lengths use their OWN target magnitude, so an unrelated large
+    /// entity cannot dilute a small dimension's contradiction. Other geometric
+    /// rows use the same natural scale as their normalized counterpart.
+    private static func structuralNorms(
+        _ rows: [any ConstraintResidual], at vars: [Double]
+    ) -> (normalized: Double, raw: Double, backward: Double) {
+        var normalizedSum = 0.0
+        var rawSum = 0.0
+        var backward = 0.0
+        for row in rows {
+            for value in row.residuals(vars) { normalizedSum += value * value }
+            let normalized = row as? NormalizedResidual
+            let base = normalized?.base ?? row
+            let rawValues = base.residuals(vars)
+            let equationScale = satisfactionScale(of: base, fallback: normalized?.scale ?? 1)
+            for value in rawValues {
+                rawSum += value * value
+                backward = Swift.max(backward, abs(value) / equationScale)
+            }
+        }
+        return (normalizedSum.squareRoot(), rawSum.squareRoot(), backward)
+    }
+
+    private static func satisfactionScale(
+        of residual: any ConstraintResidual, fallback: Double
+    ) -> Double {
+        let target: Double?
+        switch residual {
+        case let row as DistanceConstraint: target = abs(row.distance)
+        case let row as AxisDistanceConstraint: target = abs(row.distance)
+        case let row as PointDistanceToLineConstraint: target = abs(row.distance)
+        case let row as RadiusConstraint: target = abs(row.radius)
+        default: target = nil
+        }
+        // Zero/legacy-degenerate targets retain the geometric natural scale;
+        // no absolute millimetre floor participates in this relative measure.
+        return target.map { $0 > 0 ? $0 : fallback } ?? fallback
+    }
+
+    /// Convert the two independent requirements into the legacy public gate
+    /// units. <= overConstraintTolerance means BOTH:
+    ///   backward <= relativeSatisfactionTolerance, AND
+    ///   raw <= absoluteSatisfactionTolerance.
+    /// The raw gate preserves product precision; the backward gate makes the
+    /// structural verdict scale-invariant and rejects representable conflicts.
+    private static func admissionNorm(
+        _ norms: (normalized: Double, raw: Double, backward: Double)
+    ) -> Double {
+        let backwardScore = norms.backward
+            * (overConstraintTolerance / relativeSatisfactionTolerance)
+        let rawScore = norms.raw
+            * (overConstraintTolerance / absoluteSatisfactionTolerance)
+        let score = Swift.max(backwardScore, rawScore)
+        return score.isFinite ? score : .infinity
+    }
+
+    /// The natural scale of a lowered residual: the sketch's characteristic
+    /// length for every length-valued row, 1 for angle/unitless rows. This
+    /// switch is the auditable list — a new residual type MUST declare its
+    /// nature here rather than silently inherit a wrong scale.
+    private static func naturalScale(
+        of residual: any ConstraintResidual, characteristicLength L: Double
+    ) -> Double {
+        switch residual {
+        case is CoincidentConstraint,
+             is ConcentricConstraint,
+             is ColinearPointConstraint,
+             is MidpointConstraint,
+             is HorizontalConstraint,
+             is VerticalConstraint,
+             is FixedPointConstraint,
+             is FixedMidpointConstraint,
+             is DistanceConstraint,
+             is AxisDistanceConstraint,
+             is PointDistanceToLineConstraint,
+             is EqualLengthConstraint,
+             is SymmetricConstraint,
+             is RadiusConstraint,
+             is EqualRadiusConstraint,
+             is TangentLineCircleConstraint,
+             is TangentCircleCircleConstraint,
+             is ArcEndpointOnCircleConstraint,
+             // R1 review fix: both hold a millimetre measure against a UNIT
+             // direction vector — cross2(v, unit) is |v|·sinθ and
+             // dot(v, unit) is a projection length, i.e. mm-valued rows.
+             // Classifying them as unitless over/under-weighted them by
+             // exactly L in every verdict (a genuine 5e-3-relative
+             // projection conflict read 5e-6 at 1e-3 scale and was accepted;
+             // see the review's evidence/review-math.log, Part B).
+             is LineDirectionConstraint,
+             is PointProjectionConstraint:
+            return L
+        case is ParallelConstraint,
+             is PerpendicularConstraint,
+             is AngleConstraint,
+             is ArcSweepConstraint,
+             is ArcSplineTangentConstraint,
+             is ArcEndpointSweepConstraint:
+            return 1
+        default:
+            // Unknown future residuals keep the legacy absolute behavior
+            // rather than guessing a scale.
+            return 1
+        }
     }
 
     // MARK: - Entity point / scalar enumeration
 
     private static func mutableSlots(_ e: SketchEntity) -> [RawSlot] {
+        mutableSlots(e, connectedArcEndpoints: false)
+    }
+
+    /// `connectedArcEndpoints`: expose an arc's start/end points as solver
+    /// slots (M02). Only arcs referenced by a saved constraint/dimension at an
+    /// endpoint role get slots — unreferenced arcs keep the legacy
+    /// center-only model, so every existing sketch solves byte-identically.
+    private static func mutableSlots(
+        _ e: SketchEntity, connectedArcEndpoints: Bool
+    ) -> [RawSlot] {
         switch e {
         case let .line(id, a, b):
             return [RawSlot(entityID: id, role: .endpointA, position: a, endpointLike: true),
@@ -489,8 +722,17 @@ nonisolated enum SketchSolverBridge {
                     RawSlot(entityID: id, role: .endpointB, position: mx, endpointLike: true)]
         case let .circle(id, c, _):
             return [RawSlot(entityID: id, role: .center, position: c, endpointLike: false)]
-        case let .arc(id, c, _, _, _):
-            return [RawSlot(entityID: id, role: .center, position: c, endpointLike: false)]
+        case let .arc(id, c, r, startAngle, endAngle):
+            var slots = [RawSlot(entityID: id, role: .center, position: c, endpointLike: false)]
+            if connectedArcEndpoints {
+                slots.append(RawSlot(entityID: id, role: .endpointA,
+                                     position: SketchEntity.arcPoint(center: c, radius: r, angle: startAngle),
+                                     endpointLike: true))
+                slots.append(RawSlot(entityID: id, role: .endpointB,
+                                     position: SketchEntity.arcPoint(center: c, radius: r, angle: endAngle),
+                                     endpointLike: true))
+            }
+            return slots
         case let .ellipse(id, c, _, _, _):
             return [RawSlot(entityID: id, role: .center, position: c, endpointLike: false)]
         case let .polygon(id, c, _, _, _):
@@ -505,6 +747,55 @@ nonisolated enum SketchSolverBridge {
             return [RawSlot(entityID: id, role: .endpointA, position: first, endpointLike: true),
                     RawSlot(entityID: id, role: .endpointB, position: last, endpointLike: true)]
         }
+    }
+
+    /// Arcs whose endpoints take part in the saved constraint/dimension
+    /// vocabulary — those gain endpoint solver slots (M02 connected arcs).
+    private static func connectedArcIDs(in sketch: Sketch) -> Set<UUID> {
+        var ids = Set<UUID>()
+        func scan(_ refs: [ConstraintRef]) {
+            for ref in refs where ref.role == .endpointA || ref.role == .endpointB {
+                if case .arc? = sketch.entities.first(where: { $0.id == ref.entityID }) {
+                    ids.insert(ref.entityID)
+                }
+            }
+        }
+        for constraint in sketch.constraints { scan(constraint.refs) }
+        for dimension in sketch.dimensions { scan(dimension.refs) }
+        return ids
+    }
+
+    /// The sketch's characteristic length (M06): bbox diagonal over every
+    /// entity's solver-relevant geometry, including radii (a lone circle
+    /// still has a length scale). Floored only against zero.
+    private static func characteristicLength(of sketch: Sketch) -> Double {
+        var lo = SIMD2<Double>(.greatestFiniteMagnitude, .greatestFiniteMagnitude)
+        var hi = SIMD2<Double>(-.greatestFiniteMagnitude, -.greatestFiniteMagnitude)
+        var maxDiameter = 0.0
+        func add(_ p: SIMD2<Double>) {
+            lo = SIMD2(Swift.min(lo.x, p.x), Swift.min(lo.y, p.y))
+            hi = SIMD2(Swift.max(hi.x, p.x), Swift.max(hi.y, p.y))
+        }
+        for e in sketch.entities {
+            switch e {
+            case let .line(_, a, b): add(a); add(b)
+            case let .rect(_, mn, mx): add(mn); add(mx)
+            case let .circle(_, c, r): add(c); maxDiameter = Swift.max(maxDiameter, 2 * r)
+            case let .arc(_, c, r, startAngle, endAngle):
+                add(c); maxDiameter = Swift.max(maxDiameter, 2 * r)
+                // Arc endpoints can sit outside the center bbox quadrant span.
+                add(SketchEntity.arcPoint(center: c, radius: r, angle: startAngle))
+                add(SketchEntity.arcPoint(center: c, radius: r, angle: endAngle))
+            case let .ellipse(_, c, rx, ry, _):
+                add(c); maxDiameter = Swift.max(maxDiameter, 2 * Swift.max(rx, ry))
+            case let .polygon(_, c, r, _, _):
+                add(c); maxDiameter = Swift.max(maxDiameter, 2 * r)
+            case let .spline(_, points, _):
+                for p in points { add(p) }
+            }
+        }
+        let diagonal = simd_distance(lo, hi)
+        return Swift.max(diagonal, maxDiameter, 1e-300)
     }
 
     private static func radiusScalar(_ e: SketchEntity) -> Double? {
@@ -526,11 +817,16 @@ nonisolated enum SketchSolverBridge {
         preservingLineDirection: UUID? = nil,
         preservingTangentCircle: (circle: UUID, line: UUID)? = nil
     ) -> System {
+        // 0. Connected arcs (M02) and the scale every length row is
+        // normalized by (M06).
+        let connectedArcs = connectedArcIDs(in: sketch)
+        let charLength = characteristicLength(of: sketch)
+
         // 1. Raw point slots for every entity.
         var slots: [RawSlot] = []
         var rawIndexOf: [SlotKey: Int] = [:]
         for e in sketch.entities {
-            for s in mutableSlots(e) {
+            for s in mutableSlots(e, connectedArcEndpoints: connectedArcs.contains(e.id)) {
                 rawIndexOf[SlotKey(entityID: s.entityID, role: s.role)] = slots.count
                 slots.append(s)
             }
@@ -599,8 +895,18 @@ nonisolated enum SketchSolverBridge {
         }
 
         // Arc angle dimensions drive sweep while retaining the starting ray.
+        // Connected arcs (M02) carry NO sweep variable: their endpoint slots
+        // define the sweep, and an angle dimension lowers to
+        // `ArcEndpointSweepConstraint` instead.
         var arcSweepVar: [UUID: Int] = [:]
+        var arcEndpoints: [UUID: (start: Int, end: Int)] = [:]
         for case let .arc(id, _, _, start, end) in sketch.entities {
+            if connectedArcs.contains(id),
+               let a = pointIndex[SlotKey(entityID: id, role: .endpointA)],
+               let b = pointIndex[SlotKey(entityID: id, role: .endpointB)] {
+                arcEndpoints[id] = (start: a, end: b)
+                continue
+            }
             arcSweepVar[id] = 2 * pointCount + scalarValues.count
             scalarValues.append(SketchEntity.arcSweep(startAngle: start, endAngle: end))
         }
@@ -616,9 +922,10 @@ nonisolated enum SketchSolverBridge {
         // 7. Entity -> point indices.
         var entityPoints: [UUID: [Int]] = [:]
         for e in sketch.entities {
-            entityPoints[e.id] = mutableSlots(e).compactMap {
-                pointIndex[SlotKey(entityID: $0.entityID, role: $0.role)]
-            }
+            entityPoints[e.id] = mutableSlots(e, connectedArcEndpoints: connectedArcs.contains(e.id))
+                .compactMap {
+                    pointIndex[SlotKey(entityID: $0.entityID, role: $0.role)]
+                }
         }
 
         // Resolve helpers.
@@ -626,13 +933,18 @@ nonisolated enum SketchSolverBridge {
             pointIndex[SlotKey(entityID: id, role: role)]
         }
         func linePair(_ id: UUID) -> (Int, Int)? {
+            // An arc is never a "line pair": even with connected endpoints,
+            // the chord is NOT the curve's direction, so parallel/perpendicular/
+            // angle-style relations must keep refusing arcs rather than lower
+            // onto a chord (legacy drop behavior, now explicit).
+            if case .arc? = sketch.entities.first(where: { $0.id == id }) { return nil }
             guard let a = pIdx(id, .endpointA), let b = pIdx(id, .endpointB) else { return nil }
             return (a, b)
         }
         func pointOperand(_ ref: ConstraintRef) -> Int? {
             switch ref.role {
             case .endpointA, .endpointB, .center: return pIdx(ref.entityID, ref.role)
-            case .whole: return nil
+            case .whole, .radiusOnly: return nil
             }
         }
         func twoLines(_ refs: [ConstraintRef]) -> (Int, Int, Int, Int)? {
@@ -644,12 +956,18 @@ nonisolated enum SketchSolverBridge {
 
         // 8. Fixed set from `.fixed` (Lock) constraints.
         var fixed = Set<Int>()
+        var fixedRelationIDs = Set<UUID>()
         func fixPoint(_ pi: Int) { fixed.insert(2 * pi); fixed.insert(2 * pi + 1) }
         for c in sketch.constraints where c.kind == .fixed {
+            fixedRelationIDs.insert(c.id)
             for ref in c.refs {
                 switch ref.role {
                 case .endpointA, .endpointB, .center:
                     if let pi = pIdx(ref.entityID, ref.role) { fixPoint(pi) }
+                case .radiusOnly:
+                    // Transient solver anchor (M02): pin ONLY the radius scalar
+                    // of a connected arc — never a point. Never persisted.
+                    if let rv = radiusVar[ref.entityID] { fixed.insert(rv) }
                 case .whole:
                     if let edge = ref.rectangleEdge, (0..<4).contains(edge),
                        case .rect? = sketch.entities.first(where: { $0.id == ref.entityID }),
@@ -682,18 +1000,34 @@ nonisolated enum SketchSolverBridge {
 
         // 9. Lower constraints + dimensions to residuals, recording each
         // row's source object so a conflict can be attributed back to the
-        // constraint/dimension the user sees (stage 2).
+        // constraint/dimension the user sees (stage 2). Every row is wrapped
+        // in its natural scale (M06) so mm and unitless residuals share one
+        // dimensionless tolerance.
         var structural: [any ConstraintResidual] = []
         var structuralSources: [ConflictSource] = []
+        // Pointer/edit preferences participate in the LM solve only. They are
+        // not saved relations, consume no structural DOF and cannot blame a
+        // random/phantom relation or turn their compromise into admission.
+        var preferences: [any ConstraintResidual] = []
+        /// R2 review: every saved relation that produced at least one row.
+        var loweredRelationIDs = Set<UUID>()
+        /// Locks are executable without producing a residual row (they pin
+        /// variables in the fixed set); fixedRelationIDs was collected above.
         var currentSource = ConflictSource.constraint(UUID()) // set per loop turn
         func lower(_ residual: any ConstraintResidual) {
-            structural.append(residual)
+            structural.append(NormalizedResidual(
+                base: residual, scale: naturalScale(of: residual, characteristicLength: charLength)))
             structuralSources.append(currentSource)
+            if let id = currentSource.relationID { loweredRelationIDs.insert(id) }
+        }
+        func prefer(_ residual: any ConstraintResidual) {
+            preferences.append(NormalizedResidual(
+                base: residual, scale: naturalScale(of: residual, characteristicLength: charLength)))
         }
         if let id = preservingLineDirection, let (a, b) = linePair(id) {
             let delta = SIMD2(initial[2*b] - initial[2*a], initial[2*b+1] - initial[2*a+1])
             if simd_length(delta) > 1e-9 {
-                lower(LineDirectionConstraint(a: a, b: b, direction: simd_normalize(delta)))
+                prefer(LineDirectionConstraint(a: a, b: b, direction: simd_normalize(delta)))
             }
         }
         // Application-only preference: a free circle approaches the anchored
@@ -706,7 +1040,7 @@ nonisolated enum SketchSolverBridge {
             let delta = SIMD2(initial[2*b] - initial[2*a], initial[2*b+1] - initial[2*a+1])
             if simd_length(delta) > 1e-9 {
                 fixed.insert(rv)
-                lower(PointProjectionConstraint(p: center,
+                prefer(PointProjectionConstraint(p: center,
                     origin: SIMD2(initial[2*center], initial[2*center+1]),
                     direction: simd_normalize(delta)))
             }
@@ -771,6 +1105,45 @@ nonisolated enum SketchSolverBridge {
                let rv = radiusVar[cRef.entityID] {
                 lower(TangentLineCircleConstraint(lA: a, lB: b, center: center, radiusVar: rv))
             }
+        }
+        func appendArcSplineTangent(_ r0: ConstraintRef, _ r1: ConstraintRef) -> Bool {
+            // M02: junction tangency between a connected arc endpoint and an
+            // open-spline end. The junction point must be the SAME solver point
+            // (welded by the companion `.coincident`) for the residual to mean
+            // continuity of one shared profile vertex.
+            func arcEndpoint(_ ref: ConstraintRef) -> (center: Int, point: Int, isStart: Bool)? {
+                guard arcEndpoints[ref.entityID] != nil,
+                      let center = pIdx(ref.entityID, .center) else { return nil }
+                if ref.role == .endpointA, let p = pIdx(ref.entityID, .endpointA) {
+                    return (center, p, true)
+                }
+                if ref.role == .endpointB, let p = pIdx(ref.entityID, .endpointB) {
+                    return (center, p, false)
+                }
+                return nil
+            }
+            func splineEnd(_ ref: ConstraintRef) -> (points: [SIMD2<Double>], atStart: Bool)? {
+                guard ref.role == .endpointA || ref.role == .endpointB,
+                      case let .spline(_, points, closed)? =
+                        sketch.entities.first(where: { $0.id == ref.entityID }),
+                      !closed, points.count >= 2 else { return nil }
+                return (points, ref.role == .endpointA)
+            }
+            if let arc = arcEndpoint(r0), let spl = splineEnd(r1) {
+                lower(ArcSplineTangentConstraint(
+                    center: arc.center, point: arc.point,
+                    splinePoints: spl.points,
+                    end: spl.atStart ? .start : .end))
+                return true
+            }
+            if let arc = arcEndpoint(r1), let spl = splineEnd(r0) {
+                lower(ArcSplineTangentConstraint(
+                    center: arc.center, point: arc.point,
+                    splinePoints: spl.points,
+                    end: spl.atStart ? .start : .end))
+                return true
+            }
+            return false
         }
         func appendDistance(_ refs: [ConstraintRef], value: Double) {
             guard refs.count == 2 else { return }
@@ -871,6 +1244,17 @@ nonisolated enum SketchSolverBridge {
                     }
                 }
             case .tangent:
+                // M02: point-role refs (connected arc endpoint + open spline
+                // end) lower to junction G1 continuity. Whole-entity refs keep
+                // the legacy circle/circle and line/circle lowering. Other
+                // combinations (e.g. spline to a full circle — no shared
+                // welded point) remain unsupported and are NOT lowered.
+                if c.refs.count == 2,
+                   (c.refs[0].role == .endpointA || c.refs[0].role == .endpointB),
+                   (c.refs[1].role == .endpointA || c.refs[1].role == .endpointB),
+                   appendArcSplineTangent(c.refs[0], c.refs[1]) {
+                    break
+                }
                 appendTangent(c.refs, branch: c.circleTangency)
             case .colinear:
                 guard c.refs.count == 2 else { break }
@@ -885,6 +1269,17 @@ nonisolated enum SketchSolverBridge {
                     lower(ColinearPointConstraint(p: b2, lA: la, lB: lb))
                 }
             }
+        }
+
+        // 9b. Connected-arc coherence (M02): every exposed arc endpoint stays
+        // on its own circle. These rows are structural (so drag projection and
+        // the write-back gate enforce them) and attribute to the arc entity.
+        for (arcID, ends) in arcEndpoints {
+            guard let center = pIdx(arcID, .center),
+                  let rv = radiusVar[arcID] else { continue }
+            currentSource = .coherence(arcID)
+            lower(ArcEndpointOnCircleConstraint(endpoint: ends.start, center: center, radiusVar: rv))
+            lower(ArcEndpointOnCircleConstraint(endpoint: ends.end, center: center, radiusVar: rv))
         }
 
         for d in sketch.dimensions {
@@ -903,6 +1298,12 @@ nonisolated enum SketchSolverBridge {
             case .angle:
                 if d.refs.count == 1, let ref = d.refs.first, let av = arcSweepVar[ref.entityID] {
                     lower(ArcSweepConstraint(sweepVar: av, sweep: d.value))
+                } else if d.refs.count == 1, let ref = d.refs.first,
+                          let ends = arcEndpoints[ref.entityID],
+                          let center = pIdx(ref.entityID, .center) {
+                    // Connected arc: the endpoints define the sweep.
+                    lower(ArcEndpointSweepConstraint(
+                        endA: ends.start, endB: ends.end, center: center, sweep: d.value))
                 } else if let (a1, b1, a2, b2) = twoLines(d.refs) {
                     lower(AngleConstraint(l1A: a1, l1B: b1, l2A: a2, l2B: b2, angle: d.value))
                 }
@@ -919,8 +1320,9 @@ nonisolated enum SketchSolverBridge {
             }
         }
 
-        // 10. Transient drag constraint: pull the moved entity's nearest point.
-        var solveConstraints = structural
+        // 10. Transient preferences + drag constraint. Only `structural` is
+        // evaluated for admission, attribution, unsupported state and DOF.
+        var solveConstraints = structural + preferences
         if let mid = movingEntity, let target = dragTarget,
            let pts = entityPoints[mid], !pts.isEmpty {
             var best = pts[0]
@@ -933,6 +1335,19 @@ nonisolated enum SketchSolverBridge {
             solveConstraints.append(FixedPointConstraint(p: best, target: target))
         }
 
+        // R2 review: a saved relation is unsupported when it produced no row
+        // and is not a Lock. This is a truthful "not applied" state — the
+        // solve simply never saw it — reported by the definition report
+        // instead of being counted as satisfied by omission.
+        var unsupportedRelationIDs = Set<UUID>()
+        let supportedRelations = loweredRelationIDs.union(fixedRelationIDs)
+        for c in sketch.constraints where !supportedRelations.contains(c.id) {
+            unsupportedRelationIDs.insert(c.id)
+        }
+        for d in sketch.dimensions where !supportedRelations.contains(d.id) {
+            unsupportedRelationIDs.insert(d.id)
+        }
+
         return System(
             initial: initial,
             fixed: fixed,
@@ -940,10 +1355,13 @@ nonisolated enum SketchSolverBridge {
             pointIndex: pointIndex,
             radiusVar: radiusVar,
             arcSweepVar: arcSweepVar,
+            arcEndpoints: arcEndpoints,
+            characteristicLength: charLength,
             structural: structural,
             structuralSources: structuralSources,
             solveConstraints: solveConstraints,
-            entityPoints: entityPoints
+            entityPoints: entityPoints,
+            unsupportedRelationIDs: unsupportedRelationIDs
         )
     }
 
@@ -971,6 +1389,33 @@ nonisolated enum SketchSolverBridge {
             case let .circle(id, c, r):
                 return .circle(id: id, center: pt(id, .center) ?? c, radius: rad(id, r))
             case let .arc(id, c, r, sa, ea):
+                if sys.arcEndpoints[id] != nil,
+                   let center = pt(id, .center),
+                   let a = pt(id, .endpointA), let b = pt(id, .endpointB) {
+                    // M02 connected arc: the solved endpoints are
+                    // authoritative — the arc's angles are derived from them
+                    // (the on-circle coherence rows keep them on this circle).
+                    let newRadius = rad(id, r)
+                    var newStart = atan2(a.y - center.y, a.x - center.x)
+                    if newStart < 0 { newStart += 2 * .pi }
+                    let newSweep = SketchEntity.arcSweep(
+                        startAngle: newStart,
+                        endAngle: atan2(b.y - center.y, b.x - center.x))
+                    // Representation stability: a solve that did not move the
+                    // arc writes back the EXACT same entity, so no
+                    // numerical-noise undo step appears.
+                    let eps = 1e-9 * max(1.0, sys.characteristicLength)
+                    let oldA = SketchEntity.arcPoint(center: c, radius: r, angle: sa)
+                    let oldB = SketchEntity.arcPoint(center: c, radius: r, angle: ea)
+                    guard simd_distance(a, oldA) > eps
+                            || simd_distance(b, oldB) > eps
+                            || simd_distance(center, c) > eps
+                            || abs(newRadius - r) > eps else {
+                        return e
+                    }
+                    return .arc(id: id, center: center, radius: newRadius,
+                                startAngle: newStart, endAngle: newStart + newSweep)
+                }
                 let oldSweep = SketchEntity.arcSweep(startAngle: sa, endAngle: ea)
                 let sweep = sys.arcSweepVar[id].map { vars[$0] } ?? oldSweep
                 // Avoid representation-only changes to untouched wrapped arcs.
@@ -1056,12 +1501,16 @@ nonisolated enum SketchSolverBridge {
             }
         }
 
-        // Numeric Jacobian (central differences), row-major m × nf.
-        let h = 1e-6
+        // Numeric Jacobian (central differences), row-major m × nf. The
+        // perturbation is relative to the variable's magnitude (M06): an
+        // absolute step made the Jacobian's relative truncation error grow at
+        // large scales and its round-off error grow at small scales, so the
+        // DOF answer drifted with sketch size.
         var J = [Double](repeating: 0, count: m * nf)
         var xw = x
         for (col, g) in free.enumerated() {
             let saved = xw[g]
+            let h = 1e-6 * max(1.0, abs(saved))
             for ci in affects[g] {
                 let c = cons[ci]
                 xw[g] = saved + h
@@ -1188,13 +1637,14 @@ nonisolated extension SketchSolverBridge {
         }
 
         let sys = buildSystem(from: sketch, movingEntity: nil, dragTarget: nil)
+        let connected = connectedArcIDs(in: sketch)
 
         // Degenerate (no variables / no entities): every enumerated point is as
         // determined as it can be — locked if pinned, else constrained (matches
         // `entityStates` returning `true` for an empty system).
         guard !sys.initial.isEmpty else {
             for e in sketch.entities {
-                for slot in mutableSlots(e) {
+                for slot in mutableSlots(e, connectedArcEndpoints: connected.contains(e.id)) {
                     let key = SketchPointKey(entityID: slot.entityID, role: slot.role)
                     out[key] = explicitlyLocked(slot.entityID, slot.role) ? .locked : .constrained
                 }
@@ -1210,7 +1660,7 @@ nonisolated extension SketchSolverBridge {
         let determined = nullSpaceAnalysis(sys, at: solved).determined
 
         for e in sketch.entities {
-            for slot in mutableSlots(e) {
+            for slot in mutableSlots(e, connectedArcEndpoints: connected.contains(e.id)) {
                 let key = SketchPointKey(entityID: slot.entityID, role: slot.role)
                 guard let pi = sys.pointIndex[SlotKey(entityID: slot.entityID, role: slot.role)] else {
                     out[key] = explicitlyLocked(slot.entityID, slot.role) ? .locked : .free

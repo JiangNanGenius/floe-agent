@@ -285,12 +285,28 @@ public extension FloeCADDocument {
             // this same service advertises.
             var rows: [[String: Any]] = []
             for sketch in document.sketches {
+                let definition = SketchSolverBridge.definitionReport(sketch)
+                let blame = definition.conflicting
+                    ? SketchSolverBridge.conflictAttribution(sketch) : nil
+                let sketchSolverState = !definition.converged ? "nonconverged"
+                    : definition.conflicting ? "conflicting"
+                    : !definition.unsupportedRelationIDs.isEmpty ? "unsupported" : "satisfied"
+                func decorate(_ row: inout [String: Any], id: UUID, conflicted: Bool) {
+                    row["sketch_solver_state"] = sketchSolverState
+                    row["relation_state"] = definition.unsupportedRelationIDs.contains(id)
+                        ? "unsupported" : conflicted ? "conflicting"
+                        : !definition.converged ? "nonconverged" : "satisfied"
+                    row["sketch_dof"] = definition.dof
+                    row["sketch_fully_defined"] = definition.isFullyDefined
+                }
                 for constraint in sketch.constraints {
                     var row = Self.encodedObject(constraint) ?? ["kind": String(describing: constraint.kind)]
                     row["sketchID"] = sketch.id.raw.uuidString
                     row["sketchName"] = sketch.name
                     row["row_kind"] = "constraint"
                     row["editable"] = false
+                    decorate(&row, id: constraint.id,
+                             conflicted: blame?.constraintIDs.contains(constraint.id) == true)
                     rows.append(row)
                 }
                 for dimension in sketch.dimensions {
@@ -316,6 +332,8 @@ public extension FloeCADDocument {
                     row["formula_reference_names"] = dimension.formula.map {
                         ExpressionEvaluator.identifiers(in: $0).sorted()
                     } ?? []
+                    decorate(&row, id: dimension.id,
+                             conflicted: blame?.dimensionIDs.contains(dimension.id) == true)
                     rows.append(row)
                 }
             }

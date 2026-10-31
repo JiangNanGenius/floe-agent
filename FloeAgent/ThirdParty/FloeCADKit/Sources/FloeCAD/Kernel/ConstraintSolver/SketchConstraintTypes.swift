@@ -20,6 +20,19 @@ nonisolated enum PointRole: String, Codable, Equatable, Sendable {
     case endpointB
     case center
     case whole
+    /// TRANSIENT solver anchor only (M02): pins just the entity's radius
+    /// scalar, never a point. Created by the edit service for connected-arc
+    /// shape edits and NEVER persisted in a saved constraint. R2 review: the
+    /// persistence boundary enforces the saved-role contract — decoding a
+    /// relation that carries this role REFUSES the whole document with a
+    /// precise error instead of silently keeping (and later re-saving) a
+    /// semantics the public vocabulary does not define. Product-written
+    /// documents never contain it; the legacy four-role payload is unchanged.
+    case radiusOnly
+
+    /// The four legacy roles are the complete persisted vocabulary. The
+    /// transient radius anchor has no saved relation meaning.
+    var isPersistable: Bool { self != .radiusOnly }
 }
 
 /// A single operand of a constraint or dimension: an entity plus the point role
@@ -35,6 +48,43 @@ nonisolated struct ConstraintRef: Codable, Equatable, Sendable {
         self.entityID = entityID
         self.role = role
         self.rectangleEdge = rectangleEdge
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case entityID, role, rectangleEdge
+    }
+
+    /// Decode is ONE saved-role boundary, complemented by direct service-input
+    /// validation and save-side encoding. Refusing here keeps hand-written or
+    /// corrupted archives out; old four-role documents decode exactly as before.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let entityID = try container.decode(UUID.self, forKey: .entityID)
+        let role = try container.decode(PointRole.self, forKey: .role)
+        guard role.isPersistable else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .role, in: container,
+                debugDescription: "PointRole.radiusOnly is a transient solver anchor and must not "
+                    + "appear in a persisted constraint or dimension.")
+        }
+        self.init(entityID: entityID, role: role,
+                  rectangleEdge: try container.decodeIfPresent(Int.self, forKey: .rectangleEdge))
+    }
+
+    /// Refuse to CREATE an unreadable archive even if a future direct command
+    /// path accidentally constructs the transient role. This is the save-side
+    /// complement to the service input gate and decoder; legacy role bytes are
+    /// unchanged.
+    func encode(to encoder: any Encoder) throws {
+        guard role.isPersistable else {
+            throw EncodingError.invalidValue(role, .init(
+                codingPath: encoder.codingPath,
+                debugDescription: "PointRole.radiusOnly is a transient solver anchor and cannot be saved."))
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(entityID, forKey: .entityID)
+        try container.encode(role, forKey: .role)
+        try container.encodeIfPresent(rectangleEdge, forKey: .rectangleEdge)
     }
 }
 

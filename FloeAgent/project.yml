@@ -1231,6 +1231,9 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDrawingMultiViewAssociativityTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDrawingFormatAdmissionTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchEntityEditingTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADCurveConstraintAdmissionTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADCurveConstraintServiceTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADCurveConstraintSolvingTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADParameterCorrectnessTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADCapabilitySurfaceTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADStoredIntegrityTests.swift

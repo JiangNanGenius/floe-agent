@@ -113647,6 +113647,57 @@
           }
         }
       }
+    },
+    "cad.status.solveDidNotConverge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sketch solve did not converge"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草图求解未收敛"
+          }
+        }
+      }
+    },
+    "cad.status.oneRelationNotApplied": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 relation not applied"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 个关系未应用"
+          }
+        }
+      }
+    },
+    "cad.status.relationsNotApplied": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d relations not applied"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d 个关系未应用"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

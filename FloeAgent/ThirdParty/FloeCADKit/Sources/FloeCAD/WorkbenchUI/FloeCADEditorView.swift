@@ -382,17 +382,13 @@ struct FloeCADEditorView: View {
         }
     }
 
-    /// Sketch-state chip inside the sketch pill (plan §C4). Under-defined
-    /// geometry is conveyed by the on-canvas point/edge colours (blue = free),
-    /// not a toolbar badge that reads like an error while you're mid-sketch —
-    /// so this only surfaces the positive GREEN "Fully defined" confirmation.
+    /// Sketch-state chip inside the sketch pill. DOF zero alone is not a
+    /// success state: report-level conflicts, failed solves and unsupported
+    /// relations take precedence over the green confirmation.
     @ViewBuilder
     private func sketchStateChip(_ viewModel: EditorViewModel) -> some View {
-        if viewModel.sketchSolveConflict {
-            // A conflicting system is the one sketch state that IS an error:
-            // drags spring back rather than writing the solver's compromise
-            // into the document, and without this chip that reads as a
-            // stuck gesture.
+        let status = viewModel.sketchDefinitionStatus
+        if viewModel.sketchSolveConflict || status?.conflicting == true {
             Text(FloeCADStrings.text("cad.status.constraintsConflict", "Constraints conflict"))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white)
@@ -400,7 +396,28 @@ struct FloeCADEditorView: View {
                 .padding(.vertical, 4)
                 .background(Color.red, in: Capsule())
                 .accessibilityIdentifier("SketchConflictChip")
-        } else if let status = viewModel.sketchDefinitionStatus, status.fullyDefined {
+        } else if let status, !status.converged {
+            Text(FloeCADStrings.text("cad.status.solveDidNotConverge", "Sketch solve did not converge"))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Color.orange, in: Capsule())
+                .accessibilityIdentifier("SketchNonconvergedChip")
+        } else if let status, status.unsupportedCount > 0 {
+            let key = status.unsupportedCount == 1
+                ? "cad.status.oneRelationNotApplied" : "cad.status.relationsNotApplied"
+            let message = status.unsupportedCount == 1
+                ? FloeCADStrings.text(key, "1 relation not applied")
+                : FloeCADStrings.format(key, "%d relations not applied", status.unsupportedCount)
+            Text(message)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Color.orange, in: Capsule())
+                .accessibilityIdentifier("SketchUnsupportedChip")
+        } else if let status, status.fullyDefined {
             Text(FloeCADStrings.text("cad.status.fullyDefined", "Fully defined"))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white)
