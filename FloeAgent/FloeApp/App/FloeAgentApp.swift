@@ -239,6 +239,11 @@ private struct FloeAgentCommands: Commands {
                 .keyboardShortcut("n", modifiers: .command)
         }
 
+        CommandGroup(replacing: .appSettings) {
+            Button("app.floe_agent_app.settings") { router.presentedSettings = true }
+                .keyboardShortcut(",", modifiers: .command)
+        }
+
         CommandMenu(FloeL10n.l("app.floe_agent_app.navigation")) {
             Button("tab.workbench") { router.navigate(to: .home) }
                 .keyboardShortcut("1", modifiers: [.command, .shift])
@@ -249,9 +254,6 @@ private struct FloeAgentCommands: Commands {
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             Button("app.floe_agent_app.files") { router.navigate(to: .files) }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
-            Divider()
-            Button("app.floe_agent_app.settings") { router.presentedSettings = true }
-                .keyboardShortcut(",", modifiers: .command)
         }
 
         CommandMenu(FloeL10n.l("settings.settings_root_view.canvas")) {

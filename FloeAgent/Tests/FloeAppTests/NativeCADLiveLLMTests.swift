@@ -2960,10 +2960,32 @@ private final class NativeCADContextCompactionSession {
             call.tool == "tools.readResult"
                 && (call.arguments["query"] as? String) == searchToken
         }
-        guard let queryCall = queryCalls.first,
-              let queryResult = results[queryCall.callID],
-              queryResult.status == "ok",
-              let matchOffset = matchOffset(in: queryResult.summary) else {
+        // A model can issue a lookup in the same batch as the read, observe
+        // an empty index, and correctly retry after the capture is committed.
+        // Dictionary iteration must not make that recovered sequence fail at
+        // random. Require a later successful match for THIS read, then bind
+        // the page to its exact ref and result sequence.
+        var captureMatch: (result: NativeCADLiveToolResult, offset: Int, ref: String)?
+        for call in queryCalls.sorted(by: { $0.requestSequence < $1.requestSequence }) {
+            guard let result = results[call.callID], result.status == "ok",
+                  result.sequence > firstResult.sequence else { continue }
+            for line in result.summary.split(separator: "\n") {
+                let fields = line.split(whereSeparator: { $0.isWhitespace })
+                func field(_ name: String) -> String? {
+                    let prefix = name + "="
+                    return fields.first(where: { $0.hasPrefix(prefix) })
+                        .map { String($0.dropFirst(prefix.count)) }
+                }
+                guard field("callID") == firstRead.callID,
+                      field("tool") == "workspace.readFile",
+                      let rawOffset = field("matchOffset"), let offset = Int(rawOffset),
+                      let ref = field("ref"), !ref.isEmpty else { continue }
+                captureMatch = (result, offset, ref)
+                break
+            }
+            if captureMatch != nil { break }
+        }
+        guard let captureMatch else {
             XCTFail("The follow-up did not search the retained capture for the exact unique token.")
             throw NativeCADLiveError.runIncomplete(
                 state: "missingPagingQuery",
@@ -2973,8 +2995,9 @@ private final class NativeCADContextCompactionSession {
 
         let pageCalls = requests.values.filter { call in
             call.tool == "tools.readResult"
-                && NativeCADLiveJSON.int(call.arguments["offset"]) == matchOffset
-        }
+                && NativeCADLiveJSON.int(call.arguments["offset"]) == captureMatch.offset
+                && (call.arguments["ref"] as? String) == captureMatch.ref
+        }.sorted(by: { $0.requestSequence < $1.requestSequence })
         guard let pageCall = pageCalls.first(where: { results[$0.callID]?.status == "ok" }),
               let pageResult = results[pageCall.callID] else {
             XCTFail("The follow-up did not read the exact retained page after compaction.")
@@ -2984,9 +3007,9 @@ private final class NativeCADContextCompactionSession {
             )
         }
         XCTAssertGreaterThan(
-            pageResult.sequence,
-            firstResult.sequence,
-            "The retained-capture page was not fetched after the real workspace read."
+            pageCall.requestSequence,
+            captureMatch.result.sequence,
+            "The retained-capture page was not requested after the matching capture search."
         )
         XCTAssertTrue(
             pageResult.summary.contains("callID=\(firstRead.callID)"),
@@ -3152,12 +3175,6 @@ private final class NativeCADContextCompactionSession {
         return (requests, results)
     }
 
-    private func matchOffset(in summary: String) -> Int? {
-        guard let range = summary.range(of: "matchOffset=") else { return nil }
-        let digits = summary[range.upperBound...].prefix { $0.isNumber }
-        return Int(String(digits))
-    }
-
     // MARK: Deterministic prompts
 
     /// Scale the inert real-message payload with the explicitly selected
@@ -3288,9 +3305,13 @@ private final class NativeCADContextCompactionSession {
                         + " source_ids=\(row.sourceMessageIDs.prefix(8).map(\.uuidString).joined(separator: ","))"
                         + " summary_contains_alpha=\(row.summary.contains(alphaFact))"
                         + " summary_contains_beta=\(row.summary.contains(betaFact))"
+                        + " summary_contains_instruction=\(row.summary.contains(alphaInstruction))"
                         + " summary_contains_hidden=\(row.summary.contains(hiddenToken))"
                 )
-                lines.append("    summary_prefix=\(String(row.summary.prefix(800)).replacingOccurrences(of: "\n", with: " "))")
+                lines.append("    summary_bytes=\(row.summary.utf8.count)")
+                lines.append("    BEGIN COMPLETE COMPACTION RECORD \(row.id.uuidString)")
+                lines.append(row.summary)
+                lines.append("    END COMPLETE COMPACTION RECORD \(row.id.uuidString)")
             }
             let events = (try? await environment.runStore.events(runID: runID)) ?? []
             lines.append("  events=\(events.count)")
