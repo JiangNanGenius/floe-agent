@@ -11,9 +11,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +55,16 @@ fun FloeDetailColumn(
     modifier: Modifier = Modifier,
     runtimeHost: RuntimeHost? = null,
     onConversationHolderBound: (String, com.floe.android.feature.conversation.ConversationFlowHolder) -> Unit = { _, _ -> },
+    /** Home's Scheduled Tasks card opens the REAL Task Center route through
+     * the shell's existing navigation/fence callback. Null hides the card
+     * (fixtures/previews) instead of inventing a local route. */
+    onOpenSchedules: (() -> Unit)? = null,
+    /** One-shot signal produced ONLY by an admitted Home→TaskCenter commit;
+     * opens the schedules sub-view without bypassing the outer route. */
+    taskCenterSchedulesToken: Int = 0,
+    /** Clears the one-shot signal after the Task Center really consumed it,
+     * so re-entering Task Center later does not reopen schedules. */
+    onTaskCenterSchedulesHandled: () -> Unit = {},
 ) {
     androidx.compose.runtime.LaunchedEffect(selection, runtimeHost) {
         if (selection == SidebarSelection.More(MoreDestination.NETWORK)) runtimeHost?.networkWorkbench?.enter()
@@ -67,6 +80,7 @@ fun FloeDetailColumn(
                     onOpenDrawer = onOpenDrawer,
                     onOpenSettingsSection = onOpenSettingsSection,
                     runtimeHost = runtimeHost,
+                    onOpenSchedules = onOpenSchedules,
                 )
                 WorkbenchSelection.OVERVIEW -> TaskCenterDestination(
                     showSidebarToggle = showSidebarToggle,
@@ -74,6 +88,8 @@ fun FloeDetailColumn(
                     onOpenDrawer = onOpenDrawer,
                     compact = compact,
                     runtimeHost = runtimeHost,
+                    openSchedulesToken = taskCenterSchedulesToken,
+                    onSchedulesTokenHandled = onTaskCenterSchedulesHandled,
                 )
                 WorkbenchSelection.CONVERSATION -> FloePlaceholderPage(
                     title = stringResource(R.string.new_task),
@@ -185,42 +201,77 @@ private fun TaskCenterDestination(
     onOpenDrawer: () -> Unit,
     compact: Boolean,
     runtimeHost: RuntimeHost?,
+    openSchedulesToken: Int = 0,
+    onSchedulesTokenHandled: () -> Unit = {},
 ) {
     if (runtimeHost == null) {
         FloeTaskCenterPage(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
         return
     }
     // The Task Center surface owns its REAL sub-view switch: the default
-    // list, the archive sheet and the management (selection/bulk) view all
-    // render the SAME produced history wire through the destination
-    // component; back returns to the list. No phantom destination, no empty
-    // callback.
+    // list, the schedule destination, the archive sheet and the management
+    // (selection/bulk) view all render the SAME produced history wire through
+    // the destination component; back returns to the list. No phantom
+    // destination, no empty callback.
     var historyMode by remember {
         mutableStateOf(com.floe.android.feature.conversation.HistoryDestinationMode.LIST)
     }
-    Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
-        FloeDetailToolbar(
-            title = stringResource(R.string.task_center),
-            showSidebarToggle = showSidebarToggle,
-            onExpandSidebar = onExpandSidebar,
-            onOpenDrawer = onOpenDrawer,
+    // Local sub-view ONLY inside the already-committed Task Center route: the
+    // outer sidebar selection, split view and temporary-chat fence stay
+    // shell-owned. The token is produced only by an admitted Home→TaskCenter
+    // navigation commit, so opening schedules can never bypass the fence.
+    var showSchedules by rememberSaveable { mutableStateOf(false) }
+    var handledSchedulesToken by rememberSaveable { mutableIntStateOf(0) }
+    LaunchedEffect(openSchedulesToken) {
+        if (openSchedulesToken > handledSchedulesToken) {
+            handledSchedulesToken = openSchedulesToken
+            showSchedules = true
+            // Consume the shell-owned one-shot so a later visit to Task
+            // Center does not open this sub-view again.
+            onSchedulesTokenHandled()
+        }
+    }
+    if (showSchedules) {
+        com.floe.android.schedule.TaskScheduleDestination(
+            host = runtimeHost,
             compact = compact,
+            showSidebarToggle = showSidebarToggle,
+            onBack = { showSchedules = false },
         )
-        FloeConversationHistoryDestination(
-            holder = runtimeHost.conversations.historyHolder,
-            mode = historyMode,
-            modifier = Modifier.fillMaxSize(),
-            onBack = if (historyMode ==
-                com.floe.android.feature.conversation.HistoryDestinationMode.LIST
-            ) null else { { historyMode =
-                com.floe.android.feature.conversation.HistoryDestinationMode.LIST } },
-            onOpenArchive = {
-                historyMode = com.floe.android.feature.conversation.HistoryDestinationMode.ARCHIVE
-            },
-            onOpenManagement = {
-                historyMode = com.floe.android.feature.conversation.HistoryDestinationMode.MANAGE
-            },
-        )
+    } else {
+        Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
+            FloeDetailToolbar(
+                title = stringResource(R.string.task_center),
+                showSidebarToggle = showSidebarToggle,
+                onExpandSidebar = onExpandSidebar,
+                onOpenDrawer = onOpenDrawer,
+                compact = compact,
+            )
+            com.floe.android.schedule.ScheduledTasksSummaryCard(
+                host = runtimeHost,
+                onOpen = { showSchedules = true },
+                modifier = Modifier.padding(
+                    start = if (compact) 16.dp else 28.dp,
+                    end = if (compact) 16.dp else 28.dp,
+                    top = 8.dp,
+                ),
+            )
+            FloeConversationHistoryDestination(
+                holder = runtimeHost.conversations.historyHolder,
+                mode = historyMode,
+                modifier = Modifier.weight(1f),
+                onBack = if (historyMode ==
+                    com.floe.android.feature.conversation.HistoryDestinationMode.LIST
+                ) null else { { historyMode =
+                    com.floe.android.feature.conversation.HistoryDestinationMode.LIST } },
+                onOpenArchive = {
+                    historyMode = com.floe.android.feature.conversation.HistoryDestinationMode.ARCHIVE
+                },
+                onOpenManagement = {
+                    historyMode = com.floe.android.feature.conversation.HistoryDestinationMode.MANAGE
+                },
+            )
+        }
     }
 }
 

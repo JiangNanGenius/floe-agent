@@ -46,6 +46,11 @@ extension G02InstalledComposition {
         registerDefaultsUsageCommands(gen: gen)
         registerSharedContentRead(gen: gen)
         registerInteractionCommands(gen: gen)
+        // G07.3B: scheduled-task command surface (the epoch service is
+        // already installed by G02DomainServices.build).
+        registeredHandlerKeys.append(contentsOf:
+            G073TaskScheduleBindings.install(epoch: gen.epoch,
+                                             registry: gen.registry))
         return registeredHandlerKeys
     }
 

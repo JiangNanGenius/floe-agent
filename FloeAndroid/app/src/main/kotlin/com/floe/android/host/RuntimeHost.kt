@@ -111,6 +111,26 @@ class RuntimeHost internal constructor(
     /** One phone-native measurement service shared by workbench and Agent pump. */
     internal val networkService by lazy { com.floe.android.core.network.PhoneNetworkService(appContext) }
     internal val networkWorkbench by lazy { NetworkWorkbenchController(this) }
+    /** Offline artifacts share this host's scope and native generation. The
+     * owned lazy avoids a process-wide registry retaining retired hosts. */
+    private val networkArtifactDelegate = lazy {
+        com.floe.android.host.networkartifact.NetworkArtifactHostController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            networkService = networkService,
+            access = networkArtifactAccessFor(::nativeRootEpoch),
+        )
+    }
+    internal val networkArtifact: com.floe.android.host.networkartifact.NetworkArtifactHostController
+        get() = networkArtifactDelegate.value
+    internal val isNetworkArtifactInitialized: Boolean
+        get() = networkArtifactDelegate.isInitialized()
+
+    /** Root draining must not create an unused artifact controller. */
+    internal fun networkArtifactIfCreated(): com.floe.android.host.networkartifact.NetworkArtifactHostController? =
+        if (networkArtifactDelegate.isInitialized()) networkArtifactDelegate.value else null
     internal data class NetworkPermissionNotice(
         val request: com.floe.android.host.network.NetworkPermissionRequest,
         val generation: Long,
@@ -127,6 +147,7 @@ class RuntimeHost internal constructor(
         )
     }
     private var networkDiagnosticsControl: Job? = null
+    private var networkArtifactControl: Job? = null
     private val networkDiagnosticsLock = Any()
 
     /**
@@ -208,6 +229,27 @@ class RuntimeHost internal constructor(
         }
     }
 
+    private fun startNetworkArtifactLane() {
+        if (!::appContext.isInitialized) return
+        synchronized(networkDiagnosticsLock) {
+            if (networkArtifactControl?.isActive == true) return
+            networkArtifactControl = scope.launch(ioDispatcher) {
+                for (attempt in 0 until 5) {
+                    val epoch = nativeRootEpoch()
+                    if (epoch != null && epoch > 0) {
+                        val artifacts = networkArtifact
+                        val previous = artifacts.boundEpoch()
+                        if (previous > 0 && previous != epoch &&
+                            !artifacts.stopAndJoin(previous, 5_000)
+                        ) return@launch
+                        if (artifacts.start(epoch)) return@launch
+                    }
+                    delay(250L * (attempt + 1))
+                }
+            }
+        }
+    }
+
     internal suspend fun prepareNetworkForRootStop(): Boolean {
         // Arm the generation gate before any lane work: from here on a new
         // launch (including one arriving after an untouched lazy host is
@@ -242,7 +284,14 @@ class RuntimeHost internal constructor(
         }
         val epoch = networkDiagnostics.boundEpoch()
         val diagnosticsReady = epoch <= 0 || networkDiagnostics.stopAndJoin(epoch, 5_000)
-        return monitorReady && diagnosticsReady
+        networkArtifactControl?.cancelAndJoin()
+        networkArtifactControl = null
+        // Even a local-only artifact operation started before mailbox binding
+        // must settle. Do not skip its IO drain merely because epoch is zero.
+        val artifacts = networkArtifactIfCreated()
+        val artifactsReady = artifacts == null ||
+            artifacts.stopAndJoin(artifacts.boundEpoch(), 5_000)
+        return monitorReady && diagnosticsReady && artifactsReady
     }
 
     /**
@@ -386,7 +435,7 @@ class RuntimeHost internal constructor(
         // close before the root retires; a refused drain keeps the old
         // generation rather than pretending the document work is gone.
         if (!prepareWorkspaceDocumentPreviewForRootStop()) return
-        prepareNetworkForRootStop()
+        if (!prepareNetworkForRootStop()) return
         commandClient.bumpGeneration()
         providers.stop()
         conversations.stop()
@@ -529,6 +578,7 @@ class RuntimeHost internal constructor(
                 // with bounded attempts (same doctrine as the browser lane).
                 startOfficeAiLane()
                 startNetworkDiagnosticsLane()
+                startNetworkArtifactLane()
             }
             is RuntimeBootstrapCapability.Failed ->
                 update { it.copy(store = RuntimeHostReadiness.StoreReadiness.Failed(value.reason)) }

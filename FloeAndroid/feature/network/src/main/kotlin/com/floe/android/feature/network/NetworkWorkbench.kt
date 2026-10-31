@@ -44,25 +44,32 @@ fun NetworkWorkbench(
      */
     monitoringLabel: String? = null,
     monitoringContent: (@Composable (Modifier) -> Unit)? = null,
+    /** Optional offline-capture/coverage panel; absent on older hosts. */
+    artifactLabel: String? = null,
+    artifactContent: (@Composable (Modifier) -> Unit)? = null,
     diagnosticReport: (@Composable (NetworkObservationUi) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var selection by rememberSaveable { mutableStateOf<String?>(null) }
     var detailsPage by rememberSaveable { mutableStateOf<String?>(null) }
     var monitoringSelected by rememberSaveable { mutableStateOf(false) }
+    var artifactSelected by rememberSaveable { mutableStateOf(false) }
     val monitoring = monitoringContent?.takeIf { monitoringLabel != null }
     val monitoringVisible = monitoringSelected && monitoring != null
-    val page = if (monitoringVisible) {
+    val artifact = artifactContent?.takeIf { artifactLabel != null }
+    val artifactVisible = artifactSelected && artifact != null
+    val page = if (monitoringVisible || artifactVisible) {
         null
     } else {
         selection?.let { saved -> NetworkPage.entries.firstOrNull { it.name == saved } }
             ?: if (compact) null else NetworkPage.OVERVIEW
     }
-    val detailVisible = page != null || monitoringVisible
+    val detailVisible = page != null || monitoringVisible || artifactVisible
     val back: () -> Unit = {
         if (compact && detailVisible) {
             selection = null
             monitoringSelected = false
+            artifactSelected = false
         } else {
             onNavigate()
         }
@@ -72,6 +79,7 @@ fun NetworkWorkbench(
         FloeToolbar(
             title = when {
                 compact && monitoringVisible -> monitoringLabel ?: stringResource(R.string.network_title)
+                compact && artifactVisible -> artifactLabel ?: stringResource(R.string.network_title)
                 compact && page != null -> pageTitle(page)
                 else -> stringResource(R.string.network_title)
             },
@@ -138,6 +146,7 @@ fun NetworkWorkbench(
                             onClick = {
                                 selection = item.name
                                 monitoringSelected = false
+                                artifactSelected = false
                             },
                             modifier = Modifier.padding(horizontal = 10.dp),
                         )
@@ -152,6 +161,22 @@ fun NetworkWorkbench(
                             onClick = {
                                 selection = null
                                 monitoringSelected = true
+                                artifactSelected = false
+                            },
+                            modifier = Modifier.padding(horizontal = 10.dp),
+                        )
+                    }
+                    val artifactPanel = artifact
+                    if (artifactPanel != null && artifactLabel != null) {
+                        FloeDivider(Modifier.padding(horizontal = 10.dp, vertical = 8.dp))
+                        FloeSidebarRow(
+                            icon = FloeIcons.ChartBar,
+                            label = artifactLabel,
+                            selected = artifactVisible,
+                            onClick = {
+                                selection = null
+                                monitoringSelected = false
+                                artifactSelected = true
                             },
                             modifier = Modifier.padding(horizontal = 10.dp),
                         )
@@ -160,8 +185,11 @@ fun NetworkWorkbench(
             }
             if (!compact) FloeVerticalDivider()
             val panel = monitoring
+            val artifactPanel = artifact
             if (monitoringVisible && panel != null) {
                 panel(Modifier.weight(1f))
+            } else if (artifactVisible && artifactPanel != null) {
+                artifactPanel(Modifier.weight(1f))
             } else if (page != null) {
                 NetworkDetail(
                     page = page, result = state.results[page], busy = state.running != null,

@@ -419,6 +419,26 @@ public enum ThreadSearchText {
             }
             if character == "*" || character == "_" || character == "~" {
                 let next = source.index(after: index)
+                if character == "_" {
+                    // CommonMark does not use intraword underscore runs as
+                    // emphasis delimiters. Keep the entire run before the
+                    // strong/emphasis cases below: ALPHA19_NOTE_OK and a__b
+                    // are visible identifiers, including inside emphasis.
+                    var runEnd = next
+                    while runEnd < source.endIndex, source[runEnd] == "_" {
+                        runEnd = source.index(after: runEnd)
+                    }
+                    let beforeIsWord = index > source.startIndex
+                        && source[source.index(before: index)] != "_"
+                        && isWordCharacter(source[source.index(before: index)])
+                    let afterIsWord = runEnd < source.endIndex
+                        && isWordCharacter(source[runEnd])
+                    if beforeIsWord && afterIsWord {
+                        output += String(source[index..<runEnd])
+                        index = runEnd
+                        continue
+                    }
+                }
                 if next < source.endIndex, source[next] == character {
                     // Strong/strikethrough delimiter: drop both markers.
                     index = source.index(after: next)

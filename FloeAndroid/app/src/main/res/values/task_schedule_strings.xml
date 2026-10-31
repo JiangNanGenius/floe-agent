@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="schedule_title">Scheduled Tasks</string>
+    <string name="schedule_add">New scheduled task</string>
+    <string name="schedule_back">Back</string>
+    <string name="schedule_more">More actions</string>
+    <string name="schedule_ok">OK</string>
+    <string name="schedule_cancel">Cancel</string>
+    <string name="schedule_save">Save</string>
+    <string name="schedule_saving">Saving\u2026</string>
+    <string name="schedule_choose">Choose</string>
+    <string name="schedule_loading">Loading scheduled tasks\u2026</string>
+    <string name="schedule_runtime_unavailable">The task runtime is not ready yet. Scheduled tasks will be available when it starts.</string>
+    <string name="schedule_empty_title">No scheduled tasks</string>
+    <string name="schedule_empty_body">Schedule a task to run once, daily, weekly, at a fixed interval, or after another task completes successfully.</string>
+    <string name="schedule_section_upcoming">Upcoming</string>
+    <string name="schedule_section_paused">Paused</string>
+    <string name="schedule_next_line">Next: %1$s</string>
+    <string name="schedule_after_success_line">Runs after the selected task succeeds</string>
+    <string name="schedule_no_next">No next run</string>
+    <string name="schedule_needs_attention">This schedule needs attention before it can run.</string>
+
+    <string name="schedule_cadence_once">Once</string>
+    <string name="schedule_cadence_daily">Daily</string>
+    <string name="schedule_cadence_weekly">Weekly</string>
+    <string name="schedule_cadence_interval">Interval</string>
+    <string name="schedule_cadence_after_success">After success</string>
+
+    <string name="schedule_status_active">Scheduled</string>
+    <string name="schedule_status_flexible">Flexible</string>
+    <string name="schedule_status_waiting">Waiting for permission</string>
+    <string name="schedule_status_paused">Paused</string>
+    <string name="schedule_status_event">After success</string>
+    <string name="schedule_status_attention">Needs attention</string>
+
+    <string name="schedule_action_run_now">Run now</string>
+    <string name="schedule_action_pause">Pause</string>
+    <string name="schedule_action_resume">Resume</string>
+    <string name="schedule_action_history">Run history</string>
+    <string name="schedule_action_use_flexible">Use flexible schedule</string>
+    <string name="schedule_action_use_exact">Use exact time</string>
+    <string name="schedule_action_allow_exact">Allow exact alarms</string>
+    <string name="schedule_delete_title">Delete scheduled task?</string>
+    <string name="schedule_delete_body">\u201c%1$s\u201d will stop running. Its past run history is kept.</string>
+    <string name="schedule_delete_action">Delete</string>
+
+    <string name="schedule_permission_title">Exact-time permission is off</string>
+    <string name="schedule_permission_body">Scheduled tasks will wait instead of running at the wrong time. Allow exact alarms, or choose flexible scheduling for a task if running a little late is acceptable.</string>
+    <string name="schedule_permission_note">This schedule uses the task permission system. It does not grant any extra tool access.</string>
+
+    <string name="schedule_editor_create">New Scheduled Task</string>
+    <string name="schedule_editor_edit">Edit Scheduled Task</string>
+    <string name="schedule_field_title">Title</string>
+    <string name="schedule_field_prompt">Task instruction</string>
+    <string name="schedule_field_cadence">Repeat</string>
+    <string name="schedule_field_time">Date and time</string>
+    <string name="schedule_field_weekday">Weekday</string>
+    <string name="schedule_field_interval_minutes">Every N minutes</string>
+    <string name="schedule_field_workspace">Workspace</string>
+    <string name="schedule_field_model">Model</string>
+    <string name="schedule_field_environment">Environment</string>
+    <string name="schedule_field_approval">Approval</string>
+    <string name="schedule_field_upstream_run">After task run</string>
+    <string name="schedule_run_untitled">Untitled task</string>
+    <string name="schedule_workspace_new">New workspace for each run</string>
+    <string name="schedule_workspace_caption">A new independent workspace is created for every run. Choose a project workspace to reuse its files instead.</string>
+    <string name="schedule_environment_auto">Automatic (from workspace)</string>
+    <string name="schedule_environment_new_workspace">Each new workspace resolves its own environment.</string>
+    <string name="schedule_environment_unavailable">Environment selection is unavailable until the local runtime lists its environments. Tasks will refuse to run rather than substitute one.</string>
+    <string name="schedule_options_truncated">Some options are not shown because this list is too large to display.</string>
+    <string name="schedule_list_truncated">Some scheduled tasks are not shown because this list is too large to display.</string>
+    <string name="schedule_upstream_unavailable">No task run is active right now. Start a task, then choose it here to run this schedule after it succeeds.</string>
+    <string name="schedule_approval_ask">Ask each time</string>
+    <string name="schedule_approval_automatic">Automatic</string>
+    <string name="schedule_approval_full">Full access</string>
+
+    <string name="schedule_history_title">History \u00b7 %1$s</string>
+    <string name="schedule_history_empty">No runs yet</string>
+    <string name="schedule_history_truncated">Some older runs are not shown because this history is too large to display.</string>
+    <string name="schedule_state_pending">Pending</string>
+    <string name="schedule_state_running">Running</string>
+    <string name="schedule_state_completed">Completed</string>
+    <string name="schedule_state_failed">Failed</string>
+    <string name="schedule_state_cancelled">Cancelled</string>
+    <string name="schedule_state_skipped">Skipped</string>
+    <string name="schedule_state_interrupted">Interrupted</string>
+
+    <string name="schedule_card_title">Scheduled tasks</string>
+    <string name="schedule_card_open">Open</string>
+    <string name="schedule_card_empty">No upcoming scheduled tasks</string>
+    <string name="schedule_queued_title">Task queued</string>
+    <string name="schedule_queued_body">\u201c%1$s\u201d will start as a new task as soon as the background dispatcher can admit it.</string>
+
+    <string name="schedule_weekday_sun">Sunday</string>
+    <string name="schedule_weekday_mon">Monday</string>
+    <string name="schedule_weekday_tue">Tuesday</string>
+    <string name="schedule_weekday_wed">Wednesday</string>
+    <string name="schedule_weekday_thu">Thursday</string>
+    <string name="schedule_weekday_fri">Friday</string>
+    <string name="schedule_weekday_sat">Saturday</string>
+
+    <string name="schedule_error_title">Scheduled task</string>
+    <string name="schedule_error_generic">The schedule could not be updated.</string>
+    <string name="schedule_error_payload_too_large">This scheduled task contains text too large to display in the editor. Its settings can still be changed with the task tool.</string>
+    <string name="schedule_error_not_found">This scheduled task no longer exists.</string>
+    <string name="schedule_error_revision">This scheduled task changed since it was opened. Reopen it and try again.</string>
+    <string name="schedule_error_prompt">Enter a task instruction and try again.</string>
+    <string name="schedule_error_model">The scheduled model is missing or disabled. Choose an available model.</string>
+    <string name="schedule_error_workspace">The selected project workspace is unavailable. Choose another one or use a new workspace for each run.</string>
+    <string name="schedule_error_environment">The selected environment is not an active project environment for this workspace.</string>
+    <string name="schedule_error_environment_authority">The local runtime could not list its environments. A task that needs an environment stays unavailable until the runtime is ready.</string>
+    <string name="schedule_error_upstream">Choose an active task run for the after-success trigger.</string>
+    <string name="schedule_error_exact">Exact alarms are not allowed. Allow exact alarms or choose flexible scheduling.</string>
+    <string name="schedule_error_notifications">Notifications are blocked, so a background task cannot stay protected. Allow notifications and try again.</string>
+    <string name="schedule_error_runtime">The task runtime is not ready. The scheduled task stays pending and will retry.</string>
+    <string name="schedule_error_store">The schedule could not be read or saved. Try again.</string>
+    <string name="schedule_error_launch">The scheduled task could not start. Open it for details.</string>
+
+    <string name="schedule_generic_task">A scheduled task</string>
+    <string name="schedule_notification_channel">Scheduled tasks</string>
+    <string name="schedule_notification_channel_description">Waiting states for scheduled tasks</string>
+    <string name="schedule_waiting_exact_title">Scheduled task is waiting</string>
+    <string name="schedule_waiting_exact_body">%1$s needs exact-alarm permission to run at the specified time.</string>
+    <string name="schedule_pending_title">Scheduled task is pending</string>
+    <string name="schedule_pending_body">%1$s could not start in the background. Open Floe to retry.</string>
+    <string name="schedule_use_flexible_action">Use flexible schedule</string>
+</resources>

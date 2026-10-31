@@ -246,6 +246,12 @@ public struct RunDomainComponents: Sendable {
     /// `needsConfiguration{notesRuntimeUnbound}` BEFORE any effect; ordinary
     /// and temporary launches never consult it.
     public var notesRuntime: (any NotesRunRuntimeProviding)?
+    /// G07.3B (additive, default nil): the scheduling service's terminal
+    /// hook. Retirement calls it exactly once per real top-level ordinary run
+    /// so the durable occurrence ledger settles and `.afterSuccess`
+    /// dependents are enqueued only for a clean successful upstream run.
+    /// Unbound leaves every previous behavior byte-identical.
+    public var scheduleCompletion: (any G073ScheduleCompletionRecording)?
 
     public init(context: RunIngressContext,
                 durable: RunPersistenceBundle,
@@ -268,7 +274,8 @@ public struct RunDomainComponents: Sendable {
                     (@Sendable (ProviderProfile) -> any ProviderAdapter)? = nil,
                 registry: ToolRunnerRegistry = .shared,
                 settings: (any SettingsStore)? = nil,
-                notesRuntime: (any NotesRunRuntimeProviding)? = nil) {
+                notesRuntime: (any NotesRunRuntimeProviding)? = nil,
+                scheduleCompletion: (any G073ScheduleCompletionRecording)? = nil) {
         self.context = context
         self.durable = durable
         self.checkpoints = checkpoints
@@ -289,6 +296,7 @@ public struct RunDomainComponents: Sendable {
         self.registry = registry
         self.settings = settings
         self.notesRuntime = notesRuntime
+        self.scheduleCompletion = scheduleCompletion
     }
 }
 
@@ -1055,13 +1063,26 @@ public actor FacadeRunDomain {
                       expectedActivationProof: String? = nil,
                       preResolvedAttachments: [AttachmentRef]? = nil,
                       queuedInputProofID: UUID? = nil,
-                      notesBinding: NotesRunBinding? = nil) async
+                      notesBinding: NotesRunBinding? = nil,
+                      scheduledLaunch: RunScheduledLaunchIdentity? = nil) async
         -> RunDomainReply {
         let bundle = bundleOverride ?? durable
         let isCreateIntent = conversationID == nil
+        // G07.3B: a scheduled launch is ALWAYS a create intent against the
+        // deterministic occurrence identities and the frozen project
+        // workspace. It is an internal in-process launch only (the ordinary
+        // wire grammar cannot carry it) and never a temporary/Notes path.
+        if let scheduledLaunch {
+            guard isCreateIntent, bundle.identity == .ordinary,
+                  query.conversationID == scheduledLaunch.conversationID else {
+                return RunDomainReply(.rejected(RunDomainError(
+                    .invalidState, .payloadInvalid)))
+            }
+        }
         // C0 window: nothing before the atomic prepare has a durable effect.
-        let effectiveConversation = conversationID ?? query.conversationID
-        let runID = UUID()
+        let effectiveConversation = conversationID
+            ?? scheduledLaunch?.conversationID ?? query.conversationID
+        let runID = scheduledLaunch?.runID ?? UUID()
         // Frozen BEFORE the first await: execution identity (bundle),
         // conversation scope, minted runID, scoped fence token.
         let launchToken = issueFence(effectiveConversation)
@@ -1315,11 +1336,30 @@ public actor FacadeRunDomain {
             }
             if let env = query.requestedEnvironmentID {
                 admissionPhase = .environmentProof
-                guard let proof = components.environmentProof,
-                      await proof.proveEnvironment(env,
-                                                   conversationID: effectiveConversation,
-                                                   epoch: epoch) else {
-                    throw RunDomainError(.unsupportedRole, .environmentRoleUnresolvable)
+                if let scheduledLaunch {
+                    // A NEW scheduled conversation can only prove a PROJECT
+                    // environment owned by its frozen workspace. Session
+                    // containers owned by an older conversation, a different
+                    // owner and any unproven backend refuse; nothing is
+                    // substituted.
+                    guard let workspaceID = scheduledLaunch.workspaceID,
+                          let scheduledProof = components.environmentProof
+                            as? any RunScheduledEnvironmentOwnershipProving,
+                          await scheduledProof.proveScheduledEnvironment(
+                            env,
+                            workspaceID: workspaceID,
+                            metadata: scheduledLaunch.environmentMetadata,
+                            epoch: epoch) else {
+                        throw RunDomainError(.unsupportedRole,
+                                             .environmentRoleUnresolvable)
+                    }
+                } else {
+                    guard let proof = components.environmentProof,
+                          await proof.proveEnvironment(env,
+                                                       conversationID: effectiveConversation,
+                                                       epoch: epoch) else {
+                        throw RunDomainError(.unsupportedRole, .environmentRoleUnresolvable)
+                    }
                 }
                 provenEnvironmentID = env
             }
@@ -1496,14 +1536,18 @@ public actor FacadeRunDomain {
         var request = RunLaunchRequest(
             conversationID: isCreateIntent ? nil : effectiveConversation,
             newConversationID: isCreateIntent
-                ? (bundle.identity == .temporary ? effectiveConversation : UUID())
+                ? (bundle.identity == .temporary
+                    ? effectiveConversation
+                    : (scheduledLaunch?.conversationID ?? UUID()))
                 : nil,
-            conversationTitle: isCreateIntent ? conversationTitle : "",
+            conversationTitle: isCreateIntent
+                ? (scheduledLaunch?.conversationTitle ?? conversationTitle)
+                : "",
             runID: runID,
             goal: scanned.sanitizedText
                 .trimmingCharacters(in: .whitespacesAndNewlines),
             initialState: "preparing",
-            workspaceID: nil,
+            workspaceID: scheduledLaunch?.workspaceID,
             // c04-native repair B (G04R2 queue-input closure): the atomic
             // prepare is the ORIGINAL sole attachment binder, so the
             // request must carry the REAL combined set — reserved lease
@@ -1896,6 +1940,54 @@ public actor FacadeRunDomain {
         return await start(query: query.inner,
                            conversationTitle: query.conversationTitle,
                            receipt: receipt, conversationID: nil)
+    }
+
+    // MARK: - G07.3B internal scheduled launch
+
+    /// The ONLY entry a scheduled occurrence uses. It reuses the ordinary
+    /// create-intent pipeline above (same atomic prepare, model/gate/transport
+    /// admission, service assembly and owned-work lifecycle) with three
+    /// explicit differences, all internal to the trusted App process:
+    ///
+    ///   * deterministic conversation/run identities derived from the
+    ///     durable occurrence id;
+    ///   * the actual frozen project workspace (a new independent private
+    ///     workspace is minted by the transaction when the schedule chose
+    ///     that mode);
+    ///   * a project-environment ownership proof bound to that workspace.
+    ///
+    /// The caller-chosen arbitrary identities used by tests never traverse
+    /// the wire: the ordinary `run.startTask` grammar is unchanged and this
+    /// method is not registered as a command.
+    public func startScheduled(_ request: G073ScheduledLaunchRequest,
+                               receipt: String? = nil) async -> RunDomainReply {
+        guard request.conversationID
+                == G073ScheduleIdentity.conversationID(occurrenceID: request.occurrenceID),
+              request.runID
+                == G073ScheduleIdentity.runID(occurrenceID: request.occurrenceID) else {
+            return RunDomainReply(.rejected(RunDomainError(
+                .invalidState, .payloadInvalid)))
+        }
+        let query = RunStartQuery(
+            conversationID: request.conversationID,
+            goal: request.prompt,
+            mode: .chat,
+            providerID: request.providerID,
+            modelID: request.modelID,
+            policy: request.policy,
+            requestedEnvironmentID: request.environmentID)
+        let identity = RunScheduledLaunchIdentity(
+            occurrenceID: request.occurrenceID,
+            conversationID: request.conversationID,
+            runID: request.runID,
+            workspaceID: request.workspaceID,
+            conversationTitle: request.title,
+            environmentMetadata: request.environmentMetadata)
+        return await start(query: query,
+                           conversationTitle: request.title,
+                           receipt: receipt,
+                           conversationID: nil,
+                           scheduledLaunch: identity)
     }
 
     // MARK: - run.cancel
@@ -3724,6 +3816,17 @@ public actor FacadeRunDomain {
         }
         RunTaskBox.clear(runID: runID)
         lastObservedState[runID] = nil
+        // G07.3B scheduled-occurrence settlement: called exactly once per
+        // REAL top-level ordinary run retirement (the ownership entry above
+        // is already removed, so no later duplicate can reach it). The
+        // service settles the bound occurrence and enqueues `.afterSuccess`
+        // dependents only when the durable terminal is a clean success.
+        if ownership.identity == .ordinary,
+           let scheduleCompletion = components.scheduleCompletion {
+            await scheduleCompletion.runTerminal(
+                runID: runID, succeeded: terminalSucceeded,
+                cancelled: false, summary: nil, at: Date())
+        }
         // Intelligence hook #2: the ACTUAL terminal truth for an ORDINARY
         // run, exactly once per run identity (restart never re-feeds an
         // old epoch). The feed is DISPATCHED as a real owned maintenance

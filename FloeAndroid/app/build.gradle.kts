@@ -465,6 +465,13 @@ dependencies {
     implementation(project(":core:contracts"))
     implementation(project(":core:network"))
     implementation(project(":core:networkmonitor"))
+    implementation(project(":core:pcap"))
+    implementation(libs.androidx.work.runtime)
+    // Preserve the already-locked concurrent-futures KTX 1.2.0 line:
+    // androidx.test:core 1.7.0 (androidTest) references SuspendToFutureAdapter,
+    // which is absent from WorkManager 2.12.0's minimum 1.1.0, and AGP
+    // consistent resolution otherwise downgrades the androidTest runtime to 1.1.0.
+    implementation("androidx.concurrent:concurrent-futures-ktx:1.2.0")
     implementation(project(":feature:network"))
     implementation(project(":core:credentials"))
     implementation(project(":core:designsystem"))

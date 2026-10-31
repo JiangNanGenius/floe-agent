@@ -13,6 +13,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- G07.3B: user-created Agent schedules; wake-up receivers reconcile the
+         durable schedule ledger instead of starting a foreground service at boot.
+         Exact timing requires the user's Alarms & reminders special access. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- G07: normal state permissions and explicit foreground Wi-Fi analysis.
          Location/Nearby permission requests happen only after the user's action. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -29,6 +34,21 @@
     <application android:name=".FloeApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.Floe" android:allowBackup="false" android:supportsRtl="true"
         android:usesCleartextTraffic="false" android:enableOnBackInvokedCallback="true">
+        <!-- G07.3B: OS wake transport. The receiver only enqueues bounded
+             WorkManager jobs; it never launches a foreground service or an
+             Agent run at boot. -->
+        <receiver
+            android:name=".schedule.TaskScheduleWakeReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+                <action android:name="com.floe.android.schedule.REARM" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".host.networkmonitor.NetworkMonitorService"
             android:exported="false"

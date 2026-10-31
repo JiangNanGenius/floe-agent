@@ -110,14 +110,11 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
 
     func testClosedCommandMatrixIsUniqueAndComplete() throws {
         let rules = BridgeV3.commandRules
-        // G04 workspace ledger (Main decisions D12/D14, 2026-10-24):
-        // 87 -> 90 tuples appended (workspace.read, workspace.write and
-        // workspace.activate under conversationLifecycle, after the goal-core
-        // batch). The 57 legacy + 27 settings + 3 goal-core tuples, the 55
-        // configuration entries, the 19 labels and the mailbox bounds are
-        // unchanged; there is NO child.create and no renamed/deleted identity.
-        XCTAssertEqual(rules.count, 95)
-        XCTAssertEqual(rules.filter { $0.scope == .applicationConfiguration }.count, 55)
+        // G07.3B appends thirteen schedule configuration tuples to the
+        // preserved Alpha20 matrix. Existing role counts and mailbox bounds
+        // are unchanged; the new label grants no execution role by itself.
+        XCTAssertEqual(rules.count, 108)
+        XCTAssertEqual(rules.filter { $0.scope == .applicationConfiguration }.count, 68)
         XCTAssertEqual(rules.filter { $0.scope == .conversationLifecycle }.count, 21)
         XCTAssertEqual(rules.filter { $0.scope == .launch }.count, 5)
         XCTAssertEqual(rules.filter { $0.scope == .taskExecution }.count, 14)
@@ -147,7 +144,7 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
                         "memory.add", "memory.delete.bulk", "memory.organize.start",
                         "memory.organize.apply", "personalization.generate"])
         XCTAssertEqual(rules.filter { $0.isRunEventPoll }.map { $0.command }, ["event.poll"])
-        // The declared vocabulary is the closed 19 labels. Active command
+        // The declared vocabulary is the closed 20 labels. Active command
         // labels must match the approved matrix; the three reserved labels are
         // explicit, not silently dropped or turned into invented commands.
         let declaredLabels: Set<String> = [
@@ -156,15 +153,16 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
             "conversations", "capabilities", "system", "operations",
             "attachmentStaging",
             "settings.defaults", "memory", "personalization", "usage", "privacy",
+            "schedule",
         ]
-        XCTAssertEqual(BridgeV3.configurationScopes.count, 19)
+        XCTAssertEqual(BridgeV3.configurationScopes.count, 20)
         XCTAssertEqual(Set(BridgeV3.configurationScopes), declaredLabels)
         let activeLabels = Set(rules.compactMap { $0.configurationScope })
         XCTAssertEqual(activeLabels, [
             "providers", "models", "preferences", "catalog", "skills", "mcp",
             "settings.websearch", "conversations", "capabilities", "system",
             "attachmentStaging", "settings.defaults", "memory", "personalization",
-            "usage", "privacy",
+            "usage", "privacy", "schedule",
         ])
         // `settings.approval` is reserved/inactive for this wire slice:
         // approval preferences remain implemented through the actual
@@ -292,15 +290,28 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
             ("conversationLifecycle", nil, "question.pending"),
             ("conversationLifecycle", nil, "question.answer"),
             ("conversationLifecycle", nil, "question.cancel"),
+            ("applicationConfiguration", "schedule", "schedule.list"),
+            ("applicationConfiguration", "schedule", "schedule.get"),
+            ("applicationConfiguration", "schedule", "schedule.options"),
+            ("applicationConfiguration", "schedule", "schedule.create"),
+            ("applicationConfiguration", "schedule", "schedule.update"),
+            ("applicationConfiguration", "schedule", "schedule.enable"),
+            ("applicationConfiguration", "schedule", "schedule.disable"),
+            ("applicationConfiguration", "schedule", "schedule.delete"),
+            ("applicationConfiguration", "schedule", "schedule.runNow"),
+            ("applicationConfiguration", "schedule", "schedule.history"),
+            ("applicationConfiguration", "schedule", "schedule.dispatch"),
+            ("applicationConfiguration", "schedule", "schedule.rearm"),
+            ("applicationConfiguration", "schedule", "schedule.dispatchPending"),
         ]
-        XCTAssertEqual(goldenPairs.count, 95)
+        XCTAssertEqual(goldenPairs.count, 108)
         // The uniqueness key includes configurationScope: the third
         // content.read entry intentionally shares scope+command with the
         // conversations entry. The 57 legacy tuples remain unchanged.
         let goldenKeys = goldenPairs.map {
             "\($0.scope)|\($0.configurationScope ?? "")|\($0.command)"
         }
-        XCTAssertEqual(Set(goldenKeys).count, 95)
+        XCTAssertEqual(Set(goldenKeys).count, 108)
         XCTAssertEqual(Set(goldenPairs.prefix(57).map {
             "\($0.scope)|\($0.configurationScope ?? "")|\($0.command)"
         }).count, 57)
@@ -308,12 +319,28 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
         // workspace.read + workspace.write + workspace.activate (all three
         // are new distinct commands) => 89 (86+3); distinct COMMAND names are
         // 88 (85+3).
-        XCTAssertEqual(Set(goldenPairs.map { "\($0.scope)|\($0.command)" }).count, 94)
-        XCTAssertEqual(Set(goldenPairs.map { "\($0.command)" }).count, 93)
+        XCTAssertEqual(Set(goldenPairs.map { "\($0.scope)|\($0.command)" }).count, 107)
+        XCTAssertEqual(Set(goldenPairs.map { "\($0.command)" }).count, 106)
         XCTAssertEqual(Set(rules.map {
             "\($0.scope.rawValue)|\($0.configurationScope ?? "")|\($0.command)"
         }), Set(goldenKeys),
-                       "Swift matrix must equal the approved 95-entry golden matrix")
+                       "Swift matrix must equal the approved 108-entry golden matrix")
+    }
+
+    func testScheduleWritesRetainCASAndTheClosedConfigurationRole() {
+        let expectedWrites: Set<String> = [
+            "schedule.create", "schedule.update", "schedule.enable",
+            "schedule.disable", "schedule.delete", "schedule.runNow",
+        ]
+        let schedules = BridgeV3.commandRules.filter { $0.command.hasPrefix("schedule.") }
+        XCTAssertEqual(schedules.count, 13)
+        XCTAssertEqual(Set(schedules.filter(\.revisionRequired).map(\.command)), expectedWrites)
+        XCTAssertEqual(schedules.filter(\.allowsCreateIntent).map(\.command), ["schedule.create"])
+        for rule in schedules {
+            XCTAssertEqual(rule.scope, .applicationConfiguration)
+            XCTAssertEqual(rule.configurationScope, "schedule")
+            XCTAssertFalse(rule.isRunEventPoll)
+        }
     }
 
     func testCredentialStatusStaysFailClosedInV3() throws {

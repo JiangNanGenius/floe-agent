@@ -17,6 +17,30 @@ import java.util.UUID
  * canonical digest fixed vectors without opening a database or a network.
  */
 class SettingsDomainV1Test {
+
+    @Test
+    fun scheduleCommandsAreAnExactAdditiveConfigurationContract() {
+        val expected = listOf(
+            "schedule.list", "schedule.get", "schedule.options", "schedule.create",
+            "schedule.update", "schedule.enable", "schedule.disable", "schedule.delete",
+            "schedule.runNow", "schedule.history", "schedule.dispatch", "schedule.rearm",
+            "schedule.dispatchPending",
+        )
+        val rows = BridgeV3CommandMatrix.ENTRIES.drop(95)
+        assertEquals(expected, rows.map { it.command })
+        val writes = setOf(
+            "schedule.create", "schedule.update", "schedule.enable", "schedule.disable",
+            "schedule.delete", "schedule.runNow",
+        )
+        assertEquals("schedule", BridgeV3Scope.ApplicationConfiguration("schedule").configurationScope)
+        for (row in rows) {
+            assertEquals(BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, row.scope)
+            assertEquals("schedule", row.configurationScope)
+            assertEquals(row.command in writes, row.revisionRequired)
+            assertEquals(row.command == "schedule.create", row.allowsCreateIntent)
+            assertNull(BridgeV3CommandMatrix.entry(row.command, BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE))
+        }
+    }
     private fun failure(
         command: String,
         label: String,
@@ -27,18 +51,18 @@ class SettingsDomainV1Test {
         SettingsDomainV1.validate(command, label, createIntent, revisionPresent, payload)
 
     @Test
-    fun matrixHas95TuplesAnd19Labels() {
+    fun matrixIncludesSchedulesAfterThePreserved95TuplesAnd19Labels() {
         // 90 accepted tuples + the five G07.3A interaction tuples. The first
         // 90 entries (including the G04 workspace ledger at the tail before
         // this batch) remain intact; the interaction tuples are appended.
-        assertEquals(95, BridgeV3CommandMatrix.ENTRIES.size)
+        assertEquals(108, BridgeV3CommandMatrix.ENTRIES.size)
         val interactionCommands = listOf(
             "conversation.messageSearch", "conversation.messageWindow",
             "question.pending", "question.answer", "question.cancel",
         )
         assertEquals(
             interactionCommands,
-            BridgeV3CommandMatrix.ENTRIES.takeLast(5).map { it.command },
+            BridgeV3CommandMatrix.ENTRIES.take(95).takeLast(5).map { it.command },
         )
         for (command in interactionCommands) {
             val entry = BridgeV3CommandMatrix.ENTRIES.single { it.command == command }
@@ -76,9 +100,9 @@ class SettingsDomainV1Test {
                 !it.revisionRequired
         })
         assertEquals(0, BridgeV3CommandMatrix.ENTRIES.count { it.command == "child.create" })
-        assertEquals(19, BridgeProtocolV3.CONFIGURATION_SCOPES.size)
+        assertEquals(20, BridgeProtocolV3.CONFIGURATION_SCOPES.size)
         assertEquals(SettingsDomainV1.LABELS.toSet(),
-            BridgeProtocolV3.CONFIGURATION_SCOPES.takeLast(5).toSet())
+            BridgeProtocolV3.CONFIGURATION_SCOPES.take(19).takeLast(5).toSet())
 
         val newPairs = listOf(
             "config.defaults.get" to "settings.defaults",
@@ -358,17 +382,17 @@ class SettingsDomainV1Test {
         val keys = entries.map {
             "${it.scope.wire}|${it.configurationScope ?: ""}|${it.command}"
         }
-        assertEquals(95, keys.toSet().size)
+        assertEquals(108, keys.toSet().size)
         assertEquals(57, entries.take(57).map {
             "${it.scope.wire}|${it.configurationScope ?: ""}|${it.command}"
         }.toSet().size)
-        assertEquals(94, entries.map { "${it.scope.wire}|${it.command}" }.toSet().size)
+        assertEquals(107, entries.map { "${it.scope.wire}|${it.command}" }.toSet().size)
         assertEquals(2, entries.count {
             it.scope == BridgeV3Scope.Kind.APPLICATION_CONFIGURATION &&
                 it.command == "content.read"
         })
-        assertEquals(95, entries.size)
-        assertEquals(19, BridgeProtocolV3.CONFIGURATION_SCOPES.size)
+        assertEquals(108, entries.size)
+        assertEquals(20, BridgeProtocolV3.CONFIGURATION_SCOPES.size)
     }
 
     @Test

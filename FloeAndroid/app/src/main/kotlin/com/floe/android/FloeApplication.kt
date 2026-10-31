@@ -234,6 +234,11 @@ class FloeApplication : Application() {
     // bound at the SAME actual accepted native Root epoch as the shell pump
     // and stays serviceable while shell/model admission is fenced.
     private lateinit var linuxCleanup: com.floe.android.host.linux.LinuxRuntimeCleanupPump
+    // G07.3B: ONE App-owned environment-authority reader for scheduled tasks.
+    // The platform dispatch worker and the schedule UI share this exact
+    // instance; it reads the authenticated runtime IPC environment.list
+    // snapshot and never invents rows.
+    private lateinit var scheduleEnvironments: com.floe.android.host.RuntimeScheduleEnvironmentProvider
     // R3 trusted-host readiness authority: binds the seven live facts to the
     // ACTUAL accepted native epoch; the shell pump consults it BEFORE any
     // first-use workspace preflight dispatch (never a boolean override).
@@ -430,6 +435,15 @@ class FloeApplication : Application() {
         // downloads and installs run in hostScope and never block startup.
         // The Play flavour object is an empty Noop (no download/install code).
         com.floe.android.host.update.AppUpdateFeature.attach(this, hostScope)
+        // G07.3B scheduled tasks: data-only platform attach with the ONE
+        // Application-owned environment authority reader. The coordinator
+        // binds to the REAL host only after the owned store is ready, so no
+        // worker, alarm or runtime connection is created here.
+        scheduleEnvironments = com.floe.android.host.RuntimeScheduleEnvironmentProvider(
+            context = this,
+            currentNativeEpoch = { runtimeHost?.nativeRootEpoch() },
+        )
+        com.floe.android.schedule.TaskSchedulePlatform.attach(this, scheduleEnvironments)
         hostScope.launch(Dispatchers.Default) { observeBootstrap(runtimeState) }
     }
 
@@ -455,6 +469,13 @@ class FloeApplication : Application() {
                 val firstStart = !started
                 started = true
                 if (firstStart) runtimeHost?.start()
+                // Bind the schedule platform on the FIRST ready epoch AND on
+                // every later root-generation replacement. bindHost is
+                // idempotent for the same live host and performs a bounded
+                // schedule.rearm; it starts no UI and no Agent run.
+                runtimeHost?.let {
+                    com.floe.android.schedule.TaskSchedulePlatform.bindHost(it)
+                }
                 kotlinx.coroutines.withContext(Dispatchers.IO) {
                     val epoch = runtimeHost?.nativeRootEpoch()
                     if (epoch != null && epoch > 0) {
@@ -517,6 +538,11 @@ class FloeApplication : Application() {
                 }
             } else if (capability is RuntimeBootstrapCapability.Stopped) {
                 cancelPendingNotesLaunches()
+                // Retirement: stop observing the retired root generation so a
+                // late owned-work wake can never schedule work against a
+                // stopped host. Alarms stay armed from the durable planner;
+                // the next OwnedStoreReady rebinds through bindHost.
+                com.floe.android.schedule.TaskSchedulePlatform.onRootStopped(runtimeHost)
                 // The coordinator published this only after actual native
                 // owner/store drain, including the local-runtime gate.
                 foregroundObservation?.cancel()

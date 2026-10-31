@@ -29,6 +29,7 @@
 // unregistered until their real extension binds — the frozen fail-closed
 // `runtimeUnavailable` refusal answers them (no matrix widening).
 import Foundation
+import GRDB
 import FloePersistence
 import FloeAgentRuntime
 import FloeModels
@@ -93,6 +94,11 @@ public final class G02InstalledComposition: @unchecked Sendable {
     /// event-drop reuses its lease surface through a later extension.
     public let feedBinder: RunPersonalizationFeedBinder
 
+    /// G07.3B: the ONE epoch-owned scheduled-task service over the durable
+    /// `task_schedules`/`task_schedule_occurrences` ledger. Main's command
+    /// table binds `G073TaskScheduleBindings` against this same instance.
+    public let taskSchedules: G073TaskScheduleService
+
     /// Optional-domain extensions that attached successfully for this
     /// epoch (temporary, privacy successors). Empty in the ordinary product.
     internal var attachedExtensions: [G02DomainExtensionID: any G02DomainExtension] = [:]
@@ -134,7 +140,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
          conversationDomain: FacadeConversationDomain,
          defaultsAdapter: FacadeSettingsDefaultsAdapter,
          usageAdapter: FacadeUsageAdapter,
-         feedBinder: RunPersonalizationFeedBinder) {
+         feedBinder: RunPersonalizationFeedBinder,
+         taskSchedules: G073TaskScheduleService) {
         self.epoch = epoch
         self.cluster = cluster
         self.registry = registry
@@ -164,6 +171,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
         self.defaultsAdapter = defaultsAdapter
         self.usageAdapter = usageAdapter
         self.feedBinder = feedBinder
+        self.taskSchedules = taskSchedules
     }
 
     // MARK: - Build
@@ -372,6 +380,135 @@ public final class G02InstalledComposition: @unchecked Sendable {
             intelligence: intelligence,
             discovery: SQLiteConversationDiscoveryStore(database: database),
             taskChecklist: taskChecklist)
+        // G07.3B: real scheduled Agent tasks over the EXISTING durable
+        // schedule/occurrence model. The service is created BEFORE the run
+        // components (its terminal hook rides them) and its launch port
+        // resolves the run domain lazily after `RunDomainFacade.install`.
+        let scheduleStore = SQLiteTaskScheduleStore(database: database)
+        let environmentOwnership = G073ScheduleEnvironmentOwnership {
+            conversationID in
+            try? await workspace.workspaceID(conversationID: conversationID)
+        }
+        let scheduleService = G073TaskScheduleService(
+            epoch: epoch,
+            store: scheduleStore,
+            dependencies: G073TaskScheduleDependencies(
+                launch: G073RunDomainLaunchPort(epoch: epoch),
+                workspaceForConversation: { conversationID in
+                    try? await workspace.workspaceID(conversationID: conversationID)
+                },
+                workspace: { id in
+                    guard let record = try? await workspace.workspace(id: id) else {
+                        return nil
+                    }
+                    return G073WorkspaceSummary(id: record.id, name: record.name,
+                                                kind: record.kind)
+                },
+                workspaces: {
+                    let records = (try? await workspace.workspaces()) ?? []
+                    return records.map {
+                        G073WorkspaceSummary(id: $0.id, name: $0.name, kind: $0.kind)
+                    }
+                },
+                model: { id in
+                    guard let model = try? await cluster.modelConfigurationStore.model(id: id),
+                          let provider = try? await cluster.modelConfigurationStore.provider(
+                            id: model.providerID),
+                          model.isEnabled, provider.isEnabled else { return nil }
+                    return G073ModelSummary(
+                        id: model.id, providerID: provider.id,
+                        displayName: model.displayName,
+                        providerName: provider.displayName,
+                        supportsChat: model.supportsChatAgentSurface)
+                },
+                models: {
+                    let providers = (try? await cluster.modelConfigurationStore.providers()) ?? []
+                    let models = (try? await cluster.modelConfigurationStore.models()) ?? []
+                    let enabled = Dictionary(uniqueKeysWithValues:
+                        providers.filter(\.isEnabled).map { ($0.id, $0) })
+                    return models.compactMap { model in
+                        guard model.isEnabled, let provider = enabled[model.providerID] else {
+                            return nil
+                        }
+                        return G073ModelSummary(
+                            id: model.id, providerID: provider.id,
+                            displayName: model.displayName,
+                            providerName: provider.displayName,
+                            supportsChat: model.supportsChatAgentSurface)
+                    }
+                },
+                defaultModelID: {
+                    (try? await cluster.modelConfigurationStore.preferences())?
+                        .defaultAgentModelID
+                },
+                runState: { id in
+                    (try? await cluster.runStore.run(id: id))?.state
+                },
+                terminalStopReason: { id in
+                    guard let events = try? await cluster.runStore.recentEvents(
+                        runID: id, limit: 8) else { return nil }
+                    for event in events.reversed() where event.kind == .terminal {
+                        guard let data = event.payloadJSON.data(using: .utf8),
+                              let object = try? JSONSerialization.jsonObject(with: data)
+                                as? [String: Any] else { return nil }
+                        return object["stopReason"] as? String
+                    }
+                    return nil
+                },
+                claimedOccurrences: {
+                    let rows = (try? await database.reader { db in
+                        try Row.fetchAll(db, sql: """
+                            SELECT id, schedule_id, scheduled_for, run_id
+                            FROM task_schedule_occurrences
+                            WHERE state IN ('claimed', 'running')
+                            ORDER BY scheduled_for DESC
+                            LIMIT 200
+                            """)
+                    }) ?? []
+                    let fractional = ISO8601DateFormatter()
+                    fractional.formatOptions = [.withInternetDateTime,
+                                                .withFractionalSeconds]
+                    let plain = ISO8601DateFormatter()
+                    plain.formatOptions = [.withInternetDateTime]
+                    func date(_ raw: String?) -> Date? {
+                        guard let raw else { return nil }
+                        return fractional.date(from: raw) ?? plain.date(from: raw)
+                    }
+                    return rows.compactMap { row in
+                        guard let id = UUID(uuidString: row["id"]),
+                              let scheduleID = UUID(uuidString: row["schedule_id"]),
+                              let scheduledFor = date(row["scheduled_for"]) else {
+                            return nil
+                        }
+                        return G073ClaimedOccurrence(
+                            id: id, scheduleID: scheduleID,
+                            scheduledFor: scheduledFor,
+                            runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:)))
+                    }
+                },
+                environmentSource: nil,
+                environmentOwnership: environmentOwnership,
+                // G07.3B after-success run choices: the EXISTING durable
+                // top-level run projection over the SAME database. This is a
+                // read-only seam; the schedule service re-validates the chosen
+                // run (existence, liveness, bound project) before freezing it.
+                recentRunChoices: { limit in
+                    let runs = (try? await cluster.runStore.recentRunSummaries(
+                        limit: limit)) ?? []
+                    return runs.map {
+                        G073ScheduleRecentRun(
+                            id: $0.id,
+                            conversationID: $0.conversationID,
+                            conversationTitle: $0.conversationTitle,
+                            state: $0.state,
+                            startedAt: $0.startedAt)
+                    }
+                },
+                runConversation: { id in
+                    (try? await cluster.runStore.run(id: id))?.conversationID
+                }),
+            )
+
         let runComponents = RunDomainComponents(
             context: RunIngressContext(
                 epoch: epoch,
@@ -395,7 +532,10 @@ public final class G02InstalledComposition: @unchecked Sendable {
             stagedAttachments: stagingLaunchAuthority,
             stagedImages: G02StagedImageLoader(staging: staging),
             toolCancellation: toolWork,
-            environmentProof: G02NoEnvironmentOwnership(),
+            // G07.3B: the real project/session ownership gate over the host's
+            // FRESH runtime authority metadata (unbound -> fail closed exactly
+            // like the previous no-environment build).
+            environmentProof: environmentOwnership,
             intelligenceFeed: feedBinder.feed,
             personalizationProvider: {
                 try await personalizationStore.liveSnapshot(workspaceID: nil)
@@ -409,8 +549,63 @@ public final class G02InstalledComposition: @unchecked Sendable {
             // G06 Notes: the ONE process-wide assistant coordinator (closed
             // tools, document policy, durable purpose.notes threads). It is
             // the same accepted-epoch domain's port, never a second runtime.
-            notesRuntime: NotesAssistantDomain.shared)
+            notesRuntime: NotesAssistantDomain.shared,
+            // G07.3B: terminal occurrence settlement + after-success enqueue.
+            scheduleCompletion: scheduleService)
         RunDomainFacade.install(components: runComponents, registry: gen.registry)
+        G073TaskScheduleFacade.install(epoch: epoch, service: scheduleService)
+        // Cold-start ordering is enforced by the service: settle occurrences
+        // whose durable run reached a terminal, THEN interrupt leftovers.
+        // Unknown in-flight outcomes stay interrupted and are never replayed.
+        _ = await scheduleService.reconcileColdStart()
+        // The agent-facing tool shares the SAME service; it cannot grant any
+        // permission (the binding resolver only freezes the run's actual
+        // three-field DraftTaskPolicy, workspace and model).
+        registerG073TaskScheduleTools(
+            service: scheduleService,
+            registry: runComponents.registry,
+            bindingResolver: { context in
+                var frozenWorkspace: UUID?
+                var policy = DraftTaskPolicy()
+                if let conversationID = context.conversationID {
+                    if let workspaceID = try? await workspace.workspaceID(
+                        conversationID: conversationID),
+                       let record = try? await workspace.workspace(id: workspaceID) {
+                        // A previous private task workspace is deliberately
+                        // not frozen; nil means a new independent workspace
+                        // per occurrence.
+                        if record.kind == .project { frozenWorkspace = record.id }
+                    }
+                    if let taskPolicy = try? await workspace.taskPolicy(
+                        conversationID: conversationID) {
+                        policy = DraftTaskPolicy(
+                            approvalMode: taskPolicy.resolvedApprovalMode,
+                            recoveryPolicy: taskPolicy.recoveryPolicy,
+                            notificationPolicy: taskPolicy.notificationPolicy)
+                    }
+                }
+                var modelID: UUID?
+                if let run = try? await cluster.runStore.run(id: context.runID) {
+                    modelID = run.modelID
+                }
+                if modelID == nil {
+                    modelID = (try? await cluster.modelConfigurationStore.preferences())?
+                        .defaultAgentModelID
+                }
+                guard let modelID else { return nil }
+                var environmentID: String?
+                if let environment = context.environmentID {
+                    guard let project = frozenWorkspace,
+                          await environmentOwnership.proveScheduledEnvironment(
+                            environment, workspaceID: project,
+                            metadata: environmentOwnership.metadata(id: environment),
+                            epoch: epoch) else { return nil }
+                    environmentID = environment
+                }
+                return G073TaskScheduleToolBinding(
+                    workspaceID: frozenWorkspace, modelID: modelID,
+                    environmentID: environmentID, policy: policy)
+            })
 
         // Close the REAL feed/lease cycle with the exact accepted domain
         // instance; until this line both sides answered fail-closed.
@@ -481,7 +676,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
             conversationDomain: conversationDomain,
             defaultsAdapter: defaultsAdapter,
             usageAdapter: usageAdapter,
-            feedBinder: feedBinder)
+            feedBinder: feedBinder,
+            taskSchedules: scheduleService)
         // Capture the SAME-database identity evidence at build time: each
         // entry is the identifier of the ACTUAL argument bound at the
         // domain's construction call site — a second DatabaseManager opened

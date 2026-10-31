@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="schedule_title">定时任务</string>
+    <string name="schedule_add">新建定时任务</string>
+    <string name="schedule_back">返回</string>
+    <string name="schedule_more">更多操作</string>
+    <string name="schedule_ok">好</string>
+    <string name="schedule_cancel">取消</string>
+    <string name="schedule_save">保存</string>
+    <string name="schedule_saving">正在保存…</string>
+    <string name="schedule_choose">选择</string>
+    <string name="schedule_loading">正在载入定时任务…</string>
+    <string name="schedule_runtime_unavailable">任务运行时尚未就绪。运行时启动后即可使用定时任务。</string>
+    <string name="schedule_empty_title">暂无定时任务</string>
+    <string name="schedule_empty_body">可创建只运行一次、每天、每周、固定间隔，或在另一个任务成功后运行的任务。</string>
+    <string name="schedule_section_upcoming">即将运行</string>
+    <string name="schedule_section_paused">已暂停</string>
+    <string name="schedule_next_line">下次：%1$s</string>
+    <string name="schedule_after_success_line">在所选任务成功后运行</string>
+    <string name="schedule_no_next">没有下次运行</string>
+    <string name="schedule_needs_attention">此定时任务需要处理后才能运行。</string>
+
+    <string name="schedule_cadence_once">一次</string>
+    <string name="schedule_cadence_daily">每天</string>
+    <string name="schedule_cadence_weekly">每周</string>
+    <string name="schedule_cadence_interval">间隔</string>
+    <string name="schedule_cadence_after_success">成功后</string>
+
+    <string name="schedule_status_active">已定时</string>
+    <string name="schedule_status_flexible">弹性时间</string>
+    <string name="schedule_status_waiting">等待授权</string>
+    <string name="schedule_status_paused">已暂停</string>
+    <string name="schedule_status_event">成功后运行</string>
+    <string name="schedule_status_attention">需要处理</string>
+
+    <string name="schedule_action_run_now">立即运行</string>
+    <string name="schedule_action_pause">暂停</string>
+    <string name="schedule_action_resume">恢复</string>
+    <string name="schedule_action_history">运行历史</string>
+    <string name="schedule_action_use_flexible">改用弹性时间</string>
+    <string name="schedule_action_use_exact">改用精确时间</string>
+    <string name="schedule_action_allow_exact">允许精确闹钟</string>
+    <string name="schedule_delete_title">删除定时任务？</string>
+    <string name="schedule_delete_body">“%1$s”将停止运行。已有的运行历史会保留。</string>
+    <string name="schedule_delete_action">删除</string>
+
+    <string name="schedule_permission_title">精确时间权限未开启</string>
+    <string name="schedule_permission_body">定时任务会保持等待，而不会在错误的时间运行。可允许精确闹钟，或为允许稍晚运行的任务改用弹性时间。</string>
+    <string name="schedule_permission_note">此定时任务使用任务权限系统，不会额外授予任何工具访问权限。</string>
+
+    <string name="schedule_editor_create">新建定时任务</string>
+    <string name="schedule_editor_edit">编辑定时任务</string>
+    <string name="schedule_field_title">标题</string>
+    <string name="schedule_field_prompt">任务指令</string>
+    <string name="schedule_field_cadence">重复</string>
+    <string name="schedule_field_time">日期与时间</string>
+    <string name="schedule_field_weekday">星期</string>
+    <string name="schedule_field_interval_minutes">每隔多少分钟</string>
+    <string name="schedule_field_workspace">工作区</string>
+    <string name="schedule_field_model">模型</string>
+    <string name="schedule_field_environment">环境</string>
+    <string name="schedule_field_approval">审批</string>
+    <string name="schedule_field_upstream_run">在任务运行后</string>
+    <string name="schedule_run_untitled">未命名任务</string>
+    <string name="schedule_workspace_new">每次运行使用新工作区</string>
+    <string name="schedule_workspace_caption">每次运行都会创建独立的新工作区。选择项目工作区可改为复用其文件。</string>
+    <string name="schedule_environment_auto">自动（跟随工作区）</string>
+    <string name="schedule_environment_new_workspace">每个新工作区会自行解析环境。</string>
+    <string name="schedule_environment_unavailable">本地运行时列出环境前无法选择环境。任务会拒绝运行，而不是替换成其他环境。</string>
+    <string name="schedule_options_truncated">选项过多，部分选项未在此显示。</string>
+    <string name="schedule_list_truncated">定时任务过多，部分任务未在此显示。</string>
+    <string name="schedule_upstream_unavailable">当前没有正在运行的任务。先开始一个任务，再在这里选择它，以便在该任务成功后运行此定时任务。</string>
+    <string name="schedule_approval_ask">每次询问</string>
+    <string name="schedule_approval_automatic">自动</string>
+    <string name="schedule_approval_full">完全访问</string>
+
+    <string name="schedule_history_title">运行历史 · %1$s</string>
+    <string name="schedule_history_empty">尚无运行记录</string>
+    <string name="schedule_history_truncated">运行记录过多，部分较早的运行未在此显示。</string>
+    <string name="schedule_state_pending">等待中</string>
+    <string name="schedule_state_running">运行中</string>
+    <string name="schedule_state_completed">已完成</string>
+    <string name="schedule_state_failed">失败</string>
+    <string name="schedule_state_cancelled">已取消</string>
+    <string name="schedule_state_skipped">已跳过</string>
+    <string name="schedule_state_interrupted">已中断</string>
+
+    <string name="schedule_card_title">定时任务</string>
+    <string name="schedule_card_open">打开</string>
+    <string name="schedule_card_empty">暂无即将运行的定时任务</string>
+    <string name="schedule_queued_title">任务已排队</string>
+    <string name="schedule_queued_body">“%1$s”会在后台调度器允许后立即作为新任务开始运行。</string>
+
+    <string name="schedule_weekday_sun">星期日</string>
+    <string name="schedule_weekday_mon">星期一</string>
+    <string name="schedule_weekday_tue">星期二</string>
+    <string name="schedule_weekday_wed">星期三</string>
+    <string name="schedule_weekday_thu">星期四</string>
+    <string name="schedule_weekday_fri">星期五</string>
+    <string name="schedule_weekday_sat">星期六</string>
+
+    <string name="schedule_error_title">定时任务</string>
+    <string name="schedule_error_generic">无法更新定时任务。</string>
+    <string name="schedule_error_payload_too_large">此定时任务包含的文本过大，无法在编辑器中显示。仍可通过任务工具修改其设置。</string>
+    <string name="schedule_error_not_found">此定时任务已不存在。</string>
+    <string name="schedule_error_revision">此定时任务在打开后已发生变化。请重新打开后再试。</string>
+    <string name="schedule_error_prompt">请输入任务指令后重试。</string>
+    <string name="schedule_error_model">定时使用的模型不存在或已停用。请选择可用模型。</string>
+    <string name="schedule_error_workspace">所选项目工作区不可用。请选择其他工作区，或每次运行使用新工作区。</string>
+    <string name="schedule_error_environment">所选环境不是此工作区的活动项目环境。</string>
+    <string name="schedule_error_environment_authority">本地运行时无法列出环境。需要环境的任务会在运行时就绪前保持不可用。</string>
+    <string name="schedule_error_upstream">请为“成功后”触发器选择一个仍在运行的任务。</string>
+    <string name="schedule_error_exact">不允许精确闹钟。请允许精确闹钟，或改用弹性时间。</string>
+    <string name="schedule_error_notifications">通知已被阻止，后台任务无法保持受保护状态。请允许通知后重试。</string>
+    <string name="schedule_error_runtime">任务运行时尚未就绪。定时任务会保持等待并重试。</string>
+    <string name="schedule_error_store">无法读取或保存定时任务。请重试。</string>
+    <string name="schedule_error_launch">定时任务无法启动。打开它查看详情。</string>
+
+    <string name="schedule_generic_task">一个定时任务</string>
+    <string name="schedule_notification_channel">定时任务</string>
+    <string name="schedule_notification_channel_description">定时任务的等待状态</string>
+    <string name="schedule_waiting_exact_title">定时任务正在等待</string>
+    <string name="schedule_waiting_exact_body">“%1$s”需要精确闹钟权限才能按指定时间运行。</string>
+    <string name="schedule_pending_title">定时任务待运行</string>
+    <string name="schedule_pending_body">“%1$s”无法在后台启动。请打开 Floe 重试。</string>
+    <string name="schedule_use_flexible_action">改用弹性时间</string>
+</resources>
