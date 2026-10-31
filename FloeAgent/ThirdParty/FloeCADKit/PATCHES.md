@@ -79,6 +79,22 @@ upstream sync can rebase instead of re-deriving the patches.
     `prewarmBrepSerialization`, `buildSavePayload`; autosave now runs
     off-main. `ModelContext.save()` remains for tests/explicit close.
 
+## Native read-only observation (2026-10-31)
+
+11. **`Rendering/Camera.swift` — explicit pole up vector.** `TurntableCamera`
+    gained an additive `upVector` (default +Y) consumed by `viewMatrix`. Every
+    existing orbit/pick/standard-view result is bit-identical; the App's native
+    `cad.document observe` path supplies the horizontal limit direction for an
+    exact ±90° plan view, so `Matrices.lookAt` never degenerates and a real
+    pole frame is never reported as an undisclosed 89° approximation.
+12. **`Floe/FloeCADDocument+Observation.swift` (new).** Bounded read-only
+    multi-view capture for the App's native observe path: a detached `Renderer`
+    over a value-copy `viewModel().scene`, a local `TurntableCamera.fit` pose,
+    committed-revision/content-SHA + live-change-count fencing, exact PNG
+    dimension/digest/per-frame/total budget checks, cancellation checks and
+    honest `renderer: engineering` metadata. No new camera engine, no second
+    scene authority, no package/model/undo/camera mutation.
+
 ## Original extraction gaps (historical)
 
 The first two items below describe the original extraction, not the current

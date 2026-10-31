@@ -62,6 +62,14 @@ final class EngineeringObservationService {
     func observe(path: String, service: WorkspaceFileService,
                  request: CadModelObservationRequest) async throws -> CadModelObservationResult {
         try request.validate()
+        // A native live-generation pin is meaningless for an original file;
+        // never accept the request and silently drop the pin.
+        guard !request.hasNativeGenerationPins else {
+            throw FloeError.validationFailed(
+                "expectedRevision and expectedChangeCount pin the native .floecad live "
+                    + "generation; this original-file observer has no such generation. "
+                    + "Use expectedSourceSHA256 for an original model.")
+        }
         // A single job bounds WebGL memory without tying the job to view lifetime.
         while activeJob != nil {
             try Task.checkCancellation()
@@ -82,7 +90,7 @@ final class EngineeringObservationService {
         guard let backend = package.backend,
               backend == .threeGLTF || backend == .online3DViewer || backend == .occt else {
             throw FloeError.validationFailed(
-                "observe reads original mesh and CAD-surface files (STL, OBJ, PLY, OFF, 3DS, DAE, FBX, 3MF, AMF, WRL, BIM, STEP, IGES, BREP, GLB, glTF). Native .floecad uses capture/query/measure; drawings, Gerber and other formats use their existing tools.")
+                "observe reads original mesh and CAD-surface files (STL, OBJ, PLY, OFF, 3DS, DAE, FBX, 3MF, AMF, WRL, BIM, STEP, IGES, BREP, GLB, glTF). A native .floecad document is observed by the native bridge through the same cad.document observe action, not by this original-file viewer; drawings, Gerber and other formats use their existing tools.")
         }
         let isGLTFScene = backend == .threeGLTF
         if !isGLTFScene {

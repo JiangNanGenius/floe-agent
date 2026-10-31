@@ -2187,7 +2187,7 @@ struct CadOriginalSceneObservationTests {
         #expect(projected.projection == .orthographic)
     }
 
-    @Test("all existing static mesh and CAD-surface originals are accepted; imported/native/2D formats are not")
+    @Test("original observe accepts static mesh/CAD-surface formats; native and 2D routes stay explicit")
     func observableOriginalPaths() throws {
         let tool = CadDocumentTool(host: FakeCadHost())
         let accepted = [
@@ -2199,8 +2199,13 @@ struct CadOriginalSceneObservationTests {
         for path in accepted {
             try tool.validate(arguments(path: path))
         }
+        // The native multi-view closure: `.floecad` is now a REAL observe
+        // target through the same action (host-authorized native bridge),
+        // not an "unsupported format". Its unsupported SELECTIONS are covered
+        // by the native observation contract suite.
+        try tool.validate(arguments(path: "part.floecad"))
         let refused = [
-            "part.floecad", "part.dxf", "part.dwg", "part.gbr",
+            "part.dxf", "part.dwg", "part.gbr",
             "part.fcstd", "part.ifc", "part.3dm", "part.dgn",
         ]
         for path in refused {
@@ -2228,8 +2233,11 @@ struct CadOriginalSceneObservationTests {
                 from: Data(#"{"projection":"isometric"}"#.utf8))
         }
         let tool = CadDocumentTool(host: FakeCadHost())
+        // Native observe is admitted by the ACTION contract; the native
+        // selection/pin refusals are asserted in the dedicated suite.
+        try tool.validate(arguments(path: "part.floecad"))
         #expect(throws: (any Error).self) {
-            try tool.validate(arguments(path: "part.floecad"))
+            try tool.validate(arguments(path: "part.dxf"))
         }
     }
 

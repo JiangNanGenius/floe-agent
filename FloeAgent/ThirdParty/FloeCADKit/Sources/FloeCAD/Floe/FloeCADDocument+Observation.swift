@@ -1,0 +1,471 @@
+//
+//  FloeCADDocument+Observation.swift
+//  FloeCADKit
+//
+//  Bounded, read-only multi-view observation of the live native document
+//  scene for `cad.document action=observe`.
+//
+//  The pixels come from a DETACHED `Renderer` over a value copy of
+//  `viewModel().scene`, with a locally fitted `TurntableCamera`. The user's
+//  live camera, selection, preferences, saved appearance, animation playback,
+//  undo/redo history and model geometry are never modified: there is no
+//  `cameraControl`, no `ViewportCoordinator.attach`, no thumbnail provider and
+//  no live renderer touched.
+//
+//  An observation is bound to ONE live generation:
+//    * `revision` + `contentSHA256` are the last COMMITTED package identity;
+//    * `changeCount` is the live in-memory generation (which also advances for
+//      an unsaved draft).
+//  `contentSHA256` is never described as a digest of unsaved mesh bytes.
+//
+//  This is the engineering offscreen renderer, not the live RealityKit
+//  Present. A frame always reports `renderer: engineering` and
+//  `present_pixels: false`; it never pretends to be a Present capture.
+//
+//  SPDX-License-Identifier: MPL-2.0
+//
+
+import CoreGraphics
+import Foundation
+import ImageIO
+import simd
+
+/// One requested observation view. Degrees cross this boundary once and are
+/// converted to radians once; `distanceScale` multiplies the fitted turntable
+/// distance (the same meaning as the original-model viewer contract).
+public nonisolated struct CADObservationView: Sendable, Equatable {
+    public var azimuthDegrees: Double
+    public var elevationDegrees: Double
+    public var distanceScale: Double
+
+    public init(azimuthDegrees: Double, elevationDegrees: Double,
+                distanceScale: Double = 1) {
+        self.azimuthDegrees = azimuthDegrees
+        self.elevationDegrees = elevationDegrees
+        self.distanceScale = distanceScale
+    }
+}
+
+/// Requested projection for an observation frame. Nil uses the native
+/// document's saved scene projection (perspective when the package has none),
+/// never the user's transient orbit camera.
+public nonisolated enum CADObservationProjection: String, Sendable,
+                                                     Equatable, CaseIterable {
+    case perspective
+    case orthographic
+}
+
+/// The exact native generation one observation is bound to.
+public nonisolated struct CADObservationIdentity: Sendable, Equatable {
+    public var revision: Int
+    public var changeCount: Int
+    public var contentSHA256: String
+    public var modelSHA256: String
+    public var isReadOnly: Bool
+    public var hasUnsavedChanges: Bool
+    public var bodyCount: Int
+    public var sketchCount: Int
+    public var featureCount: Int
+    public var hasAssembly: Bool
+
+    public init(revision: Int, changeCount: Int, contentSHA256: String,
+                modelSHA256: String, isReadOnly: Bool, hasUnsavedChanges: Bool,
+                bodyCount: Int, sketchCount: Int, featureCount: Int,
+                hasAssembly: Bool) {
+        self.revision = revision
+        self.changeCount = changeCount
+        self.contentSHA256 = contentSHA256
+        self.modelSHA256 = modelSHA256
+        self.isReadOnly = isReadOnly
+        self.hasUnsavedChanges = hasUnsavedChanges
+        self.bodyCount = bodyCount
+        self.sketchCount = sketchCount
+        self.featureCount = featureCount
+        self.hasAssembly = hasAssembly
+    }
+}
+
+/// The workbench display state the observation scene was read from. These
+/// are transient view aids (not saved appearance): reporting them keeps a
+/// sectioned/isolated/alternate-display observation honest instead of
+/// implying the frames always show the whole default shaded part.
+public nonisolated struct CADObservationDisplayState: Sendable, Equatable {
+    public var sectioned: Bool
+    public var isolated: Bool
+    public var displayMode: String
+    public var hiddenEdges: Bool
+    public var groundShadow: Bool
+
+    public init(sectioned: Bool, isolated: Bool, displayMode: String,
+                hiddenEdges: Bool, groundShadow: Bool) {
+        self.sectioned = sectioned
+        self.isolated = isolated
+        self.displayMode = displayMode
+        self.hiddenEdges = hiddenEdges
+        self.groundShadow = groundShadow
+    }
+}
+
+/// One actual observation frame. The pose fields describe the camera that
+/// really rendered the pixels; `requested*` and `effective*` differ only by
+/// the degree→radian round trip (and an exact pole frame is labelled).
+public nonisolated struct CADObservationFrame: Sendable, Equatable {
+    public var pngData: Data
+    public var width: Int
+    public var height: Int
+    public var imageSHA256: String
+    public var viewIndex: Int
+    public var requestedAzimuthDegrees: Double
+    public var requestedElevationDegrees: Double
+    public var effectiveAzimuthDegrees: Double
+    public var effectiveElevationDegrees: Double
+    /// The exact radians the camera used (the same values used for the view
+    /// matrix), so pole float representation is never hidden behind a rounded
+    /// degree value.
+    public var azimuthRadians: Double
+    public var elevationRadians: Double
+    public var distanceMM: Double
+    public var targetMM: [Double]
+    public var upVector: [Double]
+    public var projection: String
+    public var fovYDegrees: Double
+    /// True when the request selected the exact top/bottom pole frame. The
+    /// camera uses an explicit horizontal up vector there; no 89° fallback is
+    /// substituted and the reported elevation is the requested ±90°.
+    public var poleView: Bool
+    public var revision: Int
+    public var changeCount: Int
+    public var contentSHA256: String
+    public var renderer: String
+    public var note: String
+
+    public init(pngData: Data, width: Int, height: Int, imageSHA256: String,
+                viewIndex: Int, requestedAzimuthDegrees: Double,
+                requestedElevationDegrees: Double,
+                effectiveAzimuthDegrees: Double,
+                effectiveElevationDegrees: Double,
+                azimuthRadians: Double, elevationRadians: Double,
+                distanceMM: Double, targetMM: [Double], upVector: [Double],
+                projection: String, fovYDegrees: Double, poleView: Bool,
+                revision: Int, changeCount: Int, contentSHA256: String,
+                renderer: String, note: String) {
+        self.pngData = pngData
+        self.width = width
+        self.height = height
+        self.imageSHA256 = imageSHA256
+        self.viewIndex = viewIndex
+        self.requestedAzimuthDegrees = requestedAzimuthDegrees
+        self.requestedElevationDegrees = requestedElevationDegrees
+        self.effectiveAzimuthDegrees = effectiveAzimuthDegrees
+        self.effectiveElevationDegrees = effectiveElevationDegrees
+        self.azimuthRadians = azimuthRadians
+        self.elevationRadians = elevationRadians
+        self.distanceMM = distanceMM
+        self.targetMM = targetMM
+        self.upVector = upVector
+        self.projection = projection
+        self.fovYDegrees = fovYDegrees
+        self.poleView = poleView
+        self.revision = revision
+        self.changeCount = changeCount
+        self.contentSHA256 = contentSHA256
+        self.renderer = renderer
+        self.note = note
+    }
+}
+
+@MainActor
+public extension FloeCADDocument {
+    /// The current transient display aids, read WITHOUT changing them. The
+    /// observation uses the same value-copy scene, so its frames and this
+    /// report describe the same display state.
+    func observationDisplayState() -> CADObservationDisplayState {
+        let model = viewModel()
+        return CADObservationDisplayState(
+            sectioned: model.sectionState != nil,
+            isolated: model.isolatedBodyIDs != nil,
+            displayMode: model.displayMode.rawValue,
+            hiddenEdges: model.showHiddenEdges,
+            groundShadow: model.groundShadowEnabled)
+    }
+
+    /// The committed + live identity an observation is bound to.
+    func observationIdentity() -> CADObservationIdentity {
+        let summary = summary()
+        return CADObservationIdentity(
+            revision: revision,
+            changeCount: liveChangeCount,
+            contentSHA256: contentSHA256,
+            modelSHA256: modelSHA256,
+            isReadOnly: isReadOnly,
+            hasUnsavedChanges: hasUnsavedChanges,
+            bodyCount: summary.bodyCount,
+            sketchCount: summary.sketchCount,
+            featureCount: summary.featureCount,
+            hasAssembly: summary.hasAssembly)
+    }
+
+    /// Refuses a stale or mismatched generation BEFORE any frame is rendered.
+    /// Every pin is optional; each supplied pin must match exactly.
+    func verifyObservationPins(expectedRevision: Int64?,
+                               expectedChangeCount: Int?,
+                               expectedContentSHA256: String?) throws {
+        if let expectedRevision {
+            guard expectedRevision >= 0 else {
+                throw CADDocumentError(code: "bad_revision",
+                                       message: "revision must be a non-negative integer.")
+            }
+            guard Int64(revision) == expectedRevision else {
+                throw CADDocumentError(
+                    code: "revision_mismatch",
+                    message: "The document is at revision \(revision), not the requested "
+                        + "\(expectedRevision). Observe the current document and retry.")
+            }
+        }
+        if let expectedChangeCount {
+            guard expectedChangeCount >= 0 else {
+                throw CADDocumentError(
+                    code: "change_count_mismatch",
+                    message: "expectedChangeCount must be a non-negative integer.")
+            }
+            guard liveChangeCount == expectedChangeCount else {
+                throw CADDocumentError(
+                    code: "change_count_mismatch",
+                    message: "The document's live change count is \(liveChangeCount), not the requested "
+                        + "\(expectedChangeCount); the scene (including any unsaved draft) changed. "
+                        + "Observe the current generation or re-pin after the edit.")
+            }
+        }
+        if let expectedContentSHA256 {
+            let expected = expectedContentSHA256.lowercased()
+            guard contentSHA256.lowercased() == expected else {
+                throw CADDocumentError(
+                    code: "content_mismatch",
+                    message: "The last committed package content SHA-256 is \(contentSHA256), not the "
+                        + "requested \(expected). The committed package changed; re-read the document "
+                        + "before observing it. (This SHA is the committed package identity, never a "
+                        + "digest of unsaved mesh bytes.)")
+            }
+        }
+    }
+
+    /// Renders 1...4 actual offscreen frames of the live scene at ONE bounded
+    /// generation. The whole loop is synchronous on the main actor, so an edit
+    /// cannot interleave between the identity check, the renders and the
+    /// returned receipts; the generation is still rechecked before each frame
+    /// and once more before returning.
+    ///
+    /// `shouldCancel` is consulted before every frame and before returning.
+    /// Cancellation returns no partial frames.
+    func captureObservationViews(_ views: [CADObservationView],
+                                 width: Int, height: Int,
+                                 projection: CADObservationProjection? = nil,
+                                 maximumFrameBytes: Int = 16 * 1024 * 1024,
+                                 maximumTotalBytes: Int = 32 * 1024 * 1024,
+                                 shouldCancel: @MainActor () -> Bool = { false }) throws
+    -> [CADObservationFrame] {
+        guard (1...4).contains(views.count),
+              (64...2048).contains(width), (64...2048).contains(height) else {
+            throw CADDocumentError(
+                code: "bad_observation_request",
+                message: "observe requires 1...4 views at 64...2048 pixels.")
+        }
+        guard views.allSatisfy({ view in
+            view.azimuthDegrees.isFinite && view.elevationDegrees.isFinite
+                && (-90...90).contains(view.elevationDegrees)
+                && view.distanceScale.isFinite && (0.1...5).contains(view.distanceScale)
+        }) else {
+            throw CADDocumentError(
+                code: "bad_observation_request",
+                message: "observe views require finite azimuth/elevation, elevation within -90...90 "
+                    + "and distanceScale within 0.1...5.")
+        }
+        guard maximumFrameBytes > 0, maximumTotalBytes >= maximumFrameBytes else {
+            throw CADDocumentError(
+                code: "bad_observation_request",
+                message: "The observation frame budget is invalid.")
+        }
+        guard !isReadOnly else {
+            throw CADDocumentError(
+                code: "document_read_only",
+                message: "A .floecad package written by a newer app version opens read-only and is "
+                    + "not observed as an editable scene. Update the app or use a matching package.")
+        }
+        try throwIfObservationCancelled(shouldCancel)
+
+        let identity = observationIdentity()
+        guard let context = RenderContext() else {
+            throw CADDocumentError(
+                code: "viewport_unavailable",
+                message: "The offscreen Metal viewport is unavailable on this device/build; "
+                    + "no observation image was fabricated.")
+        }
+        // ONE value copy of the live scene. UI-only overlays are removed from
+        // the COPY (never from the live view model) so the observation frames
+        // show the document, not the user's current gizmo/selection chrome.
+        var scene = viewModel().scene
+        scene.gizmo = nil
+        scene.pullArrow = nil
+        scene.planePickers = []
+        for index in scene.bodies.indices {
+            // 0 == SelectionStateNone (ShaderTypes.h); the COPY is cleaned so
+            // an observation never advertises the user's selection highlight.
+            scene.bodies[index].selectionState = 0
+        }
+        guard let bounds = scene.worldBounds,
+              bounds.min.x.isFinite, bounds.min.y.isFinite, bounds.min.z.isFinite,
+              bounds.max.x.isFinite, bounds.max.y.isFinite, bounds.max.z.isFinite,
+              bounds.min.x <= bounds.max.x, bounds.min.y <= bounds.max.y,
+              bounds.min.z <= bounds.max.z else {
+            throw CADDocumentError(
+                code: "empty_scene",
+                message: "The native document has no renderable geometry to observe. "
+                    + "Add or import geometry first; no placeholder image is produced.")
+        }
+        let settings = session.document.sceneSettingsData.flatMap {
+            try? JSONDecoder().decode(CADSceneSettings.self, from: $0)
+        }
+        let savedFovYDegrees = settings?.camera?.fovYDegrees
+        let selectedProjection: CADObservationProjection = projection
+            ?? ((settings?.camera?.isOrthographic == true) ? .orthographic : .perspective)
+        let fovY: Float = {
+            guard let savedFovYDegrees, savedFovYDegrees.isFinite,
+                  savedFovYDegrees > 1, savedFovYDegrees < 179 else {
+                return TurntableCamera.defaultFovY
+            }
+            return Float(savedFovYDegrees * .pi / 180)
+        }()
+
+        let renderer = Renderer(context: context)
+        renderer.scene = scene
+        var frames: [CADObservationFrame] = []
+        frames.reserveCapacity(views.count)
+        var totalBytes = 0
+
+        for (index, view) in views.enumerated() {
+            try throwIfObservationCancelled(shouldCancel)
+            let current = observationIdentity()
+            guard current.revision == identity.revision,
+                  current.changeCount == identity.changeCount,
+                  current.contentSHA256 == identity.contentSHA256 else {
+                throw CADDocumentError(
+                    code: "document_changed",
+                    message: "The native document changed during observation; no frame was published. "
+                        + "Observe the current generation again.")
+            }
+            var camera = TurntableCamera()
+            switch selectedProjection {
+            case .perspective: camera.projection = .perspective(fovY: fovY)
+            case .orthographic: camera.projection = .orthographic
+            }
+            camera.fit(boundsMin: bounds.min, boundsMax: bounds.max,
+                       aspect: Float(width) / Float(max(height, 1)))
+            camera.distance = min(max(camera.distance * Float(view.distanceScale), 0.05),
+                                  TurntableCamera.maxZoomDistance)
+            camera.azimuth = Float(view.azimuthDegrees * .pi / 180)
+            camera.elevation = Float(view.elevationDegrees * .pi / 180)
+            let pole = abs(view.elevationDegrees) >= 90 - 1e-9
+            if pole {
+                // Exact top/bottom frame. The turntable's +Y up is parallel to
+                // the view direction at ±90°, so use the horizontal direction
+                // the limit approaches. This is a real ±90° plan view, not an
+                // undisclosed 89° approximation.
+                camera.elevation = view.elevationDegrees >= 0
+                    ? Float.pi / 2
+                    : -Float.pi / 2
+                let azimuth = Double(camera.azimuth)
+                let sign = view.elevationDegrees >= 0 ? 1.0 : -1.0
+                camera.upVector = SIMD3<Float>(Float(-sign * sin(azimuth)), 0,
+                                               Float(-sign * cos(azimuth)))
+            } else {
+                camera.upVector = SIMD3<Float>(0, 1, 0)
+            }
+            renderer.camera = camera
+            guard let png = renderer.makeThumbnailPNG(
+                width: width, height: height,
+                transparentBackground: false,
+                showGrid: scene.showsGrid), !png.isEmpty else {
+                throw CADDocumentError(
+                    code: "viewport_unavailable",
+                    message: "The offscreen renderer returned no image for view \(index); "
+                        + "no placeholder was substituted.")
+            }
+            guard png.count <= maximumFrameBytes else {
+                throw CADDocumentError(
+                    code: "observation_budget_exceeded",
+                    message: "Observation view \(index) produced \(png.count) bytes, above the "
+                        + "\(maximumFrameBytes)-byte frame budget.")
+            }
+            totalBytes += png.count
+            guard totalBytes <= maximumTotalBytes else {
+                throw CADDocumentError(
+                    code: "observation_budget_exceeded",
+                    message: "The observation frames exceeded the \(maximumTotalBytes)-byte total budget.")
+            }
+            guard let actual = cadObservationPNGSize(png),
+                  actual.width == width, actual.height == height else {
+                throw CADDocumentError(
+                    code: "observation_budget_exceeded",
+                    message: "Observation view \(index) did not return a PNG with the requested "
+                        + "\(width)x\(height) pixels; the image was discarded.")
+            }
+            let effectiveElevation = pole
+                ? view.elevationDegrees
+                : Double(camera.elevation) * 180 / .pi
+            frames.append(CADObservationFrame(
+                pngData: png,
+                width: actual.width,
+                height: actual.height,
+                imageSHA256: CADMaterialTexture.digest(png),
+                viewIndex: index,
+                requestedAzimuthDegrees: view.azimuthDegrees,
+                requestedElevationDegrees: view.elevationDegrees,
+                effectiveAzimuthDegrees: Double(camera.azimuth) * 180 / .pi,
+                effectiveElevationDegrees: effectiveElevation,
+                azimuthRadians: Double(camera.azimuth),
+                elevationRadians: Double(camera.elevation),
+                distanceMM: Double(camera.distance),
+                targetMM: [Double(camera.target.x), Double(camera.target.y),
+                           Double(camera.target.z)],
+                upVector: [Double(camera.upVector.x), Double(camera.upVector.y),
+                           Double(camera.upVector.z)],
+                projection: selectedProjection.rawValue,
+                fovYDegrees: Double(camera.fovY) * 180 / .pi,
+                poleView: pole,
+                revision: identity.revision,
+                changeCount: identity.changeCount,
+                contentSHA256: identity.contentSHA256,
+                renderer: "engineering",
+                note: "Actual offscreen engineering snapshot rendered by a detached Renderer "
+                    + "over a value-copy scene; not the live RealityKit Present, and it does not "
+                    + "change the user's camera, selection or document."))
+        }
+        try throwIfObservationCancelled(shouldCancel)
+        let after = observationIdentity()
+        guard after.revision == identity.revision,
+              after.changeCount == identity.changeCount,
+              after.contentSHA256 == identity.contentSHA256 else {
+            throw CADDocumentError(
+                code: "document_changed",
+                message: "The native document changed during observation; no frame was published. "
+                    + "Observe the current generation again.")
+        }
+        return frames
+    }
+
+    private func throwIfObservationCancelled(_ shouldCancel: @MainActor () -> Bool) throws {
+        if shouldCancel() || Task.isCancelled {
+            throw CADDocumentError(code: "cancelled",
+                                   message: "The observation was cancelled before it completed.")
+        }
+    }
+}
+
+/// PNG container identity check; a renderer that reports requested dimensions
+/// but returned different pixels must not become trusted vision evidence.
+private func cadObservationPNGSize(_ data: Data) -> (width: Int, height: Int)? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+          let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+          image.width > 0, image.height > 0 else { return nil }
+    return (image.width, image.height)
+}

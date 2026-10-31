@@ -1237,6 +1237,14 @@ targets:
       - path: Tests/FloeToolsTests/CADMaterialMutationTargetTests.swift
       - path: Tests/FloeToolsTests/VerifiedToolImageArtifactTests.swift
       - path: Tests/FloeWorkbenchTests/CadDocumentToolTests.swift
+      # R3 native read-only observation closure (2026-10-31): the tool
+      # contract suite covers argument/pin/refusal semantics without a
+      # renderer; the App-host suite drives the real bridge/center/tool
+      # path over an actual OCCT document. Both are explicit source-list
+      # members: applying this file requires gen_project.sh in the same
+      # apply step.
+      - path: Tests/FloeWorkbenchTests/CadDocumentObserveContractTests.swift
+      - path: Tests/FloeAppTests/CadNativeObservationTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialCoreTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialUVConsistencyTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialRenderWitnessTests.swift

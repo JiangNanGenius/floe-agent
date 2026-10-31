@@ -1520,9 +1520,14 @@ actor CadDocumentCenter: CadDocumentHost {
             return FloeError.validationFailed(message)
         case "requery_required", "stale_face_ref", "stale_edge_ref":
             return FloeError.validationFailed("\(code): \(message)")
+        case "cancelled":
+            return FloeError.cancelled
         case "revision_mismatch", "bad_revision", "presentation_stale",
              "presentation_not_active", "presentation_failed",
              "viewport_unavailable", "document_changed",
+             "change_count_mismatch", "content_mismatch", "empty_scene",
+             "bad_observation_request", "observation_budget_exceeded",
+             "unsupported_native_selection", "query_failed",
              "shared_library_corrupt", "shared_library_too_large",
              "shared_library_busy", "shared_library_write_failed":
             return FloeError.validationFailed("\(code): \(message)")
@@ -2350,12 +2355,355 @@ actor CadDocumentCenter: CadDocumentHost {
 
     func observeModel(documentID: String, request: CadModelObservationRequest,
                       access: CadDocumentAccess) async throws -> CadModelObservationResult {
+        try await observeModel(documentID: documentID, request: request, access: access,
+                               cancellation: CancellationToken())
+    }
+
+    /// Read-only observation through the SAME authorized resolution as the
+    /// other native actions (task workspace or a verified canvas-cad binding).
+    /// An ORIGINAL stays on the existing engineering viewer with its source
+    /// and resource hashing unchanged. A NATIVE `.floecad` renders the live
+    /// kernel scene and is fenced by the committed revision/content SHA plus
+    /// the live change count, so pixels and the object page always describe
+    /// one generation.
+    func observeModel(documentID: String, request: CadModelObservationRequest,
+                      access: CadDocumentAccess,
+                      cancellation: CancellationToken) async throws -> CadModelObservationResult {
         try await authorizeAccess(access: access)
         try request.validate()
-        let resolved = try resolve(documentID: documentID, access: access,
-                                   readonlyModelByteLimit: request.maximumSourceBytes)
-        return try await EngineeringObservationService.shared.observe(
-            path: resolved.id, service: resolved.service, request: request)
+        try cancellation.throwIfCancelled()
+        let native = (documentID as NSString).pathExtension.lowercased() == "floecad"
+        if !native {
+            // Native-only generation pins must never be silently ignored on an
+            // original file: the caller asked for an identity this route has.
+            guard !request.hasNativeGenerationPins else {
+                throw FloeError.validationFailed(
+                    "expectedRevision and expectedChangeCount pin the native .floecad live "
+                        + "generation; for an original model use expectedSourceSHA256.")
+            }
+            let resolved = try resolve(documentID: documentID, access: access,
+                                       readonlyModelByteLimit: request.maximumSourceBytes)
+            let result = try await EngineeringObservationService.shared.observe(
+                path: resolved.id, service: resolved.service, request: request)
+            try cancellation.throwIfCancelled()
+            return result
+        }
+        if let refusal = request.nativeSelectionRefusal() {
+            throw FloeError.validationFailed(refusal)
+        }
+        let resolved = try await resolveNativeAware(documentID: documentID, access: access)
+        try cancellation.throwIfCancelled()
+        let url = try resolved.service.guardResolver.resolve(resolved.id)
+        // Report the address the CALLER used (a canvas-cad key stays a key; a
+        // workspace document stays its relative id) instead of leaking the
+        // app-container file name of a canvas package.
+        let displayID = CanvasCADBindingKey.isCanvasOwned(documentID)
+            ? documentID : resolved.id
+        do {
+            let observation = try await Self.observeNativeDocument(
+                at: url, request: request, documentID: displayID,
+                cancellation: cancellation)
+            try cancellation.throwIfCancelled()
+            return observation
+        } catch let error as CADDocumentError {
+            throw Self.classifiedNativeError(error)
+        }
+    }
+
+    // MARK: - Native read-only observation
+
+    /// MainActor entry point: open the ONE cached live document, then run the
+    /// synchronous observation block. Keeping the open here (instead of a
+    /// @Sendable `MainActor.run` closure) also keeps the exact main-actor
+    /// isolation of `FloeCADDocument` explicit.
+    @MainActor
+    private static func observeNativeDocument(
+        at url: URL,
+        request: CadModelObservationRequest,
+        documentID: String,
+        cancellation: CancellationToken
+    ) async throws -> CadModelObservationResult {
+        let document = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        try cancellation.throwIfCancelled()
+        return try nativeObservation(document: document, request: request,
+                                     documentID: documentID,
+                                     cancellation: cancellation)
+    }
+
+    /// ONE synchronous main-actor block: identity snapshot, body query page,
+    /// every render and the final recheck cannot interleave with an edit.
+    @MainActor
+    private static func nativeObservation(
+        document: FloeCADDocument,
+        request: CadModelObservationRequest,
+        documentID: String,
+        cancellation: CancellationToken
+    ) throws -> CadModelObservationResult {
+        guard !document.isReadOnly else {
+            throw CADDocumentError(
+                code: "document_read_only",
+                message: "A .floecad package written by a newer app version opens read-only and is "
+                    + "not observed as an editable scene. Update the app or use a matching package.")
+        }
+        try cancellation.throwIfCancelled()
+        let identity = document.observationIdentity()
+        try document.verifyObservationPins(
+            expectedRevision: request.expectedRevision,
+            expectedChangeCount: request.expectedChangeCount,
+            expectedContentSHA256: request.expectedSourceSHA256)
+        let observationID = UUID()
+        let displayState = document.observationDisplayState()
+        let hierarchy = try nativeObservationHierarchy(
+            document: document, offset: request.nodeOffset, limit: request.nodeLimit,
+            identity: identity)
+        let frames: [CADObservationFrame]
+        if request.includeImages {
+            frames = try document.captureObservationViews(
+                request.views.map {
+                    CADObservationView(azimuthDegrees: $0.azimuthDegrees,
+                                       elevationDegrees: $0.elevationDegrees,
+                                       distanceScale: $0.distanceScale)
+                },
+                width: request.width, height: request.height,
+                projection: request.projection.flatMap {
+                    CADObservationProjection(rawValue: $0.rawValue)
+                },
+                maximumFrameBytes: 16 * 1024 * 1024,
+                maximumTotalBytes: 32 * 1024 * 1024,
+                shouldCancel: { cancellation.isCancelled || Task.isCancelled })
+        } else {
+            frames = []
+        }
+        try cancellation.throwIfCancelled()
+        // Source/revision fence before publishing: pixels or object rows that
+        // no longer describe the pinned generation are never returned.
+        let after = document.observationIdentity()
+        guard after.revision == identity.revision,
+              after.changeCount == identity.changeCount,
+              after.contentSHA256 == identity.contentSHA256 else {
+            throw CADDocumentError(
+                code: "document_changed",
+                message: "The native document changed during observation; nothing was published. "
+                    + "Observe the current generation again.")
+        }
+        var summary: [String: Any] = [
+            "ok": true,
+            "action": "observe",
+            "representation": "native_floecad",
+            "observationID": observationID.uuidString,
+            "document": [
+                "path": documentID,
+                "name": document.name,
+                "revision": identity.revision,
+                "change_count": identity.changeCount,
+                "content_sha256": identity.contentSHA256,
+                "model_sha256": identity.modelSHA256,
+                "read_only": identity.isReadOnly,
+                "unsaved_changes": identity.hasUnsavedChanges,
+                "body_count": identity.bodyCount,
+                "sketch_count": identity.sketchCount,
+                "feature_count": identity.featureCount,
+                "has_assembly": identity.hasAssembly,
+            ],
+            "pins": nativeObservationPins(request),
+            "requested": [
+                "views": request.views.count,
+                "include_images": request.includeImages,
+                "width": request.width,
+                "height": request.height,
+                "projection": request.projection?.rawValue ?? "document_default",
+                "node_offset": request.nodeOffset,
+                "node_limit": request.nodeLimit,
+            ],
+            "requested_frames": request.includeImages ? request.views.count : 0,
+            "completed_frames": frames.count,
+            "partial": false,
+            "failures": [],
+            "renderer": [
+                "id": request.includeImages ? "engineering" : "none",
+                "present_pixels": false,
+                "frames_rendered": frames.count,
+                "note": request.includeImages
+                    ? "Actual offscreen engineering snapshot of the native document scene. "
+                        + "These pixels are not the live RealityKit Present and the user's "
+                        + "camera/selection are never changed."
+                    : "includeImages=false: no renderer ran; this reply is the committed/live "
+                        + "identity and the native object query only.",
+            ],
+            "views": frames.map { frame -> [String: Any] in
+                [
+                    "view_index": frame.viewIndex,
+                    "image_sha256": frame.imageSHA256,
+                    "projection": frame.projection,
+                    "width": frame.width,
+                    "height": frame.height,
+                    "azimuth_degrees": frame.effectiveAzimuthDegrees,
+                    "elevation_degrees": frame.effectiveElevationDegrees,
+                    "azimuth_radians": frame.azimuthRadians,
+                    "elevation_radians": frame.elevationRadians,
+                    "pole_view": frame.poleView,
+                    "distance_mm": frame.distanceMM,
+                    "target_mm": frame.targetMM,
+                    "up_vector": frame.upVector,
+                ]
+            },
+            "hierarchy": hierarchy,
+            "display": [
+                "sectioned": displayState.sectioned,
+                "isolated": displayState.isolated,
+                "display_mode": displayState.displayMode,
+                "hidden_edges": displayState.hiddenEdges,
+                "ground_shadow": displayState.groundShadow,
+                "note": "Transient workbench display aids read for this observation; "
+                    + "observation did not change them.",
+            ],
+            "identity_recheck": [
+                "unchanged": true,
+                "revision": after.revision,
+                "change_count": after.changeCount,
+                "content_sha256": after.contentSHA256,
+            ],
+            "visual_evidence": "Actual offscreen engineering pixels of the native document "
+                + "scene at this revision/change count; not a drawing page, not a Present "
+                + "capture, and not CAD topology from image coordinates. Only a vision-capable "
+                + "model may inspect the frames; otherwise use query/measure values.",
+            "limitations": [
+                "Pixels come from the offscreen Metal engineering renderer, not the live "
+                    + "RealityKit Present; the user's camera, selection, saved appearance, "
+                    + "playback and undo history are not modified.",
+                "content_sha256 is the last committed package content identity; change_count "
+                    + "identifies the live in-memory generation. An unsaved draft is described "
+                    + "by change_count, never by a hash of its unsaved mesh.",
+                "Native object rows come from the deterministic body query at this exact "
+                    + "generation; placed assembly occurrences remain available through "
+                    + "query kind=assembly.",
+                "Selection, gizmo, pull-arrow and plane-picker overlays are removed from the "
+                    + "observation copy; the document and its saved appearance are unchanged.",
+                "Frames use a value copy of the current workbench display scene. If a transient "
+                    + "section view, isolate state or alternate display mode is active, the "
+                    + "summary's display block reports it; observation never changes it.",
+                "Frames reflect the live scene at change_count; a still-active edit preview is "
+                    + "part of that live scene. Commit or cancel an in-progress edit before "
+                    + "treating the frames as the settled part.",
+            ],
+        ]
+        summary["initial_identity"] = [
+            "revision": identity.revision,
+            "change_count": identity.changeCount,
+            "content_sha256": identity.contentSHA256,
+        ]
+        let receipts = try frames.map { frame -> CadModelObservationFrame in
+            let receipt: [String: Any] = [
+                "observationID": observationID.uuidString,
+                "representation": "native_floecad",
+                "viewIndex": frame.viewIndex,
+                "revision": frame.revision,
+                "changeCount": frame.changeCount,
+                "contentSHA256": frame.contentSHA256,
+                "imageSHA256": frame.imageSHA256,
+                "renderer": frame.renderer,
+                "presentPixels": false,
+                "projection": frame.projection,
+                "width": frame.width,
+                "height": frame.height,
+                "azimuthDegrees": frame.requestedAzimuthDegrees,
+                "elevationDegrees": frame.requestedElevationDegrees,
+                "effectiveAzimuthDegrees": frame.effectiveAzimuthDegrees,
+                "effectiveElevationDegrees": frame.effectiveElevationDegrees,
+                "azimuthRadians": frame.azimuthRadians,
+                "elevationRadians": frame.elevationRadians,
+                "distanceMM": frame.distanceMM,
+                "targetMM": frame.targetMM,
+                "upVector": frame.upVector,
+                "poleView": frame.poleView,
+                "fovYDegrees": frame.fovYDegrees,
+                "note": frame.note,
+            ]
+            return CadModelObservationFrame(
+                pngData: frame.pngData,
+                metadataJSON: try nativeObservationJSON(receipt))
+        }
+        return CadModelObservationResult(
+            summaryJSON: try nativeObservationJSON(summary),
+            frames: receipts)
+    }
+
+    /// One bounded, pageable page of REAL native objects (the existing
+    /// deterministic body query) at the observation's exact generation. The
+    /// page is additionally byte-bounded so the model-visible summary cannot
+    /// be truncated mid-JSON; `next_offset` continues exactly where it stopped.
+    @MainActor
+    private static func nativeObservationHierarchy(
+        document: FloeCADDocument, offset: Int, limit: Int,
+        identity: CADObservationIdentity
+    ) throws -> [String: Any] {
+        // 64 rows is the per-page work bound (each body row measures volume
+        // and carries typed tokens); the caller pages with next_offset.
+        let outcome = document.nativeQueryJSON([
+            "scope": "bodies", "offset": offset, "limit": min(limit, 64),
+        ])
+        guard outcome.isOK,
+              let object = (try? JSONSerialization.jsonObject(with: outcome.payload))
+                as? [String: Any] else {
+            throw CADDocumentError(
+                code: "query_failed",
+                message: outcome.message ?? "The native body query failed; no observation was published.")
+        }
+        let rows = object["rows"] as? [[String: Any]] ?? []
+        let total = object["total"] as? Int ?? rows.count
+        var kept: [[String: Any]] = []
+        var keptBytes = 0
+        for row in rows {
+            let size = (try? JSONSerialization.data(withJSONObject: row))?.count ?? 0
+            if !kept.isEmpty, keptBytes + size > 10 * 1024 { break }
+            kept.append(row)
+            keptBytes += size
+        }
+        let served = min(total, offset + kept.count)
+        var page: [String: Any] = [
+            "scope": "bodies",
+            "offset": offset,
+            "requested_limit": limit,
+            "returned": kept.count,
+            "total": total,
+            "revision": identity.revision,
+            "change_count": identity.changeCount,
+            "content_sha256": identity.contentSHA256,
+            "has_assembly": identity.hasAssembly,
+            "rows": kept,
+            "note": "Deterministic native body rows at this exact generation. Each row carries "
+                + "its stable id, bounds and query_token/generation. Pages are capped at 64 rows "
+                + "and additionally byte-bounded; continue with next_offset and the SAME "
+                + "generation pins. Placed assembly occurrences remain available through query "
+                + "kind=assembly.",
+        ]
+        if served < total {
+            page["next_offset"] = served
+        } else {
+            page["next_offset"] = NSNull()
+        }
+        return page
+    }
+
+    private static func nativeObservationPins(
+        _ request: CadModelObservationRequest
+    ) -> [String: Any] {
+        var pins: [String: Any] = [:]
+        if let revision = request.expectedRevision { pins["revision"] = revision }
+        if let count = request.expectedChangeCount { pins["change_count"] = count }
+        if let sha = request.expectedSourceSHA256 {
+            pins["content_sha256"] = sha.lowercased()
+        }
+        return pins
+    }
+
+    private static func nativeObservationJSON(_ object: Any) throws -> String {
+        let data = try JSONSerialization.data(
+            withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw FloeError.internalError("Native observation JSON encoding failed")
+        }
+        return text
     }
 
     func capabilities(access: CadDocumentAccess) async throws -> String {

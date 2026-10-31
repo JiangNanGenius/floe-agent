@@ -23,6 +23,13 @@ nonisolated struct TurntableCamera: Sendable, Equatable {
     var azimuth: Float = .pi / 5      // radians around +Y, 0 looks down -Z
     var elevation: Float = .pi / 7    // radians above the ground plane
     var projection: CameraProjection = .perspective(fovY: TurntableCamera.defaultFovY)
+    /// Screen-up direction used by `viewMatrix`. The ordinary turntable keeps
+    /// +Y so every existing orbit/pick/projection result is unchanged. An
+    /// exact pole view (elevation ±90°, where the turntable's +Y up is
+    /// parallel to the view direction and `lookAt` would degenerate) supplies
+    /// the horizontal direction that the limit approaches; the pose stays the
+    /// real ±90° plan view instead of an undisclosed 89° approximation.
+    var upVector: SIMD3<Float> = SIMD3(0, 1, 0)
 
     static let defaultFovY: Float = 40 * .pi / 180
     static let elevationLimit: Float = 89 * .pi / 180
@@ -49,7 +56,9 @@ nonisolated struct TurntableCamera: Sendable, Equatable {
     }
 
     var viewMatrix: simd_float4x4 {
-        Matrices.lookAt(eye: position, target: target, up: SIMD3(0, 1, 0))
+        let upLength = simd_length(upVector)
+        let up = upLength > 1e-6 && upLength.isFinite ? upVector / upLength : SIMD3<Float>(0, 1, 0)
+        return Matrices.lookAt(eye: position, target: target, up: up)
     }
 
     /// `centerOffset` moves the image's centre — where the target lands — off
