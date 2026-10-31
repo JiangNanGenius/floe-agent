@@ -4000,9 +4000,8 @@ public final class CADAssemblyService {
     }
 
     private func doubles(_ raw: Any) -> [Double]? {
-        if let values = raw as? [Double] { return values }
-        if let values = raw as? [Int] { return values.map(Double.init) }
-        if let values = raw as? [NSNumber] { return values.map(\.doubleValue) }
+        // Swift's numeric array bridges also accept CFBoolean. Every element
+        // must pass the same number check as scalar dimensions.
         guard let values = raw as? [Any] else { return nil }
         var out: [Double] = []
         out.reserveCapacity(values.count)

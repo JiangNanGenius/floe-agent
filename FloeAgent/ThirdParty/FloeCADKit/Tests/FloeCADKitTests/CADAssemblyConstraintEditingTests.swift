@@ -191,6 +191,8 @@ final class CADAssemblyConstraintEditingTests: XCTestCase {
 
         let added = service.handle(action: "addConstraint", args: [
             "kind": "distance", "instanceA": a, "instanceB": b, "value": 10.0,
+            "pointA": [0.0, 0.0, 0.0], "pointB": [0.0, 0.0, 0.0],
+            "directionA": [0.0, 0.0, 1.0], "directionB": [0.0, 0.0, 1.0],
         ])
         XCTAssertEqual(added["ok"] as? Bool, true, "\(added)")
         let constraintID = try XCTUnwrap(added["id"] as? String)
