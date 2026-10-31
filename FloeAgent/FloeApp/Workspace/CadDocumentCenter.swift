@@ -1527,6 +1527,7 @@ actor CadDocumentCenter: CadDocumentHost {
              "viewport_unavailable", "document_changed",
              "change_count_mismatch", "content_mismatch", "empty_scene",
              "bad_observation_request", "observation_budget_exceeded",
+             "transient_preview_active",
              "unsupported_native_selection", "query_failed",
              "shared_library_corrupt", "shared_library_too_large",
              "shared_library_busy", "shared_library_write_failed":
@@ -2453,6 +2454,15 @@ actor CadDocumentCenter: CadDocumentHost {
             expectedContentSHA256: request.expectedSourceSHA256)
         let observationID = UUID()
         let displayState = document.observationDisplayState()
+        // The editor owns ONE derived preview fence. Frames are refused before
+        // any query work while its display scene contains transient geometry
+        // the body/occurrence query cannot describe at this generation, so the
+        // caller gets a precise read-only refusal instead of mismatched pixels.
+        let frameReadiness = document.observationFrameReadiness()
+        if request.includeImages, !frameReadiness.isReady {
+            throw CADDocumentError(code: "transient_preview_active",
+                                   message: frameReadiness.refusalMessage)
+        }
         let hierarchy = try nativeObservationHierarchy(
             document: document, offset: request.nodeOffset, limit: request.nodeLimit,
             identity: identity)
@@ -2475,6 +2485,15 @@ actor CadDocumentCenter: CadDocumentHost {
             frames = []
         }
         try cancellation.throwIfCancelled()
+        // The display scene must still be the one the frames and rows describe.
+        // `captureObservationViews` rechecks this before every frame; the host
+        // repeats it after the page/render block so a published frame list and
+        // summary can never carry a preview that appeared during the block.
+        let frameReadinessAfter = document.observationFrameReadiness()
+        guard frameReadinessAfter == frameReadiness else {
+            throw CADDocumentError(code: "transient_preview_active",
+                                   message: frameReadinessAfter.refusalMessage)
+        }
         // Source/revision fence before publishing: pixels or object rows that
         // no longer describe the pinned generation are never returned.
         let after = document.observationIdentity()
@@ -2485,6 +2504,15 @@ actor CadDocumentCenter: CadDocumentHost {
                 code: "document_changed",
                 message: "The native document changed during observation; nothing was published. "
                     + "Observe the current generation again.")
+        }
+        var frameFence: [String: Any] = [
+            "ready": frameReadiness.isReady,
+            "blocker": frameReadiness.blocker?.rawValue ?? "none",
+            "query_only": !request.includeImages,
+        ]
+        if !frameReadiness.isReady {
+            frameFence["detail"] = frameReadiness.detail
+            frameFence["guidance"] = frameReadiness.guidance
         }
         var summary: [String: Any] = [
             "ok": true,
@@ -2519,6 +2547,7 @@ actor CadDocumentCenter: CadDocumentHost {
             "completed_frames": frames.count,
             "partial": false,
             "failures": [],
+            "frame_fence": frameFence,
             "renderer": [
                 "id": request.includeImages ? "engineering" : "none",
                 "present_pixels": false,
@@ -2555,7 +2584,9 @@ actor CadDocumentCenter: CadDocumentHost {
                 "hidden_edges": displayState.hiddenEdges,
                 "ground_shadow": displayState.groundShadow,
                 "note": "Transient workbench display aids read for this observation; "
-                    + "observation did not change them.",
+                    + "observation did not change them. Section/isolate states, sketch/measure "
+                    + "overlays and inserted reference images can appear in the frames but do "
+                    + "not change the queried body geometry.",
             ],
             "identity_recheck": [
                 "unchanged": true,
@@ -2563,10 +2594,14 @@ actor CadDocumentCenter: CadDocumentHost {
                 "change_count": after.changeCount,
                 "content_sha256": after.contentSHA256,
             ],
-            "visual_evidence": "Actual offscreen engineering pixels of the native document "
-                + "scene at this revision/change count; not a drawing page, not a Present "
-                + "capture, and not CAD topology from image coordinates. Only a vision-capable "
-                + "model may inspect the frames; otherwise use query/measure values.",
+            "visual_evidence": request.includeImages
+                ? "Actual offscreen engineering pixels of the native document scene at this "
+                    + "revision/change count, published only after the editor's transient-preview "
+                    + "fence passed; not a drawing page, not a Present capture, and not CAD "
+                    + "topology from image coordinates. Only a vision-capable model may inspect "
+                    + "the frames; otherwise use query/measure values."
+                : "includeImages=false: no frame was requested or rendered; this reply is the "
+                    + "identity, frame-fence status and native body query only.",
             "limitations": [
                 "Pixels come from the offscreen Metal engineering renderer, not the live "
                     + "RealityKit Present; the user's camera, selection, saved appearance, "
@@ -2577,14 +2612,18 @@ actor CadDocumentCenter: CadDocumentHost {
                 "Native object rows come from the deterministic body query at this exact "
                     + "generation; placed assembly occurrences remain available through "
                     + "query kind=assembly.",
-                "Selection, gizmo, pull-arrow and plane-picker overlays are removed from the "
-                    + "observation copy; the document and its saved appearance are unchanged.",
+                "Body selection state, gizmo, pull-arrow and plane-picker overlays are removed "
+                    + "from the observation copy. Face/sketch/measure highlights and "
+                    + "section/isolate display aids can remain and are reported here; the "
+                    + "document and its saved appearance are unchanged.",
                 "Frames use a value copy of the current workbench display scene. If a transient "
                     + "section view, isolate state or alternate display mode is active, the "
                     + "summary's display block reports it; observation never changes it.",
-                "Frames reflect the live scene at change_count; a still-active edit preview is "
-                    + "part of that live scene. Commit or cancel an in-progress edit before "
-                    + "treating the frames as the settled part.",
+                "Frames are published only while the display scene carries no transient "
+                    + "editor preview geometry. A tool, blend, shell, delete/replace-face, "
+                    + "pattern-ghost or exploded-view preview is refused by name instead of "
+                    + "being labelled as the queried model; includeImages=false still returns "
+                    + "the queried rows at the same generation.",
             ],
         ]
         summary["initial_identity"] = [

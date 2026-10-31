@@ -748,6 +748,99 @@ final class EditorViewModel {
         return nil
     }
 
+    /// ONE derived, read-only answer to "may `cad.document observe` publish
+    /// engineering frames of this scene right now?".
+    ///
+    /// `scene` can draw transient bodies that are NOT part of the queried
+    /// document at the same `session.changeCount`: a tool preview (an additive
+    /// extrude/revolve/sweep/loft body, or a face push/pull body that replaces
+    /// its source), a live blend/shell/delete-face/replace-face result,
+    /// pattern ghost instances, or a saved exploded view's transient
+    /// placements. Those previews are computed in this view model and never
+    /// enter the document, so `nativeQueryJSON` would still describe the
+    /// un-previewed geometry. Observation refuses images while one is active
+    /// instead of labelling a previewed shape as the queried one; query-only
+    /// observation remains available.
+    ///
+    /// Purely derived: this never changes the tool, selection, camera,
+    /// display state, document or undo history.
+    var observationFrameReadiness: CADObservationFrameReadiness {
+        if let context = toolContext, context.preview != nil {
+            return .blocked(
+                .toolPreview,
+                detail: context.previewReplacesSource
+                    ? "an active face push/pull preview is replacing the source body"
+                    : "an active tool preview is drawing a body that is not part of the queried model",
+                guidance: "Finish or cancel that tool preview, then observe again.")
+        }
+        if blendPreview != nil {
+            return .blocked(
+                .blendPreview,
+                detail: "a live chamfer/fillet preview is replacing the source body",
+                guidance: "Apply or cancel the chamfer/fillet, then observe again.")
+        }
+        if shellPreview != nil {
+            return .blocked(
+                .shellPreview,
+                detail: "a live shell preview is replacing the source body",
+                guidance: "Apply or cancel the shell, then observe again.")
+        }
+        if deleteFacePreview != nil {
+            return .blocked(
+                .deleteFacePreview,
+                detail: "a live delete-face preview is replacing the source body",
+                guidance: "Apply or cancel the face deletion, then observe again.")
+        }
+        if replaceFacePreview != nil {
+            return .blocked(
+                .replaceFacePreview,
+                detail: "a live replace-face preview is replacing the source body",
+                guidance: "Apply or cancel the face replacement, then observe again.")
+        }
+        if case .patterning = mode, let state = patternState,
+           patternPreviewDrawsAdditionalGeometry(state) {
+            return .blocked(
+                .patternPreview,
+                detail: "a pattern preview is drawing ghost instances that are not model bodies",
+                guidance: "Apply or cancel the pattern, then observe again.")
+        }
+        if let preview = CADExplodedViewPreview.current(for: session),
+           let assembly = try? CADAssembly.decode(from: session.document.assemblyData),
+           let viewID = preview.resolvedViewID(in: assembly),
+           assembly.occurrences(viewID: viewID, includeHidden: false).contains(where: { occurrence in
+               // Match the scene's own drawable rule: only leaf occurrences
+               // with a resolvable source body are drawn. A preview changes
+               // what the viewport shows whenever its resolved placement
+               // differs from the saved one, or is not placeable (the scene
+               // then skips that instance entirely).
+               guard occurrence.subassemblyID == nil,
+                     let effectiveID = occurrence.effectiveBodyID,
+                     session.document.bodies.contains(where: { $0.id.raw == effectiveID }),
+                     let exploded = occurrence.explodedWorldTransform else { return false }
+               return exploded != occurrence.worldTransform || !exploded.isPlaceable
+           }) {
+            return .blocked(
+                .explodedViewPreview,
+                detail: "a transient exploded-view preview is offsetting assembly placements",
+                guidance: "Reset the exploded view to its base placement, then observe again.")
+        }
+        return .ready
+    }
+
+    /// True only when the armed pattern would actually draw at least one ghost
+    /// body or sketch entity beyond the original. A pattern bar at quantity 1
+    /// draws nothing extra and is safe.
+    private func patternPreviewDrawsAdditionalGeometry(_ state: PatternState) -> Bool {
+        guard max(1, state.count) > 1 else { return false }
+        if let bodyID = state.bodyID {
+            return session.document.body(with: bodyID) != nil
+        }
+        guard let sketchID = state.sketchID,
+              let sketch = session.document.sketches.first(where: { $0.id == sketchID })
+        else { return false }
+        return sketch.entities.contains { state.entityIDs.contains($0.id) }
+    }
+
     var scene: ViewportScene {
         _ = session.changeCount // establish observation dependency
         _ = explodedPreview.revision // …and the transient exploded preview

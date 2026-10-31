@@ -262,6 +262,92 @@ final class CadNativeObservationTests: XCTestCase {
         return FloeDigest.sha256Hex(Data(manifest.utf8))
     }
 
+    /// Straight-down world ray through a ground-plane point, matching the
+    /// production viewport's tap event.
+    private static func downwardRay(at point: SIMD2<Double>) -> Ray {
+        Ray(origin: SIMD3<Float>(SketchPlane.ground.toWorld(point)) + SIMD3(0, 100, 0),
+            direction: SIMD3(0, -1, 0))
+    }
+
+    /// Horizontal ray at mid-plate height into a clean side face. Unlike the
+    /// holed top face, this face is a simple rectangle, so the production
+    /// push/pull preview is a pure replacement test, not a test of face-loop
+    /// repair.
+    private static func frontSideRay() -> Ray {
+        Ray(origin: SIMD3<Float>(50, 5, 100), direction: SIMD3<Float>(0, 0, -1))
+    }
+
+    /// Observe images while one production preview is active. Asserts the
+    /// exact refusal, that the ONE derived status names this blocker, and that
+    /// the refusal changes neither the user's edit nor the document/package.
+    private func assertTransientPreviewRefused(
+        tool: CadDocumentTool,
+        context: ToolContext,
+        expectedBlocker: String,
+        document: FloeCADDocument,
+        model: EditorViewModel,
+        selection: Set<BodyID>,
+        cameraEpoch: Int,
+        undoDepth: Int,
+        redoDepth: Int,
+        packageURL: URL,
+        expectedPackageDigest: String,
+        expectedChangeCount: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let readiness = document.observationFrameReadiness()
+        XCTAssertFalse(readiness.isReady,
+                       "\(expectedBlocker) must block frame publication",
+                       file: file, line: line)
+        XCTAssertEqual(readiness.blocker?.rawValue, expectedBlocker,
+                       "the derived status must name the precise preview",
+                       file: file, line: line)
+        XCTAssertTrue(readiness.refusalMessage.contains("includeImages=false"),
+                      file: file, line: line)
+        let identityBefore = document.observationIdentity()
+        do {
+            _ = try await observe(tool, context: context, payload: [
+                "views": [["azimuthDegrees": 20.0, "elevationDegrees": 15.0,
+                           "distanceScale": 1.0]],
+                "width": 320,
+                "height": 240,
+                "includeImages": true,
+            ])
+            XCTFail("\(expectedBlocker) must refuse image publication",
+                    file: file, line: line)
+        } catch {
+            let text = String(describing: error)
+            XCTAssertTrue(text.contains("transient_preview_active"),
+                          "unexpected refusal: \(text)", file: file, line: line)
+            XCTAssertTrue(text.contains("includeImages=false"),
+                          "the refusal must offer the query-only route: \(text)",
+                          file: file, line: line)
+        }
+        XCTAssertEqual(document.observationIdentity(), identityBefore,
+                       "the refusal must not change the document identity",
+                       file: file, line: line)
+        XCTAssertEqual(document.liveChangeCount, expectedChangeCount,
+                       file: file, line: line)
+        XCTAssertEqual(model.selection, selection,
+                       "the refusal must not change the user's selection",
+                       file: file, line: line)
+        XCTAssertEqual(model.cameraEpoch, cameraEpoch,
+                       "the refusal must not move the user's camera",
+                       file: file, line: line)
+        XCTAssertNil(model.cameraControl,
+                     "observation must never take camera ownership",
+                     file: file, line: line)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoDepth,
+                       file: file, line: line)
+        XCTAssertEqual(document.session.undoStack.redoCommands.count, redoDepth,
+                       file: file, line: line)
+        let digestAfter = try? packageDigest(packageURL)
+        XCTAssertEqual(digestAfter, expectedPackageDigest,
+                       "observation must not write package bytes",
+                       file: file, line: line)
+    }
+
     // MARK: - Main acceptance
 
     func testRealNativeMultiViewObservationIsIdentityBoundAndNonMutating() async throws {
@@ -436,6 +522,312 @@ final class CadNativeObservationTests: XCTestCase {
         XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore)
         XCTAssertEqual(document.session.undoStack.redoCommands.count, redoBefore)
         XCTAssertEqual(document.hasUnsavedChanges, unsavedBefore)
+    }
+
+    // MARK: - Transient preview fence
+
+    /// Regression for the confirmed identity seam: a tool/pattern/exploded
+    /// preview changes the DISPLAY scene without moving `session.changeCount`,
+    /// so frames rendered through it would not describe the body rows queried
+    /// at that same generation. Each production preview state must refuse
+    /// images while leaving the user's edit, camera, selection and history
+    /// untouched. Cancelling it through the ordinary production path must
+    /// restore frames; the query-only route must stay available throughout.
+    func testTransientDisplayPreviewsFenceFramesWithoutMutatingTheEdit() async throws {
+        let center = makeCenter()
+        let tool = CadDocumentTool(host: center)
+        let context = makeContext()
+        let fixture = try await createFixture(tool: tool, context: context)
+        let document = fixture.document
+        let model = document.viewModel()
+        let bodyUUID = try XCTUnwrap(UUID(uuidString: fixture.bodyID))
+        let bodyID = try XCTUnwrap(document.session.document.bodies.first {
+            $0.id.raw == bodyUUID
+        }?.id)
+
+        let packageBefore = try packageDigest(fixture.url)
+        let identityBefore = document.observationIdentity()
+        let unsavedBefore = document.hasUnsavedChanges
+        let undoBefore = document.session.undoStack.undoCommands.count
+        let redoBefore = document.session.undoStack.redoCommands.count
+
+        // A real stable baseline through the same public tool path.
+        let baseline = try await observe(tool, context: context, payload: [
+            "views": [["azimuthDegrees": 20.0, "elevationDegrees": 15.0,
+                       "distanceScale": 1.0]],
+            "width": 320,
+            "height": 240,
+            "includeImages": true,
+        ])
+        let baselineSummary = try observeSummary(baseline)
+        XCTAssertEqual(baselineSummary["completed_frames"] as? Int, 1)
+        XCTAssertEqual(baseline.artifacts.count, 1)
+        let baselinePNG = try artifactData(try XCTUnwrap(baseline.artifacts.first))
+        XCTAssertFalse(baselinePNG.isEmpty)
+        let baselineReceipts = try observeReceipts(baseline)
+        XCTAssertEqual(baselineReceipts.count, 1)
+        XCTAssertEqual(baselineReceipts.first?["revision"] as? Int, identityBefore.revision)
+        XCTAssertEqual(baselineReceipts.first?["changeCount"] as? Int,
+                       identityBefore.changeCount)
+        let baselineFence = try XCTUnwrap(baselineSummary["frame_fence"] as? [String: Any])
+        XCTAssertEqual(baselineFence["ready"] as? Bool, true)
+        XCTAssertEqual(baselineFence["blocker"] as? String, "none")
+        let baselineHierarchy = try XCTUnwrap(baselineSummary["hierarchy"] as? [String: Any])
+        let baselineRow = try XCTUnwrap(
+            (baselineHierarchy["rows"] as? [[String: Any]])?.first)
+        let baselineQueryToken = try XCTUnwrap(baselineRow["query_token"] as? String)
+        let baselineVolume = try XCTUnwrap(baselineRow["volumeMM3"] as? Double)
+        let baselineTriangles = try XCTUnwrap(baselineRow["triangles"] as? Int)
+
+        // 1) ADDITIVE preview: a real Extrude tool armed from the production
+        // palette, then a real profile tap and a real distance change. The
+        // preview body exists only in the view model; the generation is
+        // unchanged.
+        model.selection.removeAll()
+        model.beginCreate(.extrude)
+        model.handle(.tap(ray: Self.downwardRay(at: SIMD2(50, 30))))
+        XCTAssertNotNil(model.toolContext,
+                        "the production profile tap must arm the Extrude tool")
+        model.setExtrudeDistance(6)
+        let additivePreview = try XCTUnwrap(model.toolContext?.preview,
+                                            "the Extrude preview must be a real body")
+        XCTAssertEqual(model.toolContext?.previewReplacesSource, false)
+        let additivePreviewRevision = additivePreview.meshRevision
+        XCTAssertEqual(document.liveChangeCount, identityBefore.changeCount,
+                       "a tool preview must not move the queried generation")
+
+        await assertTransientPreviewRefused(
+            tool: tool, context: context, expectedBlocker: "tool_preview",
+            document: document, model: model,
+            selection: model.selection, cameraEpoch: model.cameraEpoch,
+            undoDepth: document.session.undoStack.undoCommands.count,
+            redoDepth: document.session.undoStack.redoCommands.count,
+            packageURL: fixture.url, expectedPackageDigest: packageBefore,
+            expectedChangeCount: identityBefore.changeCount)
+        XCTAssertEqual(model.toolContext?.preview?.meshRevision, additivePreviewRevision,
+                       "the refusal must leave the user's active preview untouched")
+
+        // Query-only is the honest alternative at this same generation: same
+        // real body row, no renderer and no artifact.
+        let additiveQuery = try await observe(tool, context: context, payload: [
+            "includeImages": false, "nodeLimit": 10,
+        ])
+        let additiveSummary = try observeSummary(additiveQuery)
+        XCTAssertTrue(additiveQuery.artifacts.isEmpty)
+        XCTAssertEqual(additiveSummary["completed_frames"] as? Int, 0)
+        let additiveFence = try XCTUnwrap(additiveSummary["frame_fence"] as? [String: Any])
+        XCTAssertEqual(additiveFence["ready"] as? Bool, false)
+        XCTAssertEqual(additiveFence["blocker"] as? String, "tool_preview")
+        XCTAssertEqual(additiveFence["query_only"] as? Bool, true)
+        let additiveHierarchy = try XCTUnwrap(additiveSummary["hierarchy"] as? [String: Any])
+        XCTAssertEqual(additiveHierarchy["change_count"] as? Int,
+                       identityBefore.changeCount)
+        XCTAssertEqual(additiveHierarchy["revision"] as? Int, identityBefore.revision)
+        let additiveRows = try XCTUnwrap(additiveHierarchy["rows"] as? [[String: Any]])
+        let additiveRow = try XCTUnwrap(additiveRows.first)
+        XCTAssertEqual(additiveRow["id"] as? String, fixture.bodyID)
+        XCTAssertEqual(additiveRow["query_token"] as? String, baselineQueryToken,
+                       "query-only must describe the same body generation as the baseline")
+        let additiveVolume = try XCTUnwrap(additiveRow["volumeMM3"] as? Double)
+        XCTAssertEqual(additiveVolume, baselineVolume, accuracy: 1e-9,
+                       "the uncommitted tool preview must never enter the queried body")
+        XCTAssertEqual(additiveRow["triangles"] as? Int, baselineTriangles)
+
+        // Cancel through the ordinary production path; frames return.
+        model.cancelTool()
+        XCTAssertNil(model.toolContext)
+        let afterAdditive = try await observe(tool, context: context, payload: [
+            "views": [["azimuthDegrees": 20.0, "elevationDegrees": 15.0,
+                       "distanceScale": 1.0]],
+            "width": 320, "height": 240, "includeImages": true,
+        ])
+        let afterAdditiveSummary = try observeSummary(afterAdditive)
+        XCTAssertEqual(afterAdditiveSummary["completed_frames"] as? Int, 1)
+        XCTAssertEqual(afterAdditive.artifacts.count, 1)
+        XCTAssertEqual((afterAdditiveSummary["frame_fence"] as? [String: Any])?["ready"]
+                        as? Bool, true)
+
+        // 2) REPLACEMENT preview: a real body-face tap arms the push/pull; a
+        // real distance makes the preview replace the source body in `scene`
+        // while the document still holds the committed geometry. The side
+        // face is a simple rectangle; the additive test above already covers
+        // the holed top face.
+        model.handle(.tap(ray: Self.frontSideRay()))
+        XCTAssertNotNil(model.toolContext,
+                        "the production face tap must arm the face push/pull")
+        model.setExtrudeDistance(3)
+        let replacementPreview = try XCTUnwrap(model.toolContext?.preview,
+                                               "the face pull must have a preview body")
+        XCTAssertEqual(model.toolContext?.previewReplacesSource, true)
+        let replacementPreviewRevision = replacementPreview.meshRevision
+        XCTAssertEqual(document.liveChangeCount, identityBefore.changeCount)
+        await assertTransientPreviewRefused(
+            tool: tool, context: context, expectedBlocker: "tool_preview",
+            document: document, model: model,
+            selection: model.selection, cameraEpoch: model.cameraEpoch,
+            undoDepth: document.session.undoStack.undoCommands.count,
+            redoDepth: document.session.undoStack.redoCommands.count,
+            packageURL: fixture.url, expectedPackageDigest: packageBefore,
+            expectedChangeCount: identityBefore.changeCount)
+        XCTAssertEqual(model.toolContext?.preview?.meshRevision, replacementPreviewRevision,
+                       "the refusal must leave the face preview untouched")
+        model.cancelTool()
+        XCTAssertNil(model.toolContext)
+        let afterReplacement = try await observe(tool, context: context, payload: [
+            "views": [["azimuthDegrees": 20.0, "elevationDegrees": 15.0,
+                       "distanceScale": 1.0]],
+            "width": 320, "height": 240, "includeImages": true,
+        ])
+        XCTAssertEqual(try observeSummary(afterReplacement)["completed_frames"] as? Int, 1)
+
+        // 3) PATTERN ghosts: the production pattern bar draws extra instances
+        // that are not model bodies.
+        model.selection = [bodyID]
+        model.beginPattern()
+        if case .patterning = model.mode {
+            // expected
+        } else {
+            XCTFail("the production pattern action must open the pattern bar")
+        }
+        XCTAssertNotNil(model.patternState)
+        XCTAssertEqual(document.liveChangeCount, identityBefore.changeCount,
+                       "pattern ghosts must not move the queried generation")
+        await assertTransientPreviewRefused(
+            tool: tool, context: context, expectedBlocker: "pattern_preview",
+            document: document, model: model,
+            selection: model.selection, cameraEpoch: model.cameraEpoch,
+            undoDepth: document.session.undoStack.undoCommands.count,
+            redoDepth: document.session.undoStack.redoCommands.count,
+            packageURL: fixture.url, expectedPackageDigest: packageBefore,
+            expectedChangeCount: identityBefore.changeCount)
+        XCTAssertNotNil(model.patternState,
+                        "the refusal must leave the user's pattern bar active")
+        model.cancelPattern()
+        XCTAssertNil(model.patternState)
+        let afterPattern = try await observe(tool, context: context, payload: [
+            "views": [["azimuthDegrees": 20.0, "elevationDegrees": 15.0,
+                       "distanceScale": 1.0]],
+            "width": 320, "height": 240, "includeImages": true,
+        ])
+        XCTAssertEqual(try observeSummary(afterPattern)["completed_frames"] as? Int, 1)
+
+        // Observation changed nothing: no undo/redo entry, no package bytes,
+        // no dirty flag and no camera ownership.
+        XCTAssertEqual(document.observationIdentity(), identityBefore)
+        XCTAssertEqual(try packageDigest(fixture.url), packageBefore)
+        XCTAssertEqual(document.hasUnsavedChanges, unsavedBefore)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore)
+        XCTAssertEqual(document.session.undoStack.redoCommands.count, redoBefore)
+        XCTAssertNil(model.cameraControl)
+    }
+
+    /// A saved exploded view is display-only state: activating it offsets the
+    /// viewport/assembly placements without moving `changeCount` or writing
+    /// the package. Frames rendered through it would show placements that the
+    /// saved occurrence query does not describe, so observation must refuse
+    /// images until the preview is reset; the user's view choice is untouched.
+    func testTransientExplodedPlacementFencesFramesUntilReset() async throws {
+        let center = makeCenter()
+        let tool = CadDocumentTool(host: center)
+        let context = makeContext()
+        let fixture = try await createFixture(tool: tool, context: context)
+        let document = fixture.document
+        let model = document.viewModel()
+        let bodyUUID = try XCTUnwrap(UUID(uuidString: fixture.bodyID))
+        let service = CADAssemblyService(document: document)
+        let addedInstance = service.handle(action: "addInstance", args: [
+            "bodyID": bodyUUID.uuidString,
+            "name": "Placed",
+        ])
+        XCTAssertEqual(addedInstance["ok"] as? Bool, true,
+                       addedInstance["message"] as? String ?? "")
+        let instanceID = try XCTUnwrap(addedInstance["id"] as? String)
+        let addedView = service.handle(action: "addExplodedView", args: [
+            "name": "Service",
+            "direction": [1, 0, 0],
+            "distanceMM": 20,
+            "entries": [["instanceID": instanceID, "distanceMM": 25]],
+        ])
+        XCTAssertEqual(addedView["ok"] as? Bool, true,
+                       addedView["message"] as? String ?? "")
+        let viewID = try XCTUnwrap(UUID(uuidString: addedView["id"] as? String ?? ""))
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let settle = try await document.session.settleSaveStateBeforeIdentityPin(
+            expectingChangeCount: document.liveChangeCount)
+        XCTAssertEqual(settle, .ready)
+
+        let packageBefore = try packageDigest(fixture.url)
+        let identityBefore = document.observationIdentity()
+        let undoDepth = document.session.undoStack.undoCommands.count
+        let redoDepth = document.session.undoStack.redoCommands.count
+
+        // A settled assembly still observes images normally.
+        let baseline = try await observe(tool, context: context, payload: [
+            "views": [["azimuthDegrees": 35.0, "elevationDegrees": 25.0,
+                       "distanceScale": 1.0]],
+            "width": 320, "height": 240, "includeImages": true,
+        ])
+        XCTAssertEqual(try observeSummary(baseline)["completed_frames"] as? Int, 1)
+
+        let preview = service.handle(action: "previewExplodedView",
+                                     args: ["id": viewID.uuidString])
+        XCTAssertEqual(preview["ok"] as? Bool, true,
+                       preview["message"] as? String ?? "")
+        XCTAssertEqual(preview["mutated"] as? Bool, false)
+        XCTAssertEqual(preview["applied"] as? Bool, true)
+        XCTAssertEqual(document.liveChangeCount, identityBefore.changeCount,
+                       "the exploded preview must not move the queried generation")
+        let active = try XCTUnwrap(CADExplodedViewPreview.current(for: document.session))
+        XCTAssertEqual(active.viewID, viewID)
+        await assertTransientPreviewRefused(
+            tool: tool, context: context, expectedBlocker: "exploded_view_preview",
+            document: document, model: model,
+            selection: model.selection, cameraEpoch: model.cameraEpoch,
+            undoDepth: document.session.undoStack.undoCommands.count,
+            redoDepth: document.session.undoStack.redoCommands.count,
+            packageURL: fixture.url, expectedPackageDigest: packageBefore,
+            expectedChangeCount: identityBefore.changeCount)
+        XCTAssertEqual(CADExplodedViewPreview.current(for: document.session)?.viewID, viewID,
+                       "the refusal must leave the user's saved-view preview active")
+
+        // Query-only keeps the real body rows at the same generation.
+        let queryOnly = try await observe(tool, context: context, payload: [
+            "includeImages": false, "nodeLimit": 10,
+        ])
+        let querySummary = try observeSummary(queryOnly)
+        XCTAssertTrue(queryOnly.artifacts.isEmpty)
+        XCTAssertEqual(querySummary["completed_frames"] as? Int, 0)
+        let queryFence = try XCTUnwrap(querySummary["frame_fence"] as? [String: Any])
+        XCTAssertEqual(queryFence["ready"] as? Bool, false)
+        XCTAssertEqual(queryFence["blocker"] as? String, "exploded_view_preview")
+        XCTAssertEqual(queryFence["query_only"] as? Bool, true)
+        let queryHierarchy = try XCTUnwrap(querySummary["hierarchy"] as? [String: Any])
+        XCTAssertEqual(queryHierarchy["change_count"] as? Int, identityBefore.changeCount)
+        let queryRows = try XCTUnwrap(queryHierarchy["rows"] as? [[String: Any]])
+        XCTAssertEqual(queryRows.first?["id"] as? String, fixture.bodyID)
+
+        let reset = service.handle(action: "resetExplodedView", args: [:])
+        XCTAssertEqual(reset["ok"] as? Bool, true,
+                       reset["message"] as? String ?? "")
+        XCTAssertNil(CADExplodedViewPreview.current(for: document.session))
+        let afterReset = try await observe(tool, context: context, payload: [
+            "views": [["azimuthDegrees": 35.0, "elevationDegrees": 25.0,
+                       "distanceScale": 1.0]],
+            "width": 320, "height": 240, "includeImages": true,
+        ])
+        let afterSummary = try observeSummary(afterReset)
+        XCTAssertEqual(afterSummary["completed_frames"] as? Int, 1)
+        XCTAssertEqual((afterSummary["frame_fence"] as? [String: Any])?["ready"] as? Bool,
+                       true)
+
+        // Preview, refusal and reset changed neither the document/package nor
+        // the history or camera.
+        XCTAssertEqual(document.observationIdentity(), identityBefore)
+        XCTAssertEqual(try packageDigest(fixture.url), packageBefore)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoDepth)
+        XCTAssertEqual(document.session.undoStack.redoCommands.count, redoDepth)
+        XCTAssertNil(model.cameraControl)
     }
 
     // MARK: - Generation pins

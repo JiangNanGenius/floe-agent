@@ -206,7 +206,7 @@ struct SketchDimensionOverlay: View {
         let arc: (points: [CGPoint], anchor: CGPoint, rotation: Double)?
         let radial: (tail: CGPoint, anchor: CGPoint, rotation: Double)?
         let diameter: SketchDiameterDimensionLayout?
-        let linear: SketchLinearDimensionLayout?
+        let linear: SketchLinearDimensionLayout.Layout?
         let isManual: Bool
         let isSelectedCircleRadius: Bool
         let defaultCenter: CGPoint

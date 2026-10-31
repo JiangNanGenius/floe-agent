@@ -22,6 +22,15 @@
 //  Present. A frame always reports `renderer: engineering` and
 //  `present_pixels: false`; it never pretends to be a Present capture.
 //
+//  Frames are published only while the editor's ONE derived
+//  `observationFrameReadiness` reports no transient preview geometry. Tool,
+//  blend, shell, delete/replace-face, pattern-ghost and exploded-view previews
+//  change the display scene without moving `session.changeCount`; rendering
+//  through them would label uncommitted/unqueried geometry as the model at the
+//  returned generation. Such a state is refused before a frame exists, and
+//  `includeImages=false` remains the honest query-only route. The fence reads
+//  state and never cancels a tool, moves the camera or edits the document.
+//
 //  SPDX-License-Identifier: MPL-2.0
 //
 
@@ -29,6 +38,57 @@ import CoreGraphics
 import Foundation
 import ImageIO
 import simd
+
+/// Which transient editor preview currently prevents a frame from being
+/// published as the queried model geometry. These are display-only states
+/// owned by the editor, not document commands: they change the live viewport
+/// without moving `session.changeCount`, so a frame rendered through them
+/// would not describe the body/occurrence rows returned at that generation.
+public nonisolated enum CADObservationFrameBlocker: String, Sendable, Equatable {
+    case toolPreview = "tool_preview"
+    case blendPreview = "blend_preview"
+    case shellPreview = "shell_preview"
+    case deleteFacePreview = "delete_face_preview"
+    case replaceFacePreview = "replace_face_preview"
+    case patternPreview = "pattern_preview"
+    case explodedViewPreview = "exploded_view_preview"
+}
+
+/// The editor's derived, read-only answer to "may observation publish frames
+/// right now?". `blocker == nil` is the only state that permits a frame; every
+/// blocked state means the live `scene` contains transient display geometry
+/// that the body/occurrence query does not describe at the same generation.
+/// The readiness itself is never a permission and never changes user state.
+public nonisolated struct CADObservationFrameReadiness: Sendable, Equatable {
+    /// The precise preview that blocks frame publication, or nil when ready.
+    public let blocker: CADObservationFrameBlocker?
+    /// What the live scene is displaying that the query does not describe.
+    public let detail: String
+    /// How the user can reach a settled state (finish/cancel/reset), phrased
+    /// as guidance rather than an action observation performs for them.
+    public let guidance: String
+
+    static let ready = CADObservationFrameReadiness(
+        blocker: nil, detail: "", guidance: "")
+
+    static func blocked(_ blocker: CADObservationFrameBlocker,
+                        detail: String, guidance: String) -> Self {
+        CADObservationFrameReadiness(blocker: blocker, detail: detail,
+                                     guidance: guidance)
+    }
+
+    public var isReady: Bool { blocker == nil }
+
+    /// Model/human-facing refusal. It names the precise preview and the one
+    /// non-mutating alternative (query-only observation); it never asks the
+    /// observation to cancel the user's edit on its own.
+    public var refusalMessage: String {
+        guard blocker != nil else { return "" }
+        return "Native observation images are paused while \(detail). \(guidance) "
+            + "No tool, selection, camera or document state was changed. Re-run observe "
+            + "with includeImages=false to read the body rows without rendering."
+    }
+}
 
 /// One requested observation view. Degrees cross this boundary once and are
 /// converted to radians once; `distanceScale` multiplies the fitted turntable
@@ -189,6 +249,14 @@ public extension FloeCADDocument {
             groundShadow: model.groundShadowEnabled)
     }
 
+    /// The ONE derived, read-only status for frame publication. The editor
+    /// owns the transient preview vars; this accessor keeps the host summary
+    /// and the renderer fence on the same answer. It never changes a tool,
+    /// selection, camera or document value.
+    func observationFrameReadiness() -> CADObservationFrameReadiness {
+        viewModel().observationFrameReadiness
+    }
+
     /// The committed + live identity an observation is bound to.
     func observationIdentity() -> CADObservationIdentity {
         let summary = summary()
@@ -292,6 +360,7 @@ public extension FloeCADDocument {
                     + "not observed as an editable scene. Update the app or use a matching package.")
         }
         try throwIfObservationCancelled(shouldCancel)
+        try throwIfObservationFramesBlocked()
 
         let identity = observationIdentity()
         guard let context = RenderContext() else {
@@ -344,6 +413,7 @@ public extension FloeCADDocument {
 
         for (index, view) in views.enumerated() {
             try throwIfObservationCancelled(shouldCancel)
+            try throwIfObservationFramesBlocked()
             let current = observationIdentity()
             guard current.revision == identity.revision,
                   current.changeCount == identity.changeCount,
@@ -441,6 +511,7 @@ public extension FloeCADDocument {
                     + "change the user's camera, selection or document."))
         }
         try throwIfObservationCancelled(shouldCancel)
+        try throwIfObservationFramesBlocked()
         let after = observationIdentity()
         guard after.revision == identity.revision,
               after.changeCount == identity.changeCount,
@@ -451,6 +522,18 @@ public extension FloeCADDocument {
                     + "Observe the current generation again.")
         }
         return frames
+    }
+
+    /// Refuses frames while the editor's derived status reports transient
+    /// preview geometry. Re-read before every frame and before returning so a
+    /// preview that appears during the block cannot leak into a published
+    /// frame list. This checks only; it never cancels the edit.
+    private func throwIfObservationFramesBlocked() throws {
+        let readiness = observationFrameReadiness()
+        guard readiness.isReady else {
+            throw CADDocumentError(code: "transient_preview_active",
+                                   message: readiness.refusalMessage)
+        }
     }
 
     private func throwIfObservationCancelled(_ shouldCancel: @MainActor () -> Bool) throws {
