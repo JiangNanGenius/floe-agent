@@ -278,7 +278,8 @@ public actor ConversationRunService {
         currentUserImages: [ConversationImagePart] = [],
         runContext: RunContext? = nil,
         personalizationProvider: (@Sendable () async throws -> LivePersonalizationSnapshot)? = nil,
-        resourceAccessCleanup: (@Sendable () -> Void)? = nil
+        resourceAccessCleanup: (@Sendable () -> Void)? = nil,
+        artifactRootURL: URL? = nil
     ) {
         self.runID = runID
         self.conversationID = configuration.conversationID
@@ -337,7 +338,8 @@ public actor ConversationRunService {
             toolCallNormalizer: toolCallNormalizer,
             liveSystemContext: refreshContext,
             sink: forwarder,
-            runID: runID
+            runID: runID,
+            artifactRootURL: artifactRootURL
         )
         forwarder.onTransition = { [weak self] state in
             await self?.handleTransition(state)

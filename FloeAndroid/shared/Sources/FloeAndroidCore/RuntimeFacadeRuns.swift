@@ -7,8 +7,7 @@
 // REPAIR SUCCESSOR (job-047bee7a3eff4941) of the frozen parent lane
 // runtime-runs-approvals-source (job-f6772d4de1584403, pure archive
 // 6c36124e7860433430c8fc898b19cbc69f6e57a02544c0524e04eda691b1b443,
-// 11 files/60 authored tests — parent bytes stay immutable under
-// Local/Private/android-g02-20261018/runtime-runs-approvals-source).
+// 11 files/60 authored tests — archived parent bytes stay immutable).
 // Main review MAIN_SOURCE_REVIEW_20261019.json found four finite defects,
 // repaired HERE in bounded form (no broad audit, no frozen matrix change):
 //   RUN-S1 — the parent CALLED makeService with no declaration anywhere,
@@ -252,6 +251,13 @@ public struct RunDomainComponents: Sendable {
     /// dependents are enqueued only for a clean successful upstream run.
     /// Unbound leaves every previous behavior byte-identical.
     public var scheduleCompletion: (any G073ScheduleCompletionRecording)?
+    /// The ACTUAL generation-owned artifact directory
+    /// (`<owned root>/FloeAgent`) that visual evidence must be read from.
+    /// Android composition binds it from the live `G02OwnedStoreCluster`
+    /// identity; nil keeps the original iOS Application Support behavior for
+    /// hosts that never supply an owned root. It is never model-supplied and
+    /// never a temporary/HOME fallback.
+    public var artifactRootURL: URL?
 
     public init(context: RunIngressContext,
                 durable: RunPersistenceBundle,
@@ -275,7 +281,8 @@ public struct RunDomainComponents: Sendable {
                 registry: ToolRunnerRegistry = .shared,
                 settings: (any SettingsStore)? = nil,
                 notesRuntime: (any NotesRunRuntimeProviding)? = nil,
-                scheduleCompletion: (any G073ScheduleCompletionRecording)? = nil) {
+                scheduleCompletion: (any G073ScheduleCompletionRecording)? = nil,
+                artifactRootURL: URL? = nil) {
         self.context = context
         self.durable = durable
         self.checkpoints = checkpoints
@@ -297,6 +304,7 @@ public struct RunDomainComponents: Sendable {
         self.settings = settings
         self.notesRuntime = notesRuntime
         self.scheduleCompletion = scheduleCompletion
+        self.artifactRootURL = artifactRootURL
     }
 }
 
