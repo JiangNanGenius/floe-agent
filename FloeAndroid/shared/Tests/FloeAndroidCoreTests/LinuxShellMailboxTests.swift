@@ -20,6 +20,37 @@ import FloeAndroidShellTools
 
 final class LinuxShellMailboxPreparationBudgetTests: XCTestCase {
 
+    /// A loaded device can oversleep every 20 ms poll. This clock makes that
+    /// deterministic: each requested interval advances REAL time by the
+    /// requested amount plus a fixed overshoot, exactly what `Task.sleep`
+    /// did on the actual run (6,000 nominal 20 ms waits took 148.4 s).
+    private final class OversleepClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var nowNanos: UInt64 = 0
+        private var sleeps = 0
+        let overshootNanos: UInt64
+
+        init(overshootNanos: UInt64 = 4_700_000) {
+            self.overshootNanos = overshootNanos
+        }
+
+        func now() -> UInt64 {
+            lock.lock(); defer { lock.unlock() }
+            return nowNanos
+        }
+
+        func advance(by requested: UInt64) {
+            lock.lock(); defer { lock.unlock() }
+            nowNanos &+= requested &+ overshootNanos
+            sleeps += 1
+        }
+
+        var sleepCount: Int {
+            lock.lock(); defer { lock.unlock() }
+            return sleeps
+        }
+    }
+
     private func makeMailbox() -> LinuxShellMailbox {
         // Use the real bounded waiter clock: shortening each sleep while the
         // watchdog charges the full poll interval would expire the budget
@@ -119,6 +150,54 @@ final class LinuxShellMailboxPreparationBudgetTests: XCTestCase {
         XCTAssertEqual(complete(mailbox, claim: claim, status: 1,
                                 json: #"{"code":"runtime_start_stopped"}"#), -101,
                        "a duplicate late settlement is classified, never replayed")
+    }
+
+    /// Actual 2026-10-31 regression: the watchdog counted nominal 20 ms
+    /// intervals instead of elapsed time. Under load each wait overslept, so a
+    /// 120 s budget really expired after 148.4 s and the cold start kept
+    /// copying. With a fixed monotonic deadline the same oversleep pattern
+    /// must expire on REAL time (here 500 ms, with 4.7 ms overshoot per poll),
+    /// not after the old 25 nominal waits (617 ms). The claimed ticket stays
+    /// live/stoppable and is not fabricated settled.
+    func testPreparationBudgetUsesElapsedDeadlineUnderOversleep() async throws {
+        let clock = OversleepClock()
+        let mailbox = LinuxShellMailbox(
+            sleeper: { requested in
+                // Let the host claim this ticket before the first fake tick;
+                // otherwise the instantaneous fake clock could expire a
+                // still-queued ticket and retire it before `claim` runs.
+                if clock.sleepCount == 0 {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+                clock.advance(by: requested)
+            },
+            clock: { clock.now() })
+        XCTAssertTrue(mailbox.bind(epoch: 1))
+        let payload = Data(#"{"command":"printf x","timeoutSeconds":10}"#.utf8)
+        let waiter = Task { () -> Result<Data, LinuxShellTransportError> in
+            do {
+                return .success(try await mailbox.submit(
+                    operation: "shell.start", payload: payload, timeoutMillis: 500))
+            } catch let error as LinuxShellTransportError {
+                return .failure(error)
+            } catch {
+                return .failure(.hostFenced)
+            }
+        }
+        let claim = try claim(mailbox)
+        let result = await awaitResult(waiter)
+        guard case .failure(.waitBudgetExpired) = result else {
+            return XCTFail("expected the 500 ms preparation waiter to expire, got \(result)")
+        }
+        // 500 ms / (20 ms requested + 4.7 ms overshoot) = 21 real sleeps.
+        XCTAssertGreaterThanOrEqual(clock.sleepCount, 20)
+        XCTAssertLessThanOrEqual(clock.sleepCount, 22,
+                                 "the deadline must use elapsed time, not 25 nominal intervals")
+        XCTAssertEqual(mailbox.isLive(claim: claim), 1)
+        XCTAssertEqual(mailbox.shouldStop(claim: claim), 1,
+                       "the host must observe the real expiry and stop the pending start")
+        XCTAssertEqual(complete(mailbox, claim: claim, status: 1,
+                                json: #"{"code":"runtime_start_stopped"}"#), 0)
     }
 
     /// A caller cancellation releases only the WAITER. The real preparation

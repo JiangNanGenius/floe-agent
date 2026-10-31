@@ -101,6 +101,7 @@
 
     <string name="schedule_error_title">Scheduled task</string>
     <string name="schedule_error_generic">The schedule could not be updated.</string>
+    <string name="schedule_error_disabled">Enable this scheduled task before running it.</string>
     <string name="schedule_error_payload_too_large">This scheduled task contains text too large to display in the editor. Its settings can still be changed with the task tool.</string>
     <string name="schedule_error_not_found">This scheduled task no longer exists.</string>
     <string name="schedule_error_revision">This scheduled task changed since it was opened. Reopen it and try again.</string>

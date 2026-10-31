@@ -1154,6 +1154,9 @@ private fun scheduleErrorMessage(code: String?): String = when (code) {
     "timeout", "runtime_unavailable", "runtimeUnavailable", "superseded" ->
         stringResource(R.string.schedule_error_runtime)
     "storeUnavailable", "rearm_failed" -> stringResource(R.string.schedule_error_store)
+    // Native runNow keeps its canonical refusal for a paused schedule; show
+    // the actionable reason instead of the generic "could not be updated".
+    "disabled" -> stringResource(R.string.schedule_error_disabled)
     "launchRefused" -> stringResource(R.string.schedule_error_launch)
     else -> stringResource(R.string.schedule_error_generic)
 }

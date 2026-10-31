@@ -75,4 +75,18 @@ object RuntimeExecutionTrace {
         try { Log.i("FloeLinuxStart", stage.name) }
         catch (_: Exception) { /* Logging is observational, including JVM hosts. */ }
     }
+
+    /**
+     * Bounded cold-materialization progress: counts/durations only, never a
+     * path, ID, command or payload. Emitted at start, every 1024 copied
+     * entries, before the durability barrier, and after publication. This is
+     * the diagnostic seam that distinguishes copy latency from a barrier or
+     * publication stall; it cannot change admission or ownership.
+     */
+    fun materializeProgress(phase: String, entries: Long, bytes: Long, elapsedMillis: Long) {
+        try {
+            Log.i("FloeLinuxStart",
+                "OPS_MATERIALIZE_PROGRESS phase=$phase entries=$entries bytes=$bytes elapsedMs=$elapsedMillis")
+        } catch (_: Exception) { /* Logging is observational, including JVM hosts. */ }
+    }
 }

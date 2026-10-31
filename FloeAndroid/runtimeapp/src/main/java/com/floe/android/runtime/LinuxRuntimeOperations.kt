@@ -476,8 +476,36 @@ internal class LinuxRuntimeOperations(
             // after a complete, fsynced, atomic publication; a half-copied tree
             // never carries it. No writable hardlink is ever created across
             // tasks: the copier uses CREATE_NEW + full byte copies.
+            //
+            // Cold-copy durability: the extracted base is 10,206 members (8,014 regular files) /
+            // 221,379,155 bytes. Per-file `force(true)` + per-directory fsync
+            // serialized the copy behind ~9k flush latencies (actual
+            // cold runs: 27.4 s, 38.1 s, still copying after 148 s under load).
+            // One filesystem syncfs(fd) on the controlled stage directory is
+            // the SAME publication rule (marker only after all bytes/metadata
+            // are durable), but reports real errno and avoids ~9k flushes.
             val prepareStart = SystemClock.elapsedRealtime()
-            val materialized = LinuxRootfsMaterializer().prepare(
+            // Use the bulk barrier ONLY where the running kernel actually
+            // reports syncfs writeback errors (>= 5.8). Older/unknown kernels
+            // keep the original per-file fsync failure semantics.
+            val kernel = runCatching { android.system.Os.uname().release }.getOrNull()
+            val syncfsReportsErrors = kernel != null && reportsSyncfsWritebackErrors(kernel)
+            RuntimeExecutionTrace.materializeProgress(
+                if (syncfsReportsErrors) "BARRIER_SYNCFS" else "BARRIER_PER_FILE", 0, 0, 0)
+            val barrier: ((java.nio.file.Path) -> Unit)? = if (syncfsReportsErrors) {
+                { stage ->
+                    // Native opens ONLY this materializer-owned stage path with
+                    // O_DIRECTORY|O_CLOEXEC, syncfs(es) it, and closes it.
+                    PosixBridge.syncfsDirectory(stage.toString())
+                }
+            } else null
+            val materialized = LinuxRootfsMaterializer(
+                durabilityBarrier = barrier,
+                progress = { value ->
+                    RuntimeExecutionTrace.materializeProgress(
+                        value.phase.name, value.entries, value.bytes, value.elapsedMillis)
+                },
+            ).prepare(
                 LinuxRootfsMaterializer.Plan(lease.environmentID, descriptor.getString("baseRevision"),
                     writable, ordered)) { isCancelled() }
             val prepareMillis = SystemClock.elapsedRealtime() - prepareStart

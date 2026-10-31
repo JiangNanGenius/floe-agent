@@ -8,6 +8,10 @@
 // String discipline: jstrings cross as UTF-16 and are converted here to
 // strict UTF-8 (real 4-byte encodings for non-BMP), never modified UTF-8.
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #include <jni.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -598,6 +602,31 @@ Java_com_floe_android_linuxruntime_PosixBridge_setFdNonBlocking(JNIEnv *env, jcl
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) return -errno;
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -errno;
+    return 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_floe_android_linuxruntime_PosixBridge_syncfsDirectory(JNIEnv *env, jclass clazz, jstring path) {
+    (void)clazz;
+    if (!path) { throwMsg(env, "java/io/IOException", "syncfs: missing stage path"); return -1; }
+    int ok = 0;
+    char *utf8 = utf8_from_jstring(env, path, &ok);
+    if (!ok || !utf8) {
+        free(utf8);
+        throwMsg(env, "java/io/IOException", "syncfs: invalid stage path encoding");
+        return -1;
+    }
+    int fd = open(utf8, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    int openErrno = errno;
+    free(utf8);
+    if (fd < 0) { errno = openErrno; return throwErrno(env, "syncfs directory open"); }
+    int result;
+    do { result = syncfs(fd); } while (result != 0 && errno == EINTR);
+    int syncErrno = errno;
+    int closeResult = close(fd);
+    int closeErrno = errno;
+    if (result != 0) { errno = syncErrno; return throwErrno(env, "syncfs"); }
+    if (closeResult != 0) { errno = closeErrno; return throwErrno(env, "syncfs directory close"); }
     return 0;
 }
 

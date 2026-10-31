@@ -80,6 +80,14 @@ internal object TaskSchedulePlatform {
         coordinator?.enqueuePendingDispatch(scheduleID)
     }
 
+    /** A durable schedule mutation (create/update/enable/delete) changed the
+     *  planner output. Re-derive the OS wake transport now; a durable save is
+     *  NOT an armed alarm, and the UI must never present the former as the
+     *  latter. The pass starts no Agent run and never downgrades exact time. */
+    fun requestRearm() {
+        coordinator?.requestRearm()
+    }
+
     fun exactAlarmAllowed(context: Context): Boolean =
         TaskScheduleAlarmScheduler.exactAlarmAllowed(context)
 
@@ -169,6 +177,15 @@ internal class TaskScheduleCoordinator(
     fun enqueuePendingDispatch(scheduleID: String) {
         TaskScheduleDispatchWorker.enqueue(
             application, scheduleID, TaskScheduleDispatchWorker.TRIGGER_PENDING)
+    }
+
+    /** Apply a just-saved/deleted durable plan to AlarmManager/WorkManager.
+     *  The WorkManager request is recorded first so process death cannot lose
+     *  the handoff; the immediate Application-scoped pass arms the exact alarm
+     *  without waiting for worker scheduling. Runs are never launched here. */
+    fun requestRearm() {
+        TaskScheduleRearmWorker.enqueue(application)
+        scope.launch { refreshWakeupsOnce(allowPendingDispatch = false) }
     }
 
     fun release() {

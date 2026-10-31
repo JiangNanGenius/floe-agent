@@ -242,7 +242,10 @@ private fun TaskCenterDestination(
             host = runtimeHost,
             compact = compact,
             showSidebarToggle = showSidebarToggle,
-            onBack = { showSchedules = false },
+            onBack = {
+                showSchedules = false
+                runtimeHost.conversations.reloadHistory()
+            },
         )
     } else {
         Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {

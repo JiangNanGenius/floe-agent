@@ -154,7 +154,7 @@ class TaskScheduleHostController internal constructor(
         } else {
             commands.update(draft)
         }
-        if (result is TaskScheduleResult.Ok) refreshNow()
+        if (result is TaskScheduleResult.Ok) refreshAfterMutation()
         return result
     }
 
@@ -163,13 +163,13 @@ class TaskScheduleHostController internal constructor(
         enabled: Boolean,
     ): TaskScheduleResult<TaskScheduleMutation> {
         val result = commands.setEnabled(summary, enabled)
-        if (result is TaskScheduleResult.Ok) refreshNow()
+        if (result is TaskScheduleResult.Ok) refreshAfterMutation()
         return result
     }
 
     internal suspend fun delete(summary: TaskScheduleSummary): TaskScheduleResult<Unit> {
         val result = commands.delete(summary)
-        if (result is TaskScheduleResult.Ok) refreshNow()
+        if (result is TaskScheduleResult.Ok) refreshAfterMutation()
         return result
     }
 
@@ -201,6 +201,14 @@ class TaskScheduleHostController internal constructor(
 
     fun close() {
         scope.cancel()
+    }
+
+    /** A durable mutation is not an armed alarm: re-derive the OS wake
+     *  transport. The pass is Application-scoped so closing the editor cannot
+     *  cancel it, and it never downgrades exact timing. */
+    private suspend fun refreshAfterMutation() {
+        TaskSchedulePlatform.requestRearm()
+        refreshNow()
     }
 
     /** Re-registers the exact host-read authority listing right before an

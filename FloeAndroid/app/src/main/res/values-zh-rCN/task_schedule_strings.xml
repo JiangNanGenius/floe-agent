@@ -101,6 +101,7 @@
 
     <string name="schedule_error_title">定时任务</string>
     <string name="schedule_error_generic">无法更新定时任务。</string>
+    <string name="schedule_error_disabled">请先启用此定时任务再运行。</string>
     <string name="schedule_error_payload_too_large">此定时任务包含的文本过大，无法在编辑器中显示。仍可通过任务工具修改其设置。</string>
     <string name="schedule_error_not_found">此定时任务已不存在。</string>
     <string name="schedule_error_revision">此定时任务在打开后已发生变化。请重新打开后再试。</string>
