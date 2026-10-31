@@ -387,7 +387,7 @@ final class EngineeringSceneResourceWitnessTests: XCTestCase {
         let alternate = try await observe(Fixtures.hierarchy, in: root, .init(
             views: [], width: 320, height: 240, sceneIndex: 1, includeImages: false))
         let alternateSummary = try json(alternate.summaryJSON)
-        let alternateState = try state(alternateSummary)
+        let alternateState = try self.state(alternateSummary)
         XCTAssertEqual(alternateState.activeSceneIndex, 1)
         XCTAssertEqual(alternateState.meshCount, 1)
         XCTAssertEqual(alternate.frames.count, 0)
