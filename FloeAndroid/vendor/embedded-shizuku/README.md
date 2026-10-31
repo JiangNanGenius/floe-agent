@@ -28,8 +28,8 @@ adapted:
 
 | Floe file | Upstream origin | Change |
 | --- | --- | --- |
-| `src/main/java/moe/shizuku/pairing/PairingWire.kt` | `manager/.../adb/AdbPairingClient.kt` (packet classes) | extracted bounded codec, strict version/type/length checks, no logs |
-| `src/main/java/moe/shizuku/pairing/AdbPairingClient.kt` | `manager/.../adb/AdbPairingClient.kt` | injected public/native TLS exporter, typed outcomes, timeouts, code wiped, no peer-info logging |
+| `src/main/java/moe/shizuku/pairing/PairingWire.kt` | `manager/.../adb/AdbPairingClient.kt` (packet classes) | extracted bounded codec, strict version/length checks, accepts the server's `ADB_DEVICE_GUID` peer-info type, no logs |
+| `src/main/java/moe/shizuku/pairing/AdbPairingClient.kt` | `manager/.../adb/AdbPairingClient.kt` | injected public/native TLS exporter, typed outcomes with stable wire-rejection codes, client-role `ADB_DEVICE_GUID` server check, timeouts, code wiped, no peer-info logging |
 | `src/main/java/moe/shizuku/pairing/NativePairingContext.kt` + `src/main/cpp/floe_pairing_jni.cpp` | `manager/src/main/jni/adb_pairing.cpp` | renamed JNI class, bounded inputs, nonce-wrap refusal, no secret logging |
 | `src/main/java/moe/shizuku/pairing/AdbIdentity.kt` | `manager/.../adb/AdbKey.kt` | host-supplied key material; SHA1withRSA ADB token signature; TLS key/trust managers |
 | `src/main/java/moe/shizuku/pairing/AdbPublicKey.kt` | `AdbKey.kt` (`android_pubkey` encoding) | pure, testable, no logging |

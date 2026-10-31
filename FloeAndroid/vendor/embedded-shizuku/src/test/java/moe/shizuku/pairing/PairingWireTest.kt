@@ -41,6 +41,85 @@ class PairingWireTest {
         )
     }
 
+    /**
+     * Regression: Android's pairing server (`native_pairing_start` in
+     * frameworks/base) replies with `ADB_DEVICE_GUID` (type 1), not an RSA key.
+     * Rejecting that record made a real device handshake fail with
+     * `protocol_wire` even though the device had already accepted Floe's key.
+     */
+    @Test
+    fun deviceGuidPeerInfoIsAccepted() {
+        val guid = "adb-1234567890ABCDEF-abcdef".toByteArray(Charsets.UTF_8)
+        val record = ByteArray(PairingWire.PEER_INFO_RECORD_BYTES)
+        record[0] = PairingWire.PEER_TYPE_DEVICE_GUID
+        System.arraycopy(guid, 0, record, 1, guid.size)
+
+        val decoded = PairingWire.decodePeerInfo(record) as PairingWire.PeerInfoResult.Ok
+        assertEquals(PairingWire.PEER_TYPE_DEVICE_GUID, decoded.type)
+        assertArrayEquals(guid, decoded.data.copyOf(guid.size))
+        assertTrue(decoded.data.drop(guid.size).all { it == 0.toByte() })
+
+        // The client still sends only its RSA public key; the codec must not
+        // start emitting GUID records.
+        assertEquals(
+            "unsupported peer-info type",
+            runCatching {
+                PairingWire.encodePeerInfo(PairingWire.PEER_TYPE_DEVICE_GUID, ByteArray(1))
+            }.exceptionOrNull()?.message,
+        )
+    }
+
+    /**
+     * Role boundary: the generic codec accepts both defined AOSP peer-info
+     * types, but Floe is always the pairing client and the AOSP `adb pair`
+     * client requires the server's `ADB_DEVICE_GUID` record. A server RSA
+     * record, an unknown type or a wrong-size record must not complete the
+     * authenticated client exchange.
+     */
+    @Test
+    fun clientRoleRequiresDeviceGuidPeerInfo() {
+        val guid = "adb-1234567890ABCDEF-abcdef".toByteArray(Charsets.UTF_8)
+        val guidRecord = ByteArray(PairingWire.PEER_INFO_RECORD_BYTES)
+        guidRecord[0] = PairingWire.PEER_TYPE_DEVICE_GUID
+        System.arraycopy(guid, 0, guidRecord, 1, guid.size)
+
+        assertEquals(
+            null,
+            AdbPairingClient.clientPeerInfoRejection(PairingWire.decodePeerInfo(guidRecord)),
+        )
+
+        val rsaRecord = guidRecord.copyOf().also { it[0] = PairingWire.PEER_TYPE_RSA_PUBLIC_KEY }
+        assertEquals(
+            "peer_type",
+            AdbPairingClient.clientPeerInfoRejection(PairingWire.decodePeerInfo(rsaRecord)),
+        )
+
+        val unknownRecord = guidRecord.copyOf().also { it[0] = 7 }
+        assertEquals(
+            "peer_type",
+            AdbPairingClient.clientPeerInfoRejection(PairingWire.decodePeerInfo(unknownRecord)),
+        )
+
+        assertEquals(
+            "peer_size",
+            AdbPairingClient.clientPeerInfoRejection(
+                PairingWire.decodePeerInfo(guidRecord.copyOf(PairingWire.PEER_INFO_RECORD_BYTES - 1)),
+            ),
+        )
+
+        // Defense in depth: even a hand-built Ok(type = RSA) is rejected by the
+        // client role, independently of the codec's decode result.
+        assertEquals(
+            "peer_type",
+            AdbPairingClient.clientPeerInfoRejection(
+                PairingWire.PeerInfoResult.Ok(
+                    PairingWire.PEER_TYPE_RSA_PUBLIC_KEY,
+                    ByteArray(PairingWire.PEER_INFO_DATA_BYTES),
+                ),
+            ),
+        )
+    }
+
     @Test
     fun peerInfoIsFixedSizeAndStrictlyTyped() {
         val data = ByteArray(128) { it.toByte() }

@@ -68,6 +68,8 @@ class AdbPairingClient(
             Outcome.Success
         } catch (e: InvalidPairingCode) {
             Outcome.InvalidCode
+        } catch (e: WireFault) {
+            Outcome.ProtocolError(e.code)
         } catch (e: UnsupportedOperationException) {
             Outcome.Unsupported(e.message ?: "unsupported")
         } catch (e: SocketTimeoutException) {
@@ -113,14 +115,14 @@ class AdbPairingClient(
     private fun exchangeMessages(context: NativePairingContext) {
         val message = context.message
         if (message.isEmpty() || message.size > PairingWire.MAX_PAYLOAD_BYTES) {
-            throw IllegalArgumentException("spake2 message size")
+            throw WireFault("spake2_size")
         }
         writePacket(PairingWire.TYPE_SPAKE2, message)
-        val header = readHeader() ?: throw IllegalArgumentException("spake2 header")
-        if (header.type != PairingWire.TYPE_SPAKE2) throw IllegalArgumentException("spake2 type")
+        val header = readHeader()
+        if (header.type != PairingWire.TYPE_SPAKE2) throw WireFault("spake2_type")
         val theirMessage = ByteArray(header.payloadBytes)
         input!!.readFully(theirMessage)
-        if (!context.initCipher(theirMessage)) throw IllegalArgumentException("spake2 verify")
+        if (!context.initCipher(theirMessage)) throw WireFault("spake2_verify")
     }
 
     private fun exchangePeerInfo(context: NativePairingContext) {
@@ -131,20 +133,20 @@ class AdbPairingClient(
         val encrypted = context.encrypt(record)
             ?: throw IllegalStateException("peer encrypt")
         if (encrypted.isEmpty() || encrypted.size > PairingWire.MAX_PAYLOAD_BYTES) {
-            throw IllegalArgumentException("peer payload")
+            throw WireFault("peer_size")
         }
         writePacket(PairingWire.TYPE_PEER_INFO, encrypted)
 
-        val header = readHeader() ?: throw IllegalArgumentException("peer header")
-        if (header.type != PairingWire.TYPE_PEER_INFO) throw IllegalArgumentException("peer type")
+        // The device replies with its ADB_DEVICE_GUID peer info (Android's
+        // pairing server never sends an RSA key here). The codec accepts both
+        // defined AOSP types; the client-role check below requires the GUID.
+        val header = readHeader()
+        if (header.type != PairingWire.TYPE_PEER_INFO) throw WireFault("peer_type")
         val theirCipher = ByteArray(header.payloadBytes)
         input!!.readFully(theirCipher)
         val plain = context.decrypt(theirCipher) ?: throw InvalidPairingCode()
         try {
-            when (val peer = PairingWire.decodePeerInfo(plain)) {
-                is PairingWire.PeerInfoResult.Ok -> Unit
-                is PairingWire.PeerInfoResult.Rejected -> throw IllegalArgumentException(peer.code)
-            }
+            clientPeerInfoRejection(PairingWire.decodePeerInfo(plain))?.let { throw WireFault(it) }
         } finally {
             plain.fill(0)
         }
@@ -156,12 +158,12 @@ class AdbPairingClient(
         output!!.flush()
     }
 
-    private fun readHeader(): PairingWire.Header? {
+    private fun readHeader(): PairingWire.Header {
         val bytes = ByteArray(PairingWire.HEADER_BYTES)
         input!!.readFully(bytes)
         return when (val result = PairingWire.decodeHeader(bytes)) {
             is PairingWire.DecodeResult.Ok -> result.header
-            is PairingWire.DecodeResult.Rejected -> throw IllegalArgumentException(result.code)
+            is PairingWire.DecodeResult.Rejected -> throw WireFault(result.code)
         }
     }
 
@@ -190,7 +192,32 @@ class AdbPairingClient(
 
     private class InvalidPairingCode : Exception()
 
+    /**
+     * A bounded protocol rejection with a stable non-secret code (for example
+     * `peer_type`), so a wire failure keeps its reason instead of collapsing
+     * into an undiagnosable `wire`. Never carries peer data or key material.
+     */
+    private class WireFault(val code: String) : Exception()
+
     companion object {
         const val CODE_LENGTH = 6
+
+        /**
+         * Client-role validation of the decrypted server peer-info record. The
+         * generic codec accepts both defined AOSP peer-info types, but Floe is
+         * always the pairing client: AOSP's `adb pair` client requires the
+         * server to send `ADB_DEVICE_GUID` (`packages/modules/adb/client/
+         * adb_wifi.cpp` rejects anything else as an unknown response). A server
+         * RSA record must not satisfy a completed authenticated client exchange.
+         *
+         * Returns the bounded rejection code, or null when the record carries
+         * the expected device GUID. Never returns or logs peer data.
+         */
+        internal fun clientPeerInfoRejection(result: PairingWire.PeerInfoResult): String? =
+            when (result) {
+                is PairingWire.PeerInfoResult.Ok ->
+                    if (result.type == PairingWire.PEER_TYPE_DEVICE_GUID) null else "peer_type"
+                is PairingWire.PeerInfoResult.Rejected -> result.code
+            }
     }
 }

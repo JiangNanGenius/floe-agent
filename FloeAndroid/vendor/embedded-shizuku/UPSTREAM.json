@@ -40,18 +40,18 @@
   "files": [
     {
       "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/pairing/PairingWire.kt",
-      "floeSha256": "71edcf249e1133a25b3338cb0fa0ff22fe9374bf158ed458bcefab6813b05ab7",
-      "floeBytes": 4054,
-      "modification": "extracted bounded packet codec",
+      "floeSha256": "5de7690d99fa438a51d977a5265de6ecbed26c95e467acc75d63639e2087cf74",
+      "floeBytes": 4931,
+      "modification": "extracted bounded packet codec; strict size and known-peer-type checks; accepts the server ADB_DEVICE_GUID peer-info record",
       "upstreamPath": "manager/src/main/java/moe/shizuku/manager/adb/AdbPairingClient.kt",
       "upstreamBlobSha": "c03370d5f875a3c2ddb38eda9b9eb278a3f8863c",
       "upstreamBytes": 9665
     },
     {
       "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/pairing/AdbPairingClient.kt",
-      "floeSha256": "99e17d9153a1f1427226c74302f093e292573ab891d99e41c4e9d1384575c60f",
-      "floeBytes": 7379,
-      "modification": "TLS exporter injection, timeouts, typed outcomes, code wipe, no logs",
+      "floeSha256": "1f678392abb290503fb03c001d857189a2aa2dd15b769434131d2ab75bfd9eb6",
+      "floeBytes": 8671,
+      "modification": "TLS exporter injection, timeouts, typed outcomes with stable wire-rejection codes, client-role server-GUID check, code wipe, no logs",
       "upstreamPath": "manager/src/main/java/moe/shizuku/manager/adb/AdbPairingClient.kt",
       "upstreamBlobSha": "c03370d5f875a3c2ddb38eda9b9eb278a3f8863c",
       "upstreamBytes": 9665

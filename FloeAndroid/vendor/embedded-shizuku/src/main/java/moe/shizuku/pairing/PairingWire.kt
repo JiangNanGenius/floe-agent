@@ -15,6 +15,11 @@ import java.nio.ByteOrder
  * an AES-128-GCM protected fixed-size peer-info record. Every length is checked
  * against a hard bound before allocating or reading; malformed packets are
  * rejected, never truncated into something that looks valid.
+ *
+ * Android's pairing server sends its wireless-debugging GUID as the peer-info
+ * record, not an RSA public key (see [PEER_TYPE_DEVICE_GUID]). A received
+ * record may therefore carry either defined AOSP peer-info type; the type
+ * identifies the payload and never grants trust by itself.
  */
 object PairingWire {
 
@@ -31,6 +36,16 @@ object PairingWire {
     const val PEER_INFO_RECORD_BYTES = MAX_PEER_INFO_BYTES
 
     const val PEER_TYPE_RSA_PUBLIC_KEY: Byte = 0
+
+    /**
+     * Android's pairing server replies with its device GUID instead of an RSA
+     * key. AOSP `PeerInfoType` is `{ ADB_RSA_PUB_KEY = 0, ADB_DEVICE_GUID = 1 }`;
+     * the framework JNI `native_pairing_start` always sets `ADB_DEVICE_GUID`,
+     * and the AOSP `adb pair` client requires that type from the server. The
+     * client still sends [PEER_TYPE_RSA_PUBLIC_KEY]; both defined types are
+     * accepted for a received record, unknown values stay rejected.
+     */
+    const val PEER_TYPE_DEVICE_GUID: Byte = 1
 
     /** The peer-info payload always fills the fixed record; the last byte is padding. */
     const val PEER_INFO_DATA_BYTES = PEER_INFO_RECORD_BYTES - 1
@@ -87,7 +102,9 @@ object PairingWire {
     fun decodePeerInfo(record: ByteArray): PeerInfoResult {
         if (record.size != PEER_INFO_RECORD_BYTES) return PeerInfoResult.Rejected("peer_size")
         val type = record[0]
-        if (type != PEER_TYPE_RSA_PUBLIC_KEY) return PeerInfoResult.Rejected("peer_type")
+        if (type != PEER_TYPE_RSA_PUBLIC_KEY && type != PEER_TYPE_DEVICE_GUID) {
+            return PeerInfoResult.Rejected("peer_type")
+        }
         val data = ByteArray(PEER_INFO_DATA_BYTES)
         System.arraycopy(record, 1, data, 0, PEER_INFO_DATA_BYTES)
         return PeerInfoResult.Ok(type, data)
