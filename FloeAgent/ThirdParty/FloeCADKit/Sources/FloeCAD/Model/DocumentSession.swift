@@ -1422,7 +1422,8 @@ final class DocumentSession {
                 CADFeatureRecord(featureID: $0.featureID, orderIndex: $0.orderIndex,
                                  name: $0.name, suppressed: $0.suppressed,
                                  kind: $0.kindData, outputBodyIDs: $0.outputBodyIDData)
-            })
+            },
+            drawings: project.drawingsData)
         project.hasOpaqueAssociations = project.hasOpaqueAssociations || associationAssessment?.isOpaqueReadOnly == true
         storeIsNewerThanApp = project.formatVersion > Project.currentFormatVersion || project.hasOpaqueAssociations
         #if DEBUG

@@ -188,12 +188,16 @@ struct CadServiceOperationCatalogTests {
     /// router (and the mutate/read split of `CADServiceOperations`). Locked
     /// here; the App-level closure test and the cross-source parity check
     /// re-verify it against the engine.
-    private static let drawingActions = ["standardSheet", "assemblySheet", "addPage", "updatePage",
+    private static let drawingActions = ["standardSheet", "multiViewSheet", "addView", "updateView",
+                                         "removeView", "layoutViews", "dimensionCandidates",
+                                         "assemblySheet", "addPage", "updatePage",
                                          "removePage", "setBOM", "addBalloon", "updateBalloon",
                                          "removeBalloon", "addDimension", "updateDimension",
                                          "removeDimension", "addAnnotation", "updateAnnotation",
                                          "removeAnnotation", "pages", "project", "dimensions", "export"]
-    private static let drawingMutating: Set<String> = ["standardSheet", "assemblySheet", "addPage", "updatePage",
+    private static let drawingMutating: Set<String> = ["standardSheet", "multiViewSheet", "addView",
+                                                       "updateView", "removeView", "layoutViews",
+                                                       "assemblySheet", "addPage", "updatePage",
                                                        "removePage", "setBOM", "addBalloon", "updateBalloon",
                                                        "removeBalloon", "addDimension", "updateDimension",
                                                        "removeDimension", "addAnnotation", "updateAnnotation",
@@ -294,16 +298,31 @@ struct CadServiceOperationCatalogTests {
                     "assembly.\(action) argument drift")
         }
         let expectedDrawing: [String: Set<String>] = [
+            "multiViewSheet": ["bodyID", "bodyIDs", "title", "scale", "paper",
+                               "sectionOrigin", "sectionNormal", "assemblyMode",
+                               "explodedViewID", "replace"],
+            "addView": ["pageID", "kind", "name", "scale", "offset", "nudge",
+                        "viewNormal", "viewUp", "sectionOrigin", "sectionNormal",
+                        "detailOrigin", "detailSizeMM", "bodyIDs",
+                        "alignmentPlacement", "alignmentReferenceID", "gapMM"],
+            "updateView": ["pageID", "viewID", "kind", "name", "scale", "offset", "nudge",
+                           "viewNormal", "viewUp", "sectionOrigin", "sectionNormal",
+                           "detailOrigin", "detailSizeMM", "bodyIDs",
+                           "alignmentPlacement", "alignmentReferenceID", "gapMM"],
+            "removeView": ["pageID", "viewID", "removeAnnotations"],
+            "layoutViews": ["pageID", "marginMM", "gapMM"],
+            "dimensionCandidates": ["pageID", "viewID"],
             "assemblySheet": ["bodyIDs", "title", "explodedViewID", "scale", "paper", "replace"],
             "setBOM": ["pageID", "entries", "showBOM"],
-            "addBalloon": ["pageID", "itemNumber", "bomEntryID", "instanceID", "anchor", "target", "text"],
+            "addBalloon": ["pageID", "itemNumber", "bomEntryID", "instanceID", "viewID",
+                           "anchor", "target", "text"],
             "updateBalloon": ["pageID", "balloonID", "anchor", "target", "text", "itemNumber", "instanceID"],
             "removeBalloon": ["pageID", "balloonID"],
-            "addDimension": ["pageID", "kind", "instanceID", "drawingPoints", "modelPoints",
-                             "textPosition", "text"],
+            "addDimension": ["pageID", "kind", "instanceID", "viewID", "drawingPoints",
+                             "modelPoints", "feature", "textPosition", "text"],
             "updateDimension": ["pageID", "dimensionID", "textPosition", "text"],
             "removeDimension": ["pageID", "dimensionID"],
-            "addAnnotation": ["pageID", "text", "position", "heightMM", "instanceID"],
+            "addAnnotation": ["pageID", "text", "position", "heightMM", "instanceID", "viewID"],
             "updateAnnotation": ["pageID", "annotationID", "text", "position", "heightMM"],
             "removeAnnotation": ["pageID", "annotationID"],
         ]
@@ -331,6 +350,12 @@ struct CadServiceOperationCatalogTests {
                     "assembly.\(action) required-argument drift")
         }
         let requiredDrawing: [String: Set<String>] = [
+            "multiViewSheet": [],
+            "addView": ["pageID", "kind"],
+            "updateView": ["pageID", "viewID"],
+            "removeView": ["pageID", "viewID"],
+            "layoutViews": ["pageID"],
+            "dimensionCandidates": ["pageID"],
             "assemblySheet": [],
             "setBOM": ["pageID"],
             "addBalloon": ["pageID"],
@@ -361,12 +386,16 @@ struct CadServiceOperationCatalogTests {
             #expect(CadServiceOperationCatalog.isMutating(kind: "assembly", action: action),
                     "assembly.\(action) writes assemblyData")
         }
-        for action in ["assemblySheet", "setBOM", "addBalloon", "updateBalloon", "removeBalloon",
+        for action in ["multiViewSheet", "addView", "updateView", "removeView", "layoutViews",
+                       "assemblySheet", "setBOM", "addBalloon", "updateBalloon", "removeBalloon",
                        "addDimension", "updateDimension", "removeDimension",
                        "addAnnotation", "updateAnnotation", "removeAnnotation"] {
             #expect(CadServiceOperationCatalog.isMutating(kind: "drawing", action: action),
                     "drawing.\(action) persists the drawing set")
         }
+        #expect(CadServiceOperationCatalog.isMutating(kind: "drawing",
+                                                      action: "dimensionCandidates") == false,
+                "drawing.dimensionCandidates is a read")
 
         // Page metadata is real buildPage input, so it must be documented on
         // both addPage and updatePage.

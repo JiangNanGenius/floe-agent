@@ -2,10 +2,11 @@
 //  CADDrawing.swift
 //  FloeCADKit
 //
-//  Drawing-set model for FloeCAD: independent pages with named standard views,
-//  explicit scale/paper/title, and model-revision associativity. Geometry
-//  generation and export (PDF/SVG/DXF) live in CADDrawingService; this file is
-//  the persisted contract, shared by the UI, the AI tool and the file store.
+//  Drawing-set model for FloeCAD: independent pages, a v4 shared-sheet view
+//  list with per-view scale and projection alignment, explicit paper/title,
+//  and model-revision associativity. Geometry generation and export
+//  (PDF/SVG/DXF) live in CADDrawingService; this file is the persisted
+//  contract, shared by the UI, the AI tool and the file store.
 //
 
 import Foundation
@@ -117,6 +118,187 @@ public nonisolated struct CADDrawingSourceFingerprint: Codable, Sendable, Equata
     }
 }
 
+// MARK: - Shared-sheet views (schema v4)
+
+/// Where an aligned view sits relative to its reference view. `free` uses the
+/// view's own `offset` directly; every other case re-derives the placement
+/// from the reference view's LIVE projected bounds, so changing the model (or
+/// the reference view's scale) moves the aligned view with it.
+public nonisolated enum CADDrawingViewPlacement: String, Codable, Sendable, CaseIterable {
+    case free, above, below, left, right
+}
+
+/// Projection alignment for one view on a shared sheet. The cross axis is
+/// always centred on the reference view's projected bounds; `gapMM` is the
+/// clear sheet-space gap along the placement axis.
+public nonisolated struct CADDrawingViewAlignment: Codable, Sendable, Equatable {
+    public var referenceViewID: UUID?
+    public var placement: CADDrawingViewPlacement
+    public var gapMM: Double
+
+    public init(referenceViewID: UUID? = nil,
+                placement: CADDrawingViewPlacement = .free,
+                gapMM: Double = 14) {
+        self.referenceViewID = referenceViewID
+        self.placement = placement
+        self.gapMM = gapMM
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case referenceViewID, placement, gapMM
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        referenceViewID = try container.decodeIfPresent(UUID.self, forKey: .referenceViewID)
+        placement = try container.decodeIfPresent(CADDrawingViewPlacement.self,
+                                                  forKey: .placement) ?? .free
+        gapMM = try container.decodeIfPresent(Double.self, forKey: .gapMM) ?? 14
+    }
+}
+
+/// Stable, radius-independent identity of a kernel face used by a linked
+/// drawing dimension. The centroid/axis pair survives a diameter edit (the
+/// cylinder's axis and axial centre do not move when its radius changes), so
+/// Ø10 → Ø8 remeasures on the SAME dimension id. Radius is kept as provenance
+/// only and is never part of the match.
+public nonisolated enum CADDrawingFeatureKind: String, Codable, Sendable {
+    case cylindricalFace
+}
+
+public nonisolated struct CADDrawingFeatureAnchor: Codable, Sendable, Equatable {
+    /// Body-local face centroid (mm).
+    public var centroid: SIMD3<Double>
+    /// Body-local cylindrical axis direction.
+    public var direction: SIMD3<Double>
+    /// Captured radius (provenance; a radius edit does not invalidate it).
+    public var radiusMM: Double?
+    /// Re-find tolerance in model mm. The axis direction is compared
+    /// separately with a fixed angular tolerance.
+    public var toleranceMM: Double
+
+    public init(centroid: SIMD3<Double>, direction: SIMD3<Double>,
+                radiusMM: Double? = nil, toleranceMM: Double = 0.5) {
+        self.centroid = centroid
+        self.direction = direction
+        self.radiusMM = radiusMM
+        self.toleranceMM = toleranceMM
+    }
+}
+
+/// A linked drawing dimension's semantic source. Resolution is by the live
+/// kernel face anchor, never by a stale numeric index. `sketchID` /
+/// `sketchEntityID` / `featureID` are provenance and diagnosis; the measured
+/// value always comes from the resolved kernel face.
+public nonisolated struct CADDrawingFeatureReference: Codable, Sendable, Equatable {
+    public var kind: CADDrawingFeatureKind
+    /// The document body that owns the face (for an assembly occurrence this
+    /// is the source body id, not the occurrence id).
+    public var bodyID: UUID
+    /// Assembly occurrence, when the dimension lives on a placed instance.
+    public var instanceID: UUID?
+    public var anchor: CADDrawingFeatureAnchor
+    public var featureID: UUID?
+    public var sketchID: UUID?
+    public var sketchEntityID: UUID?
+    /// Mesh revision the face was captured from (information only).
+    public var sourceRevision: UInt64?
+
+    public init(kind: CADDrawingFeatureKind = .cylindricalFace,
+                bodyID: UUID, instanceID: UUID? = nil,
+                anchor: CADDrawingFeatureAnchor,
+                featureID: UUID? = nil,
+                sketchID: UUID? = nil,
+                sketchEntityID: UUID? = nil,
+                sourceRevision: UInt64? = nil) {
+        self.kind = kind
+        self.bodyID = bodyID
+        self.instanceID = instanceID
+        self.anchor = anchor
+        self.featureID = featureID
+        self.sketchID = sketchID
+        self.sketchEntityID = sketchEntityID
+        self.sourceRevision = sourceRevision
+    }
+}
+
+/// One independently placed projection on a shared drawing sheet. `offset` is
+/// in sheet mm. For `free` views it is the absolute translation; for an
+/// aligned view it is an additional nudge applied after the alignment solve.
+/// `scale` is drawing mm per model mm for THIS view, so a sheet can show the
+/// same model at different scales without duplicating an editable model.
+public nonisolated struct CADDrawingSheetView: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var name: String
+    public var kind: CADDrawingViewKind
+    public var scale: Double
+    public var offset: SIMD2<Double>
+    public var viewNormal: SIMD3<Double>
+    public var viewUp: SIMD3<Double>
+    public var sectionOrigin: SIMD3<Double>?
+    public var sectionNormal: SIMD3<Double>?
+    public var detailOrigin: SIMD3<Double>?
+    public var detailSizeMM: SIMD2<Double>?
+    /// Per-view source filter; nil/empty inherits the page's `sourceBodyIDs`.
+    public var sourceBodyIDs: [UUID]?
+    public var alignment: CADDrawingViewAlignment
+
+    public init(id: UUID = UUID(), name: String, kind: CADDrawingViewKind,
+                scale: Double = 1, offset: SIMD2<Double> = .zero,
+                viewNormal: SIMD3<Double> = SIMD3(0, 0, 1),
+                viewUp: SIMD3<Double> = SIMD3(0, 1, 0),
+                sectionOrigin: SIMD3<Double>? = nil,
+                sectionNormal: SIMD3<Double>? = nil,
+                detailOrigin: SIMD3<Double>? = nil,
+                detailSizeMM: SIMD2<Double>? = nil,
+                sourceBodyIDs: [UUID]? = nil,
+                alignment: CADDrawingViewAlignment = CADDrawingViewAlignment()) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.scale = scale
+        self.offset = offset
+        self.viewNormal = viewNormal
+        self.viewUp = viewUp
+        self.sectionOrigin = sectionOrigin
+        self.sectionNormal = sectionNormal
+        self.detailOrigin = detailOrigin
+        self.detailSizeMM = detailSizeMM
+        self.sourceBodyIDs = sourceBodyIDs
+        self.alignment = alignment
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, kind, scale, offset, viewNormal, viewUp
+        case sectionOrigin, sectionNormal, detailOrigin, detailSizeMM
+        case sourceBodyIDs, alignment
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "View"
+        kind = try container.decodeIfPresent(CADDrawingViewKind.self, forKey: .kind) ?? .front
+        scale = try container.decodeIfPresent(Double.self, forKey: .scale) ?? 1
+        offset = try container.decodeIfPresent(SIMD2<Double>.self, forKey: .offset) ?? .zero
+        viewNormal = try container.decodeIfPresent(SIMD3<Double>.self, forKey: .viewNormal)
+            ?? SIMD3(0, 0, 1)
+        viewUp = try container.decodeIfPresent(SIMD3<Double>.self, forKey: .viewUp)
+            ?? SIMD3(0, 1, 0)
+        sectionOrigin = try container.decodeIfPresent(SIMD3<Double>.self, forKey: .sectionOrigin)
+        sectionNormal = try container.decodeIfPresent(SIMD3<Double>.self, forKey: .sectionNormal)
+        detailOrigin = try container.decodeIfPresent(SIMD3<Double>.self, forKey: .detailOrigin)
+        detailSizeMM = try container.decodeIfPresent(SIMD2<Double>.self, forKey: .detailSizeMM)
+        sourceBodyIDs = try container.decodeIfPresent([UUID].self, forKey: .sourceBodyIDs)
+        alignment = try container.decodeIfPresent(CADDrawingViewAlignment.self,
+                                                  forKey: .alignment)
+            ?? CADDrawingViewAlignment()
+        if viewNormal == .zero { viewNormal = SIMD3(0, 0, 1) }
+        if viewUp == .zero { viewUp = SIMD3(0, 1, 0) }
+        if !scale.isFinite || scale <= 0 { scale = 1 }
+    }
+}
+
 // MARK: - Assembly annotations
 
 /// Binds a drawing annotation to live assembly geometry. `modelPoints` are
@@ -160,18 +342,28 @@ public nonisolated enum CADDrawingDimensionKind: String, Codable, Sendable, Case
 public nonisolated struct CADDrawingManualDimension: Codable, Sendable, Equatable, Identifiable {
     public var id: UUID
     public var kind: CADDrawingDimensionKind
-    /// Drawing-space reference points captured at creation (page mm), matching
+    /// Drawing-space reference points captured at creation. They are LOCAL to
+    /// `viewID` (before that view's sheet offset), matching
     /// `binding.modelPoints` order.
     public var drawingPoints: [SIMD2<Double>]
     public var value: Double
     public var textPosition: SIMD2<Double>
     public var textOverride: String?
     public var binding: CADDrawingBinding?
+    /// Shared-sheet view this annotation belongs to. Nil on legacy pages and
+    /// on single-view pages; a multi-view sheet requires it for new edits.
+    public var viewID: UUID?
+    /// Linked kernel-face source. When present this is the measurement
+    /// authority: a live remeasure replaces `value` in every reply and a
+    /// missing/ambiguous face is reported as dangling (never the old value).
+    public var feature: CADDrawingFeatureReference?
 
     public init(id: UUID = UUID(), kind: CADDrawingDimensionKind,
                 drawingPoints: [SIMD2<Double>], value: Double,
                 textPosition: SIMD2<Double>, textOverride: String? = nil,
-                binding: CADDrawingBinding? = nil) {
+                binding: CADDrawingBinding? = nil,
+                viewID: UUID? = nil,
+                feature: CADDrawingFeatureReference? = nil) {
         self.id = id
         self.kind = kind
         self.drawingPoints = drawingPoints
@@ -179,6 +371,8 @@ public nonisolated struct CADDrawingManualDimension: Codable, Sendable, Equatabl
         self.textPosition = textPosition
         self.textOverride = textOverride
         self.binding = binding
+        self.viewID = viewID
+        self.feature = feature
     }
 }
 
@@ -196,10 +390,13 @@ public nonisolated struct CADDrawingBalloon: Codable, Sendable, Equatable, Ident
     /// projected bounds.
     public var target: SIMD2<Double>?
     public var text: String?
+    /// Shared-sheet view this balloon belongs to (coordinates are view-local).
+    public var viewID: UUID?
 
     public init(id: UUID = UUID(), itemNumber: Int, bomEntryID: UUID? = nil,
                 instanceID: UUID? = nil, anchor: SIMD2<Double>,
-                target: SIMD2<Double>? = nil, text: String? = nil) {
+                target: SIMD2<Double>? = nil, text: String? = nil,
+                viewID: UUID? = nil) {
         self.id = id
         self.itemNumber = itemNumber
         self.bomEntryID = bomEntryID
@@ -207,6 +404,7 @@ public nonisolated struct CADDrawingBalloon: Codable, Sendable, Equatable, Ident
         self.anchor = anchor
         self.target = target
         self.text = text
+        self.viewID = viewID
     }
 }
 
@@ -262,14 +460,18 @@ public nonisolated struct CADDrawingTextAnnotation: Codable, Sendable, Equatable
     public var position: SIMD2<Double>
     public var heightMM: Double
     public var binding: CADDrawingBinding?
+    /// Shared-sheet view this annotation belongs to (position is view-local).
+    public var viewID: UUID?
 
     public init(id: UUID = UUID(), text: String, position: SIMD2<Double>,
-                heightMM: Double = 3.5, binding: CADDrawingBinding? = nil) {
+                heightMM: Double = 3.5, binding: CADDrawingBinding? = nil,
+                viewID: UUID? = nil) {
         self.id = id
         self.text = text
         self.position = position
         self.heightMM = heightMM
         self.binding = binding
+        self.viewID = viewID
     }
 }
 
@@ -325,6 +527,13 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
     public var manualDimensions: [CADDrawingManualDimension]
     public var annotations: [CADDrawingTextAnnotation]
 
+    // Additive v4 shared-sheet state. Nil/empty = a legacy single-view page
+    // whose one view is derived from the page fields above. A multi-view page
+    // stores every view here; its page-level `sourceBodyIDs` is deliberately
+    // empty so an older reader cannot present one bare view as the complete
+    // sheet (older builds also refuse to edit a v4 set).
+    public var sheetViews: [CADDrawingSheetView]?
+
     public init(id: UUID = UUID(),
                 name: String,
                 kind: CADDrawingViewKind,
@@ -350,7 +559,8 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
                 bom: CADDrawingBOM? = nil,
                 balloons: [CADDrawingBalloon] = [],
                 manualDimensions: [CADDrawingManualDimension] = [],
-                annotations: [CADDrawingTextAnnotation] = []) {
+                annotations: [CADDrawingTextAnnotation] = [],
+                sheetViews: [CADDrawingSheetView]? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -377,6 +587,7 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
         self.balloons = balloons
         self.manualDimensions = manualDimensions
         self.annotations = annotations
+        self.sheetViews = sheetViews
     }
 
     enum CodingKeys: String, CodingKey {
@@ -386,7 +597,7 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
         case detailOrigin, detailSizeMM, modelRevision, sourceFingerprint
         case showCenterlines, showDimensions
         case assemblyMode, explodedViewID, explodedViewName, showBOM
-        case bom, balloons, manualDimensions, annotations
+        case bom, balloons, manualDimensions, annotations, sheetViews
     }
 
     public init(from decoder: Decoder) throws {
@@ -424,6 +635,8 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
                                                          forKey: .manualDimensions) ?? []
         annotations = try container.decodeIfPresent([CADDrawingTextAnnotation].self,
                                                     forKey: .annotations) ?? []
+        sheetViews = try container.decodeIfPresent([CADDrawingSheetView].self,
+                                                   forKey: .sheetViews)
         if viewNormal == .zero { viewNormal = SIMD3(0, 0, 1) }
         if viewUp == .zero { viewUp = SIMD3(0, 1, 0) }
     }
@@ -433,6 +646,50 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
     }
     public var paperHeightMM: Double {
         customHeightMM ?? paper.millimetres.height
+    }
+
+    /// True when the page stores more than one sheet view. A v1/v2/v3 page
+    /// (and a single-view v4 page) is still one legacy projection.
+    public var isMultiViewSheet: Bool {
+        (sheetViews?.count ?? 0) > 1
+    }
+
+    /// The page's views, materialising the legacy single view when the v4
+    /// `sheetViews` field is absent. The synthesized view is not persisted, so
+    /// old pages stay byte-compatible until they are edited.
+    public var effectiveSheetViews: [CADDrawingSheetView] {
+        if let sheetViews, !sheetViews.isEmpty { return sheetViews }
+        return [CADDrawingSheetView(
+            name: name,
+            kind: kind,
+            scale: scale,
+            offset: .zero,
+            viewNormal: viewNormal,
+            viewUp: viewUp,
+            sectionOrigin: sectionOrigin,
+            sectionNormal: sectionNormal,
+            detailOrigin: detailOrigin,
+            detailSizeMM: detailSizeMM,
+            sourceBodyIDs: sourceBodyIDs.isEmpty ? nil : sourceBodyIDs,
+            alignment: CADDrawingViewAlignment())]
+    }
+
+    /// Source filter used for page-level staleness when the page has several
+    /// views: a view with no filter means "all sources", so the union is also
+    /// unfiltered. Single-view pages keep the historical page array.
+    public var effectiveSourceBodyIDs: [UUID] {
+        guard let sheetViews, !sheetViews.isEmpty else { return sourceBodyIDs }
+        if sheetViews.contains(where: { ($0.sourceBodyIDs ?? []).isEmpty })
+            && sourceBodyIDs.isEmpty {
+            return []
+        }
+        var seen = Set<UUID>()
+        var result: [UUID] = []
+        for view in sheetViews {
+            let ids = view.sourceBodyIDs ?? sourceBodyIDs
+            for id in ids where seen.insert(id).inserted { result.append(id) }
+        }
+        return result
     }
 
     /// A page is stale when it pins a revision older than the live document.
@@ -455,10 +712,14 @@ public nonisolated struct CADDrawingSet: Codable, Sendable, Equatable {
     /// Drawing schema. v1 pages carry no detail fields and no source
     /// fingerprint; v2 adds typed detail windows and the fingerprint; v3 adds
     /// assembly-aware projection, exploded views, BOM/balloons and manual
-    /// annotation. Every v3 page field has a decoding default, so v1/v2 pages
-    /// open unchanged. A newer value opens for reading and blocks edits (the
-    /// service refuses).
-    public static let currentSchemaVersion = 3
+    /// annotation; v4 adds shared-sheet multi-view layout, per-view scale and
+    /// projection alignment, view-scoped annotations and linked kernel-face
+    /// dimensions. Every v4 field decodes to a default, so v1/v2/v3 pages open
+    /// unchanged. A newer value opens for reading and blocks edits (the
+    /// service refuses). v4 is a DRAWING-JSON floor only: the surrounding
+    /// `.floecad` package format is unchanged, and no App version is encoded
+    /// here.
+    public static let currentSchemaVersion = 4
     public var schemaVersion: Int
     public var pages: [CADDrawingPage]
 
@@ -500,6 +761,59 @@ public nonisolated struct CADDrawingSet: Codable, Sendable, Equatable {
             CADDrawingPage(name: kind.title, kind: kind, title: title,
                            sourceBodyIDs: [bodyID], viewNormal: normal)
         })
+    }
+
+    /// One A3-style shared sheet: front, top, side and section views on the
+    /// SAME page. Each view carries its own scale and projection alignment;
+    /// `bodyIDs` filter every view. Page-level `sourceBodyIDs` is intentionally
+    /// empty so an older v3 reader shows no fabricated single-view geometry.
+    public static func multiViewSheet(bodyIDs: [UUID],
+                                      title: String,
+                                      scale: Double = 1,
+                                      paper: CADPaperSize = .a3,
+                                      sectionOrigin: SIMD3<Double>,
+                                      sectionNormal: SIMD3<Double>,
+                                      assemblyMode: Bool = false,
+                                      explodedViewID: UUID? = nil,
+                                      explodedViewName: String? = nil) -> CADDrawingSet {
+        let front = CADDrawingSheetView(name: "Front", kind: .front,
+                                        scale: scale, offset: SIMD2(30, 150),
+                                        viewNormal: SIMD3(0, -1, 0),
+                                        viewUp: SIMD3(0, 1, 0),
+                                        sourceBodyIDs: bodyIDs)
+        let top = CADDrawingSheetView(name: "Top", kind: .top,
+                                      scale: scale, offset: .zero,
+                                      viewNormal: SIMD3(0, 0, 1),
+                                      viewUp: SIMD3(0, 1, 0),
+                                      sourceBodyIDs: bodyIDs,
+                                      alignment: CADDrawingViewAlignment(referenceViewID: front.id,
+                                                                         placement: .above))
+        let side = CADDrawingSheetView(name: "Side", kind: .side,
+                                       scale: scale, offset: .zero,
+                                       viewNormal: SIMD3(1, 0, 0),
+                                       viewUp: SIMD3(0, 1, 0),
+                                       sourceBodyIDs: bodyIDs,
+                                       alignment: CADDrawingViewAlignment(referenceViewID: front.id,
+                                                                          placement: .right))
+        let section = CADDrawingSheetView(name: "Section", kind: .section,
+                                          scale: scale, offset: .zero,
+                                          viewNormal: sectionNormal,
+                                          viewUp: SIMD3(0, 1, 0),
+                                          sectionOrigin: sectionOrigin,
+                                          sectionNormal: sectionNormal,
+                                          sourceBodyIDs: bodyIDs,
+                                          alignment: CADDrawingViewAlignment(referenceViewID: front.id,
+                                                                             placement: .below))
+        let page = CADDrawingPage(name: "Sheet", kind: .front, scale: scale,
+                                  paper: paper, title: title,
+                                  sourceBodyIDs: [],
+                                  viewNormal: SIMD3(0, -1, 0),
+                                  viewUp: SIMD3(0, 1, 0),
+                                  assemblyMode: assemblyMode,
+                                  explodedViewID: explodedViewID,
+                                  explodedViewName: explodedViewName,
+                                  sheetViews: [front, top, side, section])
+        return CADDrawingSet(pages: [page], schemaVersion: currentSchemaVersion)
     }
 
     /// Assembly-aware sheet: front/top/side/iso plus a dedicated exploded

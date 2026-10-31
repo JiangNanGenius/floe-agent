@@ -46,6 +46,19 @@ nonisolated enum CADDocumentFormat {
     /// below, and let `supportedVersion` be the maximum. Do not treat codable
     /// tolerance as compatibility; do not lower this floor when merging.
     static let nestedAssemblyVersion = 4
+    /// First drawing-JSON schema whose shared-sheet intent a pre-v4 build
+    /// cannot represent. Frozen older readers decode away `sheetViews`,
+    /// read the deliberately empty page-level `sourceBodyIDs` of a
+    /// multi-view page and project/export a BLANK sheet (their drawing
+    /// persist guard refuses edits, but no newer-format warning runs on
+    /// read/project/export). A document whose drawing set actually uses
+    /// that intent — a page carrying `sheetViews`, or a dimension linked
+    /// through a `feature` reference — therefore raises the package floor
+    /// to 4, which older builds already open read-only. Flat/ordinary
+    /// drawings keep the existing lower floor: the stamped drawing
+    /// schemaVersion alone is NOT intent, so a flat sheet written by this
+    /// build does not force older clients read-only.
+    static let drawingSheetViewVersion = 4
     static var opaqueReadOnlyMessage: String {
         FloeCADStrings.text("cad.document.readOnlyAssociation", "This document uses newer features. Update the app to edit it.")
     }
@@ -68,6 +81,7 @@ nonisolated enum CADDocumentFormat {
         if assemblyRequiresNestedFormat(document.assemblyData) {
             required = max(required, nestedAssemblyVersion)
         }
+        required = max(required, drawingRequiredVersion(document.drawingsData))
         if document.features.nodes.contains(where: {
             if case .hole = $0.kind { return true }
             return false
@@ -79,6 +93,31 @@ nonisolated enum CADDocumentFormat {
             required = max(required, associativeVersion)
         }
         return required
+    }
+
+    /// Inspect the REAL drawing-set bytes for v4-only sheet intent, the same
+    /// inline-bytes discipline as the association rows above. Malformed or
+    /// future-shape sets stay on the existing drawing persist guard /
+    /// read-only paths (they are never rewritten by an older writer because
+    /// the rest of the floor machinery still applies); only intent this
+    /// build can both verify and represent raises the floor.
+    static func drawingRequiredVersion(_ data: Data?) -> Int {
+        guard let data, !data.isEmpty,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pages = object["pages"] as? [[String: Any]] else { return legacyVersion }
+        for page in pages {
+            if let views = page["sheetViews"] as? [[String: Any]], !views.isEmpty {
+                return drawingSheetViewVersion
+            }
+            if let dimensions = page["manualDimensions"] as? [[String: Any]],
+               dimensions.contains(where: { dimension in
+                   guard let feature = dimension["feature"] else { return false }
+                   return !(feature is NSNull)
+               }) {
+                return drawingSheetViewVersion
+            }
+        }
+        return legacyVersion
     }
 
     /// Best-effort inspection of the persisted assembly record. A malformed
@@ -134,15 +173,18 @@ nonisolated enum CADDocumentFormat {
     /// existing unreadable-row preservation contract.
     static func assess(planes: [CADBlobRecord], sketches: [CADBlobRecord],
                        features: [CADFeatureRecord] = [],
-                       assembly: Data? = nil) throws -> Assessment {
+                       assembly: Data? = nil,
+                       drawings: Data? = nil) throws -> Assessment {
         var result = Assessment()
         if assemblyRequiresNestedFormat(assembly) {
             result.requiredVersion = max(result.requiredVersion, nestedAssemblyVersion)
         }
+        result.requiredVersion = max(result.requiredVersion,
+                                     drawingRequiredVersion(drawings))
         for row in planes {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
                   let definition = object["definition"], !(definition is NSNull) else { continue }
-            result.requiredVersion = associativeVersion
+            result.requiredVersion = max(result.requiredVersion, associativeVersion)
             do {
                 _ = try JSONDecoder().decode(ConstructionPlane.self, from: row.data)
             } catch let error as AssociativeGeometryError where error.requiresOpaqueReadOnlyDocument {
@@ -158,7 +200,7 @@ nonisolated enum CADDocumentFormat {
         for row in sketches {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
                   let support = object["support"], !(support is NSNull) else { continue }
-            result.requiredVersion = associativeVersion
+            result.requiredVersion = max(result.requiredVersion, associativeVersion)
             do {
                 _ = try JSONDecoder().decode(Sketch.self, from: row.data)
             } catch {
@@ -178,7 +220,7 @@ nonisolated enum CADDocumentFormat {
             // inspected for the non-additive format 3 contract.
             guard let object = try? JSONSerialization.jsonObject(with: row.kind) as? [String: Any],
                   let hole = object["hole"], !(hole is NSNull) else { continue }
-            result.requiredVersion = holeVersion
+            result.requiredVersion = max(result.requiredVersion, holeVersion)
             guard let hole = hole as? [String: Any],
                   let spec = hole["spec"] as? [String: Any] else {
                 throw CADDocumentFormatError.malformedAssociation("hole-feature")
@@ -220,7 +262,8 @@ nonisolated enum CADDocumentFormat {
 
     static func assess(_ record: CADDocumentRecord) throws -> Assessment {
         try assess(planes: record.planes, sketches: record.sketches,
-                   features: record.features, assembly: record.assembly)
+                   features: record.features, assembly: record.assembly,
+                   drawings: record.drawings)
     }
 
     static func validateWrite(_ payload: CADWritePayload, storedSchema: Int? = nil) throws {

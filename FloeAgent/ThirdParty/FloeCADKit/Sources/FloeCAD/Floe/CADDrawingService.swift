@@ -34,11 +34,24 @@
 //  * `CADDrawingPage` v2 stores the typed detail window (`detailOrigin` /
 //    `detailSizeMM`); v3 adds assembly-aware projection (`assemblyMode`,
 //    `explodedViewID`), BOM/balloons `showBOM`, `bom`, `balloons`, manual
-//    dimensions and text annotations. Every v3 field decodes to a default, so
-//    v1/v2 pages load unchanged. Ordinary pages keep projecting raw body
-//    transforms; only pages that ask for assembly mode project placed
-//    instances (shared bodies and independent copies) with their exploded
-//    view offsets. Paper/scale/title remain page data in both modes.
+//    dimensions and text annotations; v4 adds a shared-sheet `sheetViews`
+//    list (per-view kind/scale/offset/projection alignment, section/detail
+//    windows) and view-scoped, kernel-face-linked dimensions. Every v4 field
+//    decodes to a default, so v1/v2/v3 pages load unchanged. Ordinary pages
+//    keep projecting raw body transforms; only pages that ask for assembly
+//    mode project placed instances (shared bodies and independent copies)
+//    with their exploded view offsets. Paper/scale/title remain page data in
+//    both modes.
+//  * v4 is a drawing-JSON schema floor only; the `.floecad` package format is
+//    unchanged and no App version is encoded here. A multi-view page leaves
+//    its page-level `sourceBodyIDs` empty and stores the real filter on each
+//    view, so an older v3 reader cannot show one bare projection as a
+//    complete sheet.
+//  * Section honesty (E13): a section view whose sources include a mesh-only
+//    body or a missing body/instance is marked `sectionComplete:false` and
+//    `outputBlocked:true`; `exportData` refuses it with `incomplete_section`
+//    instead of emitting a partial section as a complete drawing. This is
+//    not E12 hidden-line classification and does not claim E14 hatching.
 //  * Export layers: GEOMETRY (outline/edges/section), DIMENSIONS,
 //    CENTERLINES, ANNOTATIONS (manual dimensions/balloons/text), BOM (sheet
 //    table) and TITLE (sheet frame + title block + text). DXF is R12 ASCII,
@@ -82,8 +95,14 @@ public final class CADDrawingService {
         case "updatePage": return updatePageAction(args)
         case "removePage": return removePageAction(args)
         case "standardSheet": return standardSheetAction(args)
+        case "multiViewSheet": return multiViewSheetAction(args)
+        case "addView": return addViewAction(args)
+        case "updateView": return updateViewAction(args)
+        case "removeView": return removeViewAction(args)
+        case "layoutViews": return layoutViewsAction(args)
         case "project": return projectAction(args)
         case "dimensions": return dimensionsAction(args)
+        case "dimensionCandidates": return dimensionCandidatesAction(args)
         case "export": return exportAction(args)
         case "assemblySheet": return assemblySheetAction(args)
         case "setBOM": return setBOMAction(args)
@@ -135,6 +154,18 @@ public final class CADDrawingService {
             throw CADDocumentError(code: "unknown_page", message: "No drawing page with that id.")
         }
         let projection = projectPage(page)
+        if projection.outputBlocked || projection.sectionIncomplete
+            || projection.sectionCoverage.contains(where: { !$0.included }) {
+            let missingCount = projection.missing.count + projection.missingInstances.count
+            let meshOnly = projection.sectionCoverage.filter { !$0.analyticBRep }.count
+            let detail = meshOnly > 0
+                ? "\(meshOnly) source(s) have no analytic B-rep"
+                : "\(max(missingCount, 1)) source(s) are missing"
+            throw CADDocumentError(
+                code: "incomplete_section",
+                message: "This page's section is incomplete: \(detail). Vector output is blocked "
+                    + "rather than presenting a partial section as a complete drawing.")
+        }
         let graphics = renderGraphics(page: page, projection: projection)
         switch format.lowercased() {
         case "pdf": return try pdfData(page: page, graphics: graphics)
@@ -164,6 +195,10 @@ public final class CADDrawingService {
             let missing = live.sources.filter(\.missing).map(\.bodyID)
             row["stale"] = page.isStale(against: live)
             row["outputMatches"] = !page.isStale(against: live)
+            row["viewCount"] = page.effectiveSheetViews.count
+            row["isMultiView"] = page.isMultiViewSheet
+            row["sectionIncomplete"] = pageSectionIncomplete(page)
+            row["outputBlocked"] = pageSectionIncomplete(page)
             if let revision = maxMeshRevision(for: page) { row["liveRevision"] = revision }
             if !missing.isEmpty {
                 row["missingBodyIDs"] = missing.map(\.uuidString)
@@ -204,6 +239,228 @@ public final class CADDrawingService {
                 "dimensionBindingIssues": manual.issues]
     }
 
+    /// Read-only candidates for a linked dimension: cylindrical kernel faces
+    /// whose axis is parallel to the view. Each row carries the exact
+    /// `reference` object `addDimension.feature` accepts. Visibility is NOT
+    /// classified (that is E12 hidden-line scope); the note says so.
+    private func dimensionCandidatesAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let pageID = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let page = set.pages.first(where: { $0.id == pageID }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        let requestedViewID = uuidValue(args["viewID"]) ?? uuidValue(args["viewId"])
+        let views = page.effectiveSheetViews.filter { item in
+            requestedViewID.map { id in id == item.id } ?? true
+        }
+        guard !views.isEmpty else {
+            return fail("unknown_view", "viewID does not reference a view on this page.")
+        }
+        let projection = projectPage(page)
+        let assembly = loadAssemblyValue()
+        var candidates: [[String: Any]] = []
+        var notes: [String] = []
+        for view in views {
+            guard let plane = plane(for: page, view: view) else { continue }
+            let projectionOffset = projection.views.first {
+                $0.view.id == view.id
+            }?.offset ?? .zero
+            let resolved = projectionSources(for: page, sourceBodyIDs: view.sourceBodyIDs)
+            var viewHasAmbiguousAuthorship = false
+            for source in resolved.sources {
+                guard let brep = source.body.brep else { continue }
+                let sourceBodyID: UUID
+                if let instanceID = source.instanceID,
+                   let instance = assembly?.instance(instanceID) {
+                    sourceBodyID = effectiveBodyID(instance)
+                } else {
+                    sourceBodyID = source.body.id.raw
+                }
+                for face in OCCTKernel.faceInfo(brep) {
+                    guard let signature = face.signature,
+                          case let .cylindrical(radius) = signature.kind else { continue }
+                    let worldAxis = simd_normalize(
+                        source.body.transform.rotation.act(signature.normal))
+                    guard abs(simd_dot(worldAxis, plane.normal)) >= 0.995 else { continue }
+                    let worldCentroid = source.body.transform.applying(to: signature.centroid)
+                    let local = plane.toLocal(worldCentroid) * view.scale
+                    let sheet = local + projectionOffset
+                    var reference: [String: Any] = [
+                        "kind": "cylindricalFace",
+                        "bodyID": sourceBodyID.uuidString,
+                        "instanceID": (source.instanceID?.uuidString as Any?) ?? (NSNull() as Any),
+                        "anchor": [
+                            "centroid": vectorPayload(signature.centroid),
+                            "direction": vectorPayload(signature.normal),
+                            "radiusMM": radius,
+                            "toleranceMM": 0.5,
+                        ],
+                        "sourceRevision": source.body.meshRevision,
+                    ]
+                    switch featureProvenance(
+                        bodyID: sourceBodyID, radius: radius,
+                        centroid: signature.centroid, normal: signature.normal,
+                        world: body(for: sourceBodyID)?.transform ?? source.body.transform) {
+                    case .unique(let featureID, let sketchID, let entityID):
+                        reference["featureID"] = featureID.uuidString
+                        reference["sketchID"] = sketchID.uuidString
+                        reference["sketchEntityID"] = entityID.uuidString
+                    case .ambiguous:
+                        // Structured ambiguity: name no author and say why.
+                        // The caller must re-select an explicit
+                        // featureID/sketchID/sketchEntityID, which
+                        // resolveFeatureFace then validates against the live
+                        // model — never adopt the newest/first similar one.
+                        reference["provenanceAmbiguity"] = true
+                        viewHasAmbiguousAuthorship = true
+                    case .none:
+                        // An unresolved author may also be an unsupported
+                        // native feature, so do not label it as imported.
+                        reference["provenanceState"] = "geometryOnly"
+                    }
+                    var row: [String: Any] = [
+                        "viewID": view.id.uuidString,
+                        "viewName": view.name,
+                        "kind": view.kind.rawValue,
+                        "bodyID": sourceBodyID.uuidString,
+                        "bodyName": source.name,
+                        "faceIndex": face.index,
+                        "radiusMM": radius,
+                        "center": pointPayload(local),
+                        "sheetCenter": pointPayload(sheet),
+                        "radiusInView": radius * view.scale,
+                        "reference": reference,
+                    ]
+                    if let instanceID = source.instanceID {
+                        row["instanceID"] = instanceID.uuidString
+                    }
+                    candidates.append(row)
+                }
+            }
+            if page.sheetViews != nil {
+                notes.append("View \(view.name): cylindrical faces parallel to the view; "
+                             + "hidden-line visibility is not classified (E12).")
+            }
+            if viewHasAmbiguousAuthorship {
+                notes.append("View \(view.name): a cylindrical face here is authored by more "
+                             + "than one feature; the candidates name no single author. "
+                             + "Re-select an explicit featureID/sketchID/sketchEntityID — "
+                             + "it is validated against the model before it is used.")
+            }
+        }
+        return ["ok": true, "pageID": pageID.uuidString,
+                "viewID": (requestedViewID?.uuidString as Any?) ?? NSNull(),
+                "count": candidates.count,
+                "candidates": candidates,
+                "notes": notes]
+    }
+
+    /// Whether `node` writes (produces, boolean-targets, or tools) `target`.
+    /// Shared by provenance capture and the linked-dimension identity gate.
+    private static func featureNode(_ node: FeatureNode, writesBody target: BodyID) -> Bool {
+        if node.outputBodyIDs.contains(target) { return true }
+        switch node.kind {
+        case let .extrude(_, _, _, _, boolean, _),
+             let .draftExtrude(_, _, _, _, _, boolean):
+            return boolean.resolvedTargets.contains { $0.bodyID == target }
+        case let .revolve(_, _, _, _, boolean):
+            return boolean.resolvedTargets.contains { $0.bodyID == target }
+        case let .sweep(_, _, _, boolean, _):
+            return boolean.resolvedTargets.contains { $0.bodyID == target }
+        case let .loft(_, boolean):
+            return boolean.resolvedTargets.contains { $0.bodyID == target }
+        case let .boolean(_, body, tools):
+            return body.bodyID == target || tools.contains { $0.bodyID == target }
+        case let .hole(body, _, _, _):
+            return body.bodyID == target
+        default:
+            return false
+        }
+    }
+
+    /// Provenance capture outcome for one cylindrical kernel face.
+    private enum ProvenanceCapture {
+        /// Exactly one (feature, sketch, circle entity) triple authored the
+        /// face; safe to capture as the linked dimension's identity.
+        case unique(featureID: UUID, sketchID: UUID, entityID: UUID)
+        /// Several distinct triples match the face; authorship is genuinely
+        /// ambiguous and must be reported so the caller re-selects an
+        /// explicit source instead of adopting the newest/first similar one.
+        case ambiguous
+        /// No eligible circle author was resolved. This includes imported,
+        /// legacy and unsupported authoring paths; no identity is invented.
+        case none
+    }
+
+    /// Provenance only: find the feature/sketch circle that authored a
+    /// cylindrical face. EVERY eligible writer of the body is scanned — not
+    /// just the newest one — because holes are usually boolean-cut into the
+    /// SAME body: a dimension linked to an earlier hole must still capture
+    /// that hole even after later unrelated features exist. A match requires
+    /// the authoring circle's radius and radial position to agree with the
+    /// live kernel face; exactly one matching triple is the author, several
+    /// is structured ambiguity (never resolved by picking the newest or
+    /// first similar circle), none keeps only the geometric anchor. The
+    /// linked dimension's AUTHORITY remains the live face anchor; this
+    /// triple lets the UI/Agent show and diagnose the originating feature
+    /// after a rebuild. Suppressed features cannot author live geometry, so
+    /// they are skipped.
+    private func featureProvenance(bodyID: UUID,
+                                   radius: Double,
+                                   centroid: SIMD3<Double>,
+                                   normal: SIMD3<Double>,
+                                   world: Transform3D)
+        -> ProvenanceCapture {
+        let worldAxis = simd_normalize(world.rotation.act(normal))
+        let worldCentroid = world.applying(to: centroid)
+        let radiusLimit = max(0.25, radius * 0.05)
+        let target = BodyID(raw: bodyID)
+        var match: (featureID: UUID, sketchID: UUID, entityID: UUID)?
+        for node in document.session.document.features.nodes
+        where !node.suppressed
+            && Self.featureNode(node, writesBody: target)
+            && !node.referencedSketchIDs.isEmpty {
+            for sketchID in node.referencedSketchIDs {
+                guard let sketch = document.session.document.sketches.first(where: { $0.id == sketchID }) else {
+                    continue
+                }
+                for entity in sketch.entities {
+                    guard case let .circle(entityID, center, entityRadius) = entity,
+                          abs(entityRadius - radius) <= radiusLimit else { continue }
+                    let sketchCenter = sketch.plane.toWorld(center)
+                    let delta = sketchCenter - worldCentroid
+                    let radial = delta - simd_dot(delta, worldAxis) * worldAxis
+                    guard simd_length(radial) <= max(1.0, radius * 0.75) else { continue }
+                    let candidate = (featureID: node.id.raw,
+                                     sketchID: sketchID.raw,
+                                     entityID: entityID)
+                    guard let existing = match else {
+                        match = candidate
+                        continue
+                    }
+                    // The same triple surfacing twice is one author; a
+                    // DIFFERENT triple (another feature, sketch or circle)
+                    // is real ambiguity, not a tie-break by recency.
+                    if existing.featureID != candidate.featureID
+                        || existing.sketchID != candidate.sketchID
+                        || existing.entityID != candidate.entityID {
+                        return .ambiguous
+                    }
+                }
+            }
+        }
+        guard let match else { return .none }
+        return .unique(featureID: match.featureID,
+                       sketchID: match.sketchID,
+                       entityID: match.entityID)
+    }
+
     private func projectAction(_ args: [String: Any]) -> [String: Any] {
         let set: CADDrawingSet
         switch loadSet() {
@@ -224,7 +481,7 @@ public final class CADDrawingService {
         // informational max meshRevision.
         var mutated = false
         let live = liveFingerprint(for: page)
-        let hasGeometry = !page.sourceBodyIDs.isEmpty
+        let hasGeometry = !page.effectiveSourceBodyIDs.isEmpty
             || !(live.instances ?? []).isEmpty
         if live.sources.allSatisfy({ !$0.missing }), hasGeometry {
             let revision = maxMeshRevision(for: page)
@@ -278,6 +535,18 @@ public final class CADDrawingService {
         }
         guard let index = updated.pages.firstIndex(where: { $0.id == id }) else {
             return fail("unknown_page", "No drawing page with that id.")
+        }
+        if updated.pages[index].isMultiViewSheet {
+            let viewFields: Set<String> = [
+                "kind", "bodyIDs", "sourceBodyIDs", "scale", "viewNormal", "viewUp",
+                "sectionOrigin", "sectionNormal", "detailOrigin", "detailSizeMM",
+                "assemblyMode", "explodedViewID", "explodedViewName",
+            ]
+            if viewFields.contains(where: { args.keys.contains($0) }) {
+                return fail("multi_view_page",
+                            "This is a shared-sheet page; edit its views with addView/updateView "
+                            + "and its annotations with viewID, not with page-level view fields.")
+            }
         }
         switch buildPage(args: args, existing: updated.pages[index]) {
         case .failure(let error):
@@ -339,6 +608,600 @@ public final class CADDrawingService {
             "createdIDs": sheet.pages.map(\.id.uuidString),
             "pages": sheet.pages.map(pagePayload),
         ]
+    }
+
+    // MARK: - Shared-sheet multi-view
+
+    /// Create ONE page carrying front/top/side/section views. The views share
+    /// the page paper and title block; each owns its scale/placement and a
+    /// projection-alignment reference. Page-level `sourceBodyIDs` stays empty
+    /// (a v3 reader then cannot show a bare front view as the whole sheet).
+    private func multiViewSheetAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        var updated = set
+        guard updated.pages.count < Self.maxPages else {
+            return fail("too_many_pages", "A drawing set is bounded to \(Self.maxPages) pages.")
+        }
+        var bodyIDs: [UUID] = []
+        if let raw = args["bodyIDs"] ?? args["sourceBodyIDs"] ?? args["bodyID"] {
+            let strings: [String]
+            if let one = raw as? String { strings = [one] }
+            else if let list = raw as? [String] { strings = list }
+            else { return fail("bad_body_ids", "bodyIDs must be an array of body UUID strings.") }
+            for string in strings {
+                guard let id = UUID(uuidString: string) else {
+                    return fail("bad_body_ids", "bodyIDs must be body UUID strings.")
+                }
+                guard body(for: id) != nil else {
+                    return fail("unknown_body", "bodyIDs must all reference live document bodies.")
+                }
+                bodyIDs.append(id)
+            }
+            guard bodyIDs.count <= Self.maxSourceBodies else {
+                return fail("too_many_bodies",
+                            "A page is bounded to \(Self.maxSourceBodies) source bodies.")
+            }
+            guard Set(bodyIDs).count == bodyIDs.count else {
+                return fail("duplicate_body", "bodyIDs must not repeat.")
+            }
+        }
+        var assemblyMode = boolValue(args["assemblyMode"]) ?? false
+        var explodedViewID: UUID?
+        if let raw = args["explodedViewID"], !(raw is NSNull) {
+            guard let id = uuidValue(raw),
+                  let assembly = loadAssemblyValue(),
+                  assembly.explodedView(id) != nil else {
+                return fail("unknown_exploded_view",
+                            "explodedViewID does not reference a stored exploded view.")
+            }
+            explodedViewID = id
+            assemblyMode = true
+        }
+        if assemblyMode && bodyIDs.isEmpty {
+            guard let assembly = loadAssemblyValue(),
+                  assembly.occurrences(includeHidden: false).contains(where: { $0.isDrawablePart }) else {
+                return fail("empty_assembly",
+                            "Place assembly instances before creating an assembly drawing sheet.")
+            }
+        }
+        guard assemblyMode || !bodyIDs.isEmpty else {
+            return fail("missing_body",
+                        "multiViewSheet needs bodyIDs (or assemblyMode with placed instances).")
+        }
+        var scale = 1.0
+        if let raw = args["scale"] {
+            guard let value = doubleValue(raw), value.isFinite, value > 0, value <= 1000 else {
+                return fail("bad_scale", "scale must be a finite number in (0, 1000].")
+            }
+            scale = value
+        }
+        var paper = CADPaperSize.a3
+        if let raw = args["paper"] {
+            guard let name = raw as? String, let parsed = CADPaperSize(rawValue: name) else {
+                return fail("unknown_paper",
+                            "paper must be a4, a3, a2, a1, a0, letter, tabloid or custom.")
+            }
+            paper = parsed
+        }
+        let sectionNormal: SIMD3<Double>
+        if let raw = args["sectionNormal"] {
+            guard let vector = vector3(raw), simd_length(vector) > 1e-9 else {
+                return fail("bad_section_normal", "sectionNormal must be a non-zero finite [x,y,z].")
+            }
+            sectionNormal = simd_normalize(vector)
+        } else if let derived = derivedSectionNormal(bodyIDs: bodyIDs,
+                                                     assemblyMode: assemblyMode,
+                                                     explodedViewID: explodedViewID) {
+            sectionNormal = derived
+        } else {
+            return fail("missing_section_plane",
+                        "Could not derive a section normal from the selected sources; "
+                        + "pass sectionNormal and sectionOrigin.")
+        }
+        let sectionOrigin: SIMD3<Double>
+        if let raw = args["sectionOrigin"] {
+            guard let vector = vector3(raw) else {
+                return fail("bad_section_origin", "sectionOrigin must be a finite [x,y,z].")
+            }
+            sectionOrigin = vector
+        } else {
+            guard let origin = derivedSectionOrigin(bodyIDs: bodyIDs,
+                                                    assemblyMode: assemblyMode,
+                                                    explodedViewID: explodedViewID) else {
+                return fail("missing_section_plane",
+                            "Could not derive a section plane from the selected sources; "
+                            + "pass sectionOrigin and sectionNormal.")
+            }
+            sectionOrigin = origin
+        }
+        let title = (args["title"] as? String) ?? document.name
+        let viewName = explodedViewID.flatMap { loadAssemblyValue()?.explodedView($0)?.name }
+        let sheet = CADDrawingSet.multiViewSheet(
+            bodyIDs: bodyIDs, title: title, scale: scale, paper: paper,
+            sectionOrigin: sectionOrigin, sectionNormal: sectionNormal,
+            assemblyMode: assemblyMode, explodedViewID: explodedViewID,
+            explodedViewName: viewName)
+        let replace = boolValue(args["replace"]) ?? false
+        var pages = replace ? [] : updated.pages
+        pages.append(contentsOf: sheet.pages)
+        guard pages.count <= Self.maxPages else {
+            return fail("too_many_pages", "A drawing set is bounded to \(Self.maxPages) pages.")
+        }
+        updated.pages = pages
+        // Place the free front view against the real projected bounds so the
+        // sheet is usable immediately; the aligned views derive from it.
+        if let pageIndex = updated.pages.firstIndex(where: { $0.id == sheet.pages[0].id }) {
+            var page = updated.pages[pageIndex]
+            if let frontIndex = page.effectiveSheetViews.firstIndex(where: {
+                $0.alignment.placement == .free
+            }) {
+                let preview = projectSheetPreview(page)
+                let frontID = page.effectiveSheetViews[frontIndex].id
+                if let bounds = preview.views.first(where: { $0.view.id == frontID })?.localBounds,
+                   var views = page.sheetViews, frontIndex < views.count {
+                    views[frontIndex].offset = SIMD2(30 - bounds.min.x, 150 - bounds.min.y)
+                    page.sheetViews = views
+                }
+            }
+            updated.pages[pageIndex] = page
+        }
+        if let failure = persist(updated) { return failure }
+        guard let created = updated.pages.last else {
+            return fail("page_failed", "The multi-view sheet page could not be created.")
+        }
+        return ["ok": true, "mutated": true,
+                "pageCount": updated.pages.count,
+                "page": pagePayload(created),
+                "createdViewIDs": created.effectiveSheetViews.map(\.id.uuidString),
+                "createdIDs": [created.id.uuidString]]
+    }
+
+    /// Derive a mid-model section origin from the current sources. The plane
+    /// is centred on the combined world bounds, which keeps a new section
+    /// inside the solid for ordinary parts. Callers can override both fields.
+    private func sectionSourceBodies(bodyIDs: [UUID],
+                                     assemblyMode: Bool,
+                                     explodedViewID: UUID?) -> [Body] {
+        if assemblyMode, let assembly = loadAssemblyValue() {
+            let occurrences = assembly.occurrences(viewID: explodedViewID, includeHidden: false)
+                .filter { $0.isDrawablePart }
+            var bodies: [Body] = []
+            for occurrence in occurrences {
+                guard let sourceID = occurrence.effectiveBodyID,
+                      let source = body(for: sourceID),
+                      let placement = occurrence.explodedWorldTransform ?? occurrence.worldTransform,
+                      placement.isPlaceable else { continue }
+                var placed = source
+                placed.transform = placement.placement3D().composed(onto: source.transform)
+                bodies.append(placed)
+            }
+            return bodies
+        }
+        return bodyIDs.compactMap { body(for: $0) }
+    }
+
+    private func derivedSectionOrigin(bodyIDs: [UUID],
+                                      assemblyMode: Bool,
+                                      explodedViewID: UUID?) -> SIMD3<Double>? {
+        let bodies = sectionSourceBodies(bodyIDs: bodyIDs,
+                                         assemblyMode: assemblyMode,
+                                         explodedViewID: explodedViewID)
+        guard let bounds = MeasureKit.boundingBox(bodies: bodies) else { return nil }
+        return (bounds.min + bounds.max) / 2
+    }
+
+    /// Default a new sheet's section normal along the smallest world extent:
+    /// for a plate that cuts through the thickness and shows the largest face
+    /// (and its bores). Callers can always override sectionNormal explicitly.
+    private func derivedSectionNormal(bodyIDs: [UUID],
+                                      assemblyMode: Bool,
+                                      explodedViewID: UUID?) -> SIMD3<Double>? {
+        let bodies = sectionSourceBodies(bodyIDs: bodyIDs,
+                                         assemblyMode: assemblyMode,
+                                         explodedViewID: explodedViewID)
+        guard let bounds = MeasureKit.boundingBox(bodies: bodies) else { return nil }
+        let extents = bounds.max - bounds.min
+        if extents.y <= extents.x && extents.y <= extents.z { return SIMD3(0, 1, 0) }
+        if extents.z <= extents.x && extents.z <= extents.y { return SIMD3(0, 0, 1) }
+        return SIMD3(1, 0, 0)
+    }
+
+    private func addViewAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let pageID = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let pageIndex = set.pages.firstIndex(where: { $0.id == pageID }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var updated = set
+        var page = updated.pages[pageIndex]
+        var views = page.effectiveSheetViews
+        guard views.count < 16 else {
+            return fail("too_many_views", "A sheet is bounded to 16 views.")
+        }
+        switch buildSheetView(args: args, existing: nil, page: page, views: views) {
+        case .failure(let error):
+            return fail(error.code, error.message)
+        case .success(let view):
+            views.append(view)
+            if page.sheetViews == nil { page.sourceBodyIDs = [] }
+            if view.kind == .exploded { page.assemblyMode = true }
+            page.sheetViews = views
+            updated.pages[pageIndex] = page
+            if let failure = persist(updated) { return failure }
+            return ["ok": true, "mutated": true,
+                    "page": pagePayload(page),
+                    "view": viewPayload(view)]
+        }
+    }
+
+    private func updateViewAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let pageID = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let pageIndex = set.pages.firstIndex(where: { $0.id == pageID }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var updated = set
+        var page = updated.pages[pageIndex]
+        var views = page.effectiveSheetViews
+        guard let viewID = uuidValue(args["viewID"]) ?? uuidValue(args["viewId"]),
+              let viewIndex = views.firstIndex(where: { $0.id == viewID }) else {
+            return fail("unknown_view", "No sheet view with that id on this page.")
+        }
+        switch buildSheetView(args: args, existing: views[viewIndex],
+                              page: page, views: views) {
+        case .failure(let error):
+            return fail(error.code, error.message)
+        case .success(let view):
+            views[viewIndex] = view
+            if view.kind == .exploded { page.assemblyMode = true }
+            page.sheetViews = views
+            updated.pages[pageIndex] = page
+            if let failure = persist(updated) { return failure }
+            return ["ok": true, "mutated": true,
+                    "page": pagePayload(page),
+                    "view": viewPayload(view)]
+        }
+    }
+
+    private func removeViewAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let pageID = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let pageIndex = set.pages.firstIndex(where: { $0.id == pageID }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var updated = set
+        var page = updated.pages[pageIndex]
+        var views = page.effectiveSheetViews
+        guard let viewID = uuidValue(args["viewID"]) ?? uuidValue(args["viewId"]) else {
+            return fail("bad_view_id", "viewID must be a sheet-view UUID string.")
+        }
+        guard views.contains(where: { $0.id == viewID }) else {
+            return fail("unknown_view", "No sheet view with that id on this page.")
+        }
+        guard views.count > 1 else {
+            return fail("last_view", "A sheet needs at least one view; remove the page instead.")
+        }
+        let danglingAnnotations = page.manualDimensions.filter { $0.viewID == viewID }.count
+            + page.balloons.filter { $0.viewID == viewID }.count
+            + page.annotations.filter { $0.viewID == viewID }.count
+        if danglingAnnotations > 0 && !(boolValue(args["removeAnnotations"]) ?? false) {
+            return fail("view_has_annotations",
+                        "This view still owns \(danglingAnnotations) annotation(s). "
+                        + "Move or remove them, or pass removeAnnotations=true.")
+        }
+        page.manualDimensions.removeAll { $0.viewID == viewID }
+        page.balloons.removeAll { $0.viewID == viewID }
+        page.annotations.removeAll { $0.viewID == viewID }
+        views.removeAll { $0.id == viewID }
+        // Re-home alignments that referenced the removed view rather than
+        // leaving a permanently unresolved link.
+        for index in views.indices where views[index].alignment.referenceViewID == viewID {
+            views[index].alignment.referenceViewID = nil
+            views[index].alignment.placement = .free
+        }
+        page.sheetViews = views
+        updated.pages[pageIndex] = page
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true,
+                "page": pagePayload(page),
+                "removedViewID": viewID.uuidString,
+                "removedAnnotationCount": danglingAnnotations]
+    }
+
+    /// Recompute the sheet's base layout from live projected bounds. The first
+    /// non-section view is the free anchor; the other standard views get their
+    /// projection alignment relative to it. Explicit offsets become nudges of
+    /// zero so the sheet snaps back to a coherent arrangement.
+    private func layoutViewsAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let pageID = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let pageIndex = set.pages.firstIndex(where: { $0.id == pageID }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var updated = set
+        var page = updated.pages[pageIndex]
+        var views = page.effectiveSheetViews
+        guard views.count > 1 else {
+            return fail("not_multi_view", "layoutViews needs a page with several sheet views.")
+        }
+        var margin = 25.0
+        if let raw = args["marginMM"] {
+            guard let value = doubleValue(raw), value.isFinite, value >= 0, value <= 200 else {
+                return fail("bad_margin", "marginMM must be a finite number in [0, 200].")
+            }
+            margin = value
+        }
+        var gap = 14.0
+        if let raw = args["gapMM"] {
+            guard let value = doubleValue(raw), value.isFinite, value >= 0, value <= 200 else {
+                return fail("bad_gap", "gapMM must be a finite number in [0, 200].")
+            }
+            gap = value
+        }
+        let preview = projectSheetPreview(page)
+        guard let anchorIndex = views.firstIndex(where: { $0.kind != .section }) else {
+            return fail("no_anchor_view", "A sheet layout needs a non-section anchor view.")
+        }
+        let anchorID = views[anchorIndex].id
+        guard let anchorBounds = preview.views.first(where: { $0.view.id == anchorID })?.localBounds else {
+            return fail("empty_view", "The anchor view projected no geometry.")
+        }
+        views[anchorIndex].alignment = CADDrawingViewAlignment()
+        views[anchorIndex].offset = SIMD2(margin - anchorBounds.min.x,
+                                          150 - anchorBounds.min.y)
+        for index in views.indices where index != anchorIndex {
+            views[index].alignment.referenceViewID = anchorID
+            views[index].alignment.gapMM = gap
+            let placement: CADDrawingViewPlacement
+            switch views[index].kind {
+            case .top: placement = .above
+            case .side, .detail, .iso, .exploded: placement = .right
+            case .section, .front: placement = .below
+            }
+            views[index].alignment.placement = placement
+            views[index].offset = .zero
+        }
+        page.sheetViews = views
+        updated.pages[pageIndex] = page
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true,
+                "page": pagePayload(page),
+                "views": page.effectiveSheetViews.map { viewPayload($0) }]
+    }
+
+    /// Build/validate one view. Omitted fields keep the existing value.
+    private func buildSheetView(args: [String: Any],
+                                existing: CADDrawingSheetView?,
+                                page: CADDrawingPage,
+                                views: [CADDrawingSheetView])
+        -> Result<CADDrawingSheetView, CADDrawingServiceError> {
+        let kind: CADDrawingViewKind
+        if let raw = args["kind"] {
+            guard let name = raw as? String, let parsed = CADDrawingViewKind(rawValue: name) else {
+                return .failure(CADDrawingServiceError(
+                    code: "unknown_kind",
+                    message: "kind must be front, top, side, iso, section, detail or exploded."))
+            }
+            kind = parsed
+        } else if let existing {
+            kind = existing.kind
+        } else {
+            return .failure(CADDrawingServiceError(
+                code: "missing_kind", message: "addView needs a kind."))
+        }
+        var scale = existing?.scale ?? page.scale
+        if let raw = args["scale"] {
+            guard let value = doubleValue(raw), value.isFinite, value > 0, value <= 1000 else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_scale", message: "scale must be a finite number in (0, 1000]."))
+            }
+            scale = value
+        }
+        var offset = existing?.offset ?? .zero
+        if let raw = args["nudge"] {
+            guard let parsed = point2(raw) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_offset", message: "nudge must be a finite [x,y] point."))
+            }
+            offset += parsed
+        }
+        var clearsAlignment = false
+        if let raw = args["offset"] {
+            guard let parsed = point2(raw) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_offset", message: "offset must be a finite [x,y] point."))
+            }
+            offset = parsed
+            clearsAlignment = args["alignmentPlacement"] == nil
+        }
+        var viewNormal = existing?.viewNormal ?? defaultViewNormal(for: kind)
+        if let raw = args["viewNormal"] {
+            guard let vector = vector3(raw), simd_length(vector) > 1e-9 else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_view_normal", message: "viewNormal must be a non-zero finite [x,y,z]."))
+            }
+            viewNormal = simd_normalize(vector)
+        }
+        var viewUp = existing?.viewUp ?? SIMD3<Double>(0, 1, 0)
+        if let raw = args["viewUp"] {
+            guard let vector = vector3(raw) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_view_up", message: "viewUp must be a finite [x,y,z]."))
+            }
+            viewUp = simd_length(vector) > 1e-9 ? simd_normalize(vector)
+                                              : SIMD3<Double>(0, 1, 0)
+        }
+        var sectionOrigin = existing?.kind == .section ? existing?.sectionOrigin : nil
+        var sectionNormal = existing?.kind == .section ? existing?.sectionNormal : nil
+        var detailOrigin = existing?.kind == .detail ? existing?.detailOrigin : nil
+        var detailSizeMM = existing?.kind == .detail ? existing?.detailSizeMM : nil
+        if let raw = args["sectionOrigin"] {
+            guard let vector = vector3(raw) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_section_origin", message: "sectionOrigin must be a finite [x,y,z]."))
+            }
+            sectionOrigin = vector
+        }
+        if let raw = args["sectionNormal"] {
+            guard let vector = vector3(raw), simd_length(vector) > 1e-9 else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_section_normal", message: "sectionNormal must be a non-zero finite [x,y,z]."))
+            }
+            sectionNormal = simd_normalize(vector)
+        }
+        if kind == .section {
+            guard sectionNormal != nil, sectionOrigin != nil else {
+                return .failure(CADDrawingServiceError(
+                    code: "missing_section_plane",
+                    message: "section views need sectionOrigin and sectionNormal."))
+            }
+            if args["viewNormal"] == nil { viewNormal = sectionNormal! }
+        }
+        if kind == .detail {
+            if let raw = args["detailOrigin"] {
+                guard let vector = vector3(raw) else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_detail_origin", message: "detailOrigin must be a finite [x,y,z]."))
+                }
+                detailOrigin = vector
+            }
+            if let raw = args["detailSizeMM"] {
+                guard let size = sizeValue(raw), size.width > 0, size.height > 0 else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_detail_size",
+                        message: "detailSizeMM must be a positive number or [width, height]."))
+                }
+                detailSizeMM = SIMD2(size.width, size.height)
+            }
+            guard detailOrigin != nil, detailSizeMM != nil else {
+                return .failure(CADDrawingServiceError(
+                    code: "missing_detail_window",
+                    message: "detail views need detailOrigin and detailSizeMM."))
+            }
+        }
+        var sourceBodyIDs = existing?.sourceBodyIDs
+        if sourceBodyIDs == nil, existing == nil,
+           args["bodyIDs"] == nil, args["sourceBodyIDs"] == nil {
+            sourceBodyIDs = page.effectiveSheetViews.first?.sourceBodyIDs
+        }
+        if let raw = args["bodyIDs"] ?? args["sourceBodyIDs"] {
+            let strings: [String]
+            if let list = raw as? [String] { strings = list }
+            else if let one = raw as? String { strings = [one] }
+            else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_body_ids", message: "bodyIDs must be an array of body UUID strings."))
+            }
+            var ids: [UUID] = []
+            for string in strings {
+                guard let id = UUID(uuidString: string), body(for: id) != nil else {
+                    return .failure(CADDrawingServiceError(
+                        code: "unknown_body", message: "bodyIDs must all reference live document bodies."))
+                }
+                ids.append(id)
+            }
+            guard ids.count <= Self.maxSourceBodies else {
+                return .failure(CADDrawingServiceError(
+                    code: "too_many_bodies",
+                    message: "A view is bounded to \(Self.maxSourceBodies) source bodies."))
+            }
+            guard Set(ids).count == ids.count else {
+                return .failure(CADDrawingServiceError(
+                    code: "duplicate_body", message: "bodyIDs must not repeat."))
+            }
+            sourceBodyIDs = ids.isEmpty ? nil : ids
+        }
+        var alignment = existing?.alignment ?? CADDrawingViewAlignment()
+        if clearsAlignment {
+            alignment = CADDrawingViewAlignment()
+        }
+        if let raw = args["alignmentPlacement"] {
+            guard let name = raw as? String,
+                  let placement = CADDrawingViewPlacement(rawValue: name) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_alignment",
+                    message: "alignmentPlacement must be free, above, below, left or right."))
+            }
+            alignment.placement = placement
+            if placement == .free { alignment.referenceViewID = nil }
+        }
+        if args.keys.contains("alignmentReferenceID") {
+            let raw = args["alignmentReferenceID"]
+            if raw == nil || raw is NSNull {
+                alignment.referenceViewID = nil
+            } else {
+                guard let id = uuidValue(raw) else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_alignment",
+                        message: "alignmentReferenceID must be a sheet-view UUID."))
+                }
+                if let existingID = existing?.id, existingID == id {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_alignment", message: "A view cannot align to itself."))
+                }
+                guard views.contains(where: { $0.id == id }) else {
+                    return .failure(CADDrawingServiceError(
+                        code: "unknown_view",
+                        message: "alignmentReferenceID does not reference a view on this page."))
+                }
+                alignment.referenceViewID = id
+                if alignment.placement == .free { alignment.placement = .above }
+            }
+        }
+        if alignment.placement != .free && alignment.referenceViewID == nil {
+            return .failure(CADDrawingServiceError(
+                code: "missing_alignment_reference",
+                message: "An aligned view needs alignmentReferenceID."))
+        }
+        if let raw = args["gapMM"] {
+            guard let value = doubleValue(raw), value.isFinite, value >= 0, value <= 500 else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_gap", message: "gapMM must be a finite number in [0, 500]."))
+            }
+            alignment.gapMM = value
+        }
+        var name = existing?.name ?? kind.title
+        if let raw = args["name"] {
+            guard let value = raw as? String, !value.isEmpty else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_name", message: "name must be a non-empty string."))
+            }
+            name = value
+        }
+        return .success(CADDrawingSheetView(
+            id: existing?.id ?? UUID(), name: name, kind: kind, scale: scale,
+            offset: offset, viewNormal: viewNormal, viewUp: viewUp,
+            sectionOrigin: sectionOrigin, sectionNormal: sectionNormal,
+            detailOrigin: detailOrigin, detailSizeMM: detailSizeMM,
+            sourceBodyIDs: sourceBodyIDs, alignment: alignment))
     }
 
     // MARK: - Export action
@@ -609,6 +1472,15 @@ public final class CADDrawingService {
         guard page.balloons.count < 128 else {
             return fail("too_many_balloons", "A page is bounded to 128 balloons.")
         }
+        let requestedViewID = uuidValue(args["viewID"]) ?? uuidValue(args["viewId"])
+        if page.isMultiViewSheet && requestedViewID == nil {
+            return fail("view_required",
+                        "A multi-view sheet needs viewID so the balloon belongs to one view.")
+        }
+        if let requestedViewID,
+           !page.effectiveSheetViews.contains(where: { $0.id == requestedViewID }) {
+            return fail("unknown_view", "viewID does not reference a view on this page.")
+        }
         let assembly = loadAssemblyValue()
         var itemNumber = intValue(args["itemNumber"]) ?? 0
         var bomEntryID = uuidValue(args["bomEntryID"])
@@ -650,7 +1522,8 @@ public final class CADDrawingService {
             anchor = parsed
         } else {
             anchor = autoBalloonAnchor(instanceID: instance.id,
-                                       page: page, projection: projection)
+                                       page: page, projection: projection,
+                                       viewID: requestedViewID)
         }
         var target: SIMD2<Double>?
         if let raw = args["target"], !(raw is NSNull) {
@@ -666,7 +1539,8 @@ public final class CADDrawingService {
             instanceID: instance.id,
             anchor: anchor,
             target: target,
-            text: args["text"] as? String)
+            text: args["text"] as? String,
+            viewID: requestedViewID)
         page.balloons.append(balloon)
         var updated = set
         updated.pages[index] = page
@@ -783,7 +1657,73 @@ public final class CADDrawingService {
             return fail("unknown_dimension_kind",
                         "kind must be length, angle, radius or diameter.")
         }
+        let requestedViewID = uuidValue(args["viewID"]) ?? uuidValue(args["viewId"])
+        if page.isMultiViewSheet && requestedViewID == nil {
+            return fail("view_required",
+                        "A multi-view sheet needs viewID so the annotation belongs to one view.")
+        }
+        let view: CADDrawingSheetView
+        if let requestedViewID {
+            guard let found = page.effectiveSheetViews.first(where: { $0.id == requestedViewID }) else {
+                return fail("unknown_view", "viewID does not reference a view on this page.")
+            }
+            view = found
+        } else {
+            view = page.effectiveSheetViews[0]
+        }
+        let viewPlane = plane(for: page, view: view)
+        let scale = view.scale
+        let context = ResolvedViewContext(view: view, offset: .zero, plane: viewPlane,
+                                          scale: scale, isLegacy: page.sheetViews == nil)
         let required = kind == .angle ? 3 : 2
+
+        if let rawFeature = args["feature"], !(rawFeature is NSNull) {
+            guard kind == .diameter || kind == .radius else {
+                return fail("unsupported_reference",
+                            "A linked feature dimension supports only diameter or radius; "
+                            + "source-relative length/angle dimensions are not implemented.")
+            }
+            let feature: CADDrawingFeatureReference
+            switch parseFeatureReference(rawFeature, page: page) {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let parsed): feature = parsed
+            }
+            let resolved: ResolvedFeatureFace
+            switch resolveFeatureFace(feature, page: page, context: context) {
+            case .failure(let message):
+                return fail("stale_feature_reference", message)
+            case .success(let face): resolved = face
+            }
+            let direction = SIMD2<Double>(1, 0)
+            let drawingPoints = [resolved.drawingCenter,
+                                 resolved.drawingCenter + direction * resolved.drawingRadius]
+            let value = kind == .diameter ? resolved.radiusMM * 2 : resolved.radiusMM
+            var textPosition: SIMD2<Double>
+            if let raw = args["textPosition"] {
+                guard let parsed = point2(raw) else {
+                    return fail("bad_text_position", "textPosition must be a finite [x,y] point.")
+                }
+                textPosition = parsed
+            } else {
+                textPosition = defaultDimensionTextPosition(kind: kind, points: drawingPoints)
+            }
+            let dimension = CADDrawingManualDimension(
+                id: UUID(), kind: kind, drawingPoints: drawingPoints, value: value,
+                textPosition: textPosition,
+                textOverride: args["text"] as? String, binding: nil,
+                viewID: requestedViewID, feature: feature)
+            page.manualDimensions.append(dimension)
+            var updated = set
+            updated.pages[index] = page
+            if let failure = persist(updated) { return failure }
+            let resolvedRows = resolvedManualDimensions(page: page, projection: projectPage(page))
+            return ["ok": true, "mutated": true,
+                    "dimension": resolvedRows.rows.first {
+                        ($0["id"] as? String) == dimension.id.uuidString
+                    } ?? [:],
+                    "manualDimensions": resolvedRows.rows]
+        }
+
         var drawingPoints: [SIMD2<Double>] = []
         if let raw = args["drawingPoints"] {
             guard let rows = raw as? [[Double]] else {
@@ -820,7 +1760,8 @@ public final class CADDrawingService {
         }
         if modelPoints.isEmpty && drawingPoints.isEmpty {
             return fail("bad_points",
-                        "Provide drawingPoints (page space) or modelPoints with an instance binding.")
+                        "Provide drawingPoints (view space), modelPoints with an instance binding, "
+                        + "or a feature reference.")
         }
         var instance: CADAssemblyInstance?
         var source: Body?
@@ -834,39 +1775,39 @@ public final class CADDrawingService {
             instance = live
             source = body
         }
-        let plane = plane(for: page)
         if !modelPoints.isEmpty, instance == nil {
             return fail("missing_instance",
                         "Body-local modelPoints need an assembly instance frame.")
         }
         if modelPoints.isEmpty {
-            guard let plane else {
-                return fail("bad_view_direction", "The page's view direction is invalid.")
+            guard let viewPlane else {
+                return fail("bad_view_direction", "The view's direction is invalid.")
             }
             guard let instance, let source else {
                 return fail("missing_instance",
                             "A dimension from drawing points must reference an assembly instance; "
-                            + "pass modelPoints with a page-local frame only when bound.")
+                            + "pass modelPoints with a view-local frame only when bound.")
             }
             guard let world = instanceWorldTransform(instance: instance, source: source, page: page) else {
                 return fail("unknown_instance", "The instance transform is not placeable.")
             }
             for point in drawingPoints {
-                guard let local = bodyLocalPointFromDrawing(point, page: page, plane: plane,
-                                                           world: world, source: source) else {
+                guard let local = bodyLocalPointFromDrawing(point, plane: viewPlane,
+                                                           scale: scale, world: world,
+                                                           source: source) else {
                     return fail("bad_points", "A drawing point could not be mapped onto the part.")
                 }
                 modelPoints.append(local)
             }
         } else if drawingPoints.isEmpty {
-            guard let plane, let instance, let source,
+            guard let viewPlane, let instance, let source,
                   let world = instanceWorldTransform(instance: instance, source: source, page: page) else {
                 return fail("bad_points",
-                            "The page view or instance transform cannot project the model points.")
+                            "The view or instance transform cannot project the model points.")
             }
             for point in modelPoints {
-                guard let drawing = drawingPointFromBodyLocal(point, page: page,
-                                                              plane: plane, world: world) else {
+                guard let drawing = drawingPointFromBodyLocal(point, plane: viewPlane,
+                                                              scale: scale, world: world) else {
                     return fail("bad_points", "A model point could not be projected.")
                 }
                 drawingPoints.append(drawing)
@@ -911,7 +1852,8 @@ public final class CADDrawingService {
         let dimension = CADDrawingManualDimension(
             id: UUID(), kind: kind, drawingPoints: drawingPoints, value: value,
             textPosition: textPosition,
-            textOverride: args["text"] as? String, binding: binding)
+            textOverride: args["text"] as? String, binding: binding,
+            viewID: requestedViewID, feature: nil)
         page.manualDimensions.append(dimension)
         var updated = set
         updated.pages[index] = page
@@ -920,6 +1862,72 @@ public final class CADDrawingService {
         return ["ok": true, "mutated": true,
                 "dimension": resolved.rows.first { ($0["id"] as? String) == dimension.id.uuidString } ?? [:],
                 "manualDimensions": resolved.rows]
+    }
+
+    private func parseFeatureReference(_ raw: Any, page: CADDrawingPage)
+        -> Result<CADDrawingFeatureReference, CADDrawingServiceError> {
+        var dict = raw as? [String: Any] ?? [:]
+        if let nested = dict["reference"] as? [String: Any] { dict = nested }
+        if dict["provenanceAmbiguity"] as? Bool == true,
+           uuidValue(dict["featureID"]) == nil
+            || uuidValue(dict["sketchID"]) == nil
+            || uuidValue(dict["sketchEntityID"]) == nil {
+            return .failure(CADDrawingServiceError(
+                code: "ambiguous_feature_reference",
+                message: "Select the source feature, sketch and circle for this dimension."))
+        }
+        guard let bodyID = uuidValue(dict["bodyID"]) else {
+            return .failure(CADDrawingServiceError(
+                code: "bad_feature_reference", message: "feature.bodyID is required."))
+        }
+        guard body(for: bodyID) != nil else {
+            return .failure(CADDrawingServiceError(
+                code: "unknown_body", message: "feature.bodyID must reference a live body."))
+        }
+        let instanceID = uuidValue(dict["instanceID"])
+        if let instanceID, loadAssemblyValue()?.instance(instanceID) == nil {
+            return .failure(CADDrawingServiceError(
+                code: "unknown_instance", message: "feature.instanceID must reference a live instance."))
+        }
+        guard let anchor = dict["anchor"] as? [String: Any],
+              let centroid = vector3(anchor["centroid"]),
+              let direction = vector3(anchor["direction"]),
+              simd_length(direction) > 1e-9 else {
+            return .failure(CADDrawingServiceError(
+                code: "bad_feature_reference",
+                message: "feature.anchor needs a finite centroid and non-zero direction."))
+        }
+        let kind: CADDrawingFeatureKind
+        if let rawKind = dict["kind"] as? String {
+            guard let parsed = CADDrawingFeatureKind(rawValue: rawKind) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_feature_reference",
+                    message: "feature.kind must be cylindricalFace."))
+            }
+            kind = parsed
+        } else {
+            kind = .cylindricalFace
+        }
+        let tolerance = doubleValue(anchor["toleranceMM"]) ?? 0.5
+        guard tolerance.isFinite, tolerance > 0, tolerance <= 10 else {
+            return .failure(CADDrawingServiceError(
+                code: "bad_feature_reference",
+                message: "feature.anchor.toleranceMM must be in (0, 10]."))
+        }
+        let radius = doubleValue(anchor["radiusMM"])
+        let sourceRevision = (dict["sourceRevision"] as? UInt64)
+            ?? (dict["sourceRevision"] as? Int).map { UInt64($0) }
+            ?? (dict["sourceRevision"] as? NSNumber)?.uint64Value
+        return .success(CADDrawingFeatureReference(
+            kind: kind, bodyID: bodyID, instanceID: instanceID,
+            anchor: CADDrawingFeatureAnchor(centroid: centroid,
+                                            direction: simd_normalize(direction),
+                                            radiusMM: radius,
+                                            toleranceMM: tolerance),
+            featureID: uuidValue(dict["featureID"]),
+            sketchID: uuidValue(dict["sketchID"]),
+            sketchEntityID: uuidValue(dict["sketchEntityID"]),
+            sourceRevision: sourceRevision))
     }
 
     private func updateDimensionAction(_ args: [String: Any]) -> [String: Any] {
@@ -1002,6 +2010,20 @@ public final class CADDrawingService {
         guard page.annotations.count < 128 else {
             return fail("too_many_annotations", "A page is bounded to 128 text annotations.")
         }
+        let requestedViewID = uuidValue(args["viewID"]) ?? uuidValue(args["viewId"])
+        if page.isMultiViewSheet && requestedViewID == nil {
+            return fail("view_required",
+                        "A multi-view sheet needs viewID so the annotation belongs to one view.")
+        }
+        let view: CADDrawingSheetView
+        if let requestedViewID {
+            guard let found = page.effectiveSheetViews.first(where: { $0.id == requestedViewID }) else {
+                return fail("unknown_view", "viewID does not reference a view on this page.")
+            }
+            view = found
+        } else {
+            view = page.effectiveSheetViews[0]
+        }
         guard let text = (args["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty, text.count <= 500 else {
             return fail("bad_text", "text must be a non-empty string of at most 500 characters.")
@@ -1022,9 +2044,10 @@ public final class CADDrawingService {
                   let source = body(for: effectiveBodyID(instance)) else {
                 return fail("unknown_instance", "instanceID must reference a live assembly instance.")
             }
-            guard let plane = plane(for: page),
+            guard let plane = plane(for: page, view: view),
                   let world = instanceWorldTransform(instance: instance, source: source, page: page),
-                  let local = bodyLocalPointFromDrawing(position, page: page, plane: plane,
+                  let local = bodyLocalPointFromDrawing(position, plane: plane,
+                                                       scale: view.scale,
                                                        world: world, source: source) else {
                 return fail("bad_position", "The annotation position could not be bound to the part.")
             }
@@ -1034,7 +2057,7 @@ public final class CADDrawingService {
         }
         let annotation = CADDrawingTextAnnotation(
             id: UUID(), text: text, position: position,
-            heightMM: height, binding: binding)
+            heightMM: height, binding: binding, viewID: requestedViewID)
         page.annotations.append(annotation)
         var updated = set
         updated.pages[index] = page
@@ -1073,13 +2096,17 @@ public final class CADDrawingService {
                 return fail("bad_position", "position must be a finite [x,y] drawing point.")
             }
             annotation.position = parsed
+            let view = annotation.viewID.flatMap { id in
+                page.effectiveSheetViews.first(where: { $0.id == id })
+            } ?? page.effectiveSheetViews[0]
             if let binding = annotation.binding,
                let instance = loadAssemblyValue()?.instance(binding.instanceID ?? UUID()),
                let source = binding.bodyID.flatMap({ body(for: $0) })
                     ?? body(for: effectiveBodyID(instance)),
-               let plane = plane(for: page),
+               let plane = plane(for: page, view: view),
                let world = instanceWorldTransform(instance: instance, source: source, page: page),
-               let local = bodyLocalPointFromDrawing(parsed, page: page, plane: plane,
+               let local = bodyLocalPointFromDrawing(parsed, plane: plane,
+                                                     scale: view.scale,
                                                      world: world, source: source) {
                 annotation.binding = CADDrawingBinding(
                     instanceID: instance.id, bodyID: source.id.raw,
@@ -1435,7 +2462,8 @@ public final class CADDrawingService {
             bom: existing?.bom,
             balloons: existing?.balloons ?? [],
             manualDimensions: existing?.manualDimensions ?? [],
-            annotations: existing?.annotations ?? [])
+            annotations: existing?.annotations ?? [],
+            sheetViews: existing?.sheetViews)
         page.customWidthMM = customWidth
         page.customHeightMM = customHeight
         return .success(page)
@@ -1459,12 +2487,14 @@ public final class CADDrawingService {
     /// actual placed instances (base placement + optional exploded offset),
     /// never the raw source-body transforms; ordinary pages keep the previous
     /// body-id behaviour.
-    private func projectionSources(for page: CADDrawingPage) -> ResolvedProjectionSources {
+    private func projectionSources(for page: CADDrawingPage,
+                                   sourceBodyIDs: [UUID]? = nil) -> ResolvedProjectionSources {
         var result = ResolvedProjectionSources()
         let assemblyAware = page.assemblyMode || page.kind == .exploded
             || page.explodedViewID != nil
+        let filterIDs = sourceBodyIDs ?? page.sourceBodyIDs
         guard assemblyAware else {
-            for id in page.sourceBodyIDs {
+            for id in filterIDs {
                 if let body = body(for: id) {
                     result.sources.append(ProjectionSource(instanceID: nil,
                                                            name: body.name,
@@ -1499,7 +2529,7 @@ public final class CADDrawingService {
         result.explodedViewID = view?.id
         result.explodedViewName = view?.name ?? page.explodedViewName
 
-        let filter = Set(page.sourceBodyIDs)
+        let filter = Set(filterIDs)
         let maxInstances = 64
         var occurrences = assembly.occurrences(viewID: view?.id, includeHidden: false)
             .filter { $0.isDrawablePart }
@@ -1556,56 +2586,231 @@ public final class CADDrawingService {
         return result
     }
 
+    /// Project one page. A legacy page (no `sheetViews`) goes through the
+    /// historical single-view path so its payload/coordinates stay identical.
+    /// A v4 shared sheet projects every view, solves its alignment layout and
+    /// merges the views in sheet coordinates.
     private func projectPage(_ page: CADDrawingPage) -> PageProjection {
-        let resolved = projectionSources(for: page)
-        var notes = resolved.notes
-        guard page.scale.isFinite, page.scale > 0 else {
-            notes.append("page scale is invalid; nothing was projected.")
-            return PageProjection(entities: [], notes: notes,
-                                  missing: resolved.missingBodies,
-                                  missingInstances: resolved.missingInstances,
-                                  explodedViewID: resolved.explodedViewID,
-                                  explodedViewName: resolved.explodedViewName)
+        let views = page.effectiveSheetViews
+        if page.sheetViews == nil, views.count == 1 {
+            return projectSingleView(page: page, view: views[0])
         }
-        let header = PageProjection(entities: [], notes: notes,
-                                    missing: resolved.missingBodies,
-                                    missingInstances: resolved.missingInstances,
-                                    explodedViewID: resolved.explodedViewID,
-                                    explodedViewName: resolved.explodedViewName)
-        guard !resolved.sources.isEmpty else { return header }
-        switch page.kind {
+        return projectSheet(page)
+    }
+
+    /// Local bounds only, used by auto-layout before any offset is applied.
+    private func projectSheetPreview(_ page: CADDrawingPage) -> PageProjection {
+        projectSheet(page, applyLayout: false)
+    }
+
+    private func projectSheet(_ page: CADDrawingPage,
+                              applyLayout: Bool = true) -> PageProjection {
+        let views = page.effectiveSheetViews
+        var perView: [CADDrawingViewProjection] = []
+        perView.reserveCapacity(views.count)
+        for view in views {
+            let local = projectSingleView(page: page, view: view)
+            var item = CADDrawingViewProjection(view: view)
+            item.entities = local.entities
+            item.instances = local.instances
+            item.notes = local.notes
+            item.missing = local.missing
+            item.missingInstances = local.missingInstances
+            item.sectionCoverage = local.sectionCoverage
+            item.sectionComplete = local.sectionComplete
+            item.localBounds = entityBounds(local.entities)
+            item.bounds = item.localBounds
+            perView.append(item)
+        }
+        var issues: [String] = []
+        let offsets: [SIMD2<Double>]
+        if applyLayout {
+            offsets = resolveViewOffsets(views: views, projections: perView, issues: &issues)
+        } else {
+            offsets = Array(repeating: SIMD2<Double>.zero, count: views.count)
+        }
+        for index in perView.indices {
+            perView[index].offset = offsets[index]
+            if offsets[index] != .zero {
+                perView[index].entities = perView[index].entities.map {
+                    $0.translated(by: offsets[index])
+                }
+                perView[index].instances = perView[index].instances.map { instance in
+                    var copy = instance
+                    copy.entities = copy.entities.map { $0.translated(by: offsets[index]) }
+                    return copy
+                }
+            }
+            perView[index].bounds = entityBounds(perView[index].entities)
+        }
+
+        var result = PageProjection()
+        result.views = perView
+        result.viewIssues = issues
+        var notes: [String] = []
+        for item in perView {
+            if views.count > 1 {
+                notes.append(contentsOf: item.notes.map { "\(item.view.name): \($0)" })
+            } else {
+                notes.append(contentsOf: item.notes)
+            }
+            result.entities.append(contentsOf: item.entities)
+            result.instances.append(contentsOf: item.instances)
+            result.missing.append(contentsOf: item.missing)
+            result.missingInstances.append(contentsOf: item.missingInstances)
+            result.sectionCoverage.append(contentsOf: item.sectionCoverage)
+        }
+        result.notes = notes
+        result.missing = Array(Set(result.missing))
+        result.missingInstances = Array(Set(result.missingInstances))
+        result.sectionIncomplete = perView.contains { !$0.sectionComplete }
+        result.outputBlocked = result.sectionIncomplete
+        result.explodedViewID = page.explodedViewID
+        result.explodedViewName = page.explodedViewName
+        return result
+    }
+
+    /// Resolve each view's sheet offset. A free view uses its stored offset.
+    /// An aligned view is placed against its reference's LIVE projected
+    /// bounds (cross axis centred, gap on the placement axis) and then gains
+    /// its stored offset as a nudge. Cycles/invalid references fall back to
+    /// the stored offset and are reported, never guessed.
+    private func resolveViewOffsets(views: [CADDrawingSheetView],
+                                    projections: [CADDrawingViewProjection],
+                                    issues: inout [String]) -> [SIMD2<Double>] {
+        var resolved: [UUID: SIMD2<Double>] = [:]
+        var visiting = Set<UUID>()
+        var localIssues: [String] = []
+        func offset(for index: Int, depth: Int) -> SIMD2<Double> {
+            let view = views[index]
+            if let cached = resolved[view.id] { return cached }
+            if depth > 8 || visiting.contains(view.id) {
+                localIssues.append("View \(view.name): alignment cycle or depth limit; using its offset.")
+                return view.offset
+            }
+            guard view.alignment.placement != .free,
+                  let referenceID = view.alignment.referenceViewID,
+                  let referenceIndex = views.firstIndex(where: { $0.id == referenceID }),
+                  referenceIndex != index else {
+                if view.alignment.placement != .free {
+                    localIssues.append("View \(view.name): alignment reference is missing; using its offset.")
+                }
+                resolved[view.id] = view.offset
+                return view.offset
+            }
+            visiting.insert(view.id)
+            let referenceOffset = offset(for: referenceIndex, depth: depth + 1)
+            visiting.remove(view.id)
+            guard let own = projections[index].localBounds,
+                  let referenceLocal = projections[referenceIndex].localBounds else {
+                resolved[view.id] = view.offset
+                return view.offset
+            }
+            let referenceBounds = (min: referenceLocal.min + referenceOffset,
+                                   max: referenceLocal.max + referenceOffset)
+            let gap = max(view.alignment.gapMM, 0)
+            var base = SIMD2<Double>.zero
+            switch view.alignment.placement {
+            case .free:
+                base = .zero
+            case .above:
+                base.x = (referenceBounds.min.x + referenceBounds.max.x) / 2
+                    - (own.min.x + own.max.x) / 2
+                base.y = referenceBounds.max.y + gap - own.min.y
+            case .below:
+                base.x = (referenceBounds.min.x + referenceBounds.max.x) / 2
+                    - (own.min.x + own.max.x) / 2
+                base.y = referenceBounds.min.y - gap - own.max.y
+            case .left:
+                base.x = referenceBounds.min.x - gap - own.max.x
+                base.y = (referenceBounds.min.y + referenceBounds.max.y) / 2
+                    - (own.min.y + own.max.y) / 2
+            case .right:
+                base.x = referenceBounds.max.x + gap - own.min.x
+                base.y = (referenceBounds.min.y + referenceBounds.max.y) / 2
+                    - (own.min.y + own.max.y) / 2
+            }
+            let value = base + view.offset
+            resolved[view.id] = value
+            return value
+        }
+        let result = views.indices.map { offset(for: $0, depth: 0) }
+        issues.append(contentsOf: localIssues)
+        return result
+    }
+
+    /// Project one view in its own local sheet coordinates (no layout offset).
+    private func projectSingleView(page: CADDrawingPage,
+                                   view: CADDrawingSheetView) -> PageProjection {
+        let resolved = projectionSources(for: page, sourceBodyIDs: view.sourceBodyIDs)
+        guard view.scale.isFinite, view.scale > 0 else {
+            var result = PageProjection()
+            result.notes = resolved.notes + ["view scale is invalid; nothing was projected."]
+            result.missing = resolved.missingBodies
+            result.missingInstances = resolved.missingInstances
+            if view.kind == .section {
+                result.sectionComplete = false
+                result.sectionIncomplete = true
+                result.outputBlocked = true
+            }
+            return result
+        }
+        var header = PageProjection()
+        header.notes = resolved.notes
+        header.missing = resolved.missingBodies
+        header.missingInstances = resolved.missingInstances
+        header.explodedViewID = resolved.explodedViewID
+        header.explodedViewName = resolved.explodedViewName
+        if view.kind == .section,
+           (!resolved.missingBodies.isEmpty || !resolved.missingInstances.isEmpty) {
+            header.sectionIncomplete = true
+            header.sectionComplete = false
+            header.notes.append("The section is INCOMPLETE: one or more sources are missing.")
+        }
+        guard !resolved.sources.isEmpty else {
+            if view.kind == .section {
+                header.sectionIncomplete = true
+                header.sectionComplete = false
+                if header.notes.isEmpty {
+                    header.notes.append("The section is INCOMPLETE: no section source resolved.")
+                }
+            }
+            return header
+        }
+        switch view.kind {
         case .section:
-            return projectSection(page, sources: resolved.sources,
+            return projectSection(page: page, view: view, sources: resolved.sources,
                                   header: header)
         case .front, .top, .side, .iso, .exploded:
-            return projectView(page, sources: resolved.sources,
+            return projectView(page: page, view: view, sources: resolved.sources,
                                header: header)
         case .detail:
-            return projectDetail(page, sources: resolved.sources,
+            return projectDetail(page: page, view: view, sources: resolved.sources,
                                  header: header)
         }
     }
 
-    /// The in-plane frame for a page: `SectionKit.frame(normal:xAxisHint:)`
-    /// with the page's own view normal and up hint, matching how section loops
-    /// get their coordinates.
-    private func plane(for page: CADDrawingPage) -> SketchPlane? {
+    /// The in-plane frame for one view: `SectionKit.frame(normal:xAxisHint:)`
+    /// with the VIEW's normal and up hint, matching section loop coordinates.
+    private func plane(for page: CADDrawingPage,
+                       view: CADDrawingSheetView) -> SketchPlane? {
         let normal: SIMD3<Double>
-        switch page.kind {
+        switch view.kind {
         case .section:
-            guard let stored = page.sectionNormal, simd_length(stored) > 1e-9 else { return nil }
+            guard let stored = view.sectionNormal, simd_length(stored) > 1e-9 else { return nil }
             normal = simd_normalize(stored)
         default:
-            guard simd_length(page.viewNormal) > 1e-9 else { return nil }
-            normal = simd_normalize(page.viewNormal)
+            guard simd_length(view.viewNormal) > 1e-9 else { return nil }
+            normal = simd_normalize(view.viewNormal)
         }
-        let frame = SectionKit.frame(normal: normal, xAxisHint: page.viewUp)
+        let frame = SectionKit.frame(normal: normal, xAxisHint: view.viewUp)
         return SketchPlane(origin: .zero, xAxis: frame.xAxis, yAxis: frame.yAxis)
     }
 
-    private func projectView(_ page: CADDrawingPage, sources: [ProjectionSource],
+    private func projectView(page: CADDrawingPage, view: CADDrawingSheetView,
+                             sources: [ProjectionSource],
                              header: PageProjection) -> PageProjection {
-        guard let plane = plane(for: page) else {
+        guard let plane = plane(for: page, view: view) else {
             var result = header
             result.notes.append("view direction is invalid")
             return result
@@ -1621,33 +2826,56 @@ public final class CADDrawingService {
                                              normal: plane.normal)
             var projected = dedupe(circularize(outline, exact: exact)
                                     + circularize(edges, exact: exact))
-            projected = projected.map { $0.scaled(by: page.scale) }
+            projected = projected.map { $0.scaled(by: view.scale) }
             entities.append(contentsOf: projected)
             if let id = source.instanceID {
                 groups[id, default: []].append(contentsOf: projected)
             }
         }
-        return completedProjection(header: header, page: page,
+        return completedProjection(header: header, view: view,
                                    entities: entities, groups: groups,
                                    sources: sources)
     }
 
-    private func projectSection(_ page: CADDrawingPage, sources: [ProjectionSource],
+    private func projectSection(page: CADDrawingPage, view: CADDrawingSheetView,
+                                sources: [ProjectionSource],
                                 header: PageProjection) -> PageProjection {
-        guard let origin = page.sectionOrigin,
-              let storedNormal = page.sectionNormal,
+        guard let origin = view.sectionOrigin,
+              let storedNormal = view.sectionNormal,
               simd_length(storedNormal) > 1e-9 else {
             var result = header
-            result.notes.append("section pages need sectionOrigin and sectionNormal")
+            result.notes.append("section views need sectionOrigin and sectionNormal")
+            result.sectionComplete = false
+            result.sectionIncomplete = true
+            result.outputBlocked = true
             return result
         }
         let normal = simd_normalize(storedNormal)
-        let frame = SectionKit.frame(normal: normal, xAxisHint: page.viewUp)
+        let frame = SectionKit.frame(normal: normal, xAxisHint: view.viewUp)
         var entities: [ProjectedEntity] = []
         var groups: [UUID: [ProjectedEntity]] = [:]
-        var skipped = 0
+        var coverage: [CADDrawingSectionCoverage] = []
+        var incomplete = false
+        let assembly = loadAssemblyValue()
         for source in sources {
-            guard let brep = source.body.brep else { skipped += 1; continue }
+            let coverageBodyID: UUID
+            if let instanceID = source.instanceID,
+               let instance = assembly?.instance(instanceID) {
+                coverageBodyID = effectiveBodyID(instance)
+            } else {
+                coverageBodyID = source.body.id.raw
+            }
+            let item = CADDrawingSectionCoverage(
+                bodyID: coverageBodyID,
+                instanceID: source.instanceID,
+                name: source.name,
+                analyticBRep: source.body.brep != nil,
+                included: source.body.brep != nil)
+            coverage.append(item)
+            guard let brep = source.body.brep else {
+                incomplete = true
+                continue
+            }
             // The kernel section runs on the body-local solid: map the world
             // plane in, then the resulting points back out.
             let localOrigin = bodyLocal(origin, source.body.transform)
@@ -1667,34 +2895,41 @@ public final class CADDrawingService {
             var projected: [ProjectedEntity] = []
             for loop in loops where loop.points.count >= 2 {
                 projected.append(ProjectedEntity(
-                    shape: .polyline(points: loop.points.map { $0 * page.scale },
+                    shape: .polyline(points: loop.points.map { $0 * view.scale },
                                      closed: loop.closed),
                     layer: "section",
-                    area: loop.area * page.scale * page.scale))
+                    area: loop.area * view.scale * view.scale))
             }
             entities.append(contentsOf: projected)
             if let id = source.instanceID {
                 groups[id, default: []].append(contentsOf: projected)
             }
         }
-        var result = completedProjection(header: header, page: page,
+        var result = completedProjection(header: header, view: view,
                                          entities: entities, groups: groups,
                                          sources: sources)
-        if skipped > 0 {
-            result.notes.append("\(skipped) mesh-only body/bodies skipped in section (no B-rep).")
+        result.sectionCoverage = coverage
+        result.sectionComplete = !incomplete
+        result.sectionIncomplete = incomplete
+        result.outputBlocked = incomplete
+        if incomplete {
+            result.notes.append("\(coverage.filter { !$0.analyticBRep }.count) "
+                                + "mesh-only body/bodies have no analytic section; "
+                                + "this section is INCOMPLETE and vector output is blocked.")
         }
         return result
     }
 
-    private func projectDetail(_ page: CADDrawingPage, sources: [ProjectionSource],
+    private func projectDetail(page: CADDrawingPage, view: CADDrawingSheetView,
+                               sources: [ProjectionSource],
                                header: PageProjection) -> PageProjection {
         var header = header
-        guard let plane = plane(for: page),
-              let centerPoint = page.detailOrigin,
-              let windowSize = page.detailSizeMM,
+        guard let plane = plane(for: page, view: view),
+              let centerPoint = view.detailOrigin,
+              let windowSize = view.detailSizeMM,
               windowSize.x > 0, windowSize.y > 0 else {
             header.notes.append("detail window is missing; projecting the full view.")
-            return projectView(page, sources: sources, header: header)
+            return projectView(page: page, view: view, sources: sources, header: header)
         }
         let width = windowSize.x
         let height = windowSize.y
@@ -1711,19 +2946,19 @@ public final class CADDrawingService {
                 clippedEntities.append(contentsOf: clipped(convert(entity, layer: "detail"),
                                                            to: rect))
             }
-            clippedEntities = clippedEntities.map { $0.scaled(by: page.scale) }
+            clippedEntities = clippedEntities.map { $0.scaled(by: view.scale) }
             entities.append(contentsOf: clippedEntities)
             if let id = source.instanceID {
                 groups[id, default: []].append(contentsOf: clippedEntities)
             }
         }
-        return completedProjection(header: header, page: page,
+        return completedProjection(header: header, view: view,
                                    entities: entities, groups: groups,
                                    sources: sources)
     }
 
     private func completedProjection(header: PageProjection,
-                                     page: CADDrawingPage,
+                                     view: CADDrawingSheetView,
                                      entities: [ProjectedEntity],
                                      groups: [UUID: [ProjectedEntity]],
                                      sources: [ProjectionSource]) -> PageProjection {
@@ -1734,7 +2969,7 @@ public final class CADDrawingService {
             return ProjectedInstance(id: id, name: source.name,
                                      entities: groups[id] ?? [])
         }
-        _ = page
+        _ = view
         return result
     }
 
@@ -2027,9 +3262,19 @@ public final class CADDrawingService {
 
     private func dimensions(for page: CADDrawingPage,
                             projection: PageProjection) -> [DrawingDimension] {
-        let scale = page.scale.isFinite && page.scale > 0 ? page.scale : 1
+        if !projection.views.isEmpty {
+            return projection.views.flatMap { item in
+                dimensions(entities: item.entities, scale: item.view.scale)
+            }
+        }
+        return dimensions(entities: projection.entities, scale: page.scale)
+    }
+
+    private func dimensions(entities: [ProjectedEntity],
+                            scale rawScale: Double) -> [DrawingDimension] {
+        let scale = rawScale.isFinite && rawScale > 0 ? rawScale : 1
         var dims: [DrawingDimension] = []
-        guard let bounds = entityBounds(projection.entities) else { return dims }
+        guard let bounds = entityBounds(entities) else { return dims }
         let width = bounds.max.x - bounds.min.x
         let height = bounds.max.y - bounds.min.y
         if width > 1e-9 {
@@ -2038,7 +3283,7 @@ public final class CADDrawingService {
         if height > 1e-9 {
             dims.append(linearDimension(axis: "y", value: height / scale, bounds: bounds))
         }
-        for circle in detectedCircles(projection) {
+        for circle in detectedCircles(entities: entities) {
             if circle.isFull {
                 dims.append(diameterDimension(circle, scale: scale))
             } else {
@@ -2052,8 +3297,12 @@ public final class CADDrawingService {
     /// ones `circularize` recognized) plus closed section loops that fit a
     /// circle. Duplicates from coincident geometry collapse to one.
     private func detectedCircles(_ projection: PageProjection) -> [DetectedCircle] {
+        detectedCircles(entities: projection.entities)
+    }
+
+    private func detectedCircles(entities: [ProjectedEntity]) -> [DetectedCircle] {
         var circles: [DetectedCircle] = []
-        for entity in projection.entities {
+        for entity in entities {
             switch entity.shape {
             case let .circle(center, radius):
                 circles.append(DetectedCircle(center: center, radius: radius, isFull: true))
@@ -2193,9 +3442,18 @@ public final class CADDrawingService {
                                            plane: SketchPlane,
                                            world: Transform3D,
                                            source: Body) -> SIMD3<Double>? {
-        guard page.scale.isFinite, page.scale > 0 else { return nil }
-        let modelPoint = plane.origin + plane.xAxis * (drawing.x / page.scale)
-            + plane.yAxis * (drawing.y / page.scale)
+        bodyLocalPointFromDrawing(drawing, plane: plane, scale: page.scale,
+                                  world: world, source: source)
+    }
+
+    private func bodyLocalPointFromDrawing(_ drawing: SIMD2<Double>,
+                                           plane: SketchPlane,
+                                           scale: Double,
+                                           world: Transform3D,
+                                           source: Body) -> SIMD3<Double>? {
+        guard scale.isFinite, scale > 0 else { return nil }
+        let modelPoint = plane.origin + plane.xAxis * (drawing.x / scale)
+            + plane.yAxis * (drawing.y / scale)
         guard let bodyLocal = inverseApply(modelPoint, world) else { return nil }
         // `world` already includes the source body transform; the stored
         // binding is body-local, which is the document's part frame.
@@ -2207,9 +3465,16 @@ public final class CADDrawingService {
                                            page: CADDrawingPage,
                                            plane: SketchPlane,
                                            world: Transform3D) -> SIMD2<Double>? {
-        guard page.scale.isFinite, page.scale > 0 else { return nil }
+        drawingPointFromBodyLocal(local, plane: plane, scale: page.scale, world: world)
+    }
+
+    private func drawingPointFromBodyLocal(_ local: SIMD3<Double>,
+                                           plane: SketchPlane,
+                                           scale: Double,
+                                           world: Transform3D) -> SIMD2<Double>? {
+        guard scale.isFinite, scale > 0 else { return nil }
         let point = plane.toLocal(world.applying(to: local))
-        return point * page.scale
+        return point * scale
     }
 
     private func instanceBounds(_ instanceID: UUID,
@@ -2223,8 +3488,14 @@ public final class CADDrawingService {
 
     private func autoBalloonAnchor(instanceID: UUID,
                                    page: CADDrawingPage,
-                                   projection: PageProjection) -> SIMD2<Double> {
-        if let bounds = instanceBounds(instanceID, projection: projection) {
+                                   projection: PageProjection,
+                                   viewID: UUID? = nil) -> SIMD2<Double> {
+        if let sheetBounds = instanceBounds(instanceID, page: page,
+                                            projection: projection, viewID: viewID) {
+            let offset = projection.views.first { item in
+                viewID.map { id in id == item.view.id } ?? true
+            }?.offset ?? .zero
+            let bounds = (min: sheetBounds.min - offset, max: sheetBounds.max - offset)
             return SIMD2(bounds.max.x + 12, bounds.max.y + 12)
         }
         return SIMD2(max(page.paperWidthMM * 0.5, 20), max(page.paperHeightMM * 0.5, 20))
@@ -2248,10 +3519,13 @@ public final class CADDrawingService {
                                   projection: PageProjection) -> [[String: Any]] {
         let assembly = loadAssemblyValue()
         return page.balloons.map { balloon -> [String: Any] in
+            let context = viewContext(for: page, projection: projection,
+                                      viewID: balloon.viewID)
+            let sheetAnchor = balloon.anchor + context.offset
             let entry = page.bom?.entry(id: balloon.bomEntryID ?? UUID())
                 ?? page.bom?.entry(itemNumber: balloon.itemNumber)
             let instance = balloon.instanceID.flatMap { assembly?.instance($0) }
-            var target = balloon.target
+            var target = balloon.target.map { $0 + context.offset }
             var stale = false
             var invalid = false
             var reasons: [String] = []
@@ -2269,18 +3543,20 @@ public final class CADDrawingService {
                     reasons.append("The source body is hidden.")
                 }
                 if target == nil {
-                    if let bounds = instanceBounds(instance.id, projection: projection) {
-                        target = nearestBoundaryPoint(to: balloon.anchor, bounds: bounds)
+                    if let bounds = instanceBounds(instance.id, page: page,
+                                                   projection: projection,
+                                                   viewID: context.view.id) {
+                        target = nearestBoundaryPoint(to: sheetAnchor, bounds: bounds)
                     } else {
                         stale = true
-                        reasons.append("The instance has no projected geometry on this page.")
-                        target = balloon.anchor + SIMD2(10, 10)
+                        reasons.append("The instance has no projected geometry in this view.")
+                        target = sheetAnchor + SIMD2(10, 10)
                     }
                 }
             } else {
                 invalid = true
                 reasons.append("The associated assembly instance no longer exists.")
-                target = target ?? balloon.anchor + SIMD2(10, 10)
+                target = target ?? sheetAnchor + SIMD2(10, 10)
             }
             if let entry {
                 let liveCount = entry.instanceIDs.compactMap { assembly?.instance($0) }
@@ -2294,16 +3570,34 @@ public final class CADDrawingService {
                 "id": balloon.id.uuidString,
                 "itemNumber": balloon.itemNumber,
                 "text": balloon.text ?? "\(balloon.itemNumber)",
-                "anchor": pointPayload(balloon.anchor),
-                "target": pointPayload(target ?? balloon.anchor),
+                "anchor": pointPayload(sheetAnchor),
+                "target": pointPayload(target ?? sheetAnchor),
+                "localAnchor": pointPayload(balloon.anchor),
                 "stale": stale,
                 "invalid": invalid,
                 "bomEntryID": ((entry?.id.uuidString ?? balloon.bomEntryID?.uuidString) as Any?) ?? NSNull(),
                 "instanceID": (balloon.instanceID?.uuidString as Any?) ?? NSNull(),
             ]
+            if balloon.viewID != nil || !context.isLegacy {
+                row["viewID"] = context.view.id.uuidString
+            }
             if !reasons.isEmpty { row["reasons"] = reasons }
             return row
         }
+    }
+
+    private func instanceBounds(_ instanceID: UUID,
+                                page: CADDrawingPage,
+                                projection: PageProjection,
+                                viewID: UUID?) -> (min: SIMD2<Double>, max: SIMD2<Double>)? {
+        if let viewID,
+           let item = projection.views.first(where: { $0.view.id == viewID }) {
+            guard let instance = item.instances.first(where: { $0.id == instanceID }) else {
+                return nil
+            }
+            return entityBounds(instance.entities)
+        }
+        return instanceBounds(instanceID, projection: projection)
     }
 
     private func nearestBoundaryPoint(to point: SIMD2<Double>,
@@ -2319,21 +3613,307 @@ public final class CADDrawingService {
         return candidates.min { simd_length($0 - point) < simd_length($1 - point) } ?? clamped
     }
 
+    private struct ResolvedViewContext {
+        var view: CADDrawingSheetView
+        var offset: SIMD2<Double>
+        var plane: SketchPlane?
+        var scale: Double
+        var isLegacy: Bool
+        var entities: [ProjectedEntity] = []
+    }
+
+    private func viewContext(for page: CADDrawingPage,
+                             projection: PageProjection,
+                             viewID: UUID?) -> ResolvedViewContext {
+        let projected = projection.views.first { item in
+            viewID.map { $0 == item.view.id } ?? true
+        } ?? projection.views.first
+        if let projected {
+            return ResolvedViewContext(view: projected.view,
+                                       offset: projected.offset,
+                                       plane: plane(for: page, view: projected.view),
+                                       scale: projected.view.scale,
+                                       isLegacy: false,
+                                       entities: projected.entities)
+        }
+        let view = page.effectiveSheetViews.first { item in
+            viewID.map { $0 == item.id } ?? true
+        } ?? page.effectiveSheetViews[0]
+        return ResolvedViewContext(view: view, offset: .zero,
+                                   plane: plane(for: page, view: view),
+                                   scale: view.scale,
+                                   isLegacy: page.sheetViews == nil,
+                                   entities: projection.entities)
+    }
+
+    private struct ResolvedFeatureFace {
+        var faceIndex: Int
+        var radiusMM: Double
+        var currentRevision: UInt64
+        var drawingCenter: SIMD2<Double>
+        var drawingRadius: Double
+    }
+
+    /// Identity gate for a captured feature reference. While provenance names
+    /// the authoring feature, the SAME active feature must still own the
+    /// linked source body and the captured sketch links must still exist;
+    /// otherwise the dimension DANGLES instead of falling back to a
+    /// geometric guess. Returns the failure message, or nil when the
+    /// reference carries no feature provenance (imported faces keep the
+    /// honest anchor-only ambiguity handling below) or the provenance is
+    /// still live. Measurement authority stays with the kernel face; this
+    /// gate only protects identity.
+    private func provenanceGateFailure(_ feature: CADDrawingFeatureReference,
+                                       source: Body) -> String? {
+        guard let featureID = feature.featureID else { return nil }
+        let features = document.session.document.features
+        guard let node = features.node(FeatureID(raw: featureID)) else {
+            return "The linked feature no longer exists "
+                   + "(the hole feature was deleted); the dimension is dangling."
+        }
+        guard !node.suppressed else {
+            return "The linked feature is suppressed; the dimension is dangling."
+        }
+        guard Self.featureNode(node, writesBody: source.id) else {
+            return "The linked feature no longer owns this source body; "
+                   + "the dimension is dangling."
+        }
+        if let sketchID = feature.sketchID {
+            guard node.referencedSketchIDs.contains(SketchID(raw: sketchID)) else {
+                return "The linked sketch is not a source of this feature; the dimension is dangling."
+            }
+            guard let sketch = document.session.document.sketches
+                .first(where: { $0.id == SketchID(raw: sketchID) }) else {
+                return "The linked feature's authoring sketch no longer exists; "
+                       + "the dimension is dangling."
+            }
+            if let entityID = feature.sketchEntityID {
+                guard let entity = sketch.entities.first(where: { $0.id == entityID }) else {
+                    return "The linked sketch entity no longer exists; the dimension is dangling."
+                }
+                guard case .circle = entity else {
+                    return "The linked entity is no longer a circle; the dimension is dangling."
+                }
+            }
+        }
+        return nil
+    }
+
+    /// The captured authoring circle, still live in the document, or nil when
+    /// this reference carries no usable entity provenance (feature-level-only
+    /// or imported references). Callers must run `provenanceGateFailure`
+    /// first so a MISSING sketch/entity dangles instead of degrading to
+    /// anchor-only matching.
+    private func provenanceCircle(_ feature: CADDrawingFeatureReference)
+        -> (radius: Double, center: SIMD2<Double>, plane: SketchPlane)? {
+        guard let sketchID = feature.sketchID,
+              let sketch = document.session.document.sketches
+                .first(where: { $0.id == SketchID(raw: sketchID) }),
+              let entityID = feature.sketchEntityID,
+              let entity = sketch.entities.first(where: { $0.id == entityID }),
+              case let .circle(_, center, radius) = entity else { return nil }
+        return (radius: radius, center: center, plane: sketch.plane)
+    }
+
+    private func resolveFeatureFace(_ feature: CADDrawingFeatureReference,
+                                    page: CADDrawingPage,
+                                    context: ResolvedViewContext)
+        -> Result<ResolvedFeatureFace, String> {
+        guard let plane = context.plane else {
+            return .failure("The view has no valid projection plane.")
+        }
+        let assembly = loadAssemblyValue()
+        let source: Body?
+        let world: Transform3D?
+        if let requestedInstanceID = feature.instanceID {
+            guard let instance = assembly?.instance(requestedInstanceID) else {
+                return .failure("The linked assembly instance no longer exists.")
+            }
+            guard let resolved = body(for: effectiveBodyID(instance)) else {
+                return .failure("The linked instance's source body no longer exists.")
+            }
+            guard let placement = instanceWorldTransform(instance: instance,
+                                                         source: resolved, page: page) else {
+                return .failure("The linked instance no longer has a placeable transform.")
+            }
+            source = resolved
+            world = placement
+        } else if let resolved = body(for: feature.bodyID) {
+            source = resolved
+            world = resolved.transform
+        } else {
+            return .failure("The linked source body no longer exists.")
+        }
+        guard let source, let world else {
+            return .failure("The linked source body no longer resolves.")
+        }
+        guard let brep = source.brep else {
+            return .failure("The linked source no longer has an analytic B-rep.")
+        }
+        // Identity authority: while this reference captured the authoring
+        // feature/sketch entity, the SAME active feature must still own this
+        // geometry or the dimension DANGLES. A geometric fallback can adopt a
+        // different plausible unique coaxial cylinder (a counterbore left at
+        // the same station after the measured hole is gone), so provenance is
+        // checked before any face is considered.
+        if let failure = provenanceGateFailure(feature, source: source) {
+            return .failure(failure)
+        }
+        let anchorAxis = simd_normalize(feature.anchor.direction)
+        let worldAxis = simd_normalize(world.rotation.act(anchorAxis))
+        let viewNormal = simd_normalize(plane.normal)
+        guard abs(simd_dot(worldAxis, viewNormal)) >= 0.995 else {
+            return .failure("The view is not looking along the linked cylinder's axis.")
+        }
+        let tolerance = max(feature.anchor.toleranceMM, 0.05)
+        var matches: [(face: OCCTKernel.KernelFaceInfo, radius: Double)] = []
+        for face in OCCTKernel.faceInfo(brep) {
+            guard let signature = face.signature,
+                  case let .cylindrical(radius) = signature.kind else { continue }
+            let axis = simd_normalize(signature.normal)
+            guard abs(simd_dot(anchorAxis, axis)) >= 0.995 else { continue }
+            // Compare the AXIAL position, not the radial centroid: a
+            // half-cylinder's centroid moves inward/outward when its radius
+            // changes, while the hole's axis and axial station do not.
+            let delta = signature.centroid - feature.anchor.centroid
+            let axialDelta = abs(simd_dot(delta, anchorAxis))
+            let radial = delta - simd_dot(delta, anchorAxis) * anchorAxis
+            // A partial cylindrical face's centroid sits off-axis and moves
+            // with the radius; allow that bounded radial drift but still
+            // reject a different bore at the same axial station.
+            let radialLimit = max(tolerance,
+                                  0.5 * max(radius, feature.anchor.radiusMM ?? radius))
+            guard axialDelta <= tolerance,
+                  simd_length(radial) <= radialLimit else { continue }
+            matches.append((face: face, radius: radius))
+        }
+        guard !matches.isEmpty else {
+            return .failure("The linked cylindrical face no longer exists "
+                            + "(the hole feature was deleted or the topology changed).")
+        }
+        // When the captured provenance names the authoring sketch circle, the
+        // surviving match must be the SAME cylinder that entity describes:
+        // same axis, same axial station and a consistent radius. The entity
+        // may legitimately change radius (Ø10 → Ø8 remeasures on the SAME
+        // feature); a face that only shares axis and station but not the
+        // entity's cylinder (e.g. the coaxial counterbore left behind after a
+        // hole edit consumed the measured band) is a DIFFERENT cylinder and
+        // dangles instead of adopting its value. The displayed measurement
+        // still comes from the live kernel face below, never from the entity.
+        var provenanceMatches = matches
+        if let entity = provenanceCircle(feature) {
+            let axis = simd_normalize(feature.anchor.direction)
+            let tolerance = max(feature.anchor.toleranceMM, 0.05)
+            let radiusLimit = max(0.25,
+                                  0.05 * max(entity.radius,
+                                             feature.anchor.radiusMM ?? entity.radius))
+            provenanceMatches = matches.filter { candidate in
+                guard let signature = candidate.face.signature,
+                      case let .cylindrical(radius) = signature.kind else { return false }
+                guard abs(simd_dot(simd_normalize(signature.normal), axis)) >= 0.995 else {
+                    return false
+                }
+                // Same axial-position discipline as the anchor scan above:
+                // the centroid's station along the axis, with bounded radial
+                // drift for partial cylindrical faces.
+                let delta = signature.centroid - feature.anchor.centroid
+                guard abs(simd_dot(delta, axis)) <= tolerance else { return false }
+                let radial = delta - simd_dot(delta, axis) * axis
+                guard simd_length(radial) <= max(tolerance, radius * 0.5) else { return false }
+                return abs(radius - entity.radius) <= radiusLimit
+            }
+            guard !provenanceMatches.isEmpty else {
+                return .failure("The linked feature no longer owns this geometry "
+                                + "(the captured cylinder is gone); the dimension is dangling.")
+            }
+        }
+        guard provenanceMatches.count == 1, let match = provenanceMatches.first else {
+            return .failure("The linked cylindrical face is ambiguous after the source change; "
+                            + "re-select the feature.")
+        }
+        var center = plane.toLocal(world.applying(to: match.face.centroid)) * context.scale
+        var drawingRadius = match.radius * context.scale
+        // Refine the projected centre from the view's detected circle when
+        // available: a partial cylindrical face's centroid is radially offset
+        // from the hole axis, while the projected circle centre is the true
+        // axis point. Match by radius and a bounded distance, never by a bare
+        // index.
+        if !context.entities.isEmpty {
+            let expectedRadius = match.radius * context.scale
+            let candidates = detectedCircles(entities: context.entities).filter { circle in
+                guard circle.isFull else { return false }
+                let radiusDelta = abs(circle.radius - expectedRadius)
+                let limit = max(0.05, max(expectedRadius, circle.radius) * 0.02)
+                return radiusDelta <= limit
+                    && simd_distance(circle.center, center)
+                        <= max(2.0, expectedRadius * 0.75)
+            }
+            if let nearest = candidates.min(by: {
+                simd_distance($0.center, center) < simd_distance($1.center, center)
+            }) {
+                center = nearest.center
+                drawingRadius = nearest.radius
+            }
+        }
+        return .success(ResolvedFeatureFace(faceIndex: match.face.index,
+                                            radiusMM: match.radius,
+                                            currentRevision: source.meshRevision,
+                                            drawingCenter: center,
+                                            drawingRadius: drawingRadius))
+    }
+
     private func resolvedManualDimensions(page: CADDrawingPage,
                                           projection: PageProjection)
         -> ResolvedAnnotations {
         var result = ResolvedAnnotations()
         let assembly = loadAssemblyValue()
-        let plane = plane(for: page)
         for dimension in page.manualDimensions {
+            let context = viewContext(for: page, projection: projection, viewID: dimension.viewID)
             var points = dimension.drawingPoints
-            var value = dimension.value
+            var value: Double? = dimension.value
             var textPosition = dimension.textPosition
             var stale = false
             var invalid = false
+            var dangling = false
+            var remeasured = false
+            var status = "resolved"
             var reasons: [String] = []
             var currentRevision: UInt64?
-            if let binding = dimension.binding {
+            var resolvedFeature: [String: Any]?
+            if let feature = dimension.feature {
+                switch resolveFeatureFace(feature, page: page, context: context) {
+                case .success(let live):
+                    currentRevision = live.currentRevision
+                    let oldCenter = points.first ?? live.drawingCenter
+                    let direction: SIMD2<Double>
+                    if points.count >= 2 {
+                        let delta = points[1] - points[0]
+                        direction = simd_length(delta) > 1e-9
+                            ? simd_normalize(delta) : SIMD2(1, 0)
+                    } else {
+                        direction = SIMD2(1, 0)
+                    }
+                    points = [live.drawingCenter,
+                              live.drawingCenter + direction * live.drawingRadius]
+                    textPosition += live.drawingCenter - oldCenter
+                    value = dimension.kind == .diameter
+                        ? live.radiusMM * 2 : live.radiusMM
+                    let revisionChanged = dimension.feature?.sourceRevision
+                        .map { $0 != live.currentRevision } ?? true
+                    remeasured = abs((value ?? 0) - dimension.value) > 1e-9 || revisionChanged
+                    status = "resolved"
+                    resolvedFeature = [
+                        "faceIndex": live.faceIndex,
+                        "radiusMM": live.radiusMM,
+                        "currentRevision": live.currentRevision,
+                    ]
+                case .failure(let message):
+                    dangling = true
+                    value = nil
+                    status = "dangling"
+                    reasons.append(message)
+                }
+            } else if let binding = dimension.binding {
                 let instance = binding.instanceID.flatMap { assembly?.instance($0) }
                 let source = binding.bodyID.flatMap { body(for: $0) }
                     ?? instance.flatMap { body(for: effectiveBodyID($0)) }
@@ -2343,11 +3923,12 @@ public final class CADDrawingService {
                         stale = true
                         reasons.append("The source part changed since this dimension was placed.")
                     }
-                    if let plane,
+                    if let plane = context.plane,
                        let world = instanceWorldTransform(instance: instance,
                                                           source: source, page: page) {
                         let live = binding.modelPoints.compactMap {
-                            drawingPointFromBodyLocal($0, page: page, plane: plane, world: world)
+                            drawingPointFromBodyLocal($0, plane: plane,
+                                                      scale: context.scale, world: world)
                         }
                         if !live.isEmpty, live.count == points.count {
                             let delta = live[0] - points[0]
@@ -2358,38 +3939,63 @@ public final class CADDrawingService {
                             if !delta.x.isFinite || !delta.y.isFinite { invalid = true }
                         } else {
                             invalid = true
+                            value = nil
                             reasons.append("The bound part geometry no longer projects.")
                         }
                     } else {
                         invalid = true
-                        reasons.append("The page view or instance transform is invalid.")
+                        value = nil
+                        reasons.append("The view or instance transform is invalid.")
                     }
                 } else {
                     invalid = true
+                    value = nil
                     reasons.append("The bound instance or source body no longer exists.")
                 }
             } else {
                 reasons.append("This dimension is not bound to a part; it will not follow the model.")
             }
-            let text = dimension.textOverride
-                ?? dimensionText(kind: dimension.kind, value: value)
+            if invalid { status = "invalid" }
+            let text: String
+            if let override = dimension.textOverride {
+                text = override
+            } else if dangling {
+                text = dimension.kind == .diameter ? "Ø—"
+                    : (dimension.kind == .radius ? "R—" : "—")
+            } else if invalid {
+                text = "—"
+            } else {
+                text = dimensionText(kind: dimension.kind, value: value ?? 0)
+            }
+            let sheetPosition = textPosition + context.offset
             var row: [String: Any] = [
                 "id": dimension.id.uuidString,
                 "kind": dimension.kind.rawValue,
-                "value": value,
+                "value": (value.map { $0 as Any }) ?? (NSNull() as Any),
                 "unit": dimension.kind == .angle ? "deg" : "mm",
                 "text": text,
-                "textPosition": pointPayload(textPosition),
+                "textPosition": pointPayload(sheetPosition),
                 "drawingPoints": points.map(pointPayload),
+                "sheetPoints": points.map { pointPayload($0 + context.offset) },
                 "stale": stale,
                 "invalid": invalid,
-                "unbound": dimension.binding == nil,
+                "dangling": dangling,
+                "remeasured": remeasured,
+                "status": status,
+                "unbound": dimension.binding == nil && dimension.feature == nil,
                 "binding": bindingPayload(dimension.binding,
                                           currentRevision: currentRevision),
             ]
+            if dimension.viewID != nil || !context.isLegacy {
+                row["viewID"] = context.view.id.uuidString
+            }
+            if let feature = dimension.feature {
+                row["feature"] = featurePayload(feature)
+            }
+            if let resolvedFeature { row["resolvedFeature"] = resolvedFeature }
             if !reasons.isEmpty { row["reasons"] = reasons }
             result.manualDimensions.append(row)
-            if stale || invalid {
+            if stale || invalid || dangling {
                 result.issues.append("Dimension \(dimension.id.uuidString): "
                                      + reasons.joined(separator: " "))
             }
@@ -2401,10 +4007,35 @@ public final class CADDrawingService {
         return result
     }
 
+    private func featurePayload(_ feature: CADDrawingFeatureReference) -> [String: Any] {
+        var object: [String: Any] = [
+            "kind": feature.kind.rawValue,
+            "bodyID": feature.bodyID.uuidString,
+            "anchor": [
+                "centroid": vectorPayload(feature.anchor.centroid),
+                "direction": vectorPayload(feature.anchor.direction),
+                "toleranceMM": feature.anchor.toleranceMM,
+            ],
+        ]
+        if let radius = feature.anchor.radiusMM { object["radiusMM"] = radius }
+        if let instanceID = feature.instanceID { object["instanceID"] = instanceID.uuidString }
+        if let featureID = feature.featureID { object["featureID"] = featureID.uuidString }
+        if let sketchID = feature.sketchID { object["sketchID"] = sketchID.uuidString }
+        if let sketchEntityID = feature.sketchEntityID {
+            object["sketchEntityID"] = sketchEntityID.uuidString
+        }
+        if let sourceRevision = feature.sourceRevision {
+            object["sourceRevision"] = sourceRevision
+        }
+        return object
+    }
+
     private func annotationRow(_ annotation: CADDrawingTextAnnotation,
                                page: CADDrawingPage,
                                projection: PageProjection) -> [String: Any] {
         let assembly = loadAssemblyValue()
+        let context = viewContext(for: page, projection: projection,
+                                  viewID: annotation.viewID)
         var position = annotation.position
         var stale = false
         var invalid = false
@@ -2419,9 +4050,10 @@ public final class CADDrawingService {
                 stale = true
                 reasons.append("The source part changed since this annotation was placed.")
             }
-            if let plane = plane(for: page),
+            if let plane = context.plane,
                let world = instanceWorldTransform(instance: instance, source: source, page: page),
-               let live = drawingPointFromBodyLocal(local, page: page, plane: plane, world: world) {
+               let live = drawingPointFromBodyLocal(local, plane: plane,
+                                                    scale: context.scale, world: world) {
                 position = live
             } else {
                 invalid = true
@@ -2431,12 +4063,16 @@ public final class CADDrawingService {
         var row: [String: Any] = [
             "id": annotation.id.uuidString,
             "text": annotation.text,
-            "position": pointPayload(position),
+            "position": pointPayload(position + context.offset),
+            "localPosition": pointPayload(position),
             "heightMM": annotation.heightMM,
             "stale": stale,
             "invalid": invalid,
             "binding": bindingPayload(annotation.binding, currentRevision: currentRevision),
         ]
+        if annotation.viewID != nil || !context.isLegacy {
+            row["viewID"] = context.view.id.uuidString
+        }
         if !reasons.isEmpty { row["reasons"] = reasons }
         return row
     }
@@ -2539,6 +4175,20 @@ public final class CADDrawingService {
             }
         }
         for dimension in page.manualDimensions {
+            if let feature = dimension.feature {
+                let view = dimension.viewID.flatMap { id in
+                    page.effectiveSheetViews.first(where: { $0.id == id })
+                } ?? page.effectiveSheetViews[0]
+                let context = ResolvedViewContext(view: view, offset: .zero,
+                                                  plane: plane(for: page, view: view),
+                                                  scale: view.scale,
+                                                  isLegacy: page.sheetViews == nil)
+                if case .failure(let message) = resolveFeatureFace(feature, page: page,
+                                                                  context: context) {
+                    messages.append("Dimension \(dimension.id.uuidString) is dangling: \(message)")
+                }
+                continue
+            }
             if let id = dimension.binding?.instanceID, assembly?.instance(id) == nil {
                 missing.insert(id)
                 messages.append("Dimension \(dimension.id.uuidString) references a missing instance.")
@@ -2619,13 +4269,21 @@ public final class CADDrawingService {
         for row in resolved.manualDimensions {
             guard let kindRaw = row["kind"] as? String,
                   let kind = CADDrawingDimensionKind(rawValue: kindRaw),
-                  let rawPoints = row["drawingPoints"] as? [[Double]],
+                  let rawPoints = (row["sheetPoints"] ?? row["drawingPoints"]) as? [[Double]],
                   let text = row["text"] as? String else { continue }
             let points = rawPoints.compactMap { values -> SIMD2<Double>? in
                 guard values.count == 2 else { return nil }
                 return SIMD2(values[0], values[1])
             }
             guard points.count >= 2 else { continue }
+            if row["dangling"] as? Bool == true {
+                if let position = row["textPosition"] as? [Double], position.count == 2 {
+                    texts.append(DrawingText(text: text,
+                                             position: SIMD2(position[0], position[1]),
+                                             height: 3.0, layer: "dimension"))
+                }
+                continue
+            }
             switch kind {
             case .length:
                 let a = points[0], b = points[1]
@@ -2718,16 +4376,26 @@ public final class CADDrawingService {
         let centerlines = page.showCenterlines ? centerlineSegments(projection) : []
         if page.showCenterlines { counts["centerlines"] = centerlines.count }
         let assembly = loadAssemblyValue()
-        let instanceRows = projection.instances.map { instance -> [String: Any] in
+        func instanceRow(_ instance: ProjectedInstance,
+                         viewID: UUID?) -> [String: Any] {
             var row: [String: Any] = [
                 "instanceID": instance.id.uuidString,
                 "name": instance.name,
                 "entityCount": instance.entities.count,
             ]
+            if let viewID { row["viewID"] = viewID.uuidString }
             if let bounds = entityBounds(instance.entities) {
                 row["bounds"] = [pointPayload(bounds.min), pointPayload(bounds.max)]
             }
             return row
+        }
+        let instanceRows: [[String: Any]]
+        if projection.views.isEmpty {
+            instanceRows = projection.instances.map { instanceRow($0, viewID: nil) }
+        } else {
+            instanceRows = projection.views.flatMap { item in
+                item.instances.map { instanceRow($0, viewID: item.view.id) }
+            }
         }
         var issues = resolved.issues
         for row in resolved.balloons where (row["stale"] as? Bool == true)
@@ -2742,11 +4410,15 @@ public final class CADDrawingService {
             issues.append("Text \(row["id"] as? String ?? "?"): "
                           + reasons.joined(separator: " "))
         }
+        let sectionIncomplete = projection.sectionIncomplete
+            || projection.sectionCoverage.contains(where: { !$0.included })
         var payload: [String: Any] = [
             "ok": true,
             "mutated": mutated,
             "noRasterization": true,
             "page": pagePayload(page),
+            "sectionComplete": !sectionIncomplete,
+            "outputBlocked": projection.outputBlocked || sectionIncomplete,
             "counts": counts,
             "entities": graphics.entities.map(entityPayload),
             "texts": graphics.texts.map(textPayload),
@@ -2764,6 +4436,50 @@ public final class CADDrawingService {
             "missingInstanceIDs": projection.missingInstances.map(\.uuidString),
             "bindingIssues": issues,
         ]
+        if !projection.views.isEmpty {
+            payload["views"] = projection.views.map { item -> [String: Any] in
+                var row: [String: Any] = [
+                    "id": item.view.id.uuidString,
+                    "name": item.view.name,
+                    "kind": item.view.kind.rawValue,
+                    "scale": item.view.scale,
+                    "offset": pointPayload(item.offset),
+                    "entityCount": item.entities.count,
+                    "instanceCount": item.instances.count,
+                    "sectionComplete": item.sectionComplete,
+                    "notes": item.notes,
+                    "missingBodyIDs": item.missing.map(\.uuidString),
+                    "missingInstanceIDs": item.missingInstances.map(\.uuidString),
+                ]
+                row["view"] = viewPayload(item.view)
+                if let bounds = item.bounds {
+                    row["bounds"] = [pointPayload(bounds.min), pointPayload(bounds.max)]
+                }
+                if let local = item.localBounds {
+                    row["localBounds"] = [pointPayload(local.min), pointPayload(local.max)]
+                }
+                return row
+            }
+            payload["viewCount"] = projection.views.count
+            payload["isMultiView"] = true
+        }
+        if !projection.sectionCoverage.isEmpty {
+            payload["sectionCoverage"] = projection.sectionCoverage.map { coverage -> [String: Any] in
+                var row: [String: Any] = [
+                    "bodyID": coverage.bodyID.uuidString,
+                    "name": coverage.name,
+                    "analyticBRep": coverage.analyticBRep,
+                    "included": coverage.included,
+                ]
+                if let instanceID = coverage.instanceID {
+                    row["instanceID"] = instanceID.uuidString
+                }
+                return row
+            }
+        }
+        if !projection.viewIssues.isEmpty {
+            payload["viewLayoutIssues"] = projection.viewIssues
+        }
         if let viewID = page.explodedViewID {
             payload["explodedView"] = [
                 "id": viewID.uuidString,
@@ -2774,6 +4490,43 @@ public final class CADDrawingService {
         if page.showCenterlines {
             payload["centerlines"] = centerlines.map {
                 entityPayload(ProjectedEntity(shape: .line($0.0, $0.1), layer: "centerline"))
+            }
+        }
+        return payload
+    }
+
+    private func viewPayload(_ view: CADDrawingSheetView) -> [String: Any] {
+        var payload: [String: Any] = [
+            "id": view.id.uuidString,
+            "name": view.name,
+            "kind": view.kind.rawValue,
+            "scale": view.scale,
+            "offset": pointPayload(view.offset),
+            "viewNormal": vectorPayload(view.viewNormal),
+            "viewUp": vectorPayload(view.viewUp),
+            "alignment": [
+                "placement": view.alignment.placement.rawValue,
+                "referenceViewID": (view.alignment.referenceViewID?.uuidString as Any?) ?? NSNull(),
+                "gapMM": view.alignment.gapMM,
+            ],
+        ]
+        if let ids = view.sourceBodyIDs {
+            payload["sourceBodyIDs"] = ids.map(\.uuidString)
+        }
+        if view.kind == .section {
+            if let origin = view.sectionOrigin {
+                payload["sectionOrigin"] = vectorPayload(origin)
+            }
+            if let normal = view.sectionNormal {
+                payload["sectionNormal"] = vectorPayload(normal)
+            }
+        }
+        if view.kind == .detail {
+            if let origin = view.detailOrigin {
+                payload["detailOrigin"] = vectorPayload(origin)
+            }
+            if let size = view.detailSizeMM {
+                payload["detailSizeMM"] = [size.x, size.y]
             }
         }
         return payload
@@ -2800,7 +4553,12 @@ public final class CADDrawingService {
             "balloonCount": page.balloons.count,
             "manualDimensionCount": page.manualDimensions.count,
             "annotationCount": page.annotations.count,
+            "viewCount": page.effectiveSheetViews.count,
+            "isMultiView": page.isMultiViewSheet,
         ]
+        if page.sheetViews != nil {
+            payload["views"] = page.effectiveSheetViews.map { viewPayload($0) }
+        }
         payload["bomEntryCount"] = page.bom?.entries.count ?? 0
         if let viewID = page.explodedViewID { payload["explodedViewID"] = viewID.uuidString }
         if let viewName = page.explodedViewName { payload["explodedViewName"] = viewName }
@@ -2897,9 +4655,14 @@ public final class CADDrawingService {
         // title block at the bottom. All exports share this placement, and the
         // preview uses the same pre-offset model space.
         var offset = SIMD2<Double>.zero
-        if let bounds = entityBounds(projection.entities)
-            ?? entityBounds(graphics.entities) {
-            offset = SIMD2(20 - bounds.min.x, 40 - bounds.min.y)
+        if page.sheetViews == nil {
+            // Legacy single-view sheet: model geometry is placed in the upper
+            // left, clear of the title block. A v4 page already carries an
+            // explicit per-view sheet offset, so it must not be moved again.
+            if let bounds = entityBounds(projection.entities)
+                ?? entityBounds(graphics.entities) {
+                offset = SIMD2(20 - bounds.min.x, 40 - bounds.min.y)
+            }
         }
         let placedEntities = graphics.entities.map { $0.translated(by: offset) }
         let placedTexts = graphics.texts.map {
@@ -2938,7 +4701,18 @@ public final class CADDrawingService {
         texts.append(DrawingText(text: page.title.isEmpty ? page.name : page.title,
                                  position: SIMD2(blockMin.x + 2, blockMin.y + 4),
                                  height: 3.5, layer: "title"))
-        texts.append(DrawingText(text: scaleText(page.scale),
+        let scaleLabel: String
+        if page.sheetViews == nil {
+            scaleLabel = scaleText(page.scale)
+        } else {
+            let scales = page.effectiveSheetViews.map(\.scale)
+            if let first = scales.first, scales.allSatisfy({ abs($0 - first) < 1e-9 }) {
+                scaleLabel = scaleText(first)
+            } else {
+                scaleLabel = "AS SHOWN"
+            }
+        }
+        texts.append(DrawingText(text: scaleLabel,
                                  position: SIMD2(blockMin.x + 72, blockMin.y + 14),
                                  height: 3.5, layer: "title"))
         if !page.partNumbers.isEmpty {
@@ -3546,9 +5320,10 @@ public final class CADDrawingService {
                         + "(v\(CADDrawingSet.currentSchemaVersion)); edits are refused.")
         }
         var updated = set
-        // v3 is additive: old v1/v2 pages decoded with defaults, but the first
-        // write this build produces is honestly stamped v3 so an older reader
-        // cannot silently drop the new fields on a later edit.
+        // v4 is additive: old v1/v2/v3 pages decoded with defaults, but the
+        // first write this build produces is honestly stamped v4 so an older
+        // reader cannot silently drop shared-sheet views or linked-dimension
+        // identity on a later edit.
         updated.schemaVersion = CADDrawingSet.currentSchemaVersion
         do {
             let data = try updated.encoded()
@@ -3578,13 +5353,35 @@ public final class CADDrawingService {
         page.assemblyMode || page.kind == .exploded || page.explodedViewID != nil
     }
 
+    /// True when a section view on this page would omit a source (mesh-only,
+    /// missing body or missing instance). Vector export must be blocked rather
+    /// than presenting the partial section as a complete drawing.
+    private func pageSectionIncomplete(_ page: CADDrawingPage) -> Bool {
+        for view in page.effectiveSheetViews where view.kind == .section {
+            if view.sectionOrigin == nil || view.sectionNormal == nil { return true }
+            if !view.scale.isFinite || view.scale <= 0 { return true }
+            let resolved = projectionSources(for: page, sourceBodyIDs: view.sourceBodyIDs)
+            if !resolved.missingBodies.isEmpty || !resolved.missingInstances.isEmpty {
+                return true
+            }
+            if resolved.sources.contains(where: { $0.body.brep == nil }) {
+                return true
+            }
+            if resolved.sources.isEmpty {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Informational revision for the status line: the max `meshRevision`
     /// over resolvable sources. NOT the staleness authority (see
     /// `liveFingerprint`).
     private func maxMeshRevision(for page: CADDrawingPage) -> UInt64? {
         var revision: UInt64?
+        let pageSourceIDs = page.effectiveSourceBodyIDs
         if pageIsAssemblyAware(page) {
-            let filter = Set(page.sourceBodyIDs)
+            let filter = Set(pageSourceIDs)
             for instance in loadAssemblyValue()?.instances ?? [] where !instance.isHidden {
                 let id = effectiveBodyID(instance)
                 guard filter.isEmpty || filter.contains(id),
@@ -3593,7 +5390,7 @@ public final class CADDrawingService {
             }
             return revision
         }
-        for id in page.sourceBodyIDs {
+        for id in pageSourceIDs {
             guard let body = body(for: id) else { continue }
             revision = max(revision ?? 0, body.meshRevision)
         }
@@ -3607,8 +5404,9 @@ public final class CADDrawingService {
     /// offset, so switching a view (or moving an instance) marks the page
     /// stale even when the source mesh is unchanged.
     private func liveFingerprint(for page: CADDrawingPage) -> CADDrawingSourceFingerprint {
+        let pageSourceIDs = page.effectiveSourceBodyIDs
         guard pageIsAssemblyAware(page) else {
-            return CADDrawingSourceFingerprint(sources: page.sourceBodyIDs.map { id in
+            return CADDrawingSourceFingerprint(sources: pageSourceIDs.map { id in
                 guard let body = body(for: id) else {
                     return CADDrawingSourceFingerprint.Source(bodyID: id, missing: true)
                 }
@@ -3621,7 +5419,7 @@ public final class CADDrawingService {
         }
         let assembly = loadAssemblyValue()
         let view = page.explodedViewID.flatMap { assembly?.explodedView($0) }
-        let filter = Set(page.sourceBodyIDs)
+        let filter = Set(pageSourceIDs)
         var instances = (assembly?.instances ?? []).filter { !$0.isHidden }
         if !filter.isEmpty {
             instances = instances.filter { filter.contains(effectiveBodyID($0)) }
@@ -3630,13 +5428,13 @@ public final class CADDrawingService {
 
         var sourceIDs: [UUID] = []
         var seen = Set<UUID>()
-        if page.sourceBodyIDs.isEmpty {
+        if pageSourceIDs.isEmpty {
             for instance in instances {
                 let id = effectiveBodyID(instance)
                 if seen.insert(id).inserted { sourceIDs.append(id) }
             }
         } else {
-            sourceIDs = page.sourceBodyIDs
+            sourceIDs = pageSourceIDs
         }
         let sources = sourceIDs.map { id -> CADDrawingSourceFingerprint.Source in
             guard let body = body(for: id) else {
@@ -3836,6 +5634,35 @@ private nonisolated struct PageProjection {
     var instances: [ProjectedInstance] = []
     var explodedViewID: UUID?
     var explodedViewName: String?
+    /// Populated for a v4 shared sheet (one entry per view); legacy pages
+    /// keep it empty so their payload stays unchanged.
+    var views: [CADDrawingViewProjection] = []
+    var viewIssues: [String] = []
+    var sectionCoverage: [CADDrawingSectionCoverage] = []
+    var sectionIncomplete: Bool = false
+    var outputBlocked: Bool = false
+}
+
+private nonisolated struct CADDrawingViewProjection {
+    var view: CADDrawingSheetView
+    var offset: SIMD2<Double> = .zero
+    var entities: [ProjectedEntity] = []
+    var instances: [ProjectedInstance] = []
+    var notes: [String] = []
+    var missing: [UUID] = []
+    var missingInstances: [UUID] = []
+    var sectionCoverage: [CADDrawingSectionCoverage] = []
+    var sectionComplete: Bool = true
+    var localBounds: (min: SIMD2<Double>, max: SIMD2<Double>)?
+    var bounds: (min: SIMD2<Double>, max: SIMD2<Double>)?
+}
+
+private nonisolated struct CADDrawingSectionCoverage {
+    var bodyID: UUID
+    var instanceID: UUID?
+    var name: String
+    var analyticBRep: Bool
+    var included: Bool
 }
 
 /// One geometry source for projection: a plain body (instanceID nil) or one

@@ -58,13 +58,15 @@ public nonisolated enum CADServiceOperations {
         "removePartReference", "makeIndependent",
     ]
 
-    /// Mutating drawing actions. `pages`/`project`/`dimensions`/`export` are
-    /// read-only (project pins the fingerprint, which is metadata, but it does
-    /// not change user-visible geometry — kept read-only deliberately). Every
-    /// assembly-sheet/BOM/balloon/manual-dimension/annotation action persists
-    /// the drawing set and is therefore included.
+    /// Mutating drawing actions. `pages`/`project`/`dimensions`/
+    /// `dimensionCandidates`/`export` are read-only (project pins the
+    /// fingerprint, which is metadata, but it does not change user-visible
+    /// geometry — kept read-only deliberately). Every sheet/view/BOM/balloon/
+    /// manual-dimension/annotation action persists the drawing set and is
+    /// therefore included.
     public static let mutatingDrawingActions: Set<String> = [
         "addPage", "updatePage", "removePage", "standardSheet",
+        "multiViewSheet", "addView", "updateView", "removeView", "layoutViews",
         "assemblySheet", "setBOM",
         "addBalloon", "updateBalloon", "removeBalloon",
         "addDimension", "updateDimension", "removeDimension",
