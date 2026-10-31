@@ -118,8 +118,20 @@ final class EngineeringSceneResourceWitnessTests: XCTestCase {
                          file: StaticString = #filePath,
                          line: UInt = #line) async throws -> CadModelObservationResult {
         let service = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root))
-        return try await EngineeringObservationService.shared.observe(
-            path: path, service: service, request: request)
+        do {
+            return try await EngineeringObservationService.shared.observe(
+                path: path, service: service, request: request)
+        } catch {
+            // Keep the original error before XCTest formats an asynchronous
+            // App-host failure at the application's entry point.
+            let reason = (error as? FloeError)?.reason ?? String(reflecting: error)
+            print("SCENE_OBSERVATION_FAILURE path=\(path) reason=\(reason)")
+            let evidence = XCTAttachment(string: "path=\(path)\n\(reason)")
+            evidence.name = "scene-observation-original-error"
+            evidence.lifetime = .keepAlways
+            add(evidence)
+            throw error
+        }
     }
 
     private func json(_ text: String) throws -> [String: Any] {
@@ -263,6 +275,36 @@ final class EngineeringSceneResourceWitnessTests: XCTestCase {
                 if delta >= threshold { changed += 1 }
             }
             return Double(changed) / Double(total)
+        }
+
+        /// Compare the rendered object, excluding unchanged clear-colour
+        /// pixels. A quad occupies only part of the canvas; requiring a
+        /// canvas-wide percentage makes a correct texture fail when fitted.
+        func objectDifferenceFraction(from other: Pixels) throws -> Double {
+            guard width == other.width, height == other.height else {
+                throw FloeError.validationFailed("frames have different dimensions")
+            }
+            let firstBackground = background()
+            let secondBackground = other.background()
+            var samples = 0
+            var changed = 0
+            func distance(_ first: (Int, Int, Int), _ second: (Int, Int, Int)) -> Int {
+                max(abs(first.0 - second.0), max(abs(first.1 - second.1), abs(first.2 - second.2)))
+            }
+            for y in 0..<height {
+                for x in 0..<width {
+                    let first = rgb(x, y)
+                    let second = other.rgb(x, y)
+                    guard distance(first, firstBackground) > 18
+                        || distance(second, secondBackground) > 18 else { continue }
+                    samples += 1
+                    if distance(first, second) >= 8 { changed += 1 }
+                }
+            }
+            guard samples > 0 else {
+                throw FloeError.validationFailed("no rendered object pixels")
+            }
+            return Double(changed) / Double(samples)
         }
 
         func distinctColorCount(limit: Int = 4096) -> Int {
@@ -465,10 +507,29 @@ final class EngineeringSceneResourceWitnessTests: XCTestCase {
             fileURL: sourceURL, includeSiblingResources: false, limits: .standard)
         let session = EngineeringWebSession()
         let errors = Box<String?>(nil)
-        _ = session.attach(package: package, identity: "witness-controls",
-                           error: errors.binding, onReview: nil, onSave: nil,
-                           onDirty: nil, dark: false, locale: "en")
-        defer { session.tearDown() }
+        let web = session.attach(package: package, identity: "witness-controls",
+                                 error: errors.binding, onReview: nil, onSave: nil,
+                                 onDirty: nil, dark: false, locale: "en")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previousKeyWindow = scene.windows.first { $0.isKeyWindow }
+        let host = UIWindow(windowScene: scene)
+        host.frame = scene.screen.bounds
+        let controller = UIViewController()
+        host.rootViewController = controller
+        host.makeKeyAndVisible()
+        controller.view.addSubview(web)
+        web.frame = CGRect(x: 0, y: 0, width: 640, height: 480)
+        web.layoutIfNeeded()
+        XCTAssertTrue(web.window === host && !host.isHidden,
+                      "Playback needs a real visible host; offscreen capture does not drive RAF")
+        defer {
+            web.removeFromSuperview()
+            session.tearDown()
+            host.isHidden = true
+            previousKeyWindow?.makeKey()
+        }
         try await waitUntil("the live scene never became ready") {
             session.sceneState?.ready == true
         }
@@ -773,8 +834,15 @@ final class EngineeringSceneResourceWitnessTests: XCTestCase {
         assertFourQuadrantTexture(secondPixels,
                                   expected: [.black, .white, .cyan, .magenta],
                                   label: "texture-B")
-        XCTAssertGreaterThan(try firstPixels.differenceFraction(from: secondPixels), 0.2,
-                             "a different source texture must change the actual render")
+        let unchanged = try await observe(Fixtures.textureA, in: root, .init(
+            views: [.init(azimuthDegrees: 0, elevationDegrees: 0)],
+            width: 480, height: 360,
+            expectedSourceSHA256: FloeDigest.sha256Hex(firstBytes)))
+        let unchangedPixels = try Pixels.decode(try XCTUnwrap(unchanged.frames.first).pngData)
+        XCTAssertLessThan(try firstPixels.differenceFraction(from: unchangedPixels), 0.005,
+                          "the same source texture is a negative control")
+        XCTAssertGreaterThan(try firstPixels.objectDifferenceFraction(from: secondPixels), 0.8,
+                             "changing all four source quadrants must change the actual object pixels")
         XCTAssertEqual(try Data(contentsOf: firstURL), firstBytes)
         XCTAssertEqual(try Data(contentsOf: secondURL), secondBytes)
         attachPNG(try XCTUnwrap(first.frames.first).pngData, name: "scene-texture-a")

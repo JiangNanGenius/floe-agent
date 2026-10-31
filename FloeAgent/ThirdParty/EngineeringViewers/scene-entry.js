@@ -199,6 +199,20 @@ export function createEngineeringScene({container, package: pkg, config = {}, sa
   let ktx2 = null;
   try {
     ktx2 = new KTX2Loader(manager).setTranscoderPath('./').detectSupport(renderer);
+    // r176's pool handles message replies only. A worker startup/decoding
+    // exception otherwise leaves its texture promise pending until the page
+    // times out, hiding the real failure from the native error bridge.
+    const pool = ktx2.workerPool;
+    const setCreator = pool.setWorkerCreator.bind(pool);
+    pool.setWorkerCreator = (factory) => setCreator(() => {
+      const worker = factory();
+      const report = (message) => {
+        if (!disposed) onError?.(new Error(`Texture decoder: ${message}`));
+      };
+      worker.addEventListener('error', (event) => report(event.message || 'worker failed'), {once: true});
+      worker.addEventListener('messageerror', () => report('invalid worker response'), {once: true});
+      return worker;
+    });
     loader.setKTX2Loader(ktx2);
   } catch {
     ktx2 = null;
