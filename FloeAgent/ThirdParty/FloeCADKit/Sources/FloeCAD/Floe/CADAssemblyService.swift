@@ -6,8 +6,10 @@
 //  positioning constraints (including live face/axis/edge picks with query-
 //  generation fences), named exploded views (display/drawing state only), an
 //  iterative projection solver, rank-based DOF reporting with an explicit
-//  residual-solve credibility check, and exact (OCCT) / approximate (AABB)
-//  interference checks. Existing constraints can be edited in place while
+//  residual-solve credibility check, and selected-instance all-pairs
+//  interference: exact OCCT common volume where both instances carry a B-rep,
+//  otherwise real triangle-surface distance/contact/containment (AABB is
+//  broadphase only). Existing constraints can be edited in place while
 //  keeping their stable id, scope and reference pins.
 //
 //  The service is a MainActor façade. It reads and writes the assembly JSON in
@@ -24,16 +26,205 @@
 //
 //  Threading: the service is a MainActor façade over the persisted JSON, but
 //  exact OCCT work never runs there. `handleAsync(action: "interference")`
-//  serializes the world-placed B-reps on the main actor, deserializes them in a
-//  detached task that owns those copies exclusively, and validates task
-//  cancellation plus the document revision/change count before accepting the
-//  result — a late result from a document that moved is discarded. Live
+//  resolves an explicit instance/subassembly subset, snapshots immutable mesh
+//  and B-rep bytes on the main actor, then streams every requested pair through
+//  one detached worker that owns its deserialized copies exclusively. The
+//  service owns real processed-pair progress and cancellation, and validates
+//  task cancellation plus the document revision/change count before accepting
+//  the result — a late result from a document that moved is discarded. Live
 //  `BRepHandle`s are never shared across threads (see the CAVEAT in
 //  OCCTKernel.swift).
 //
 
 import Foundation
+import CryptoKit
 import simd
+
+
+// MARK: - Interference run state
+
+/// One generation of a CAD document. Both values are checked after the worker
+/// joins; a result from any other generation is discarded.
+nonisolated struct CADAssemblyKernelRevisionToken: Equatable, Sendable {
+    let revision: Int
+    let changeCount: Int
+}
+
+nonisolated struct CADAssemblyInterferenceGeometryKey: Hashable, Sendable {
+    let bodyID: UUID
+    let meshRevision: UInt64
+}
+
+/// Immutable per-occurrence input for off-main inspection. The mesh arrays are
+/// retained value storage (copy-on-write), not a new world-space triangle copy;
+/// the worker builds one local geometry per unique body definition.
+nonisolated struct CADAssemblyInterferenceInstanceSnapshot: Sendable {
+    let instanceID: UUID
+    let name: String
+    let bodyID: UUID?
+    let geometryKey: CADAssemblyInterferenceGeometryKey?
+    let placement: CADInterferenceTransform
+    let positions: [SIMD3<Float>]
+    let indices: [UInt32]
+    let brepData: Data?
+    let brepUnavailable: Bool
+    let missingReason: String?
+}
+
+nonisolated struct CADAssemblyInterferencePairOutcome: Sendable {
+    let a: UUID
+    let b: UUID
+    let mode: String
+    let classification: String
+    let exactVolume: Bool
+    let volumeMM3: Double?
+    /// The explicit cubic (mm³) threshold used for this exact result. Never
+    /// the linear contact tolerance.
+    let volumeThresholdMM3: Double?
+    /// A real positive common volume is below the explicit cubic threshold.
+    /// It remains reported with its actual volume; it is never rewritten as
+    /// `noSharedVolume` or `separated`.
+    let volumeBelowThreshold: Bool?
+    let volumeClassification: String?
+    let minimumDistanceMM: Double?
+    let precisionMM: Double?
+    let witnessA: SIMD3<Double>?
+    let witnessB: SIMD3<Double>?
+    let triangleA: Int?
+    let triangleB: Int?
+    let surfaceCrossing: Bool
+    let surfaceTouching: Bool
+    let containment: String
+    let aabbGapMM: Double?
+    let aabbOverlapVolumeMM3: Double?
+    let topologyA: CADInterferenceMeshTopology?
+    let topologyB: CADInterferenceMeshTopology?
+    let notes: [String]
+    let unresolvedReason: String?
+    let kernelRefused: Bool
+    let kernelErrorDetail: String?
+}
+
+nonisolated struct CADAssemblyInterferenceWorkerResult: Sendable {
+    let outcomes: [CADAssemblyInterferencePairOutcome]
+    let cancelled: Bool
+    /// The complete detailed result would exceed the explicit byte envelope.
+    /// No outcome is returned in this case: an envelope refusal is atomic and
+    /// never presents `ok=true` with a dropped tail.
+    let budgetExceeded: Bool
+    /// A row could not be encoded as finite JSON. The service refuses instead
+    /// of silently omitting it.
+    let detailEncodingFailed: Bool
+    /// Encoded UTF-8 bytes of every accepted detail row (canonical sorted-key
+    /// JSON, one LF per row).
+    let detailBytes: Int
+}
+
+/// Thread-safe progress owned by the service run. Every processed requested
+/// pair increments exactly one counter; no UI-derived percentage is used.
+nonisolated final class CADAssemblyInterferenceProgressBox: @unchecked Sendable {
+    struct Snapshot: Sendable, Equatable {
+        var runID: UUID
+        var phase: String
+        var selectedInstanceCount: Int
+        var requestedPairCount: Int
+        var processedPairCount: Int
+        var exactPairCount: Int
+        var meshPairCount: Int
+        var interferingPairCount: Int
+        var contactPairCount: Int
+        var separatedPairCount: Int
+        var unresolvedPairCount: Int
+        var cancelled: Bool
+        var startedAt: Date
+    }
+
+    private let lock = NSLock()
+    private var state: Snapshot
+
+    init(runID: UUID) {
+        state = Snapshot(
+            runID: runID, phase: "preparing", selectedInstanceCount: 0,
+            requestedPairCount: 0, processedPairCount: 0,
+            exactPairCount: 0, meshPairCount: 0,
+            interferingPairCount: 0, contactPairCount: 0,
+            separatedPairCount: 0, unresolvedPairCount: 0,
+            cancelled: false, startedAt: Date())
+    }
+
+    func begin(total: Int, selected: Int) {
+        lock.lock()
+        state.requestedPairCount = max(0, total)
+        state.selectedInstanceCount = max(0, selected)
+        state.phase = "checking"
+        lock.unlock()
+    }
+
+    func recordPair(mode: String, classification: String) {
+        lock.lock()
+        state.processedPairCount += 1
+        if mode.hasPrefix("brep") { state.exactPairCount += 1 }
+        if mode == "mesh" { state.meshPairCount += 1 }
+        switch classification {
+        case "penetrating": state.interferingPairCount += 1
+        case "contact": state.contactPairCount += 1
+        case "separated": state.separatedPairCount += 1
+        default: state.unresolvedPairCount += 1
+        }
+        lock.unlock()
+    }
+
+    func setPhase(_ phase: String) {
+        lock.lock()
+        state.phase = phase
+        lock.unlock()
+    }
+
+    func requestCancel() {
+        lock.lock()
+        state.cancelled = true
+        state.phase = "cancelling"
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return state.cancelled
+    }
+
+    func snapshot() -> Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return state
+    }
+}
+
+@MainActor
+final class CADAssemblyInterferenceRun {
+    let id: UUID
+    let documentKey: ObjectIdentifier
+    let token: CADAssemblyKernelRevisionToken
+    let progress: CADAssemblyInterferenceProgressBox
+    private var worker: Task<CADAssemblyInterferenceWorkerResult, Never>?
+
+    init(documentKey: ObjectIdentifier, token: CADAssemblyKernelRevisionToken) {
+        self.id = UUID()
+        self.documentKey = documentKey
+        self.token = token
+        self.progress = CADAssemblyInterferenceProgressBox(runID: id)
+    }
+
+    func attach(_ task: Task<CADAssemblyInterferenceWorkerResult, Never>) {
+        worker = task
+        if progress.isCancelled { task.cancel() }
+    }
+
+    func cancel() {
+        progress.requestCancel()
+        worker?.cancel()
+    }
+}
 
 @MainActor
 public final class CADAssemblyService {
@@ -46,6 +237,9 @@ public final class CADAssemblyService {
     /// One JSON-shaped action. See the action list in
     /// `docs/FLOE_CAD_AND_DRAWING_ASSISTANT.md`. Never throws.
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        guard !document.isClosed else {
+            return fail("closed", "The CAD document is closed.")
+        }
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "assembly", action: action) { return refusal }
         switch action {
         case "report": return reportAction()
@@ -60,6 +254,9 @@ public final class CADAssemblyService {
         case "suppressConstraint": return suppressConstraintAction(args)
         case "solve": return solveAction()
         case "dof": return dofAction()
+        case "interferencePlan": return interferencePlanAction(args)
+        case "interferenceStatus": return interferenceStatusAction()
+        case "cancelInterference": return cancelInterferenceAction()
         case "interference":
             return fail("needs_async",
                         "Exact interference runs the kernel off the main actor; "
@@ -100,9 +297,45 @@ public final class CADAssemblyService {
     /// is accepted (late results from a moved document are discarded). All
     /// other actions delegate to the synchronous path.
     public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
+        guard !document.isClosed else {
+            return fail("closed", "The CAD document is closed.")
+        }
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "assembly", action: action) { return refusal }
         guard action == "interference" else { return handle(action: action, args: args) }
         return await interferenceOffMain(args)
+    }
+
+    /// Current progress/pair counts of the one active inspection for this
+    /// document, or nil when none is active. The service, not the UI, owns
+    /// these counters; a tool caller can poll `interferenceStatus`.
+    public func interferenceProgress() -> [String: Any]? {
+        guard let run = Self.activeInterferenceRuns[ObjectIdentifier(document)] else {
+            return nil
+        }
+        return progressPayload(run.progress.snapshot())
+    }
+
+    /// Request cancellation of the active inspection. The awaiting caller is
+    /// released only after the detached worker observes the flag and returns;
+    /// no partial result is accepted.
+    public func cancelInterference() -> [String: Any] {
+        let key = ObjectIdentifier(document)
+        guard let run = Self.activeInterferenceRuns[key] else {
+            return ["ok": true, "active": false, "cancelRequested": false, "mutated": false]
+        }
+        run.cancel()
+        var payload = progressPayload(run.progress.snapshot())
+        payload["ok"] = true
+        payload["active"] = true
+        payload["cancelRequested"] = true
+        return payload
+    }
+
+    /// Closing the owner fences the existing run, including calls made through
+    /// another facade. The awaiting caller still joins its serialized-copy
+    /// worker before returning; a close never accepts those late results.
+    static func cancelInterference(for document: FloeCADDocument) {
+        activeInterferenceRuns[ObjectIdentifier(document)]?.cancel()
     }
 
     /// Test-only seam called inside the detached exact-interference worker so
@@ -110,10 +343,35 @@ public final class CADAssemblyService {
     /// production code.
     nonisolated(unsafe) static var testOffMainProbe: (@Sendable () -> Void)?
 
-    private struct KernelRevisionToken: Equatable, Sendable {
-        let revision: Int
-        let changeCount: Int
-    }
+    /// Test-only progress seam. Called after every processed requested pair
+    /// with the service-owned snapshot; it may block a suite that needs to
+    /// cancel or mutate the document at a deterministic midpoint. Never set in
+    /// production code.
+    nonisolated(unsafe) static var testInterferencePairProbe:
+        (@Sendable (CADAssemblyInterferenceProgressBox.Snapshot) -> Void)?
+
+    private static var activeInterferenceRuns:
+        [ObjectIdentifier: CADAssemblyInterferenceRun] = [:]
+
+    /// Explicit result envelope for ALL completed pair details. It is below
+    /// the runtime's 8 MiB per-result full-capture budget and far below the
+    /// 64 MiB per-task capture quota, so a complete accepted result is retained
+    /// and pageable without an intrinsic detail-row cap. A result that would
+    /// exceed this envelope is refused atomically (`result_too_large`) with an
+    /// actionable subset-selection message; it is never returned as
+    /// `ok=true` with a dropped tail.
+    public static let interferenceResultBudgetBytes = 6 * 1_024 * 1_024
+
+    /// Digest basis for the complete detail arrays: SHA-256 over each row's
+    /// canonical JSON (sorted keys, UTF-8) in returned order, one LF after
+    /// each row. Recovery/paging can verify the exact retained bytes without
+    /// re-running the kernel.
+    public static let interferenceDetailDigestAlgorithm =
+        "sha256-canonical-json-row-lf-v1"
+
+    /// Test-only envelope override, used to prove honest refusal without
+    /// allocating a six-megabyte result. Never set in production code.
+    nonisolated(unsafe) static var testInterferenceResultBudgetBytes: Int?
 
     /// One resolved constraint reference in the instance's placement-local
     /// frame (the same frame `CADAssemblySolver` consumes). Produced by
@@ -144,19 +402,62 @@ public final class CADAssemblyService {
         }
     }
 
-    private struct ExactPairPlan: Sendable {
-        let a: String
-        let b: String
-        let dataA: Data
-        let dataB: Data
-        let boxA: (min: SIMD3<Double>, max: SIMD3<Double>)
-        let boxB: (min: SIMD3<Double>, max: SIMD3<Double>)
+    // MARK: - Interference planning and execution
+
+    private struct InterferenceSelection {
+        let occurrences: [CADAssemblyOccurrence]
+        let requestedIDs: [UUID]?
     }
 
-    private enum ExactPairOutcome: Sendable {
-        case interfering(volumeMM3: Double)
-        case noSharedVolume
-        case fallback
+    private enum InterferenceSerializedBRep: Sendable {
+        case data(Data)
+        case failed
+    }
+
+    private func interferencePlanAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        let selection: InterferenceSelection
+        switch resolveInterferenceSelection(assembly, args: args) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let resolved): selection = resolved
+        }
+        let count = selection.occurrences.count
+        let pairCount = count * (count - 1) / 2
+        var payload: [String: Any] = [
+            "ok": true,
+            "mutated": false,
+            "selectedInstanceCount": count,
+            "selectedInstanceIDs": selection.occurrences.map { $0.instance.id.uuidString },
+            "selectedNames": selection.occurrences.map(\.instance.name),
+            "pairCount": pairCount,
+            "units": "mm",
+        ]
+        if let requested = selection.requestedIDs {
+            payload["requestedInstanceIDs"] = requested.map(\.uuidString)
+        } else {
+            payload["requestedInstanceIDs"] = NSNull()
+        }
+        return payload
+    }
+
+    private func interferenceStatusAction() -> [String: Any] {
+        guard let run = Self.activeInterferenceRuns[ObjectIdentifier(document)] else {
+            return ["ok": true, "active": false, "mutated": false]
+        }
+        var payload = progressPayload(run.progress.snapshot())
+        payload["ok"] = true
+        payload["active"] = true
+        return payload
+    }
+
+    private func cancelInterferenceAction() -> [String: Any] {
+        var payload = cancelInterference()
+        payload["mutated"] = false
+        return payload
     }
 
     private func interferenceOffMain(_ args: [String: Any]) async -> [String: Any] {
@@ -166,135 +467,1003 @@ public final class CADAssemblyService {
         case .success(let loaded): assembly = loaded
         }
 
-        let tolerance = doubleValue(args["toleranceMM"]) ?? 1e-6
-        guard tolerance.isFinite, tolerance >= 0 else {
-            return fail("bad_tolerance", "toleranceMM must be a finite, non-negative number of mm.")
-        }
-
-        let instances = assembly.occurrences(includeHidden: true).filter {
-            $0.isDrawablePart
-        }
-        let pairCount = instances.count * (instances.count - 1) / 2
-        let maxPairs = 32
-        guard pairCount <= maxPairs else {
-            return fail("too_many_pairs",
-                        "\(pairCount) instance pairs exceed the \(maxPairs)-pair exact-check budget; "
-                        + "remove instances or check subsets.")
-        }
-
-        var plans: [ExactPairPlan] = []
-        var entries: [[String: Any]] = []
-        var unresolved: Set<String> = []
-        var refusedPairs: [[String]] = []
-
-        for i in 0..<instances.count {
-            for j in (i + 1)..<instances.count {
-                let a = instances[i]
-                let b = instances[j]
-                guard let bodyIDA = a.effectiveBodyID,
-                      let bodyIDB = b.effectiveBodyID,
-                      let sourceA = body(for: bodyIDA),
-                      let sourceB = body(for: bodyIDB) else {
-                    if a.effectiveBodyID.flatMap({ body(for: $0) }) == nil {
-                        unresolved.insert(a.instance.id.uuidString)
-                    }
-                    if b.effectiveBodyID.flatMap({ body(for: $0) }) == nil {
-                        unresolved.insert(b.instance.id.uuidString)
-                    }
-                    continue
-                }
-                guard let worldA = placedBody(sourceA, transform: a.worldTransform),
-                      let worldB = placedBody(sourceB, transform: b.worldTransform),
-                      let boxA = MeasureKit.boundingBox(bodies: [worldA]),
-                      let boxB = MeasureKit.boundingBox(bodies: [worldB]) else {
-                    unresolved.insert(a.instance.id.uuidString)
-                    unresolved.insert(b.instance.id.uuidString)
-                    continue
-                }
-                guard aabbOverlap(boxA, boxB, tolerance: tolerance) else { continue }
-
-                let pair: [String] = [a.instance.id.uuidString, b.instance.id.uuidString]
-                if let brepA = worldA.brep, let brepB = worldB.brep,
-                   let dataA = OCCTKernel.serialize(brepA),
-                   let dataB = OCCTKernel.serialize(brepB) {
-                    plans.append(ExactPairPlan(a: pair[0], b: pair[1],
-                                               dataA: dataA, dataB: dataB,
-                                               boxA: boxA, boxB: boxB))
-                } else {
-                    entries.append(meshFallbackEntry(pair, boxA: boxA, boxB: boxB,
-                                                     tolerance: tolerance))
-                }
+        let tolerance: Double
+        if let raw = args["toleranceMM"], !(raw is NSNull) {
+            guard let value = doubleValue(raw), value.isFinite, value >= 0 else {
+                return fail("bad_tolerance",
+                            "toleranceMM must be a finite, non-negative number of mm.")
             }
+            tolerance = value
+        } else {
+            tolerance = 1e-6
         }
-
-        let token = KernelRevisionToken(revision: document.store.revision,
-                                        changeCount: document.session.changeCount)
-        let probe = Self.testOffMainProbe
-        let outcomes: [ExactPairOutcome] = await Task.detached(priority: .userInitiated) {
-            probe?()
-            var results: [ExactPairOutcome] = []
-            results.reserveCapacity(plans.count)
-            for plan in plans {
-                if Task.isCancelled {
-                    results.append(.fallback)
-                    continue
-                }
-                guard let handleA = OCCTKernel.deserialize(plan.dataA),
-                      let handleB = OCCTKernel.deserialize(plan.dataB) else {
-                    results.append(.fallback)
-                    continue
-                }
-                switch OCCTKernel.booleanResult(handleA, handleB, op: 2) {
-                case .success(let booleanOutcome):
-                    let volume = OCCTKernel.volume(booleanOutcome.handle)
-                    if volume.isFinite, volume > tolerance {
-                        results.append(.interfering(volumeMM3: volume))
-                    } else {
-                        results.append(.noSharedVolume)
-                    }
-                case .failure:
-                    // A regularized common with no solid means the bodies do
-                    // not share volume, not an error.
-                    results.append(.noSharedVolume)
-                }
+        // Distance/contact tolerance stays a LINEAR millimetre value. The
+        // exact OCCT common volume is CUBIC and therefore has its own explicit
+        // threshold; default 0 means any strictly positive common volume is a
+        // real penetration regardless of the linear clearance tolerance.
+        let volumeToleranceMM3: Double
+        if let raw = args["volumeToleranceMM3"], !(raw is NSNull) {
+            guard let value = doubleValue(raw), value.isFinite, value >= 0 else {
+                return fail("bad_volume_tolerance",
+                            "volumeToleranceMM3 must be a finite, non-negative number of mm³. "
+                            + "Use 0 (the default) to report any strictly positive exact common volume.")
             }
-            return results
-        }.value
-
-        if Task.isCancelled {
-            return fail("cancelled", "The interference check was cancelled; no result was used.")
+            volumeToleranceMM3 = value
+        } else {
+            volumeToleranceMM3 = 0
         }
-        let current = KernelRevisionToken(revision: document.store.revision,
-                                          changeCount: document.session.changeCount)
+        // `detailLimit` was an intrinsic row cap that silently dropped the
+        // tail of a completed result before the runtime could capture it.
+        // Refuse it explicitly instead of silently rerouting it.
+        if let legacy = args["detailLimit"], !(legacy is NSNull) {
+            return fail(
+                "deprecated_argument",
+                "detailLimit was removed because it silently dropped completed pair details. "
+                + "Every completed pair detail is now returned in full under the explicit "
+                + "\(Self.interferenceResultBudgetBytes)-byte result envelope; the runtime's "
+                + "existing capture paging exposes the retained text. Select a smaller instance "
+                + "subset instead of truncating the result.")
+        }
+        let resultBudgetBytes = max(
+            1_024,
+            min(Self.interferenceResultBudgetBytes,
+                Self.testInterferenceResultBudgetBytes ?? Self.interferenceResultBudgetBytes))
+
+        let selection: InterferenceSelection
+        switch resolveInterferenceSelection(assembly, args: args) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let resolved): selection = resolved
+        }
+
+        let selected = selection.occurrences
+        let pairCount = selected.count * (selected.count - 1) / 2
+        if pairCount == 0 {
+            let payload: [String: Any] = [
+                "ok": true,
+                "mutated": false,
+                "mode": "selected-subset-all-pairs",
+                "selectedInstanceCount": selected.count,
+                "selectedInstanceIDs": selected.map { $0.instance.id.uuidString },
+                "selectedNames": selected.map(\.instance.name),
+                "pairCount": 0,
+                "requestedPairCount": 0,
+                "processedPairCount": 0,
+                "interferingPairCount": 0,
+                "contactPairCount": 0,
+                "separatedPairCount": 0,
+                "unresolvedPairCount": 0,
+                "toleranceMM": tolerance,
+                "volumeToleranceMM3": volumeToleranceMM3,
+                "units": "mm",
+                "interferences": [],
+                "contacts": [],
+                "clearances": [],
+                "unresolvedPairs": [],
+                "unresolvedInstances": [],
+                "kernelRefusedPairs": [],
+                "kernelExecutor": "serialized-copy-off-main",
+                "resultBudgetBytes": resultBudgetBytes,
+                "detailRowCount": 0,
+                "detailBytes": 0,
+                "detailsComplete": true,
+                "detailDigest": Self.emptyDetailDigest,
+                "detailDigestAlgorithm": Self.interferenceDetailDigestAlgorithm,
+                "completed": true,
+                "notes": ["fewer than two drawable instances were selected; there are no pairs to inspect"],
+            ]
+            guard let encoded = try? JSONSerialization.data(withJSONObject: payload,
+                                                           options: [.sortedKeys]),
+                  encoded.count <= resultBudgetBytes else {
+                return interferenceBudgetFailure(
+                    budget: resultBudgetBytes, requestedPairs: 0,
+                    processedPairs: 0, selected: selected.count, progress: nil)
+            }
+            return payload
+        }
+
+        let token = CADAssemblyKernelRevisionToken(revision: document.store.revision,
+                                                   changeCount: document.session.changeCount)
+        let documentKey = ObjectIdentifier(document)
+        let started = Self.beginInterferenceRun(documentKey: documentKey, token: token)
+        if let busy = started.busy { return busy }
+        guard let run = started.run else {
+            return fail("interference_unavailable",
+                        "The interference run could not be started.")
+        }
+        defer { Self.finishInterferenceRun(run) }
+
+        var serialized: [CADAssemblyInterferenceGeometryKey: InterferenceSerializedBRep] = [:]
+        var snapshots: [CADAssemblyInterferenceInstanceSnapshot] = []
+        snapshots.reserveCapacity(selected.count)
+        for occurrence in selected {
+            snapshots.append(interferenceSnapshot(occurrence, serialized: &serialized))
+        }
+        // Reserve the payload's own identity/name/progress metadata before any
+        // pair work. The worker enforces the remaining row budget pair by
+        // pair, so a large assembly never materializes an unbounded pair plan
+        // or an oversized detail array.
+        let metadataAllowance = 16 * 1_024
+            + snapshots.reduce(0) {
+                $0 + $1.instanceID.uuidString.utf8.count + $1.name.utf8.count + 32
+            }
+            + (selection.requestedIDs?.reduce(0) {
+                $0 + $1.uuidString.utf8.count + 8
+            } ?? 0)
+        let detailBudgetBytes = resultBudgetBytes - metadataAllowance
+        guard detailBudgetBytes >= 4 * 1_024 else {
+            return interferenceBudgetFailure(
+                budget: resultBudgetBytes, requestedPairs: pairCount,
+                processedPairs: 0, selected: snapshots.count, progress: nil)
+        }
+        run.progress.begin(total: pairCount, selected: snapshots.count)
+
+        if run.progress.isCancelled || Task.isCancelled {
+            run.progress.setPhase("cancelled")
+            return interferenceFailure("cancelled",
+                                       "The interference check was cancelled before it started; "
+                                       + "no result was used.",
+                                       progress: run.progress.snapshot())
+        }
+
+        let box = run.progress
+        let offMainProbe = Self.testOffMainProbe
+        let pairProbe = Self.testInterferencePairProbe
+        let worker = Task.detached(priority: .userInitiated) {
+            offMainProbe?()
+            return Self.runInterferenceWorker(
+                snapshots: snapshots, toleranceMM: tolerance,
+                volumeToleranceMM3: volumeToleranceMM3,
+                detailBudgetBytes: detailBudgetBytes,
+                progress: box, pairProbe: pairProbe)
+        }
+        run.attach(worker)
+
+        let result = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            box.requestCancel()
+            worker.cancel()
+        }
+
+        guard !document.isClosed else {
+            box.setPhase("closed")
+            return interferenceFailure("closed",
+                                       "The document closed during the interference check; no result was used.",
+                                       progress: box.snapshot())
+        }
+        if box.isCancelled || Task.isCancelled {
+            box.setPhase("cancelled")
+            return interferenceFailure("cancelled",
+                                       "The interference check was cancelled and its worker joined; "
+                                       + "no partial result was used.",
+                                       progress: box.snapshot())
+        }
+        let current = CADAssemblyKernelRevisionToken(revision: document.store.revision,
+                                                     changeCount: document.session.changeCount)
         guard current == token else {
-            return fail("stale",
-                        "The document changed while the interference check ran; "
-                        + "re-run it against the current revision.")
+            box.setPhase("stale")
+            return interferenceFailure("stale",
+                                       "The document changed while the interference check ran; "
+                                       + "the old result was rejected. Re-run it against the current revision.",
+                                       progress: box.snapshot())
         }
+        if result.detailEncodingFailed {
+            box.setPhase("refused")
+            return interferenceFailure(
+                "detail_encoding_failed",
+                "A completed pair detail could not be encoded as finite JSON. No partial result "
+                + "was returned; report this as a service defect rather than a geometry result.",
+                progress: box.snapshot())
+        }
+        if result.budgetExceeded {
+            box.setPhase("result_too_large")
+            return interferenceBudgetFailure(
+                budget: resultBudgetBytes, requestedPairs: pairCount,
+                processedPairs: box.snapshot().processedPairCount,
+                selected: snapshots.count, progress: box.snapshot())
+        }
+        box.setPhase("completed")
 
-        for (index, outcome) in outcomes.enumerated() where index < plans.count {
-            let plan = plans[index]
-            switch outcome {
-            case .interfering(let volume):
-                entries.append(["a": plan.a, "b": plan.b, "volumeMM3": volume, "exact": true])
-            case .noSharedVolume:
-                refusedPairs.append([plan.a, plan.b])
-            case .fallback:
-                entries.append(meshFallbackEntry([plan.a, plan.b], boxA: plan.boxA, boxB: plan.boxB,
-                                                 tolerance: tolerance))
+        var interferences: [[String: Any]] = []
+        var contacts: [[String: Any]] = []
+        var clearances: [[String: Any]] = []
+        var unresolved: [[String: Any]] = []
+        var kernelRefused: [[String]] = []
+        var missingInstances: [String] = []
+        var belowVolumeThresholdPairCount = 0
+        for snapshot in snapshots {
+            if snapshot.missingReason != nil {
+                missingInstances.append(snapshot.instanceID.uuidString)
             }
         }
+        for outcome in result.outcomes {
+            let entry = Self.interferenceEntry(outcome)
+            switch outcome.classification {
+            case "penetrating": interferences.append(entry)
+            case "contact": contacts.append(entry)
+            case "separated": clearances.append(entry)
+            default: unresolved.append(entry)
+            }
+            if outcome.volumeBelowThreshold == true {
+                belowVolumeThresholdPairCount += 1
+            }
+            if outcome.kernelRefused {
+                kernelRefused.append([outcome.a.uuidString, outcome.b.uuidString])
+            }
+        }
+        interferences.sort {
+            let left = ($0["volumeMM3"] as? Double) ?? 0
+            let right = ($1["volumeMM3"] as? Double) ?? 0
+            if left != right { return left > right }
+            return pairKey($0) < pairKey($1)
+        }
+        contacts.sort { pairKey($0) < pairKey($1) }
+        clearances.sort {
+            let left = ($0["minimumDistanceMM"] as? Double) ?? .infinity
+            let right = ($1["minimumDistanceMM"] as? Double) ?? .infinity
+            if left != right { return left < right }
+            return pairKey($0) < pairKey($1)
+        }
+        unresolved.sort { pairKey($0) < pairKey($1) }
+        kernelRefused.sort { $0.joined(separator: ":") < $1.joined(separator: ":") }
 
-        return [
+        // The complete detail arrays ARE the retained truth. No prefix page is
+        // substituted for them, and no per-list truncation flag exists.
+        let detailRows = interferences + contacts + clearances + unresolved
+        guard let detailEnvelope = Self.detailEnvelope(rows: detailRows) else {
+            box.setPhase("refused")
+            return interferenceFailure(
+                "detail_encoding_failed",
+                "A completed pair detail could not be encoded as finite JSON. No partial result "
+                + "was returned; report this as a service defect rather than a geometry result.",
+                progress: box.snapshot())
+        }
+        let snapshot = box.snapshot()
+
+        var payload: [String: Any] = [
             "ok": true,
             "mutated": false,
+            "completed": true,
+            "mode": "selected-subset-all-pairs",
+            "selectedInstanceCount": snapshots.count,
+            "selectedInstanceIDs": snapshots.map { $0.instanceID.uuidString },
+            "selectedNames": snapshots.map(\.name),
             "pairCount": pairCount,
-            "maxPairs": maxPairs,
+            "requestedPairCount": pairCount,
+            "processedPairCount": snapshot.processedPairCount,
+            "exactPairCount": snapshot.exactPairCount,
+            "meshPairCount": snapshot.meshPairCount,
+            "interferingPairCount": snapshot.interferingPairCount,
+            "contactPairCount": snapshot.contactPairCount,
+            "separatedPairCount": snapshot.separatedPairCount,
+            "unresolvedPairCount": snapshot.unresolvedPairCount,
+            "belowVolumeThresholdPairCount": belowVolumeThresholdPairCount,
             "toleranceMM": tolerance,
-            "interferences": entries,
-            "unresolvedInstances": unresolved.sorted(),
-            "kernelRefusedPairs": refusedPairs,
+            "volumeToleranceMM3": volumeToleranceMM3,
+            "units": "mm",
+            "interferences": interferences,
+            "contacts": contacts,
+            "clearances": clearances,
+            "unresolvedPairs": unresolved,
+            "unresolvedInstances": Array(Set(missingInstances)).sorted(),
+            "kernelRefusedPairs": kernelRefused,
             "kernelExecutor": "serialized-copy-off-main",
+            "progress": progressPayload(snapshot),
+            "resultBudgetBytes": resultBudgetBytes,
+            "detailRowCount": detailRows.count,
+            "detailBytes": detailEnvelope.bytes,
+            "detailsComplete": true,
+            "detailDigest": detailEnvelope.digest,
+            "detailDigestAlgorithm": Self.interferenceDetailDigestAlgorithm,
+            "precision": [
+                "units": "mm",
+                "basis": "Float render-mesh vertices, Double triangle distances; "
+                    + "tessellation chord error is not stored in the mesh and is not included.",
+            ],
+            "notes": [
+                "Every requested pair was processed exactly once; progress counts come from the service.",
+                "Exact OCCT regularized common volume is used when both instances carry a B-rep. "
+                    + "The cubic common volume is compared with volumeToleranceMM3 (default 0, "
+                    + "strictly positive), never with the linear toleranceMM.",
+                "A positive exact common volume below an explicit volumeToleranceMM3 is still reported "
+                    + "with its actual volume and volumeBelowThreshold=true; it is never rewritten as "
+                    + "noSharedVolume or separated.",
+                "Otherwise minimum surface distance and contact/containment come from the render triangles; "
+                    + "AABB is broadphase only.",
+                "The four detail arrays are complete; the runtime's existing capture/paging may present "
+                    + "a bounded window of these same retained bytes.",
+            ],
+        ]
+        if let requested = selection.requestedIDs {
+            payload["requestedInstanceIDs"] = requested.map(\.uuidString)
+        }
+        // Verify the actual encoded service reply against the explicit
+        // envelope before accepting. A metadata-heavy selection can still
+        // exceed the envelope; it refuses atomically instead of shipping a
+        // result that the runtime capture would truncate.
+        guard let encoded = try? JSONSerialization.data(withJSONObject: payload,
+                                                       options: [.sortedKeys]),
+              encoded.count <= resultBudgetBytes else {
+            box.setPhase("result_too_large")
+            return interferenceBudgetFailure(
+                budget: resultBudgetBytes, requestedPairs: pairCount,
+                processedPairs: snapshot.processedPairCount,
+                selected: snapshots.count, progress: snapshot)
+        }
+        // Include the reply's own exact encoded size in the receipt. Iterate
+        // to a fixed point because the decimal value itself adds bytes.
+        var resultBytes = encoded.count
+        for _ in 0..<4 {
+            payload["resultBytes"] = resultBytes
+            guard let receiptEncoded = try? JSONSerialization.data(
+                    withJSONObject: payload, options: [.sortedKeys]),
+                  receiptEncoded.count <= resultBudgetBytes else {
+                box.setPhase("result_too_large")
+                return interferenceBudgetFailure(
+                    budget: resultBudgetBytes, requestedPairs: pairCount,
+                    processedPairs: snapshot.processedPairCount,
+                    selected: snapshots.count, progress: snapshot)
+            }
+            if receiptEncoded.count == resultBytes { return payload }
+            resultBytes = receiptEncoded.count
+        }
+        box.setPhase("result_too_large")
+        return interferenceBudgetFailure(
+            budget: resultBudgetBytes, requestedPairs: pairCount,
+            processedPairs: snapshot.processedPairCount,
+            selected: snapshots.count, progress: snapshot)
+    }
+
+    /// Honest refusal when the complete detail result cannot fit the explicit
+    /// envelope. It never contains accepted detail rows: `ok=false` and
+    /// `detailsComplete=false` are the whole result.
+    private func interferenceBudgetFailure(
+        budget: Int, requestedPairs: Int, processedPairs: Int,
+        selected: Int, progress: CADAssemblyInterferenceProgressBox.Snapshot?
+    ) -> [String: Any] {
+        var payload = fail(
+            "result_too_large",
+            "The COMPLETE pair-detail result cannot fit the explicit \(budget)-byte result "
+            + "envelope (below the runtime's 8 MiB full-capture budget), so no partial rows "
+            + "were accepted. Select fewer instances; for example use assembly.interferencePlan "
+            + "to split the requested set into smaller subsets and run them separately.")
+        payload["mutated"] = false
+        payload["completed"] = false
+        payload["cancelled"] = false
+        payload["detailsComplete"] = false
+        payload["resultBudgetBytes"] = budget
+        payload["requestedPairCount"] = requestedPairs
+        payload["processedPairCount"] = processedPairs
+        payload["selectedInstanceCount"] = selected
+        if let progress { payload["progress"] = progressPayload(progress) }
+        return payload
+    }
+
+    private func pairKey(_ row: [String: Any]) -> String {
+        "\(row["a"] as? String ?? ""):\(row["b"] as? String ?? "")"
+    }
+
+    private static let emptyDetailDigest: String = {
+        SHA256.hash(data: Data())
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }()
+
+    /// Canonical bytes and digest of the COMPLETE detail arrays. The digest is
+    /// SHA-256 over each row's sorted-key JSON plus one LF, in returned order.
+    private nonisolated static func detailEnvelope(rows: [[String: Any]])
+        -> (digest: String, bytes: Int)? {
+        var hasher = SHA256()
+        var bytes = 0
+        for row in rows {
+            guard JSONSerialization.isValidJSONObject(row),
+                  let data = try? JSONSerialization.data(
+                    withJSONObject: row, options: [.sortedKeys]) else {
+                return nil
+            }
+            hasher.update(data: data)
+            hasher.update(data: Data([0x0A]))
+            bytes += data.count + 1
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return (digest, bytes)
+    }
+
+    private nonisolated static func encodedDetailRowBytes(_ row: [String: Any]) -> Int? {
+        guard JSONSerialization.isValidJSONObject(row),
+              let data = try? JSONSerialization.data(
+                withJSONObject: row, options: [.sortedKeys]) else {
+            return nil
+        }
+        return data.count + 1
+    }
+
+    private func interferenceFailure(_ code: String, _ message: String,
+                                     progress: CADAssemblyInterferenceProgressBox.Snapshot)
+        -> [String: Any] {
+        var payload = fail(code, message)
+        payload["mutated"] = false
+        payload["completed"] = false
+        payload["cancelled"] = code == "cancelled"
+        payload["detailsComplete"] = false
+        payload["processedPairCount"] = progress.processedPairCount
+        payload["requestedPairCount"] = progress.requestedPairCount
+        payload["progress"] = progressPayload(progress)
+        return payload
+    }
+
+    private func progressPayload(_ snapshot: CADAssemblyInterferenceProgressBox.Snapshot)
+        -> [String: Any] {
+        let elapsed = max(0, Date().timeIntervalSince(snapshot.startedAt) * 1000)
+        var payload: [String: Any] = [
+            "runID": snapshot.runID.uuidString,
+            "phase": snapshot.phase,
+            "selectedInstanceCount": snapshot.selectedInstanceCount,
+            "requestedPairCount": snapshot.requestedPairCount,
+            "processedPairCount": snapshot.processedPairCount,
+            "exactPairCount": snapshot.exactPairCount,
+            "meshPairCount": snapshot.meshPairCount,
+            "interferingPairCount": snapshot.interferingPairCount,
+            "contactPairCount": snapshot.contactPairCount,
+            "separatedPairCount": snapshot.separatedPairCount,
+            "unresolvedPairCount": snapshot.unresolvedPairCount,
+            "cancelled": snapshot.cancelled,
+            "elapsedMilliseconds": elapsed,
+            "startedAt": ISO8601DateFormatter().string(from: snapshot.startedAt),
+        ]
+        if snapshot.requestedPairCount > 0 {
+            payload["fraction"] = min(1, max(0,
+                Double(snapshot.processedPairCount) / Double(snapshot.requestedPairCount)))
+        } else {
+            payload["fraction"] = 0
+        }
+        return payload
+    }
+
+    private func resolveInterferenceSelection(_ assembly: CADAssembly, args: [String: Any])
+        -> Result<InterferenceSelection, CADAssemblyServiceError> {
+        let raw = args["instanceIDs"] ?? args["instanceIds"]
+        var requested: [UUID]? = nil
+        if let raw, !(raw is NSNull) {
+            var ids: [UUID] = []
+            if let values = raw as? [String] {
+                for value in values {
+                    guard let id = UUID(uuidString: value) else {
+                        return .failure(CADAssemblyServiceError(
+                            code: "bad_instance_id",
+                            message: "instanceIDs must be an array of instance UUID strings."))
+                    }
+                    ids.append(id)
+                }
+            } else if let values = raw as? [UUID] {
+                ids = values
+            } else if let values = raw as? [Any] {
+                for value in values {
+                    guard let id = uuidValue(value) else {
+                        return .failure(CADAssemblyServiceError(
+                            code: "bad_instance_id",
+                            message: "instanceIDs must be an array of instance UUID strings."))
+                    }
+                    ids.append(id)
+                }
+            } else if let id = uuidValue(raw) {
+                ids = [id]
+            } else {
+                return .failure(CADAssemblyServiceError(
+                    code: "bad_instance_id",
+                    message: "instanceIDs must be an array of instance UUID strings."))
+            }
+            requested = ids
+        }
+
+        let all = assembly.occurrences(includeHidden: true)
+        var byID: [UUID: CADAssemblyOccurrence] = [:]
+        for occurrence in all {
+            byID[occurrence.instance.id] = occurrence
+        }
+
+        let selectedIDs: Set<UUID>
+        if let requested {
+            var resolved = Set<UUID>()
+            for id in requested {
+                guard let occurrence = byID[id] else {
+                    return .failure(CADAssemblyServiceError(
+                        code: "unknown_instance",
+                        message: "No assembly occurrence has id \(id.uuidString)."))
+                }
+                if occurrence.instance.isSubassembly {
+                    for descendant in all
+                        where descendant.isDrawablePart
+                        && descendant.path.contains(id) {
+                        resolved.insert(descendant.instance.id)
+                    }
+                } else if occurrence.isDrawablePart {
+                    resolved.insert(id)
+                }
+            }
+            selectedIDs = resolved
+        } else {
+            selectedIDs = Set(all.filter(\.isDrawablePart).map(\.instance.id))
+        }
+        let occurrences = all.filter {
+            $0.isDrawablePart && selectedIDs.contains($0.instance.id)
+        }
+        return .success(InterferenceSelection(occurrences: occurrences,
+                                              requestedIDs: requested))
+    }
+
+    private func interferenceSnapshot(
+        _ occurrence: CADAssemblyOccurrence,
+        serialized: inout [CADAssemblyInterferenceGeometryKey: InterferenceSerializedBRep]
+    ) -> CADAssemblyInterferenceInstanceSnapshot {
+        guard let bodyID = occurrence.effectiveBodyID else {
+            return CADAssemblyInterferenceInstanceSnapshot(
+                instanceID: occurrence.instance.id, name: occurrence.instance.name,
+                bodyID: nil, geometryKey: nil, placement: .identity,
+                positions: [], indices: [], brepData: nil, brepUnavailable: false,
+                missingReason: "the occurrence has no drawable body")
+        }
+        guard let body = body(for: bodyID) else {
+            return CADAssemblyInterferenceInstanceSnapshot(
+                instanceID: occurrence.instance.id, name: occurrence.instance.name,
+                bodyID: bodyID, geometryKey: nil, placement: .identity,
+                positions: [], indices: [], brepData: nil, brepUnavailable: false,
+                missingReason: "the occurrence references a body that is not in the document")
+        }
+        guard CADAssemblySolver.isValidTransform(occurrence.worldTransform) else {
+            return CADAssemblyInterferenceInstanceSnapshot(
+                instanceID: occurrence.instance.id, name: occurrence.instance.name,
+                bodyID: bodyID, geometryKey: nil, placement: .identity,
+                positions: [], indices: [], brepData: nil, brepUnavailable: false,
+                missingReason: "the occurrence placement is not a finite uniform transform")
+        }
+        let placed = CADAssemblySolver.transform3D(from: occurrence.worldTransform)
+            .composed(onto: body.transform)
+        guard placed.scale.isFinite, placed.scale > 0,
+              placed.translation.x.isFinite, placed.translation.y.isFinite,
+              placed.translation.z.isFinite,
+              placed.rotation.imag.x.isFinite, placed.rotation.imag.y.isFinite,
+              placed.rotation.imag.z.isFinite, placed.rotation.real.isFinite else {
+            return CADAssemblyInterferenceInstanceSnapshot(
+                instanceID: occurrence.instance.id, name: occurrence.instance.name,
+                bodyID: bodyID, geometryKey: nil, placement: .identity,
+                positions: [], indices: [], brepData: nil, brepUnavailable: false,
+                missingReason: "the composed body placement is not finite")
+        }
+        let placement = CADInterferenceTransform(
+            rotation: placed.rotation, scale: placed.scale,
+            translation: placed.translation)
+        let key = CADAssemblyInterferenceGeometryKey(
+            bodyID: bodyID, meshRevision: body.meshRevision)
+        var brepData: Data?
+        var brepUnavailable = false
+        if let brep = body.brep {
+            switch serialized[key] {
+            case .some(.data(let data)):
+                brepData = data
+            case .some(.failed):
+                brepUnavailable = true
+            case .none:
+                if let data = OCCTKernel.serialize(brep) {
+                    serialized[key] = .data(data)
+                    brepData = data
+                } else {
+                    serialized[key] = .failed
+                    brepUnavailable = true
+                }
+            }
+        }
+        return CADAssemblyInterferenceInstanceSnapshot(
+            instanceID: occurrence.instance.id, name: occurrence.instance.name,
+            bodyID: bodyID, geometryKey: key, placement: placement,
+            positions: body.render.positions, indices: body.render.indices,
+            brepData: brepData, brepUnavailable: brepUnavailable,
+            missingReason: nil)
+    }
+
+    private static func beginInterferenceRun(
+        documentKey: ObjectIdentifier,
+        token: CADAssemblyKernelRevisionToken
+    ) -> (run: CADAssemblyInterferenceRun?, busy: [String: Any]?) {
+        if let active = activeInterferenceRuns[documentKey] {
+            var busy = ["ok": false,
+                        "error": "interference_busy",
+                        "mutated": false,
+                        "message": "An interference check is already running for this document; "
+                            + "cancel it before starting another."] as [String: Any]
+            busy["progress"] = progressPayloadStatic(active.progress.snapshot())
+            return (nil, busy)
+        }
+        let run = CADAssemblyInterferenceRun(documentKey: documentKey, token: token)
+        activeInterferenceRuns[documentKey] = run
+        return (run, nil)
+    }
+
+    private static func finishInterferenceRun(_ run: CADAssemblyInterferenceRun) {
+        if activeInterferenceRuns[run.documentKey]?.id == run.id {
+            activeInterferenceRuns.removeValue(forKey: run.documentKey)
+        }
+    }
+
+    private static func progressPayloadStatic(
+        _ snapshot: CADAssemblyInterferenceProgressBox.Snapshot
+    ) -> [String: Any] {
+        let elapsed = max(0, Date().timeIntervalSince(snapshot.startedAt) * 1000)
+        var payload: [String: Any] = [
+            "runID": snapshot.runID.uuidString,
+            "phase": snapshot.phase,
+            "selectedInstanceCount": snapshot.selectedInstanceCount,
+            "requestedPairCount": snapshot.requestedPairCount,
+            "processedPairCount": snapshot.processedPairCount,
+            "exactPairCount": snapshot.exactPairCount,
+            "meshPairCount": snapshot.meshPairCount,
+            "interferingPairCount": snapshot.interferingPairCount,
+            "contactPairCount": snapshot.contactPairCount,
+            "separatedPairCount": snapshot.separatedPairCount,
+            "unresolvedPairCount": snapshot.unresolvedPairCount,
+            "cancelled": snapshot.cancelled,
+            "elapsedMilliseconds": elapsed,
+            "startedAt": ISO8601DateFormatter().string(from: snapshot.startedAt),
+        ]
+        if snapshot.requestedPairCount > 0 {
+            payload["fraction"] = min(1, max(0,
+                Double(snapshot.processedPairCount) / Double(snapshot.requestedPairCount)))
+        } else {
+            payload["fraction"] = 0
+        }
+        return payload
+    }
+
+    private nonisolated static func runInterferenceWorker(
+        snapshots: [CADAssemblyInterferenceInstanceSnapshot],
+        toleranceMM: Double,
+        volumeToleranceMM3: Double,
+        detailBudgetBytes: Int,
+        progress: CADAssemblyInterferenceProgressBox,
+        pairProbe: (@Sendable (CADAssemblyInterferenceProgressBox.Snapshot) -> Void)?
+    ) -> CADAssemblyInterferenceWorkerResult {
+        var geometries: [CADAssemblyInterferenceGeometryKey: CADInterferenceMeshGeometry] = [:]
+        var outcomes: [CADAssemblyInterferencePairOutcome] = []
+        // Do not reserve from a caller-controlled all-pairs count: the array
+        // grows only while the encoded detail budget admits the next row.
+        outcomes.reserveCapacity(min(1_024, snapshots.count * 2))
+        var detailBytes = 0
+
+        func geometry(for snapshot: CADAssemblyInterferenceInstanceSnapshot)
+            -> CADInterferenceMeshGeometry? {
+            guard let key = snapshot.geometryKey else { return nil }
+            if let existing = geometries[key] { return existing }
+            let built = CADInterferenceMeshGeometry.build(
+                positions: snapshot.positions, indices: snapshot.indices)
+            geometries[key] = built
+            return built
+        }
+
+        func refused(_ cancelled: Bool, _ budgetExceeded: Bool,
+                     _ encodingFailed: Bool) -> CADAssemblyInterferenceWorkerResult {
+            CADAssemblyInterferenceWorkerResult(
+                outcomes: [], cancelled: cancelled,
+                budgetExceeded: budgetExceeded,
+                detailEncodingFailed: encodingFailed,
+                detailBytes: detailBytes)
+        }
+
+        for i in 0..<snapshots.count {
+            for j in (i + 1)..<snapshots.count {
+                if progress.isCancelled || Task.isCancelled {
+                    return refused(true, false, false)
+                }
+                let a = snapshots[i]
+                let b = snapshots[j]
+                let outcome = interferencePairOutcome(
+                    a: a, b: b, geometryA: geometry(for: a), geometryB: geometry(for: b),
+                    toleranceMM: toleranceMM, volumeToleranceMM3: volumeToleranceMM3)
+                // Account the exact canonical row bytes before accepting. A
+                // row that would push the complete envelope over budget
+                // refuses the WHOLE result atomically.
+                let row = Self.interferenceEntry(outcome)
+                guard let rowBytes = encodedDetailRowBytes(row) else {
+                    return refused(false, false, true)
+                }
+                guard detailBytes + rowBytes <= detailBudgetBytes else {
+                    return refused(false, true, false)
+                }
+                detailBytes += rowBytes
+                outcomes.append(outcome)
+                progress.recordPair(mode: outcome.mode, classification: outcome.classification)
+                pairProbe?(progress.snapshot())
+                if progress.isCancelled || Task.isCancelled {
+                    return refused(true, false, false)
+                }
+            }
+        }
+        return CADAssemblyInterferenceWorkerResult(
+            outcomes: outcomes, cancelled: false,
+            budgetExceeded: false, detailEncodingFailed: false,
+            detailBytes: detailBytes)
+    }
+
+    private nonisolated static func interferencePairOutcome(
+        a: CADAssemblyInterferenceInstanceSnapshot,
+        b: CADAssemblyInterferenceInstanceSnapshot,
+        geometryA: CADInterferenceMeshGeometry?,
+        geometryB: CADInterferenceMeshGeometry?,
+        toleranceMM: Double,
+        volumeToleranceMM3: Double
+    ) -> CADAssemblyInterferencePairOutcome {
+        if let reason = a.missingReason ?? b.missingReason {
+            return baseOutcome(a: a, b: b, mode: "unresolved", classification: "unresolved",
+                               exactVolume: false, notes: [reason],
+                               unresolvedReason: reason)
+        }
+        guard let geometryA, let geometryB else {
+            let reason = "one instance has no usable mesh geometry"
+            return baseOutcome(a: a, b: b, mode: "unresolved", classification: "unresolved",
+                               exactVolume: false, notes: [reason],
+                               unresolvedReason: reason)
+        }
+        let placedA = CADInterferencePlacedMesh(geometry: geometryA, placement: a.placement)
+        let placedB = CADInterferencePlacedMesh(geometry: geometryB, placement: b.placement)
+        let worldA = geometryA.bounds.transformed(by: a.placement)
+        let worldB = geometryB.bounds.transformed(by: b.placement)
+        let aabbGap = sqrt(max(0, worldA.distanceSquared(to: worldB)))
+        let overlapVolume = worldA.overlapVolume(with: worldB)
+        let broadphaseOverlap = worldA.overlaps(worldB, tolerance: toleranceMM)
+
+        if let dataA = a.brepData, let dataB = b.brepData,
+           !a.brepUnavailable, !b.brepUnavailable {
+            if geometryA.isValid, geometryB.isValid, !broadphaseOverlap {
+                return baseOutcome(
+                    a: a, b: b, mode: "brep-exact", classification: "separated",
+                    exactVolume: true, volumeMM3: 0,
+                    volumeThresholdMM3: volumeToleranceMM3,
+                    volumeBelowThreshold: false,
+                    volumeClassification: "no_positive_common_volume",
+                    aabbGapMM: aabbGap, aabbOverlapVolumeMM3: 0,
+                    notes: ["AABB separation proves no shared solid; the exact common was not run"])
+            }
+            guard let handleA = OCCTKernel.deserialize(dataA),
+                  let handleB = OCCTKernel.deserialize(dataB) else {
+                let mesh = CADInterferenceGeometry.surfacePair(
+                    a: placedA, b: placedB, toleranceMM: toleranceMM)
+                return meshOutcome(
+                    a: a, b: b, mesh: mesh, aabbGapMM: aabbGap,
+                    overlapVolumeMM3: overlapVolume,
+                    notes: ["the serialized B-rep could not be reopened off-main; "
+                            + "the render-mesh result is labelled approximate"])
+            }
+            switch OCCTKernel.booleanResult(handleA, handleB, op: 2) {
+            case .success(let booleanOutcome):
+                let volume = OCCTKernel.volume(booleanOutcome.handle)
+                guard volume.isFinite else {
+                    let mesh = CADInterferenceGeometry.surfacePair(
+                        a: placedA, b: placedB, toleranceMM: toleranceMM)
+                    return meshOutcome(
+                        a: a, b: b, mesh: mesh, mode: "brep-exact-failed",
+                        classification: "unresolved", exactVolume: true,
+                        aabbGapMM: aabbGap, overlapVolumeMM3: overlapVolume,
+                        unresolvedReason: "OCCT returned a non-finite common volume",
+                        notes: ["the exact result is unresolved, not a claim of no shared volume"])
+                }
+                // CUBIC common volume vs CUBIC threshold. Never compare it
+                // with the LINEAR contact/clearance tolerance.
+                if volume > 0 {
+                    let belowThreshold = volume < volumeToleranceMM3
+                    var notes = ["exact OCCT regularized common volume"]
+                    if belowThreshold {
+                        notes.append(
+                            "positive common volume is below the explicit volumeToleranceMM3; "
+                            + "it is reported with its actual volume belowThreshold=true, "
+                            + "never as noSharedVolume or separated")
+                    }
+                    return baseOutcome(
+                        a: a, b: b, mode: "brep-exact", classification: "penetrating",
+                        exactVolume: true, volumeMM3: volume,
+                        volumeThresholdMM3: volumeToleranceMM3,
+                        volumeBelowThreshold: belowThreshold,
+                        volumeClassification: belowThreshold
+                            ? "positive_common_below_threshold"
+                            : "positive_common_at_or_above_threshold",
+                        minimumDistanceMM: 0,
+                        aabbGapMM: aabbGap, aabbOverlapVolumeMM3: overlapVolume,
+                        notes: notes)
+                }
+                let mesh = CADInterferenceGeometry.surfacePair(
+                    a: placedA, b: placedB, toleranceMM: toleranceMM)
+                let contact = (mesh.minimumDistanceMM ?? .infinity) <= toleranceMM
+                return meshOutcome(
+                    a: a, b: b, mesh: mesh, mode: "brep-exact-empty-common",
+                    classification: contact ? "contact" : "separated",
+                    exactVolume: true, volumeMM3: max(0, volume),
+                    volumeThresholdMM3: volumeToleranceMM3,
+                    volumeBelowThreshold: false,
+                    volumeClassification: "no_positive_common_volume",
+                    aabbGapMM: aabbGap, overlapVolumeMM3: overlapVolume,
+                    kernelRefused: false,
+                    notes: ["the exact common has no positive volume; "
+                            + "surface distance comes from the render triangles"])
+            case .failure(let error):
+                if case .kernelRefused(let detail) = error,
+                   detail == "the operation leaves no solid" {
+                    let mesh = CADInterferenceGeometry.surfacePair(
+                        a: placedA, b: placedB, toleranceMM: toleranceMM)
+                    let contact = (mesh.minimumDistanceMM ?? .infinity) <= toleranceMM
+                    return meshOutcome(
+                        a: a, b: b, mesh: mesh, mode: "brep-exact-empty-common",
+                        classification: contact ? "contact" : "separated",
+                        exactVolume: true, volumeMM3: 0,
+                        volumeThresholdMM3: volumeToleranceMM3,
+                        volumeBelowThreshold: false,
+                        volumeClassification: "no_positive_common_volume",
+                        aabbGapMM: aabbGap, overlapVolumeMM3: overlapVolume,
+                        kernelRefused: true,
+                        notes: ["OCCT reports a regularized common with no solid; "
+                                + "this is not treated as a generic kernel error"])
+                }
+                let mesh = CADInterferenceGeometry.surfacePair(
+                    a: placedA, b: placedB, toleranceMM: toleranceMM)
+                return meshOutcome(
+                    a: a, b: b, mesh: mesh, mode: "brep-exact-failed",
+                    classification: "unresolved", exactVolume: true,
+                    aabbGapMM: aabbGap, overlapVolumeMM3: overlapVolume,
+                    unresolvedReason: "OCCT exact common failed: \(error.message)",
+                    notes: ["the exact result is unresolved, not a claim of no shared volume"],
+                    kernelErrorDetail: error.message)
+            }
+        }
+
+        let mesh = CADInterferenceGeometry.surfacePair(
+            a: placedA, b: placedB, toleranceMM: toleranceMM)
+        return meshOutcome(
+            a: a, b: b, mesh: mesh, aabbGapMM: aabbGap,
+            overlapVolumeMM3: overlapVolume,
+            notes: a.brepUnavailable || b.brepUnavailable
+                ? ["a B-rep could not be serialized; the render-mesh result is labelled approximate"]
+                : [])
+    }
+
+    private nonisolated static func meshOutcome(
+        a: CADAssemblyInterferenceInstanceSnapshot,
+        b: CADAssemblyInterferenceInstanceSnapshot,
+        mesh: CADInterferenceMeshPairResult,
+        mode: String = "mesh",
+        classification: String? = nil,
+        exactVolume: Bool = false,
+        volumeMM3: Double? = nil,
+        volumeThresholdMM3: Double? = nil,
+        volumeBelowThreshold: Bool? = nil,
+        volumeClassification: String? = nil,
+        aabbGapMM: Double?,
+        overlapVolumeMM3: Double?,
+        kernelRefused: Bool = false,
+        unresolvedReason: String? = nil,
+        notes: [String] = [],
+        kernelErrorDetail: String? = nil
+    ) -> CADAssemblyInterferencePairOutcome {
+        var combinedNotes = notes
+        combinedNotes.append(contentsOf: mesh.notes)
+        let resolvedClassification = classification ?? mesh.classification.rawValue
+        return CADAssemblyInterferencePairOutcome(
+            a: a.instanceID, b: b.instanceID, mode: mode,
+            classification: resolvedClassification, exactVolume: exactVolume,
+            volumeMM3: volumeMM3, volumeThresholdMM3: volumeThresholdMM3,
+            volumeBelowThreshold: volumeBelowThreshold,
+            volumeClassification: volumeClassification,
+            minimumDistanceMM: mesh.minimumDistanceMM,
+            precisionMM: mesh.precisionMM, witnessA: mesh.witnessAWorld,
+            witnessB: mesh.witnessBWorld, triangleA: mesh.triangleA,
+            triangleB: mesh.triangleB, surfaceCrossing: mesh.surfaceCrossing,
+            surfaceTouching: mesh.surfaceTouching, containment: mesh.containment,
+            aabbGapMM: aabbGapMM, aabbOverlapVolumeMM3: overlapVolumeMM3,
+            topologyA: mesh.topologyA, topologyB: mesh.topologyB,
+            notes: combinedNotes,
+            unresolvedReason: unresolvedReason ?? mesh.unresolvedReason,
+            kernelRefused: kernelRefused, kernelErrorDetail: kernelErrorDetail)
+    }
+
+    private nonisolated static func baseOutcome(
+        a: CADAssemblyInterferenceInstanceSnapshot,
+        b: CADAssemblyInterferenceInstanceSnapshot,
+        mode: String,
+        classification: String,
+        exactVolume: Bool,
+        volumeMM3: Double? = nil,
+        volumeThresholdMM3: Double? = nil,
+        volumeBelowThreshold: Bool? = nil,
+        volumeClassification: String? = nil,
+        minimumDistanceMM: Double? = nil,
+        aabbGapMM: Double? = nil,
+        aabbOverlapVolumeMM3: Double? = nil,
+        notes: [String] = [],
+        unresolvedReason: String? = nil,
+        kernelRefused: Bool = false,
+        kernelErrorDetail: String? = nil
+    ) -> CADAssemblyInterferencePairOutcome {
+        CADAssemblyInterferencePairOutcome(
+            a: a.instanceID, b: b.instanceID, mode: mode,
+            classification: classification, exactVolume: exactVolume,
+            volumeMM3: volumeMM3, volumeThresholdMM3: volumeThresholdMM3,
+            volumeBelowThreshold: volumeBelowThreshold,
+            volumeClassification: volumeClassification,
+            minimumDistanceMM: minimumDistanceMM,
+            precisionMM: nil, witnessA: nil, witnessB: nil,
+            triangleA: nil, triangleB: nil, surfaceCrossing: false,
+            surfaceTouching: false, containment: "none",
+            aabbGapMM: aabbGapMM, aabbOverlapVolumeMM3: aabbOverlapVolumeMM3,
+            topologyA: nil, topologyB: nil, notes: notes,
+            unresolvedReason: unresolvedReason, kernelRefused: kernelRefused,
+            kernelErrorDetail: kernelErrorDetail)
+    }
+
+    private nonisolated static func interferenceEntry(
+        _ outcome: CADAssemblyInterferencePairOutcome
+    ) -> [String: Any] {
+        var row: [String: Any] = [
+            "a": outcome.a.uuidString,
+            "b": outcome.b.uuidString,
+            "classification": outcome.classification,
+            "exact": outcome.exactVolume,
+            "approximation": outcome.mode.hasPrefix("brep")
+                ? "brep" : (outcome.mode == "mesh" ? "mesh" : "none"),
+            "method": outcome.mode,
+            "units": "mm",
+        ]
+        if let volume = outcome.volumeMM3, volume.isFinite {
+            row["volumeMM3"] = volume
+        }
+        if let threshold = outcome.volumeThresholdMM3, threshold.isFinite {
+            row["volumeThresholdMM3"] = threshold
+        }
+        if let below = outcome.volumeBelowThreshold {
+            row["volumeBelowThreshold"] = below
+        }
+        if let volumeClass = outcome.volumeClassification {
+            row["volumeClassification"] = volumeClass
+        }
+        if let distance = outcome.minimumDistanceMM, distance.isFinite {
+            row["minimumDistanceMM"] = distance
+        }
+        if let precision = outcome.precisionMM, precision.isFinite {
+            row["precisionMM"] = precision
+        }
+        if let gap = outcome.aabbGapMM, gap.isFinite { row["aabbGapMM"] = gap }
+        if let overlap = outcome.aabbOverlapVolumeMM3, overlap.isFinite {
+            row["aabbOverlapVolumeMM3"] = overlap
+            row["aabbOverlapVolumeIsBroadphaseOnly"] = true
+        }
+        if let witness = outcome.witnessA { row["witnessA"] = Self.vectorPayload(witness) }
+        if let witness = outcome.witnessB { row["witnessB"] = Self.vectorPayload(witness) }
+        if let triangle = outcome.triangleA { row["triangleA"] = triangle }
+        if let triangle = outcome.triangleB { row["triangleB"] = triangle }
+        if outcome.surfaceCrossing { row["surfaceCrossing"] = true }
+        if outcome.surfaceTouching { row["surfaceTouching"] = true }
+        row["containment"] = outcome.containment
+        if let topology = outcome.topologyA {
+            row["meshTopologyA"] = Self.topologyPayload(topology)
+        }
+        if let topology = outcome.topologyB {
+            row["meshTopologyB"] = Self.topologyPayload(topology)
+        }
+        if !outcome.notes.isEmpty { row["notes"] = outcome.notes }
+        if let reason = outcome.unresolvedReason { row["unresolvedReason"] = reason }
+        if outcome.kernelRefused { row["kernelRefused"] = true }
+        if let detail = outcome.kernelErrorDetail { row["kernelError"] = detail }
+        return row
+    }
+
+    private nonisolated static func topologyPayload(
+        _ topology: CADInterferenceMeshTopology
+    ) -> [String: Any] {
+        [
+            "summary": topology.summary,
+            "closed": topology.isClosed,
+            "oriented": topology.isOriented,
+            "watertight": topology.isWatertight,
+            "components": topology.componentCount,
+            "inwardComponents": topology.inwardComponentCount,
+            "boundaryEdges": topology.boundaryEdgeCount,
+            "nonManifoldEdges": topology.nonManifoldEdgeCount,
+            "degenerateTriangles": topology.degenerateTriangleCount,
         ]
     }
 
@@ -408,13 +1577,13 @@ public final class CADAssemblyService {
                 if let instanceB = constraint.instanceB {
                     entry["instanceB"] = instanceB.uuidString
                 }
-                entry["pointA"] = vectorPayload(constraint.pointA)
-                entry["directionA"] = vectorPayload(constraint.directionA)
+                entry["pointA"] = Self.vectorPayload(constraint.pointA)
+                entry["directionA"] = Self.vectorPayload(constraint.directionA)
                 if let pointB = constraint.pointB {
-                    entry["pointB"] = vectorPayload(pointB)
+                    entry["pointB"] = Self.vectorPayload(pointB)
                 }
                 if let directionB = constraint.directionB {
-                    entry["directionB"] = vectorPayload(directionB)
+                    entry["directionB"] = Self.vectorPayload(directionB)
                 }
                 if let value = constraint.value {
                     entry["value"] = value
@@ -452,13 +1621,13 @@ public final class CADAssemblyService {
                     if let instanceB = constraint.instanceB {
                         entry["instanceB"] = instanceB.uuidString
                     }
-                    entry["pointA"] = vectorPayload(constraint.pointA)
-                    entry["directionA"] = vectorPayload(constraint.directionA)
+                    entry["pointA"] = Self.vectorPayload(constraint.pointA)
+                    entry["directionA"] = Self.vectorPayload(constraint.directionA)
                     if let pointB = constraint.pointB {
-                        entry["pointB"] = vectorPayload(pointB)
+                        entry["pointB"] = Self.vectorPayload(pointB)
                     }
                     if let directionB = constraint.directionB {
-                        entry["directionB"] = vectorPayload(directionB)
+                        entry["directionB"] = Self.vectorPayload(directionB)
                     }
                     if let value = constraint.value {
                         entry["value"] = value
@@ -481,7 +1650,7 @@ public final class CADAssemblyService {
                 return [
                     "id": view.id.uuidString,
                     "name": view.name,
-                    "direction": vectorPayload(safeDirection(view.direction)),
+                    "direction": Self.vectorPayload(safeDirection(view.direction)),
                     "distanceMM": view.distanceMM,
                     "entryCount": view.entries.count,
                     "invalidEntryIDs": invalid.map(\.id.uuidString),
@@ -1801,8 +2970,8 @@ public final class CADAssemblyService {
                     "label": kind == "planar"
                         ? "Face \(face.index) · plane"
                         : "Face \(face.index) · cylinder axis",
-                    "point": vectorPayload(point),
-                    "direction": vectorPayload(direction),
+                    "point": Self.vectorPayload(point),
+                    "direction": Self.vectorPayload(direction),
                     "areaMM2": face.area,
                     "query_token": faceToken,
                 ]
@@ -1854,10 +3023,10 @@ public final class CADAssemblyService {
                     "kind": "edge",
                     "reference": "edge",
                     "label": "Edge \(index)",
-                    "point": vectorPayload(source.transform.applying(to: midpoint)),
+                    "point": Self.vectorPayload(source.transform.applying(to: midpoint)),
                     "query_token": edgeToken,
                 ]
-                if let direction { row["direction"] = vectorPayload(direction) }
+                if let direction { row["direction"] = Self.vectorPayload(direction) }
                 if let length { row["lengthMM"] = length }
                 edges.append(row)
             }
@@ -2447,7 +3616,7 @@ public final class CADAssemblyService {
                 var entry: [String: Any] = [
                     "instanceID": instance.id.uuidString,
                     "name": instance.name,
-                    "offset": vectorPayload(offset),
+                    "offset": Self.vectorPayload(offset),
                     "distanceMM": simd_length(offset),
                     "path": occurrence.path.map(\.uuidString),
                     "depth": occurrence.depth,
@@ -2839,7 +4008,7 @@ public final class CADAssemblyService {
             var row: [String: Any] = [
                 "instanceID": instance.id.uuidString,
                 "name": instance.name,
-                "offset": vectorPayload(offset),
+                "offset": Self.vectorPayload(offset),
                 "distanceMM": simd_length(offset),
                 "baseTransform": transformPayload(base),
                 "transform": transformPayload(exploded),
@@ -2997,7 +4166,7 @@ public final class CADAssemblyService {
         var payload: [String: Any] = [
             "id": view.id.uuidString,
             "name": view.name,
-            "direction": vectorPayload(safeDirection(view.direction)),
+            "direction": Self.vectorPayload(safeDirection(view.direction)),
             "distanceMM": view.distanceMM,
             "entryCount": view.entries.count,
             "createdAt": ISO8601DateFormatter().string(from: view.createdAt),
@@ -3010,7 +4179,7 @@ public final class CADAssemblyService {
                 "valid": assembly.instance(entry.instanceID) != nil,
             ]
             if let direction = entry.direction {
-                row["direction"] = vectorPayload(safeDirection(direction))
+                row["direction"] = Self.vectorPayload(safeDirection(direction))
             }
             if let distance = entry.distanceMM { row["distanceMM"] = distance }
             return row
@@ -3131,20 +4300,6 @@ public final class CADAssemblyService {
     // The exact interference worker lives in `interferenceOffMain`: it
     // serializes the world-placed B-reps and runs OCCT on owned copies in a
     // detached task, so no live kernel handle is touched off the main actor.
-
-    private func meshFallbackEntry(_ pair: [String],
-                                   boxA: (min: SIMD3<Double>, max: SIMD3<Double>),
-                                   boxB: (min: SIMD3<Double>, max: SIMD3<Double>),
-                                   tolerance: Double) -> [String: Any] {
-        [
-            "a": pair[0],
-            "b": pair[1],
-            "exact": false,
-            "approximation": "mesh",
-            "aabbOverlapVolumeMM3": aabbOverlapVolume(boxA, boxB),
-            "toleranceMM": tolerance,
-        ]
-    }
 
     // MARK: - Source revision tracking
 
@@ -4059,23 +5214,6 @@ public final class CADAssemblyService {
         return max(simd_length(bounds.max - bounds.min), 1)
     }
 
-    private func aabbOverlap(_ a: (min: SIMD3<Double>, max: SIMD3<Double>),
-                             _ b: (min: SIMD3<Double>, max: SIMD3<Double>),
-                             tolerance: Double) -> Bool {
-        for axis in 0..<3 {
-            if a.max[axis] + tolerance < b.min[axis] { return false }
-            if b.max[axis] + tolerance < a.min[axis] { return false }
-        }
-        return true
-    }
-
-    private func aabbOverlapVolume(_ a: (min: SIMD3<Double>, max: SIMD3<Double>),
-                                   _ b: (min: SIMD3<Double>, max: SIMD3<Double>)) -> Double {
-        let overlap = simd_max(SIMD3<Double>.zero,
-                               simd_min(a.max, b.max) - simd_max(a.min, b.min))
-        return overlap.x * overlap.y * overlap.z
-    }
-
     private func uniqueInstanceName(base: String, in assembly: CADAssembly) -> String {
         let existing = Set(assembly.occurrences(includeHidden: true).map { $0.instance.name })
         if !existing.contains(base) { return base }
@@ -4126,14 +5264,14 @@ public final class CADAssemblyService {
             "id": constraint.id.uuidString,
             "kind": constraint.kind.rawValue,
             "instanceA": constraint.instanceA.uuidString,
-            "pointA": vectorPayload(constraint.pointA),
-            "directionA": vectorPayload(constraint.directionA),
+            "pointA": Self.vectorPayload(constraint.pointA),
+            "directionA": Self.vectorPayload(constraint.directionA),
             "suppressed": constraint.isSuppressed,
         ]
         if let instanceB = constraint.instanceB { payload["instanceB"] = instanceB.uuidString }
-        if let pointB = constraint.pointB { payload["pointB"] = vectorPayload(pointB) }
+        if let pointB = constraint.pointB { payload["pointB"] = Self.vectorPayload(pointB) }
         if let directionB = constraint.directionB {
-            payload["directionB"] = vectorPayload(directionB)
+            payload["directionB"] = Self.vectorPayload(directionB)
         }
         if let value = constraint.value {
             payload["value"] = value
@@ -4150,14 +5288,14 @@ public final class CADAssemblyService {
 
     private func transformPayload(_ transform: CADTransform) -> [String: Any] {
         [
-            "position": vectorPayload(transform.position),
+            "position": Self.vectorPayload(transform.position),
             "rotation": [transform.rotation.x, transform.rotation.y,
                          transform.rotation.z, transform.rotation.w],
-            "scale": vectorPayload(transform.scale),
+            "scale": Self.vectorPayload(transform.scale),
         ]
     }
 
-    private func vectorPayload(_ vector: SIMD3<Double>) -> [Double] {
+    private nonisolated static func vectorPayload(_ vector: SIMD3<Double>) -> [Double] {
         [vector.x, vector.y, vector.z]
     }
 

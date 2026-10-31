@@ -20,6 +20,12 @@ final class EngineeringObservationService {
     static let shared = EngineeringObservationService()
     private var activeJob: UUID?
 
+    #if DEBUG
+    /// Qualification boundary after real PNG validation, before re-reading
+    /// source/resource identities. Per-instance and never set in production.
+    var testBeforeSourceRevalidation: (@MainActor (Int) throws -> Void)?
+    #endif
+
     private final class ErrorBox { var message: String? }
     private struct Failure: Codable { let viewIndex: Int; let reason: String }
     private struct Summary: Encodable {
@@ -191,6 +197,9 @@ final class EngineeringObservationService {
         for frame in capture.frames {
             try validateFramePNG(frame)
         }
+        #if DEBUG
+        try testBeforeSourceRevalidation?(capture.frames.count)
+        #endif
         // The main file alone is insufficient identity for external resources.
         // A changed texture, buffer or OBJ/MTL dependency invalidates every old
         // frame, so the exact same package is loaded again before returning.

@@ -128,7 +128,7 @@ struct OrdinaryDocumentActionProfileTests {
         for operation in ["create", "update", "remove", "apply", "applyFaces", "mapping", "textures", "libraryImport", "undo", "redo", "unknown"] {
             #expect(try payloadRole("material", operation) == nil)
         }
-        for operation in ["report", "instances", "dof", "interference", "reference", "referenceCandidates", "explodedViews", "previewExplodedView", "resetExplodedView", "hierarchy", "references", "referenceDiagnostics"] {
+        for operation in ["report", "instances", "dof", "interference", "interferencePlan", "interferenceStatus", "cancelInterference", "reference", "referenceCandidates", "explodedViews", "previewExplodedView", "resetExplodedView", "hierarchy", "references", "referenceDiagnostics"] {
             #expect(try payloadRole("three_d_assembly", operation) == .readOnly)
         }
         for operation in ["pages", "project", "dimensions", "export"] {

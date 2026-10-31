@@ -22,6 +22,23 @@ struct NativeCADCapabilityDiscoveryTests {
         }
         #expect(!(capabilities["mesh_actions"] as? [String] ?? []).contains("text"))
         #expect((capabilities["operation_names"] as? [String] ?? []).contains("sketch.addText"))
+
+        // The removed 32-pair gate must not be advertised. The envelope is
+        // derived from the executable assembly service and stays inside the
+        // runtime's real 8 MiB full-capture budget.
+        let limits = try #require(capabilities["limits"] as? [String: Any])
+        #expect(limits["max_pairs"] == nil)
+        let resultBytes = try #require(limits["interference_result_bytes"] as? Int)
+        #expect(resultBytes == CADAssemblyService.interferenceResultBudgetBytes)
+        #expect(resultBytes > 0)
+        #expect(resultBytes <= 8 * 1_024 * 1_024)
+        let pairContract = try #require(limits["interference_pair_contract"] as? String)
+        #expect(pairContract.contains("no fixed pair cap"))
+        #expect(limits["interference_detail_digest"] as? String
+                == CADAssemblyService.interferenceDetailDigestAlgorithm)
+        // Viewport and animation metadata are unrelated and must survive.
+        #expect(capabilities["viewport_capture"] != nil)
+        #expect(capabilities["animation_actions"] as? [String] == CadNativeEditActions.animation.sorted())
     }
 }
 #endif

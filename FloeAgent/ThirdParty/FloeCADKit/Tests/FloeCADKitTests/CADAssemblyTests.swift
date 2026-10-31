@@ -13,6 +13,7 @@ import XCTest
 import simd
 @testable import FloeCAD
 
+@MainActor
 final class CADAssemblyTests: XCTestCase {
 
     private var workDir: URL!

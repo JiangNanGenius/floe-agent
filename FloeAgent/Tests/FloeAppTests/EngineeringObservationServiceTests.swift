@@ -222,7 +222,9 @@ struct EngineeringObservationServiceTests {
         #expect((hierarchy["total"] as? Int ?? 0) >= 1)
         #expect(hierarchy["sourceSHA256"] as? String == digest)
         var hashes = Set<String>()
-        for frame in perspective.frames {
+        for (index, frame) in perspective.frames.enumerated() {
+            Attachment.record(Array(frame.pngData), named: "static-original-perspective-\(index).png")
+            Attachment.record(frame.metadataJSON, named: "static-original-perspective-\(index).json")
             let meta = try metadata(frame)
             #expect(meta["projection"] as? String == "perspective")
             #expect(meta["renderer"] as? String == "online3DViewer")
@@ -245,7 +247,8 @@ struct EngineeringObservationServiceTests {
                 width: 320, height: 240, projection: .orthographic,
                 expectedSourceSHA256: digest))
         #expect(orthographic.frames.count == 2)
-        for frame in orthographic.frames {
+        for (index, frame) in orthographic.frames.enumerated() {
+            Attachment.record(Array(frame.pngData), named: "static-original-orthographic-\(index).png")
             let meta = try metadata(frame)
             #expect(meta["projection"] as? String == "orthographic")
             #expect(meta["renderer"] as? String == "online3DViewer")
@@ -325,6 +328,57 @@ struct EngineeringObservationServiceTests {
         #expect(fresh.summaryJSON.contains("sourceUnchanged"))
         #expect(fresh.frames.isEmpty)
     }
+
+    #if DEBUG
+    @Test("a sibling buffer changed after actual capture invalidates every old frame")
+    func resourceMutationDuringCaptureRejectsOldFrames() async throws {
+        let (root, service, embedded) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var model = try #require(try JSONSerialization.jsonObject(with: embedded) as? [String: Any])
+        var buffers = try #require(model["buffers"] as? [[String: Any]])
+        let uri = try #require(buffers[0]["uri"] as? String)
+        let encoded = try #require(uri.split(separator: ",", maxSplits: 1).last)
+        let originalBuffer = try #require(Data(base64Encoded: String(encoded)))
+        buffers[0]["uri"] = "positions.bin"
+        model["buffers"] = buffers
+        let sourceBytes = try JSONSerialization.data(withJSONObject: model, options: [.sortedKeys])
+        let sourceURL = root.appendingPathComponent("assembly.gltf")
+        let bufferURL = root.appendingPathComponent("positions.bin")
+        try sourceBytes.write(to: sourceURL)
+        try originalBuffer.write(to: bufferURL)
+        let sourceHash = FloeDigest.sha256Hex(sourceBytes)
+        var changedBuffer = originalBuffer
+        var firstCoordinate = Data()
+        appendFloat(-0.5, to: &firstCoordinate)
+        changedBuffer.replaceSubrange(0..<4, with: firstCoordinate)
+        let observer = EngineeringObservationService()
+        var validatedFrames = 0
+        observer.testBeforeSourceRevalidation = { count in
+            validatedFrames = count
+            try changedBuffer.write(to: bufferURL, options: .atomic)
+        }
+        defer { observer.testBeforeSourceRevalidation = nil }
+        let request = CadModelObservationRequest(
+            views: [.init(azimuthDegrees: 35, elevationDegrees: 20)],
+            width: 320, height: 240, expectedSourceSHA256: sourceHash)
+        var rejection: (any Error)?
+        do {
+            _ = try await observer.observe(path: "assembly.gltf", service: service, request: request)
+        } catch { rejection = error }
+        #expect(validatedFrames == 1, "the race must happen after a real PNG was validated")
+        let error = try #require(rejection)
+        #expect(error.localizedDescription.contains("changed during capture"))
+        #expect(try Data(contentsOf: sourceURL) == sourceBytes,
+                "the main file alone did not change; resource identity must fence the image")
+
+        observer.testBeforeSourceRevalidation = nil
+        let fresh = try await observer.observe(path: "assembly.gltf", service: service, request: request)
+        #expect(fresh.frames.count == 1)
+        #expect(fresh.summaryJSON.contains(FloeDigest.sha256Hex(changedBuffer)))
+        #expect(!fresh.summaryJSON.contains(FloeDigest.sha256Hex(originalBuffer)))
+        Attachment.record(Array(fresh.frames[0].pngData), named: "fresh-after-resource-mutation.png")
+    }
+    #endif
 
     @Test("cancelling a static observation leaves the next request runnable")
     func staticCancelThenFresh() async throws {

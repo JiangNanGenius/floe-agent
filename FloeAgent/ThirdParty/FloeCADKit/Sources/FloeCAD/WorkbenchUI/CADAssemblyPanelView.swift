@@ -266,6 +266,7 @@ struct CADAssemblyPanelView: View {
     @State private var showConstraintSheet = false
     @State private var editingConstraint: CADAssemblyReport.Constraint?
     @State private var showExplodedSheet = false
+    @State private var showInterferenceSheet = false
     @State private var showReferenceAttach = false
     @State private var showReferenceCheck = false
     @State private var showReferenceUpdate = false
@@ -318,7 +319,7 @@ struct CADAssemblyPanelView: View {
                 }
                 PanelActionButton(title: FloeCADStrings.label("cad.workbench.assembly.interference", "Interference"),
                                   systemImage: "square.on.square.dashed", disabled: busy) {
-                    run { await $0.handleAsync(action: "interference", args: ["toleranceMM": 1e-6]) }
+                    showInterferenceSheet = true
                 }
                 PanelActionButton(title: FloeCADStrings.label("cad.workbench.assembly.source", "Update sources"),
                                   systemImage: "arrow.triangle.2.circlepath", disabled: busy) {
@@ -404,6 +405,16 @@ struct CADAssemblyPanelView: View {
                                       outcome = reply
                                       if reply["mutated"] as? Bool == true { refresh() }
                                   })
+        }
+        .sheet(isPresented: $showInterferenceSheet) {
+            CADAssemblyInterferenceSheet(
+                document: document,
+                report: report,
+                initialSelection: viewModel.selectedAssemblyInstances,
+                busy: $busy,
+                onFinished: { reply in
+                    outcome = reply
+                })
         }
         .sheet(isPresented: $showConstraintSheet) {
             CADConstraintEditorSheet(
@@ -938,6 +949,595 @@ struct CADAssemblyPanelView: View {
         }
     }
 }
+
+// MARK: - Interference sheet
+
+/// One compact selected-instance inspector: choose the subset (a selected
+/// subassembly expands to its drawable parts), run the same
+/// `CADAssemblyService` operation the typed tool uses, watch the service-owned
+/// pair progress, cancel it, and read the actual exact/mesh result.
+private struct CADAssemblyInterferenceSheet: View {
+    let document: FloeCADDocument
+    let report: CADAssemblyReport
+    let initialSelection: Set<UUID>
+    @Binding var busy: Bool
+    let onFinished: ([String: Any]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedIDs: Set<String> = []
+    @State private var initialized = false
+    @State private var toleranceText = "0.000001"
+    @State private var volumeToleranceText = "0"
+    @State private var visibleRowLimits: [String: Int] = [:]
+    @State private var service: CADAssemblyService?
+    @State private var isRunning = false
+    @State private var progress: [String: Any] = [:]
+    @State private var result: [String: Any] = [:]
+    @State private var errorText: String?
+    @State private var pollTask: Task<Void, Never>?
+
+    private var leaves: [CADAssemblyReport.Instance] {
+        report.instances.filter { !$0.isSubassembly }
+    }
+
+    private var selectedLeaves: [CADAssemblyReport.Instance] {
+        leaves.filter { selectedIDs.contains($0.id) }
+    }
+
+    private var pairCount: Int {
+        let count = selectedLeaves.count
+        return count * (count - 1) / 2
+    }
+
+    private var parsedTolerance: Double? {
+        Double(toleranceText.replacingOccurrences(of: ",", with: "."))
+    }
+
+    private var parsedVolumeTolerance: Double? {
+        Double(volumeToleranceText.replacingOccurrences(of: ",", with: "."))
+    }
+
+    /// Local page size for one result section. The sheet renders only this
+    /// many rows at a time from the already-retained service result; it never
+    /// re-runs the kernel to read a later page.
+    private var rowPageSize: Int { 40 }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    if report.instances.isEmpty {
+                        Text(FloeCADStrings.text(
+                            "cad.workbench.assembly.interference.noInstances",
+                            "No assembly instances are available to inspect."))
+                        .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(report.instances) { instance in
+                            Toggle(isOn: selectionBinding(for: instance)) {
+                                HStack(spacing: 6) {
+                                    Text(instance.name)
+                                    if instance.isSubassembly {
+                                        PanelBadge(text: FloeCADStrings.format(
+                                            "cad.workbench.assembly.childCount", "%@ parts",
+                                            instance.childCount))
+                                    }
+                                }
+                            }
+                            .padding(.leading, CGFloat(instance.depth) * 10)
+                            .disabled(isRunning)
+                            .accessibilityIdentifier("CADAssemblyInterferenceSelection-\(instance.id)")
+                        }
+                    }
+                } header: {
+                    Text(FloeCADStrings.text(
+                        "cad.workbench.assembly.interference.select",
+                        "Instances to inspect"))
+                } footer: {
+                    Text(FloeCADStrings.format(
+                        "cad.workbench.assembly.interference.selectionSummary",
+                        "%@ selected · %@ pairs", selectedLeaves.count, pairCount))
+                    .accessibilityIdentifier("CADAssemblyInterferencePairCount")
+                }
+
+                Section {
+                    HStack {
+                        Text(FloeCADStrings.text(
+                            "cad.workbench.assembly.interference.tolerance", "Contact tolerance"))
+                        Spacer(minLength: 8)
+                        TextField("0.000001", text: $toleranceText)
+                            .keyboardType(.decimalPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(maxWidth: 120)
+                            .disabled(isRunning)
+                            .accessibilityIdentifier("CADAssemblyInterferenceTolerance")
+                        Text("mm").foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text(FloeCADStrings.text(
+                            "cad.workbench.assembly.interference.volumeTolerance",
+                            "Volume threshold"))
+                        Spacer(minLength: 8)
+                        TextField("0", text: $volumeToleranceText)
+                            .keyboardType(.decimalPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(maxWidth: 120)
+                            .disabled(isRunning)
+                            .accessibilityIdentifier("CADAssemblyInterferenceVolumeTolerance")
+                        Text("mm³").foregroundStyle(.secondary)
+                    }
+                } footer: {
+                    Text(FloeCADStrings.text(
+                        "cad.workbench.assembly.interference.toleranceHint",
+                        "Surfaces within this distance count as touching. The volume threshold "
+                            + "flags small overlaps without hiding them."))
+                }
+
+                if isRunning || !progress.isEmpty {
+                    Section {
+                        ProgressView(value: progressFraction)
+                            .accessibilityIdentifier("CADAssemblyInterferenceProgress")
+                        HStack {
+                            Text(progressPairText)
+                                .font(.callout)
+                            Spacer(minLength: 8)
+                            if isRunning {
+                                Button(role: .destructive) {
+                                    _ = service?.cancelInterference()
+                                } label: {
+                                    Text(FloeCADStrings.text(
+                                        "cad.workbench.assembly.interference.cancelRun",
+                                        "Cancel check"))
+                                }
+                                .accessibilityIdentifier("CADAssemblyInterferenceCancel")
+                            }
+                        }
+                        HStack(spacing: 6) {
+                            PanelBadge(text: FloeCADStrings.format(
+                                "cad.workbench.assembly.interference.countInterfering",
+                                "%@ interfering", int(progress["interferingPairCount"])),
+                                tint: .red)
+                            PanelBadge(text: FloeCADStrings.format(
+                                "cad.workbench.assembly.interference.countContacts",
+                                "%@ contacts", int(progress["contactPairCount"])),
+                                tint: .orange)
+                            PanelBadge(text: FloeCADStrings.format(
+                                "cad.workbench.assembly.interference.countClearances",
+                                "%@ clearances", int(progress["separatedPairCount"])),
+                                tint: .blue)
+                            PanelBadge(text: FloeCADStrings.format(
+                                "cad.workbench.assembly.interference.countUnresolved",
+                                "%@ unresolved", int(progress["unresolvedPairCount"])))
+                        }
+                        if let phase = progress["phase"] as? String {
+                            Text(phaseLabel(phase))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text(FloeCADStrings.text(
+                            "cad.workbench.assembly.interference.progress", "Progress"))
+                    }
+                }
+
+                if let errorText {
+                    Section {
+                        Text(errorText)
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                resultSections
+
+                Section {
+                    Button {
+                        start()
+                    } label: {
+                        Text(FloeCADStrings.text(
+                            "cad.workbench.assembly.interference.start", "Run check"))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isRunning || selectedLeaves.count < 2
+                              || parsedTolerance == nil || parsedVolumeTolerance == nil)
+                    .accessibilityIdentifier("CADAssemblyInterferenceStart")
+                } footer: {
+                    Text(FloeCADStrings.text(
+                        "cad.workbench.assembly.interference.basis",
+                        "Mesh measurements are approximate."))
+                }
+            }
+            .navigationTitle(FloeCADStrings.text(
+                "cad.workbench.assembly.interference.title", "Interference check"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(FloeCADStrings.text("cad.ui.common.close", "Close")) {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if service == nil { service = CADAssemblyService(document: document) }
+            initializeSelection()
+        }
+        .onDisappear {
+            pollTask?.cancel()
+            if isRunning { _ = service?.cancelInterference() }
+        }
+    }
+
+    // MARK: Selection
+
+    private func initializeSelection() {
+        guard !initialized else { return }
+        initialized = true
+        let valid = Set(leaves.map(\.id))
+        var seed = Set<String>()
+        for id in initialSelection.map(\.uuidString) {
+            guard let instance = report.instances.first(where: { $0.id == id }) else { continue }
+            if instance.isSubassembly {
+                seed.formUnion(leafDescendants(of: instance.id))
+            } else if valid.contains(id) {
+                seed.insert(id)
+            }
+        }
+        selectedIDs = seed.intersection(valid)
+        if selectedIDs.isEmpty && initialSelection.isEmpty {
+            selectedIDs = valid
+        }
+    }
+
+    private func leafDescendants(of instanceID: String) -> Set<String> {
+        Set(leaves.filter { $0.path.contains(instanceID) }.map(\.id))
+    }
+
+    private func selectionBinding(for instance: CADAssemblyReport.Instance) -> Binding<Bool> {
+        Binding(
+            get: {
+                if instance.isSubassembly {
+                    let descendants = leafDescendants(of: instance.id)
+                    return !descendants.isEmpty && descendants.isSubset(of: selectedIDs)
+                }
+                return selectedIDs.contains(instance.id)
+            },
+            set: { isOn in
+                if instance.isSubassembly {
+                    let descendants = leafDescendants(of: instance.id)
+                    if isOn {
+                        selectedIDs.formUnion(descendants)
+                    } else {
+                        selectedIDs.subtract(descendants)
+                    }
+                } else if isOn {
+                    selectedIDs.insert(instance.id)
+                } else {
+                    selectedIDs.remove(instance.id)
+                }
+            })
+    }
+
+    // MARK: Run
+
+    private func start() {
+        guard let service else { return }
+        guard let tolerance = parsedTolerance, tolerance.isFinite, tolerance >= 0 else {
+            errorText = FloeCADStrings.text(
+                "cad.workbench.assembly.interference.badTolerance",
+                "Enter a finite, non-negative contact tolerance in millimetres.")
+            return
+        }
+        guard let volumeTolerance = parsedVolumeTolerance,
+              volumeTolerance.isFinite, volumeTolerance >= 0 else {
+            errorText = FloeCADStrings.text(
+                "cad.workbench.assembly.interference.badVolumeTolerance",
+                "Enter a finite, non-negative exact-common volume threshold in cubic millimetres.")
+            return
+        }
+        let ids = selectedLeaves.map(\.id)
+        guard ids.count >= 2 else {
+            errorText = FloeCADStrings.text(
+                "cad.workbench.assembly.interference.needTwo",
+                "Select at least two drawable instances.")
+            return
+        }
+        visibleRowLimits = [:]
+        result = [:]
+        progress = [:]
+        errorText = nil
+        isRunning = true
+        busy = true
+        let args: [String: Any] = [
+            "instanceIDs": ids,
+            "toleranceMM": tolerance,
+            "volumeToleranceMM3": volumeTolerance,
+        ]
+        pollTask?.cancel()
+        pollTask = Task { @MainActor in
+            while !Task.isCancelled {
+                if let current = service.interferenceProgress() {
+                    progress = current
+                }
+                if !isRunning { break }
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+        }
+        Task { @MainActor in
+            let reply = await service.handleAsync(action: "interference", args: args)
+            if let current = service.interferenceProgress() {
+                progress = current
+            } else if let current = reply["progress"] as? [String: Any] {
+                progress = current
+            }
+            result = reply
+            if reply["ok"] as? Bool != true {
+                errorText = failureMessage(reply)
+            }
+            isRunning = false
+            busy = false
+            pollTask?.cancel()
+            onFinished(reply)
+        }
+    }
+
+    // MARK: Progress and results
+
+    private func failureMessage(_ reply: [String: Any]) -> String {
+        switch reply["error"] as? String {
+        case "cancelled":
+            return FloeCADStrings.text("cad.workbench.assembly.interference.cancelled", "Check cancelled.")
+        case "closed":
+            return FloeCADStrings.text("cad.workbench.assembly.interference.closed", "The document is closed.")
+        case "stale":
+            return FloeCADStrings.text("cad.workbench.assembly.interference.stale", "The assembly changed. Run the check again.")
+        case "result_too_large":
+            return FloeCADStrings.text("cad.workbench.assembly.interference.tooLarge", "There are too many results. Select fewer instances and try again.")
+        default:
+            return reply["message"] as? String
+                ?? FloeCADStrings.text("cad.workbench.assembly.interference.failed", "The interference check did not complete.")
+        }
+    }
+
+    private var progressFraction: Double {
+        if let fraction = double(progress["fraction"]) { return min(1, max(0, fraction)) }
+        let total = int(progress["requestedPairCount"])
+        let processed = int(progress["processedPairCount"])
+        guard total > 0 else { return 0 }
+        return min(1, max(0, Double(processed) / Double(total)))
+    }
+
+    private var progressPairText: String {
+        let processed = int(progress["processedPairCount"])
+        let total = int(progress["requestedPairCount"])
+        return FloeCADStrings.format(
+            "cad.workbench.assembly.interference.pairProgress",
+            "%@ / %@ pairs", processed, total)
+    }
+
+    @ViewBuilder
+    private var resultSections: some View {
+        if !result.isEmpty {
+            Section {
+                LabeledContent(FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.resultPairs", "Pairs checked"),
+                               value: "\(int(result["processedPairCount"])) / \(int(result["requestedPairCount"]))")
+                LabeledContent(FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.resultInterfering", "Interfering"),
+                               value: "\(int(result["interferingPairCount"]))")
+                LabeledContent(FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.resultContacts", "Contacts"),
+                               value: "\(int(result["contactPairCount"]))")
+                LabeledContent(FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.resultClearances", "Clearances"),
+                               value: "\(int(result["separatedPairCount"]))")
+                LabeledContent(FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.resultUnresolved", "Unresolved"),
+                               value: "\(int(result["unresolvedPairCount"]))")
+                DisclosureGroup(FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.details", "Check details")) {
+                    LabeledContent(FloeCADStrings.text(
+                        "cad.workbench.assembly.interference.detailRows", "Detail rows"),
+                                   value: "\(int(result["detailRowCount"]))")
+                    LabeledContent(FloeCADStrings.text(
+                        "cad.workbench.assembly.interference.resultEnvelope", "Result size"),
+                                   value: "\(int(result["resultBytes"] ?? result["detailBytes"])) / \(int(result["resultBudgetBytes"])) B")
+                    if let basis = (result["precision"] as? [String: Any])?["basis"] as? String {
+                        Text(basis)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text(FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.results", "Result"))
+                    .accessibilityIdentifier("CADAssemblyInterferenceResult")
+            }
+
+            entrySection(
+                key: "interferences",
+                title: FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.interferences", "Interferences"),
+                tint: .red)
+            entrySection(
+                key: "contacts",
+                title: FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.contacts", "Contacts"),
+                tint: .orange)
+            entrySection(
+                key: "clearances",
+                title: FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.clearances", "Clearances"),
+                tint: .blue)
+            entrySection(
+                key: "unresolvedPairs",
+                title: FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.unresolved", "Unresolved"),
+                tint: .gray)
+        }
+    }
+
+    @ViewBuilder
+    private func entrySection(key: String, title: String, tint: Color) -> some View {
+        let rows = result[key] as? [[String: Any]] ?? []
+        let shown = min(rows.count, visibleRowLimits[key] ?? rowPageSize)
+        if !rows.isEmpty {
+            Section {
+                ForEach(Array(rows.prefix(shown).enumerated()), id: \.offset) { _, row in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text("\(name(row["a"] as? String)) ↔ \(name(row["b"] as? String))")
+                                .font(.callout)
+                            Spacer(minLength: 4)
+                            PanelBadge(text: classificationLabel(row["classification"] as? String ?? ""),
+                                       tint: tint)
+                        }
+                        let detail = entryDetail(row)
+                        if !detail.isEmpty {
+                            Text(detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if rows.count > shown {
+                    Button {
+                        visibleRowLimits[key] = min(rows.count, shown + rowPageSize)
+                    } label: {
+                        Text(FloeCADStrings.text(
+                            "cad.workbench.assembly.interference.showMoreRows", "Show more rows"))
+                    }
+                    .accessibilityIdentifier("CADAssemblyInterferenceMore-\(key)")
+                }
+                Text(FloeCADStrings.format(
+                    "cad.workbench.assembly.interference.rowsShown",
+                    "%@ of %@ rows shown", shown, rows.count))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text(title)
+            }
+        }
+    }
+
+    private func entryDetail(_ row: [String: Any]) -> String {
+        var parts: [String] = []
+        let volume = double(row["volumeMM3"])
+        if let volume, volume > 0 {
+            parts.append(String(format: "%.6g mm³", volume))
+            if row["volumeBelowThreshold"] as? Bool == true {
+                parts.append(FloeCADStrings.text(
+                    "cad.workbench.assembly.interference.belowVolumeThreshold",
+                    "below volume threshold"))
+            }
+        } else if let distance = double(row["minimumDistanceMM"]) {
+            parts.append(String(format: "%.6g mm", distance))
+        } else if let gap = double(row["aabbGapMM"]) {
+            parts.append(String(format: "AABB gap %.6g mm", gap))
+        }
+        if let precision = double(row["precisionMM"]) {
+            parts.append(String(format: "± %.3g mm", precision))
+        }
+        if let containment = row["containment"] as? String,
+           containment != "none", containment != "none_disjointBounds" {
+            parts.append(containmentLabel(containment))
+        }
+        if let reason = row["unresolvedReason"] as? String {
+            parts.append(reason)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func name(_ id: String?) -> String {
+        guard let id else { return "—" }
+        return report.instances.first { $0.id == id }?.name
+            ?? FloeCADStrings.text(
+                "cad.workbench.assembly.interference.unknownInstance", "Unknown instance")
+    }
+
+    private func classificationLabel(_ classification: String) -> String {
+        switch classification {
+        case "penetrating":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.penetrating", "Penetrating")
+        case "contact":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.contact", "Contact")
+        case "separated":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.separated", "Separated")
+        default:
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.unresolvedBadge", "Unresolved")
+        }
+    }
+
+    private func containmentLabel(_ containment: String) -> String {
+        switch containment {
+        case "bInsideA":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.bInsideA", "B inside A material")
+        case "aInsideB":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.aInsideB", "A inside B material")
+        case "surfaceCrossing":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.surfaceCrossing", "Surfaces cross")
+        case "notEvaluatedOpenMesh":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.openMesh",
+                "Open mesh; containment not claimed")
+        case "indeterminate":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.indeterminate",
+                "Containment indeterminate")
+        default:
+            return ""
+        }
+    }
+
+    private func phaseLabel(_ phase: String) -> String {
+        switch phase {
+        case "preparing":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.phasePreparing", "Preparing")
+        case "checking":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.phaseChecking", "Checking")
+        case "cancelling":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.phaseCancelling", "Cancelling")
+        case "cancelled":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.phaseCancelled", "Cancelled")
+        case "stale":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.phaseStale", "Document changed")
+        case "result_too_large":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.phaseTooLarge", "Result too large")
+        case "completed":
+            return FloeCADStrings.text(
+                "cad.workbench.assembly.interference.phaseCompleted", "Completed")
+        default:
+            return phase
+        }
+    }
+
+    private func int(_ raw: Any?) -> Int {
+        if let number = raw as? NSNumber { return number.intValue }
+        if let value = raw as? Int { return value }
+        return 0
+    }
+
+    private func double(_ raw: Any?) -> Double? {
+        if let number = raw as? NSNumber { return number.doubleValue }
+        if let value = raw as? Double { return value }
+        if let value = raw as? Int { return Double(value) }
+        return nil
+    }
+}
+
 
 // MARK: - Place sheet
 

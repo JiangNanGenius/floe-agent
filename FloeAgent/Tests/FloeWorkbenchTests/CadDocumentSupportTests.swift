@@ -211,6 +211,8 @@ struct CadServiceOperationCatalogTests {
                                           "previewExplodedView", "resetExplodedView",
                                           "partMetadata", "setPartMetadata",
                                           "report", "instances", "dof", "interference",
+                                          "interferencePlan", "interferenceStatus",
+                                          "cancelInterference",
                                           "hierarchy", "references", "referenceDiagnostics",
                                           "addSubassembly", "placePartReference", "moveInstance",
                                           "removePartReference", "makeIndependent"]
@@ -289,6 +291,10 @@ struct CadServiceOperationCatalogTests {
         // (`CADAssemblyService` / `CADDrawingService`). A renamed or invented
         // field on either side fails here instead of becoming a runtime refusal.
         let expectedAssembly: [String: Set<String>] = [
+            "interference": ["toleranceMM", "volumeToleranceMM3", "instanceIDs"],
+            "interferencePlan": ["instanceIDs"],
+            "interferenceStatus": [],
+            "cancelInterference": [],
             "reference": ["instanceID", "useSelection", "face", "edge", "axisPreset"],
             "referenceCandidates": ["instanceID", "scope"],
             "explodedViews": [],

@@ -71,7 +71,11 @@ final class CADVersionManagementUITests: XCTestCase {
         let restoreAlert = app.alerts["Restore Version?"]
         XCTAssertTrue(restoreAlert.waitForExistence(timeout: 5))
         restoreAlert.buttons.matching(identifier: "CADVersionRestoreConfirm").firstMatch.tap()
-        let outcome = app.staticTexts["CADVersionsOutcome"]
+        let outcome = app.descendants(matching: .any)
+            .matching(identifier: "CADVersionsOutcome").firstMatch
+        // Native List virtualizes rows below the selected version details.
+        // Reveal the actual status before waiting for its restore receipt.
+        reveal(outcome, upwards: true)
         let restored = NSPredicate(format: "exists == true AND label CONTAINS %@", "Restored")
         let restoredExpectation = expectation(for: restored, evaluatedWith: outcome)
         wait(for: [restoredExpectation], timeout: 30)

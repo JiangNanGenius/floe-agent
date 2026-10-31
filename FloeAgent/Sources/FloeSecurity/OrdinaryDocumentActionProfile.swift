@@ -154,7 +154,8 @@ public enum OrdinaryDocumentActionProfile {
                 guard parts.count == 1 || (parts.count == 2 && parts[0] == expectedKind) else { return nil }
                 let operation = String(parts.last ?? "")
                 let reads: Set<String> = action == "three_d_assembly"
-                    ? ["report", "instances", "dof", "interference", "reference", "referenceCandidates",
+                    ? ["report", "instances", "dof", "interference", "interferencePlan",
+                       "interferenceStatus", "cancelInterference", "reference", "referenceCandidates",
                        "explodedViews", "previewExplodedView", "resetExplodedView",
                        "partMetadata", "hierarchy", "references", "referenceDiagnostics"]
                     : ["pages", "project", "dimensions", "export"]

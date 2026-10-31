@@ -609,7 +609,14 @@ final class FloeCAD3DBridge {
             "drawing_actions": CadServiceOperationCatalog.actionNames(forKind: "drawing"),
             "script_actions": CadServiceOperationCatalog.actionNames(forKind: "script"),
             "mesh_actions": CadServiceOperationCatalog.actionNames(forKind: "mesh"),
-            "limits": ["max_pairs": 32,
+            // Derived from the executable assembly service, not a retired
+            // gate: there is no fixed pair limit (the old max_pairs=32 is
+            // gone). Complete pair details are bounded by the explicit byte
+            // envelope that the runtime can fully capture and page.
+            "limits": ["interference_result_bytes": CADAssemblyService.interferenceResultBudgetBytes,
+                       "interference_detail_digest": CADAssemblyService.interferenceDetailDigestAlgorithm,
+                       "interference_pair_contract": "every requested unordered pair is processed exactly once; no fixed pair cap; complete details are bounded by interference_result_bytes",
+                       "interference_volume_tolerance_mm3_default": 0,
                        "script_source_bytes": 65536,
                        "script_wall_clock_seconds": 10,
                        "script_triangles": 200000,

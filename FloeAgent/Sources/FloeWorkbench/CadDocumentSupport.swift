@@ -1138,9 +1138,48 @@ public enum CadServiceOperationCatalog: Sendable {
                   summary: "Degrees-of-freedom model (kinematic rank, per-instance DOF, redundant constraints).",
                   arguments: [], examples: ["{}"]),
         Operation(kind: "assembly", action: "interference", mutating: false,
-                  summary: "Exact pairwise interference through the kernel (<= 32 pairs, runs off the main actor).",
-                  arguments: [arg("toleranceMM", "number", note: "default 1e-6")],
-                  examples: [#"{"toleranceMM":0.001}"#]),
+                  summary: "Selected-instance all-pairs inspection with COMPLETE pair details. A "
+                    + "subassembly id expands to its drawable parts; every requested pair is "
+                    + "processed exactly once with real service-owned progress, cancellation and a "
+                    + "revision/change-count stale fence. B-rep pairs use the exact OCCT common "
+                    + "volume in mm³; other pairs use real triangle surface distance/contact/"
+                    + "containment in mm (AABB is broadphase only). All four detail arrays are "
+                    + "returned in full under a 6 MiB result envelope; the runtime's existing "
+                    + "capture/paging presents that same retained text when a model window is "
+                    + "smaller. A result that cannot fit refuses atomically with "
+                    + "result_too_large instead of dropping completed rows.",
+                  arguments: [
+                      arg("toleranceMM", "number", note: "linear contact/clearance tolerance in mm; "
+                          + "default 1e-6; never compared with a cubic volume"),
+                      arg("volumeToleranceMM3", "number", note: "optional exact-common volume "
+                          + "threshold in mm³; finite, non-negative; default 0 = any strictly "
+                          + "positive common volume is penetrating. A positive volume below an "
+                          + "explicit threshold is still reported with its actual volume and "
+                          + "volumeBelowThreshold=true"),
+                      arg("instanceIDs", "array", note: "optional leaf or subassembly instance uuids; "
+                          + "omitted = every drawable occurrence, empty = no pairs; a subassembly "
+                          + "expands to all of its drawable descendants"),
+                  ],
+                  examples: [
+                      #"{"toleranceMM":0.001}"#,
+                      #"{"instanceIDs":["<instance uuid>","<subassembly uuid>"],"toleranceMM":0.01,"volumeToleranceMM3":1.0}"#,
+                  ]),
+        Operation(kind: "assembly", action: "interferencePlan", mutating: false,
+                  summary: "Resolve a selected instance/subassembly subset without running the check: "
+                    + "returns the drawable leaf ids, selected names and all-pairs count. "
+                    + "Uses the same selection expansion as assembly.interference.",
+                  arguments: [arg("instanceIDs", "array", note: "optional leaf or subassembly uuids; "
+                      + "omitted = every drawable occurrence, empty = none")],
+                  examples: [#"{"instanceIDs":["<subassembly uuid>"]}"#]),
+        Operation(kind: "assembly", action: "interferenceStatus", mutating: false,
+                  summary: "Current service-owned progress of the active interference check "
+                    + "(processed/requested pairs, classification counts, phase, cancellation).",
+                  arguments: [], examples: ["{}"]),
+        Operation(kind: "assembly", action: "cancelInterference", mutating: false,
+                  summary: "Request cancellation of the active interference check. The original "
+                    + "caller receives cancelled only after the detached worker joins; no partial "
+                    + "result is accepted.",
+                  arguments: [], examples: ["{}"]),
         Operation(kind: "assembly", action: "hierarchy", mutating: false,
                   summary: "Nested subassembly/instance tree, local constraints, stable BOM identities "
                     + "and structural integrity diagnostics. Never flattens or repairs the stored hierarchy.",

@@ -1247,6 +1247,8 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDrawingBOMTableExportTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyBOMExplodedClosureTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyConstraintEditingTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyInterferenceClosureTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDrawingMultiViewAssociativityTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDrawingFormatAdmissionTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchEntityEditingTests.swift
