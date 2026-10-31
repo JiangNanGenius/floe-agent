@@ -158,7 +158,8 @@ public enum OrdinaryDocumentActionProfile {
                        "interferenceStatus", "cancelInterference", "reference", "referenceCandidates",
                        "explodedViews", "previewExplodedView", "resetExplodedView",
                        "partMetadata", "hierarchy", "references", "referenceDiagnostics"]
-                    : ["pages", "project", "dimensions", "export"]
+                    : ["pages", "project", "dimensions", "dimensionCandidates",
+                       "export", "listTemplates"]
                 // Preview/reset affect only display state, not the stored CAD
                 // model. Persistent service changes still use propose/apply.
                 return reads.contains(operation) ? .readOnly : nil

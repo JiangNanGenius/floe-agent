@@ -357,13 +357,17 @@ public nonisolated struct CADDrawingManualDimension: Codable, Sendable, Equatabl
     /// authority: a live remeasure replaces `value` in every reply and a
     /// missing/ambiguous face is reported as dangling (never the old value).
     public var feature: CADDrawingFeatureReference?
+    /// Structured tolerance/fit. Nil on an ordinary dimension; never inferred
+    /// from the free-text override.
+    public var tolerance: CADDrawingTolerance?
 
     public init(id: UUID = UUID(), kind: CADDrawingDimensionKind,
                 drawingPoints: [SIMD2<Double>], value: Double,
                 textPosition: SIMD2<Double>, textOverride: String? = nil,
                 binding: CADDrawingBinding? = nil,
                 viewID: UUID? = nil,
-                feature: CADDrawingFeatureReference? = nil) {
+                feature: CADDrawingFeatureReference? = nil,
+                tolerance: CADDrawingTolerance? = nil) {
         self.id = id
         self.kind = kind
         self.drawingPoints = drawingPoints
@@ -373,6 +377,7 @@ public nonisolated struct CADDrawingManualDimension: Codable, Sendable, Equatabl
         self.binding = binding
         self.viewID = viewID
         self.feature = feature
+        self.tolerance = tolerance
     }
 }
 
@@ -553,6 +558,28 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
     public var manualDimensions: [CADDrawingManualDimension]
     public var annotations: [CADDrawingTextAnnotation]
 
+    // Additive schema-v5 manufacturing/template state. Every field decodes to
+    // a default, so v1–v4 pages open unchanged; a v4 writer refuses the set
+    // once the stamped schema is v5, and the package floor rises only when a
+    // document actually stores one of these records.
+
+    /// Structured manufacturing annotations (tolerances live on dimensions;
+    /// datums, feature-control frames, surface finish, weld and hole callouts
+    /// live here). Free text is never treated as a substitute.
+    public var manufacturingAnnotations: [CADDrawingManufacturingAnnotation]
+    /// Editable revision table copied from the applied template and then owned
+    /// by the page.
+    public var revisionRows: [CADDrawingRevisionRow]
+    /// Independent snapshot of the applied sheet template. Nil on legacy pages.
+    public var sheetTemplate: CADDrawingSheetTemplateBinding?
+    /// Display-only units for annotation/tolerance text. Geometry stays mm.
+    public var units: CADDrawingUnit?
+    /// Display-only decimal places for annotation/tolerance text (0…4).
+    public var precision: Int?
+    /// Per-page title-block company/drawing-number override. Template apply
+    /// copies the template values here, after which the page owns them.
+    public var titleBlock: CADDrawingTitleBlock?
+
     // Additive v4 shared-sheet state. Nil/empty = a legacy single-view page
     // whose one view is derived from the page fields above. A multi-view page
     // stores every view here; its page-level `sourceBodyIDs` is deliberately
@@ -586,7 +613,13 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
                 balloons: [CADDrawingBalloon] = [],
                 manualDimensions: [CADDrawingManualDimension] = [],
                 annotations: [CADDrawingTextAnnotation] = [],
-                sheetViews: [CADDrawingSheetView]? = nil) {
+                sheetViews: [CADDrawingSheetView]? = nil,
+                manufacturingAnnotations: [CADDrawingManufacturingAnnotation] = [],
+                revisionRows: [CADDrawingRevisionRow] = [],
+                sheetTemplate: CADDrawingSheetTemplateBinding? = nil,
+                units: CADDrawingUnit? = nil,
+                precision: Int? = nil,
+                titleBlock: CADDrawingTitleBlock? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -614,6 +647,12 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
         self.manualDimensions = manualDimensions
         self.annotations = annotations
         self.sheetViews = sheetViews
+        self.manufacturingAnnotations = manufacturingAnnotations
+        self.revisionRows = revisionRows
+        self.sheetTemplate = sheetTemplate
+        self.units = units
+        self.precision = precision
+        self.titleBlock = titleBlock
     }
 
     enum CodingKeys: String, CodingKey {
@@ -624,6 +663,8 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
         case showCenterlines, showDimensions
         case assemblyMode, explodedViewID, explodedViewName, showBOM
         case bom, balloons, manualDimensions, annotations, sheetViews
+        case manufacturingAnnotations, revisionRows, sheetTemplate
+        case units, precision, titleBlock
     }
 
     public init(from decoder: Decoder) throws {
@@ -663,6 +704,17 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
                                                     forKey: .annotations) ?? []
         sheetViews = try container.decodeIfPresent([CADDrawingSheetView].self,
                                                    forKey: .sheetViews)
+        manufacturingAnnotations = try container.decodeIfPresent(
+            [CADDrawingManufacturingAnnotation].self,
+            forKey: .manufacturingAnnotations) ?? []
+        revisionRows = try container.decodeIfPresent([CADDrawingRevisionRow].self,
+                                                      forKey: .revisionRows) ?? []
+        sheetTemplate = try container.decodeIfPresent(CADDrawingSheetTemplateBinding.self,
+                                                       forKey: .sheetTemplate)
+        units = try container.decodeIfPresent(CADDrawingUnit.self, forKey: .units)
+        precision = try container.decodeIfPresent(Int.self, forKey: .precision)
+        titleBlock = try container.decodeIfPresent(CADDrawingTitleBlock.self,
+                                                    forKey: .titleBlock)
         if viewNormal == .zero { viewNormal = SIMD3(0, 0, 1) }
         if viewUp == .zero { viewUp = SIMD3(0, 1, 0) }
     }
@@ -732,6 +784,17 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
         guard let recorded = sourceFingerprint else { return true }
         return !recorded.matches(live)
     }
+
+    /// Display unit for annotation text. Geometry and scale stay millimetres;
+    /// a legacy page (nil) keeps the historical plain-mm formatting.
+    public var displayUnit: CADDrawingUnit { units ?? .millimetre }
+
+    /// Decimal places for annotation text, or nil for the historical trimmed
+    /// millimetre spelling.
+    public var displayPrecision: Int? {
+        guard let precision else { return nil }
+        return max(0, min(4, precision))
+    }
 }
 
 public nonisolated struct CADDrawingSet: Codable, Sendable, Equatable {
@@ -740,23 +803,30 @@ public nonisolated struct CADDrawingSet: Codable, Sendable, Equatable {
     /// assembly-aware projection, exploded views, BOM/balloons and manual
     /// annotation; v4 adds shared-sheet multi-view layout, per-view scale and
     /// projection alignment, view-scoped annotations and linked kernel-face
-    /// dimensions. Every v4 field decodes to a default, so v1/v2/v3 pages open
-    /// unchanged. A newer value opens for reading and blocks edits (the
-    /// service refuses). v4 is a DRAWING-JSON floor only: the surrounding
-    /// `.floecad` package format is unchanged, and no App version is encoded
-    /// here.
-    public static let currentSchemaVersion = 4
+    /// dimensions; v5 adds structured manufacturing annotations and reusable
+    /// sheet templates. Every new field decodes to a default, so v1–v4 pages
+    /// open unchanged. A newer value opens for reading and blocks edits (the
+    /// service refuses). v5 is a DRAWING-JSON schema only: the surrounding
+    /// `.floecad` package floor rises only when a document actually stores a
+    /// v5 record (`CADDocumentFormat.drawingManufacturingVersion`).
+    public static let currentSchemaVersion = 5
     public var schemaVersion: Int
     public var pages: [CADDrawingPage]
+    /// Document-owned template collection. Built-in presets are NOT stored
+    /// here; `listTemplates` serves them separately. Deleting a row never
+    /// changes a page because every applied page carries its own snapshot.
+    public var templates: [CADDrawingSheetTemplate]
 
     public init(pages: [CADDrawingPage] = [],
+                templates: [CADDrawingSheetTemplate] = [],
                 schemaVersion: Int = CADDrawingSet.currentSchemaVersion) {
         self.schemaVersion = schemaVersion
         self.pages = pages
+        self.templates = templates
     }
 
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, pages
+        case schemaVersion, pages, templates
     }
 
     public init(from decoder: Decoder) throws {
@@ -764,6 +834,8 @@ public nonisolated struct CADDrawingSet: Codable, Sendable, Equatable {
         // Missing key = legacy document (v1); never fail a decode on it.
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         pages = try container.decodeIfPresent([CADDrawingPage].self, forKey: .pages) ?? []
+        templates = try container.decodeIfPresent([CADDrawingSheetTemplate].self,
+                                                   forKey: .templates) ?? []
     }
 
     public static func decode(from data: Data?) throws -> CADDrawingSet {

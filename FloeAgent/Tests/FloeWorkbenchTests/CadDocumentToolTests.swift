@@ -1557,13 +1557,14 @@ struct CadDocumentServiceRequestTests {
         let catalog = try #require(object["service_operations"] as? [String: Any])
         let detail = try #require(catalog["detail"] as? [String: Any])
         #expect(detail["kind"] as? String == "drawing")
-        #expect(detail["total"] as? Int == 19)
+        #expect(detail["total"] as? Int == 34)
         let operations = try #require(detail["operations"] as? [[String: Any]])
-        let addPage = try #require(operations.first)
-        #expect(addPage["action"] as? String == "addPage")
-        #expect(addPage["mutating"] as? Bool == true)
-        #expect((addPage["args"] as? [[String: Any]])?.isEmpty == false)
-        #expect((addPage["examples"] as? [String])?.isEmpty == false)
+        let addView = try #require(operations.first)
+        #expect(addView["action"] as? String == "addView",
+                "offset 2 is addView in the 34-operation drawing catalog")
+        #expect(addView["mutating"] as? Bool == true)
+        #expect((addView["args"] as? [[String: Any]])?.isEmpty == false)
+        #expect((addView["examples"] as? [String])?.isEmpty == false)
         // The engine capabilities are fetched normally (the catalog is served
         // by the tool so the reply stays inside the budget).
         let requests = await nativeHost.threeDRequests

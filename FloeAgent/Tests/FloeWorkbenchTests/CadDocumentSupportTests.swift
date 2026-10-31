@@ -194,14 +194,23 @@ struct CadServiceOperationCatalogTests {
                                          "removePage", "setBOM", "addBalloon", "updateBalloon",
                                          "removeBalloon", "addDimension", "updateDimension",
                                          "removeDimension", "addAnnotation", "updateAnnotation",
-                                         "removeAnnotation", "pages", "project", "dimensions", "export"]
+                                         "removeAnnotation", "addManufacturingAnnotation",
+                                         "updateManufacturingAnnotation",
+                                         "removeManufacturingAnnotation", "listTemplates",
+                                         "createTemplate", "updateTemplate", "copyTemplate",
+                                         "applyTemplate", "deleteTemplate",
+                                         "pages", "project", "dimensions", "export"]
     private static let drawingMutating: Set<String> = ["standardSheet", "multiViewSheet", "addView",
                                                        "updateView", "removeView", "layoutViews",
                                                        "assemblySheet", "addPage", "updatePage",
                                                        "removePage", "setBOM", "addBalloon", "updateBalloon",
                                                        "removeBalloon", "addDimension", "updateDimension",
                                                        "removeDimension", "addAnnotation", "updateAnnotation",
-                                                       "removeAnnotation"]
+                                                       "removeAnnotation", "addManufacturingAnnotation",
+                                                       "updateManufacturingAnnotation",
+                                                       "removeManufacturingAnnotation",
+                                                       "createTemplate", "updateTemplate", "copyTemplate",
+                                                       "applyTemplate", "deleteTemplate"]
     private static let assemblyActions = ["addInstance", "addConstraint", "updateConstraint",
                                           "removeInstance",
                                           "setTransform", "setVisible", "removeConstraint",
@@ -520,7 +529,7 @@ struct CadServiceOperationCatalogTests {
         let summary = try CadServiceOperationCatalog.capabilitiesJSON()
         let kinds = try #require(summary["kinds"] as? [String: Any])
         #expect(kinds.count == 4)
-        #expect(kinds["drawing"] as? Int == 19, "the compact summary carries counts only")
+        #expect(kinds["drawing"] as? Int == 34, "the compact summary carries counts only")
         #expect(summary["detail"] == nil)
         #expect((summary["detail_hint"] as? String)?.contains("kind=") == true)
 
@@ -529,11 +538,17 @@ struct CadServiceOperationCatalogTests {
         let drawing = try #require(fullKinds["drawing"] as? [String: Any])
         #expect((drawing["mutating"] as? [String])?.contains("addPage") == true)
         #expect((drawing["read_only"] as? [String])?.contains("pages") == true)
+        #expect((drawing["mutating"] as? [String])?.count == 28,
+                "20 existing mutations + 8 new template/annotation mutations")
+        #expect((drawing["read_only"] as? [String])?.count == 6,
+                "5 existing reads + listTemplates")
+        #expect((drawing["read_only"] as? [String])?.contains("listTemplates") == true)
+        #expect((drawing["mutating"] as? [String])?.contains("applyTemplate") == true)
 
         let page = try CadServiceOperationCatalog.capabilitiesJSON(detailKind: "drawing",
                                                                    offset: 0, limit: 3)
         let detail = try #require(page["detail"] as? [String: Any])
-        #expect(detail["total"] as? Int == 19)
+        #expect(detail["total"] as? Int == 34)
         #expect(detail["next_offset"] as? Int == 3)
         let operations = try #require(detail["operations"] as? [[String: Any]])
         #expect(operations.count == 3)
@@ -543,7 +558,7 @@ struct CadServiceOperationCatalogTests {
         #expect((first["examples"] as? [String])?.isEmpty == false)
 
         let last = try CadServiceOperationCatalog.capabilitiesJSON(detailKind: "drawing",
-                                                                   offset: 18, limit: 3)
+                                                                   offset: 33, limit: 3)
         let lastDetail = try #require(last["detail"] as? [String: Any])
         #expect(lastDetail["next_offset"] is NSNull)
         #expect((lastDetail["operations"] as? [[String: Any]])?.count == 1)

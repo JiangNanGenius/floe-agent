@@ -131,11 +131,18 @@ struct OrdinaryDocumentActionProfileTests {
         for operation in ["report", "instances", "dof", "interference", "interferencePlan", "interferenceStatus", "cancelInterference", "reference", "referenceCandidates", "explodedViews", "previewExplodedView", "resetExplodedView", "hierarchy", "references", "referenceDiagnostics"] {
             #expect(try payloadRole("three_d_assembly", operation) == .readOnly)
         }
-        for operation in ["pages", "project", "dimensions", "export"] {
+        for operation in ["pages", "project", "dimensions", "dimensionCandidates",
+                          "export", "listTemplates"] {
             #expect(try payloadRole("three_d_drawing", operation) == .readOnly)
         }
+        for operation in ["addAnnotation", "addManufacturingAnnotation",
+                          "updateManufacturingAnnotation", "removeManufacturingAnnotation",
+                          "createTemplate", "updateTemplate", "copyTemplate",
+                          "applyTemplate", "deleteTemplate", "unknown"] {
+            #expect(try payloadRole("three_d_drawing", operation) == nil,
+                    "three_d_drawing \(operation) must stay on the write path")
+        }
         #expect(try payloadRole("three_d_assembly", "addConstraint") == nil)
-        #expect(try payloadRole("three_d_drawing", "addAnnotation") == nil)
         #expect(try payloadRole("three_d_assembly", "unknown") == nil)
         #expect(role("cad.document", #"{"action":"three_d_assembly","payload":"{\"op\":\"assembly.reference\"}"}"#) == .readOnly)
         #expect(role("cad.document", #"{"action":"three_d_assembly","payload":"{\"op\":\"drawing.pages\"}"}"#) == nil)

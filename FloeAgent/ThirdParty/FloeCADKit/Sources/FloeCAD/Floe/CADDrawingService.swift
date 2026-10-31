@@ -47,6 +47,14 @@
 //    its page-level `sourceBodyIDs` empty and stores the real filter on each
 //    view, so an older v3 reader cannot show one bare projection as a
 //    complete sheet.
+//  * v5 adds structured manufacturing annotations (dimension tolerances with
+//    real ISO 286 limits, datum/feature-control frames, surface finish, weld,
+//    and thread/counterbore callouts bound to live mechanical holes) plus
+//    reusable sheet templates. Those records are non-additive for an older
+//    drawing writer, so only documents that really store one raise the
+//    package floor (`CADDocumentFormat.drawingManufacturingVersion`). Symbols
+//    are vector linework shared by preview, PDF, SVG and DXF; a thread callout
+//    is drafting semantics only and never claims geometric helix geometry.
 //  * Section honesty (E13): a section view whose sources include a mesh-only
 //    body or a missing body/instance is marked `sectionComplete:false` and
 //    `outputBlocked:true`; `exportData` refuses it with `incomplete_section`
@@ -121,6 +129,15 @@ public final class CADDrawingService {
         case "addAnnotation": return addAnnotationAction(args)
         case "updateAnnotation": return updateAnnotationAction(args)
         case "removeAnnotation": return removeAnnotationAction(args)
+        case "addManufacturingAnnotation": return addManufacturingAnnotationAction(args)
+        case "updateManufacturingAnnotation": return updateManufacturingAnnotationAction(args)
+        case "removeManufacturingAnnotation": return removeManufacturingAnnotationAction(args)
+        case "listTemplates": return listTemplatesAction()
+        case "createTemplate": return createTemplateAction(args)
+        case "updateTemplate": return updateTemplateAction(args)
+        case "copyTemplate": return copyTemplateAction(args)
+        case "applyTemplate": return applyTemplateAction(args)
+        case "deleteTemplate": return deleteTemplateAction(args)
         default:
             return fail("unknown_action", "Unknown drawing action '\(action)'.")
         }
@@ -660,6 +677,376 @@ public final class CADDrawingService {
             "createdIDs": sheet.pages.map(\.id.uuidString),
             "pages": sheet.pages.map(pagePayload),
         ]
+    }
+
+    // MARK: - Reusable sheet templates (schema v5)
+
+    private func listTemplatesAction() -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        let builtIns = CADDrawingSheetTemplateLibrary.builtIns.compactMap {
+            templatePayload($0)
+        }
+        let saved = set.templates.compactMap { templatePayload($0) }
+        return ["ok": true, "mutated": false,
+                "builtIns": builtIns, "templates": saved,
+                "builtInCount": builtIns.count, "count": saved.count]
+    }
+
+    private func createTemplateAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard set.templates.count < 64 else {
+            return fail("too_many_templates", "A document is bounded to 64 saved templates.")
+        }
+        let template: CADDrawingSheetTemplate
+        switch parseTemplate(args, starting: nil) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let parsed): template = parsed
+        }
+        if CADDrawingSheetTemplateLibrary.isBuiltIn(id: template.id)
+            || set.templates.contains(where: { $0.id == template.id }) {
+            return fail("duplicate_template", "That template id is already in use.")
+        }
+        var updated = set
+        updated.templates.append(template)
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true,
+                "template": templatePayload(template) ?? [:],
+                "templates": updated.templates.compactMap { templatePayload($0) },
+                "count": updated.templates.count]
+    }
+
+    private func updateTemplateAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let templateID = uuidValue(args["templateID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_template_id", "templateID must be a template UUID string.")
+        }
+        if CADDrawingSheetTemplateLibrary.isBuiltIn(id: templateID) {
+            return fail("built_in_template",
+                        "Built-in presets are read-only; copy one to edit it.")
+        }
+        guard let index = set.templates.firstIndex(where: { $0.id == templateID }) else {
+            return fail("unknown_template", "No saved template with that id.")
+        }
+        let template: CADDrawingSheetTemplate
+        switch parseTemplate(args, starting: set.templates[index]) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let parsed): template = parsed
+        }
+        var updated = set
+        updated.templates[index] = template
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true,
+                "template": templatePayload(template) ?? [:],
+                "templates": updated.templates.compactMap { templatePayload($0) },
+                "count": updated.templates.count]
+    }
+
+    private func copyTemplateAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard set.templates.count < 64 else {
+            return fail("too_many_templates", "A document is bounded to 64 saved templates.")
+        }
+        guard let sourceID = uuidValue(args["templateID"]) ?? uuidValue(args["sourceTemplateID"]) else {
+            return fail("bad_template_id", "templateID must be a template UUID string.")
+        }
+        let source = CADDrawingSheetTemplateLibrary.preset(id: sourceID)
+            ?? set.templates.first { $0.id == sourceID }
+        guard let source else {
+            return fail("unknown_template", "No built-in or saved template with that id.")
+        }
+        var copy = source
+        copy.id = UUID()
+        copy.builtIn = false
+        if let name = args["name"] as? String,
+           !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            copy.name = name
+        } else {
+            copy.name = source.name + " Copy"
+        }
+        let issues = CADDrawingTemplateRules.validate(copy)
+        guard issues.isEmpty else {
+            return fail("invalid_template", issues.joined(separator: " "))
+        }
+        var updated = set
+        updated.templates.append(copy)
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true,
+                "template": templatePayload(copy) ?? [:],
+                "templates": updated.templates.compactMap { templatePayload($0) },
+                "count": updated.templates.count]
+    }
+
+    private func deleteTemplateAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let templateID = uuidValue(args["templateID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_template_id", "templateID must be a template UUID string.")
+        }
+        if CADDrawingSheetTemplateLibrary.isBuiltIn(id: templateID) {
+            return fail("built_in_template", "Built-in presets cannot be deleted.")
+        }
+        guard set.templates.contains(where: { $0.id == templateID }) else {
+            return fail("unknown_template", "No saved template with that id.")
+        }
+        var updated = set
+        updated.templates.removeAll { $0.id == templateID }
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true,
+                "removedTemplateID": templateID.uuidString,
+                "templates": updated.templates.compactMap { templatePayload($0) },
+                "count": updated.templates.count,
+                "appliedPageSnapshotsPreserved": true]
+    }
+
+    /// Apply ONE template to several pages as a single drawing-set command
+    /// (one undo step). Every page keeps its id, views, source binding and
+    /// annotations; only sheet presentation/display settings change. All page
+    /// ids are validated before any byte is persisted, so a bad request rolls
+    /// back the whole batch.
+    private func applyTemplateAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let templateID = uuidValue(args["templateID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_template_id", "templateID must be a template UUID string.")
+        }
+        guard let template = CADDrawingSheetTemplateLibrary.preset(id: templateID)
+                ?? set.templates.first(where: { $0.id == templateID }) else {
+            return fail("unknown_template", "No built-in or saved template with that id.")
+        }
+        let issues = CADDrawingTemplateRules.validate(template)
+        guard issues.isEmpty else {
+            return fail("invalid_template", issues.joined(separator: " "))
+        }
+        let rawIDs: [String]
+        if let list = args["pageIDs"] as? [String] {
+            rawIDs = list
+        } else if let one = args["pageID"] as? String {
+            rawIDs = [one]
+        } else {
+            return fail("bad_page_ids", "pageIDs must be a non-empty array of page UUID strings.")
+        }
+        guard !rawIDs.isEmpty, rawIDs.count <= Self.maxPages else {
+            return fail("bad_page_ids", "pageIDs must name 1…\(Self.maxPages) pages.")
+        }
+        var ids: [UUID] = []
+        for raw in rawIDs {
+            guard let id = UUID(uuidString: raw) else {
+                return fail("bad_page_ids", "pageIDs must all be page UUID strings.")
+            }
+            ids.append(id)
+        }
+        guard Set(ids).count == ids.count else {
+            return fail("duplicate_page", "pageIDs must not repeat.")
+        }
+        var indexes: [Int] = []
+        for id in ids {
+            guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+                return fail("unknown_page", "pageIDs must all reference pages in this set.")
+            }
+            indexes.append(index)
+        }
+        var updated = set
+        for index in indexes {
+            do {
+                try CADDrawingTemplateRules.apply(template, to: &updated.pages[index])
+            } catch {
+                return fail("template_apply_failed", error.localizedDescription)
+            }
+        }
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true,
+                "transaction": "single",
+                "undoSteps": 1,
+                "appliedPageIDs": ids.map(\.uuidString),
+                "appliedCount": ids.count,
+                "template": templatePayload(template) ?? [:],
+                "pages": indexes.map { pagePayload(updated.pages[$0]) }]
+    }
+
+    private func parseTemplate(_ args: [String: Any],
+                               starting: CADDrawingSheetTemplate?)
+        -> Result<CADDrawingSheetTemplate, CADDrawingServiceError> {
+        var template = starting ?? CADDrawingSheetTemplate(
+            id: uuidValue(args["id"]) ?? UUID(), name: "New template")
+        template.builtIn = false
+        if let raw = args["name"] {
+            guard let name = raw as? String else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_template_name", message: "name must be a string."))
+            }
+            template.name = name
+        }
+        if let raw = args["paper"] {
+            guard let name = raw as? String, let paper = CADPaperSize(rawValue: name) else {
+                return .failure(CADDrawingServiceError(
+                    code: "unknown_paper",
+                    message: "paper must be a4, a3, a2, a1, a0, letter, tabloid or custom."))
+            }
+            template.paper = paper
+        }
+        if let raw = args["customWidthMM"] {
+            guard let value = doubleValue(raw), value.isFinite, value > 0 else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_paper_size", message: "customWidthMM must be positive and finite."))
+            }
+            template.customWidthMM = value
+        }
+        if let raw = args["customHeightMM"] {
+            guard let value = doubleValue(raw), value.isFinite, value > 0 else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_paper_size", message: "customHeightMM must be positive and finite."))
+            }
+            template.customHeightMM = value
+        }
+        if let raw = args["projection"] {
+            guard let name = raw as? String,
+                  let projection = CADDrawingProjectionMethod(rawValue: name) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_projection", message: "projection must be firstAngle or thirdAngle."))
+            }
+            template.projection = projection
+        }
+        if let raw = args["units"] {
+            guard let name = raw as? String, let unit = CADDrawingUnit(rawValue: name) else {
+                return .failure(CADDrawingServiceError(
+                    code: "unknown_unit", message: "units must be millimetre, centimetre or inch."))
+            }
+            template.units = unit
+        }
+        if let raw = args["precision"] {
+            guard let value = intValue(raw), (0...4).contains(value) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_precision", message: "precision must be an integer from 0 to 4."))
+            }
+            template.precision = value
+        }
+        if let raw = args["style"], !(raw is NSNull) {
+            guard let object = raw as? [String: Any] else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_template_style", message: "style must be an object."))
+            }
+            let allowed = Set(["marginMM", "titleBlockWidthMM", "titleBlockHeightMM",
+                               "lineWidthMM", "textHeightMM", "showZoneGrid"])
+            let unknown = Set(object.keys).subtracting(allowed)
+            guard unknown.isEmpty else {
+                return .failure(CADDrawingServiceError(
+                    code: "unknown_template_field",
+                    message: "Unknown style field(s): \(unknown.sorted().joined(separator: ", "))."))
+            }
+            if let value = doubleValue(object["marginMM"]) { template.style.marginMM = value }
+            if let value = doubleValue(object["titleBlockWidthMM"]) {
+                template.style.titleBlockWidthMM = value
+            }
+            if let value = doubleValue(object["titleBlockHeightMM"]) {
+                template.style.titleBlockHeightMM = value
+            }
+            if let value = doubleValue(object["lineWidthMM"]) { template.style.lineWidthMM = value }
+            if let value = doubleValue(object["textHeightMM"]) { template.style.textHeightMM = value }
+            if let value = boolValue(object["showZoneGrid"]) { template.style.showZoneGrid = value }
+        }
+        if let raw = args["titleBlock"], !(raw is NSNull) {
+            guard let object = raw as? [String: Any] else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_title_block", message: "titleBlock must be an object."))
+            }
+            let unknown = Set(object.keys).subtracting(["company", "drawingNumber"])
+            guard unknown.isEmpty else {
+                return .failure(CADDrawingServiceError(
+                    code: "unknown_template_field",
+                    message: "Unknown titleBlock field(s): \(unknown.sorted().joined(separator: ", "))."))
+            }
+            if let company = object["company"] as? String { template.titleBlock.company = company }
+            if let number = object["drawingNumber"] as? String {
+                template.titleBlock.drawingNumber = number
+            }
+        }
+        if let raw = args["revisionRows"] {
+            if raw is NSNull {
+                template.revisionRows = []
+            } else {
+                guard let rows = raw as? [[String: Any]] else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_revision_rows",
+                        message: "revisionRows must be an array of row objects."))
+                }
+                guard rows.count <= CADDrawingTemplateRules.maximumRevisionRows else {
+                    return .failure(CADDrawingServiceError(
+                        code: "too_many_revision_rows",
+                        message: "A template supports at most \(CADDrawingTemplateRules.maximumRevisionRows) revision rows."))
+                }
+                var parsed: [CADDrawingRevisionRow] = []
+                for row in rows {
+                    let unknown = Set(row.keys).subtracting(["id", "revision", "date",
+                                                             "description", "approvedBy"])
+                    guard unknown.isEmpty else {
+                        return .failure(CADDrawingServiceError(
+                            code: "unknown_template_field",
+                            message: "Unknown revision row field."))
+                    }
+                    guard let revision = row["revision"] as? String,
+                          let description = row["description"] as? String else {
+                        return .failure(CADDrawingServiceError(
+                            code: "bad_revision_rows",
+                            message: "Each revision row needs revision and description strings."))
+                    }
+                    guard row["date"] == nil || row["date"] is String || row["date"] is NSNull,
+                          row["approvedBy"] == nil || row["approvedBy"] is String
+                            || row["approvedBy"] is NSNull else {
+                        return .failure(CADDrawingServiceError(
+                            code: "bad_revision_rows",
+                            message: "date/approvedBy must be strings or null."))
+                    }
+                    let date = row["date"] as? String ?? ""
+                    let approvedBy = row["approvedBy"] as? String
+                    guard revision.count <= 16, date.count <= 24,
+                          description.count <= 80, (approvedBy?.count ?? 0) <= 40 else {
+                        return .failure(CADDrawingServiceError(
+                            code: "bad_revision_rows",
+                            message: "A revision row field is longer than its bound."))
+                    }
+                    parsed.append(CADDrawingRevisionRow(
+                        id: uuidValue(row["id"]) ?? UUID(), revision: revision,
+                        date: row["date"] as? String ?? "", description: description,
+                        approvedBy: row["approvedBy"] as? String))
+                }
+                template.revisionRows = parsed
+            }
+        }
+        let issues = CADDrawingTemplateRules.validate(template)
+        guard issues.isEmpty else {
+            return .failure(CADDrawingServiceError(
+                code: "invalid_template", message: issues.joined(separator: " ")))
+        }
+        return .success(template)
+    }
+
+    private func templatePayload(_ template: CADDrawingSheetTemplate) -> [String: Any]? {
+        guard let object = jsonObject(template) as? [String: Any] else { return nil }
+        var payload = object
+        payload["builtIn"] = template.builtIn
+        return payload
     }
 
     // MARK: - Shared-sheet multi-view
@@ -1839,11 +2226,17 @@ public final class CADDrawingService {
             } else {
                 textPosition = defaultDimensionTextPosition(kind: kind, points: drawingPoints)
             }
+            let tolerance: CADDrawingTolerance?
+            switch parseTolerance(args["tolerance"], kind: kind, nominal: value) {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let parsed): tolerance = parsed
+            }
             let dimension = CADDrawingManualDimension(
                 id: UUID(), kind: kind, drawingPoints: drawingPoints, value: value,
                 textPosition: textPosition,
                 textOverride: args["text"] as? String, binding: nil,
-                viewID: requestedViewID, feature: feature)
+                viewID: requestedViewID, feature: feature,
+                tolerance: tolerance)
             page.manualDimensions.append(dimension)
             var updated = set
             updated.pages[index] = page
@@ -1965,6 +2358,11 @@ public final class CADDrawingService {
         guard value.isFinite, value >= 0 else {
             return fail("bad_value", "The dimension value is not finite.")
         }
+        let tolerance: CADDrawingTolerance?
+        switch parseTolerance(args["tolerance"], kind: kind, nominal: value) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let parsed): tolerance = parsed
+        }
         var textPosition: SIMD2<Double>
         if let raw = args["textPosition"] {
             guard let parsed = point2(raw) else {
@@ -1985,7 +2383,8 @@ public final class CADDrawingService {
             id: UUID(), kind: kind, drawingPoints: drawingPoints, value: value,
             textPosition: textPosition,
             textOverride: args["text"] as? String, binding: binding,
-            viewID: requestedViewID, feature: nil)
+            viewID: requestedViewID, feature: nil,
+            tolerance: tolerance)
         page.manualDimensions.append(dimension)
         var updated = set
         updated.pages[index] = page
@@ -2062,6 +2461,107 @@ public final class CADDrawingService {
             sourceRevision: sourceRevision))
     }
 
+    /// Parse and validate a structured dimension tolerance. `null`/absent
+    /// clears it. The values are model millimetres (degrees for an angle) and
+    /// are never derived from the text override.
+    private func parseTolerance(_ raw: Any?, kind: CADDrawingDimensionKind,
+                                nominal: Double)
+        -> Result<CADDrawingTolerance?, CADDrawingServiceError> {
+        guard let raw, !(raw is NSNull) else { return .success(nil) }
+        guard let dict = raw as? [String: Any],
+              let kindRaw = dict["kind"] as? String,
+              let toleranceKind = CADDrawingToleranceKind(rawValue: kindRaw) else {
+            return .failure(CADDrawingServiceError(
+                code: "bad_tolerance",
+                message: "tolerance.kind must be symmetric, deviation, limits or fit."))
+        }
+        func finite(_ key: String) -> Double? {
+            guard let raw = dict[key] else { return nil }
+            return doubleValue(raw)
+        }
+        var tolerance = CADDrawingTolerance(kind: toleranceKind)
+        switch toleranceKind {
+        case .symmetric:
+            guard let deviation = finite("deviationMM") else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_tolerance",
+                    message: "A symmetric tolerance needs deviationMM."))
+            }
+            tolerance.deviationMM = deviation
+        case .deviation:
+            guard let upper = finite("upperDeviationMM"),
+                  let lower = finite("lowerDeviationMM") else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_tolerance",
+                    message: "A deviation tolerance needs upperDeviationMM and lowerDeviationMM."))
+            }
+            tolerance.upperDeviationMM = upper
+            tolerance.lowerDeviationMM = lower
+        case .limits:
+            guard let upper = finite("upperLimitMM"),
+                  let lower = finite("lowerLimitMM") else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_tolerance",
+                    message: "A limits tolerance needs upperLimitMM and lowerLimitMM."))
+            }
+            tolerance.upperLimitMM = upper
+            tolerance.lowerLimitMM = lower
+        case .fit:
+            guard let fit = dict["fit"] as? [String: Any],
+                  let holeGrade = intValue(fit["holeGrade"]),
+                  let shaftLetter = fit["shaftLetter"] as? String,
+                  let shaftGrade = intValue(fit["shaftGrade"]) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_tolerance",
+                    message: "A fit tolerance needs fit.holeGrade, fit.shaftLetter and fit.shaftGrade."))
+            }
+            tolerance.fit = CADDrawingISO286Fit(holeGrade: holeGrade,
+                                                shaftLetter: shaftLetter,
+                                                shaftGrade: shaftGrade)
+        }
+        let issues = CADDrawingManufacturingRules.validateTolerance(tolerance,
+                                                                    kind: kind,
+                                                                    nominal: nominal)
+        guard issues.isEmpty else {
+            return .failure(CADDrawingServiceError(
+                code: "invalid_tolerance", message: issues.joined(separator: " ")))
+        }
+        return .success(tolerance)
+    }
+
+    private func tolerancePayload(_ tolerance: CADDrawingTolerance) -> [String: Any] {
+        var object: [String: Any] = ["kind": tolerance.kind.rawValue]
+        if let value = tolerance.deviationMM { object["deviationMM"] = value }
+        if let value = tolerance.upperDeviationMM { object["upperDeviationMM"] = value }
+        if let value = tolerance.lowerDeviationMM { object["lowerDeviationMM"] = value }
+        if let value = tolerance.upperLimitMM { object["upperLimitMM"] = value }
+        if let value = tolerance.lowerLimitMM { object["lowerLimitMM"] = value }
+        if let fit = tolerance.fit {
+            object["fit"] = [
+                "holeGrade": fit.holeGrade,
+                "shaftLetter": fit.shaftLetter,
+                "shaftGrade": fit.shaftGrade,
+            ]
+        }
+        return object
+    }
+
+    private func toleranceDisplayPayload(_ display: CADDrawingToleranceDisplay) -> [String: Any] {
+        var object: [String: Any] = [
+            "lines": display.lines,
+            "consistentWithNominal": display.consistentWithNominal,
+        ]
+        if let suffix = display.primarySuffix { object["primarySuffix"] = suffix }
+        if let designation = display.designation { object["designation"] = designation }
+        if let value = display.upperLimitMM { object["upperLimitMM"] = value }
+        if let value = display.lowerLimitMM { object["lowerLimitMM"] = value }
+        if let value = display.upperDeviationMM { object["upperDeviationMM"] = value }
+        if let value = display.lowerDeviationMM { object["lowerDeviationMM"] = value }
+        if let value = display.minClearanceMM { object["minClearanceMM"] = value }
+        if let value = display.maxClearanceMM { object["maxClearanceMM"] = value }
+        return object
+    }
+
     private func updateDimensionAction(_ args: [String: Any]) -> [String: Any] {
         let set: CADDrawingSet
         switch loadSet() {
@@ -2088,6 +2588,13 @@ public final class CADDrawingService {
         }
         if args.keys.contains("text") {
             dimension.textOverride = args["text"] as? String
+        }
+        if args.keys.contains("tolerance") {
+            switch parseTolerance(args["tolerance"], kind: dimension.kind,
+                                   nominal: dimension.value) {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let parsed): dimension.tolerance = parsed
+            }
         }
         page.manualDimensions[dimensionIndex] = dimension
         var updated = set
@@ -2122,6 +2629,603 @@ public final class CADDrawingService {
         if let failure = persist(updated) { return failure }
         return ["ok": true, "mutated": true, "removedDimension": dimensionID.uuidString,
                 "manualDimensionCount": page.manualDimensions.count]
+    }
+
+    // MARK: - Manufacturing annotations (schema v5)
+
+    private func addManufacturingAnnotationAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let id = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == id }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard page.manufacturingAnnotations.count < 128 else {
+            return fail("too_many_manufacturing_annotations",
+                        "A page is bounded to 128 manufacturing annotations.")
+        }
+        guard let rawKind = args["kind"] as? String,
+              let kind = CADDrawingManufacturingKind(rawValue: rawKind) else {
+            return fail("unknown_manufacturing_kind",
+                        "kind must be datumFeature, featureControlFrame, surfaceFinish, "
+                        + "weld, threadCallout or counterboreCallout.")
+        }
+        guard let position = point2(args["position"]) else {
+            return fail("bad_position", "position must be a finite [x,y] view point.")
+        }
+        let requestedViewID = uuidValue(args["viewID"]) ?? uuidValue(args["viewId"])
+        if page.isMultiViewSheet && requestedViewID == nil {
+            return fail("view_required",
+                        "A multi-view sheet needs viewID so the annotation belongs to one view.")
+        }
+        if let requestedViewID,
+           !page.effectiveSheetViews.contains(where: { $0.id == requestedViewID }) {
+            return fail("unknown_view", "viewID does not reference a view on this page.")
+        }
+        let context = viewContext(for: page, projection: PageProjection(),
+                                  viewID: requestedViewID)
+        var feature: CADDrawingFeatureReference?
+        if let rawFeature = args["feature"], !(rawFeature is NSNull) {
+            switch parseFeatureReference(rawFeature, page: page) {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let parsed):
+                if case .failure(let message) = resolveFeatureFace(parsed, page: page,
+                                                                   context: context) {
+                    return fail("stale_feature_reference", message)
+                }
+                feature = parsed
+            }
+        }
+        let annotation: CADDrawingManufacturingAnnotation
+        switch buildManufacturingAnnotation(kind: kind, args: args, base: nil,
+                                            feature: feature, position: position,
+                                            viewID: requestedViewID, context: context) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let parsed): annotation = parsed
+        }
+        page.manufacturingAnnotations.append(annotation)
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        let rows = resolvedManufacturingAnnotations(page: page,
+                                                    projection: projectPage(page))
+        return ["ok": true, "mutated": true,
+                "manufacturingAnnotation": rows.first {
+                    ($0["id"] as? String) == annotation.id.uuidString
+                } ?? [:],
+                "manufacturingAnnotations": rows]
+    }
+
+    private func updateManufacturingAnnotationAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let pageID = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == pageID }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard let annotationID = uuidValue(args["annotationID"]),
+              let annotationIndex = page.manufacturingAnnotations.firstIndex(where: {
+                  $0.id == annotationID
+              }) else {
+            return fail("unknown_manufacturing_annotation",
+                        "No manufacturing annotation with that id on this page.")
+        }
+        if let rawKind = args["kind"] as? String,
+           rawKind != page.manufacturingAnnotations[annotationIndex].kind.rawValue {
+            return fail("kind_immutable",
+                        "A manufacturing annotation's kind cannot change; add a new annotation instead.")
+        }
+        let existing = page.manufacturingAnnotations[annotationIndex]
+        let requestedViewID = existing.viewID
+        let context = viewContext(for: page, projection: PageProjection(),
+                                  viewID: requestedViewID)
+        var feature = existing.feature
+        if args.keys.contains("feature") {
+            let rawFeature = args["feature"]
+            if rawFeature == nil || rawFeature is NSNull {
+                feature = nil
+            } else {
+                switch parseFeatureReference(rawFeature!, page: page) {
+                case .failure(let error): return fail(error.code, error.message)
+                case .success(let parsed):
+                    if case .failure(let message) = resolveFeatureFace(parsed, page: page,
+                                                                       context: context) {
+                        return fail("stale_feature_reference", message)
+                    }
+                    feature = parsed
+                }
+            }
+        }
+        var position = existing.position
+        if let raw = args["position"] {
+            guard let parsed = point2(raw) else {
+                return fail("bad_position", "position must be a finite [x,y] view point.")
+            }
+            position = parsed
+        }
+        let annotation: CADDrawingManufacturingAnnotation
+        switch buildManufacturingAnnotation(kind: existing.kind, args: args, base: existing,
+                                            feature: feature, position: position,
+                                            viewID: requestedViewID, context: context) {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let parsed): annotation = parsed
+        }
+        page.manufacturingAnnotations[annotationIndex] = annotation
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        let rows = resolvedManufacturingAnnotations(page: page,
+                                                    projection: projectPage(page))
+        return ["ok": true, "mutated": true,
+                "manufacturingAnnotation": rows.first {
+                    ($0["id"] as? String) == annotation.id.uuidString
+                } ?? [:],
+                "manufacturingAnnotations": rows]
+    }
+
+    private func removeManufacturingAnnotationAction(_ args: [String: Any]) -> [String: Any] {
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): set = loaded
+        }
+        guard let pageID = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else {
+            return fail("bad_page_id", "pageID must be a drawing page UUID string.")
+        }
+        guard let index = set.pages.firstIndex(where: { $0.id == pageID }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        var page = set.pages[index]
+        guard let annotationID = uuidValue(args["annotationID"]),
+              page.manufacturingAnnotations.contains(where: { $0.id == annotationID }) else {
+            return fail("unknown_manufacturing_annotation",
+                        "No manufacturing annotation with that id on this page.")
+        }
+        page.manufacturingAnnotations.removeAll { $0.id == annotationID }
+        var updated = set
+        updated.pages[index] = page
+        if let failure = persist(updated) { return failure }
+        return ["ok": true, "mutated": true,
+                "removedManufacturingAnnotation": annotationID.uuidString,
+                "manufacturingAnnotationCount": page.manufacturingAnnotations.count]
+    }
+
+    private func buildManufacturingAnnotation(
+        kind: CADDrawingManufacturingKind,
+        args: [String: Any],
+        base: CADDrawingManufacturingAnnotation?,
+        feature: CADDrawingFeatureReference?,
+        position: SIMD2<Double>,
+        viewID: UUID?,
+        context: ResolvedViewContext
+    ) -> Result<CADDrawingManufacturingAnnotation, CADDrawingServiceError> {
+        var height = base?.heightMM ?? 3.0
+        if let raw = args["heightMM"] {
+            guard let value = doubleValue(raw), value.isFinite,
+                  (0.5...50).contains(value) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_height", message: "heightMM must be in [0.5, 50]."))
+            }
+            height = value
+        }
+        var annotation = CADDrawingManufacturingAnnotation(
+            id: base?.id ?? UUID(), kind: kind, viewID: viewID,
+            position: position, heightMM: height, feature: feature)
+        let payloadKey: String
+        switch kind {
+        case .datumFeature: payloadKey = "datum"
+        case .featureControlFrame: payloadKey = "featureControlFrame"
+        case .surfaceFinish: payloadKey = "surfaceFinish"
+        case .weld: payloadKey = "weld"
+        case .threadCallout: payloadKey = "thread"
+        case .counterboreCallout: payloadKey = "counterbore"
+        }
+        let allPayloadKeys = ["datum", "featureControlFrame", "surfaceFinish",
+                              "weld", "thread", "counterbore"]
+        if let wrong = allPayloadKeys.first(where: { $0 != payloadKey && args.keys.contains($0) }) {
+            return .failure(CADDrawingServiceError(
+                code: "payload_kind_mismatch",
+                message: "A \(kind.rawValue) annotation cannot carry a \(wrong) payload."))
+        }
+        let rawPayload: Any?
+        if args.keys.contains(payloadKey) {
+            rawPayload = args[payloadKey]
+        } else {
+            rawPayload = payloadValue(base, kind: kind)
+        }
+        guard let rawPayload, !(rawPayload is NSNull),
+              let dict = rawPayload as? [String: Any] else {
+            return .failure(CADDrawingServiceError(
+                code: "missing_manufacturing_payload",
+                message: "This kind needs a \(payloadKey) object."))
+        }
+        func rejectUnknown(_ allowed: Set<String>) -> CADDrawingServiceError? {
+            let unknown = Set(dict.keys).subtracting(allowed)
+            guard unknown.isEmpty else {
+                return CADDrawingServiceError(
+                    code: "unknown_manufacturing_field",
+                    message: "Unknown \(payloadKey) field(s): \(unknown.sorted().joined(separator: ", ")).")
+            }
+            return nil
+        }
+        switch kind {
+        case .datumFeature:
+            if let error = rejectUnknown(["letter", "leaderTarget"]) { return .failure(error) }
+            guard let letterRaw = dict["letter"] as? String,
+                  let letter = CADDrawingManufacturingRules.datumLetter(letterRaw) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_datum", message: "datum.letter must be a single A-Z letter."))
+            }
+            let target: SIMD2<Double>?
+            switch optionalPoint(dict["leaderTarget"]) {
+            case .failure(let error): return .failure(error)
+            case .success(let parsed): target = parsed
+            }
+            annotation.datum = CADDrawingDatumFeature(letter: letter, leaderTarget: target)
+        case .featureControlFrame:
+            if let error = rejectUnknown(["characteristic", "toleranceMM", "diameterZone",
+                                          "materialCondition", "datumReferences",
+                                          "leaderTarget"]) { return .failure(error) }
+            guard let characteristicRaw = dict["characteristic"] as? String,
+                  let characteristic = CADDrawingGDTSymbol(rawValue: characteristicRaw) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_gdt_symbol", message: "Unknown geometric characteristic."))
+            }
+            guard let tolerance = doubleValue(dict["toleranceMM"]), tolerance.isFinite,
+                  tolerance > 0, tolerance <= 1000 else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_gdt_tolerance",
+                    message: "featureControlFrame.toleranceMM must be in (0, 1000]."))
+            }
+            var condition: CADDrawingMaterialCondition?
+            if let raw = dict["materialCondition"], !(raw is NSNull) {
+                guard let name = raw as? String,
+                      let parsed = CADDrawingMaterialCondition(rawValue: name) else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_material_condition",
+                        message: "materialCondition must be maximumMaterial, leastMaterial or regardless."))
+                }
+                condition = parsed
+            }
+            var references: [CADDrawingDatumReference] = []
+            if let rawReferences = dict["datumReferences"] {
+                guard let rows = rawReferences as? [[String: Any]], rows.count <= 3 else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_datum_references",
+                        message: "datumReferences must be an array of at most three references."))
+                }
+                for row in rows {
+                    let unknown = Set(row.keys).subtracting(["letter", "modifier"])
+                    guard unknown.isEmpty else {
+                        return .failure(CADDrawingServiceError(
+                            code: "unknown_manufacturing_field",
+                            message: "Unknown datum reference field."))
+                    }
+                    guard let letterRaw = row["letter"] as? String,
+                          let letter = CADDrawingManufacturingRules.datumLetter(letterRaw) else {
+                        return .failure(CADDrawingServiceError(
+                            code: "bad_datum_references",
+                            message: "Each datum reference needs a single A-Z letter."))
+                    }
+                    var modifier: CADDrawingMaterialCondition?
+                    if let raw = row["modifier"], !(raw is NSNull) {
+                        guard let name = raw as? String,
+                              let parsed = CADDrawingMaterialCondition(rawValue: name) else {
+                            return .failure(CADDrawingServiceError(
+                                code: "bad_material_condition",
+                                message: "A datum modifier must be maximumMaterial, leastMaterial or regardless."))
+                        }
+                        if parsed != .regardless { modifier = parsed }
+                    }
+                    references.append(CADDrawingDatumReference(letter: letter,
+                                                               modifier: modifier))
+                }
+            }
+            let target: SIMD2<Double>?
+            switch optionalPoint(dict["leaderTarget"]) {
+            case .failure(let error): return .failure(error)
+            case .success(let parsed): target = parsed
+            }
+            annotation.featureControlFrame = CADDrawingFeatureControlFrame(
+                characteristic: characteristic, toleranceMM: tolerance,
+                diameterZone: boolValue(dict["diameterZone"]) ?? false,
+                materialCondition: condition, datumReferences: references,
+                leaderTarget: target)
+        case .surfaceFinish:
+            if let error = rejectUnknown(["raMicrometres", "machiningMethod",
+                                          "allAround"]) { return .failure(error) }
+            guard let ra = doubleValue(dict["raMicrometres"]), ra.isFinite,
+                  ra > 0, ra <= 1000 else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_surface_finish",
+                    message: "surfaceFinish.raMicrometres must be in (0, 1000]."))
+            }
+            var method: String?
+            if let raw = dict["machiningMethod"], !(raw is NSNull) {
+                guard let value = raw as? String,
+                      let trimmed = CADDrawingManufacturingRules.trimmed(value, maxLength: 40) else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_surface_finish",
+                        message: "machiningMethod must be 1…40 characters."))
+                }
+                method = trimmed
+            }
+            annotation.surfaceFinish = CADDrawingSurfaceFinish(
+                raMicrometres: ra, machiningMethod: method,
+                allAround: boolValue(dict["allAround"]) ?? false)
+        case .weld:
+            if let error = rejectUnknown(["type", "sizeMM", "lengthMM", "pitchMM",
+                                          "allAround", "fieldWeld", "tailNote",
+                                          "leaderTarget"]) { return .failure(error) }
+            guard let typeRaw = dict["type"] as? String,
+                  let type = CADDrawingWeldType(rawValue: typeRaw) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_weld", message: "Unknown weld type."))
+            }
+            guard let size = doubleValue(dict["sizeMM"]), size.isFinite,
+                  size > 0, size <= 1000 else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_weld", message: "weld.sizeMM must be in (0, 1000]."))
+            }
+            var length: Double?
+            if let raw = dict["lengthMM"], !(raw is NSNull) {
+                guard let value = doubleValue(raw), value.isFinite,
+                      value > 0, value <= 100_000 else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_weld", message: "weld.lengthMM must be positive and finite."))
+                }
+                length = value
+            }
+            var pitch: Double?
+            if let raw = dict["pitchMM"], !(raw is NSNull) {
+                guard let value = doubleValue(raw), value.isFinite,
+                      value > 0, value <= 100_000 else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_weld", message: "weld.pitchMM must be positive and finite."))
+                }
+                pitch = value
+            }
+            var tail: String?
+            if let raw = dict["tailNote"], !(raw is NSNull) {
+                guard let value = raw as? String,
+                      let trimmed = CADDrawingManufacturingRules.trimmed(value, maxLength: 80) else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_weld", message: "tailNote must be 1…80 characters."))
+                }
+                tail = trimmed
+            }
+            let target: SIMD2<Double>?
+            switch optionalPoint(dict["leaderTarget"]) {
+            case .failure(let error): return .failure(error)
+            case .success(let parsed): target = parsed
+            }
+            annotation.weld = CADDrawingWeld(
+                type: type, sizeMM: size, lengthMM: length, pitchMM: pitch,
+                allAround: boolValue(dict["allAround"]) ?? false,
+                fieldWeld: boolValue(dict["fieldWeld"]) ?? false,
+                tailNote: tail, leaderTarget: target)
+        case .threadCallout:
+            if let error = rejectUnknown(["designation", "pitchMM", "threadClass",
+                                          "handedness", "through", "depthMM",
+                                          "leaderTarget"]) { return .failure(error) }
+            guard let designationRaw = dict["designation"] as? String,
+                  let parsedDesignation = CADDrawingManufacturingRules
+                    .parseThreadDesignation(designationRaw) else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_thread",
+                    message: "designation must be an ISO metric designation such as M6."))
+            }
+            var pitch = parsedDesignation.pitchMM
+            if let raw = dict["pitchMM"], !(raw is NSNull) {
+                guard let value = doubleValue(raw) else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_thread", message: "thread.pitchMM must be a number."))
+                }
+                pitch = value
+            }
+            if pitch == nil {
+                pitch = CADDrawingManufacturingRules.coarseMetricPitch(
+                    nominalMM: parsedDesignation.nominalMM)
+            }
+            guard let resolvedPitch = pitch, resolvedPitch.isFinite,
+                  resolvedPitch > 0, resolvedPitch <= 6 else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_thread", message: "thread.pitchMM must be in (0, 6]."))
+            }
+            let threadClass = (dict["threadClass"] as? String) ?? "6H"
+            guard CADDrawingManufacturingRules.threadClass(threadClass) != nil else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_thread", message: "thread.threadClass must look like 6H or 6g."))
+            }
+            let handedness: CADDrawingThreadHandedness
+            if let raw = dict["handedness"], !(raw is NSNull) {
+                guard let name = raw as? String,
+                      let parsed = CADDrawingThreadHandedness(rawValue: name) else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_thread",
+                        message: "handedness must be rightHand or leftHand."))
+                }
+                handedness = parsed
+            } else {
+                handedness = .rightHand
+            }
+            let through = boolValue(dict["through"]) ?? true
+            var depth: Double?
+            if let raw = dict["depthMM"], !(raw is NSNull) {
+                guard let value = doubleValue(raw), value.isFinite,
+                      value > 0, value <= 1000 else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_thread", message: "thread.depthMM must be in (0, 1000]."))
+                }
+                depth = value
+            }
+            if !through && depth == nil {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_thread", message: "A blind thread needs depthMM."))
+            }
+            let target: SIMD2<Double>?
+            switch optionalPoint(dict["leaderTarget"]) {
+            case .failure(let error): return .failure(error)
+            case .success(let parsed): target = parsed
+            }
+            annotation.thread = CADDrawingThreadCallout(
+                designation: parsedDesignation.canonical, pitchMM: resolvedPitch,
+                threadClass: threadClass, handedness: handedness,
+                through: through, depthMM: depth, leaderTarget: target)
+        case .counterboreCallout:
+            if let error = rejectUnknown(["leaderTarget"]) { return .failure(error) }
+            let target: SIMD2<Double>?
+            switch optionalPoint(dict["leaderTarget"]) {
+            case .failure(let error): return .failure(error)
+            case .success(let parsed): target = parsed
+            }
+            annotation.counterbore = CADDrawingCounterboreCallout(leaderTarget: target)
+        }
+        let issues = CADDrawingManufacturingRules.validate(annotation)
+        guard issues.isEmpty else {
+            return .failure(CADDrawingServiceError(
+                code: "invalid_manufacturing_annotation",
+                message: issues.joined(separator: " ")))
+        }
+        if kind == .threadCallout, let thread = annotation.thread {
+            guard let feature else {
+                return .failure(CADDrawingServiceError(
+                    code: "missing_hole_source",
+                    message: "A thread callout requires a linked mechanical hole."))
+            }
+            let hole: ManufacturingHoleMetadata
+            switch holeMetadata(feature) {
+            case .failure(let error): return .failure(error)
+            case .success(let parsed): hole = parsed
+            }
+            let sourceIssues = CADDrawingManufacturingRules.validateThread(
+                thread, kind: nil, value: nil,
+                pilotDiameterMM: hole.pilotDiameterMM,
+                sourceThrough: hole.through,
+                sourceDepthMM: hole.holeDepthMM)
+            guard sourceIssues.isEmpty else {
+                return .failure(CADDrawingServiceError(
+                    code: "thread_source_mismatch",
+                    message: sourceIssues.joined(separator: " ")))
+            }
+        }
+        if kind == .counterboreCallout {
+            guard let feature else {
+                return .failure(CADDrawingServiceError(
+                    code: "missing_hole_source",
+                    message: "A counterbore callout requires a linked mechanical hole."))
+            }
+            let hole: ManufacturingHoleMetadata
+            switch holeMetadata(feature) {
+            case .failure(let error): return .failure(error)
+            case .success(let parsed): hole = parsed
+            }
+            guard hole.spec.kind == .counterbore,
+                  hole.counterboreDiameterMM != nil,
+                  hole.counterboreDepthMM != nil else {
+                return .failure(CADDrawingServiceError(
+                    code: "not_a_counterbore",
+                    message: "The linked mechanical hole is not a counterbore."))
+            }
+        }
+        return .success(annotation)
+    }
+
+    private func payloadValue(_ annotation: CADDrawingManufacturingAnnotation?,
+                              kind: CADDrawingManufacturingKind) -> Any? {
+        guard let annotation else { return nil }
+        switch kind {
+        case .datumFeature: return annotation.datum.flatMap { jsonObject($0) }
+        case .featureControlFrame: return annotation.featureControlFrame.flatMap { jsonObject($0) }
+        case .surfaceFinish: return annotation.surfaceFinish.flatMap { jsonObject($0) }
+        case .weld: return annotation.weld.flatMap { jsonObject($0) }
+        case .threadCallout: return annotation.thread.flatMap { jsonObject($0) }
+        case .counterboreCallout: return annotation.counterbore.flatMap { jsonObject($0) }
+        }
+    }
+
+    private func jsonObject<T: Encodable>(_ value: T) -> Any? {
+        guard let data = try? JSONEncoder().encode(value) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data)
+    }
+
+    private func optionalPoint(_ raw: Any?)
+        -> Result<SIMD2<Double>?, CADDrawingServiceError> {
+        guard let raw, !(raw is NSNull) else { return .success(nil) }
+        guard let point = point2(raw) else {
+            return .failure(CADDrawingServiceError(
+                code: "bad_leader_target",
+                message: "leaderTarget must be a finite [x,y] view point."))
+        }
+        return .success(point)
+    }
+
+    private func holeMetadata(_ feature: CADDrawingFeatureReference)
+        -> Result<ManufacturingHoleMetadata, CADDrawingServiceError> {
+        guard let featureID = feature.featureID,
+              let node = document.session.document.features.node(
+                FeatureID(raw: featureID)) else {
+            return .failure(CADDrawingServiceError(
+                code: "missing_hole_feature",
+                message: "The linked feature no longer exists; the callout is dangling."))
+        }
+        guard !node.suppressed else {
+            return .failure(CADDrawingServiceError(
+                code: "suppressed_hole_feature",
+                message: "The linked hole feature is suppressed; the callout is dangling."))
+        }
+        guard case let .hole(target, profile, _, spec) = node.kind else {
+            return .failure(CADDrawingServiceError(
+                code: "not_a_hole_feature",
+                message: "The linked feature is not a mechanical hole; the callout is dangling."))
+        }
+        guard let source = body(for: feature.bodyID) else {
+            return .failure(CADDrawingServiceError(
+                code: "missing_hole_body",
+                message: "The linked hole's source body no longer exists."))
+        }
+        guard Self.featureNode(node, writesBody: target.bodyID)
+                || Self.featureNode(node, writesBody: source.id) else {
+            return .failure(CADDrawingServiceError(
+                code: "hole_source_mismatch",
+                message: "The linked feature no longer owns this body; the callout is dangling."))
+        }
+        guard let sketch = document.session.document.sketches.first(where: {
+            $0.id == profile.sketchID
+        }) else {
+            return .failure(CADDrawingServiceError(
+                code: "missing_hole_sketch",
+                message: "The linked hole's authoring sketch no longer exists."))
+        }
+        let pilotDiameter = HoleKit.circle(in: sketch, matching: profile).map { $0.radius * 2 }
+        if let issue = HoleKit.validationIssue(spec, pilotDiameter: pilotDiameter) {
+            return .failure(CADDrawingServiceError(
+                code: "invalid_hole_feature",
+                message: "The linked mechanical hole is invalid: \(issue)"))
+        }
+        let through = spec.kind == .throughAll || spec.kind == .counterbore
+            || spec.kind == .countersink
+        return .success(ManufacturingHoleMetadata(
+            spec: spec,
+            pilotDiameterMM: pilotDiameter,
+            through: through,
+            holeDepthMM: spec.kind == .blind ? spec.depth?.value : nil,
+            counterboreDiameterMM: spec.counterboreDiameter?.value,
+            counterboreDepthMM: spec.counterboreDepth?.value,
+            countersinkDiameterMM: spec.countersinkDiameter?.value,
+            countersinkAngleDegrees: spec.countersinkAngle?.value))
     }
 
     // MARK: - Text annotations
@@ -2598,6 +3702,118 @@ public final class CADDrawingService {
             sheetViews: existing?.sheetViews)
         page.customWidthMM = customWidth
         page.customHeightMM = customHeight
+        // New non-additive records are edited by their own actions; a page
+        // update preserves them rather than dropping unknown data.
+        page.manufacturingAnnotations = existing?.manufacturingAnnotations ?? []
+        page.revisionRows = existing?.revisionRows ?? []
+        page.sheetTemplate = existing?.sheetTemplate
+        page.units = existing?.units
+        page.precision = existing?.precision
+        page.titleBlock = existing?.titleBlock
+
+        if let raw = args["units"] {
+            if raw is NSNull {
+                page.units = nil
+            } else if let name = raw as? String, let unit = CADDrawingUnit(rawValue: name) {
+                page.units = unit
+            } else {
+                return .failure(CADDrawingServiceError(
+                    code: "unknown_unit",
+                    message: "units must be millimetre, centimetre or inch."))
+            }
+        }
+        if let raw = args["precision"] {
+            if raw is NSNull {
+                page.precision = nil
+            } else if let value = intValue(raw), (0...4).contains(value) {
+                page.precision = value
+            } else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_precision",
+                    message: "precision must be an integer from 0 to 4."))
+            }
+        }
+        if let raw = args["revisionRows"] {
+            if raw is NSNull {
+                page.revisionRows = []
+            } else {
+                guard let rows = raw as? [[String: Any]] else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_revision_rows",
+                        message: "revisionRows must be an array of row objects."))
+                }
+                guard rows.count <= CADDrawingTemplateRules.maximumRevisionRows else {
+                    return .failure(CADDrawingServiceError(
+                        code: "too_many_revision_rows",
+                        message: "A sheet supports at most \(CADDrawingTemplateRules.maximumRevisionRows) revision rows."))
+                }
+                var parsed: [CADDrawingRevisionRow] = []
+                for row in rows {
+                    let unknown = Set(row.keys).subtracting(["id", "revision", "date",
+                                                             "description", "approvedBy"])
+                    guard unknown.isEmpty else {
+                        return .failure(CADDrawingServiceError(
+                            code: "unknown_revision_row_field",
+                            message: "Unknown revision row field(s): "
+                                + unknown.sorted().joined(separator: ", ") + "."))
+                    }
+                    guard let revision = row["revision"] as? String,
+                          let description = row["description"] as? String else {
+                        return .failure(CADDrawingServiceError(
+                            code: "bad_revision_rows",
+                            message: "Each revision row needs revision and description strings."))
+                    }
+                    guard row["date"] == nil || row["date"] is String || row["date"] is NSNull,
+                          row["approvedBy"] == nil || row["approvedBy"] is String
+                            || row["approvedBy"] is NSNull else {
+                        return .failure(CADDrawingServiceError(
+                            code: "bad_revision_rows",
+                            message: "date/approvedBy must be strings or null."))
+                    }
+                    let date = row["date"] as? String ?? ""
+                    let approvedBy = row["approvedBy"] as? String
+                    guard revision.count <= 16, date.count <= 24,
+                          description.count <= 80, (approvedBy?.count ?? 0) <= 40 else {
+                        return .failure(CADDrawingServiceError(
+                            code: "bad_revision_rows",
+                            message: "A revision row field is longer than its bound."))
+                    }
+                    parsed.append(CADDrawingRevisionRow(
+                        id: uuidValue(row["id"]) ?? UUID(),
+                        revision: revision,
+                        date: date,
+                        description: description,
+                        approvedBy: approvedBy))
+                }
+                page.revisionRows = parsed
+            }
+        }
+        if let raw = args["titleBlock"] {
+            if raw is NSNull {
+                page.titleBlock = nil
+            } else if let object = raw as? [String: Any],
+                      let company = object["company"] as? String,
+                      let drawingNumber = object["drawingNumber"] as? String {
+                let unknown = Set(object.keys).subtracting(["company", "drawingNumber"])
+                guard unknown.isEmpty else {
+                    return .failure(CADDrawingServiceError(
+                        code: "unknown_title_block_field",
+                        message: "Unknown titleBlock field(s): "
+                            + unknown.sorted().joined(separator: ", ") + "."))
+                }
+                guard company.count <= 80, drawingNumber.count <= 60 else {
+                    return .failure(CADDrawingServiceError(
+                        code: "bad_title_block",
+                        message: "The company name is bounded to 80 and the drawing number to 60 characters."))
+                }
+                page.titleBlock = CADDrawingTitleBlock(company: company,
+                                                       drawingNumber: drawingNumber)
+            } else {
+                return .failure(CADDrawingServiceError(
+                    code: "bad_title_block",
+                    message: "titleBlock must be {company, drawingNumber} strings."))
+            }
+        }
         return .success(page)
     }
 
@@ -3528,10 +4744,22 @@ public final class CADDrawingService {
 
     // MARK: - Annotation resolution
 
+    private struct ManufacturingHoleMetadata {
+        var spec: HoleSpec
+        var pilotDiameterMM: Double?
+        var through: Bool
+        var holeDepthMM: Double?
+        var counterboreDiameterMM: Double?
+        var counterboreDepthMM: Double?
+        var countersinkDiameterMM: Double?
+        var countersinkAngleDegrees: Double?
+    }
+
     private struct ResolvedAnnotations {
         var balloons: [[String: Any]] = []
         var manualDimensions: [[String: Any]] = []
         var annotations: [[String: Any]] = []
+        var manufacturingAnnotations: [[String: Any]] = []
         var issues: [String] = []
 
         var rows: [[String: Any]] { manualDimensions }
@@ -4010,6 +5238,312 @@ public final class CADDrawingService {
                                             drawingRadius: drawingRadius))
     }
 
+    // MARK: - Manufacturing resolution
+
+    /// Resolve every manufacturing annotation against the LIVE document. A
+    /// resolved callout exposes its display lines and computed limits; a
+    /// stale/dangling callout exposes no old measured value, only an explicit
+    /// STALE/— marker and the reason.
+    private func resolvedManufacturingAnnotations(page: CADDrawingPage,
+                                                  projection: PageProjection)
+        -> [[String: Any]] {
+        var rows: [[String: Any]] = []
+        for annotation in page.manufacturingAnnotations {
+            let context = viewContext(for: page, projection: projection,
+                                      viewID: annotation.viewID)
+            var stale = false
+            var invalid = false
+            var dangling = false
+            var status = "resolved"
+            var reasons: [String] = []
+            var target: SIMD2<Double>?
+            var resolvedFeature: [String: Any]?
+            if let feature = annotation.feature {
+                switch resolveFeatureFace(feature, page: page, context: context) {
+                case .success(let live):
+                    target = live.drawingCenter
+                    resolvedFeature = [
+                        "faceIndex": live.faceIndex,
+                        "radiusMM": live.radiusMM,
+                        "currentRevision": live.currentRevision,
+                    ]
+                case .failure(let message):
+                    dangling = true
+                    status = "dangling"
+                    reasons.append(message)
+                }
+            } else if annotation.kind.requiresHoleSource {
+                dangling = true
+                status = "dangling"
+                reasons.append("This callout needs a linked mechanical hole.")
+            }
+
+            var display: [String: Any] = [:]
+            var computed: [String: Any] = [:]
+            switch annotation.kind {
+            case .datumFeature:
+                guard let datum = annotation.datum else {
+                    invalid = true
+                    reasons.append("The stored datum payload is missing.")
+                    break
+                }
+                display["letter"] = datum.letter
+                if let explicit = datum.leaderTarget {
+                    target = explicit
+                }
+            case .featureControlFrame:
+                guard let frame = annotation.featureControlFrame else {
+                    invalid = true
+                    reasons.append("The stored feature-control frame is missing.")
+                    break
+                }
+                display["characteristic"] = frame.characteristic.rawValue
+                display["characteristicTitle"] = frame.characteristic.title
+                display["diameterZone"] = frame.diameterZone
+                let toleranceDigits = max(2, page.displayPrecision ?? 2)
+                display["toleranceText"] = (frame.diameterZone ? "Ø" : "")
+                    + CADDrawingManufacturingRules.formatNumber(frame.toleranceMM, precision: toleranceDigits)
+                if let condition = frame.materialCondition,
+                   condition != .regardless {
+                    display["materialCondition"] = condition.rawValue
+                    display["materialConditionCode"] = condition.shortCode
+                }
+                display["datumReferences"] = frame.datumReferences.map {
+                    reference -> [String: Any] in
+                    var row: [String: Any] = ["letter": reference.letter]
+                    if let modifier = reference.modifier, modifier != .regardless {
+                        row["modifier"] = modifier.rawValue
+                        row["modifierCode"] = modifier.shortCode
+                    }
+                    return row
+                }
+                if let explicit = frame.leaderTarget {
+                    target = explicit
+                }
+            case .surfaceFinish:
+                guard let finish = annotation.surfaceFinish else {
+                    invalid = true
+                    reasons.append("The stored surface-finish payload is missing.")
+                    break
+                }
+                display["raText"] = "Ra " + CADDrawingManufacturingRules.formatNumber(
+                    finish.raMicrometres, precision: page.displayPrecision)
+                display["allAround"] = finish.allAround
+                if let method = finish.machiningMethod { display["machiningMethod"] = method }
+                computed["raMicrometres"] = finish.raMicrometres
+            case .weld:
+                guard let weld = annotation.weld else {
+                    invalid = true
+                    reasons.append("The stored weld payload is missing.")
+                    break
+                }
+                display["weldType"] = weld.type.rawValue
+                display["weldTypeTitle"] = weld.type.title
+                display["sizeText"] = formatDisplayLength(weld.sizeMM, page: page)
+                if let length = weld.lengthMM {
+                    display["lengthText"] = formatDisplayLength(length, page: page)
+                }
+                if let pitch = weld.pitchMM {
+                    display["pitchText"] = formatDisplayLength(pitch, page: page)
+                }
+                display["allAround"] = weld.allAround
+                display["fieldWeld"] = weld.fieldWeld
+                if let tail = weld.tailNote { display["tailNote"] = tail }
+                if let explicit = weld.leaderTarget { target = explicit }
+            case .threadCallout:
+                guard let thread = annotation.thread else {
+                    invalid = true
+                    reasons.append("The stored thread payload is missing.")
+                    break
+                }
+                display["designation"] = thread.designation
+                display["pitchMM"] = thread.pitchMM
+                display["threadClass"] = thread.threadClass
+                display["handedness"] = thread.handedness.rawValue
+                display["through"] = thread.through
+                display["geometricThread"] = false
+                if dangling {
+                    display["textLines"] = ["STALE"]
+                    break
+                }
+                guard let feature = annotation.feature else {
+                    dangling = true
+                    status = "dangling"
+                    reasons.append("This thread callout has no linked hole.")
+                    display["textLines"] = ["STALE"]
+                    break
+                }
+                let holeResult = holeMetadata(feature)
+                guard case let .success(hole) = holeResult else {
+                    var reason = "The linked hole metadata could not be resolved."
+                    if case let .failure(error) = holeResult { reason = error.message }
+                    stale = true
+                    status = "stale"
+                    reasons.append(reason)
+                    display["textLines"] = ["STALE"]
+                    break
+                }
+                let issues = CADDrawingManufacturingRules.validateThread(
+                    thread, kind: nil, value: nil,
+                    pilotDiameterMM: hole.pilotDiameterMM,
+                    sourceThrough: hole.through,
+                    sourceDepthMM: hole.holeDepthMM)
+                if !issues.isEmpty {
+                    stale = true
+                    status = "stale"
+                    reasons.append(contentsOf: issues)
+                    display["textLines"] = ["STALE"]
+                    break
+                }
+                var lines: [String] = [threadDesignationText(thread)]
+                if thread.handedness == .leftHand { lines[0] += " LH" }
+                if thread.through {
+                    lines.append("THRU")
+                } else if let depth = thread.depthMM {
+                    lines.append("DEPTH " + formatDisplayLength(depth, page: page))
+                }
+                display["textLines"] = lines
+                display["verification"] = CADDrawingManufacturingRules.threadVerification(
+                    thread: thread, pilotDiameterMM: hole.pilotDiameterMM) ?? "linkedHole"
+                if let pilot = hole.pilotDiameterMM {
+                    computed["pilotDiameterMM"] = pilot
+                }
+                computed["holeThrough"] = hole.through
+                if let depth = hole.holeDepthMM {
+                    computed["holeDepthMM"] = depth
+                }
+            case .counterboreCallout:
+                computed["geometricThread"] = false
+                if dangling {
+                    display["textLines"] = ["STALE"]
+                    break
+                }
+                guard let feature = annotation.feature else {
+                    dangling = true
+                    status = "dangling"
+                    reasons.append("This counterbore callout has no linked hole.")
+                    display["textLines"] = ["STALE"]
+                    break
+                }
+                let holeResult = holeMetadata(feature)
+                guard case let .success(hole) = holeResult else {
+                    var reason = "The linked hole metadata could not be resolved."
+                    if case let .failure(error) = holeResult { reason = error.message }
+                    stale = true
+                    status = "stale"
+                    reasons.append(reason)
+                    display["textLines"] = ["STALE"]
+                    break
+                }
+                guard hole.spec.kind == .counterbore,
+                      let diameter = hole.counterboreDiameterMM,
+                      let depth = hole.counterboreDepthMM else {
+                    stale = true
+                    status = "stale"
+                    reasons.append("The linked hole is no longer a counterbore.")
+                    display["textLines"] = ["STALE"]
+                    break
+                }
+                var lines: [String] = [
+                    "CBORE Ø" + formatDisplayLength(diameter, page: page),
+                    "DEPTH " + formatDisplayLength(depth, page: page),
+                ]
+                if hole.through {
+                    lines.append("THRU")
+                } else if let pilotDepth = hole.holeDepthMM {
+                    lines.append("PILOT DEPTH " + formatDisplayLength(pilotDepth, page: page))
+                }
+                if let pilot = hole.pilotDiameterMM {
+                    lines.append("PILOT Ø" + formatDisplayLength(pilot, page: page))
+                }
+                display["textLines"] = lines
+                computed["counterboreDiameterMM"] = diameter
+                computed["counterboreDepthMM"] = depth
+                computed["holeThrough"] = hole.through
+                if let pilot = hole.pilotDiameterMM {
+                    computed["pilotDiameterMM"] = pilot
+                }
+            }
+            if !annotation.payloadIsExclusive {
+                invalid = true
+                reasons.append("The stored annotation payload is not exclusive to its kind.")
+            }
+            if invalid { status = "invalid" }
+            let localPosition = annotation.position
+            var row: [String: Any] = [
+                "id": annotation.id.uuidString,
+                "kind": annotation.kind.rawValue,
+                "kindTitle": annotation.kind.title,
+                "position": pointPayload(localPosition + context.offset),
+                "localPosition": pointPayload(localPosition),
+                "heightMM": annotation.heightMM,
+                "stale": stale,
+                "invalid": invalid,
+                "dangling": dangling,
+                "status": status,
+                "display": display,
+                "configured": configuredPayload(annotation),
+            ]
+            if annotation.viewID != nil || !context.isLegacy {
+                row["viewID"] = context.view.id.uuidString
+            }
+            if let target {
+                row["target"] = pointPayload(target + context.offset)
+            }
+            if let feature = annotation.feature {
+                row["feature"] = featurePayload(feature)
+            }
+            if let resolvedFeature { row["resolvedFeature"] = resolvedFeature }
+            if !computed.isEmpty { row["computed"] = computed }
+            if !reasons.isEmpty { row["reasons"] = reasons }
+            rows.append(row)
+        }
+        return rows
+    }
+
+    private func threadDesignationText(_ thread: CADDrawingThreadCallout) -> String {
+        let parsed = CADDrawingManufacturingRules.parseThreadDesignation(thread.designation)
+        let nominal = parsed?.nominalMM ?? 0
+        let pitch: String
+        if abs(thread.pitchMM - thread.pitchMM.rounded()) < 1e-9 {
+            pitch = String(format: "%.1f", thread.pitchMM)
+        } else {
+            pitch = CADDrawingManufacturingRules.formatNumber(thread.pitchMM)
+        }
+        return "M" + CADDrawingManufacturingRules.formatNumber(nominal) + "×" + pitch
+            + "-" + thread.threadClass
+    }
+
+    private func configuredPayload(_ annotation: CADDrawingManufacturingAnnotation)
+        -> [String: Any] {
+        var object: [String: Any] = [
+            "kind": annotation.kind.rawValue,
+            "position": pointPayload(annotation.position),
+            "heightMM": annotation.heightMM,
+        ]
+        if let viewID = annotation.viewID { object["viewID"] = viewID.uuidString }
+        if let feature = annotation.feature { object["feature"] = featurePayload(feature) }
+        if let datum = annotation.datum, let value = jsonObject(datum) {
+            object["datum"] = value
+        }
+        if let frame = annotation.featureControlFrame, let value = jsonObject(frame) {
+            object["featureControlFrame"] = value
+        }
+        if let finish = annotation.surfaceFinish, let value = jsonObject(finish) {
+            object["surfaceFinish"] = value
+        }
+        if let weld = annotation.weld, let value = jsonObject(weld) {
+            object["weld"] = value
+        }
+        if let thread = annotation.thread, let value = jsonObject(thread) {
+            object["thread"] = value
+        }
+        if let counterbore = annotation.counterbore, let value = jsonObject(counterbore) {
+            object["counterbore"] = value
+        }
+        return object
+    }
+
     private func resolvedManualDimensions(page: CADDrawingPage,
                                           projection: PageProjection)
         -> ResolvedAnnotations {
@@ -4104,7 +5638,21 @@ public final class CADDrawingService {
                 reasons.append("This dimension is not bound to a part; it will not follow the model.")
             }
             if invalid { status = "invalid" }
-            let text: String
+            var toleranceDisplay: CADDrawingToleranceDisplay?
+            var toleranceWarning: String?
+            if let tolerance = dimension.tolerance, !dangling, !invalid, let value {
+                if let display = CADDrawingManufacturingRules.formatTolerance(
+                    tolerance, nominalMM: value, kind: dimension.kind,
+                    unit: page.displayUnit, precision: page.displayPrecision) {
+                    toleranceDisplay = display
+                    if !display.consistentWithNominal {
+                        toleranceWarning = "The live nominal is outside the stored absolute limits."
+                    }
+                } else {
+                    toleranceWarning = "The stored tolerance is invalid for the live value."
+                }
+            }
+            var text: String
             if let override = dimension.textOverride {
                 text = override
             } else if dangling {
@@ -4113,7 +5661,10 @@ public final class CADDrawingService {
             } else if invalid {
                 text = "—"
             } else {
-                text = dimensionText(kind: dimension.kind, value: value ?? 0)
+                text = dimensionText(kind: dimension.kind, value: value ?? 0, page: page)
+                if let suffix = toleranceDisplay?.primarySuffix {
+                    text += " " + suffix
+                }
             }
             let sheetPosition = textPosition + context.offset
             var row: [String: Any] = [
@@ -4141,6 +5692,13 @@ public final class CADDrawingService {
                 row["feature"] = featurePayload(feature)
             }
             if let resolvedFeature { row["resolvedFeature"] = resolvedFeature }
+            if let tolerance = dimension.tolerance {
+                row["tolerance"] = tolerancePayload(tolerance)
+            }
+            if let toleranceDisplay {
+                row["toleranceDisplay"] = toleranceDisplayPayload(toleranceDisplay)
+            }
+            if let toleranceWarning { row["toleranceWarning"] = toleranceWarning }
             if !reasons.isEmpty { row["reasons"] = reasons }
             result.manualDimensions.append(row)
             if stale || invalid || dangling {
@@ -4151,6 +5709,15 @@ public final class CADDrawingService {
         result.balloons = resolvedBalloons(page: page, projection: projection)
         result.annotations = page.annotations.map {
             annotationRow($0, page: page, projection: projection)
+        }
+        result.manufacturingAnnotations = resolvedManufacturingAnnotations(
+            page: page, projection: projection)
+        for row in result.manufacturingAnnotations
+        where (row["stale"] as? Bool == true) || (row["invalid"] as? Bool == true)
+            || (row["dangling"] as? Bool == true) {
+            let reasons = row["reasons"] as? [String] ?? []
+            result.issues.append("Manufacturing annotation \(row["id"] as? String ?? "?"): "
+                                 + reasons.joined(separator: " "))
         }
         return result
     }
@@ -4268,6 +5835,42 @@ public final class CADDrawingService {
         case .radius: return "R\(formatLength(value))"
         case .diameter: return "Ø\(formatLength(value))"
         }
+    }
+
+    /// Template-aware annotation text. Geometry is still stored millimetres;
+    /// `units`/`precision` change only the displayed value. A page without a
+    /// template keeps the historical trimmed millimetre spelling.
+    private func dimensionText(kind: CADDrawingDimensionKind, value: Double,
+                               page: CADDrawingPage) -> String {
+        switch kind {
+        case .length:
+            return "\(formatDisplayLength(value, page: page)) \(page.displayUnit.symbol)"
+        case .angle:
+            return "\(formatDisplayAngle(value, page: page))°"
+        case .radius:
+            return "R\(formatDisplayLength(value, page: page))"
+        case .diameter:
+            return "Ø\(formatDisplayLength(value, page: page))"
+        }
+    }
+
+    private func formatDisplayLength(_ millimetres: Double, page: CADDrawingPage) -> String {
+        guard millimetres.isFinite else { return "—" }
+        let value = page.units == nil
+            ? millimetres
+            : page.displayUnit.displayValue(millimetres: millimetres)
+        if let precision = page.displayPrecision {
+            return String(format: "%.\(precision)f", value)
+        }
+        return formatLength(value)
+    }
+
+    private func formatDisplayAngle(_ degrees: Double, page: CADDrawingPage) -> String {
+        guard degrees.isFinite else { return "—" }
+        if let precision = page.displayPrecision {
+            return String(format: "%.\(precision)f", degrees)
+        }
+        return formatLength(degrees)
     }
 
     private func bomReply(page: CADDrawingPage, assembly: CADAssembly?,
@@ -4527,6 +6130,25 @@ public final class CADDrawingService {
                 messages.append("Annotation \(annotation.id.uuidString) is stale: the source part changed.")
             }
         }
+        for annotation in page.manufacturingAnnotations {
+            if let feature = annotation.feature {
+                let view = annotation.viewID.flatMap { id in
+                    page.effectiveSheetViews.first(where: { $0.id == id })
+                } ?? page.effectiveSheetViews[0]
+                let context = ResolvedViewContext(view: view, offset: .zero,
+                                                  plane: plane(for: page, view: view),
+                                                  scale: view.scale,
+                                                  isLegacy: page.sheetViews == nil)
+                if case .failure(let message) = resolveFeatureFace(feature, page: page,
+                                                                  context: context) {
+                    messages.append("Manufacturing annotation "
+                                    + "\(annotation.id.uuidString) is dangling: \(message)")
+                }
+            } else if annotation.kind.requiresHoleSource {
+                messages.append("Manufacturing annotation "
+                                + "\(annotation.id.uuidString) has no linked hole.")
+            }
+        }
         if let viewID = page.explodedViewID, assembly?.explodedView(viewID) == nil {
             messages.append("Exploded view \(viewID.uuidString) no longer exists.")
         }
@@ -4629,6 +6251,16 @@ public final class CADDrawingService {
                 texts.append(DrawingText(text: text,
                                          position: SIMD2(position[0], position[1]),
                                          height: 3.0, layer: "dimension"))
+                if let display = row["toleranceDisplay"] as? [String: Any],
+                   let lines = display["lines"] as? [String] {
+                    for (index, line) in lines.enumerated() {
+                        texts.append(DrawingText(
+                            text: line,
+                            position: SIMD2(position[0],
+                                            position[1] - 3.2 * Double(index + 1)),
+                            height: 2.6, layer: "dimension"))
+                    }
+                }
             }
         }
         for row in resolved.balloons {
@@ -4656,6 +6288,261 @@ public final class CADDrawingService {
             texts.append(DrawingText(text: text,
                                      position: SIMD2(position[0], position[1]),
                                      height: height, layer: "annotation"))
+        }
+        for row in resolved.manufacturingAnnotations {
+            let graphics = manufacturingGraphics(row)
+            entities.append(contentsOf: graphics.entities)
+            texts.append(contentsOf: graphics.texts)
+        }
+        return RenderGraphics(entities: entities, texts: texts)
+    }
+
+    /// Vector symbol geometry for one resolved manufacturing annotation. Every
+    /// mark is line/circle/polyline geometry, so a PDF/SVG/DXF reader never
+    /// depends on a special GD&T font being installed.
+    private func manufacturingGraphics(_ row: [String: Any]) -> RenderGraphics {
+        guard let positionRaw = row["position"] as? [Double], positionRaw.count == 2,
+              let height = row["heightMM"] as? Double, height > 0 else {
+            return RenderGraphics(entities: [], texts: [])
+        }
+        let position = SIMD2(positionRaw[0], positionRaw[1])
+        var target: SIMD2<Double>?
+        if let raw = row["target"] as? [Double], raw.count == 2 {
+            target = SIMD2(raw[0], raw[1])
+        }
+        let display = row["display"] as? [String: Any] ?? [:]
+        let stale = (row["stale"] as? Bool == true)
+            || (row["dangling"] as? Bool == true)
+            || (row["invalid"] as? Bool == true)
+        var entities: [ProjectedEntity] = []
+        var texts: [DrawingText] = []
+        func append(_ geometry: CADDrawingManufacturingRules.SymbolGeometry) {
+            for segment in geometry.segments {
+                entities.append(ProjectedEntity(shape: .line(segment.a, segment.b),
+                                                layer: "annotation"))
+            }
+            for circle in geometry.circles {
+                entities.append(ProjectedEntity(shape: .circle(center: circle.center,
+                                                               radius: circle.radius),
+                                                layer: "annotation"))
+            }
+            for polyline in geometry.polylines {
+                entities.append(ProjectedEntity(shape: .polyline(points: polyline.points,
+                                                                 closed: polyline.closed),
+                                                layer: "annotation"))
+            }
+        }
+        func leader(from start: SIMD2<Double>) {
+            guard let target else { return }
+            entities.append(ProjectedEntity(shape: .line(start, target),
+                                            layer: "annotation"))
+        }
+        if stale {
+            if let target {
+                entities.append(ProjectedEntity(shape: .line(position, target),
+                                                layer: "annotation"))
+            }
+            texts.append(DrawingText(text: "STALE", position: position,
+                                     height: max(height, 2.4), layer: "annotation"))
+            return RenderGraphics(entities: entities, texts: texts)
+        }
+        guard let kindRaw = row["kind"] as? String,
+              let kind = CADDrawingManufacturingKind(rawValue: kindRaw) else {
+            return RenderGraphics(entities: [], texts: [])
+        }
+        switch kind {
+        case .datumFeature:
+            let letter = display["letter"] as? String ?? "A"
+            let box = height * 2.0
+            let boxMin = position
+            let boxMax = position + SIMD2(box, box)
+            entities.append(contentsOf: rectangleEntities(min: boxMin, max: boxMax,
+                                                          layer: "annotation"))
+            texts.append(DrawingText(text: letter,
+                                     position: SIMD2(position.x + box * 0.35,
+                                                     position.y + box * 0.28),
+                                     height: height, layer: "annotation"))
+            if let target {
+                entities.append(ProjectedEntity(
+                    shape: .line(SIMD2(boxMax.x, position.y + box * 0.5), target),
+                    layer: "annotation"))
+                let direction = target - SIMD2(boxMax.x, position.y + box * 0.5)
+                append(CADDrawingManufacturingRules.datumTriangle(
+                    tip: target, from: direction, size: max(height * 0.7, 1.5)))
+            }
+        case .featureControlFrame:
+            let frameHeight = height * 1.5
+            let symbolWidth = frameHeight
+            let toleranceText = display["toleranceText"] as? String ?? ""
+            let toleranceWidth = max(frameHeight * 2.4,
+                                     bomTextAdvance(toleranceText, height: height)
+                                        + height * 1.2)
+            var cells: [CGRect] = []
+            var x = position.x
+            cells.append(CGRect(x: CGFloat(x), y: CGFloat(position.y),
+                                width: CGFloat(symbolWidth), height: CGFloat(frameHeight)))
+            x += symbolWidth
+            cells.append(CGRect(x: CGFloat(x), y: CGFloat(position.y),
+                                width: CGFloat(toleranceWidth), height: CGFloat(frameHeight)))
+            x += toleranceWidth
+            let references = display["datumReferences"] as? [[String: Any]] ?? []
+            for _ in references {
+                let width = frameHeight * 1.3
+                cells.append(CGRect(x: CGFloat(x), y: CGFloat(position.y),
+                                    width: CGFloat(width), height: CGFloat(frameHeight)))
+                x += width
+            }
+            for cell in cells {
+                entities.append(contentsOf: rectangleEntities(
+                    min: SIMD2(Double(cell.minX), Double(cell.minY)),
+                    max: SIMD2(Double(cell.maxX), Double(cell.maxY)),
+                    layer: "annotation"))
+            }
+            let symbolRect = cells[0]
+            append(CADDrawingManufacturingRules.gdtSymbol(
+                CADDrawingGDTSymbol(rawValue: display["characteristic"] as? String ?? "")
+                    ?? .position,
+                minimum: SIMD2(Double(symbolRect.minX) + frameHeight * 0.18,
+                               Double(symbolRect.minY) + frameHeight * 0.18),
+                maximum: SIMD2(Double(symbolRect.maxX) - frameHeight * 0.18,
+                               Double(symbolRect.maxY) - frameHeight * 0.18)))
+            texts.append(DrawingText(
+                text: toleranceText,
+                position: SIMD2(Double(cells[1].minX) + height * 0.6,
+                                position.y + height * 0.38),
+                height: height, layer: "annotation"))
+            if let code = display["materialConditionCode"] as? String, code != "RFS" {
+                let center = SIMD2(Double(cells[1].maxX) - height * 0.8,
+                                   position.y + height * 0.55)
+                entities.append(ProjectedEntity(shape: .circle(center: center,
+                                                               radius: height * 0.55),
+                                                layer: "annotation"))
+                texts.append(DrawingText(text: code,
+                                         position: center - SIMD2(height * 0.25,
+                                                                  height * 0.28),
+                                         height: height * 0.7, layer: "annotation"))
+            }
+            for (index, reference) in references.enumerated() {
+                let cell = cells[index + 2]
+                let letter = reference["letter"] as? String ?? "A"
+                texts.append(DrawingText(
+                    text: letter,
+                    position: SIMD2(Double(cell.minX) + height * 0.35,
+                                    position.y + height * 0.38),
+                    height: height, layer: "annotation"))
+                if let code = reference["modifierCode"] as? String, code != "RFS" {
+                    let center = SIMD2(Double(cell.maxX) - height * 0.7,
+                                       position.y + height * 0.55)
+                    entities.append(ProjectedEntity(shape: .circle(center: center,
+                                                                   radius: height * 0.5),
+                                                    layer: "annotation"))
+                    texts.append(DrawingText(text: code,
+                                             position: center - SIMD2(height * 0.22,
+                                                                      height * 0.26),
+                                             height: height * 0.65, layer: "annotation"))
+                }
+            }
+            leader(from: SIMD2(Double(cells[0].minX),
+                               position.y + frameHeight * 0.5))
+        case .surfaceFinish:
+            append(CADDrawingManufacturingRules.surfaceFinishSymbol(origin: position,
+                                                                     height: height))
+            texts.append(DrawingText(
+                text: display["raText"] as? String ?? "Ra",
+                position: SIMD2(position.x + height * 4.4,
+                                position.y + height * 2.0),
+                height: height, layer: "annotation"))
+            if let method = display["machiningMethod"] as? String {
+                texts.append(DrawingText(text: method,
+                                         position: SIMD2(position.x + height * 4.4,
+                                                         position.y + height * 3.4),
+                                         height: height * 0.75, layer: "annotation"))
+            }
+            if display["allAround"] as? Bool == true {
+                entities.append(ProjectedEntity(shape: .circle(center: position
+                                                                + SIMD2(height * 0.4,
+                                                                         height * 0.4),
+                                                               radius: height * 1.0),
+                                                layer: "annotation"))
+            }
+            if let target {
+                entities.append(ProjectedEntity(shape: .line(position + SIMD2(0, height),
+                                                              target),
+                                                layer: "annotation"))
+            }
+        case .weld:
+            let length = height * 9
+            let lineStart = position
+            let lineEnd = position + SIMD2(length, 0)
+            entities.append(ProjectedEntity(shape: .line(lineStart, lineEnd),
+                                            layer: "annotation"))
+            if let target {
+                entities.append(ProjectedEntity(
+                    shape: .line(SIMD2(position.x - height * 2, position.y + height * 3),
+                                 target), layer: "annotation"))
+                entities.append(ProjectedEntity(
+                    shape: .line(SIMD2(position.x - height * 2, position.y + height * 3),
+                                 SIMD2(position.x, position.y + height * 0.2)),
+                    layer: "annotation"))
+            }
+            append(CADDrawingManufacturingRules.weldTriangle(
+                origin: position + SIMD2(height * 1.4, height * 0.2),
+                height: height))
+            var weldText = display["sizeText"] as? String ?? ""
+            if let lengthText = display["lengthText"] as? String {
+                weldText += " L" + lengthText
+            }
+            if let pitchText = display["pitchText"] as? String {
+                weldText += " P" + pitchText
+            }
+            texts.append(DrawingText(text: weldText,
+                                     position: position + SIMD2(height * 1.4,
+                                                                 height * 1.9),
+                                     height: height * 0.85, layer: "annotation"))
+            if display["allAround"] as? Bool == true {
+                entities.append(ProjectedEntity(shape: .circle(center: position,
+                                                               radius: height * 1.0),
+                                                layer: "annotation"))
+            }
+            if display["fieldWeld"] as? Bool == true {
+                let flag = position + SIMD2(length - height * 1.2, 0)
+                entities.append(ProjectedEntity(shape: .polyline(
+                    points: [flag, flag + SIMD2(height * 1.2, height * 1.2),
+                             flag + SIMD2(height * 1.2, 0)], closed: true),
+                    layer: "annotation"))
+            }
+            if let tail = display["tailNote"] as? String {
+                texts.append(DrawingText(text: "(" + tail + ")",
+                                         position: lineEnd + SIMD2(height * 0.4, 0),
+                                         height: height * 0.75, layer: "annotation"))
+            }
+        case .threadCallout:
+            if let target {
+                entities.append(ProjectedEntity(shape: .line(position, target),
+                                                layer: "annotation"))
+            }
+            let lines = display["textLines"] as? [String] ?? []
+            for (index, line) in lines.enumerated() {
+                texts.append(DrawingText(
+                    text: line,
+                    position: position + SIMD2(0, -Double(index) * height * 1.35),
+                    height: height, layer: "annotation"))
+            }
+        case .counterboreCallout:
+            append(CADDrawingManufacturingRules.counterboreSymbol(origin: position,
+                                                                   height: height))
+            if let target {
+                entities.append(ProjectedEntity(shape: .line(position, target),
+                                                layer: "annotation"))
+            }
+            let lines = display["textLines"] as? [String] ?? []
+            for (index, line) in lines.enumerated() {
+                texts.append(DrawingText(
+                    text: line,
+                    position: SIMD2(position.x + height * 2.9,
+                                    position.y - Double(index) * height * 1.35),
+                    height: height, layer: "annotation"))
+            }
         }
         return RenderGraphics(entities: entities, texts: texts)
     }
@@ -4687,6 +6574,7 @@ public final class CADDrawingService {
             "manualDimensions": resolved.manualDimensions.count,
             "balloons": resolved.balloons.count,
             "annotations": resolved.annotations.count,
+            "manufacturingAnnotations": resolved.manufacturingAnnotations.count,
         ]
         let centerlines = page.showCenterlines ? centerlineSegments(projection) : []
         if page.showCenterlines { counts["centerlines"] = centerlines.count }
@@ -4725,6 +6613,13 @@ public final class CADDrawingService {
             issues.append("Text \(row["id"] as? String ?? "?"): "
                           + reasons.joined(separator: " "))
         }
+        for row in resolved.manufacturingAnnotations
+        where (row["stale"] as? Bool == true) || (row["invalid"] as? Bool == true)
+            || (row["dangling"] as? Bool == true) {
+            let reasons = row["reasons"] as? [String] ?? []
+            issues.append("Manufacturing \(row["id"] as? String ?? "?"): "
+                          + reasons.joined(separator: " "))
+        }
         let sectionIncomplete = projection.sectionIncomplete
             || projection.sectionCoverage.contains(where: { !$0.included })
         let missingExplodedView = pageMissingExplodedView(page)
@@ -4746,6 +6641,8 @@ public final class CADDrawingService {
             "balloonCount": resolved.balloons.count,
             "annotations": resolved.annotations,
             "annotationCount": resolved.annotations.count,
+            "manufacturingAnnotations": resolved.manufacturingAnnotations,
+            "manufacturingAnnotationCount": resolved.manufacturingAnnotations.count,
             "bom": bomReply(page: page, assembly: assembly),
             "instances": instanceRows,
             "notes": projection.notes,
@@ -4870,6 +6767,7 @@ public final class CADDrawingService {
             "balloonCount": page.balloons.count,
             "manualDimensionCount": page.manualDimensions.count,
             "annotationCount": page.annotations.count,
+            "manufacturingAnnotationCount": page.manufacturingAnnotations.count,
             "viewCount": page.effectiveSheetViews.count,
             "isMultiView": page.isMultiViewSheet,
         ]
@@ -4897,6 +6795,22 @@ public final class CADDrawingService {
             }
         }
         if let revision = page.modelRevision { payload["modelRevision"] = revision }
+        if !page.revisionRows.isEmpty {
+            if let value = jsonObject(page.revisionRows) { payload["revisionRows"] = value }
+        }
+        if let units = page.units { payload["units"] = units.rawValue }
+        if let precision = page.precision { payload["precision"] = precision }
+        if let titleBlock = page.titleBlock, let value = jsonObject(titleBlock) {
+            payload["titleBlock"] = value
+        }
+        if let binding = page.sheetTemplate {
+            payload["templateID"] = binding.templateID.uuidString
+            payload["templateName"] = binding.appliedName
+            payload["projectionMethod"] = binding.snapshot.projection.rawValue
+            if let value = jsonObject(binding.snapshot) {
+                payload["template"] = value
+            }
+        }
         if let fingerprint = page.sourceFingerprint {
             let encoder = JSONEncoder()
             if let data = try? encoder.encode(fingerprint),
@@ -4980,7 +6894,8 @@ public final class CADDrawingService {
         }
         let sheet = sheetGraphics(page: page)
         return RenderGraphics(entities: placedEntities + sheet.entities,
-                              texts: placedTexts + sheet.texts)
+                              texts: placedTexts + sheet.texts,
+                              lineWidthMM: sheet.lineWidthMM)
     }
 
     /// The one legacy sheet placement shared by rendering and BOM collision
@@ -4997,6 +6912,9 @@ public final class CADDrawingService {
     }
 
     private func sheetGraphics(page: CADDrawingPage) -> RenderGraphics {
+        if let binding = page.sheetTemplate {
+            return templatedSheetGraphics(page: page, binding: binding)
+        }
         let geometry = bomSheetGeometry(page: page)
         let frameMin = geometry.frameMin
         let frameMax = geometry.frameMax
@@ -5057,7 +6975,183 @@ public final class CADDrawingService {
             entities.append(contentsOf: table.entities)
             texts.append(contentsOf: table.texts)
         }
-        return RenderGraphics(entities: entities, texts: texts)
+        return RenderGraphics(entities: entities, texts: texts, lineWidthMM: 0.25)
+    }
+
+    /// Template-driven frame/title block. The applied page's snapshot is the
+    /// authority; editing or deleting the library template cannot change it.
+    private func templatedSheetGraphics(page: CADDrawingPage,
+                                        binding: CADDrawingSheetTemplateBinding)
+        -> RenderGraphics {
+        let snapshot = binding.snapshot
+        let style = CADDrawingTemplateRules.normalized(
+            snapshot.style, paperWidth: page.paperWidthMM,
+            paperHeight: page.paperHeightMM, revisionCount: page.revisionRows.count)
+        let geometry = bomSheetGeometry(page: page)
+        let frameMin = geometry.frameMin
+        let frameMax = geometry.frameMax
+        var entities = rectangleEntities(min: frameMin, max: frameMax, layer: "title")
+        var texts: [DrawingText] = []
+        let blockMin = geometry.titleBlockMin
+        let blockMax = geometry.titleBlockMax
+        entities.append(contentsOf: rectangleEntities(min: blockMin, max: blockMax,
+                                                      layer: "title"))
+
+        let revisionHeight = page.revisionRows.isEmpty ? 0.0
+            : min(blockMax.y - blockMin.y - 8,
+                  6.2 * Double(min(page.revisionRows.count, 6) + 1) + 1)
+        let mainMaxY = blockMax.y
+        let mainMinY = blockMin.y + revisionHeight
+        if revisionHeight > 0 {
+            entities.append(ProjectedEntity(
+                shape: .line(SIMD2(blockMin.x, mainMinY), SIMD2(blockMax.x, mainMinY)),
+                layer: "title"))
+        }
+        let leftWidth = (blockMax.x - blockMin.x) * 0.55
+        let dividerX = blockMin.x + leftWidth
+        entities.append(ProjectedEntity(
+            shape: .line(SIMD2(dividerX, mainMinY), SIMD2(dividerX, mainMaxY)),
+            layer: "title"))
+
+        let baseText = style.textHeightMM
+        let titleHeight = min(baseText + 1.2, max(2.4, (mainMaxY - mainMinY) * 0.32))
+        texts.append(DrawingText(text: document.name,
+                                 position: SIMD2(blockMin.x + 2, mainMaxY - titleHeight - 1),
+                                 height: titleHeight, layer: "title"))
+        let pageTitle = page.title.isEmpty ? page.name : page.title
+        texts.append(DrawingText(text: pageTitle,
+                                 position: SIMD2(blockMin.x + 2, mainMinY + 2.2),
+                                 height: baseText, layer: "title"))
+
+        let rightX = dividerX + 2
+        var rightY = mainMaxY - baseText - 1.2
+        let pageCompany = page.titleBlock?.company ?? ""
+        let company = pageCompany.isEmpty ? snapshot.titleBlock.company : pageCompany
+        if !company.isEmpty {
+            texts.append(DrawingText(text: company,
+                                     position: SIMD2(rightX, rightY),
+                                     height: baseText * 0.9, layer: "title"))
+            rightY -= baseText * 1.4
+        }
+        let pageDrawingNumber = page.titleBlock?.drawingNumber ?? ""
+        let drawingNumber = pageDrawingNumber.isEmpty
+            ? snapshot.titleBlock.drawingNumber : pageDrawingNumber
+        if !drawingNumber.isEmpty {
+            texts.append(DrawingText(text: "DWG " + drawingNumber,
+                                     position: SIMD2(rightX, rightY),
+                                     height: baseText * 0.85, layer: "title"))
+            rightY -= baseText * 1.35
+        }
+        let scaleLabel: String
+        if page.sheetViews == nil {
+            scaleLabel = scaleText(page.scale)
+        } else {
+            let scales = page.effectiveSheetViews.map(\.scale)
+            if let first = scales.first, scales.allSatisfy({ abs($0 - first) < 1e-9 }) {
+                scaleLabel = scaleText(first)
+            } else {
+                scaleLabel = "AS SHOWN"
+            }
+        }
+        let unitLabel = page.units?.symbol ?? "mm"
+        let precisionLabel = page.precision.map { "\($0) dp" } ?? "legacy"
+        texts.append(DrawingText(text: scaleLabel + " · " + unitLabel + " · " + precisionLabel,
+                                 position: SIMD2(rightX, rightY),
+                                 height: baseText * 0.75, layer: "title"))
+        rightY -= baseText * 1.25
+        texts.append(DrawingText(text: snapshot.projection.draftingLabel,
+                                 position: SIMD2(rightX, rightY),
+                                 height: baseText * 0.75, layer: "title"))
+        let symbolOrigin = SIMD2(blockMax.x - 18, mainMinY + 3)
+        for segment in CADDrawingManufacturingRules.projectionSymbol(
+            snapshot.projection, origin: symbolOrigin, height: 2.0).segments {
+            entities.append(ProjectedEntity(shape: .line(segment.a, segment.b),
+                                            layer: "title"))
+        }
+        for circle in CADDrawingManufacturingRules.projectionSymbol(
+            snapshot.projection, origin: symbolOrigin, height: 2.0).circles {
+            entities.append(ProjectedEntity(shape: .circle(center: circle.center,
+                                                           radius: circle.radius),
+                                            layer: "title"))
+        }
+        for polyline in CADDrawingManufacturingRules.projectionSymbol(
+            snapshot.projection, origin: symbolOrigin, height: 2.0).polylines {
+            entities.append(ProjectedEntity(shape: .polyline(points: polyline.points,
+                                                             closed: polyline.closed),
+                                            layer: "title"))
+        }
+        texts.append(DrawingText(text: binding.appliedName,
+                                 position: SIMD2(blockMax.x - 34, blockMax.y - 5),
+                                 height: 2.4, layer: "title"))
+
+        if !page.revisionRows.isEmpty {
+            let rowHeight = revisionHeight / Double(min(page.revisionRows.count, 6) + 1)
+            let headerY = blockMin.y + revisionHeight - rowHeight
+            texts.append(DrawingText(text: "REV",
+                                     position: SIMD2(blockMin.x + 1.2, headerY + 1.6),
+                                     height: 2.3, layer: "title"))
+            texts.append(DrawingText(text: "DATE",
+                                     position: SIMD2(blockMin.x + 16, headerY + 1.6),
+                                     height: 2.3, layer: "title"))
+            texts.append(DrawingText(text: "DESCRIPTION",
+                                     position: SIMD2(blockMin.x + 44, headerY + 1.6),
+                                     height: 2.3, layer: "title"))
+            entities.append(ProjectedEntity(
+                shape: .line(SIMD2(blockMin.x + 14, blockMin.y),
+                             SIMD2(blockMin.x + 14, headerY + rowHeight)),
+                layer: "title"))
+            entities.append(ProjectedEntity(
+                shape: .line(SIMD2(blockMin.x + 42, blockMin.y),
+                             SIMD2(blockMin.x + 42, headerY + rowHeight)),
+                layer: "title"))
+            entities.append(ProjectedEntity(
+                shape: .line(SIMD2(blockMin.x, headerY),
+                             SIMD2(blockMax.x, headerY)), layer: "title"))
+            for (index, row) in page.revisionRows.prefix(6).enumerated() {
+                let y = blockMin.y + revisionHeight - rowHeight * Double(index + 2)
+                if index > 0 {
+                    entities.append(ProjectedEntity(
+                        shape: .line(SIMD2(blockMin.x, y + rowHeight),
+                                     SIMD2(blockMax.x, y + rowHeight)), layer: "title"))
+                }
+                let baseline = y + 1.6
+                texts.append(DrawingText(text: row.revision,
+                                         position: SIMD2(blockMin.x + 1.2, baseline),
+                                         height: 2.3, layer: "title"))
+                texts.append(DrawingText(text: row.date,
+                                         position: SIMD2(blockMin.x + 16, baseline),
+                                         height: 2.3, layer: "title"))
+                let description = bomFittedCell(
+                    row.description,
+                    availableWidth: max(10, blockMax.x - blockMin.x - 45),
+                    height: 2.3).text
+                texts.append(DrawingText(text: description,
+                                         position: SIMD2(blockMin.x + 44, baseline),
+                                         height: 2.3, layer: "title"))
+            }
+        }
+        if style.showZoneGrid {
+            let step = 50.0
+            var x = frameMin.x + step
+            var index = 1
+            while x < frameMax.x - 5 {
+                entities.append(ProjectedEntity(
+                    shape: .line(SIMD2(x, frameMax.y), SIMD2(x, frameMax.y - 4)),
+                    layer: "title"))
+                texts.append(DrawingText(text: "\(index)",
+                                         position: SIMD2(x + 1, frameMax.y - 4.2),
+                                         height: 2.0, layer: "title"))
+                x += step
+                index += 1
+            }
+        }
+        if page.showBOM, let bom = page.bom, !bom.entries.isEmpty {
+            let table = bomTableGraphics(page: page)
+            entities.append(contentsOf: table.entities)
+            texts.append(contentsOf: table.texts)
+        }
+        return RenderGraphics(entities: entities, texts: texts,
+                              lineWidthMM: style.lineWidthMM)
     }
 
     /// Vector BOM table. Shared instances group by part definition; the
@@ -5317,15 +7411,23 @@ public final class CADDrawingService {
     private func bomSheetGeometry(page: CADDrawingPage) -> BOMSheetGeometry {
         let width = max(page.paperWidthMM, 40)
         let height = max(page.paperHeightMM, 40)
-        let margin = 8.0
+        let style = page.sheetTemplate.map {
+            CADDrawingTemplateRules.normalized($0.snapshot.style,
+                                               paperWidth: width, paperHeight: height,
+                                               revisionCount: page.revisionRows.count)
+        } ?? CADDrawingSheetStyle(marginMM: 8, titleBlockWidthMM: 120,
+                                  titleBlockHeightMM: 22, lineWidthMM: 0.25,
+                                  textHeightMM: 3.5)
+        let margin = style.marginMM
         let frameMin = SIMD2(margin, margin)
         let frameMax = SIMD2(width - margin, height - margin)
-        let titleBlockWidth = min(120.0, frameMax.x - frameMin.x)
+        let titleBlockWidth = min(style.titleBlockWidthMM, frameMax.x - frameMin.x)
+        let titleBlockHeight = min(style.titleBlockHeightMM, frameMax.y - frameMin.y)
         return BOMSheetGeometry(
             frameMin: frameMin, frameMax: frameMax,
             titleBlockWidth: titleBlockWidth,
             titleBlockMin: SIMD2(frameMax.x - titleBlockWidth, frameMin.y),
-            titleBlockMax: SIMD2(frameMax.x, frameMin.y + 22))
+            titleBlockMax: SIMD2(frameMax.x, frameMin.y + titleBlockHeight))
     }
 
     /// Projected content already placed on the sheet. Used only to choose a
@@ -5644,7 +7746,9 @@ public final class CADDrawingService {
         for entity in graphics.entities {
             let isCenterline = entity.layer == "centerline"
             context.setStrokeColor(gray: 0, alpha: 1)
-            let width = isCenterline ? 0.18 : 0.25
+            let baseWidth = graphics.lineWidthMM.isFinite && graphics.lineWidthMM > 0
+                ? graphics.lineWidthMM : 0.25
+            let width = isCenterline ? max(0.12, baseWidth * 0.72) : baseWidth
             context.setLineWidth(max(width, minimumStrokeMM))
             context.setLineDash(phase: 0, lengths: isCenterline ? [3, 1.5] : [])
             let path = CGMutablePath()
@@ -5742,8 +7846,9 @@ public final class CADDrawingService {
         context.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
         // A hairline that is exact in PDF antialiases to a near-invisible
         // 0.6px grey at typical paper sizes. The raster raises the stroke
-        // floor to ~1.5px so the Canvas asset stays legible; PDF/SVG/DXF keep
-        // their exact drawing widths.
+        // floor to ~1.5px so the Canvas asset stays legible; PDF/SVG keep
+        // their exact drawing widths (the R12 DXF entity set has no lineweight
+        // attribute, so it carries the geometry/text, not the style width).
         drawPDF(graphics, in: context, minimumStrokeMM: 1.5 / scale,
                 flipYPaperHeight: paperHeight)
         guard let image = context.makeImage() else {
@@ -5794,8 +7899,10 @@ public final class CADDrawingService {
             let texts = groupedTexts[groupName] ?? []
             guard !entities.isEmpty || !texts.isEmpty else { continue }
             if !entities.isEmpty {
+                let strokeWidth = abs(graphics.lineWidthMM - 0.25) < 1e-9
+                    ? "0.25" : number(graphics.lineWidthMM)
                 out += "<g id=\"\(groupName)\" fill=\"none\" stroke=\"#000000\""
-                out += " stroke-width=\"0.25\">\n"
+                out += " stroke-width=\"\(strokeWidth)\">\n"
                 for entity in entities {
                     switch entity.shape {
                     case let .line(a, b):
@@ -6556,6 +8663,9 @@ private nonisolated struct DrawingText {
 private nonisolated struct RenderGraphics {
     var entities: [ProjectedEntity]
     var texts: [DrawingText]
+    /// Exact exported line width (mm). A template style can change it; the
+    /// legacy default keeps every existing drawing byte-equivalent.
+    var lineWidthMM: Double = 0.25
 }
 
 private nonisolated struct DetectedCircle {

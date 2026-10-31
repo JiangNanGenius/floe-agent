@@ -27,8 +27,21 @@ nonisolated enum CADDocumentFormatError: Error, LocalizedError, Equatable, Senda
 }
 
 nonisolated enum CADDocumentFormat {
-    static let supportedVersion = 6
-    /// Coordinated next package floor for a document that actually stores
+    /// First package floor that can store structured manufacturing drawing
+    /// annotations (tolerances, GD&T frames, surface/weld/thread/counterbore
+    /// callouts) and reusable sheet templates. These records are NON-ADDITIVE
+    /// for an older drawing writer: JSON decoding tolerates unknown keys, but
+    /// a format-6 writer would drop them on its next save. A document raises
+    /// its package floor to this value ONLY when its real drawing JSON stores
+    /// one of those records; ordinary drawings keep their existing floor.
+    ///
+    /// Merge note: this is the coordinated next number, owned by Root. If
+    /// another feature packet also needs a new non-additive floor, assign one
+    /// shared number and keep each feature's own intent check; never lower a
+    /// floor or bump ordinary documents just because this build can write 7.
+    static let drawingManufacturingVersion = 7
+    static let supportedVersion = 7
+    /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
     static let namedVersionFormatVersion = 6
@@ -83,8 +96,13 @@ nonisolated enum CADDocumentFormat {
         /// an unknown future kind. Their cached body geometry is preserved and
         /// the whole document opens view-only; no replay consumes guessed data.
         var opaqueFeatures: Set<UUID> = []
+        /// The drawing JSON is malformed, carries an unknown future record or
+        /// is stamped with a future drawing schema. The bytes are preserved and
+        /// the whole document opens read-only; no writer may overwrite them.
+        var opaqueDrawings = false
         var isOpaqueReadOnly: Bool {
             !opaquePlanes.isEmpty || !opaqueSketches.isEmpty || !opaqueFeatures.isEmpty
+                || opaqueDrawings
         }
     }
 
@@ -110,29 +128,266 @@ nonisolated enum CADDocumentFormat {
         return required
     }
 
-    /// Inspect the REAL drawing-set bytes for v4-only sheet intent, the same
-    /// inline-bytes discipline as the association rows above. Malformed or
-    /// future-shape sets stay on the existing drawing persist guard /
-    /// read-only paths (they are never rewritten by an older writer because
-    /// the rest of the floor machinery still applies); only intent this
-    /// build can both verify and represent raises the floor.
+    nonisolated struct DrawingIntent {
+        var version = legacyVersion
+        var opaque = false
+    }
+
+    /// Inspect the REAL drawing-set bytes. The stamped drawing schema alone is
+    /// NOT intent: a flat sheet written by this build must keep its lower
+    /// package floor. Only records this build can verify raise the floor.
+    /// Malformed bytes, a future drawing schema and unknown/malformed
+    /// manufacturing records fail CLOSED (opaque read-only), so an older or
+    /// newer writer can never silently drop them.
     static func drawingRequiredVersion(_ data: Data?) -> Int {
-        guard let data, !data.isEmpty,
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let pages = object["pages"] as? [[String: Any]] else { return legacyVersion }
+        drawingIntent(data).version
+    }
+
+    static func drawingIntent(_ data: Data?) -> DrawingIntent {
+        var result = DrawingIntent()
+        guard let data, !data.isEmpty else { return result }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            result.version = supportedVersion
+            result.opaque = true
+            return result
+        }
+        if let rawSchema = object["schemaVersion"] {
+            guard let schema = jsonIntegerValue(rawSchema), schema >= legacyVersion else {
+                result.version = max(result.version, drawingManufacturingVersion)
+                result.opaque = true
+                return result
+            }
+            if schema > CADDrawingSet.currentSchemaVersion {
+                result.version = max(result.version, schema)
+                result.opaque = true
+            }
+        }
+        if let templates = object["templates"] {
+            guard let rows = templates as? [[String: Any]] else {
+                result.version = max(result.version, drawingManufacturingVersion)
+                result.opaque = true
+                return result
+            }
+            if !rows.isEmpty {
+                result.version = max(result.version, drawingManufacturingVersion)
+                for row in rows {
+                    guard templateRecordIsKnown(row) else {
+                        result.opaque = true
+                        continue
+                    }
+                }
+            }
+        }
+        guard let rawPages = object["pages"] else { return result }
+        guard let pages = rawPages as? [[String: Any]] else {
+            result.version = max(result.version, supportedVersion)
+            result.opaque = true
+            return result
+        }
         for page in pages {
             if let views = page["sheetViews"] as? [[String: Any]], !views.isEmpty {
-                return drawingSheetViewVersion
+                result.version = max(result.version, drawingSheetViewVersion)
             }
             if let dimensions = page["manualDimensions"] as? [[String: Any]],
                dimensions.contains(where: { dimension in
                    guard let feature = dimension["feature"] else { return false }
                    return !(feature is NSNull)
                }) {
-                return drawingSheetViewVersion
+                result.version = max(result.version, drawingSheetViewVersion)
+            }
+            if let rawAnnotations = page["manufacturingAnnotations"] {
+                guard let annotations = rawAnnotations as? [[String: Any]] else {
+                    result.version = max(result.version, drawingManufacturingVersion)
+                    result.opaque = true
+                    continue
+                }
+                if !annotations.isEmpty {
+                    result.version = max(result.version, drawingManufacturingVersion)
+                    for row in annotations where !manufacturingRecordIsKnown(row) {
+                        result.opaque = true
+                    }
+                }
+            }
+            if let rawTemplate = page["sheetTemplate"], !(rawTemplate is NSNull) {
+                result.version = max(result.version, drawingManufacturingVersion)
+                guard let row = rawTemplate as? [String: Any] else {
+                    result.opaque = true
+                    continue
+                }
+                let snapshot = row["snapshot"] as? [String: Any]
+                if snapshot == nil || !templateRecordIsKnown(snapshot ?? [:], requireID: false) {
+                    result.opaque = true
+                }
+            }
+            let presentation = pagePresentationIntent(page)
+            if presentation.present {
+                result.version = max(result.version, drawingManufacturingVersion)
+            }
+            if !presentation.known { result.opaque = true }
+        }
+        if result.opaque {
+            result.version = max(result.version, drawingManufacturingVersion)
+        }
+        return result
+    }
+
+    /// Page-level v5 presentation records (revision rows, units, precision and
+    /// a per-page title-block override). Any present record raises the floor;
+    /// a malformed/unknown record is opaque instead of decoding to a blank
+    /// fallback and being silently re-encoded over the original bytes.
+    private static func pagePresentationIntent(_ page: [String: Any])
+        -> (present: Bool, known: Bool) {
+        var present = false
+        var known = true
+        if let raw = page["revisionRows"] {
+            if !(raw is NSNull) {
+                guard let rows = raw as? [[String: Any]] else { return (true, false) }
+                if !rows.isEmpty {
+                    present = true
+                    if rows.count > CADDrawingTemplateRules.maximumRevisionRows {
+                        known = false
+                    }
+                    for row in rows where !revisionRowIsKnown(row) { known = false }
+                }
             }
         }
-        return legacyVersion
+        if let raw = page["units"], !(raw is NSNull) {
+            present = true
+            guard let name = raw as? String, CADDrawingUnit(rawValue: name) != nil else {
+                return (true, false)
+            }
+        }
+        if let raw = page["precision"], !(raw is NSNull) {
+            present = true
+            guard let value = jsonIntegerValue(raw), (0...4).contains(value) else {
+                return (true, false)
+            }
+        }
+        if let raw = page["titleBlock"], !(raw is NSNull) {
+            present = true
+            guard let object = raw as? [String: Any],
+                  Set(object.keys).isSubset(of: Set(["company", "drawingNumber"])),
+                  let company = object["company"] as? String,
+                  let number = object["drawingNumber"] as? String,
+                  company.count <= 80, number.count <= 60 else {
+                return (true, false)
+            }
+        }
+        return (present, known)
+    }
+
+    /// JSONSerialization bridges booleans to NSNumber and `as? Int` accepts
+    /// them as 1/0. A version or precision field must be a real integer.
+    private static func jsonIntegerValue(_ raw: Any?) -> Int? {
+        guard let number = raw as? NSNumber else { return nil }
+        guard String(cString: number.objCType) != "c" else { return nil }
+        let value = number.doubleValue
+        guard value.isFinite, value == value.rounded(),
+              value >= Double(Int.min), value <= Double(Int.max) else { return nil }
+        return number.intValue
+    }
+
+    private static func revisionRowIsKnown(_ row: [String: Any]) -> Bool {
+        let allowed = Set(["id", "revision", "date", "description", "approvedBy"])
+        guard Set(row.keys).isSubset(of: allowed),
+              let revision = row["revision"] as? String,
+              let description = row["description"] as? String,
+              row["date"] == nil || row["date"] is String || row["date"] is NSNull,
+              row["approvedBy"] == nil || row["approvedBy"] is String || row["approvedBy"] is NSNull,
+              revision.count <= 16,
+              (row["date"] as? String ?? "").count <= 24,
+              description.count <= 80,
+              ((row["approvedBy"] as? String)?.count ?? 0) <= 40,
+              let data = try? JSONSerialization.data(withJSONObject: row),
+              (try? JSONDecoder().decode(CADDrawingRevisionRow.self, from: data)) != nil else {
+            return false
+        }
+        return true
+    }
+
+    private static func manufacturingRecordIsKnown(_ row: [String: Any]) -> Bool {
+        let allowedKeys = Set(["id", "kind", "viewID", "position", "heightMM", "feature",
+                               "datum", "featureControlFrame", "surfaceFinish",
+                               "weld", "thread", "counterbore"])
+        guard Set(row.keys).isSubset(of: allowedKeys),
+              let kind = row["kind"] as? String,
+              let parsedKind = CADDrawingManufacturingKind(rawValue: kind) else {
+            return false
+        }
+        let payloadKey: String
+        switch parsedKind {
+        case .datumFeature: payloadKey = "datum"
+        case .featureControlFrame: payloadKey = "featureControlFrame"
+        case .surfaceFinish: payloadKey = "surfaceFinish"
+        case .weld: payloadKey = "weld"
+        case .threadCallout: payloadKey = "thread"
+        case .counterboreCallout: payloadKey = "counterbore"
+        }
+        let payloadKeys = ["datum", "featureControlFrame", "surfaceFinish",
+                           "weld", "thread", "counterbore"]
+        let present = payloadKeys.filter { key in
+            guard let value = row[key] else { return false }
+            return !(value is NSNull)
+        }
+        let allowedPayloadKeys: [CADDrawingManufacturingKind: Set<String>] = [
+            .datumFeature: ["letter", "leaderTarget"],
+            .featureControlFrame: ["characteristic", "toleranceMM", "diameterZone",
+                                   "materialCondition", "datumReferences", "leaderTarget"],
+            .surfaceFinish: ["raMicrometres", "machiningMethod", "allAround"],
+            .weld: ["type", "sizeMM", "lengthMM", "pitchMM", "allAround",
+                    "fieldWeld", "tailNote", "leaderTarget"],
+            .threadCallout: ["designation", "pitchMM", "threadClass", "handedness",
+                             "through", "depthMM", "leaderTarget"],
+            .counterboreCallout: ["leaderTarget"],
+        ]
+        guard let payload = row[payloadKey] as? [String: Any],
+              present == [payloadKey],
+              let allowed = allowedPayloadKeys[parsedKind],
+              Set(payload.keys).isSubset(of: allowed),
+              let decoded = try? JSONDecoder().decode(
+                  CADDrawingManufacturingAnnotation.self,
+                  from: JSONSerialization.data(withJSONObject: row)) else {
+            return false
+        }
+        return CADDrawingManufacturingRules.validate(decoded).isEmpty
+    }
+
+    private static func templateRecordIsKnown(_ row: [String: Any],
+                                              requireID: Bool = true) -> Bool {
+        let allowedKeys = Set(["id", "name", "paper", "customWidthMM", "customHeightMM",
+                               "projection", "units", "precision", "style", "titleBlock",
+                               "revisionRows", "builtIn"])
+        guard Set(row.keys).isSubset(of: allowedKeys),
+              row["name"] is String else { return false }
+        if requireID, row["id"] == nil { return false }
+        if let style = row["style"] {
+            guard let object = style as? [String: Any],
+                  Set(object.keys).isSubset(of: Set(["marginMM", "titleBlockWidthMM",
+                                                     "titleBlockHeightMM", "lineWidthMM",
+                                                     "textHeightMM", "showZoneGrid"])) else {
+                return false
+            }
+        }
+        if let block = row["titleBlock"] {
+            guard let object = block as? [String: Any],
+                  Set(object.keys).isSubset(of: Set(["company", "drawingNumber"])) else {
+                return false
+            }
+        }
+        if let rows = row["revisionRows"] {
+            guard let objects = rows as? [[String: Any]],
+                  objects.allSatisfy({ Set($0.keys).isSubset(of: Set(["id", "revision",
+                                                                      "date", "description",
+                                                                      "approvedBy"])) }) else {
+                return false
+            }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: row),
+              let template = try? JSONDecoder().decode(CADDrawingSheetTemplate.self,
+                                                       from: data) else {
+            return false
+        }
+        return CADDrawingTemplateRules.validate(template).isEmpty
     }
 
     /// Best-effort inspection of the persisted assembly record. A malformed
@@ -206,8 +461,9 @@ nonisolated enum CADDocumentFormat {
         if assemblyRequiresPartMetadataFormat(assembly) {
             result.requiredVersion = max(result.requiredVersion, partMetadataVersion)
         }
-        result.requiredVersion = max(result.requiredVersion,
-                                     drawingRequiredVersion(drawings))
+        let drawingIntent = drawingIntent(drawings)
+        result.requiredVersion = max(result.requiredVersion, drawingIntent.version)
+        if drawingIntent.opaque { result.opaqueDrawings = true }
         for row in planes {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
                   let definition = object["definition"], !(definition is NSNull) else { continue }
