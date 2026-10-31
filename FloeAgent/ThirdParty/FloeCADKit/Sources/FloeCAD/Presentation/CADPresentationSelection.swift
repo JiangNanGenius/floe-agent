@@ -162,11 +162,10 @@ enum CADPresentationSelection {
         let sourceIDs = Set(instances.compactMap { $0.effectiveBodyID })
         let bodies = document.session.document.bodies.filter { sourceIDs.contains($0.id.raw) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        let shared = instances.contains { selected in
-            guard let source = selected.effectiveBodyID else { return false }
-            return selected.instance.isIndependentCopy == false
-                && allOccurrences.filter { $0.effectiveBodyID == source }.count > 1
-        }
+        // A shared placement edits its source definition even when it is the
+        // only current occurrence. Keep that scope visible; an independent
+        // copy owns a separate definition and needs no shared-material note.
+        let shared = instances.contains { !$0.instance.isIndependentCopy }
         return CADMaterialTarget(bodyIDs: bodies.map(\.id.raw), faceBodyID: nil, faceIndex: nil,
             bodyNames: bodies.map(\.name), isFaceTarget: false,
             note: shared ? FloeCADStrings.text("cad.present.selection.sharedMaterial", "Shared material — changes apply to all instances of this part.") : nil,
