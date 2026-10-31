@@ -68,6 +68,29 @@ enum CADQualificationFixture {
                 throw CADDocumentError(code: "fixture_assembly_failed",
                                        message: "The fixture assembly instances could not be placed.")
             }
+            if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-shared-sheet") {
+                let sheet = CADDrawingService(document: document).handle(action: "multiViewSheet", args: [
+                    "bodyID": bodyID, "title": "Plate drawing", "paper": "a3",
+                ])
+                guard sheet["ok"] as? Bool == true else {
+                    throw CADDocumentError(code: "fixture_drawing_failed",
+                                           message: sheet["message"] as? String ?? "The fixture sheet could not be created.")
+                }
+            }
+            if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-animation") {
+                let clip = try document.createAnimationClip(name: "Camera orbit", duration: 0.5)
+                let track = try document.addAnimationTrack(clipID: clip.id, target: .camera)
+                _ = try document.setAnimationKeyframe(
+                    clipID: clip.id, trackID: track.id, time: 0,
+                    camera: CADAnimationCameraValue(target: SIMD3(100, 0, 30), distance: 400,
+                                                    azimuthRadians: 0.5, elevationRadians: 0.4,
+                                                    fovYDegrees: 60))
+                _ = try document.setAnimationKeyframe(
+                    clipID: clip.id, trackID: track.id, time: 0.5,
+                    camera: CADAnimationCameraValue(target: SIMD3(100, 0, 30), distance: 400,
+                                                    azimuthRadians: 0.7, elevationRadians: 0.4,
+                                                    fovYDegrees: 60))
+            }
             let save = await document.save()
             guard save.succeeded else {
                 throw CADDocumentError(code: "fixture_save_failed",

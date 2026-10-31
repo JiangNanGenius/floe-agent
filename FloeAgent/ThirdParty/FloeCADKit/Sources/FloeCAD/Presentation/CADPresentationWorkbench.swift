@@ -286,6 +286,8 @@ struct CADPresentationWorkbenchContent: View {
     @State private var showMovieExporter = false
     @State private var exportProgress: CADAnimationExportProgress?
     @State private var exportHandle: CADAnimationExportHandle?
+    @State private var videoExportOptions = CADAnimationExportOptions.load()
+    @State private var showVideoExportOptions = false
 
     init(document: FloeCADDocument, canvasActions: CADCanvasActions?) {
         self.document = document
@@ -348,6 +350,18 @@ struct CADPresentationWorkbenchContent: View {
                         environment: CADPresentationSceneBuilder.environment(
                             from: document.viewAppearance))
                 })
+            .presentationCompactAdaptation(horizontal: .popover, vertical: .sheet)
+        }
+        .sheet(isPresented: $showVideoExportOptions) {
+            CADAnimationExportOptionsSheet(
+                initial: videoExportOptions,
+                clipDuration: animationState.activeClip?.duration ?? 0) { options in
+                // The confirmed draft is handed to the existing export
+                // service verbatim; nothing is re-defaulted on the way.
+                videoExportOptions = options
+                options.save()
+                exportVideo(settings: options.exportSettings())
+            }
             .presentationCompactAdaptation(horizontal: .popover, vertical: .sheet)
         }
         .fileExporter(isPresented: $showPNGExporter, document: pngExport,
@@ -453,7 +467,7 @@ struct CADPresentationWorkbenchContent: View {
         }
     }
 
-    private func exportVideo() {
+    private func exportVideo(settings: CADAnimationExportSettings) {
         guard animationState.activeClip != nil else {
             exportError = FloeCADStrings.text("cad.animation.empty",
                                               "Add a clip to animate the camera or parts.")
@@ -466,7 +480,7 @@ struct CADPresentationWorkbenchContent: View {
         let handle: CADAnimationExportHandle
         do {
             handle = try document.startAnimationExportMP4(
-                to: temporary, settings: .default) { progress in
+                to: temporary, settings: settings) { progress in
                     exportProgress = progress
                 }
             exportHandle = handle
@@ -548,12 +562,12 @@ struct CADPresentationWorkbenchContent: View {
                           systemImage: "photo")
                 }
                 Button {
-                    exportVideo()
+                    showVideoExportOptions = true
                 } label: {
                     Label(FloeCADStrings.text("cad.animation.export.video", "MP4 video"),
                           systemImage: "film")
                 }
-                .disabled(animationState.activeClip == nil)
+                .disabled(animationState.activeClip == nil || exportHandle != nil)
 
                 Button {
                     exportGLB()

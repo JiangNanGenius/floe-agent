@@ -21,10 +21,10 @@ import simd
 /// deeply immutable. `renderMesh(from:)` runs `BRepMesh_IncrementalMesh`,
 /// which stores triangulations into the faces' shared `TShape`, and handles
 /// are aliased (undo snapshots retain the same instance; identity transforms
-/// return `self`). This is only safe because every OCCT call currently runs
-/// on the MainActor. Before moving any OCCT work off-main, all access to
-/// handles MUST be serialized on one executor — do not rely on this
-/// annotation for actual thread safety.
+/// return `self`). Live handle access is confined to the MainActor.
+/// Off-main work must never touch a live/aliased handle:
+/// `independentSnapshot(_:)` owns the ONLY copies serialization takes off the
+/// actor. Do not rely on this annotation for actual thread safety.
 nonisolated final class BRepHandle: @unchecked Sendable {
     let shape: OCCTShape
     init(_ shape: OCCTShape) { self.shape = shape }
@@ -1077,6 +1077,16 @@ nonisolated enum OCCTKernel {
     /// Serialize a solid so the analytic geometry survives a document reload.
     static func serialize(_ handle: BRepHandle) -> Data? {
         OCCTBridge.serializedShape(handle.shape)
+    }
+
+    /// An independently-owned snapshot of `handle` for off-main serialization:
+    /// the exact same analytic geometry and topology under fresh OCCT handles,
+    /// so a background `serialize(_:)` can never observe a live/undo/aliased
+    /// handle mutate (tessellation writes the shared TShape; undo snapshots
+    /// retain the same instance). Nil when the copy fails — callers must NOT
+    /// fall back to serializing the live handle off the calling actor.
+    static func independentSnapshot(_ handle: BRepHandle) -> BRepHandle? {
+        OCCTBridge.independentCopyForSerialization(handle.shape).map(BRepHandle.init)
     }
 
     /// Restore a solid from `serialize(_:)`. Nil on any failure — callers keep

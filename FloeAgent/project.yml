@@ -1234,6 +1234,7 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADParameterCorrectnessTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADCapabilitySurfaceTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADStoredIntegrityTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSavePrewarmOwnershipTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADExactnessPreservationTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADUSDZMaterialExportTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADVariableEditingTests.swift
@@ -1260,6 +1261,10 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationUITests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyDrawingExtensionTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAnimationTests.swift
+      # Original X28 (animation export options UI → real exporter settings →
+      # media read-back): options mapping/persistence tests plus the App-host
+      # RealityKit export read-back fixture. Regenerate with gen_project.sh.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAnimationExportOptionsTests.swift
       # Same-Mac bridge, suspension ownership and assistant audio additions.
       - path: Tests/FloeAppTests/AssistantAudioToolTests.swift
       - path: Tests/FloeAppTests/LocalSpeechPreparationTests.swift

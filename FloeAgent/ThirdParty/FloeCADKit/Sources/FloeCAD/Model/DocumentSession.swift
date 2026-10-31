@@ -292,6 +292,13 @@ final class DocumentSession {
     /// Deterministic, session-local suspension inside prewarm for race tests.
     /// Absent in release; no store/network/global synchronization is replaced.
     var savePrewarmSuspensionForTesting: (@MainActor () async -> Void)?
+    /// Deterministic suspension ON the detached snapshot serializer: fires
+    /// after the independently-owned snapshots are taken, before any bytes
+    /// are produced, so a test can mutate/replace/close the live document
+    /// through the REAL kernel while the background serialization is in
+    /// flight. Absent in release; it never replaces the real serializer, the
+    /// store, the CAS fence or the generation guard.
+    var brepSerializationSuspensionForTesting: (@Sendable () async -> Void)?
     /// One-shot failure injected AFTER prewarm (where real IO/CAS failures
     /// surface) for the exact async host commit path. Absent in release; it
     /// never replaces the store, CAS fence or lock.
@@ -1834,27 +1841,56 @@ final class DocumentSession {
     }
 
     /// Serialize every changed analytic body off-main into the blob cache.
+    ///
+    /// Ownership: the detached serializer reads ONLY independently-owned deep
+    /// copies (`OCCTKernel.independentSnapshot`) made here on the session
+    /// actor. Live handles are aliased (undo snapshots retain the same
+    /// instance; identity transforms return `self`) and tessellation writes
+    /// their shared TShape (see `BRepHandle`'s caveat), so a background
+    /// thread can never touch them. A body whose snapshot fails to copy is
+    /// skipped here and serialized later on the session actor by
+    /// `serializedBrep(for:)` — never shared off-main.
+    ///
+    /// Adoption after the await is generation-guarded: an entry enters the
+    /// cache only while its body is still the exact (handle,
+    /// `meshRevision`) generation that was snapshotted, so work that went
+    /// stale during the suspension (an edit/undo, a nested newer save, a
+    /// closing generation) can neither adopt a cache slot for a state it did
+    /// not read nor overwrite a fresher entry.
     func prewarmBrepSerialization() async {
         #if DEBUG
         if let suspension = savePrewarmSuspensionForTesting { await suspension() }
         #endif
-        let pending: [(UUID, UInt64, BRepHandle)] = document.bodies.compactMap { body in
-            guard let handle = body.brep else { return nil }
-            if let cached = brepBlobCache[body.id.raw],
-               cached.handle == ObjectIdentifier(handle),
-               cached.revision == body.meshRevision {
-                return nil
+        let pending: [(id: UUID, revision: UInt64, liveKey: ObjectIdentifier, snapshot: BRepHandle)] =
+            document.bodies.compactMap { body in
+                guard let handle = body.brep else { return nil }
+                if let cached = brepBlobCache[body.id.raw],
+                   cached.handle == ObjectIdentifier(handle),
+                   cached.revision == body.meshRevision {
+                    return nil
+                }
+                guard let snapshot = OCCTKernel.independentSnapshot(handle) else { return nil }
+                return (body.id.raw, body.meshRevision, ObjectIdentifier(handle), snapshot)
             }
-            return (body.id.raw, body.meshRevision, handle)
-        }
         guard !pending.isEmpty else { return }
+        #if DEBUG
+        // Read on the session actor; the detached closure captures the value.
+        let serializationSuspension = brepSerializationSuspensionForTesting
+        #endif
         let serialized: [(UUID, UInt64, ObjectIdentifier, Data)] = await Task.detached(priority: .userInitiated) {
-            pending.compactMap { id, revision, handle in
-                guard let data = OCCTKernel.serialize(handle) else { return nil }
-                return (id, revision, ObjectIdentifier(handle), data)
+            #if DEBUG
+            if let suspension = serializationSuspension { await suspension() }
+            #endif
+            return pending.compactMap { id, revision, liveKey, snapshot in
+                guard let data = OCCTKernel.serialize(snapshot) else { return nil }
+                return (id, revision, liveKey, data)
             }
         }.value
         for entry in serialized {
+            guard let current = document.body(with: BodyID(raw: entry.0)),
+                  current.meshRevision == entry.1,
+                  let handle = current.brep,
+                  ObjectIdentifier(handle) == entry.2 else { continue }
             brepBlobCache[entry.0] = (entry.2, entry.1, entry.3)
         }
     }

@@ -4565,6 +4565,29 @@ static bool OS3DPlausibleSectionCounts(NSData *data) {
     }
 }
 
++ (nullable OCCTShape *)independentCopyForSerialization:(OCCTShape *)shape {
+    if (shape == nil) return nil;
+    try {
+        // copyGeom Standard_True: the copy owns its curves/surfaces too, so
+        // NOTHING is shared with the live handle — the snapshot stays valid
+        // no matter what the main-actor kernel does to the original next
+        // (tessellation writes the shared TShape; undo snapshots and identity
+        // transforms alias handles). copyMesh
+        // Standard_False: triangulation is render cache and is never
+        // persisted (serializedShape: writes withTriangles = Standard_False),
+        // so copying it would be pure cost.
+        BRepBuilderAPI_Copy copy(shape->_shape,
+                                 /*copyGeom*/ Standard_True,
+                                 /*copyMesh*/ Standard_False);
+        if (!copy.IsDone() || copy.Shape().IsNull()) return nil;
+        OCCTShape *out = [OCCTShape new];
+        out->_shape = copy.Shape();
+        return out;
+    } catch (...) {
+        return nil;
+    }
+}
+
 + (nullable OCCTShape *)shapeFromSerialized:(NSData *)data {
     if (data.length == 0) return nil;
     // See OS3DPlausibleSectionCounts: inflated declared counts hang OCCT's

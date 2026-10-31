@@ -315,7 +315,8 @@ struct CADDrawingPanelView: View {
                                         activeSheet = .views(CADDrawingAnnotationPageRequest(page: page))
                                     }
                                         .buttonStyle(.bordered)
-                                        .controlSize(.small))
+                                        .controlSize(.small)
+                                        .accessibilityIdentifier("CADDrawingViews-\(page["id"] as? String ?? "")"))
                                 } else {
                                     panelHitTarget(Button(FloeCADStrings.label("cad.workbench.drawing.edit", "Edit")) {
                                         activeSheet = .edit(CADDrawingPageEditorRequest(page: page))
@@ -1155,7 +1156,7 @@ private struct CADDrawingViewsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section(FloeCADStrings.text("cad.workbench.drawing.views", "Views")) {
+                Section(FloeCADStrings.format("cad.workbench.drawing.viewBadge", "%lld views", views.count)) {
                     ForEach(Array(views.enumerated()), id: \.offset) { _, row in
                         Button {
                             selectedID = row["id"] as? String
@@ -1254,6 +1255,7 @@ private struct CADDrawingViewsSheet: View {
                             Text(FloeCADStrings.text("cad.workbench.drawing.removeView", "Remove view"))
                         }
                         .disabled(busy || views.count <= 1)
+                        .accessibilityIdentifier("CADDrawingViewRemove")
                     }
                 }
 
@@ -1273,6 +1275,7 @@ private struct CADDrawingViewsSheet: View {
                               systemImage: "plus.rectangle")
                     }
                     .disabled(busy)
+                    .accessibilityIdentifier("CADDrawingViewAdd")
                     Button {
                         layout()
                     } label: {
@@ -1291,6 +1294,7 @@ private struct CADDrawingViewsSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(FloeCADStrings.text("cad.ui.common.close", "Close")) { dismiss() }
+                        .accessibilityIdentifier("CADDrawingViewsClose")
                 }
             }
             .task { reload() }

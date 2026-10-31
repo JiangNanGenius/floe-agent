@@ -688,6 +688,15 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// stored in the document and survive a reload. Nil on failure.
 + (nullable NSData *)serializedShape:(OCCTShape *)shape;
 
+/// An independently-owned deep copy of `shape` for background serialization:
+/// fresh topological entities AND fresh geometry handles, no triangulation
+/// (render cache, never persisted). Live handles are aliased (undo snapshots,
+/// identity transforms) and tessellation writes their shared TShape, so
+/// serializing a live handle off the calling thread races the kernel. Nil when
+/// the copy fails — callers must refuse the off-main path for that shape and
+/// never fall back to the live handle.
++ (nullable OCCTShape *)independentCopyForSerialization:(OCCTShape *)shape;
+
 /// Rebuild a solid from `serializedShape:` output. Nil on failure (including a
 /// blob written by a different/incompatible OCCT version — callers fall back to
 /// the persisted render mesh).
