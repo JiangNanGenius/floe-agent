@@ -213,7 +213,7 @@ final class CADTextSketchTests: XCTestCase {
 
         // The result is ordinary sketch geometry and can be extruded exactly
         // like any other closed loop.
-        let sketch = try sketch(document, id: sketchID)
+        let sketch = try self.sketch(document, id: sketchID)
         let profiles = ProfileDetector.detectProfiles(in: sketch)
         XCTAssertEqual(profiles.count, 2)
         let outer = try XCTUnwrap(profiles.max { abs($0.area) < abs($1.area) })
@@ -241,7 +241,7 @@ final class CADTextSketchTests: XCTestCase {
         let addGrant = try service.issueGrant(proposalID: addProposal.id)
         _ = try await service.apply(document: document, proposalID: addProposal.id, grantID: addGrant)
 
-        let sketch = try sketch(document, id: sketchID)
+        let sketch = try self.sketch(document, id: sketchID)
         let profiles = ProfileDetector.detectProfiles(in: sketch)
         XCTAssertEqual(profiles.count, 2)
         let outer = try XCTUnwrap(profiles.max { abs($0.area) < abs($1.area) })
@@ -292,21 +292,21 @@ final class CADTextSketchTests: XCTestCase {
 
         // 4. Adding a second text to the SAME sketch is an ordinary one-step
         //    undoable edit and does not disturb the existing feature's body.
-        let beforeEntities = try sketch(document, id: sketchID).entities.count
+        let beforeEntities = try self.sketch(document, id: sketchID).entities.count
         let changeBeforeText = document.session.changeCount
         _ = try run(document, #"{"op":"sketch.addText","args":{"sketchID":"\#(sketchID)","text":"A","height":20,"origin":[40,5]}}"#)
-        let afterTextSketch = try sketch(document, id: sketchID)
+        let afterTextSketch = try self.sketch(document, id: sketchID)
         XCTAssertGreaterThan(afterTextSketch.entities.count, beforeEntities)
         XCTAssertEqual(document.session.changeCount, changeBeforeText + 1,
                        "sketch.addText is exactly one document command")
         XCTAssertEqual(try volume(document, bodyID: bodyID), ringArea * editedDistance,
                        accuracy: max(abs(ringArea * editedDistance) * 0.01, 0.01))
         document.session.undo()
-        XCTAssertEqual(try sketch(document, id: sketchID).entities.count, beforeEntities)
+        XCTAssertEqual(try self.sketch(document, id: sketchID).entities.count, beforeEntities)
         XCTAssertEqual(try volume(document, bodyID: bodyID), ringArea * editedDistance,
                        accuracy: max(abs(ringArea * editedDistance) * 0.01, 0.01))
         document.session.redo()
-        XCTAssertGreaterThan(try sketch(document, id: sketchID).entities.count, beforeEntities)
+        XCTAssertGreaterThan(try self.sketch(document, id: sketchID).entities.count, beforeEntities)
 
         // 5. Save + reopen proves the text-derived solid and its outlines are
         //    durable native document state.
@@ -317,7 +317,7 @@ final class CADTextSketchTests: XCTestCase {
         defer { reopened.close() }
         XCTAssertEqual(try volume(reopened, bodyID: bodyID), ringArea * editedDistance,
                        accuracy: max(abs(ringArea * editedDistance) * 0.01, 0.01))
-        let reopenedSketch = try sketch(reopened, id: sketchID)
+        let reopenedSketch = try self.sketch(reopened, id: sketchID)
         XCTAssertGreaterThanOrEqual(reopenedSketch.entities.count, beforeEntities)
         XCTAssertTrue(try queryRows(reopened, "features").contains {
             ($0["id"] as? String) == featureID
