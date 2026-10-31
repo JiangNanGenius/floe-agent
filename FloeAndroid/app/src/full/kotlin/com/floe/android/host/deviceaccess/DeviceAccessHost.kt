@@ -1112,14 +1112,24 @@ internal class DeviceAccessHost(
      * The exact run that is live in the REAL holder: the task/run pair the
      * conversation host itself reports as running and selected. A released
      * holder or a terminal/other selected run is not live.
+     *
+     * Native holders are keyed by canonical UPPERCASE UUID text
+     * (`UUID.uuidString`); JVM-created holders use lowercase
+     * `UUID.toString()`. Try exactly those two spellings of THIS owner's
+     * conversation id — never a scan or another owner's key.
      */
     private fun isOwnerRunLive(owner: PhoneControlOwner): Boolean {
-        val entry = runCatching {
-            host.conversations.entryFor(owner.taskID.toString())
-        }.getOrNull() ?: return false
+        val entry = PhoneTaskPresentation.holderLookupKeys(owner.taskID)
+            .firstNotNullOfOrNull { key ->
+                runCatching { host.conversations.entryFor(key) }.getOrNull()
+            } ?: return false
         val state = runCatching { entry.holder.snapshot.value }.getOrNull()
             ?: return false
-        return state.isRunning && state.selectedRunId == owner.runID.toString()
+        return PhoneTaskPresentation.liveOwnerRun(
+            isRunning = state.isRunning,
+            selectedRunID = state.selectedRunId,
+            runID = owner.runID,
+        )
     }
 
     /**

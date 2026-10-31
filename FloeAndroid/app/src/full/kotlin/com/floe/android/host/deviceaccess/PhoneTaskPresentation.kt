@@ -4,6 +4,8 @@ package com.floe.android.host.deviceaccess
 import com.floe.android.DeviceAccessTaskControlUi
 import com.floe.android.DeviceAccessTaskPhaseUi
 import com.floe.android.phonecontrol.PhoneControlOwner
+import java.util.Locale
+import java.util.UUID
 
 /**
  * Pure ownership mapping for the one "Active phone task" card.
@@ -152,6 +154,61 @@ internal object PhoneTaskPresentation {
         candidates: List<PhoneTaskLiveCandidate>,
     ): PhoneTaskLiveCandidate? = candidates.distinctBy { it.owner }.singleOrNull()
 
+    /**
+     * The ONLY holder-map keys that may name the same conversation as
+     * [taskID].
+     *
+     * Native run identities are emitted as canonical uppercase UUID text
+     * (`UUID.uuidString`), while JVM-side identities (`UUID.toString()`) are
+     * canonical lowercase. The conversation host keys holders by the exact
+     * string it opened, so the native spelling is tried first and the JVM
+     * spelling second. Both keys are derived from THIS UUID only: no map scan,
+     * no case-insensitive search and no other owner's key.
+     */
+    fun holderLookupKeys(taskID: UUID): List<String> {
+        val javaLower = taskID.toString()
+        val nativeUpper = javaLower.uppercase(Locale.ROOT)
+        return if (nativeUpper == javaLower) listOf(javaLower) else listOf(nativeUpper, javaLower)
+    }
+
+    /**
+     * True only when [selectedRunID] is the SAME canonical UUID as [runID].
+     *
+     * The native-uppercase / JVM-lowercase spelling difference is the only
+     * tolerated variation. Short/legacy UUID forms (`1-1-1-1-1`), undashed
+     * 32-char hex, braces and surrounding text are refused, so a malformed
+     * selected run can never be read as this owner.
+     */
+    fun selectedRunMatches(selectedRunID: String?, runID: UUID): Boolean {
+        val selected = selectedRunID ?: return false
+        if (selected.length != CANONICAL_UUID_CHARS) return false
+        for (index in selected.indices) {
+            val isDash = index == 8 || index == 13 || index == 18 || index == 23
+            if (isDash) {
+                if (selected[index] != '-') return false
+            } else if (!selected[index].isAsciiHexDigit()) {
+                return false
+            }
+        }
+        return selected.equals(runID.toString(), ignoreCase = true)
+    }
+
+    /**
+     * The exact live-owner predicate the host applies to the REAL holder: the
+     * holder must still report running AND its selected run must be this
+     * owner's run. A terminal/other/malformed selected run is never live.
+     */
+    fun liveOwnerRun(
+        isRunning: Boolean,
+        selectedRunID: String?,
+        runID: UUID,
+    ): Boolean = isRunning && selectedRunMatches(selectedRunID, runID)
+
     const val CODE_STOP_SETTLING = "phone_stop_settling"
     const val CODE_NO_LIVE_TASK = "no_live_task"
 }
+
+private const val CANONICAL_UUID_CHARS = 36
+
+private fun Char.isAsciiHexDigit(): Boolean =
+    this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'

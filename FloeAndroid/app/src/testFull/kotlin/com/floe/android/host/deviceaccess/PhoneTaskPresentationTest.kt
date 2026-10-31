@@ -6,8 +6,10 @@ package com.floe.android.host.deviceaccess
 import com.floe.android.DeviceAccessTaskControlUi
 import com.floe.android.DeviceAccessTaskPhaseUi
 import com.floe.android.phonecontrol.PhoneControlOwner
+import java.util.Locale
 import java.util.UUID
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -312,5 +314,130 @@ class PhoneTaskPresentationTest {
         // Two different live tasks: no arbitrary first/newest/recency pick.
         assertNull(PhoneTaskPresentation.uniqueLiveCandidate(listOf(a, b)))
         assertNull(PhoneTaskPresentation.uniqueLiveCandidate(listOf(b, a)))
+    }
+
+    // ------------------------------------------------- native UUID identity
+
+    private fun nativeText(uuid: UUID): String = uuid.toString().uppercase(Locale.ROOT)
+
+    @Test
+    fun holderLookupUsesNativeUppercaseThenJavaLowercaseOfTheSameUuid() {
+        val task = UUID.fromString("7cf5e683-a02e-9614-8f32-036344d7b997")
+        val keys = PhoneTaskPresentation.holderLookupKeys(task)
+
+        assertEquals(2, keys.size)
+        assertEquals("7CF5E683-A02E-9614-8F32-036344D7B997", keys[0])
+        assertEquals("7cf5e683-a02e-9614-8f32-036344d7b997", keys[1])
+        assertEquals(task, UUID.fromString(keys[0]))
+        assertEquals(task, UUID.fromString(keys[1]))
+    }
+
+    @Test
+    fun digitOnlyUuidHasOneDeduplicatedHolderKey() {
+        val task = UUID.fromString("00000000-0000-0000-0000-000000000001")
+        assertEquals(
+            listOf("00000000-0000-0000-0000-000000000001"),
+            PhoneTaskPresentation.holderLookupKeys(task),
+        )
+    }
+
+    @Test
+    fun nativeUppercaseAndExistingJavaLowercaseHoldersResolveTheSameOwnerOnly() {
+        val live = owner(1, 1)
+        val other = owner(2, 2)
+        val keys = PhoneTaskPresentation.holderLookupKeys(live.taskID)
+        val nativeHolders = mapOf(nativeText(live.taskID) to live)
+        val javaHolders = mapOf(live.taskID.toString() to live)
+        val otherOnlyHolders = mapOf(other.taskID.toString() to other)
+
+        // New native holders are uppercase; existing JVM holders stay lowercase.
+        assertEquals(live, keys.firstNotNullOfOrNull { nativeHolders[it] })
+        assertEquals(live, keys.firstNotNullOfOrNull { javaHolders[it] })
+        // No scan/fallback may resolve a different owner's holder.
+        assertNull(keys.firstNotNullOfOrNull { otherOnlyHolders[it] })
+        val otherKeys = PhoneTaskPresentation.holderLookupKeys(other.taskID)
+        assertNull(otherKeys.firstNotNullOfOrNull { javaHolders[it] })
+    }
+
+    @Test
+    fun nativeUppercaseSelectedRunIsLiveForTheSameOwner() {
+        val runUUID = UUID.fromString("7cf5e683-a02e-9614-8f32-036344d7b997")
+        assertTrue(
+            PhoneTaskPresentation.liveOwnerRun(
+                isRunning = true,
+                selectedRunID = "7CF5E683-A02E-9614-8F32-036344D7B997",
+                runID = runUUID,
+            ),
+        )
+        assertTrue(PhoneTaskPresentation.liveOwnerRun(true, nativeText(runUUID), runUUID))
+    }
+
+    @Test
+    fun javaLowercaseAndMixedCaseSelectedRunsAreLiveForTheSameOwner() {
+        val runUUID = UUID.fromString("7cf5e683-a02e-9614-8f32-036344d7b997")
+        assertTrue(PhoneTaskPresentation.liveOwnerRun(true, runUUID.toString(), runUUID))
+        assertTrue(
+            PhoneTaskPresentation.liveOwnerRun(
+                true,
+                "7Cf5E683-a02E-9614-8F32-036344d7B997",
+                runUUID,
+            ),
+        )
+    }
+
+    @Test
+    fun terminalOrOtherOwnerSelectedRunIsNeverLive() {
+        val live = owner(1, 1)
+        val other = owner(2, 2)
+        assertFalse(
+            PhoneTaskPresentation.liveOwnerRun(
+                isRunning = false,
+                selectedRunID = nativeText(live.runID),
+                runID = live.runID,
+            ),
+        )
+        assertFalse(
+            PhoneTaskPresentation.liveOwnerRun(
+                isRunning = true,
+                selectedRunID = nativeText(other.runID),
+                runID = live.runID,
+            ),
+        )
+        assertFalse(
+            PhoneTaskPresentation.liveOwnerRun(
+                isRunning = true,
+                selectedRunID = live.runID.toString(),
+                runID = other.runID,
+            ),
+        )
+        assertFalse(PhoneTaskPresentation.liveOwnerRun(true, null, live.runID))
+    }
+
+    @Test
+    fun malformedOrShortSelectedRunIsRefusedNotLenientlyParsed() {
+        // `UUID.fromString("1-1-1-1-1")` is the lenient legacy form of this
+        // canonical UUID; string equality must refuse it.
+        val runUUID = UUID.fromString("1-1-1-1-1")
+        assertEquals("00000001-0001-0001-0001-000000000001", runUUID.toString())
+        val refused = listOf(
+            null,
+            "",
+            "1-1-1-1-1",
+            runUUID.toString().replace("-", ""),
+            "{$runUUID}",
+            " $runUUID",
+            "$runUUID ",
+            runUUID.toString().dropLast(1) + "g",
+            runUUID.toString() + "-",
+        )
+        refused.forEach { selected ->
+            assertFalse(
+                "selected=$selected",
+                PhoneTaskPresentation.selectedRunMatches(selected, runUUID),
+            )
+        }
+        assertFalse(PhoneTaskPresentation.liveOwnerRun(true, "1-1-1-1-1", runUUID))
+        assertTrue(PhoneTaskPresentation.selectedRunMatches(runUUID.toString(), runUUID))
+        assertTrue(PhoneTaskPresentation.selectedRunMatches(nativeText(runUUID), runUUID))
     }
 }
