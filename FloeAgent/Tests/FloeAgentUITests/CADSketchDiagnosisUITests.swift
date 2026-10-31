@@ -49,6 +49,14 @@ private enum CADSketchDiagnosisUI {
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
+    /// Safe failure text for a diagnostic assertion. Reading `.label` from a
+    /// missing element raises an accessibility-snapshot error and replaces the
+    /// real XCTAssert failure with that error; describe absence instead. This
+    /// changes only the message, never a wait or an assertion.
+    static func describe(_ element: XCUIElement) -> String {
+        element.exists ? "label '\(element.label)'" : "element is absent"
+    }
+
     /// Open one real Items row, then close the Items panel again. The row is
     /// the same `ItemRow-<name>` the product shows; `selectItemSketch` enters
     /// the sketch editor through its ordinary route.
@@ -132,9 +140,17 @@ final class CADSketchLoopDiagnosisUITests: XCTestCase {
         CADSketchDiagnosisUI.openSketch("Spline loop", in: app)
 
         let dof = CADSketchDiagnosisUI.any(app, "SketchDOFChip")
-        XCTAssertTrue(CADSketchDiagnosisUI.waitForLabelContains(
-            dof, "2 DOF remaining", timeout: 30),
-                      "the locked centre + radius leaves exactly 2 real DOF; got \(dof.label)")
+        // Resolve the actual chip before the assertion (the same 30 s predicate
+        // wait, not a longer one) so the failure evidence records the settled
+        // status pill, for example the unsupported chip that used to replace
+        // the DOF chip. The assertion itself remains the same.
+        let dofReady = CADSketchDiagnosisUI.waitForLabelContains(
+            dof, "2 DOF remaining", timeout: 30)
+        CADSketchDiagnosisUI.snapshot("M02 arc+spline loop — status at the DOF assertion",
+                                      in: app, test: self)
+        XCTAssertTrue(dofReady,
+                      "the locked centre + radius leaves exactly 2 real DOF; got "
+                        + CADSketchDiagnosisUI.describe(dof))
         XCTAssertFalse(CADSketchDiagnosisUI.any(app, "SketchConflictChip").exists,
                        "a healthy connected/tangent section must not report a conflict")
         XCTAssertFalse(CADSketchDiagnosisUI.any(app, "SketchUnsupportedChip").exists)
@@ -151,10 +167,12 @@ final class CADSketchLoopDiagnosisUITests: XCTestCase {
 
         let updated = app.buttons["DimensionLabel"].firstMatch
         XCTAssertTrue(CADSketchDiagnosisUI.waitForLabelContains(updated, "R40", timeout: 30),
-                      "the driven radius must land at 40 and the section must stay usable; label: \(updated.label)")
+                      "the driven radius must land at 40 and the section must stay usable; got "
+                        + CADSketchDiagnosisUI.describe(updated))
         XCTAssertTrue(CADSketchDiagnosisUI.waitForLabelContains(
             dof, "2 DOF remaining", timeout: 20),
-                      "the dimension edit must not change the real remaining DOF; got \(dof.label)")
+                      "the dimension edit must not change the real remaining DOF; got "
+                        + CADSketchDiagnosisUI.describe(dof))
         XCTAssertFalse(CADSketchDiagnosisUI.any(app, "SketchConflictChip").exists,
                        "the justified dimension edit must not become a conflicting best fit")
         CADSketchDiagnosisUI.snapshot("M02 arc+spline loop — driven radius 40, still 2 DOF",
@@ -234,15 +252,16 @@ final class CADSketchConflictDiagnosisUITests: XCTestCase {
                        "a best fit must never be presented as fully defined/satisfied")
 
         let labels = (0..<conflicts.count).map { conflicts.element(boundBy: $0).label }
+        // Capture the actual badges (colour and text) BEFORE the critical
+        // value assertions, so a failing value still leaves visual evidence.
+        CADSketchDiagnosisUI.snapshot("M06 conflict — two exact red dimensions, clean relation unmarked",
+                                      in: app, test: self, croppedTo: CADSketchDiagnosisUI.any(app, "CADFixtureHarness"))
         XCTAssertTrue(labels.contains { $0.contains("R25") },
                       "one highlighted label must name the 25 mm driving value: \(labels)")
         XCTAssertTrue(labels.contains { $0.contains("R40") },
                       "one highlighted label must name the 40 mm driving value: \(labels)")
         XCTAssertTrue(clean.label.contains("60"),
                       "unexpected clean dimension label: \(clean.label)")
-
-        CADSketchDiagnosisUI.snapshot("M06 conflict — two exact red dimensions, clean relation unmarked",
-                                      in: app, test: self, croppedTo: CADSketchDiagnosisUI.any(app, "CADFixtureHarness"))
 
         // Editing a red driving value must be refused with the real conflict
         // reason and must not commit the solver's compromise. This is the

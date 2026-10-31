@@ -14242,6 +14242,22 @@ final class EditorViewModel {
         }
     }
 
+    /// Where a badge's number comes from. The overlay must not present a
+    /// geometry readout as if it were the user's driving value (or vice
+    /// versa): a contradictory system's best fit is never written back, so
+    /// its committed geometry is the last accepted state and cannot name the
+    /// driving dimensions that were refused.
+    enum SketchDimensionValueSource: String, Sendable, Equatable {
+        /// The saved driving dimension's own stored (already-evaluated) value.
+        case driving
+        /// A measured readout of the committed geometry: a saved dimension
+        /// the current diagnosis does not blame, or a derived construction
+        /// readout (for example a polygon side count).
+        case reference
+        /// An unsaved live selection measurement (`dimensionID == nil`).
+        case preview
+    }
+
     struct SketchDimensionLabel: Identifiable {
         let id: String
         /// The sketch this label annotates. Outside sketch mode the overlay
@@ -14250,6 +14266,9 @@ final class EditorViewModel {
         let dimensionID: UUID?
         let kind: DimensionKind
         let refs: [ConstraintRef]
+        /// displayValue/text follow `valueSource`: the stored driving value
+        /// for `.driving`, a geometry measurement for `.reference`/`.preview`.
+        let valueSource: SketchDimensionValueSource
         /// Display value (degrees for `.angle`, sketch units otherwise).
         let displayValue: Double
         let text: String
@@ -14777,7 +14796,9 @@ final class EditorViewModel {
         var labels: [SketchDimensionLabel] = []
 
         func makeLabel(id: String, in sketch: Sketch, dimensionID: UUID?, kind: DimensionKind,
-                       refs: [ConstraintRef], value: Double, presentationEdgeID: UUID? = nil,
+                       refs: [ConstraintRef], value: Double,
+                       valueSource: SketchDimensionValueSource,
+                       presentationEdgeID: UUID? = nil,
                        axisPresentationEdge: Int? = nil) -> SketchDimensionLabel? {
             var kind = kind
             var value = value
@@ -14877,6 +14898,7 @@ final class EditorViewModel {
             }
             var label = SketchDimensionLabel(
                 id: id, sketchID: sketch.id, dimensionID: dimensionID, kind: kind, refs: refs,
+                valueSource: valueSource,
                 displayValue: value, text: text,
                 worldAnchor: sketch.plane.toWorld(g.anchor),
                 worldStart: sketch.plane.toWorld(g.start),
@@ -14971,12 +14993,28 @@ final class EditorViewModel {
                 // Keep genuine geometry differences visible, but do not let a
                 // negligible solver residual move a satisfied driving dimension
                 // across a decimal rounding tie after editing another size.
+                //
+                // A conflicting driving dimension is different: the solver's
+                // best fit is deliberately NOT written back, so the committed
+                // geometry is the last accepted state and reading it here would
+                // print the SAME number for every contradictory row (two real
+                // driving radii both showing R25). A row the current diagnosis
+                // blames keeps its own stored driving value; an unblamed saved
+                // row keeps the measured reference readout, and a live
+                // selection stays a preview below. Solver math/tolerances and
+                // the document geometry are untouched.
                 let stored = d.kind == .angle ? d.value * 180 / .pi : d.value
                 let measured = measuredValue(kind: d.kind, refs: d.refs, in: sketch) ?? stored
-                let display = abs(measured - stored) <= max(1, abs(stored)) * 1e-10
-                    ? stored : measured
+                let blamed = sketch.id == activeSketch?.id &&
+                    sketchConflictAttribution.dimensionIDs.contains(d.id)
+                let measuredDiffers =
+                    abs(measured - stored) > max(1, abs(stored)) * 1e-10
+                let valueSource: SketchDimensionValueSource =
+                    (blamed || !measuredDiffers) ? .driving : .reference
+                let display = valueSource == .driving ? stored : measured
                 if let label = makeLabel(id: d.id.uuidString, in: sketch, dimensionID: d.id,
-                                         kind: d.kind, refs: d.refs, value: display) {
+                                         kind: d.kind, refs: d.refs, value: display,
+                                         valueSource: valueSource) {
                     labels.append(label)
                     // Saved sides remain visible beside a perpendicular edge's
                     // adjacent readout, or after a successful size commit. All
@@ -14993,7 +15031,8 @@ final class EditorViewModel {
                                 guard (0..<4).contains(side), (side % 2 == 0) == (d.kind == .horizontal) else { continue }
                                 if let alias = makeLabel(id: d.id.uuidString + "-axis-side-\(side)",
                                     in: sketch, dimensionID: d.id, kind: d.kind, refs: d.refs,
-                                    value: display, axisPresentationEdge: side) { labels.append(alias) }
+                                    value: display, valueSource: valueSource,
+                                    axisPresentationEdge: side) { labels.append(alias) }
                             }
                         }
                     }
@@ -15012,7 +15051,8 @@ final class EditorViewModel {
                         let oppositeID = group[(index + 2) % 4]
                         if let opposite = makeLabel(id: d.id.uuidString + "-side-" + oppositeID.uuidString,
                             in: sketch, dimensionID: d.id, kind: d.kind, refs: d.refs,
-                            value: display, presentationEdgeID: oppositeID) {
+                            value: display, valueSource: valueSource,
+                            presentationEdgeID: oppositeID) {
                             labels.append(opposite)
                         }
                     }
@@ -15031,7 +15071,8 @@ final class EditorViewModel {
                         let oppositeID = group[(drivingIndex + 2) % 4]
                         if let opposite = makeLabel(id: d.id.uuidString + "-side-" + oppositeID.uuidString,
                             in: sketch, dimensionID: d.id, kind: d.kind, refs: d.refs,
-                            value: display, presentationEdgeID: oppositeID) {
+                            value: display, valueSource: valueSource,
+                            presentationEdgeID: oppositeID) {
                             labels.append(opposite)
                         }
                     }
@@ -15075,7 +15116,8 @@ final class EditorViewModel {
             }
             if !existing, let value = measuredValue(kind: kind, refs: refs, in: sketch),
                let label = makeLabel(id: id, in: sketch, dimensionID: nil,
-                                     kind: kind, refs: refs, value: value) {
+                                     kind: kind, refs: refs, value: value,
+                                     valueSource: .preview) {
                 labels.append(label)
             }
         }
@@ -15110,6 +15152,7 @@ final class EditorViewModel {
             var count = SketchDimensionLabel(
                 id: "polygon-count-\(id)", sketchID: sketch.id, dimensionID: nil,
                 kind: .radius, refs: [ConstraintRef(entityID: id, role: .whole)],
+                valueSource: .reference,
                 displayValue: Double(sides), text: "\(sides) sides",
                 worldAnchor: sketch.plane.toWorld(opposite),
                 worldStart: sketch.plane.toWorld(center), worldEnd: sketch.plane.toWorld(opposite))

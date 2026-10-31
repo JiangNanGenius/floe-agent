@@ -907,11 +907,19 @@ nonisolated enum SketchSolverBridge {
                 if simd_distance(slots[i].position, slots[j].position) < 1e-6 { union(i, j) }
             }
         }
-        // Explicit coincident weld (point-to-point only).
+        // Explicit coincident weld (point-to-point only). A welded pair is
+        // enforced EXACTLY by variable identity, so it owns no residual row —
+        // but the solve did apply it. Remember those saved relations here;
+        // otherwise `unsupportedRelationIDs` would report every already
+        // welded coincidence as "not applied" just because `lower()` never ran.
+        var weldedCoincidentRelationIDs = Set<UUID>()
         for c in sketch.constraints where c.kind == .coincident && c.refs.count == 2 {
             let k0 = SlotKey(entityID: c.refs[0].entityID, role: c.refs[0].role)
             let k1 = SlotKey(entityID: c.refs[1].entityID, role: c.refs[1].role)
-            if let i0 = rawIndexOf[k0], let i1 = rawIndexOf[k1] { union(i0, i1) }
+            if let i0 = rawIndexOf[k0], let i1 = rawIndexOf[k1] {
+                union(i0, i1)
+                weldedCoincidentRelationIDs.insert(c.id)
+            }
         }
 
         // 3. Root -> point index, averaging welded positions.
@@ -1488,9 +1496,13 @@ nonisolated enum SketchSolverBridge {
         // R2 review: a saved relation is unsupported when it produced no row
         // and is not a Lock. This is a truthful "not applied" state — the
         // solve simply never saw it — reported by the definition report
-        // instead of being counted as satisfied by omission.
+        // instead of being counted as satisfied by omission. Point-to-point
+        // coincidences applied by the weld ARE applied (exact variable
+        // identity) even though they lower to no residual row.
         var unsupportedRelationIDs = Set<UUID>()
-        let supportedRelations = loweredRelationIDs.union(fixedRelationIDs)
+        let supportedRelations = loweredRelationIDs
+            .union(fixedRelationIDs)
+            .union(weldedCoincidentRelationIDs)
         for c in sketch.constraints where !supportedRelations.contains(c.id) {
             unsupportedRelationIDs.insert(c.id)
         }
