@@ -173,6 +173,134 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         add(screen)
     }
 
+    func testManufacturingEditAndTemplateDraftsUseTheNativeSavedDocument() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                               "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture",
+                               "--ui-test-cad-shared-sheet"]
+        app.launch()
+        defer { app.terminate() }
+        XCTAssertTrue(app.otherElements["CADFixtureHarness"].waitForExistence(timeout: 30))
+        app.buttons["CADWorkbenchToolsButton"].tap()
+        XCTAssertTrue(app.otherElements["CADWorkbenchToolsPanel"].waitForExistence(timeout: 15))
+        app.buttons["Drawings"].tap()
+        expandDrawingInspector("CAD Tools", in: app)
+
+        let manufacturing = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "CADDrawingManufacturing-")).firstMatch
+        reveal(manufacturing, in: app)
+        manufacturing.tap()
+        expandDrawingInspector("GD&T", in: app)
+        let datum = app.textFields["Datum letter"]
+        replaceDrawingField(datum, with: "A", in: app)
+        let add = app.buttons["CADDrawingManufacturingAdd"]
+        reveal(add, in: app)
+        add.tap()
+        let rows = app.buttons.matching(identifier: "CADDrawingManufacturingRow")
+        reveal(rows.firstMatch, in: app)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertTrue(rows.firstMatch.label.contains("A"))
+        rows.firstMatch.tap()
+        replaceDrawingField(datum, with: "B", in: app)
+        let save = app.buttons["CADDrawingManufacturingSave"]
+        reveal(save, in: app)
+        save.tap()
+        reveal(rows.firstMatch, in: app)
+        XCTAssertEqual(rows.count, 1, "Editing must update the real annotation rather than append one")
+        XCTAssertTrue(rows.firstMatch.label.contains("B"))
+        drawingSnapshot("CAD native manufacturing edit keeps one annotation")
+        app.navigationBars["GD&T"].buttons["Close"].tap()
+
+        reveal(manufacturing, in: app, scrollingUp: false)
+        manufacturing.tap()
+        reveal(rows.firstMatch, in: app)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertTrue(rows.firstMatch.label.contains("B"), "Reopening must read the edited document")
+        app.navigationBars["GD&T"].buttons["Close"].tap()
+
+        let templates = app.buttons["Templates"].firstMatch
+        reveal(templates, in: app, scrollingUp: false)
+        templates.tap()
+        expandDrawingInspector("Templates", in: app)
+        let newTemplate = app.buttons["CADDrawingTemplateNew"]
+        reveal(newTemplate, in: app)
+        newTemplate.tap()
+        let name = "Floe native manufacturing A3"
+        replaceDrawingField(app.textFields["Name"], with: name, in: app)
+        let margin = app.textFields["CADDrawingTemplateMargin"]
+        replaceDrawingField(margin, with: "8.", in: app)
+        XCTAssertEqual(margin.value as? String, "8.", "A decimal draft must not be rewritten while typing")
+        let lineWidth = app.textFields["CADDrawingTemplateLineWidth"]
+        replaceDrawingField(lineWidth, with: "0.25", in: app)
+        XCTAssertEqual(lineWidth.value as? String, "0.25")
+        let revisionAdd = app.buttons["CADDrawingRevisionAdd"]
+        reveal(revisionAdd, in: app)
+        revisionAdd.tap()
+        replaceDrawingField(app.textFields["Rev"], with: "A", in: app)
+        replaceDrawingField(app.textFields["Date"], with: "2026-11-01", in: app)
+        replaceDrawingField(app.textFields["Description"], with: "Native revision proof", in: app)
+        drawingSnapshot("CAD template native decimal drafts and revision row")
+        let templateSave = app.buttons["CADDrawingTemplateSave"]
+        reveal(templateSave, in: app)
+        templateSave.tap()
+        let saved = expectation(for: NSPredicate(format: "label == %@", "Update template"),
+                                evaluatedWith: templateSave)
+        wait(for: [saved], timeout: 20)
+        app.navigationBars["Templates"].buttons["Close"].tap()
+
+        reveal(templates, in: app, scrollingUp: false)
+        templates.tap()
+        expandDrawingInspector("Templates", in: app)
+        let stored = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", name)).firstMatch
+        reveal(stored, in: app)
+        stored.tap()
+        reveal(margin, in: app)
+        XCTAssertEqual(Double(margin.value as? String ?? ""), 8)
+        reveal(lineWidth, in: app)
+        XCTAssertEqual(Double(lineWidth.value as? String ?? ""), 0.25)
+        reveal(app.textFields["Description"], in: app)
+        XCTAssertEqual(app.textFields["Rev"].value as? String, "A")
+        XCTAssertEqual(app.textFields["Date"].value as? String, "2026-11-01")
+        XCTAssertEqual(app.textFields["Description"].value as? String, "Native revision proof")
+        XCTAssertEqual(app.buttons.matching(identifier: "CADDrawingRevisionRemove").count, 1)
+        drawingSnapshot("CAD template values and native revision survive reopening")
+    }
+
+    private func expandDrawingInspector(_ title: String, in app: XCUIApplication) {
+        let bar = app.navigationBars[title]
+        XCTAssertTrue(bar.waitForExistence(timeout: 10))
+        bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1,
+                   thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)))
+    }
+
+    private func replaceDrawingField(_ field: XCUIElement, with text: String,
+                                     in app: XCUIApplication) {
+        reveal(field, in: app)
+        // These are short native TextFields. Place the insertion point after
+        // the rendered value, then clear and verify before typing the draft.
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        let value = field.value as? String ?? ""
+        let existing = value == field.placeholderValue ? "" : value
+        if !existing.isEmpty {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count))
+            let cleared = expectation(for: NSPredicate(format: "value == %@ OR value == %@",
+                                                       "", field.placeholderValue ?? ""),
+                                      evaluatedWith: field)
+            wait(for: [cleared], timeout: 5)
+        }
+        field.typeText(text)
+    }
+
+    private func drawingSnapshot(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     private func checkSharedSheet(compact: Bool) throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = compact ? .portrait : .landscapeLeft
