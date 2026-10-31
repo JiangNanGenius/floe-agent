@@ -1,6 +1,2792 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "cad.datum.editOffset": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Offset"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑偏移"
+          }
+        }
+      }
+    },
+    "cad.datum.editRejected": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't change the reference plane. Check its source, offset and dependent sketches."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法更改基准面，请检查来源、偏移值及依赖它的草图。"
+          }
+        }
+      }
+    },
+    "cad.datum.finishCurrentEdit": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish the current edit and reopen the document if needed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先结束当前编辑，必要时重新打开文档。"
+          }
+        }
+      }
+    },
+    "cad.datum.formulaHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a distance or a formula using document variables."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入距离，或使用文档变量编写公式。"
+          }
+        }
+      }
+    },
+    "cad.datum.offsetMillimetres": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offset (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "偏移（毫米）"
+          }
+        }
+      }
+    },
+    "cad.datum.reselectSource": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a supported planar face again to create a reference plane."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请重新选择支持关联的平面，再创建基准面。"
+          }
+        }
+      }
+    },
+    "cad.document.readOnlyAssociation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This document uses newer features. Update the app to edit it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文档使用了新版功能，请更新 App 后再编辑。"
+          }
+        }
+      }
+    },
+    "cad.error.associativeEditRejected": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This change would break model references. Adjust the dependent features first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此更改会破坏模型引用，请先调整依赖它的特征。"
+          }
+        }
+      }
+    },
+    "cad.error.brokenSketchSupport": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repair this plane's references before starting a sketch."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先修复此基准面的引用，再开始绘制草图。"
+          }
+        }
+      }
+    },
+    "cad.error.exactEditRefused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This edit could not be completed. The original model was preserved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能完成这项编辑，已保留原模型。"
+          }
+        }
+      }
+    },
+    "cad.error.exactEditUnsupported": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This model does not support this edit yet. The original model was preserved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此模型暂不支持这项编辑，已保留原模型。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzEmission": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This emissive material can't be exported to USDZ yet. Try GLB instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此发光材质暂不能导出为 USDZ，可尝试 GLB。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzFaceMaterials": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "USDZ can't keep face materials yet. Try GLB instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "USDZ 暂不能保留各面的材质，可尝试导出 GLB。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't write USDZ. Try exporting again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法保存 USDZ，请重新导出。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzGeometry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A body couldn't be exported. Check it in Edit and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有实体无法导出，请在编辑模式中检查后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzMapping": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material's texture mapping couldn't be exported. Choose a projection in Material and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "纹理映射无法导出，请在材质中选择投影方式后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzMaterial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material couldn't be exported. Check its settings and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有材质无法导出，请检查材质设置后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzTexture": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image couldn't be exported. Replace that image and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质图片无法导出，请更换图片后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.usdzTextureSettings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This material's image settings aren't supported by USDZ yet. Try GLB instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "USDZ 暂不支持此材质的图片设置，可尝试 GLB。"
+          }
+        }
+      }
+    },
+    "cad.present.selection.sharedMaterial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shared material — changes apply to all instances of this part."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共享材质：修改会应用于此零件的所有实例。"
+          }
+        }
+      }
+    },
+    "cad.sketch.editInterrupted": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The sketch edit was interrupted. Start the edit again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草图编辑已中断，请重新开始。"
+          }
+        }
+      }
+    },
+    "cad.sketch.finishCurrentEdit": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish or cancel the sketch edit first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先完成或取消当前草图编辑。"
+          }
+        }
+      }
+    },
+    "cad.variable.changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The variable changed. Reopen the panel and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "变量已发生变化，请重新打开面板后重试。"
+          }
+        }
+      }
+    },
+    "cad.variable.duplicateName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That variable name is already in use."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此变量名已被使用。"
+          }
+        }
+      }
+    },
+    "cad.variable.finishCurrentEdit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish or cancel the current edit before changing variables."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先完成或取消当前编辑，再修改变量。"
+          }
+        }
+      }
+    },
+    "cad.variable.inUse": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This variable is still used. Update its formulas before deleting it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此变量仍被引用，请先修改相关公式再删除。"
+          }
+        }
+      }
+    },
+    "cad.variable.invalidExpression": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the formula and its variable references."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请检查公式及其引用的变量。"
+          }
+        }
+      }
+    },
+    "cad.variable.invalidName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use a valid variable name."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请输入有效的变量名。"
+          }
+        }
+      }
+    },
+    "cad.variable.notEditable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This document can't be edited."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文档无法编辑。"
+          }
+        }
+      }
+    },
+    "cad.variable.rebuildFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This change couldn't rebuild the model. The previous values were kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此修改无法重建模型，已保留原值。"
+          }
+        }
+      }
+    },
+    "cad.variable.reopenDocument": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reopen the document to edit variables."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请重新打开文档后编辑变量。"
+          }
+        }
+      }
+    },
+    "cad.variable.updateFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't update this variable. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法修改此变量，请重试。"
+          }
+        }
+      }
+    },
+    "cad.feature.hole": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔 · %@"
+          }
+        }
+      }
+    },
+    "cad.hole.blind": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blind"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "盲孔"
+          }
+        }
+      }
+    },
+    "cad.hole.blindDepth": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blind %@ mm"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "盲孔 %@ 毫米"
+          }
+        }
+      }
+    },
+    "cad.hole.circleHint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Position and diameter come from the placement circle. Edit that circle to move or resize the hole."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "位置与孔径由定位圆决定。编辑该圆即可移动或调整孔。"
+          }
+        }
+      }
+    },
+    "cad.hole.counterbore": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Counterbore"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沉头孔"
+          }
+        }
+      }
+    },
+    "cad.hole.counterboreDepth": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Counterbore depth"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沉孔深度"
+          }
+        }
+      }
+    },
+    "cad.hole.counterboreDiameter": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Counterbore diameter"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沉孔直径"
+          }
+        }
+      }
+    },
+    "cad.hole.countersink": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Countersink"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "锥沉孔"
+          }
+        }
+      }
+    },
+    "cad.hole.countersinkAngle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Included angle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "锥角"
+          }
+        }
+      }
+    },
+    "cad.hole.countersinkDiameter": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Countersink diameter"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "锥沉孔直径"
+          }
+        }
+      }
+    },
+    "cad.hole.create": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建"
+          }
+        }
+      }
+    },
+    "cad.hole.depth": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Depth"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "深度"
+          }
+        }
+      }
+    },
+    "cad.hole.direction": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drill direction"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "钻孔方向"
+          }
+        }
+      }
+    },
+    "cad.hole.directionHint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If the plane normal points out of the part, choose Opposite normal."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "若平面法向指向实体外侧，请选择反向法向。"
+          }
+        }
+      }
+    },
+    "cad.hole.directionNormal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Along plane normal"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沿平面法向"
+          }
+        }
+      }
+    },
+    "cad.hole.directionReversed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opposite normal"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "反向法向"
+          }
+        }
+      }
+    },
+    "cad.hole.edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Hole"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑孔"
+          }
+        }
+      }
+    },
+    "cad.hole.editMissing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This hole is no longer in the document. Reopen History and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此孔已不在文档中。请重新打开历史记录后重试。"
+          }
+        }
+      }
+    },
+    "cad.hole.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole could not be completed: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔未能完成：%@"
+          }
+        }
+      }
+    },
+    "cad.hole.noCircle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole needs exactly one circular sketch profile with no inner loops."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔需要且仅需要一个无内环的圆形草图轮廓。"
+          }
+        }
+      }
+    },
+    "cad.hole.noTarget": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a body to drill into first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先创建要钻孔的实体。"
+          }
+        }
+      }
+    },
+    "cad.hole.parameters": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole parameters"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔参数"
+          }
+        }
+      }
+    },
+    "cad.hole.save": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存"
+          }
+        }
+      }
+    },
+    "cad.hole.target": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Target body"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标实体"
+          }
+        }
+      }
+    },
+    "cad.hole.throughAll": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Through all"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通孔"
+          }
+        }
+      }
+    },
+    "cad.hole.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔"
+          }
+        }
+      }
+    },
+    "cad.hole.type": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "类型"
+          }
+        }
+      }
+    },
+    "cad.ui.tool.hole": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hole"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "孔"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.addExplodedView": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add view"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加视图"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.badDirection": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Direction must be a non-zero x,y,z."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方向必须是非零的 x,y,z。"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.badDistance": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Distance must be a non-negative number."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "距离必须是非负数。"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.badgeAxis": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "axis"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "轴"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.badgeEdge": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "edge"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "边"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.badgePlane": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "plane"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "面"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.clearReference": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear picked reference"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除已选参考"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.edgeCandidates": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edges"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "边"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.edit": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.editExplodedView": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit exploded view"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑爆炸视图"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.entryDirection": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dir x,y,z (inherit)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方向 x,y,z（继承）"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.entryDistance": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mm (inherit)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mm（继承）"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.exploded": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exploded views"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "爆炸视图"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.explodedDistance": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Distance (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "距离（mm）"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.explodedHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A view is display/drawing state. It never changes the base placements."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "视图只用于显示和工程图，绝不改变基准位置。"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.explodedInstances": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Per-instance direction & distance"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "各实例的方向与距离"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.explodedMissing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ missing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缺少 %@"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.explodedName": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View name"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "视图名称"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.explodedPreviewTitle": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preview · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预览 · %@"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.explodedViews": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exploded views"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "爆炸视图"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.faceCandidates": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Planes & axes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "平面与轴"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.newExplodedView": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New exploded view"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建爆炸视图"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.noReference": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No face/axis picked yet."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未选择面或轴。"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.noSelection": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing usable is selected in the viewport for this instance."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "视口中没有可用于该实例的选择。"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.pickFace": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick face/axis/edge…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择面/轴/边…"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.pickFor": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reference %@ · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "参考 %@ · %@"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.preview": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预览"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.previewActive": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exploded preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "爆炸预览"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.previewTransientHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The viewport is showing this view's offsets. Nothing is saved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "视口正在显示该视图的偏移，不会保存任何更改。"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.previewing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "previewing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预览中"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referenceFor": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Picked geometry on %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上已选的几何"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referencePickerHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick the real geometry used by the %@ reference."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择 %@ 参考使用的实际几何。"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.resetExploded": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重置预览"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.updateExplodedView": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update view"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新视图"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.useViewportSelection": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use viewport selection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用视口选择"
+          }
+        }
+      }
+    },
+    "cad.workbench.badge.staleReference": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "re-pick reference"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需重新拾取参考"
+          }
+        }
+      }
+    },
+    "cad.workbench.badge.unbound": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "unbound"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未绑定"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.addAnnotation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add text"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加文字"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.addBalloon": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add balloon"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加气泡"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.addDimension": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add dimension"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加尺寸"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.anchorX": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "X (auto)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "X（自动）"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.anchorY": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Y (auto)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Y（自动）"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.annotate": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Text"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文字"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.annotationText": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Text"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文字"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.annotations": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Text annotations"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文字注释"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.assembly": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Assembly"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "装配"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.assemblySheet": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Assembly sheet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "装配图纸"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.badgeAssembly": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "assembly"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "装配"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.balloon": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Balloon"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "气泡"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.balloonInstance": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instance"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实例"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.balloons": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Balloons"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "气泡"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.bindText": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bind to instance"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "绑定到实例"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.bom": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BOM"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BOM"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.bomEmpty": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No BOM items. Refresh from a live assembly to derive names and quantities."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无 BOM 条目。从当前装配刷新以生成名称和数量。"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.bomItems": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ BOM items available; the balloon links to the matching item."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有 %@ 个 BOM 条目；气泡会链接到对应条目。"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.boundInstance": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instance"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实例"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.deriveBOM": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh from assembly"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从装配刷新"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.dimension": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dimension"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尺寸"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.dimensionKind": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kind"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "类型"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.dimensionText": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Text override (optional)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "替换文字（可选）"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.explodedActive": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Using %@ offsets (base geometry unchanged)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 %@ 的偏移（基准几何不变）。"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.explodedView": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exploded view"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "爆炸视图"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.itemNumber": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Item"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "序号"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.kind.exploded": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exploded"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "爆炸"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.manualDimensions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manual dimensions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手动尺寸"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.newAnnotation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New text"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建文字"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.newBalloon": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New balloon"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建气泡"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.newDimension": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New dimension"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建尺寸"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.noBinding": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Free text"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自由文字"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.noExplodedView": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "None"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.pickInstance": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择…"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.projectInstances": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project assembly instances"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "投影装配实例"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.showBOM": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BOM table"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BOM 表"
+          }
+        }
+      }
+    },
+    "cad.workbench.drawing.textHeight": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Height"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "高度"
+          }
+        }
+      }
+    },
+    "cad.animation.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Animation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "动画"
+          }
+        }
+      }
+    },
+    "cad.animation.empty": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a clip to animate the camera or parts."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加片段以为相机或零件制作动画。"
+          }
+        }
+      }
+    },
+    "cad.animation.newClip": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New clip"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建片段"
+          }
+        }
+      }
+    },
+    "cad.animation.noClip": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No clip"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未选择片段"
+          }
+        }
+      }
+    },
+    "cad.animation.loop": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loop"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "循环"
+          }
+        }
+      }
+    },
+    "cad.animation.speed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "速度"
+          }
+        }
+      }
+    },
+    "cad.animation.timeline": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Timeline"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "时间轴"
+          }
+        }
+      }
+    },
+    "cad.animation.stop": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止"
+          }
+        }
+      }
+    },
+    "cad.animation.play": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "播放"
+          }
+        }
+      }
+    },
+    "cad.animation.pause": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂停"
+          }
+        }
+      }
+    },
+    "cad.animation.duration": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Duration"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "时长"
+          }
+        }
+      }
+    },
+    "cad.animation.preset": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preset"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预设"
+          }
+        }
+      }
+    },
+    "cad.animation.preset.turntable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turntable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转盘"
+          }
+        }
+      }
+    },
+    "cad.animation.preset.explode": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Explode and return"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "爆炸并复位"
+          }
+        }
+      }
+    },
+    "cad.animation.keyframe.add": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keyframe"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关键帧"
+          }
+        }
+      }
+    },
+    "cad.animation.keyframe.noCamera": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Present before adding a camera keyframe."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示演示后再添加相机关键帧。"
+          }
+        }
+      }
+    },
+    "cad.animation.edit.failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't update the animation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法更新动画"
+          }
+        }
+      }
+    },
+    "cad.animation.cancel": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
+    "cad.animation.export.video": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MP4 video"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MP4 视频"
+          }
+        }
+      }
+    },
+    "cad.animation.export.preparing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing video…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备视频…"
+          }
+        }
+      }
+    },
+    "cad.animation.export.progress": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rendering %d of %d frames"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在渲染第 %d/%d 帧"
+          }
+        }
+      }
+    },
+    "cad.animation.export.finalizing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finishing video…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在完成视频…"
+          }
+        }
+      }
+    },
+    "cad.animation.export.finished": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video exported"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "视频已导出"
+          }
+        }
+      }
+    },
+    "cad.animation.export.failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't export the video."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "视频导出失败。"
+          }
+        }
+      }
+    },
+    "cad.animation.export.cancelled": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video export cancelled."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "视频导出已取消。"
+          }
+        }
+      }
+    },
+    "cad.animation.export.readFailed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The exported video could not be read."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取导出的视频。"
+          }
+        }
+      }
+    },
+    "cad.animation.issue.corrupt": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved animation couldn't be read. Geometry is unchanged."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取已保存的动画，几何不受影响。"
+          }
+        }
+      }
+    },
+    "cad.animation.issue.newerSchema": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This animation was saved by a newer app version and is read-only here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此动画由更新版本保存，当前版本只能读取。"
+          }
+        }
+      }
+    },
+    "cad.animation.issue.missingInstance": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An animated part is no longer in the assembly."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "动画中的零件已不在装配体中。"
+          }
+        }
+      }
+    },
+    "cad.animation.issue.missingSource": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The source body for an animated part is missing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "动画零件的源几何缺失。"
+          }
+        }
+      }
+    },
+    "cad.animation.issue.sourceChanged": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A part's source changed; its animation was not applied."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "零件源已变化，未应用其动画。"
+          }
+        }
+      }
+    },
+    "cad.animation.issue.sourceUpdated": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The source geometry changed after this animation was authored."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "动画制作后源几何已更改。"
+          }
+        }
+      }
+    },
+    "cad.animation.issue.invalidValue": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A keyframe value is invalid and was skipped."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关键帧值无效，已跳过。"
+          }
+        }
+      }
+    },
+    "cad.animation.issue.duplicateTrack": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Two tracks target the same object; only one is used."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "两条轨道指向同一对象，仅使用一条。"
+          }
+        }
+      }
+    },
+    "cad.animation.issue.tooLarge": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved animation is too large to read."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存的动画过大，无法读取。"
+          }
+        }
+      }
+    },
+    "cad.animation.interpolation.linear": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linear"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "线性"
+          }
+        }
+      }
+    },
+    "cad.animation.interpolation.easeInOut": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ease in/out"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缓入缓出"
+          }
+        }
+      }
+    },
     "Check the previous action before continuing. Its result is unknown.": {
       "localizations": {
         "en": {
@@ -2887,598 +5673,6 @@
         }
       }
     },
-    "cad.animation.cancel": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancel"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "取消"
-          }
-        }
-      }
-    },
-    "cad.animation.duration": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Duration"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "时长"
-          }
-        }
-      }
-    },
-    "cad.animation.edit.failed": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn't update the animation"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无法更新动画"
-          }
-        }
-      }
-    },
-    "cad.animation.empty": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add a clip to animate the camera or parts."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "添加片段以为相机或零件制作动画。"
-          }
-        }
-      }
-    },
-    "cad.animation.export.cancelled": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Video export cancelled."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "视频导出已取消。"
-          }
-        }
-      }
-    },
-    "cad.animation.export.failed": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn't export the video."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "视频导出失败。"
-          }
-        }
-      }
-    },
-    "cad.animation.export.finalizing": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Finishing video…"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在完成视频…"
-          }
-        }
-      }
-    },
-    "cad.animation.export.finished": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Video exported"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "视频已导出"
-          }
-        }
-      }
-    },
-    "cad.animation.export.preparing": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Preparing video…"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在准备视频…"
-          }
-        }
-      }
-    },
-    "cad.animation.export.progress": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rendering %d of %d frames"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在渲染第 %d/%d 帧"
-          }
-        }
-      }
-    },
-    "cad.animation.export.readFailed": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The exported video could not be read."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无法读取导出的视频。"
-          }
-        }
-      }
-    },
-    "cad.animation.export.video": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "MP4 video"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "MP4 视频"
-          }
-        }
-      }
-    },
-    "cad.animation.interpolation.easeInOut": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ease in/out"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "缓入缓出"
-          }
-        }
-      }
-    },
-    "cad.animation.interpolation.linear": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Linear"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "线性"
-          }
-        }
-      }
-    },
-    "cad.animation.issue.corrupt": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The saved animation couldn't be read. Geometry is unchanged."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无法读取已保存的动画，几何不受影响。"
-          }
-        }
-      }
-    },
-    "cad.animation.issue.duplicateTrack": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Two tracks target the same object; only one is used."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "两条轨道指向同一对象，仅使用一条。"
-          }
-        }
-      }
-    },
-    "cad.animation.issue.invalidValue": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A keyframe value is invalid and was skipped."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "关键帧值无效，已跳过。"
-          }
-        }
-      }
-    },
-    "cad.animation.issue.missingInstance": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "An animated part is no longer in the assembly."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "动画中的零件已不在装配体中。"
-          }
-        }
-      }
-    },
-    "cad.animation.issue.missingSource": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The source body for an animated part is missing."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "动画零件的源几何缺失。"
-          }
-        }
-      }
-    },
-    "cad.animation.issue.newerSchema": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This animation was saved by a newer app version and is read-only here."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此动画由更新版本保存，当前版本只能读取。"
-          }
-        }
-      }
-    },
-    "cad.animation.issue.sourceChanged": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A part's source changed; its animation was not applied."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "零件源已变化，未应用其动画。"
-          }
-        }
-      }
-    },
-    "cad.animation.issue.sourceUpdated": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The source geometry changed after this animation was authored."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "动画制作后源几何已更改。"
-          }
-        }
-      }
-    },
-    "cad.animation.issue.tooLarge": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The saved animation is too large to read."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已保存的动画过大，无法读取。"
-          }
-        }
-      }
-    },
-    "cad.animation.keyframe.add": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Keyframe"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "关键帧"
-          }
-        }
-      }
-    },
-    "cad.animation.keyframe.noCamera": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Show Present before adding a camera keyframe."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "显示演示后再添加相机关键帧。"
-          }
-        }
-      }
-    },
-    "cad.animation.loop": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Loop"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "循环"
-          }
-        }
-      }
-    },
-    "cad.animation.newClip": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "New clip"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "新建片段"
-          }
-        }
-      }
-    },
-    "cad.animation.noClip": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No clip"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未选择片段"
-          }
-        }
-      }
-    },
-    "cad.animation.pause": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pause"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "暂停"
-          }
-        }
-      }
-    },
-    "cad.animation.play": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Play"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "播放"
-          }
-        }
-      }
-    },
-    "cad.animation.preset": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Preset"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "预设"
-          }
-        }
-      }
-    },
-    "cad.animation.preset.explode": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Explode and return"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "爆炸并复位"
-          }
-        }
-      }
-    },
-    "cad.animation.preset.turntable": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Turntable"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "转盘"
-          }
-        }
-      }
-    },
-    "cad.animation.speed": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Speed"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "速度"
-          }
-        }
-      }
-    },
-    "cad.animation.stop": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Stop"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "停止"
-          }
-        }
-      }
-    },
-    "cad.animation.timeline": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Timeline"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "时间轴"
-          }
-        }
-      }
-    },
-    "cad.animation.title": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Animation"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "动画"
-          }
-        }
-      }
-    },
     "cad.canvas.add": {
       "extractionState": "manual",
       "localizations": {
@@ -4839,119 +7033,6 @@
         }
       }
     },
-    "cad.datum.editOffset": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Edit Offset"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "编辑偏移"
-          }
-        }
-      }
-    },
-    "cad.datum.editRejected": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn't change the reference plane. Check its source, offset and dependent sketches."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无法更改基准面，请检查来源、偏移值及依赖它的草图。"
-          }
-        }
-      }
-    },
-    "cad.datum.finishCurrentEdit": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Finish the current edit and reopen the document if needed."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请先结束当前编辑，必要时重新打开文档。"
-          }
-        }
-      }
-    },
-    "cad.datum.formulaHint": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enter a distance or a formula using document variables."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "输入距离，或使用文档变量编写公式。"
-          }
-        }
-      }
-    },
-    "cad.datum.offsetMillimetres": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Offset (mm)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "偏移（毫米）"
-          }
-        }
-      }
-    },
-    "cad.datum.reselectSource": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Select a supported planar face again to create a reference plane."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请重新选择支持关联的平面，再创建基准面。"
-          }
-        }
-      }
-    },
-    "cad.document.readOnlyAssociation": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This document uses newer features. Update the app to edit it."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此文档使用了新版功能，请更新 App 后再编辑。"
-          }
-        }
-      }
-    },
     "cad.environment.azimuth": {
       "extractionState": "manual",
       "localizations": {
@@ -5254,72 +7335,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "环境"
-          }
-        }
-      }
-    },
-    "cad.error.associativeEditRejected": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This change would break model references. Adjust the dependent features first."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此更改会破坏模型引用，请先调整依赖它的特征。"
-          }
-        }
-      }
-    },
-    "cad.error.brokenSketchSupport": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Repair this plane's references before starting a sketch."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请先修复此基准面的引用，再开始绘制草图。"
-          }
-        }
-      }
-    },
-    "cad.error.exactEditRefused": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This edit could not be completed. The original model was preserved."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未能完成这项编辑，已保留原模型。"
-          }
-        }
-      }
-    },
-    "cad.error.exactEditUnsupported": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This model does not support this edit yet. The original model was preserved."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此模型暂不支持这项编辑，已保留原模型。"
           }
         }
       }
@@ -5664,142 +7679,6 @@
         }
       }
     },
-    "cad.error.usdzEmission": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This emissive material can't be exported to USDZ yet. Try GLB instead."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此发光材质暂不能导出为 USDZ，可尝试 GLB。"
-          }
-        }
-      }
-    },
-    "cad.error.usdzFaceMaterials": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "USDZ can't keep face materials yet. Try GLB instead."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "USDZ 暂不能保留各面的材质，可尝试导出 GLB。"
-          }
-        }
-      }
-    },
-    "cad.error.usdzFailed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn't write USDZ. Try exporting again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无法保存 USDZ，请重新导出。"
-          }
-        }
-      }
-    },
-    "cad.error.usdzGeometry": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A body couldn't be exported. Check it in Edit and try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "有实体无法导出，请在编辑模式中检查后重试。"
-          }
-        }
-      }
-    },
-    "cad.error.usdzMapping": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A material's texture mapping couldn't be exported. Choose a projection in Material and try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "纹理映射无法导出，请在材质中选择投影方式后重试。"
-          }
-        }
-      }
-    },
-    "cad.error.usdzMaterial": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A material couldn't be exported. Check its settings and try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "有材质无法导出，请检查材质设置后重试。"
-          }
-        }
-      }
-    },
-    "cad.error.usdzTexture": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A material image couldn't be exported. Replace that image and try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "材质图片无法导出，请更换图片后重试。"
-          }
-        }
-      }
-    },
-    "cad.error.usdzTextureSettings": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This material's image settings aren't supported by USDZ yet. Try GLB instead."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "USDZ 暂不支持此材质的图片设置，可尝试 GLB。"
-          }
-        }
-      }
-    },
     "cad.feature.angle": {
       "extractionState": "manual",
       "localizations": {
@@ -6106,23 +7985,6 @@
         }
       }
     },
-    "cad.feature.hole": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hole · %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "孔 · %@"
-          }
-        }
-      }
-    },
     "cad.feature.keepOriginal": {
       "extractionState": "manual",
       "localizations": {
@@ -6379,448 +8241,6 @@
       }
     },
     "cad.feature.type": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Type"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "类型"
-          }
-        }
-      }
-    },
-    "cad.hole.blind": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Blind"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "盲孔"
-          }
-        }
-      }
-    },
-    "cad.hole.blindDepth": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Blind %@ mm"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "盲孔 %@ 毫米"
-          }
-        }
-      }
-    },
-    "cad.hole.circleHint": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Position and diameter come from the placement circle. Edit that circle to move or resize the hole."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "位置与孔径由定位圆决定。编辑该圆即可移动或调整孔。"
-          }
-        }
-      }
-    },
-    "cad.hole.counterbore": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Counterbore"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "沉头孔"
-          }
-        }
-      }
-    },
-    "cad.hole.counterboreDepth": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Counterbore depth"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "沉孔深度"
-          }
-        }
-      }
-    },
-    "cad.hole.counterboreDiameter": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Counterbore diameter"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "沉孔直径"
-          }
-        }
-      }
-    },
-    "cad.hole.countersink": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Countersink"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "锥沉孔"
-          }
-        }
-      }
-    },
-    "cad.hole.countersinkAngle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Included angle"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "锥角"
-          }
-        }
-      }
-    },
-    "cad.hole.countersinkDiameter": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Countersink diameter"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "锥沉孔直径"
-          }
-        }
-      }
-    },
-    "cad.hole.create": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Create"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "创建"
-          }
-        }
-      }
-    },
-    "cad.hole.depth": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Depth"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "深度"
-          }
-        }
-      }
-    },
-    "cad.hole.direction": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Drill direction"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "钻孔方向"
-          }
-        }
-      }
-    },
-    "cad.hole.directionHint": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "If the plane normal points out of the part, choose Opposite normal."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "若平面法向指向实体外侧，请选择反向法向。"
-          }
-        }
-      }
-    },
-    "cad.hole.directionNormal": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Along plane normal"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "沿平面法向"
-          }
-        }
-      }
-    },
-    "cad.hole.directionReversed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Opposite normal"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "反向法向"
-          }
-        }
-      }
-    },
-    "cad.hole.edit": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Edit Hole"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "编辑孔"
-          }
-        }
-      }
-    },
-    "cad.hole.editMissing": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This hole is no longer in the document. Reopen History and try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此孔已不在文档中。请重新打开历史记录后重试。"
-          }
-        }
-      }
-    },
-    "cad.hole.failed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hole could not be completed: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "孔未能完成：%@"
-          }
-        }
-      }
-    },
-    "cad.hole.noCircle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hole needs exactly one circular sketch profile with no inner loops."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "孔需要且仅需要一个无内环的圆形草图轮廓。"
-          }
-        }
-      }
-    },
-    "cad.hole.noTarget": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add a body to drill into first."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请先创建要钻孔的实体。"
-          }
-        }
-      }
-    },
-    "cad.hole.parameters": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hole parameters"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "孔参数"
-          }
-        }
-      }
-    },
-    "cad.hole.save": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Save"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "保存"
-          }
-        }
-      }
-    },
-    "cad.hole.target": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Target body"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "目标实体"
-          }
-        }
-      }
-    },
-    "cad.hole.throughAll": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Through all"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "通孔"
-          }
-        }
-      }
-    },
-    "cad.hole.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hole"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "孔"
-          }
-        }
-      }
-    },
-    "cad.hole.type": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -9302,23 +10722,6 @@
         }
       }
     },
-    "cad.present.selection.sharedMaterial": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Shared material — changes apply to all instances of this part."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "共享材质：修改会应用于此零件的所有实例。"
-          }
-        }
-      }
-    },
     "cad.settings.alwaysConstraints": {
       "extractionState": "manual",
       "localizations": {
@@ -9485,38 +10888,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "单位"
-          }
-        }
-      }
-    },
-    "cad.sketch.editInterrupted": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The sketch edit was interrupted. Start the edit again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "草图编辑已中断，请重新开始。"
-          }
-        }
-      }
-    },
-    "cad.sketch.finishCurrentEdit": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Finish or cancel the sketch edit first."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请先完成或取消当前草图编辑。"
           }
         }
       }
@@ -9806,86 +11177,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "轻点实体以投影其边"
-          }
-        }
-      }
-    },
-    "cad.text.font_unavailable": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This font is unavailable. Choose another font."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此字体不可用，请选择其他字体。"
-          }
-        }
-      }
-    },
-    "cad.text.no_outlines": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No outlines were found. Change the text or font."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未能生成文字轮廓，请修改内容或更换字体。"
-          }
-        }
-      }
-    },
-    "cad.text.rebuild_failed": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This text conflicts with an existing feature. Check the sketch and try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "文字与已有模型冲突，请检查草图后重试。"
-          }
-        }
-      }
-    },
-    "cad.text.too_complex": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This text is too detailed. Try a shorter phrase."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "文字过于复杂，请缩短内容后重试。"
-          }
-        }
-      }
-    },
-    "cad.text.unsupported_characters": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Some characters cannot be drawn with this font. Choose another font or change the text."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此字体无法绘制部分字符，请更换字体或修改内容。"
           }
         }
       }
@@ -12406,23 +13697,6 @@
         }
       }
     },
-    "cad.ui.tool.hole": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hole"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "孔"
-          }
-        }
-      }
-    },
     "cad.ui.tool.insert": {
       "extractionState": "manual",
       "localizations": {
@@ -13035,176 +14309,6 @@
         }
       }
     },
-    "cad.variable.changed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The variable changed. Reopen the panel and try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "变量已发生变化，请重新打开面板后重试。"
-          }
-        }
-      }
-    },
-    "cad.variable.duplicateName": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "That variable name is already in use."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此变量名已被使用。"
-          }
-        }
-      }
-    },
-    "cad.variable.finishCurrentEdit": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Finish or cancel the current edit before changing variables."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请先完成或取消当前编辑，再修改变量。"
-          }
-        }
-      }
-    },
-    "cad.variable.inUse": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This variable is still used. Update its formulas before deleting it."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此变量仍被引用，请先修改相关公式再删除。"
-          }
-        }
-      }
-    },
-    "cad.variable.invalidExpression": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Check the formula and its variable references."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请检查公式及其引用的变量。"
-          }
-        }
-      }
-    },
-    "cad.variable.invalidName": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Use a valid variable name."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请输入有效的变量名。"
-          }
-        }
-      }
-    },
-    "cad.variable.notEditable": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This document can't be edited."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此文档无法编辑。"
-          }
-        }
-      }
-    },
-    "cad.variable.rebuildFailed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This change couldn't rebuild the model. The previous values were kept."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此修改无法重建模型，已保留原值。"
-          }
-        }
-      }
-    },
-    "cad.variable.reopenDocument": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reopen the document to edit variables."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请重新打开文档后编辑变量。"
-          }
-        }
-      }
-    },
-    "cad.variable.updateFailed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn't update this variable. Try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无法修改此变量，请重试。"
-          }
-        }
-      }
-    },
     "cad.workbench.assembly.addConstraint": {
       "extractionState": "manual",
       "localizations": {
@@ -13218,38 +14322,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "添加约束"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.addExplodedView": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add view"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "添加视图"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.addSubassembly": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "New subassembly"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "新建子装配"
           }
         }
       }
@@ -13301,134 +14373,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "B 的轴/面（局部）"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.badDirection": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Direction must be a non-zero x,y,z."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "方向必须是非零的 x,y,z。"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.badDistance": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Distance must be a non-negative number."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "距离必须是非负数。"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.badgeAxis": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "axis"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "轴"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.badgeEdge": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "edge"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "边"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.badgePlane": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "plane"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "面"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.cancel": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancel"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "取消"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.childCount": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ parts"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ 个零件"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.clearReference": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Clear picked reference"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "清除已选参考"
           }
         }
       }
@@ -13497,22 +14441,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "约束"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.create": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Create"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "创建"
           }
         }
       }
@@ -13602,54 +14530,6 @@
         }
       }
     },
-    "cad.workbench.assembly.edgeCandidates": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Edges"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "边"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.edit": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Edit"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "编辑"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.editExplodedView": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Edit exploded view"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "编辑爆炸视图"
-          }
-        }
-      }
-    },
     "cad.workbench.assembly.editInstance": {
       "extractionState": "manual",
       "localizations": {
@@ -13714,182 +14594,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "启用"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.entryDirection": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "dir x,y,z (inherit)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "方向 x,y,z（继承）"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.entryDistance": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "mm (inherit)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "mm（继承）"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.exploded": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Exploded views"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "爆炸视图"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.explodedDistance": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Distance (mm)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "距离（mm）"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.explodedHint": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A view is display/drawing state. It never changes the base placements."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "视图只用于显示和工程图，绝不改变基准位置。"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.explodedInstances": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Per-instance direction & distance"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "各实例的方向与距离"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.explodedMissing": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ missing"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "缺少 %@"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.explodedName": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "View name"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "视图名称"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.explodedPreviewTitle": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Preview · %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "预览 · %@"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.explodedViews": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Exploded views"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "爆炸视图"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.faceCandidates": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Planes & axes"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "平面与轴"
           }
         }
       }
@@ -14064,54 +14768,6 @@
         }
       }
     },
-    "cad.workbench.assembly.makeIndependent": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Make independent"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "转为独立副本"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.moveInto": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Move into subassembly"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "移入子装配"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.moveToTop": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Move to top level"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "移到顶层"
-          }
-        }
-      }
-    },
     "cad.workbench.assembly.name": {
       "extractionState": "manual",
       "localizations": {
@@ -14125,54 +14781,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "名称"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.newExplodedView": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "New exploded view"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "新建爆炸视图"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.newSubassemblyHint": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Place parts inside it afterwards; the subassembly keeps its own local mates."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "之后再放入零件；子装配会保留自己的局部配合。"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.newSubassemblyTitle": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "New subassembly"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "新建子装配"
           }
         }
       }
@@ -14194,38 +14802,6 @@
         }
       }
     },
-    "cad.workbench.assembly.noReference": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No face/axis picked yet."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "尚未选择面或轴。"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.noSelection": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nothing usable is selected in the viewport for this instance."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "视口中没有可用于该实例的选择。"
-          }
-        }
-      }
-    },
     "cad.workbench.assembly.pickBody": {
       "extractionState": "manual",
       "localizations": {
@@ -14239,38 +14815,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "选择实体…"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.pickFace": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pick face/axis/edge…"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择面/轴/边…"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.pickFor": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reference %@ · %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "参考 %@ · %@"
           }
         }
       }
@@ -14326,22 +14870,6 @@
         }
       }
     },
-    "cad.workbench.assembly.placePartReference": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Place reference"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "放置引用"
-          }
-        }
-      }
-    },
     "cad.workbench.assembly.pointA": {
       "extractionState": "manual",
       "localizations": {
@@ -14393,70 +14921,6 @@
         }
       }
     },
-    "cad.workbench.assembly.preview": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Preview"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "预览"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.previewActive": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Exploded preview"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "爆炸预览"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.previewTransientHint": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The viewport is showing this view's offsets. Nothing is saved."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "视口正在显示该视图的偏移，不会保存任何更改。"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.previewing": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "previewing"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "预览中"
-          }
-        }
-      }
-    },
     "cad.workbench.assembly.redundant": {
       "extractionState": "manual",
       "localizations": {
@@ -14470,214 +14934,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ 冗余约束"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referenceCachedHint": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The cached geometry, mates and BOM row are preserved. Check or update with the source document to recover."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已保留缓存几何、配合和物料行；用源文档检查或更新即可恢复。"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referenceCheck": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Check source"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "检查源"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referenceCopies": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ copies"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ 个副本"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referenceFor": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Picked geometry on %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ 上已选的几何"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referenceInSubassemblies": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Used in: "
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "用于："
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referenceMissing": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "source missing"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "源缺失"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referencePart": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reference part"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "引用零件"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referencePickerHint": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pick the real geometry used by the %@ reference."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择 %@ 参考使用的实际几何。"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referenceShares": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ shared"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ 个共享"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referenceUpdate": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "update available"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "可更新"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referenceUpdateApply": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Update source"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "更新源"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.referenceVersion": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Revision %@ · format %@ · %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "修订 %@ · 格式 %@ · %@"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.references": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "External parts"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "外部零件"
           }
         }
       }
@@ -14729,22 +14985,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "刷新报告"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.resetExploded": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reset preview"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "重置预览"
           }
         }
       }
@@ -14936,38 +15176,6 @@
         }
       }
     },
-    "cad.workbench.assembly.subassemblyDefault": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Subassembly"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "子装配"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.subassemblyName": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Subassembly name"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "子装配名称"
-          }
-        }
-      }
-    },
     "cad.workbench.assembly.suppress": {
       "extractionState": "manual",
       "localizations": {
@@ -15015,38 +15223,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "等比"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.updateExplodedView": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Update view"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "更新视图"
-          }
-        }
-      }
-    },
-    "cad.workbench.assembly.useViewportSelection": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Use viewport selection"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "使用视口选择"
           }
         }
       }
@@ -15153,22 +15329,6 @@
         }
       }
     },
-    "cad.workbench.badge.staleReference": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "re-pick reference"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "需重新拾取参考"
-          }
-        }
-      }
-    },
     "cad.workbench.badge.suppressed": {
       "extractionState": "manual",
       "localizations": {
@@ -15186,22 +15346,6 @@
         }
       }
     },
-    "cad.workbench.badge.unbound": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "unbound"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未绑定"
-          }
-        }
-      }
-    },
     "cad.workbench.drawing.add": {
       "extractionState": "manual",
       "localizations": {
@@ -15215,310 +15359,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "添加页面"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.addAnnotation": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add text"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "添加文字"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.addBalloon": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add balloon"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "添加气泡"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.addDimension": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add dimension"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "添加尺寸"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.anchorX": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "X (auto)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "X（自动）"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.anchorY": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Y (auto)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Y（自动）"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.annotate": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Text"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "文字"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.annotationText": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Text"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "文字"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.annotations": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Text annotations"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "文字注释"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.assembly": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Assembly"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "装配"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.assemblySheet": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Assembly sheet"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "装配图纸"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.badgeAssembly": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "assembly"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "装配"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.balloon": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Balloon"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "气泡"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.balloonInstance": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Instance"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "实例"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.balloons": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Balloons"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "气泡"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.bindText": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bind to instance"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "绑定到实例"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.bom": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "BOM"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "BOM"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.bomEmpty": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No BOM items. Refresh from a live assembly to derive names and quantities."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "暂无 BOM 条目。从当前装配刷新以生成名称和数量。"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.bomItems": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ BOM items available; the balloon links to the matching item."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "有 %@ 个 BOM 条目；气泡会链接到对应条目。"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.boundInstance": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Instance"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "实例"
           }
         }
       }
@@ -15676,22 +15516,6 @@
         }
       }
     },
-    "cad.workbench.drawing.deriveBOM": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Refresh from assembly"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "从装配刷新"
-          }
-        }
-      }
-    },
     "cad.workbench.drawing.detailWindow": {
       "extractionState": "manual",
       "localizations": {
@@ -15705,54 +15529,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "局部详图窗口"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.dimension": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dimension"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "尺寸"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.dimensionKind": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kind"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "类型"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.dimensionText": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Text override (optional)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "替换文字（可选）"
           }
         }
       }
@@ -15825,38 +15601,6 @@
         }
       }
     },
-    "cad.workbench.drawing.explodedActive": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Using %@ offsets (base geometry unchanged)."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "使用 %@ 的偏移（基准几何不变）。"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.explodedView": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Exploded view"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "爆炸视图"
-          }
-        }
-      }
-    },
     "cad.workbench.drawing.exported": {
       "extractionState": "manual",
       "localizations": {
@@ -15891,22 +15635,6 @@
         }
       }
     },
-    "cad.workbench.drawing.itemNumber": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Item"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "序号"
-          }
-        }
-      }
-    },
     "cad.workbench.drawing.kind": {
       "extractionState": "manual",
       "localizations": {
@@ -15937,22 +15665,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "局部详图"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.kind.exploded": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Exploded"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "爆炸"
           }
         }
       }
@@ -16042,22 +15754,6 @@
         }
       }
     },
-    "cad.workbench.drawing.manualDimensions": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Manual dimensions"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "手动尺寸"
-          }
-        }
-      }
-    },
     "cad.workbench.drawing.name": {
       "extractionState": "manual",
       "localizations": {
@@ -16071,86 +15767,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "名称"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.newAnnotation": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "New text"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "新建文字"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.newBalloon": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "New balloon"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "新建气泡"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.newDimension": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "New dimension"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "新建尺寸"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.noBinding": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Free text"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "自由文字"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.noExplodedView": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "None"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无"
           }
         }
       }
@@ -16257,22 +15873,6 @@
         }
       }
     },
-    "cad.workbench.drawing.pickInstance": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Select…"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择…"
-          }
-        }
-      }
-    },
     "cad.workbench.drawing.previewTitle": {
       "extractionState": "manual",
       "localizations": {
@@ -16303,22 +15903,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "视图"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.projectInstances": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Project assembly instances"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "投影装配实例"
           }
         }
       }
@@ -16442,22 +16026,6 @@
         }
       }
     },
-    "cad.workbench.drawing.showBOM": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "BOM table"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "BOM 表"
-          }
-        }
-      }
-    },
     "cad.workbench.drawing.sources": {
       "extractionState": "manual",
       "localizations": {
@@ -16488,22 +16056,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "已过期"
-          }
-        }
-      }
-    },
-    "cad.workbench.drawing.textHeight": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Height"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "高度"
           }
         }
       }
@@ -33126,6 +32678,22 @@
         }
       }
     },
+    "engineering.processStopped": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The viewer stopped. Close other previews or use a smaller file, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看器已停止。请关闭其他预览，或使用较小文件后重试。"
+          }
+        }
+      }
+    },
     "engineering.large_model.limit": {
       "localizations": {
         "en": {
@@ -33154,22 +32722,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "打开大模型预览"
-          }
-        }
-      }
-    },
-    "engineering.processStopped": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The viewer stopped. Close other previews or use a smaller file, then retry."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "查看器已停止。请关闭其他预览，或使用较小文件后重试。"
           }
         }
       }
@@ -94591,431 +94143,6 @@
         }
       }
     },
-    "user_question.card.add_note": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add a note"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "补充说明"
-          }
-        }
-      }
-    },
-    "user_question.card.answer_changed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This question has changed. Review the latest question."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "问题已更新，请查看最新问题。"
-          }
-        }
-      }
-    },
-    "user_question.card.back": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Back"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "上一题"
-          }
-        }
-      }
-    },
-    "user_question.card.cancel": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancel question"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "取消提问"
-          }
-        }
-      }
-    },
-    "user_question.card.continue": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Next"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "下一题"
-          }
-        }
-      }
-    },
-    "user_question.card.deadline %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Waiting until %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "等待至 %@"
-          }
-        }
-      }
-    },
-    "user_question.card.dictate": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dictate answer"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "语音作答"
-          }
-        }
-      }
-    },
-    "user_question.card.note": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Your answer"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "你的回答"
-          }
-        }
-      }
-    },
-    "user_question.card.note_placeholder": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Type your answer"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "输入回答"
-          }
-        }
-      }
-    },
-    "user_question.card.progress %lld %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Question %1$lld of %2$lld"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "第 %1$lld 题，共 %2$lld 题"
-          }
-        }
-      }
-    },
-    "user_question.card.remove_note": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Remove note"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "移除说明"
-          }
-        }
-      }
-    },
-    "user_question.card.retry_save": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn’t save your answer. Please try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "回答未保存，请重试。"
-          }
-        }
-      }
-    },
-    "user_question.card.submit": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Send answer"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "提交回答"
-          }
-        }
-      }
-    },
-    "user_question.card.submit_failed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn’t save your answer. Please try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "回答未保存，请重试。"
-          }
-        }
-      }
-    },
-    "user_question.card.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A question for you"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请你回答"
-          }
-        }
-      }
-    },
-    "user_question.error.open_to_retry": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Saved conversations are unavailable. Open Floe and retry."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "暂时无法读取会话，请打开 Floe 后重试。"
-          }
-        }
-      }
-    },
-    "user_question.notification.answer": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Answer"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "回答"
-          }
-        }
-      }
-    },
-    "user_question.notification.placeholder": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Type your answer"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "输入回答"
-          }
-        }
-      }
-    },
-    "user_question.notification.retry_body": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open Floe to try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请打开 Floe 后重试。"
-          }
-        }
-      }
-    },
-    "user_question.notification.retry_title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn’t send your answer"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "回答未提交"
-          }
-        }
-      }
-    },
-    "user_question.notification.send": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Send"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "发送"
-          }
-        }
-      }
-    },
-    "user_question.notification.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Floe needs your answer"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Floe 等待你的回答"
-          }
-        }
-      }
-    },
-    "user_question.state.waiting": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Waiting for your answer"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "等待你的回答"
-          }
-        }
-      }
-    },
-    "user_question.voice.choose_or_answer": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Say one of the choices, or answer on the card."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请说出选项，或在卡片上作答。"
-          }
-        }
-      }
-    },
-    "user_question.voice.retry_answer": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn’t submit your answer. Please try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "回答未提交，请重试。"
-          }
-        }
-      }
-    },
     "vnc.unavailable": {
       "extractionState": "manual",
       "localizations": {
@@ -112844,6 +111971,879 @@
           "stringUnit": {
             "state": "translated",
             "value": "只会移除 Floe 中的工作区记录，不会删除您选择的文件夹或其中的文件。"
+          }
+        }
+      }
+    },
+    "user_question.card.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A question for you"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请你回答"
+          }
+        }
+      }
+    },
+    "user_question.card.progress %lld %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Question %1$lld of %2$lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %1$lld 题，共 %2$lld 题"
+          }
+        }
+      }
+    },
+    "user_question.card.add_note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a note"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "补充说明"
+          }
+        }
+      }
+    },
+    "user_question.card.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你的回答"
+          }
+        }
+      }
+    },
+    "user_question.card.remove_note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove note"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除说明"
+          }
+        }
+      }
+    },
+    "user_question.card.note_placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type your answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入回答"
+          }
+        }
+      }
+    },
+    "user_question.card.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel question"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消提问"
+          }
+        }
+      }
+    },
+    "user_question.card.dictate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dictate answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音作答"
+          }
+        }
+      }
+    },
+    "user_question.card.back": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Back"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一题"
+          }
+        }
+      }
+    },
+    "user_question.card.submit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提交回答"
+          }
+        }
+      }
+    },
+    "user_question.card.continue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一题"
+          }
+        }
+      }
+    },
+    "user_question.card.deadline %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting until %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待至 %@"
+          }
+        }
+      }
+    },
+    "user_question.card.answer_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This question has changed. Review the latest question."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "问题已更新，请查看最新问题。"
+          }
+        }
+      }
+    },
+    "user_question.card.retry_save": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t save your answer. Please try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回答未保存，请重试。"
+          }
+        }
+      }
+    },
+    "user_question.notification.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe needs your answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 等待你的回答"
+          }
+        }
+      }
+    },
+    "user_question.notification.answer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回答"
+          }
+        }
+      }
+    },
+    "user_question.notification.send": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送"
+          }
+        }
+      }
+    },
+    "user_question.notification.placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type your answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入回答"
+          }
+        }
+      }
+    },
+    "user_question.state.waiting": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for your answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待你的回答"
+          }
+        }
+      }
+    },
+    "user_question.voice.choose_or_answer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Say one of the choices, or answer on the card."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请说出选项，或在卡片上作答。"
+          }
+        }
+      }
+    },
+    "user_question.voice.retry_answer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t submit your answer. Please try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回答未提交，请重试。"
+          }
+        }
+      }
+    },
+    "user_question.error.open_to_retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved conversations are unavailable. Open Floe and retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时无法读取会话，请打开 Floe 后重试。"
+          }
+        }
+      }
+    },
+    "user_question.notification.retry_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t send your answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回答未提交"
+          }
+        }
+      }
+    },
+    "user_question.notification.retry_body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Floe to try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请打开 Floe 后重试。"
+          }
+        }
+      }
+    },
+    "user_question.card.submit_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t save your answer. Please try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回答未保存，请重试。"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referencePart": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reference part"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "引用零件"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.addSubassembly": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New subassembly"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建子装配"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.subassemblyDefault": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subassembly"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "子装配"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.newSubassemblyTitle": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New subassembly"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建子装配"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.subassemblyName": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subassembly name"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "子装配名称"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.newSubassemblyHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Place parts inside it afterwards; the subassembly keeps its own local mates."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "之后再放入零件；子装配会保留自己的局部配合。"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.cancel": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.create": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.childCount": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ parts"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个零件"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referenceMissing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "source missing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "源缺失"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referenceUpdate": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "update available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可更新"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.references": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "External parts"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外部零件"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referenceShares": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ shared"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个共享"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referenceCopies": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ copies"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个副本"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referenceVersion": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revision %@ · format %@ · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "修订 %@ · 格式 %@ · %@"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referenceInSubassemblies": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used in: "
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用于："
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referenceCachedHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The cached geometry, mates and BOM row are preserved. Check or update with the source document to recover."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保留缓存几何、配合和物料行；用源文档检查或更新即可恢复。"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referenceCheck": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check source"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查源"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.referenceUpdateApply": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update source"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新源"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.makeIndependent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Make independent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转为独立副本"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.moveInto": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move into subassembly"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移入子装配"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.moveToTop": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move to top level"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移到顶层"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.placePartReference": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Place reference"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "放置引用"
+          }
+        }
+      }
+    },
+    "cad.text.font_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This font is unavailable. Choose another font."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此字体不可用，请选择其他字体。"
+          }
+        }
+      }
+    },
+    "cad.text.too_complex": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This text is too detailed. Try a shorter phrase."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文字过于复杂，请缩短内容后重试。"
+          }
+        }
+      }
+    },
+    "cad.text.unsupported_characters": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some characters cannot be drawn with this font. Choose another font or change the text."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此字体无法绘制部分字符，请更换字体或修改内容。"
+          }
+        }
+      }
+    },
+    "cad.text.no_outlines": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No outlines were found. Change the text or font."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能生成文字轮廓，请修改内容或更换字体。"
+          }
+        }
+      }
+    },
+    "cad.text.rebuild_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This text conflicts with an existing feature. Check the sketch and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文字与已有模型冲突，请检查草图后重试。"
           }
         }
       }
