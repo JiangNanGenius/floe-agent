@@ -4601,7 +4601,11 @@ public final class CADParameterService {
                     return fail("hole_type",
                                 "hole_type must be throughAll, blind, counterbore or countersink.")
                 }
-                if kind == .blind, newSpec.depth == nil {
+                // The documented single update may carry the new depth WITH the
+                // type change; refuse only when neither the stored spec nor
+                // this update supplies one. The bounds check below still
+                // validates a supplied depth before any mutation.
+                if kind == .blind, newSpec.depth == nil, value("depth") == nil {
                     return fail("depth", "A blind hole needs a depth; provide depth in this update.")
                 }
                 newSpec.kind = kind

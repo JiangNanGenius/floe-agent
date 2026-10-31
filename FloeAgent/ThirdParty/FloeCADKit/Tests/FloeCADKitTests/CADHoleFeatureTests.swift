@@ -1006,7 +1006,445 @@ final class CADHoleFeatureTests: XCTestCase {
                         "legacy circle+extrude cut must stay analytic")
     }
 
+    // MARK: - Post-creation edits and source-face following
+
+    /// Counterbore created once, then edited in place through the real
+    /// parameter and sketch-entity services: position, recess diameter,
+    /// recess depth and finally the hole TYPE. Every step keeps the SAME
+    /// feature id and the SAME placement sketch/entity, and the measured B-rep
+    /// matches independent analytic removal from a 100 × 60 × 10 mm plate.
+    func testCounterborePostCreationPositionDiameterDepthAndTypeEditsKeepIdentity() async throws {
+        let document = try await makeDocument("CounterboreEdits")
+        let fixture = try plate(document)
+        let circle = try circleSketch(document, center: SIMD2(50, 30), radius: 3)
+        let reply = try createHole(document, sketchID: circle.sketchID,
+                                   seed: SIMD2(50, 30), target: fixture.bodyID,
+                                   type: "counterbore",
+                                   extra: ["counterboreDiameter": 11, "counterboreDepth": 5])
+        let featureID = try XCTUnwrap(reply["featureID"] as? String)
+        let service = CADParameterService(document: document)
+        // Recess radius R over `depth`, pilot radius 3 through the remainder.
+        func removal(_ diameter: Double, _ depth: Double) -> Double {
+            .pi * (diameter / 2) * (diameter / 2) * depth + .pi * 3 * 3 * (10 - depth)
+        }
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - removal(11, 5), accuracy: 1e-3)
+        try assertHoleIdentity(document, featureID, sketchID: circle.sketchID,
+                               entityID: circle.entityID)
+        let created = try holeRow(document, featureID)
+        XCTAssertEqual(parameter(document, "hole_type", created)?["value"] as? String ?? "",
+                       "counterbore")
+        XCTAssertEqual(parameter(document, "counterbore_diameter", created)?["value"] as? Double ?? .nan,
+                       11, accuracy: 1e-9)
+        XCTAssertEqual(parameter(document, "counterbore_depth", created)?["value"] as? Double ?? .nan,
+                       5, accuracy: 1e-9)
+
+        // 1) Position edit through the placement circle, same entity id.
+        let moved = service.handle(action: "updateSketchEntity", args: [
+            "sketch_id": circle.sketchID,
+            "entity_id": circle.entityID,
+            "center": [58.0, 30.0],
+        ])
+        XCTAssertEqual(moved["ok"] as? Bool, true, "\(moved)")
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - removal(11, 5), accuracy: 1e-3)
+        let placed = try XCTUnwrap(body(document, fixture.bodyID))
+        XCTAssertEqual(centroidX(cylinders(placed, radius: 5.5)), 58, accuracy: 1e-5)
+        let movedShoulder = planar(placed, depth: 5, inward: SIMD3(0, 1, 0),
+                                   entry: SIMD3(58, 0, -30))
+        XCTAssertEqual(movedShoulder.count, 1)
+        XCTAssertEqual(centroidX(movedShoulder), 58, accuracy: 1e-5)
+        try assertHoleIdentity(document, featureID, sketchID: circle.sketchID,
+                               entityID: circle.entityID)
+
+        // 2) Recess diameter edit; one undo step, same hole.
+        let widened = service.handle(action: "update", args: [
+            "feature_id": featureID, "changes": ["counterbore_diameter": 13.0],
+        ])
+        XCTAssertEqual(widened["ok"] as? Bool, true, "\(widened)")
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - removal(13, 5), accuracy: 1e-3)
+        let wide = try XCTUnwrap(body(document, fixture.bodyID))
+        XCTAssertEqual(cylinders(wide, radius: 6.5).reduce(0) { $0 + $1.area },
+                       2 * .pi * 6.5 * 5, accuracy: 1e-4)
+        let wideShoulder = planar(wide, depth: 5, inward: SIMD3(0, 1, 0),
+                                  entry: SIMD3(58, 0, -30))
+        XCTAssertEqual(wideShoulder.count, 1)
+        XCTAssertEqual(wideShoulder.first?.area ?? 0,
+                       .pi * (6.5 * 6.5 - 3 * 3), accuracy: 1e-4)
+        document.session.undo()
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - removal(11, 5), accuracy: 1e-3)
+        document.session.redo()
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - removal(13, 5), accuracy: 1e-3)
+
+        // 3) Recess depth edit, same feature.
+        let shallow = service.handle(action: "update", args: [
+            "feature_id": featureID, "changes": ["counterbore_depth": 3.0],
+        ])
+        XCTAssertEqual(shallow["ok"] as? Bool, true, "\(shallow)")
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - removal(13, 3), accuracy: 1e-3)
+        let shallowBody = try XCTUnwrap(body(document, fixture.bodyID))
+        XCTAssertEqual(cylinders(shallowBody, radius: 6.5).reduce(0) { $0 + $1.area },
+                       2 * .pi * 6.5 * 3, accuracy: 1e-4)
+        XCTAssertEqual(cylinders(shallowBody, radius: 3).reduce(0) { $0 + $1.area },
+                       2 * .pi * 3 * 7, accuracy: 1e-4)
+        let shallowShoulder = planar(shallowBody, depth: 3, inward: SIMD3(0, 1, 0),
+                                     entry: SIMD3(58, 0, -30))
+        XCTAssertEqual(shallowShoulder.count, 1)
+        XCTAssertEqual(shallowShoulder.first?.area ?? 0,
+                       .pi * (6.5 * 6.5 - 3 * 3), accuracy: 1e-4)
+        try assertHoleIdentity(document, featureID, sketchID: circle.sketchID,
+                               entityID: circle.entityID)
+
+        // 4) Counterbore -> countersink on the SAME feature, one update.
+        let sunk = service.handle(action: "update", args: [
+            "feature_id": featureID,
+            "changes": ["hole_type": "countersink",
+                        "countersink_diameter": 12.0,
+                        "countersink_angle": 90.0],
+        ])
+        XCTAssertEqual(sunk["ok"] as? Bool, true, "\(sunk)")
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 126 * .pi, accuracy: 1e-3)
+        let sunkBody = try XCTUnwrap(body(document, fixture.bodyID))
+        let cones = OCCTKernel.faceInfo(try XCTUnwrap(sunkBody.brep))
+            .filter { $0.signature == nil }
+        XCTAssertEqual(cones.reduce(0) { $0 + $1.area },
+                       27 * sqrt(2) * .pi, accuracy: 1e-4)
+        XCTAssertEqual(cylinders(sunkBody, radius: 3).reduce(0) { $0 + $1.area },
+                       2 * .pi * 3 * 7, accuracy: 1e-4)
+        let sunkRow = try holeRow(document, featureID)
+        XCTAssertEqual(parameter(document, "hole_type", sunkRow)?["value"] as? String ?? "",
+                       "countersink")
+        XCTAssertEqual(parameter(document, "countersink_diameter", sunkRow)?["value"] as? Double ?? .nan,
+                       12, accuracy: 1e-9)
+        XCTAssertEqual(parameter(document, "countersink_angle", sunkRow)?["value"] as? Double ?? .nan,
+                       90, accuracy: 1e-9)
+        XCTAssertEqual(parameter(document, "counterbore_diameter", sunkRow)?["editable"] as? Bool, false,
+                       "a stored recess value stops being editable once the type no longer uses it")
+        try assertHoleIdentity(document, featureID, sketchID: circle.sketchID,
+                               entityID: circle.entityID)
+        document.session.undo()
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - removal(13, 3), accuracy: 1e-3)
+        document.session.redo()
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 126 * .pi, accuracy: 1e-3)
+        XCTAssertEqual(body(document, fixture.bodyID)?.id.raw.uuidString ?? "", fixture.bodyID)
+    }
+
+    /// Countersink created once, then edited in place: recess diameter,
+    /// position, then TYPE transitions into the flat-bottom and recess shapes
+    /// (each supplying the new type's own dimensions in the same update).
+    func testCountersinkPostCreationDiameterAndRecessTypeTransitionsKeepIdentity() async throws {
+        let document = try await makeDocument("CountersinkEdits")
+        let fixture = try plate(document)
+        let circle = try circleSketch(document, center: SIMD2(50, 30), radius: 3)
+        let reply = try createHole(document, sketchID: circle.sketchID,
+                                   seed: SIMD2(50, 30), target: fixture.bodyID,
+                                   type: "countersink",
+                                   extra: ["countersinkDiameter": 12, "countersinkAngle": 90])
+        let featureID = try XCTUnwrap(reply["featureID"] as? String)
+        let service = CADParameterService(document: document)
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 126 * .pi, accuracy: 1e-3)
+        try assertHoleIdentity(document, featureID, sketchID: circle.sketchID,
+                               entityID: circle.entityID)
+
+        // 1) Recess diameter 12 -> 14 at the same 90° included angle.
+        //    Frustum: R = 7 at the entry, r = 3 at depth 4; pilot to 10.
+        let widened = service.handle(action: "update", args: [
+            "feature_id": featureID, "changes": ["countersink_diameter": 14.0],
+        ])
+        XCTAssertEqual(widened["ok"] as? Bool, true, "\(widened)")
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 478 * .pi / 3, accuracy: 1e-3)
+        let wide = try XCTUnwrap(body(document, fixture.bodyID))
+        let wideCones = OCCTKernel.faceInfo(try XCTUnwrap(wide.brep))
+            .filter { $0.signature == nil }
+        let wideConeArea = wideCones.reduce(0) { $0 + $1.area }
+        XCTAssertEqual(wideConeArea, 40 * sqrt(2) * .pi, accuracy: 1e-4)
+        let wideConeCentroid = wideCones.reduce(SIMD3<Double>.zero) {
+            $0 + $1.centroid * $1.area
+        } / wideConeArea
+        XCTAssertEqual(simd_dot(wideConeCentroid - SIMD3(50, 0, -30), SIMD3(0, 1, 0)),
+                       26.0 / 15.0, accuracy: 1e-5,
+                       "lateral frustum centroid h(R+2r)/(3(R+r))")
+
+        // 2) Position edit through the placement circle, same entity id.
+        let moved = service.handle(action: "updateSketchEntity", args: [
+            "sketch_id": circle.sketchID,
+            "entity_id": circle.entityID,
+            "center": [44.0, 30.0],
+        ])
+        XCTAssertEqual(moved["ok"] as? Bool, true, "\(moved)")
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 478 * .pi / 3, accuracy: 1e-3)
+        let placed = try XCTUnwrap(body(document, fixture.bodyID))
+        XCTAssertEqual(centroidX(OCCTKernel.faceInfo(try XCTUnwrap(placed.brep))
+            .filter { $0.signature == nil }), 44, accuracy: 1e-5)
+        try assertHoleIdentity(document, featureID, sketchID: circle.sketchID,
+                               entityID: circle.entityID)
+
+        // 3) Countersink -> blind needs a depth. A type-only update must be
+        //    refused BEFORE mutation and must not damage the hole.
+        let beforeRejection = document.session.changeCount
+        let rejected = service.handle(action: "update", args: [
+            "feature_id": featureID, "changes": ["hole_type": "blind"],
+        ])
+        XCTAssertEqual(rejected["ok"] as? Bool, false, "\(rejected)")
+        XCTAssertEqual(rejected["error"] as? String ?? "", "bad_parameter")
+        XCTAssertTrue((rejected["message"] as? String ?? "").contains("blind"),
+                      "\(rejected)")
+        XCTAssertEqual(document.session.changeCount, beforeRejection)
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 478 * .pi / 3, accuracy: 1e-3)
+
+        // 4) The documented SINGLE update that changes the type AND supplies
+        //    its depth must be accepted (the pre-fix order checked the stored
+        //    spec before reading the depth from this same update).
+        let blind = service.handle(action: "update", args: [
+            "feature_id": featureID, "changes": ["hole_type": "blind", "depth": 7.0],
+        ])
+        XCTAssertEqual(blind["ok"] as? Bool, true, "\(blind)")
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 63 * .pi, accuracy: 1e-3)
+        let blindBody = try XCTUnwrap(body(document, fixture.bodyID))
+        try assertHealthy(blindBody)
+        XCTAssertEqual(cylinders(blindBody, radius: 3).reduce(0) { $0 + $1.area },
+                       2 * .pi * 3 * 7, accuracy: 1e-4)
+        XCTAssertEqual(planar(blindBody, depth: 7, inward: SIMD3(0, 1, 0),
+                              entry: SIMD3(44, 0, -30)).count, 1)
+        let blindRow = try holeRow(document, featureID)
+        XCTAssertEqual(parameter(document, "hole_type", blindRow)?["value"] as? String ?? "", "blind")
+        XCTAssertEqual(parameter(document, "depth", blindRow)?["value"] as? Double ?? .nan,
+                       7, accuracy: 1e-9)
+        try assertHoleIdentity(document, featureID, sketchID: circle.sketchID,
+                               entityID: circle.entityID)
+
+        // 5) Depth edit on the converted blind hole; one undo step.
+        let deeper = service.handle(action: "update", args: [
+            "feature_id": featureID, "changes": ["depth": 9.0],
+        ])
+        XCTAssertEqual(deeper["ok"] as? Bool, true, "\(deeper)")
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 81 * .pi, accuracy: 1e-3)
+        XCTAssertEqual(planar(try XCTUnwrap(body(document, fixture.bodyID)),
+                              depth: 9, inward: SIMD3(0, 1, 0),
+                              entry: SIMD3(44, 0, -30)).count, 1)
+        document.session.undo()
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 63 * .pi, accuracy: 1e-3)
+        document.session.redo()
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 81 * .pi, accuracy: 1e-3)
+
+        // 6) Blind -> counterbore on the same feature, dimensions supplied.
+        let bored = service.handle(action: "update", args: [
+            "feature_id": featureID,
+            "changes": ["hole_type": "counterbore",
+                        "counterbore_diameter": 12.0,
+                        "counterbore_depth": 4.0],
+        ])
+        XCTAssertEqual(bored["ok"] as? Bool, true, "\(bored)")
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 198 * .pi, accuracy: 1e-3)
+        let boredBody = try XCTUnwrap(body(document, fixture.bodyID))
+        try assertHealthy(boredBody)
+        XCTAssertEqual(cylinders(boredBody, radius: 6).reduce(0) { $0 + $1.area },
+                       2 * .pi * 6 * 4, accuracy: 1e-4)
+        XCTAssertEqual(cylinders(boredBody, radius: 3).reduce(0) { $0 + $1.area },
+                       2 * .pi * 3 * 6, accuracy: 1e-4)
+        let boredShoulder = planar(boredBody, depth: 4, inward: SIMD3(0, 1, 0),
+                                   entry: SIMD3(44, 0, -30))
+        XCTAssertEqual(boredShoulder.count, 1)
+        XCTAssertEqual(boredShoulder.first?.area ?? 0,
+                       .pi * (6 * 6 - 3 * 3), accuracy: 1e-4)
+        try assertHoleIdentity(document, featureID, sketchID: circle.sketchID,
+                               entityID: circle.entityID)
+        XCTAssertEqual(body(document, fixture.bodyID)?.id.raw.uuidString ?? "", fixture.bodyID)
+    }
+
+    /// The M12 gap that the transformed-target case did NOT prove: its body was
+    /// moved BEFORE the hole existed. Here a real named top face supplies an
+    /// associative construction plane and the hole's placement sketch, the hole
+    /// is created FIRST, and only then does the defining extrude move that face
+    /// from y = 10 to y = 16. The same hole must re-cut from the NEW face
+    /// (walls 10…16, floor at 10) instead of staying behind as a buried cavity.
+    func testHoleRebuildsFromPostCreationSourceFaceChangeAndSurvivesSaveReopen() async throws {
+        let url = directory.appendingPathComponent("postcreation-face.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "PostCreationFace")
+        documents.append(document)
+        let fixture = try plate(document)
+        let extrudeID = try XCTUnwrap(featureRows(document).first {
+            ($0["kind"] as? String) == "extrude"
+        }?["id"] as? String)
+        let top = try faceRow(document, bodyID: fixture.bodyID, normal: SIMD3(0, 1, 0))
+        XCTAssertEqual(top["datum_source_supported"] as? Bool, true, "\(top)")
+        XCTAssertEqual(top["kind"] as? String, "planar")
+
+        let service = CADParameterService(document: document)
+        let plane = service.handle(action: "datum.offsetPlane.create", args: [
+            "body_id": fixture.bodyID,
+            "face_index": try XCTUnwrap(top["index"]),
+            "query_token": try XCTUnwrap(top["query_token"]),
+            "expression": "0",
+        ])
+        XCTAssertEqual(plane["ok"] as? Bool, true, "\(plane)")
+        let planeID = try XCTUnwrap(plane["plane_id"] as? String)
+        let planeUUID = try XCTUnwrap(UUID(uuidString: planeID))
+
+        // The placement sketch starts on the ground like the native sketch
+        // tool, then is hosted on the derived face plane. Its local circle at
+        // (0, 0) therefore sits exactly at the current face centroid.
+        let circle = try circleSketch(document, center: SIMD2(0, 0), radius: 4)
+        let support = service.handle(action: "sketch.setSupport", args: [
+            "sketch_id": circle.sketchID, "plane_id": planeID,
+        ])
+        XCTAssertEqual(support["ok"] as? Bool, true, "\(support)")
+        let supported = try XCTUnwrap(document.session.document.sketches.first {
+            $0.id.raw.uuidString == circle.sketchID
+        })
+        XCTAssertEqual(supported.support,
+                       PlaneRef(source: .construction(ConstructionPlaneID(raw: planeUUID))))
+        XCTAssertEqual(supported.plane.origin.y, 10, accuracy: 1e-6)
+
+        let reply = try createHole(document, sketchID: circle.sketchID, seed: SIMD2(0, 0),
+                                   target: fixture.bodyID, type: "blind",
+                                   extra: ["depth": 6, "reversed": true])
+        let featureID = try XCTUnwrap(reply["featureID"] as? String)
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 96 * .pi, accuracy: 1e-3)
+        try assertHoleIdentity(document, featureID, sketchID: circle.sketchID,
+                               entityID: circle.entityID)
+        let initial = try XCTUnwrap(body(document, fixture.bodyID))
+        try assertHealthy(initial)
+        let initialWalls = cylinders(initial, radius: 4)
+        let initialWallArea = initialWalls.reduce(0) { $0 + $1.area }
+        XCTAssertEqual(initialWallArea, 2 * .pi * 4 * 6, accuracy: 1e-4)
+        let initialWallCentroid = initialWalls.reduce(SIMD3<Double>.zero) {
+            $0 + $1.centroid * $1.area
+        } / initialWallArea
+        XCTAssertEqual(initialWallCentroid.y, 7, accuracy: 1e-5,
+                       "the hole must start at the source face y = 10")
+        XCTAssertEqual(planar(initial, depth: 6, inward: SIMD3(0, -1, 0),
+                              entry: SIMD3(50, 10, -30)).count, 1)
+
+        // The REAL post-creation source-face modification: the SAME defining
+        // extrude now ends 6 mm higher. Nothing on the hole is touched.
+        let grown = service.handle(action: "update", args: [
+            "feature_id": extrudeID, "changes": ["distance": 16.0],
+        ])
+        XCTAssertEqual(grown["ok"] as? Bool, true, "\(grown)")
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       96_000 - 96 * .pi, accuracy: 1e-3)
+        XCTAssertEqual(try XCTUnwrap(document.session.document.planes.first {
+            $0.id.raw.uuidString == planeID
+        }).plane.origin.y, 16, accuracy: 1e-6)
+        XCTAssertEqual(try XCTUnwrap(document.session.document.sketches.first {
+            $0.id.raw.uuidString == circle.sketchID
+        }).plane.origin.y, 16, accuracy: 1e-6)
+
+        let followed = try XCTUnwrap(body(document, fixture.bodyID))
+        try assertHealthy(followed)
+        XCTAssertEqual(followed.id.raw.uuidString, fixture.bodyID)
+        let walls = cylinders(followed, radius: 4)
+        let wallArea = walls.reduce(0) { $0 + $1.area }
+        XCTAssertEqual(wallArea, 2 * .pi * 4 * 6, accuracy: 1e-4)
+        let wallCentroid = walls.reduce(SIMD3<Double>.zero) {
+            $0 + $1.centroid * $1.area
+        } / wallArea
+        XCTAssertEqual(wallCentroid.y, 13, accuracy: 1e-5, "walls must now run 10…16")
+        let floor = planar(followed, depth: 6, inward: SIMD3(0, -1, 0),
+                           entry: SIMD3(50, 16, -30))
+        XCTAssertEqual(floor.count, 1)
+        XCTAssertEqual(floor.first?.area ?? 0, .pi * 16, accuracy: 1e-4)
+        try assertHoleIdentity(document, featureID, sketchID: circle.sketchID,
+                               entityID: circle.entityID)
+
+        // One undo step for the source edit and its dependent hole rebuild.
+        document.session.undo()
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       60_000 - 96 * .pi, accuracy: 1e-3)
+        document.session.redo()
+        XCTAssertEqual(try volume(document, fixture.bodyID),
+                       96_000 - 96 * .pi, accuracy: 1e-3)
+
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        documents.append(reopened)
+        let bodies = try XCTUnwrap(snapshotBodies(reopened))
+        XCTAssertEqual(bodies.count, 1)
+        let bodyID = try XCTUnwrap(bodies.first?["id"] as? String)
+        XCTAssertEqual(bodyID, fixture.bodyID)
+        XCTAssertEqual(try volume(reopened, bodyID), 96_000 - 96 * .pi, accuracy: 1e-3)
+        try assertHoleIdentity(reopened, featureID, sketchID: circle.sketchID,
+                               entityID: circle.entityID)
+        XCTAssertEqual(try XCTUnwrap(reopened.session.document.planes.first {
+            $0.id.raw.uuidString == planeID
+        }).plane.origin.y, 16, accuracy: 1e-6)
+        let reopenedFloor = planar(try XCTUnwrap(body(reopened, bodyID)),
+                                   depth: 6, inward: SIMD3(0, -1, 0),
+                                   entry: SIMD3(50, 16, -30))
+        XCTAssertEqual(reopenedFloor.count, 1)
+    }
+
     // MARK: - Small helpers
+
+    /// The hole node behind a query/command id. Its typed kind is the identity
+    /// the M12 clause means; the display row alone is not enough.
+    private func holeNode(_ document: FloeCADDocument, _ featureID: String) -> FeatureNode? {
+        guard let uuid = UUID(uuidString: featureID) else { return nil }
+        return document.session.document.features.node(FeatureID(raw: uuid))
+    }
+
+    /// Every continued edit must keep the hole feature, its placement profile
+    /// and its placement plane. These assertions name the same IDs the graph
+    /// replays, not a re-derived row.
+    private func assertHoleIdentity(
+        _ document: FloeCADDocument, _ featureID: String,
+        sketchID: String, entityID: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        let node = try XCTUnwrap(holeNode(document, featureID), file: file, line: line)
+        guard case let .hole(_, profile, plane, _) = node.kind else {
+            return XCTFail("feature \(featureID) lost its hole kind", file: file, line: line)
+        }
+        XCTAssertEqual(profile.sketchID.raw.uuidString, sketchID, file: file, line: line)
+        XCTAssertEqual(profile.entityIDs.map(\.uuidString), [entityID], file: file, line: line)
+        let sketchUUID = try XCTUnwrap(UUID(uuidString: sketchID), file: file, line: line)
+        XCTAssertEqual(plane, PlaneRef(source: .sketch(SketchID(raw: sketchUUID))),
+                       "the hole must stay on its original placement sketch",
+                       file: file, line: line)
+    }
+
+    private func centroidX(_ faces: [OCCTKernel.KernelFaceInfo]) -> Double {
+        let area = faces.reduce(0) { $0 + $1.area }
+        guard area > 0 else { return .nan }
+        return faces.reduce(0) { $0 + $1.centroid.x * $1.area } / area
+    }
+
+    /// A real discovery row for the named planar face; `datum.offsetPlane.create`
+    /// needs its current 1-based kernel index and generation token.
+    private func faceRow(
+        _ document: FloeCADDocument, bodyID: String, normal: SIMD3<Double>,
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws -> [String: Any] {
+        let outcome = document.nativeQueryJSON(["scope": "faces", "limit": 500])
+        XCTAssertTrue(outcome.isOK, outcome.message ?? "", file: file, line: line)
+        let rows = try XCTUnwrap(payload(outcome)["rows"] as? [[String: Any]],
+                                 file: file, line: line)
+        return try XCTUnwrap(rows.first { row in
+            guard (row["bodyID"] as? String) == bodyID,
+                  let vector = row["normal"] as? [Double], vector.count == 3 else { return false }
+            return simd_dot(SIMD3(vector[0], vector[1], vector[2]), normal) > 0.999
+        }, "no planar face with the requested outward normal", file: file, line: line)
+    }
 
     private func snapshotBodies(_ document: FloeCADDocument) -> [[String: Any]]? {
         guard let object = (try? JSONSerialization.jsonObject(with: document.snapshotJSON()))
