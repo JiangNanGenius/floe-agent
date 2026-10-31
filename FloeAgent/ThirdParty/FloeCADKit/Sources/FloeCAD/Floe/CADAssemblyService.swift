@@ -5,8 +5,10 @@
 //  JSON-action service over the persisted `CADAssembly`: instance placement,
 //  positioning constraints (including live face/axis/edge picks with query-
 //  generation fences), named exploded views (display/drawing state only), an
-//  iterative projection solver, approximate DOF reporting, and exact (OCCT) /
-//  approximate (AABB) interference checks.
+//  iterative projection solver, rank-based DOF reporting with an explicit
+//  residual-solve credibility check, and exact (OCCT) / approximate (AABB)
+//  interference checks. Existing constraints can be edited in place while
+//  keeping their stable id, scope and reference pins.
 //
 //  The service is a MainActor façade. It reads and writes the assembly JSON in
 //  `document.project.assemblyData` and manipulates document bodies only through
@@ -53,6 +55,7 @@ public final class CADAssemblyService {
         case "setTransform": return setTransformAction(args)
         case "setVisible": return setVisibleAction(args)
         case "addConstraint": return addConstraintAction(args)
+        case "updateConstraint": return updateConstraintAction(args)
         case "removeConstraint": return removeConstraintAction(args)
         case "suppressConstraint": return suppressConstraintAction(args)
         case "solve": return solveAction()
@@ -300,23 +303,43 @@ public final class CADAssemblyService {
         case .failure(let error):
             return fail(error.code, error.message)
         case .success(let assembly):
-            let dof = CADAssemblySolver.degreesOfFreedom(assembly)
+            let dof = CADAssemblySolver.degreesOfFreedom(
+                assembly, modelScale: modelScaleFor(assembly))
             let index = CADAssemblySolver.resolvableIndex(assembly)
             let invalidAll = assembly.constraints
                 .filter { !CADAssemblySolver.constraintIsResolvable($0, in: index) }
                 .map { $0.id.uuidString }
-            // Conflicts are read-only diagnostics: run the pure solver but
-            // never persist its candidate placements from the report action.
-            let dryRun = CADAssemblySolver.solve(assembly, modelScale: modelScaleFor(assembly))
+            // DOF runs the pure solver internally and reports an unsatisfied
+            // system as not credible; a report read never persists its
+            // candidate placements.
             let redundant = Set(dof.redundant.map(\.uuidString))
 
             let occurrences = assembly.occurrences(includeHidden: true)
             var localDOF: [UUID: Int] = [:]
+            var localSolved = true
+            var localCredible = true
+            var localFullyConstrained = true
+            var nestedConflicts: [String] = []
+            var nestedInvalidRefs: [String] = []
+            var nestedRedundant = Set<String>()
+            var nestedConflictSet = Set<String>()
             for occurrence in occurrences where occurrence.instance.isSubassembly {
                 let container = occurrence.instance
                 let local = CADAssembly(instances: container.children,
                                         constraints: container.constraints)
-                let localResult = CADAssemblySolver.degreesOfFreedom(local)
+                let localResult = CADAssemblySolver.degreesOfFreedom(
+                    local, modelScale: modelScaleFor(local))
+                if !localResult.solved { localSolved = false }
+                if !localResult.credible { localCredible = false }
+                // Solvable is not locked: only a zero-mobility local scope
+                // stops the children from moving inside the container.
+                if !container.children.isEmpty, !localResult.fullyConstrained {
+                    localFullyConstrained = false
+                }
+                nestedConflicts.append(contentsOf: localResult.conflicting.map(\.uuidString))
+                nestedInvalidRefs.append(contentsOf: localResult.invalidReferences.map(\.uuidString))
+                nestedRedundant.formUnion(localResult.redundant.map(\.uuidString))
+                nestedConflictSet.formUnion(localResult.conflicting.map(\.uuidString))
                 for (id, value) in localResult.perInstance { localDOF[id] = value }
             }
             var instanceEntries: [[String: Any]] = []
@@ -379,7 +402,18 @@ public final class CADAssemblyService {
                 if let instanceB = constraint.instanceB {
                     entry["instanceB"] = instanceB.uuidString
                 }
-                if let value = constraint.value { entry["value"] = value }
+                entry["pointA"] = vectorPayload(constraint.pointA)
+                entry["directionA"] = vectorPayload(constraint.directionA)
+                if let pointB = constraint.pointB {
+                    entry["pointB"] = vectorPayload(pointB)
+                }
+                if let directionB = constraint.directionB {
+                    entry["directionB"] = vectorPayload(directionB)
+                }
+                if let value = constraint.value {
+                    entry["value"] = value
+                    entry["valueUnit"] = constraint.kind == .angle ? "degrees" : "mm"
+                }
                 let revisionState = constraintRevisionState(constraint, assembly: assembly)
                 entry["staleReference"] = revisionState.stale
                 if let a = constraint.sourceRevisionA { entry["sourceRevisionA"] = a }
@@ -403,7 +437,8 @@ public final class CADAssemblyService {
                         "instanceA": constraint.instanceA.uuidString,
                         "suppressed": constraint.isSuppressed,
                         "valid": valid,
-                        "redundant": false,
+                        "redundant": nestedRedundant.contains(constraint.id.uuidString),
+                        "conflicting": nestedConflictSet.contains(constraint.id.uuidString),
                         "scope": "subassembly",
                         "parentID": container.id.uuidString,
                         "path": occurrence.path.map(\.uuidString),
@@ -411,7 +446,18 @@ public final class CADAssemblyService {
                     if let instanceB = constraint.instanceB {
                         entry["instanceB"] = instanceB.uuidString
                     }
-                    if let value = constraint.value { entry["value"] = value }
+                    entry["pointA"] = vectorPayload(constraint.pointA)
+                    entry["directionA"] = vectorPayload(constraint.directionA)
+                    if let pointB = constraint.pointB {
+                        entry["pointB"] = vectorPayload(pointB)
+                    }
+                    if let directionB = constraint.directionB {
+                        entry["directionB"] = vectorPayload(directionB)
+                    }
+                    if let value = constraint.value {
+                        entry["value"] = value
+                        entry["valueUnit"] = constraint.kind == .angle ? "degrees" : "mm"
+                    }
                     let revisionState = constraintRevisionState(constraint, assembly: assembly)
                     entry["staleReference"] = revisionState.stale
                     if let a = constraint.sourceRevisionA { entry["sourceRevisionA"] = a }
@@ -468,23 +514,39 @@ public final class CADAssemblyService {
                 "explodedViewCount": assembly.explodedViews.count,
                 "explodedViews": explodedRows,
                 "explodedPreview": previewPayload,
-                // Total remaining mobility, including the 6 global rigid modes
-                // while nothing is grounded (two free instances read 12).
+                // Remaining mobility at the ROOT scope only (each subassembly
+                // container counts as one rigid body, its internal motion is
+                // reported per scope in `dof.scopes`); the 6 global rigid
+                // modes are included while nothing is grounded (two free
+                // root instances read 12).
                 "assemblyDOF": dof.total,
-                // Parts-vs-parts mobility: total minus the global modes.
+                "assemblyDOFScope": "root",
+                // Parts-vs-parts mobility at the root scope: total minus the
+                // global modes.
                 "relativeDOF": dof.relative,
                 // The 6 free-fly modes remain until an instance is fixed.
                 "globalRigidDOF": dof.globalRigid,
-                // True only when the assembly is grounded AND has no remaining
-                // mobility. A free-floating assembly is never "fully constrained".
-                "fullyConstrained": dof.fullyConstrained,
+                // Root-scope verdict: grounded, exactly analyzed, zero
+                // root mobility and the residual solve converges.
+                "rootFullyConstrained": dof.fullyConstrained,
+                // True only when every nested local scope has zero internal
+                // mobility (movable children inside a container block it).
+                "nestedFullyConstrained": localFullyConstrained,
+                // Whole-assembly claim: root scope locked AND no internal
+                // motion anywhere. Never true while a child can still move
+                // inside its container.
+                "fullyConstrained": dof.fullyConstrained && localFullyConstrained,
+                "dofCredible": dof.credible && localCredible,
+                "dofExact": dof.exact,
                 "unconstrainedInstances": dof.unconstrained.map(\.uuidString),
                 "invalidRefs": invalidAll,
                 "invalidNestedRefs": invalidNested,
+                "nestedInvalidRefs": Array(Set(nestedInvalidRefs)).sorted(),
+                "nestedConflicting": Array(Set(nestedConflicts)).sorted(),
                 "redundantConstraints": dof.redundant.map(\.uuidString),
-                "conflicting": dryRun.conflicting.map(\.uuidString),
-                "conflicts": dryRun.conflicting.map(\.uuidString),
-                "solved": dryRun.solved,
+                "conflicting": Array(Set(dof.conflicting.map(\.uuidString) + nestedConflicts)).sorted(),
+                "conflicts": Array(Set(dof.conflicting.map(\.uuidString) + nestedConflicts)).sorted(),
+                "solved": dof.solved && localSolved,
                 "staleInstances": stale,
                 "staleSourceBodies": stale,
                 "staleReferences": Array(Set(staleReferences)).sorted(),
@@ -531,21 +593,89 @@ public final class CADAssemblyService {
         case .failure(let error):
             return fail(error.code, error.message)
         case .success(let assembly):
-            let dof = CADAssemblySolver.degreesOfFreedom(assembly)
+            let scale = modelScaleFor(assembly)
+            let dof = CADAssemblySolver.degreesOfFreedom(assembly, modelScale: scale)
             let rows: [[String: Any]] = assembly.instances.map { instance in
                 ["id": instance.id.uuidString,
                  "dof": dof.perInstance[instance.id] ?? 0]
             }
+
+            // Local scopes are reported separately: their six free-fly modes
+            // live in the subassembly frame, so folding them into the root
+            // total would double-count. Their solve status still participates
+            // in the top-level `solved` flag, matching the real solve action
+            // (which refuses when any local scope fails).
+            var scopes: [[String: Any]] = []
+            var nestedConflicts: [String] = []
+            var nestedInvalid: [String] = []
+            var nestedSolved = true
+            var nestedCredible = true
+            var nestedFullyConstrained = true
+            for occurrence in assembly.occurrences(includeHidden: true)
+            where occurrence.instance.isSubassembly {
+                let container = occurrence.instance
+                let local = CADAssembly(instances: container.children,
+                                        constraints: container.constraints)
+                let localDof = CADAssemblySolver.degreesOfFreedom(
+                    local, modelScale: modelScaleFor(local))
+                if !localDof.solved { nestedSolved = false }
+                if !localDof.credible { nestedCredible = false }
+                // A solvable yet underconstrained local scope still permits
+                // internal motion, so it must not satisfy the global claim.
+                if !container.children.isEmpty, !localDof.fullyConstrained {
+                    nestedFullyConstrained = false
+                }
+                nestedConflicts.append(contentsOf: localDof.conflicting.map(\.uuidString))
+                nestedInvalid.append(contentsOf: localDof.invalidReferences.map(\.uuidString))
+                scopes.append([
+                    "scope": "subassembly",
+                    "parentID": container.id.uuidString,
+                    "name": container.name,
+                    "path": occurrence.path.map(\.uuidString),
+                    "assemblyDOF": localDof.total,
+                    "relativeDOF": localDof.relative,
+                    "globalRigidDOF": localDof.globalRigid,
+                    "fullyConstrained": localDof.fullyConstrained,
+                    "dofCredible": localDof.credible,
+                    "solved": localDof.solved,
+                    "exact": localDof.exact,
+                    "conflicting": localDof.conflicting.map(\.uuidString),
+                    "invalidRefs": localDof.invalidReferences.map(\.uuidString),
+                    "redundantConstraints": localDof.redundant.map(\.uuidString),
+                ])
+            }
+            let solved = dof.solved && nestedSolved
+            let conflicts = (dof.conflicting.map(\.uuidString) + nestedConflicts)
+                .reduce(into: [String]()) { result, value in
+                    if !result.contains(value) { result.append(value) }
+                }
+            let invalid = (dof.invalidReferences.map(\.uuidString) + nestedInvalid)
+                .reduce(into: [String]()) { result, value in
+                    if !result.contains(value) { result.append(value) }
+                }
             return [
                 "ok": true,
                 "dofModel": "kinematic-rank",
+                // Root-scope counts only (each subassembly container is one
+                // rigid body here); per-scope counts live in `scopes` and no
+                // verified whole-assembly aggregate is fabricated.
                 "assemblyDOF": dof.total,
+                "assemblyDOFScope": "root",
                 "relativeDOF": dof.relative,
                 "globalRigidDOF": dof.globalRigid,
-                "fullyConstrained": dof.fullyConstrained,
+                "rootFullyConstrained": dof.fullyConstrained,
+                "nestedFullyConstrained": nestedFullyConstrained,
+                "fullyConstrained": dof.fullyConstrained && nestedFullyConstrained,
+                "dofCredible": dof.credible && nestedCredible,
+                "dofExact": dof.exact,
+                "exact": dof.exact,
+                "solved": solved,
+                "conflicting": conflicts,
+                "invalidRefs": invalid,
                 "unconstrainedInstances": dof.unconstrained.map(\.uuidString),
                 "redundantConstraints": dof.redundant.map(\.uuidString),
                 "instances": rows,
+                "scopes": scopes,
             ]
         }
     }
@@ -1008,6 +1138,447 @@ public final class CADAssemblyService {
         if let parentID { payload["parentID"] = parentID.uuidString }
         if let referenceA { payload["referenceA"] = referenceA.payload }
         if let referenceB { payload["referenceB"] = referenceB.payload }
+        return payload
+    }
+
+
+    // MARK: - Constraint editing
+
+    /// Result of one transactional candidate solve for a constraint edit.
+    /// Nothing here is persisted: the caller writes `assembly` only when
+    /// `solved` is true, so a contradictory edit cannot touch placement, the
+    /// undo stack or the package.
+    private struct ConstraintSolveOutcome {
+        var assembly: CADAssembly
+        var solved: Bool
+        var invalidReferences: [UUID]
+        var conflicting: [UUID]
+        var scope: String
+        var parentID: UUID?
+        var previewInstances: [CADAssemblyInstance]
+        var nestedRows: [[String: Any]]
+    }
+
+    /// Solve nested local scopes first (each in its own frame), then the root,
+    /// mirroring `solve` exactly. Failure reports the actual scope/id so the
+    /// editor never blames the wrong constraint.
+    private func solveCandidate(_ input: CADAssembly) -> ConstraintSolveOutcome {
+        var updated = input
+        var nestedRows: [[String: Any]] = []
+        for occurrence in input.occurrences(includeHidden: true) {
+            let container = occurrence.instance
+            guard container.isSubassembly else { continue }
+            let local = CADAssembly(instances: container.children,
+                                    constraints: container.constraints)
+            let localResult = CADAssemblySolver.solve(local,
+                                                      modelScale: modelScaleFor(local))
+            guard localResult.solved else {
+                return ConstraintSolveOutcome(
+                    assembly: updated,
+                    solved: false,
+                    invalidReferences: localResult.invalidReferences,
+                    conflicting: localResult.conflicting,
+                    scope: "subassembly",
+                    parentID: container.id,
+                    previewInstances: localResult.updatedInstances,
+                    nestedRows: nestedRows)
+            }
+            updated.updateInstance(container.id) { $0.children = localResult.updatedInstances }
+            nestedRows.append([
+                "parentID": container.id.uuidString,
+                "name": container.name,
+                "path": occurrence.path.map(\.uuidString),
+                "solved": true,
+                "updatedInstanceIDs": localResult.updatedInstances.map { $0.id.uuidString },
+            ])
+        }
+
+        let result = CADAssemblySolver.solve(updated, modelScale: modelScaleFor(updated))
+        var solvedAssembly = updated
+        if result.solved {
+            solvedAssembly.instances = result.updatedInstances
+        }
+        return ConstraintSolveOutcome(
+            assembly: solvedAssembly,
+            solved: result.solved,
+            invalidReferences: result.invalidReferences,
+            conflicting: result.conflicting,
+            scope: "root",
+            parentID: nil,
+            previewInstances: result.updatedInstances,
+            nestedRows: nestedRows)
+    }
+
+    /// Resolvable instance index for the constraint's own scope. Root
+    /// constraints index root instances; local constraints index the owning
+    /// subassembly's direct children.
+    private func constraintScopeIndex(_ assembly: CADAssembly,
+                                      parentID: UUID?) -> [UUID: Int] {
+        guard let parentID else {
+            return CADAssemblySolver.resolvableIndex(assembly)
+        }
+        guard let container = assembly.instance(parentID) else { return [:] }
+        var index: [UUID: Int] = [:]
+        for (position, child) in container.children.enumerated()
+        where index[child.id] == nil && CADAssemblySolver.isValidTransform(child.transform) {
+            index[child.id] = position
+        }
+        return index
+    }
+
+    /// True when every nested local scope is inside the exact DOF window and
+    /// its residual solve is credible. Used by solve/edit responses so a
+    /// root-level claim cannot ignore an unsolved or approximate local scope.
+    private func nestedScopesAreCredible(_ assembly: CADAssembly) -> Bool {
+        for occurrence in assembly.occurrences(includeHidden: true)
+        where occurrence.instance.isSubassembly {
+            let container = occurrence.instance
+            let local = CADAssembly(instances: container.children,
+                                    constraints: container.constraints)
+            if !CADAssemblySolver.degreesOfFreedom(
+                local, modelScale: modelScaleFor(local)).credible {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// True only when EVERY nested local scope actually has zero internal
+    /// mobility: each scope is exactly analyzed, its residual solve
+    /// converges, and its local rank leaves no child free to move inside its
+    /// container. A scope that merely solves while staying underconstrained
+    /// (movable children) is NOT enough — `credible` covers solvability, this
+    /// covers freedom. An empty container has no internal motion by
+    /// definition, so it never blocks the claim. With no subassemblies this
+    /// is vacuously true, matching the historical flat behavior.
+    private func nestedScopesAreFullyConstrained(_ assembly: CADAssembly) -> Bool {
+        for occurrence in assembly.occurrences(includeHidden: true)
+        where occurrence.instance.isSubassembly {
+            let container = occurrence.instance
+            guard !container.children.isEmpty else { continue }
+            let local = CADAssembly(instances: container.children,
+                                    constraints: container.constraints)
+            if !CADAssemblySolver.degreesOfFreedom(
+                local, modelScale: modelScaleFor(local)).fullyConstrained {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Edit one existing constraint. The constraint id, kind, instance pair
+    /// and scope are immutable; `value` (mm/degrees) and geometry references
+    /// are editable. Omitted references keep their exact points, directions
+    /// and source revision pins. The edit and the solved placements are one
+    /// `SetAssemblyDataCommand`; an unsatisfiable candidate returns
+    /// `constraint_failed / mutated:false` before any write.
+    private func updateConstraintAction(_ args: [String: Any]) -> [String: Any] {
+        let assembly: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): assembly = loaded
+        }
+        var updated = assembly
+
+        guard let id = uuidValue(args["id"]) else {
+            return fail("bad_constraint_id", "id must be a constraint UUID string.")
+        }
+        guard let located = updated.constraintsWithScope().first(where: { $0.constraint.id == id }),
+              var constraint = updated.constraint(id) else {
+            return fail("unknown_constraint", "No assembly constraint with that id.")
+        }
+        let parentID = located.parentID
+        let original = constraint
+        let kind = constraint.kind
+
+        if let rawKind = args["kind"], !(rawKind is NSNull) {
+            guard let requested = rawKind as? String, requested == kind.rawValue else {
+                return fail("unsupported_constraint_kind",
+                            "The constraint kind cannot be changed in place; remove it and add a new constraint.")
+            }
+        }
+        if let rawA = args["instanceA"], !(rawA is NSNull) {
+            guard let requested = uuidValue(rawA), requested == constraint.instanceA else {
+                return fail("unsupported_instance_change",
+                            "The constrained instance pair cannot be changed in place; remove it and add a new constraint.")
+            }
+        }
+        if let rawB = args["instanceB"], !(rawB is NSNull) {
+            guard let requested = uuidValue(rawB), requested == constraint.instanceB else {
+                return fail("unsupported_instance_change",
+                            "The constrained instance pair cannot be changed in place; remove it and add a new constraint.")
+            }
+        }
+
+        if let rawExpected = args["expectedValue"], !(rawExpected is NSNull) {
+            guard let expectedValue = doubleValue(rawExpected), expectedValue.isFinite else {
+                return fail("bad_expected_value", "expectedValue must be a finite number.")
+            }
+            guard let currentValue = constraint.value,
+                  abs(currentValue - expectedValue) <= 1e-9 * max(1, abs(expectedValue)) else {
+                return fail("stale_constraint",
+                            "The constraint value changed since it was queried; re-query it and retry.")
+            }
+        }
+
+        if let rawValue = args["value"], !(rawValue is NSNull) {
+            guard let parsed = doubleValue(rawValue), parsed.isFinite else {
+                return fail("bad_value", "value must be a finite number (mm or degrees).")
+            }
+            switch kind {
+            case .distance:
+                guard parsed >= 0 else {
+                    return fail("bad_value", "distance value must be a finite, non-negative number of mm.")
+                }
+            case .angle:
+                guard parsed >= 0, parsed <= 180 else {
+                    return fail("bad_value", "angle value must be a finite number of degrees in [0, 180].")
+                }
+            case .fixed, .coaxial, .planarAlign:
+                return fail("unsupported_value",
+                            "Only distance and angle constraints carry an editable value.")
+            }
+            constraint.value = parsed
+        }
+
+        let geometryKeys = ["pointA", "directionA", "pointB", "directionB",
+                            "referenceA", "faceA", "edgeA", "referenceB", "faceB", "edgeB"]
+        let hasGeometryInput = geometryKeys.contains { key in
+            guard let raw = args[key] else { return false }
+            return !(raw is NSNull)
+        }
+        if kind == .fixed, hasGeometryInput {
+            return fail("unsupported_reference",
+                        "A fixed constraint anchors its instance and has no editable geometry reference.")
+        }
+
+        guard let instanceAValue = updated.instance(constraint.instanceA) else {
+            return fail("unknown_instance", "The constraint's instanceA no longer exists.")
+        }
+        let instanceBValue = constraint.instanceB.flatMap { updated.instance($0) }
+        if instanceBValue == nil, ["pointB", "directionB", "referenceB", "faceB", "edgeB"]
+            .contains(where: { key in
+                guard let raw = args[key] else { return false }
+                return !(raw is NSNull)
+            }) {
+            return fail("missing_instance_b",
+                        "This constraint has no instanceB to receive geometry on B.")
+        }
+
+        var referenceA: CADAssemblyReference?
+        var referenceB: CADAssemblyReference?
+        if hasGeometryInput {
+            if kind != .fixed {
+                if let resolved = parseInlineReference(args: args, key: "referenceA",
+                                                       faceKey: "faceA", edgeKey: "edgeA",
+                                                       instance: instanceAValue,
+                                                       assembly: updated, label: "A") {
+                    switch resolved {
+                    case .failure(let error): return fail(error.code, error.message)
+                    case .success(let value): referenceA = value
+                    }
+                }
+                if args["referenceB"] != nil || args["faceB"] != nil || args["edgeB"] != nil {
+                    guard let instanceBValue else {
+                        return fail("missing_instance_b",
+                                    "This constraint has no instanceB to receive referenceB.")
+                    }
+                    if let resolved = parseInlineReference(args: args, key: "referenceB",
+                                                           faceKey: "faceB", edgeKey: "edgeB",
+                                                           instance: instanceBValue,
+                                                           assembly: updated, label: "B") {
+                        switch resolved {
+                        case .failure(let error): return fail(error.code, error.message)
+                        case .success(let value): referenceB = value
+                        }
+                    }
+                }
+            }
+        }
+
+        var geometryAChanged = false
+        if let referenceA {
+            constraint.pointA = referenceA.point
+            constraint.directionA = referenceA.direction
+            constraint.sourceRevisionA = referenceA.sourceRevision
+            geometryAChanged = true
+        } else {
+            if let raw = args["pointA"], !(raw is NSNull) {
+                switch parseVector(raw) {
+                case .failure(let error): return fail(error.code, error.message)
+                case .success(let parsed):
+                    guard let parsed else {
+                        return fail("bad_vector", "pointA must be a finite [x,y,z] vector.")
+                    }
+                    constraint.pointA = parsed
+                    geometryAChanged = true
+                }
+            }
+            if let raw = args["directionA"], !(raw is NSNull) {
+                switch parseVector(raw) {
+                case .failure(let error): return fail(error.code, error.message)
+                case .success(let parsed):
+                    guard let parsed, simd_length(parsed) > 1e-12 else {
+                        return fail("zero_direction", "directionA must be a non-zero [x,y,z] vector.")
+                    }
+                    constraint.directionA = simd_normalize(parsed)
+                    geometryAChanged = true
+                }
+            }
+        }
+        if geometryAChanged, referenceA == nil,
+           let source = body(for: effectiveBodyID(instanceAValue)) {
+            constraint.sourceRevisionA = source.meshRevision
+        }
+
+        var geometryBChanged = false
+        if let referenceB {
+            constraint.pointB = referenceB.point
+            constraint.directionB = referenceB.direction
+            constraint.sourceRevisionB = referenceB.sourceRevision
+            geometryBChanged = true
+        } else if let instanceBValue {
+            if args.keys.contains("pointB") {
+                if args["pointB"] is NSNull {
+                    constraint.pointB = nil
+                    geometryBChanged = true
+                } else if let raw = args["pointB"] {
+                    switch parseVector(raw) {
+                    case .failure(let error): return fail(error.code, error.message)
+                    case .success(let parsed):
+                        guard let parsed else {
+                            return fail("bad_vector", "pointB must be a finite [x,y,z] vector.")
+                        }
+                        constraint.pointB = parsed
+                        geometryBChanged = true
+                    }
+                }
+            }
+            if args.keys.contains("directionB") {
+                if args["directionB"] is NSNull {
+                    if kind == .coaxial || kind == .planarAlign || kind == .angle {
+                        return fail("missing_direction",
+                                    "\(kind.rawValue) needs a directionB; pass a non-zero vector.")
+                    }
+                    constraint.directionB = nil
+                    geometryBChanged = true
+                } else if let raw = args["directionB"] {
+                    switch parseVector(raw) {
+                    case .failure(let error): return fail(error.code, error.message)
+                    case .success(let parsed):
+                        guard let parsed, simd_length(parsed) > 1e-12 else {
+                            return fail("zero_direction", "directionB must be a non-zero [x,y,z] vector.")
+                        }
+                        constraint.directionB = simd_normalize(parsed)
+                        geometryBChanged = true
+                    }
+                }
+            }
+            if geometryBChanged, referenceB == nil,
+               let source = body(for: effectiveBodyID(instanceBValue)) {
+                constraint.sourceRevisionB = source.meshRevision
+            }
+        }
+
+        let scopeIndex = constraintScopeIndex(updated, parentID: parentID)
+        guard CADAssemblySolver.constraintIsResolvable(constraint, in: scopeIndex) else {
+            return fail("invalid_constraint",
+                        "The edited constraint no longer resolves; nothing was changed.")
+        }
+
+        if let parentID {
+            guard updated.updateInstance(parentID, { container in
+                if let index = container.constraints.firstIndex(where: { $0.id == id }) {
+                    container.constraints[index] = constraint
+                }
+            }) else {
+                return fail("unknown_subassembly", "The owning subassembly disappeared while editing the constraint.")
+            }
+        } else {
+            guard let index = updated.constraints.firstIndex(where: { $0.id == id }) else {
+                return fail("unknown_constraint", "The constraint disappeared while editing it.")
+            }
+            updated.constraints[index] = constraint
+        }
+
+        if constraint == original {
+            var payload = constraintQueryPayload(constraint, scope: parentID == nil ? "root" : "subassembly",
+                                                 parentID: parentID)
+            payload["ok"] = true
+            payload["mutated"] = false
+            payload["unchanged"] = true
+            return payload
+        }
+
+        let outcome = solveCandidate(updated)
+        guard outcome.solved else {
+            var payload: [String: Any] = [
+                "ok": false,
+                "error": "constraint_failed",
+                "mutated": false,
+                "solved": false,
+                "constraintID": id.uuidString,
+                "scope": outcome.scope,
+                "message": failureMessage(
+                    invalid: Set(outcome.invalidReferences.map(\.uuidString)),
+                    conflicts: Set(outcome.conflicting.map(\.uuidString))),
+                "conflicting": outcome.conflicting.map(\.uuidString),
+                "invalidRefs": outcome.invalidReferences.map(\.uuidString),
+                // Candidate placements the solve reached; NOT applied.
+                "previewInstances": outcome.previewInstances.map(instancePayload),
+            ]
+            if let parentID = outcome.parentID {
+                payload["parentID"] = parentID.uuidString
+            } else {
+                payload["parentID"] = NSNull()
+            }
+            return payload
+        }
+
+        updated = outcome.assembly
+        if let failure = persist(updated) { return failure }
+        guard let current = updated.constraint(id) else {
+            return fail("unknown_constraint", "The constraint disappeared while updating it.")
+        }
+        let dof = CADAssemblySolver.degreesOfFreedom(updated, modelScale: modelScaleFor(updated))
+        let nestedCredible = nestedScopesAreCredible(updated)
+        let nestedFullyConstrained = nestedScopesAreFullyConstrained(updated)
+        var payload = constraintQueryPayload(current,
+                                             scope: parentID == nil ? "root" : "subassembly",
+                                             parentID: parentID)
+        payload["ok"] = true
+        payload["mutated"] = true
+        payload["solved"] = true
+        payload["constraintID"] = id.uuidString
+        payload["nestedSolved"] = outcome.nestedRows
+        // Same root-scope diagnostic contract as report/dof/solve.
+        payload["assemblyDOF"] = dof.total
+        payload["assemblyDOFScope"] = "root"
+        payload["relativeDOF"] = dof.relative
+        payload["globalRigidDOF"] = dof.globalRigid
+        payload["rootFullyConstrained"] = dof.fullyConstrained
+        payload["nestedFullyConstrained"] = nestedFullyConstrained
+        payload["fullyConstrained"] = dof.fullyConstrained && nestedFullyConstrained
+        payload["dofCredible"] = dof.credible && nestedCredible
+        payload["redundantConstraints"] = dof.redundant.map(\.uuidString)
+        payload["invalidRefs"] = []
+        payload["conflicting"] = []
+        return payload
+    }
+
+    /// Full query representation of one constraint (including the fields an
+    /// inspector needs to edit it without guessing geometry).
+    private func constraintQueryPayload(_ constraint: CADAssemblyConstraint,
+                                        scope: String,
+                                        parentID: UUID?) -> [String: Any] {
+        var payload = constraintPayload(constraint)
+        payload["scope"] = scope
+        if let parentID {
+            payload["parentID"] = parentID.uuidString
+        } else {
+            payload["parentID"] = NSNull()
+        }
+        payload["valid"] = true
         return payload
     }
 
@@ -2282,7 +2853,10 @@ public final class CADAssemblyService {
         }
         updated.instances = result.updatedInstances
         if let failure = persist(updated) { return failure }
-        let dof = CADAssemblySolver.degreesOfFreedom(updated)
+        let dof = CADAssemblySolver.degreesOfFreedom(
+            updated, modelScale: modelScaleFor(updated))
+        let nestedCredible = nestedScopesAreCredible(updated)
+        let nestedFullyConstrained = nestedScopesAreFullyConstrained(updated)
         return [
             "ok": true,
             "mutated": true,
@@ -2292,9 +2866,19 @@ public final class CADAssemblyService {
             "nestedSolved": nestedRows,
             "invalidRefs": [],
             "conflicting": [],
-            "assemblyDOF": dof.relative,
+            // Same root-scope total/relative split as report and dof, so a
+            // successful solve and the DOF diagnostic cannot disagree. The
+            // count covers the root scope only; nested scopes are diagnosed
+            // separately and no global aggregate is fabricated.
+            "assemblyDOF": dof.total,
+            "assemblyDOFScope": "root",
+            "relativeDOF": dof.relative,
             "globalRigidDOF": dof.globalRigid,
-            "fullyConstrained": dof.fullyConstrained,
+            "rootFullyConstrained": dof.fullyConstrained,
+            "nestedFullyConstrained": nestedFullyConstrained,
+            "fullyConstrained": dof.fullyConstrained && nestedFullyConstrained,
+            "dofCredible": dof.credible && nestedCredible,
+            "dofExact": dof.exact,
             "redundantConstraints": dof.redundant.map(\.uuidString),
         ]
     }
@@ -3320,7 +3904,16 @@ public final class CADAssemblyService {
         if let directionB = constraint.directionB {
             payload["directionB"] = vectorPayload(directionB)
         }
-        if let value = constraint.value { payload["value"] = value }
+        if let value = constraint.value {
+            payload["value"] = value
+            payload["valueUnit"] = constraint.kind == .angle ? "degrees" : "mm"
+        }
+        if let sourceRevisionA = constraint.sourceRevisionA {
+            payload["sourceRevisionA"] = sourceRevisionA
+        }
+        if let sourceRevisionB = constraint.sourceRevisionB {
+            payload["sourceRevisionB"] = sourceRevisionB
+        }
         return payload
     }
 
@@ -3739,14 +4332,33 @@ private nonisolated enum CADAssemblySolver {
         var total: Int
         var relative: Int
         var globalRigid: Int
+        /// True only when the system is grounded, exactly analyzed and the
+        /// ACTUAL residual solve converges. A rank-zero but inconsistent or
+        /// non-convergent system is never called fully constrained.
         var fullyConstrained: Bool
         var unconstrained: [UUID]
         var redundant: [UUID]
         var exact: Bool
+        /// Constraints the solver could not resolve (missing instance/value).
+        var invalidReferences: [UUID] = []
+        /// Constraints whose residual stayed above tolerance, so the rank
+        /// count is diagnostic only and MUST NOT be presented as live freedom.
+        var conflicting: [UUID] = []
+        var solved: Bool = true
+        /// A rank/DOF read is trustworthy only when the same assembly actually
+        /// solves, every reference resolves, and the rank is in the exact
+        /// 64-instance / 128-constraint window. Beyond it the rank is still
+        /// returned but `fullyConstrained` is never claimed.
+        var credible: Bool { solved && invalidReferences.isEmpty && exact }
     }
 
-    static func degreesOfFreedom(_ assembly: CADAssembly) -> DOFResult {
+    static func degreesOfFreedom(_ assembly: CADAssembly,
+                                 modelScale: Double = 1) -> DOFResult {
         let index = resolvableIndex(assembly)
+        // The true residual solver is the honesty check: rank alone cannot
+        // tell whether two different targets are inconsistent. This is pure
+        // value math and is never persisted.
+        let dryRun = solve(assembly, modelScale: modelScale)
         var order: [Int] = []
         var columnOf: [UUID: Int] = [:]
         var transforms: [Transform3D] = []
@@ -3922,6 +4534,7 @@ private nonisolated enum CADAssemblySolver {
         let globalRigid = (!grounded && n > 0) ? 6 : 0
         let relative = max(0, total - globalRigid)
         let fullyConstrained = exact && grounded && total == 0
+            && dryRun.solved && dryRun.invalidReferences.isEmpty
 
         var perInstance: [UUID: Int] = [:]
         for (slot, position) in order.enumerated() {
@@ -3950,21 +4563,12 @@ private nonisolated enum CADAssemblySolver {
         // when adding its rows to the previously accepted constraints does not
         // increase the rank. With duplicate rows this flags the LATER copies
         // (the earlier one remains authoritative readable); independent
-        // constraints are never flagged. Bounded to a small exact window.
-        var redundant: [UUID] = []
-        if exact && n <= 16 && active.count <= 24 {
-            var accumulated: [[Double]] = []
-            var accumulatedRank = 0
-            for constraint in active {
-                accumulated.append(contentsOf: rows(for: constraint))
-                let grown = analyze(accumulated, columns: columns).rank
-                if grown == accumulatedRank {
-                    redundant.append(constraint.id)
-                } else {
-                    accumulatedRank = grown
-                }
-            }
-        }
+        // constraints are never flagged. The incremental orthonormal basis
+        // stays exact at the 64-instance / 128-constraint boundary instead of
+        // silently returning an empty list beyond a small window.
+        let redundant = exact
+            ? incrementalRedundancy(active, columns: columns) { rows(for: $0) }
+            : []
 
         return DOFResult(perInstance: perInstance,
                          total: total,
@@ -3973,7 +4577,56 @@ private nonisolated enum CADAssemblySolver {
                          fullyConstrained: fullyConstrained,
                          unconstrained: unconstrained,
                          redundant: redundant,
-                         exact: exact)
+                         exact: exact,
+                         invalidReferences: dryRun.invalidReferences,
+                         conflicting: dryRun.conflicting,
+                         solved: dryRun.solved)
+    }
+
+    /// Order-stable redundancy by modified Gram-Schmidt over the normalized
+    /// constraint rows. Unlike re-running Gauss-Jordan per prefix, this is
+    /// O(rows × basis × columns), so the supported 128-row exact boundary is
+    /// still bounded. A constraint is redundant when none of its rows adds an
+    /// independent direction; duplicate/loop rows therefore flag the LATER
+    /// copy, while a genuinely new loop closure still increases the rank.
+    private static func incrementalRedundancy(
+        _ constraints: [CADAssemblyConstraint],
+        columns: Int,
+        rows: (CADAssemblyConstraint) -> [[Double]]
+    ) -> [UUID] {
+        var basis: [[Double]] = []
+        basis.reserveCapacity(min(columns, constraints.count * 6))
+        var redundant: [UUID] = []
+        let threshold = 1e-8
+
+        for constraint in constraints {
+            var contributed = false
+            for raw in rows(constraint) {
+                guard raw.count == columns else { continue }
+                let norm = sqrt(raw.reduce(0) { $0 + $1 * $1 })
+                guard norm.isFinite, norm > 1e-15 else { continue }
+                var vector = raw.map { $0 / norm }
+                // Two passes keep the basis stable for near-duplicate rows.
+                for _ in 0..<2 {
+                    for unit in basis {
+                        var dot = 0.0
+                        for index in 0..<columns { dot += vector[index] * unit[index] }
+                        guard dot != 0 else { continue }
+                        for index in 0..<columns { vector[index] -= dot * unit[index] }
+                    }
+                }
+                var residualSquared = 0.0
+                for value in vector { residualSquared += value * value }
+                let residual = sqrt(residualSquared)
+                guard residual.isFinite, residual > threshold,
+                      basis.count < columns else { continue }
+                for index in 0..<columns { vector[index] /= residual }
+                basis.append(vector)
+                contributed = true
+            }
+            if !contributed { redundant.append(constraint.id) }
+        }
+        return redundant
     }
 
     struct RankAnalysis {

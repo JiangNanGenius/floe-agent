@@ -112847,6 +112847,134 @@
           }
         }
       }
+    },
+    "cad.workbench.assembly.editConstraint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑"
+          }
+        }
+      }
+    },
+    "cad.workbench.constraint.updateFailed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The constraint could not be updated."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法更新约束，请检查后重试。"
+          }
+        }
+      }
+    },
+    "cad.workbench.constraint.subassemblyReference": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Editing the value keeps the current subassembly reference."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "修改数值会保留当前子装配引用。"
+          }
+        }
+      }
+    },
+    "cad.workbench.constraint.referenceKept": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose another face to change this reference."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新选面可更改此引用。"
+          }
+        }
+      }
+    },
+    "cad.workbench.constraint.editTitle": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit constraint"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑约束"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.dofRootScope": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ top-level DOF"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "顶层自由度 %@"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.internalMotionRemains": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parts can still move"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "子零件仍可移动"
+          }
+        }
+      }
+    },
+    "cad.workbench.assembly.dofUnavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Freedom unverified"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法确认自由度"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

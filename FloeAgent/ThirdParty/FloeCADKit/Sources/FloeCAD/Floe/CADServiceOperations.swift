@@ -49,7 +49,7 @@ public nonisolated enum CADServiceOperations {
     /// dirty state, so they stay directly callable like the other reads.
     public static let mutatingAssemblyActions: Set<String> = [
         "addInstance", "removeInstance", "setTransform", "setVisible",
-        "addConstraint", "removeConstraint", "suppressConstraint",
+        "addConstraint", "updateConstraint", "removeConstraint", "suppressConstraint",
         "solve", "sourceUpdate", "clear",
         "addExplodedView", "updateExplodedView", "removeExplodedView",
         // E01/E02 additive hierarchy/reference actions. Each persists

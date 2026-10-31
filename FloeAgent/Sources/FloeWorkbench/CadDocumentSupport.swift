@@ -909,6 +909,30 @@ public enum CadServiceOperationCatalog: Sendable {
                              #"{"kind":"distance","instanceA":"<instance uuid>","instanceB":"<instance uuid>","pointA":[0,0,0],"pointB":[0,0,0],"value":80}"#,
                              #"{"kind":"coaxial","instanceA":"<instance uuid>","instanceB":"<instance uuid>","directionA":[0,0,1],"directionB":[0,0,1]}"#,
                              #"{"kind":"planarAlign","instanceA":"<instance uuid>","instanceB":"<instance uuid>","referenceA":{"point":[0,0,0],"direction":[0,0,1],"source_revision":1,"fence":{"document_revision":1,"change_count":0}},"faceB":{"index":0,"query_token":"<query token>"}}"#]),
+        Operation(kind: "assembly", action: "updateConstraint", mutating: true,
+                  summary: "Edit one EXISTING assembly constraint in place, keeping its id, kind, "
+                    + "instance scope and (unless re-picked) its geometry references and revision pins. "
+                    + "The edited value and the solved placements commit as ONE undo step; an edit "
+                    + "that would make the constraints unsatisfiable is refused without writing anything. "
+                    + "A fixed constraint has no editable value or geometry reference.",
+                  arguments: [
+                      arg("id", "uuid", required: true, note: "constraint id from report/dof"),
+                      arg("value", "number", note: "distance in mm (>= 0) or angle in degrees [0, 180]; only for distance/angle"),
+                      arg("expectedValue", "number", note: "optional CAS fence: refuse if the stored value differs"),
+                      arg("pointA", "[x,y,z]", note: "replacement local reference point on A (mm)"),
+                      arg("directionA", "[x,y,z]", note: "replacement local axis/normal on A (non-zero)"),
+                      arg("pointB", "[x,y,z]", note: "replacement local reference point on B (mm)"),
+                      arg("directionB", "[x,y,z]", note: "replacement local axis/normal on B (non-zero)"),
+                      arg("referenceA", "object", note: "fresh assembly.reference reply for A; re-pins sourceRevisionA"),
+                      arg("referenceB", "object", note: "fresh assembly.reference reply for B; re-pins sourceRevisionB"),
+                      arg("faceA", "object", note: "{index, query_token? | signature?} kernel face for A"),
+                      arg("edgeA", "object", note: "{index, query_token?} kernel edge for A"),
+                      arg("faceB", "object", note: "{index, query_token? | signature?} kernel face for B"),
+                      arg("edgeB", "object", note: "{index, query_token?} kernel edge for B"),
+                  ],
+                  examples: [#"{"id":"<constraint uuid>","value":15}"#,
+                             #"{"id":"<constraint uuid>","value":15,"expectedValue":10}"#,
+                             #"{"id":"<constraint uuid>","referenceB":{"point":[0,0,20],"direction":[0,0,1],"fence":{"document_revision":1,"change_count":0}}}"#]),
         Operation(kind: "assembly", action: "removeInstance", mutating: true,
                   summary: "Remove one instance (a shared source body is never deleted).",
                   arguments: [arg("id", "uuid", required: true, note: "instance id from report/instances")],

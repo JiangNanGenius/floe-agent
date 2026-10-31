@@ -198,7 +198,8 @@ struct CadServiceOperationCatalogTests {
                                                        "removeBalloon", "addDimension", "updateDimension",
                                                        "removeDimension", "addAnnotation", "updateAnnotation",
                                                        "removeAnnotation"]
-    private static let assemblyActions = ["addInstance", "addConstraint", "removeInstance",
+    private static let assemblyActions = ["addInstance", "addConstraint", "updateConstraint",
+                                          "removeInstance",
                                           "setTransform", "setVisible", "removeConstraint",
                                           "suppressConstraint", "solve", "sourceUpdate", "clear",
                                           "reference", "referenceCandidates", "explodedViews",
@@ -208,7 +209,8 @@ struct CadServiceOperationCatalogTests {
                                           "hierarchy", "references", "referenceDiagnostics",
                                           "addSubassembly", "placePartReference", "moveInstance",
                                           "removePartReference", "makeIndependent"]
-    private static let assemblyMutating: Set<String> = ["addInstance", "addConstraint", "removeInstance",
+    private static let assemblyMutating: Set<String> = ["addInstance", "addConstraint", "updateConstraint",
+                                                        "removeInstance",
                                                         "setTransform", "setVisible", "removeConstraint",
                                                         "suppressConstraint", "solve", "sourceUpdate", "clear",
                                                         "addExplodedView", "updateExplodedView", "removeExplodedView",
@@ -281,6 +283,9 @@ struct CadServiceOperationCatalogTests {
             "addConstraint": ["kind", "instanceA", "instanceB",
                               "referenceA", "referenceB", "faceA", "edgeA", "faceB", "edgeB",
                               "pointA", "pointB", "directionA", "directionB", "value"],
+            "updateConstraint": ["id", "value", "expectedValue",
+                                 "pointA", "directionA", "pointB", "directionB",
+                                 "referenceA", "referenceB", "faceA", "edgeA", "faceB", "edgeB"],
         ]
         for (action, names) in expectedAssembly {
             let operation = try #require(CadServiceOperationCatalog.operation(kind: "assembly", action: action),
@@ -315,6 +320,7 @@ struct CadServiceOperationCatalogTests {
             "reference": ["instanceID"],
             "referenceCandidates": ["instanceID"],
             "addExplodedView": ["name"],
+            "updateConstraint": ["id"],
             "updateExplodedView": ["id"],
             "removeExplodedView": ["id"],
             "previewExplodedView": ["id"],

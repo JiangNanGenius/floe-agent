@@ -4,7 +4,7 @@
 //
 //  Assembly panel for the Floe workbench: explicit instance placement (source
 //  body picker — NEVER an implicit first body), per-instance transform/hide/
-//  delete, and full create/suppress/remove of fixed/coaxial/planarAlign/
+//  delete, and full create/edit/suppress/remove of fixed/coaxial/planarAlign/
 //  distance/angle constraints over `CADAssemblyService`. Constraints can use
 //  live face/axis/edge references from the real kernel geometry (native
 //  picker + current viewport selection) or the legacy numeric presets/points;
@@ -65,11 +65,20 @@ struct CADAssemblyReport {
         var instanceA: String
         var instanceB: String?
         var value: Double?
+        var valueUnit: String?
         var suppressed: Bool
         var valid: Bool
         var conflicting: Bool
         var redundant: Bool
         var staleReference: Bool
+        var pointA: SIMD3<Double>
+        var directionA: SIMD3<Double>
+        var pointB: SIMD3<Double>?
+        var directionB: SIMD3<Double>?
+        var sourceRevisionA: UInt64?
+        var sourceRevisionB: UInt64?
+        var parentID: String?
+        var scope: String?
     }
     struct ExplodedView: Identifiable {
         var id: String
@@ -86,12 +95,21 @@ struct CADAssemblyReport {
     var assemblyDOF = 0
     var relativeDOF = 0
     var globalRigidDOF = 0
+    var assemblyDOFScope = "root"
     var fullyConstrained = false
+    var rootFullyConstrained = false
+    var nestedFullyConstrained = true
+    var dofCredible = true
+    var solved = true
     var unconstrainedCount = 0
     var conflictCount = 0
     var invalidCount = 0
     var redundantCount = 0
     var staleCount = 0
+
+    /// True when the assembly contains at least one subassembly container, so
+    /// the root-scope DOF count is NOT a whole-assembly total.
+    var hasSubassemblies: Bool { instances.contains { $0.isSubassembly } }
 
     init() {}
 
@@ -99,7 +117,15 @@ struct CADAssemblyReport {
         assemblyDOF = reply["assemblyDOF"] as? Int ?? 0
         relativeDOF = reply["relativeDOF"] as? Int ?? 0
         globalRigidDOF = reply["globalRigidDOF"] as? Int ?? 0
+        assemblyDOFScope = reply["assemblyDOFScope"] as? String ?? "root"
         fullyConstrained = reply["fullyConstrained"] as? Bool ?? false
+        // Older services only sent the root-scope verdict as
+        // `fullyConstrained`; keep that display behavior when the explicit
+        // scope fields are absent.
+        rootFullyConstrained = reply["rootFullyConstrained"] as? Bool ?? fullyConstrained
+        nestedFullyConstrained = reply["nestedFullyConstrained"] as? Bool ?? true
+        dofCredible = reply["dofCredible"] as? Bool ?? true
+        solved = reply["solved"] as? Bool ?? true
         unconstrainedCount = (reply["unconstrainedInstances"] as? [String])?.count ?? 0
         let conflicts = Set(reply["conflicts"] as? [String] ?? reply["conflicting"] as? [String] ?? [])
         conflictCount = conflicts.count
@@ -138,16 +164,38 @@ struct CADAssemblyReport {
                              scale.count == 3 ? scale[2] : 1))
         }
         constraints = (reply["constraints"] as? [[String: Any]] ?? []).map { row in
-            Constraint(id: row["id"] as? String ?? "",
-                       kind: row["kind"] as? String ?? "",
-                       instanceA: row["instanceA"] as? String ?? "",
-                       instanceB: row["instanceB"] as? String,
-                       value: row["value"] as? Double,
-                       suppressed: row["suppressed"] as? Bool ?? false,
-                       valid: row["valid"] as? Bool ?? true,
-                       conflicting: conflicts.contains(row["id"] as? String ?? ""),
-                       redundant: row["redundant"] as? Bool ?? false,
-                       staleReference: row["staleReference"] as? Bool ?? false)
+            func vector(_ key: String) -> SIMD3<Double>? {
+                guard let values = row[key] as? [Double], values.count == 3 else { return nil }
+                return SIMD3(values[0], values[1], values[2])
+            }
+            func revision(_ key: String) -> UInt64? {
+                if let value = row[key] as? UInt64 { return value }
+                if let value = row[key] as? NSNumber { return value.uint64Value }
+                if let value = row[key] as? Int, value >= 0 { return UInt64(value) }
+                return nil
+            }
+            let pointA = vector("pointA") ?? .zero
+            let directionA = vector("directionA") ?? SIMD3(0, 0, 1)
+            return Constraint(
+                id: row["id"] as? String ?? "",
+                kind: row["kind"] as? String ?? "",
+                instanceA: row["instanceA"] as? String ?? "",
+                instanceB: row["instanceB"] as? String,
+                value: row["value"] as? Double,
+                valueUnit: row["valueUnit"] as? String,
+                suppressed: row["suppressed"] as? Bool ?? false,
+                valid: row["valid"] as? Bool ?? true,
+                conflicting: conflicts.contains(row["id"] as? String ?? ""),
+                redundant: row["redundant"] as? Bool ?? false,
+                staleReference: row["staleReference"] as? Bool ?? false,
+                pointA: pointA,
+                directionA: directionA,
+                pointB: vector("pointB"),
+                directionB: vector("directionB"),
+                sourceRevisionA: revision("sourceRevisionA"),
+                sourceRevisionB: revision("sourceRevisionB"),
+                parentID: row["parentID"] as? String,
+                scope: row["scope"] as? String)
         }
         explodedViews = (reply["explodedViews"] as? [[String: Any]] ?? []).map { row in
             let direction = (row["direction"] as? [Double]) ?? [1, 1, 1]
@@ -215,6 +263,7 @@ struct CADAssemblyPanelView: View {
     @State private var showPlaceSheet = false
     @State private var editingInstance: CADAssemblyReport.Instance?
     @State private var showConstraintSheet = false
+    @State private var editingConstraint: CADAssemblyReport.Constraint?
     @State private var showExplodedSheet = false
     @State private var showReferenceAttach = false
     @State private var showReferenceCheck = false
@@ -350,7 +399,18 @@ struct CADAssemblyPanelView: View {
                 document: document,
                 report: report,
                 busy: $busy,
-                onAdded: { reply in
+                onSaved: { reply in
+                    outcome = reply
+                    if reply["ok"] as? Bool == true { refresh() }
+                })
+        }
+        .sheet(item: $editingConstraint) { constraint in
+            CADConstraintEditorSheet(
+                document: document,
+                report: report,
+                busy: $busy,
+                editing: constraint,
+                onSaved: { reply in
                     outcome = reply
                     if reply["ok"] as? Bool == true { refresh() }
                 })
@@ -634,7 +694,8 @@ struct CADAssemblyPanelView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 if let value = constraint.value {
-                                    Text("· \(Self.valueFormatter.string(from: NSNumber(value: value)) ?? "\(value)")")
+                                    let unit = constraint.kind == "angle" ? "°" : " mm"
+                                    Text("· \(Self.valueFormatter.string(from: NSNumber(value: value)) ?? "\(value)")\(unit)")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -661,6 +722,16 @@ struct CADAssemblyPanelView: View {
                                 }
                             }
                             HStack(spacing: 8) {
+                                if canEditConstraint(constraint) {
+                                    panelHitTarget(Button {
+                                        editingConstraint = constraint
+                                    } label: {
+                                        Text(FloeCADStrings.text("cad.workbench.assembly.editConstraint", "Edit"))
+                                    }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .accessibilityIdentifier("CADAssemblyConstraintEdit-\(constraint.id)"))
+                                }
                                 panelHitTarget(Button(constraint.suppressed
                                                       ? FloeCADStrings.text("cad.workbench.assembly.enable", "Enable")
                                                       : FloeCADStrings.text("cad.workbench.assembly.suppress", "Suppress")) {
@@ -685,8 +756,18 @@ struct CADAssemblyPanelView: View {
 
             PanelSection(title: FloeCADStrings.text("cad.workbench.assembly.results", "Results")) {
                 HStack(spacing: 10) {
-                    PanelBadge(text: FloeCADStrings.format("cad.workbench.assembly.dofTotal", "%@ DOF total", report.assemblyDOF),
-                               tint: report.assemblyDOF == 0 ? .green : .blue)
+                    // The count is a ROOT-scope diagnostic (each subassembly
+                    // container counts as one rigid body); label it as such
+                    // whenever nested scopes exist so it is never read as a
+                    // whole-assembly total.
+                    if report.hasSubassemblies {
+                        PanelBadge(text: FloeCADStrings.format("cad.workbench.assembly.dofRootScope",
+                                                               "%@ top-level DOF", report.assemblyDOF),
+                                   tint: report.rootFullyConstrained ? .green : .blue)
+                    } else {
+                        PanelBadge(text: FloeCADStrings.format("cad.workbench.assembly.dofTotal", "%@ DOF total", report.assemblyDOF),
+                                   tint: report.fullyConstrained ? .green : .blue)
+                    }
                     PanelBadge(text: FloeCADStrings.format("cad.workbench.assembly.relative", "%@ relative", report.relativeDOF),
                                tint: .secondary)
                     if report.globalRigidDOF > 0 {
@@ -698,6 +779,19 @@ struct CADAssemblyPanelView: View {
                         PanelBadge(text: FloeCADStrings.text("cad.workbench.assembly.fullyConstrained",
                                                              "fully constrained"),
                                    tint: .green)
+                    } else if report.rootFullyConstrained, report.hasSubassemblies,
+                              report.solved, report.dofCredible {
+                        // The root scope cannot move but children inside a
+                        // subassembly still can; say that instead of implying
+                        // the whole assembly is locked.
+                        PanelBadge(text: FloeCADStrings.text("cad.workbench.assembly.internalMotionRemains",
+                                                             "Parts can still move"),
+                                   tint: .orange)
+                    }
+                    if !report.solved || !report.dofCredible {
+                        PanelBadge(text: FloeCADStrings.text("cad.workbench.assembly.dofUnavailable",
+                                                             "Freedom unverified"),
+                                   tint: .red)
                     }
                     if report.unconstrainedCount > 0 {
                         PanelBadge(text: FloeCADStrings.format("cad.workbench.assembly.unconstrained", "%@ unconstrained", report.unconstrainedCount),
@@ -717,6 +811,15 @@ struct CADAssemblyPanelView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func canEditConstraint(_ constraint: CADAssemblyReport.Constraint) -> Bool {
+        if constraint.kind == "distance" || constraint.kind == "angle" { return true }
+        guard constraint.kind == "coaxial" || constraint.kind == "planarAlign" else { return false }
+        return report.instances.contains { instance in
+            !instance.isSubassembly
+                && (instance.id == constraint.instanceA || instance.id == constraint.instanceB)
         }
     }
 
@@ -1150,27 +1253,59 @@ private struct CADConstraintEditorSheet: View {
     let document: FloeCADDocument
     let report: CADAssemblyReport
     @Binding var busy: Bool
-    let onAdded: ([String: Any]) -> Void
+    let editing: CADAssemblyReport.Constraint?
+    let onSaved: ([String: Any]) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var kind = "fixed"
+    @State private var kind: String
     @State private var instanceA: String?
     @State private var instanceB: String?
     @State private var axisA: CADPanelAxisPreset = .zPlus
     @State private var axisB: CADPanelAxisPreset = .zPlus
-    @State private var pointAX = "0"
-    @State private var pointAY = "0"
-    @State private var pointAZ = "0"
-    @State private var pointBX = "0"
-    @State private var pointBY = "0"
-    @State private var pointBZ = "0"
-    @State private var value = "0"
+    @State private var pointAX: String
+    @State private var pointAY: String
+    @State private var pointAZ: String
+    @State private var pointBX: String
+    @State private var pointBY: String
+    @State private var pointBZ: String
+    @State private var value: String
     @State private var referenceA: CADAssemblyReferenceDraft?
     @State private var referenceB: CADAssemblyReferenceDraft?
     @State private var pickerRequest: CADReferencePickerRequest?
     @State private var captureMessage: String?
     @State private var errorText: String?
 
+    init(document: FloeCADDocument,
+         report: CADAssemblyReport,
+         busy: Binding<Bool>,
+         editing: CADAssemblyReport.Constraint? = nil,
+         onSaved: @escaping ([String: Any]) -> Void) {
+        self.document = document
+        self.report = report
+        self._busy = busy
+        self.editing = editing
+        self.onSaved = onSaved
+        _kind = State(initialValue: editing?.kind ?? "fixed")
+        _instanceA = State(initialValue: editing?.instanceA ?? report.instances.first?.id)
+        _instanceB = State(initialValue: editing?.instanceB)
+        _value = State(initialValue: Self.numberString(editing?.value ?? 0))
+        _pointAX = State(initialValue: Self.numberString(editing?.pointA.x ?? 0))
+        _pointAY = State(initialValue: Self.numberString(editing?.pointA.y ?? 0))
+        _pointAZ = State(initialValue: Self.numberString(editing?.pointA.z ?? 0))
+        _pointBX = State(initialValue: Self.numberString(editing?.pointB?.x ?? 0))
+        _pointBY = State(initialValue: Self.numberString(editing?.pointB?.y ?? 0))
+        _pointBZ = State(initialValue: Self.numberString(editing?.pointB?.z ?? 0))
+    }
+
+    private static func numberString(_ value: Double) -> String {
+        String(format: "%.15g", value)
+    }
+
+    private static func vectorString(_ vector: SIMD3<Double>) -> String {
+        String(format: "(%.3f, %.3f, %.3f)", vector.x, vector.y, vector.z)
+    }
+
+    private var isEditing: Bool { editing != nil }
     private var kindLabel: String { localizedConstraintKind(kind) }
     private var needsB: Bool { kind != "fixed" }
     private var usesAxis: Bool { kind == "coaxial" || kind == "planarAlign" || kind == "angle" }
@@ -1187,7 +1322,7 @@ private struct CADConstraintEditorSheet: View {
             if kind == "distance", number < 0 { return false }
             if kind == "angle", number < 0 || number > 180 { return false }
         }
-        if usesPoints {
+        if !isEditing, usesPoints {
             if referenceA == nil, useNumericPointsA {
                 for text in [pointAX, pointAY, pointAZ] where Double(text) == nil { return false }
             }
@@ -1213,6 +1348,7 @@ private struct CADConstraintEditorSheet: View {
                         Text(localizedConstraintKind("distance")).tag("distance")
                         Text(localizedConstraintKind("angle")).tag("angle")
                     }
+                    .disabled(isEditing)
                     .accessibilityIdentifier("CADConstraintKind")
                     Picker(FloeCADStrings.text("cad.workbench.assembly.instanceA", "Instance A"),
                            selection: $instanceA) {
@@ -1222,6 +1358,7 @@ private struct CADConstraintEditorSheet: View {
                             Text(instance.name).tag(String?.some(instance.id))
                         }
                     }
+                    .disabled(isEditing)
                     .accessibilityIdentifier("CADConstraintInstanceA")
                     if needsB {
                         Picker(FloeCADStrings.text("cad.workbench.assembly.instanceB", "Instance B"),
@@ -1232,18 +1369,19 @@ private struct CADConstraintEditorSheet: View {
                                 Text(instance.name).tag(String?.some(instance.id))
                             }
                         }
+                        .disabled(isEditing)
                         .accessibilityIdentifier("CADConstraintInstanceB")
                     }
                 }
 
-                if let instanceA {
+                if kind != "fixed", let instanceA {
                     referenceSection(side: "A", instanceID: instanceA)
                 }
-                if needsB, let instanceB {
+                if kind != "fixed", needsB, let instanceB {
                     referenceSection(side: "B", instanceID: instanceB)
                 }
 
-                if usesAxis, referenceA == nil {
+                if !isEditing, usesAxis, referenceA == nil {
                     Section(FloeCADStrings.text("cad.workbench.assembly.axisA",
                                                 "Axis/face on A (local)")) {
                         Picker(FloeCADStrings.text("cad.workbench.assembly.axisA", "Axis/face on A (local)"),
@@ -1256,7 +1394,7 @@ private struct CADConstraintEditorSheet: View {
                         .accessibilityIdentifier("CADConstraintAxisA")
                     }
                 }
-                if usesAxis, needsB, referenceB == nil {
+                if !isEditing, usesAxis, needsB, referenceB == nil {
                     Section(FloeCADStrings.text("cad.workbench.assembly.axisB",
                                                 "Axis/face on B (local)")) {
                         Picker(FloeCADStrings.text("cad.workbench.assembly.axisB", "Axis/face on B (local)"),
@@ -1270,7 +1408,7 @@ private struct CADConstraintEditorSheet: View {
                     }
                 }
 
-                if usesPoints {
+                if !isEditing, usesPoints {
                     if referenceA == nil {
                         Section(FloeCADStrings.text("cad.workbench.assembly.pointA",
                                                     "Reference point on A (mm)")) {
@@ -1316,14 +1454,18 @@ private struct CADConstraintEditorSheet: View {
                     }
                 }
             }
-            .navigationTitle(kindLabel)
+            .navigationTitle(isEditing
+                             ? FloeCADStrings.text("cad.workbench.constraint.editTitle", "Edit constraint")
+                             : kindLabel)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(FloeCADStrings.text("cad.ui.common.add", "Add")) { add() }
+                    Button(isEditing
+                           ? FloeCADStrings.text("cad.ui.common.apply", "Apply")
+                           : FloeCADStrings.text("cad.ui.common.add", "Add")) { add() }
                         .disabled(!canAdd)
                         .accessibilityIdentifier("CADConstraintConfirm")
                 }
@@ -1355,6 +1497,7 @@ private struct CADConstraintEditorSheet: View {
     private func referenceSection(side: String, instanceID: String) -> some View {
         let draft = side == "A" ? referenceA : referenceB
         let name = report.instanceName(instanceID)
+        let leaf = report.instances.first(where: { $0.id == instanceID })?.isSubassembly == false
         Section {
             if let draft {
                 Text(draft.summary)
@@ -1367,41 +1510,77 @@ private struct CADConstraintEditorSheet: View {
                     Text(FloeCADStrings.text("cad.workbench.assembly.clearReference", "Clear picked reference"))
                 }
                 .accessibilityIdentifier("CADConstraintClearReference\(side)")
+            } else if isEditing {
+                Text(existingReferenceText(side: side))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(FloeCADStrings.text(
+                    "cad.workbench.constraint.referenceKept",
+                    "Choose another face to change this reference."))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             } else {
                 Text(FloeCADStrings.text("cad.workbench.assembly.noReference",
                                          "No face/axis picked yet."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            HStack(spacing: 10) {
-                Button {
-                    captureSelection(side: side, instanceID: instanceID)
-                } label: {
-                    Text(FloeCADStrings.text("cad.workbench.assembly.useViewportSelection",
-                                             "Use viewport selection"))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(busy)
-                .accessibilityIdentifier("CADConstraintCapture\(side)")
+            if leaf {
+                HStack(spacing: 10) {
+                    Button {
+                        captureSelection(side: side, instanceID: instanceID)
+                    } label: {
+                        Text(FloeCADStrings.text("cad.workbench.assembly.useViewportSelection",
+                                                 "Use viewport selection"))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(busy)
+                    .accessibilityIdentifier("CADConstraintCapture\(side)")
 
-                Button {
-                    pickerRequest = CADReferencePickerRequest(instanceID: instanceID,
-                                                              instanceName: name,
-                                                              side: side)
-                } label: {
-                    Text(FloeCADStrings.text("cad.workbench.assembly.pickFace",
-                                             "Pick face/axis/edge…"))
+                    Button {
+                        pickerRequest = CADReferencePickerRequest(instanceID: instanceID,
+                                                                  instanceName: name,
+                                                                  side: side)
+                    } label: {
+                        Text(FloeCADStrings.text("cad.workbench.assembly.pickFace",
+                                                 "Pick face/axis/edge…"))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(busy)
+                    .accessibilityIdentifier("CADConstraintPick\(side)")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(busy)
-                .accessibilityIdentifier("CADConstraintPick\(side)")
+            } else if isEditing {
+                Text(FloeCADStrings.text(
+                    "cad.workbench.constraint.subassemblyReference",
+                    "Editing the value keeps the current subassembly reference."))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         } header: {
             Text(FloeCADStrings.format("cad.workbench.assembly.referenceFor",
                                        "Picked geometry on %@", name))
         }
+    }
+
+    /// User-meaningful geometry of the stored reference (point and direction,
+    /// in mm / unit axes). Internal revision pins stay in the service
+    /// payload/diagnostics and are deliberately not surfaced in the ordinary
+    /// sheet.
+    private func existingReferenceText(side: String) -> String {
+        guard let editing else { return "" }
+        let isA = side == "A"
+        let point: SIMD3<Double>
+        let direction: SIMD3<Double>
+        if isA {
+            point = editing.pointA
+            direction = editing.directionA
+        } else {
+            point = editing.pointB ?? .zero
+            direction = editing.directionB ?? SIMD3(0, 0, 1)
+        }
+        return Self.vectorString(point) + " → " + Self.vectorString(direction)
     }
 
     private func captureSelection(side: String, instanceID: String) {
@@ -1427,6 +1606,32 @@ private struct CADConstraintEditorSheet: View {
 
     private func add() {
         guard let instanceA else { return }
+        if let editing {
+            var args: [String: Any] = ["id": editing.id]
+            if usesValue, let number = Double(value) {
+                args["value"] = number
+                if let current = editing.value { args["expectedValue"] = current }
+            }
+            if let referenceA { args["referenceA"] = referenceA.payload }
+            if needsB, let referenceB { args["referenceB"] = referenceB.payload }
+            busy = true
+            errorText = nil
+            Task { @MainActor in
+                let service = CADAssemblyService(document: document)
+                let reply = await service.handleAsync(action: "updateConstraint", args: args)
+                if reply["mutated"] as? Bool == true { _ = await document.save() }
+                busy = false
+                onSaved(reply)
+                if reply["ok"] as? Bool == true {
+                    dismiss()
+                } else {
+                    errorText = reply["message"] as? String
+                        ?? FloeCADStrings.text("cad.workbench.constraint.updateFailed",
+                                               "The constraint could not be updated.")
+                }
+            }
+            return
+        }
         var args: [String: Any] = ["kind": kind, "instanceA": instanceA]
         if let rowA = report.instances.first(where: { $0.id == instanceA }) {
             let rowB = needsB ? report.instances.first(where: { $0.id == instanceB }) : nil
@@ -1467,7 +1672,7 @@ private struct CADConstraintEditorSheet: View {
             let reply = await service.handleAsync(action: "addConstraint", args: args)
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
-            onAdded(reply)
+            onSaved(reply)
             if reply["ok"] as? Bool == true {
                 dismiss()
             } else {
