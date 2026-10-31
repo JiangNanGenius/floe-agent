@@ -211,6 +211,7 @@ struct MediaEditorView: View {
 
 /// Workspace adapter for the pinned MIT VideoEditorKit. Manual captions stay on device.
 private struct FloeVisualVideoEditor: View {
+    @EnvironmentObject private var environment: AppEnvironment
     let root: URL
     let source: URL
     let onExported: (URL) -> Void
