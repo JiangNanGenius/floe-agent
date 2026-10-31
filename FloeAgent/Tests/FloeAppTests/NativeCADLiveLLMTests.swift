@@ -13,21 +13,44 @@
 // ------------------------------------------
 // One synthetic, task-owned native `.floecad` bracket flows through the real
 // configured chat model, the real App tool catalog (`cad.document`) and the
-// real `ConversationRunService`, across three ordinary turns:
+// real `ConversationRunService`, across FOUR ordinary turns:
 //
 //   1. create the native package, a 80 × 50 × 10 mm plate and a Ø6 through
 //      hole, then save;
-//   2. edit the EXISTING hole circle (same sketch/entity identity) from
-//      Ø6 to exactly Ø8, add a 2 mm fillet on the vertical corner edge(s),
-//      then save;
-//   3. read the actual parameters back, capture a real engineering viewport
-//      PNG and save the document again.
+//   2. capture an actual 1024 × 768 engineering viewport PNG of that saved
+//      revision, receive it as a real outbound provider image part, then make
+//      the requested correction on the EXISTING hole circle (same sketch/entity
+//      identity, Ø6 → Ø8), add a 2 mm fillet on the vertical corner edge(s)
+//      and save;
+//   3. undo the fillet and the hole edit with the real native `parameters`
+//      action "undo" (each undo is one saved undoable command), read the state
+//      back and save;
+//   4. close the live bridge through its owner lifecycle, reopen the same saved
+//      package from disk, make one further real edit to the SAME hole (radius
+//      3 → 5, Ø10), save it, read it back, and capture the final engineering
+//      viewport PNG as the LAST tool call so the image binds the final package.
+//
+// Why four turns instead of the original three: the real undo stack only
+// survives while the SAME live bridge/document session stays open, and the
+// acceptance also requires closing that bridge, reopening the saved package and
+// editing it again. Combining undo and reopen in one turn would either lose the
+// native undo stack or leave no independent on-disk state to verify after the
+// undo. Four bounded turns keep every important state independently verifiable
+// on disk without adding another model, tool or engine. The aggregate ceiling
+// is unchanged: ONE 1,000,000 reported-token budget across every owned run and
+// one 2,700 s aggregate wall-clock deadline (900 s per turn).
 //
 // The assertions read the bytes on disk with an independent `FloeCADDocument`
 // reopen: body identity, analytic B-rep, hole diameter, fillet radius/edge
-// count, exact plate-minus-hole-minus-fillet volume, revision growth and the
-// capture PNG. Model prose is never evidence. A tool success string alone is
-// never evidence.
+// count, exact plate-minus-hole-minus-fillet volume, the exact canonical model
+// identity after undo, revision growth and both capture PNGs. The visual
+// receipt is not inferred from `supportsVision`: the bounded observer below
+// reads the durable provider-dispatch checkpoint and requires the exact
+// capture image to be present as an outbound image part for the selected
+// vision model, then binds the following correction to the same document
+// revision and stable hole identity. Model prose is never evidence. A tool
+// success string alone is never evidence. A text-only model that did not
+// deliver an actual image part is an explicit failure, not a pass.
 //
 // Opt-in and credential policy
 // ----------------------------
@@ -52,14 +75,25 @@
 // pricing metadata is an explicit `XCTSkip` and a handoff blocker — never a
 // live pass.
 //
-// The opt-in may instead declare `prepaidBudgetBasis: true` for the one
-// reviewed owned Agent Plan route. That mode is accepted only with the exact
-// reserved provider/model UUIDs, the exact Agent Plan base URL, the exact
-// remote model ID, no usable model pricing metadata, no unpinned/fallback
-// selection and explicit zero input/output increments. Usage is then reported
-// as prepaid-plan consumption with the ordinary token and wall-clock ceilings;
-// it is never described as free market pricing and never becomes a generic
-// zero-price model path.
+// The opt-in may instead declare `prepaidBudgetBasis: true` for the reviewed
+// owned Agent Plan route. That mode is accepted only with the exact reserved
+// provider/model UUIDs, the exact Agent Plan base URL, a reviewed same-plan
+// remote model ID, a capability flag that matches that review (native image
+// input on or off exactly as reviewed), no usable model pricing metadata, no
+// unpinned/fallback selection and explicit zero input/output increments.
+// Usage is then reported as prepaid-plan consumption with the ordinary token
+// and wall-clock ceilings; it is never described as free market pricing and
+// never becomes a generic zero-price model path. The reviewed native-image
+// candidates are metadata-only allowlist entries copied from the official
+// Agent Plan supported-models page (updated 2026-10-29); no model, URL or
+// price is hard-pinned here and no entitlement is assumed. The private source
+// receipt is `verification/cad-live-vision-route-source-review.json`.
+//
+// The X35 selector itself requires a direct-vision route: the model that
+// actually receives the capture must declare image input, and the outbound
+// request must carry the verified image part. A text-only primary model whose
+// image was only described by a helper, OCR text, tool metadata or model prose
+// cannot pass this selector; that is an honest insufficiency, not a skip.
 //
 // Cost/data bounding and approval policy
 // --------------------------------------
@@ -81,7 +115,7 @@
 // token budget exceeds the opt-in ceiling. Every run also has a wall-clock
 // deadline. Those are hard stops, not claims that a skipped/failed turn passed.
 //
-// The token budget is ONE aggregate cap across all three model turns:
+// The token budget is ONE aggregate cap across all owned model turns:
 // `maxTotalTokens` counts uncached input + cache read + output, summed over
 // every run. Reasoning tokens are already inside the provider's output count
 // and cache-write tokens are already inside its input count, so neither is
@@ -89,6 +123,9 @@
 // but the aggregate guard still stops the combined reported total at the cap.
 // The reviewed prepaid basis requires `maxTotalTokens`; a legacy metered
 // opt-in that omits it keeps the previous separate input/output caps only.
+// `maxTotalSeconds` is enforced as a real aggregate deadline in addition to
+// the XCTest time allowance, so four turns cannot silently outlive the
+// approved 2,700 s window.
 //
 // Isolation and cleanup
 // ---------------------
@@ -102,9 +139,11 @@
 // prompt; the opt-in must explicitly acknowledge that real-App context. Empty
 // `memoryQuery` avoids the embedding write path.
 //
-// Cleanup removes ONLY this task's conversation/workspace, the three run IDs'
-// content snapshots, skill run snapshots and CAD viewport artifact
-// directories, plus the bridge's live document. The App's saved provider
+// Cleanup first cancels and joins every owned run service (no late callback
+// can land in another document), then removes ONLY this task's
+// conversation/workspace, every owned run ID's content snapshots, skill run
+// snapshots and CAD viewport artifact directories, plus the bridge's live
+// document. The App's saved provider
 // configuration, global default model, personalization documents and memory
 // are never written by this test. The durable CAD proposal store keeps the
 // settled proposal record(s) for the deleted synthetic document (the product
@@ -116,7 +155,10 @@
 // 1. Add `Tests/FloeAppTests/NativeCADLiveLLMTests.swift` to the FloeAppTests
 //    sources in `FloeAgent/project.yml` and regenerate the project.
 // 2. Compile the App test host once in the normal batch.
-// 3. Write the private opt-in file into the launched App's Caches directory.
+// 3. Write the private opt-in and owned-route metadata into the launched App's
+//    Caches directory. For this selector the owned-route `remoteModelID` must
+//    be one of the reviewed same-plan native-image candidates and
+//    `supportsVision` must be true; the opt-in must name the same remote ID.
 // 4. Run only:
 //      FloeAppTests/NativeCADLiveLLMTests/
 //        testRealModelCreatesEditsHoleFilletsCapturesAndReopensNativeBracket
@@ -124,9 +166,14 @@
 // 5. A skip is zero live evidence. Do not report this acceptance as passed
 //    from a skip or from this source-only handoff.
 //
+// The non-paid contract tests in this file (`NativeCADLiveBudgetTests`,
+// `NativeCADLiveVisionContractTests` and `NativeCADSaveIdentityAppTests`) may
+// be run without an opt-in file, provider credential or provider request.
+//
 // The exact scenario, ceilings and cleanup limitations are documented in
-// `Local/Private/native-browser-cad-context-20261030/continuation/
-// native-cad-llm-acceptance/`.
+// `Local/Private/cad106-native-closure-20261031/cad-live-visual-loop-acceptance/`
+// and the original handoff in `Local/Private/native-browser-cad-context-20261030/
+// continuation/native-cad-llm-acceptance/`.
 
 #if canImport(UIKit) && DEBUG && targetEnvironment(simulator)
 import Foundation
@@ -167,6 +214,10 @@ final class NativeCADLiveLLMTests: XCTestCase {
         do {
             let route = try NativeCADLiveRoute.select(optIn: optIn, center: center)
             try NativeCADLivePreflight.requireNativeCADCapabilities()
+            // The enhanced X35 loop needs direct image delivery to the model
+            // that makes the correction. This is checked before any paid turn;
+            // a text-only route is an explicit insufficiency, never a pass.
+            try NativeCADLivePreflight.requireDirectVision(route: route)
             let session = NativeCADLiveSession(
                 environment: environment, center: center, route: route, optIn: optIn)
             do { try await session.runAll() }
@@ -383,25 +434,96 @@ final class NativeCADLiveBudgetTests: XCTestCase {
     }
 }
 
-/// The one reviewed prepaid route this test may account as zero incremental
-/// USD. These are test-only constants: they do not change production provider
-/// configuration or enable any generic free-model path.
+/// The reviewed prepaid Agent Plan routes this test may account as zero
+/// incremental USD. These are test-only constants: they do not change
+/// production provider configuration or enable any generic free-model path.
+///
+/// The reviewed remote-model rows come from the official Agent Plan supported
+/// models page (updated 2026-10-29) and its source receipt
+/// `Local/Private/cad106-native-closure-20261031/verification/
+/// cad-live-vision-route-source-review.json`. That page documents native image
+/// input and a 1,048,576-token context for `glm-5.3-flash`,
+/// `deepseek-v4.1-flash` and `deepseek-v4.1-flash-economy` on the SAME Agent
+/// Plan route. No account entitlement is assumed here: Root selects and probes
+/// the actual current candidate. The historical text-only `deepseek-v4-flash`
+/// row is retained so prior opt-ins and the 64K/128K compaction selectors keep
+/// their exact old behavior.
 private enum NativeCADLivePrepaidRoute {
+    struct ReviewedModel: Sendable, Equatable {
+        var remoteModelID: String
+        /// Whether the reviewed row declares native image input. The owned
+        /// model capability flag must match this exactly.
+        var supportsVision: Bool
+        /// Documented context window for this reviewed row.
+        var documentedContextTokens: Int
+        /// Highest output limit this harness accepts for the row. The
+        /// documented v4.1 Flash maximum is 393,216; the legacy row keeps the
+        /// previous 32,768 harness bound. GLM's output maximum is not
+        /// documented on the reviewed page, so it also keeps that bound.
+        var maximumOutputTokens: Int
+        var review: String
+    }
+
     static let providerID = UUID(uuidString: "A3060000-0000-4000-8000-000000000001")!
     static let modelID = UUID(uuidString: "A3060000-0000-4000-8000-000000000002")!
     static let baseURL = URL(string: "https://ark.cn-beijing.volces.com/api/plan/v3")!
-    static let remoteModelID = "deepseek-v4-flash"
+    static let legacyRemoteModelID = "deepseek-v4-flash"
+    static let recordedContextTokens = 1_048_576
     static let maxInputTokens = 1_000_000
     static let maxOutputTokens = 1_000_000
     static let maxTotalTokens = 1_000_000
     static let maxPerRunSeconds: Double = 900
     static let maxTotalSeconds: Double = 2_700
 
+    static let reviewedModels: [ReviewedModel] = [
+        ReviewedModel(
+            remoteModelID: legacyRemoteModelID,
+            supportsVision: false,
+            documentedContextTokens: 1_000_000,
+            maximumOutputTokens: 32_768,
+            review: "Historical text-only same-plan row; preserves the prior opt-ins and compaction tests."
+        ),
+        ReviewedModel(
+            remoteModelID: "glm-5.3-flash",
+            supportsVision: true,
+            documentedContextTokens: recordedContextTokens,
+            maximumOutputTokens: 32_768,
+            review: "Official Agent Plan supported-models page, updated 2026-10-29: native image input."
+        ),
+        ReviewedModel(
+            remoteModelID: "deepseek-v4.1-flash",
+            supportsVision: true,
+            documentedContextTokens: recordedContextTokens,
+            maximumOutputTokens: 393_216,
+            review: "Official Agent Plan supported-models page, updated 2026-10-29: native image input; documented max output 393,216."
+        ),
+        ReviewedModel(
+            remoteModelID: "deepseek-v4.1-flash-economy",
+            supportsVision: true,
+            documentedContextTokens: recordedContextTokens,
+            maximumOutputTokens: 393_216,
+            review: "Official Agent Plan supported-models page, updated 2026-10-29: native image input."
+        ),
+    ]
+
+    static func reviewedModel(_ remoteModelID: String?) -> ReviewedModel? {
+        guard let remoteModelID, !remoteModelID.isEmpty else { return nil }
+        // Exact remote identity, never a prefix or alias match.
+        return reviewedModels.first { $0.remoteModelID == remoteModelID }
+    }
+
+    static func isReviewed(remoteModelID: String?) -> Bool {
+        reviewedModel(remoteModelID) != nil
+    }
+
     /// Exact profile shape created by `NativeCADLiveOwnedRoute` for the
     /// reserved IDs above. No opt-in pin alone can authorize another base or
-    /// model as a zero-increment route.
+    /// model as a zero-increment route, and the owned model's actual
+    /// capability/limits must match the reviewed row exactly.
     static func matches(provider: ProviderProfile, model: ModelProfile) -> Bool {
-        provider.id == providerID
+        guard let reviewed = reviewedModel(model.remoteModelID) else { return false }
+        let declaresVision = model.capabilities.contains(.vision)
+        return provider.id == providerID
             && model.id == modelID
             && model.providerID == provider.id
             && provider.isEnabled
@@ -416,13 +538,17 @@ private enum NativeCADLivePrepaidRoute {
             && provider.toolNameCompatibility
             && provider.secretRef?.synchronizable == false
             && provider.secretRef?.keychainAccount.hasPrefix("native-cad-qualification.") == true
-            && model.remoteModelID == remoteModelID
+            && model.remoteModelID == reviewed.remoteModelID
             && model.displayName == "Native CAD qualification"
             && model.isHiddenFromPrimaryPicker == true
             && model.pricing == nil
             && model.capabilities.contains(.text)
             && model.capabilities.contains(.tools)
-            && !model.capabilities.contains(.vision)
+            && declaresVision == reviewed.supportsVision
+            && model.limits.contextTokens >= 16_384
+            && model.limits.contextTokens <= reviewed.documentedContextTokens
+            && model.limits.maxOutputTokens >= 1_024
+            && model.limits.maxOutputTokens <= reviewed.maximumOutputTokens
     }
 }
 
@@ -451,16 +577,20 @@ private struct NativeCADLiveOwnedRoute {
             .appendingPathComponent(NativeCADLiveOptIn.directoryName)
         let metadata = try JSONDecoder().decode(Metadata.self,
             from: Data(contentsOf: root.appendingPathComponent("owned-route.json")))
-        guard metadata.providerID == providerID, metadata.modelID == modelID,
+        guard let reviewed = NativeCADLivePrepaidRoute.reviewedModel(metadata.remoteModelID),
+              metadata.providerID == providerID, metadata.modelID == modelID,
               metadata.baseURL.absoluteString == ProcessInfo.processInfo.environment["FLOE_NATIVE_CAD_LIVE_BASE_URL"],
               metadata.remoteModelID == ProcessInfo.processInfo.environment["FLOE_NATIVE_CAD_LIVE_MODEL"],
               metadata.baseURL.scheme == "https", metadata.baseURL.host != nil,
               metadata.baseURL.user == nil, metadata.baseURL.password == nil,
               metadata.baseURL.query == nil,
-              (16_384...1_000_000).contains(metadata.contextTokens),
-              (1_024...32_768).contains(metadata.maxOutputTokens),
+              (16_384...reviewed.documentedContextTokens).contains(metadata.contextTokens),
+              (1_024...reviewed.maximumOutputTokens).contains(metadata.maxOutputTokens),
+              (metadata.supportsVision == true) == reviewed.supportsVision,
               !metadata.remoteModelID.isEmpty else {
-            throw FloeError.validationFailed("Invalid owned qualification route metadata")
+            throw FloeError.validationFailed(
+                "Invalid owned qualification route metadata: the remote model, capability flag "
+                    + "or limits do not match a reviewed same-plan route")
         }
         let existing = try await environment.configurationStore.provider(id: providerID)
         let existingModel = try await environment.configurationStore.model(id: modelID)
@@ -615,15 +745,16 @@ private struct NativeCADLiveOptIn: Sendable {
             let trimmedRemote = raw.remoteModelID?.trimmingCharacters(in: .whitespacesAndNewlines)
             guard raw.providerID == NativeCADLivePrepaidRoute.providerID,
                   raw.modelID == NativeCADLivePrepaidRoute.modelID,
-                  trimmedRemote == NativeCADLivePrepaidRoute.remoteModelID,
+                  NativeCADLivePrepaidRoute.isReviewed(remoteModelID: trimmedRemote),
                   raw.allowAnyCheapCloudChatModel != true,
                   let overrideInput, let overrideOutput,
                   overrideInput == 0, overrideOutput == 0 else {
                 throw XCTSkip(
                     "Live native CAD acceptance skipped: prepaidBudgetBasis is accepted only "
-                        + "for the exact reserved owned Agent Plan provider/model IDs, remote "
-                        + "model and both explicit zero per-million increments; unpinned "
-                        + "free-model and PAYG fallbacks are not permitted. A skip is not live evidence."
+                        + "for the exact reserved owned Agent Plan provider/model IDs, a reviewed "
+                        + "same-plan remote model and both explicit zero per-million increments; "
+                        + "unpinned free-model and PAYG fallbacks are not permitted. A skip is not "
+                        + "live evidence."
                 )
             }
         } else if let overrideInput, let overrideOutput {
@@ -751,12 +882,12 @@ private struct NativeCADLiveRoute: Sendable {
         if optIn.prepaidBudgetBasis {
             guard optIn.providerID == NativeCADLivePrepaidRoute.providerID,
                   optIn.modelID == NativeCADLivePrepaidRoute.modelID,
-                  optIn.remoteModelID == NativeCADLivePrepaidRoute.remoteModelID,
+                  NativeCADLivePrepaidRoute.isReviewed(remoteModelID: optIn.remoteModelID),
                   !optIn.allowAnyCheapCloudChatModel else {
                 throw XCTSkip(
                     "Live native CAD acceptance skipped: the prepaid budget basis requires the "
-                        + "exact reserved owned Agent Plan route pins and does not permit a "
-                        + "fallback model. A skip is not live evidence."
+                        + "exact reserved owned Agent Plan provider/model IDs, a reviewed same-plan "
+                        + "remote model and no fallback model. A skip is not live evidence."
                 )
             }
         }
@@ -833,12 +964,14 @@ private struct NativeCADLiveRoute: Sendable {
         if optIn.prepaidBudgetBasis {
             guard NativeCADLivePrepaidRoute.matches(
                 provider: chosen.provider, model: chosen.model
-            ), pricing.basis == .prepaidAgentPlan else {
+            ), pricing.basis == .prepaidAgentPlan,
+               let declaredRemote = optIn.remoteModelID,
+               declaredRemote == chosen.model.remoteModelID else {
                 throw XCTSkip(
                     "Live native CAD acceptance skipped: prepaidBudgetBasis requires the exact "
-                        + "reserved imported Agent Plan provider/model route and both explicit "
-                        + "zero increments; no PAYG or alternate-channel fallback is allowed. "
-                        + "A skip is not live evidence."
+                        + "reserved imported Agent Plan provider/model route, the same declared "
+                        + "reviewed remote model and both explicit zero increments; no PAYG or "
+                        + "alternate-channel fallback is allowed. A skip is not live evidence."
                 )
             }
         }
@@ -973,6 +1106,50 @@ private enum NativeCADLivePreflight {
                 )
             }
         }
+        // The undo leg uses the REAL `parameters` payload action, not a
+        // versions restore or a hand-edited package. The same typed parameter
+        // service also carries M11's variable/formula actions; this selector
+        // does not invent a second formula scenario, but it refuses to run on
+        // a tool surface that has lost those native commands.
+        let requiredParameterActions = Set([
+            "updateSketchEntity", "undo", "redo",
+            "variable.create", "variable.update", "variable.delete",
+            "feature.setExpression",
+        ])
+        for action in requiredParameterActions {
+            guard CadNativeEditActions.parameters.contains(action) else {
+                XCTFail(
+                    "The actual cad.document parameters action surface does not advertise "
+                        + "\(action); the native undo/parameter acceptance cannot run."
+                )
+                throw NativeCADLiveError.toolUnavailable(
+                    "cad.document parameters does not advertise \(action)."
+                )
+            }
+        }
+    }
+
+    /// The X35 selector requires the model that actually receives the capture
+    /// to declare direct image input. The bounded image-receipt observer below
+    /// then verifies the actual outbound image part; this preflight only avoids
+    /// spending paid turns on a route that cannot possibly deliver one.
+    static func requireDirectVision(route: NativeCADLiveRoute) throws {
+        guard route.model.capabilities.contains(.vision) else {
+            XCTFail(
+                "The X35 selector requires a reviewed same-plan model with native image input; "
+                    + "the selected model \(route.model.remoteModelID) is text-only. Configure a "
+                    + "reviewed direct-vision route (or rerun the compaction selectors for a "
+                    + "text-only route). A text-only run is not visual acceptance."
+            )
+            throw NativeCADLiveError.insufficientVisualRoute(route.model.remoteModelID)
+        }
+        guard route.model.limits.contextTokens >= 32_768 else {
+            XCTFail(
+                "The selected vision route's context window is too small for a real viewport image "
+                    + "plus the CAD tool transcript: \(route.model.limits.contextTokens) tokens."
+            )
+            throw NativeCADLiveError.insufficientVisualRoute(route.model.remoteModelID)
+        }
     }
 }
 
@@ -982,6 +1159,7 @@ private enum NativeCADLiveError: Error, Sendable, CustomStringConvertible {
     case toolUnavailable(String)
     case invalidContextWindow(Int)
     case timedOut(UUID)
+    case aggregateTimeExceeded(Double)
     case budgetExceeded(String)
     case runIncomplete(state: String, detail: String)
     case missingUsage
@@ -989,6 +1167,9 @@ private enum NativeCADLiveError: Error, Sendable, CustomStringConvertible {
     case invalidDocument(String)
     case missingCapture
     case invalidCapture(String)
+    case insufficientVisualRoute(String)
+    case missingVisionReceipt(String)
+    case invalidVisionReceipt(String)
 
     var description: String {
         switch self {
@@ -998,6 +1179,8 @@ private enum NativeCADLiveError: Error, Sendable, CustomStringConvertible {
             return "The model context window does not match the selected compaction acceptance; found \(tokens)."
         case .timedOut(let runID):
             return "Live native CAD turn \(runID.uuidString) exceeded its wall-clock deadline and was cancelled."
+        case .aggregateTimeExceeded(let seconds):
+            return "Live native CAD acceptance exceeded its approved aggregate wall-clock deadline of \(seconds) seconds."
         case .budgetExceeded(let detail):
             return "Live native CAD acceptance exceeded its approved cost/data ceiling: \(detail)"
         case .runIncomplete(let state, let detail):
@@ -1012,6 +1195,12 @@ private enum NativeCADLiveError: Error, Sendable, CustomStringConvertible {
             return "No successful cad.document capture result with a real PNG artifact was found."
         case .invalidCapture(let detail):
             return "The CAD viewport capture was refused as evidence: \(detail)"
+        case .insufficientVisualRoute(let model):
+            return "The selected route \(model) cannot provide direct image input for the X35 visual loop."
+        case .missingVisionReceipt(let detail):
+            return "No actual outbound image receipt was observed for the capture: \(detail)"
+        case .invalidVisionReceipt(let detail):
+            return "The outbound visual evidence was refused as proof of image receipt: \(detail)"
         }
     }
 }
@@ -1139,7 +1328,7 @@ private actor NativeCADLiveLedger {
     }
 }
 
-// MARK: - One owned task/workspace and the three-turn flow
+// MARK: - One owned task/workspace and the four-turn visual loop
 
 @MainActor
 private final class NativeCADLiveSession {
@@ -1152,12 +1341,19 @@ private final class NativeCADLiveSession {
     private let documentName: String
     private let title: String
 
+    private var sessionStartedAt = Date()
     private var runIDs: [UUID] = []
     private var services: [ConversationRunService] = []
     private var workspaceID: UUID?
     private var workspaceRoot: URL?
     private var documentURL: URL?
     private var captureRelativePaths: [String] = []
+    private var visionReceipts: [NativeCADLiveVisionReceipt] = []
+    private var visionCaptureRevision: Int?
+    private var visionCaptureContentSHA256: String?
+    private var visionCaptureImageSHA256: String?
+    private var undoEvidence: NativeCADLiveUndoEvidence?
+    private var reopenEvidence: NativeCADLiveReopenEvidence?
     private var cleanupStarted = false
     private var failureDescription: String?
 
@@ -1183,9 +1379,13 @@ private final class NativeCADLiveSession {
     }
 
     func runAll() async throws {
+        sessionStartedAt = Date()
+        try ensureAggregateTimeRemaining()
+
+        // Turn 1 — create the native package, plate and Ø6 through-hole.
         let firstGoal = turnOneGoal()
         let first = try await prepare(goal: firstGoal, firstTurn: true)
-        let firstEvents = try await runTurn(prepared: first, goal: firstGoal)
+        let firstEvents = try await runTurn(prepared: first, goal: firstGoal, observeVision: false)
         try NativeCADLiveEvidence.assertTurnOneEvidence(firstEvents)
 
         let url = try XCTUnwrap(documentURL, "The private task workspace root was not resolved.")
@@ -1200,10 +1400,47 @@ private final class NativeCADLiveSession {
             )
         }
 
+        // Turn 2 — actual viewport image, actual provider image delivery, then
+        // the requested correction on the SAME existing hole (and fillet).
         let secondGoal = turnTwoGoal(documentPath: documentName)
         let second = try await prepare(goal: secondGoal, firstTurn: false)
-        let secondEvents = try await runTurn(prepared: second, goal: secondGoal)
-        try NativeCADLiveEvidence.assertTurnTwoEvidence(secondEvents)
+        let secondEvents = try await runTurn(prepared: second, goal: secondGoal, observeVision: true)
+        let preCorrectionCapture = try validateCapture(
+            events: secondEvents,
+            runID: second.run.id,
+            requirement: .exactly(afterCreate.revision),
+            preferLast: false
+        )
+        try assertCaptureMatches(
+            preCorrectionCapture,
+            state: afterCreate,
+            label: "pre-correction"
+        )
+        attach(preCorrectionCapture.png, name: "native-cad-live-pre-correction.png")
+        visionCaptureRevision = preCorrectionCapture.revision
+        visionCaptureContentSHA256 = preCorrectionCapture.contentSHA256
+        visionCaptureImageSHA256 = preCorrectionCapture.imageSHA256
+        let preCorrectionReceipt = try requireVisionReceipt(
+            runID: second.run.id,
+            capture: preCorrectionCapture
+        )
+        let correctionCallIDs = try NativeCADLiveEvidence.assertTurnTwoEvidence(
+            secondEvents,
+            capture: preCorrectionCapture,
+            initial: afterCreate
+        )
+        // The correction and fillet must be generated in a provider dispatch
+        // AFTER the one that delivered the image. If either call id was part
+        // of the capture's own batch, the model proposed it before receiving
+        // the image; that is not a visual-feedback correction.
+        XCTAssertFalse(
+            preCorrectionReceipt.pendingCallIDs.contains(correctionCallIDs.correctionCallID),
+            "The hole correction was batched with the capture, before image delivery."
+        )
+        XCTAssertFalse(
+            preCorrectionReceipt.pendingCallIDs.contains(correctionCallIDs.filletCallID),
+            "The fillet proposal was batched with the capture, before image delivery."
+        )
 
         let afterEdit = try await inspectDocument(at: url)
         try assertEditedGeometry(afterEdit, initial: afterCreate)
@@ -1214,24 +1451,140 @@ private final class NativeCADLiveSession {
               abs(editedFillet.radius - 2.0) < 1e-3,
               (1...4).contains(editedFillet.edgeCount) else {
             throw NativeCADLiveError.invalidDocument(
-                "Ø8 existing-hole/fillet geometry assertions failed; stopping before the final paid turn."
+                "Ø8 existing-hole/fillet geometry assertions failed; stopping before the undo turn."
             )
         }
+        XCTAssertGreaterThan(
+            afterEdit.revision,
+            preCorrectionCapture.revision,
+            "The correction must create a newer committed package revision than the image."
+        )
+        XCTAssertNotEqual(
+            afterEdit.contentSHA256,
+            preCorrectionCapture.contentSHA256,
+            "The correction must change the package content the image was bound to."
+        )
+        XCTAssertEqual(
+            preCorrectionReceipt.sourceSHA256,
+            preCorrectionCapture.imageSHA256.lowercased(),
+            "The outbound visual evidence must be bound to the exact captured image digest."
+        )
 
+        // Turn 3 — real native undo of the fillet and then the hole edit. The
+        // SAME live bridge/session must remain open here: the real undo stack
+        // does not cross a close/reopen.
+        try ensureAggregateTimeRemaining()
         let thirdGoal = turnThreeGoal(documentPath: documentName)
         let third = try await prepare(goal: thirdGoal, firstTurn: false)
-        let thirdEvents = try await runTurn(prepared: third, goal: thirdGoal)
-        try NativeCADLiveEvidence.assertTurnThreeEvidence(thirdEvents)
+        let thirdEvents = try await runTurn(prepared: third, goal: thirdGoal, observeVision: false)
+        let undoReceipt = try NativeCADLiveEvidence.assertTurnThreeUndoEvidence(thirdEvents)
 
-        let afterFinal = try await inspectDocument(at: url)
-        try assertFinalGeometry(afterFinal, edited: afterEdit)
-
-        let png = try validateCapture(
-            events: thirdEvents,
-            runID: third.run.id,
-            minimumRevision: afterEdit.revision
+        let afterUndo = try await inspectDocument(at: url)
+        try assertUndoRestoredGeometry(afterUndo, initial: afterCreate, edited: afterEdit)
+        undoEvidence = NativeCADLiveUndoEvidence(
+            initialRevision: afterCreate.revision,
+            editedRevision: afterEdit.revision,
+            undoneRevision: afterUndo.revision,
+            undoCommandCount: undoReceipt.commandCount,
+            lastUndoReceiptRevision: undoReceipt.lastRevision,
+            initialModelSHA256: afterCreate.modelSHA256 ?? "",
+            restoredModelSHA256: afterUndo.modelSHA256 ?? ""
         )
-        attach(png)
+
+        // Close the real bridge through its owner lifecycle, then reopen the
+        // saved package through the same owner API. The captured instance
+        // identity proves the live session really was replaced, and the
+        // independent FloeCADDocument reopen below proves the saved identity.
+        try ensureAggregateTimeRemaining()
+        let liveBeforeClose = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        XCTAssertEqual(
+            liveBeforeClose.revision,
+            afterUndo.revision,
+            "The live bridge and the independently verified undo state disagree before close."
+        )
+        let previousInstance = ObjectIdentifier(liveBeforeClose)
+        await FloeCAD3DBridge.shared.releaseDocument(at: url)
+        let reopened = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        let reopenedInstance = ObjectIdentifier(reopened)
+        XCTAssertNotEqual(
+            previousInstance,
+            reopenedInstance,
+            "The owner close/reopen did not replace the live document instance; the bridge stayed open."
+        )
+        XCTAssertFalse(reopened.isReadOnly, "The reopened package unexpectedly became read-only.")
+        // The owner close performs one clean package save, which legitimately
+        // bumps the package revision/content metadata. The CANONICAL model
+        // identity must not move: that is the stable proof that reopen kept the
+        // exact undo-restored definitions.
+        XCTAssertGreaterThanOrEqual(
+            reopened.revision,
+            afterUndo.revision,
+            "The reopened package is older than the verified undo state."
+        )
+        let undoModelSHA = afterUndo.modelSHA256 ?? ""
+        XCTAssertFalse(undoModelSHA.isEmpty)
+        XCTAssertEqual(
+            reopened.modelSHA256,
+            undoModelSHA,
+            "The owner close/reopen changed the canonical CAD model identity."
+        )
+
+        let afterReopen = try await inspectDocument(at: url)
+        try assertReopenRetainedGeometry(afterReopen, initial: afterCreate)
+        XCTAssertEqual(afterReopen.revision, reopened.revision)
+        XCTAssertEqual(afterReopen.contentSHA256, reopened.contentSHA256)
+        XCTAssertEqual(afterReopen.modelSHA256, afterUndo.modelSHA256)
+        XCTAssertGreaterThanOrEqual(afterReopen.revision, afterUndo.revision)
+        reopenEvidence = NativeCADLiveReopenEvidence(
+            instanceChanged: previousInstance != reopenedInstance,
+            revisionBefore: afterUndo.revision,
+            revisionAfter: afterReopen.revision,
+            contentSHA256After: afterReopen.contentSHA256,
+            modelSHA256After: afterReopen.modelSHA256 ?? ""
+        )
+
+        // Turn 4 — after the real disk reopen, make one further edit on the
+        // SAME body/hole identity, then read back and capture the final state.
+        try ensureAggregateTimeRemaining()
+        let fourthGoal = turnFourGoal(documentPath: documentName)
+        let fourth = try await prepare(goal: fourthGoal, firstTurn: false)
+        let fourthEvents = try await runTurn(prepared: fourth, goal: fourthGoal, observeVision: false)
+        let afterFinal = try await inspectDocument(at: url)
+        try assertFurtherEditedGeometry(afterFinal, initial: afterCreate, reopened: afterReopen)
+        let finalCapture = try validateCapture(
+            events: fourthEvents,
+            runID: fourth.run.id,
+            requirement: .atLeast(afterFinal.revision),
+            preferLast: true
+        )
+        try assertCaptureMatches(finalCapture, state: afterFinal, label: "final")
+        attach(finalCapture.png, name: "native-cad-live-final.png")
+        try NativeCADLiveEvidence.assertTurnFourEvidence(
+            fourthEvents,
+            initial: afterCreate,
+            reopenedRevision: afterReopen.revision,
+            finalState: afterFinal
+        )
+
+        let finalLive = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        XCTAssertEqual(
+            ObjectIdentifier(finalLive),
+            reopenedInstance,
+            "The further edit did not run on the reopened bridge instance."
+        )
+        XCTAssertEqual(finalLive.revision, afterFinal.revision)
+        XCTAssertEqual(finalLive.contentSHA256, afterFinal.contentSHA256)
+
+        XCTAssertEqual(
+            runIDs.count,
+            4,
+            "The visual acceptance must own exactly four bounded model turns."
+        )
+        XCTAssertEqual(
+            Set(visionReceipts.map(\.runID)),
+            Set([second.run.id]),
+            "The image receipt must be observed for the capture turn only."
+        )
 
         let totals = await ledger.totals()
         let expectedBasis: NativeCADLiveBudgetBasis = optIn.prepaidBudgetBasis
@@ -1316,7 +1669,11 @@ private final class NativeCADLiveSession {
 
     // MARK: One real model/service turn
 
-    private func runTurn(prepared: PreparedRun, goal: String) async throws -> [RunEventRecord] {
+    private func runTurn(
+        prepared: PreparedRun,
+        goal: String,
+        observeVision: Bool
+    ) async throws -> [RunEventRecord] {
         let runID = prepared.run.id
         let history = try await ConversationHistoryAssembler(store: environment.conversationStore)
             .build(conversationID: conversationID)
@@ -1340,7 +1697,39 @@ private final class NativeCADLiveSession {
             automaticReasoningEffortIngress: .continuation
         )
         services.append(service)
-        try await execute(service: service, runID: runID, goal: goal)
+
+        // Bounded, metadata-only observation of the ACTUAL dispatch boundary.
+        // It reads the same durable provider-dispatch checkpoint the runtime
+        // writes immediately before a provider request, remembers only image
+        // digest/size/MIME/model capability/call ids and never retains the
+        // base64 image or conversation text.
+        let collector = observeVision ? NativeCADLiveVisionCollector() : nil
+        let checkpointStore = environment.checkpointStore
+        let collectorDeadline = Date().addingTimeInterval(optIn.perRunTimeoutSeconds + 15)
+        let watcher = collector.map { collector in
+            Task {
+                await collector.watch(
+                    checkpointStore: checkpointStore,
+                    runID: runID,
+                    deadline: collectorDeadline
+                )
+            }
+        }
+        do {
+            try await execute(service: service, runID: runID, goal: goal)
+        } catch {
+            watcher?.cancel()
+            _ = await watcher?.value
+            if let collector {
+                visionReceipts.append(contentsOf: await collector.snapshot())
+            }
+            throw error
+        }
+        watcher?.cancel()
+        _ = await watcher?.value
+        if let collector {
+            visionReceipts.append(contentsOf: await collector.snapshot())
+        }
 
         let events = try await environment.runStore.events(runID: runID)
         try NativeCADLiveEvidence.assertToolSurface(
@@ -1348,7 +1737,25 @@ private final class NativeCADLiveSession {
             documentName: documentName,
             turn: runIDs.count
         )
+        guard let record = try await environment.runStore.run(id: runID) else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "missingRunRecord",
+                detail: "The completed run has no durable record."
+            )
+        }
+        XCTAssertEqual(
+            record.conversationID,
+            conversationID,
+            "An owned run was recorded under a different conversation."
+        )
         return events
+    }
+
+    private func ensureAggregateTimeRemaining() throws {
+        let elapsed = Date().timeIntervalSince(sessionStartedAt)
+        guard elapsed < optIn.maxTotalSeconds else {
+            throw NativeCADLiveError.aggregateTimeExceeded(optIn.maxTotalSeconds)
+        }
     }
 
     private func execute(
@@ -1359,7 +1766,12 @@ private final class NativeCADLiveSession {
         let runStore = environment.runStore
         let ledger = self.ledger
         let stop = NativeCADLiveStopSignal()
-        let timeoutMilliseconds = Int64(optIn.perRunTimeoutSeconds * 1000)
+        let remaining = optIn.maxTotalSeconds - Date().timeIntervalSince(sessionStartedAt)
+        guard remaining > 1 else {
+            throw NativeCADLiveError.aggregateTimeExceeded(optIn.maxTotalSeconds)
+        }
+        let turnTimeout = min(optIn.perRunTimeoutSeconds, remaining)
+        let timeoutMilliseconds = max(1_000, Int64(turnTimeout * 1000))
 
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
@@ -1368,6 +1780,11 @@ private final class NativeCADLiveSession {
                 }
                 group.addTask {
                     try await Task.sleep(for: .milliseconds(timeoutMilliseconds))
+                    if remaining < optIn.perRunTimeoutSeconds {
+                        await stop.set(.aggregateTimeExceeded(optIn.maxTotalSeconds))
+                        await service.cancel()
+                        throw NativeCADLiveError.aggregateTimeExceeded(optIn.maxTotalSeconds)
+                    }
                     await stop.set(.timedOut(runID))
                     await service.cancel()
                     throw NativeCADLiveError.timedOut(runID)
@@ -1423,9 +1840,21 @@ private final class NativeCADLiveSession {
 
             let records = (try? await runStore.usage(runID: runID)) ?? []
             let totals = await ledger.update(runID: runID, records: records)
+            guard !records.isEmpty else {
+                throw NativeCADLiveError.missingUsage
+            }
+            let runReportedTokens = records.reduce(0) { partial, record in
+                partial + record.inputTokens + (record.cacheReadTokens ?? 0) + record.outputTokens
+            }
+            guard runReportedTokens > 0 else {
+                throw NativeCADLiveError.missingUsage
+            }
             guard totals.hasUsage else { throw NativeCADLiveError.missingUsage }
             guard !totals.exceeds else {
                 throw NativeCADLiveError.budgetExceeded(totals.description)
+            }
+            if Date().timeIntervalSince(sessionStartedAt) > optIn.maxTotalSeconds {
+                throw NativeCADLiveError.aggregateTimeExceeded(optIn.maxTotalSeconds)
             }
         } catch {
             await service.cancel()
@@ -1579,35 +2008,130 @@ private final class NativeCADLiveSession {
         }
     }
 
-    private func assertFinalGeometry(
+    /// The two native undos must restore the exact pre-correction model, not
+    /// merely a similar-looking shape. `modelSHA256` covers the canonical model
+    /// records and blobs (preview excluded), so equality with the initial state
+    /// is an independent identity proof that the SAME hole entity and the
+    /// absence of the fillet were restored.
+    private func assertUndoRestoredGeometry(
         _ state: NativeCADLiveDocumentState,
+        initial: NativeCADLiveDocumentState,
         edited: NativeCADLiveDocumentState
     ) throws {
-        XCTAssertEqual(state.bodyID, edited.bodyID)
-        XCTAssertEqual(state.bodyCount, 1)
+        XCTAssertEqual(state.bodyCount, 1, "Undo must keep exactly one body.")
+        XCTAssertEqual(state.bodyID, initial.bodyID, "Undo must keep the SAME body identity.")
+        XCTAssertTrue(state.bodyIsAnalytic, "The undone body must remain an analytic B-rep.")
+        XCTAssertEqual(state.circles.count, 1)
         let circle = try XCTUnwrap(state.circles.first)
-        let editedCircle = try XCTUnwrap(edited.circles.first)
-        XCTAssertEqual(circle.sketchID, editedCircle.sketchID)
-        XCTAssertEqual(circle.entityID, editedCircle.entityID)
-        XCTAssertEqual(circle.diameter, 8.0, accuracy: 1e-6)
-        let fillet = try XCTUnwrap(state.fillet)
-        let editedFillet = try XCTUnwrap(edited.fillet)
-        XCTAssertEqual(fillet.radius, 2.0, accuracy: 1e-6)
-        XCTAssertEqual(fillet.edgeCount, editedFillet.edgeCount)
-        XCTAssertGreaterThanOrEqual(state.revision, edited.revision)
-        XCTAssertEqual(state.contentSHA256.count, 64)
-        // A clean save legitimately refreshes the manifest timestamp (and thus
-        // contentSHA256); the canonical model identity must NOT move. The final
-        // turn is a readback/capture/save, not a geometry edit.
-        if let editedModelSHA = edited.modelSHA256, let finalModelSHA = state.modelSHA256 {
-            XCTAssertEqual(
-                finalModelSHA,
-                editedModelSHA,
-                "The final readback/capture/save turn silently changed the CAD model identity."
-            )
-        } else {
-            XCTFail("The verified package did not expose its additive modelSHA256 identity.")
+        let initialCircle = try XCTUnwrap(initial.circles.first)
+        XCTAssertEqual(circle.sketchID, initialCircle.sketchID, "Undo must keep the SAME hole sketch.")
+        XCTAssertEqual(circle.entityID, initialCircle.entityID, "Undo must keep the SAME hole circle entity.")
+        XCTAssertEqual(circle.radius, 3.0, accuracy: 1e-6, "Undo must restore the original Ø6 radius 3 mm.")
+        XCTAssertEqual(circle.diameter, 6.0, accuracy: 1e-6)
+        XCTAssertNil(state.fillet, "Undo must remove the 2 mm fillet feature.")
+        XCTAssertFalse(
+            state.cylindricalRadii.contains { abs($0 - 4.0) < 1e-4 },
+            "Undo must remove the Ø8 cylindrical hole; found \(state.cylindricalRadii)."
+        )
+
+        let expected = 80.0 * 50.0 * 10.0 - Double.pi * 3.0 * 3.0 * 10.0
+        XCTAssertEqual(
+            state.bodyVolumeMM3,
+            expected,
+            accuracy: 1.0,
+            "Undo must restore the exact Ø6 plate-minus-hole volume."
+        )
+        XCTAssertGreaterThan(state.revision, edited.revision, "The undo turn must commit newer revisions.")
+        XCTAssertNotEqual(state.contentSHA256, edited.contentSHA256, "Undo must change the verified package content.")
+        guard let initialModelSHA = initial.modelSHA256, let undoneModelSHA = state.modelSHA256 else {
+            XCTFail("The verified package did not expose its additive modelSHA256 identity across undo.")
+            throw NativeCADLiveError.invalidDocument("modelSHA256 was unavailable before or after undo")
         }
+        XCTAssertEqual(
+            undoneModelSHA,
+            initialModelSHA,
+            "Undo did not restore the exact canonical model identity of the original Ø6 part."
+        )
+        guard undoneModelSHA == initialModelSHA else {
+            throw NativeCADLiveError.invalidDocument(
+                "Native undo did not restore the original canonical model identity."
+            )
+        }
+    }
+
+    /// The package reopened from disk after the real bridge close must still
+    /// expose the exact original definitions and canonical model identity.
+    private func assertReopenRetainedGeometry(
+        _ state: NativeCADLiveDocumentState,
+        initial: NativeCADLiveDocumentState
+    ) throws {
+        XCTAssertEqual(state.bodyCount, 1)
+        XCTAssertEqual(state.bodyID, initial.bodyID, "Disk reopen changed the body identity.")
+        XCTAssertTrue(state.bodyIsAnalytic)
+        XCTAssertEqual(state.circles.count, 1)
+        let circle = try XCTUnwrap(state.circles.first)
+        let initialCircle = try XCTUnwrap(initial.circles.first)
+        XCTAssertEqual(circle.sketchID, initialCircle.sketchID, "Disk reopen changed the hole sketch identity.")
+        XCTAssertEqual(circle.entityID, initialCircle.entityID, "Disk reopen changed the hole circle identity.")
+        XCTAssertEqual(circle.radius, 3.0, accuracy: 1e-6)
+        XCTAssertNil(state.fillet)
+        guard let initialModelSHA = initial.modelSHA256, let reopenedModelSHA = state.modelSHA256 else {
+            XCTFail("The verified package did not expose its additive modelSHA256 identity across reopen.")
+            throw NativeCADLiveError.invalidDocument("modelSHA256 was unavailable before or after reopen")
+        }
+        XCTAssertEqual(
+            reopenedModelSHA,
+            initialModelSHA,
+            "The saved package reopened from disk did not retain its exact canonical model identity."
+        )
+        guard reopenedModelSHA == initialModelSHA else {
+            throw NativeCADLiveError.invalidDocument(
+                "The reopened package lost the original canonical model identity."
+            )
+        }
+    }
+
+    /// One further edit after the real disk reopen must land on the SAME body
+    /// and hole entity and be independently visible in the committed geometry.
+    private func assertFurtherEditedGeometry(
+        _ state: NativeCADLiveDocumentState,
+        initial: NativeCADLiveDocumentState,
+        reopened: NativeCADLiveDocumentState
+    ) throws {
+        XCTAssertEqual(state.bodyCount, 1)
+        XCTAssertEqual(state.bodyID, initial.bodyID, "The post-reopen edit changed the body identity.")
+        XCTAssertTrue(state.bodyIsAnalytic, "The post-reopen body must remain an analytic B-rep.")
+        XCTAssertEqual(state.circles.count, 1)
+        let circle = try XCTUnwrap(state.circles.first)
+        let initialCircle = try XCTUnwrap(initial.circles.first)
+        XCTAssertEqual(circle.sketchID, initialCircle.sketchID, "The post-reopen edit changed the hole sketch.")
+        XCTAssertEqual(circle.entityID, initialCircle.entityID, "The post-reopen edit changed the hole circle entity.")
+        XCTAssertEqual(circle.radius, 5.0, accuracy: 1e-6, "The post-reopen hole must be exactly Ø10 (radius 5 mm).")
+        XCTAssertEqual(circle.diameter, 10.0, accuracy: 1e-6)
+        XCTAssertNil(state.fillet, "The post-reopen flow did not re-add a fillet.")
+        XCTAssertTrue(
+            state.cylindricalRadii.contains { abs($0 - 5.0) < 1e-4 },
+            "Query kind=faces must report the rebuilt Ø10 cylindrical hole; found \(state.cylindricalRadii)."
+        )
+
+        let expected = 80.0 * 50.0 * 10.0 - Double.pi * 5.0 * 5.0 * 10.0
+        XCTAssertEqual(
+            state.bodyVolumeMM3,
+            expected,
+            accuracy: 2.0,
+            "The final volume must match the same 80×50×10 plate minus the Ø10 through-hole."
+        )
+        XCTAssertGreaterThan(state.revision, reopened.revision, "The further edit must commit a newer revision.")
+        XCTAssertNotEqual(state.contentSHA256, reopened.contentSHA256)
+        guard let reopenedModelSHA = reopened.modelSHA256, let finalModelSHA = state.modelSHA256 else {
+            XCTFail("The verified package did not expose its additive modelSHA256 identity after the further edit.")
+            throw NativeCADLiveError.invalidDocument("modelSHA256 was unavailable after the further edit")
+        }
+        XCTAssertNotEqual(
+            finalModelSHA,
+            reopenedModelSHA,
+            "The further edit did not change the canonical model identity."
+        )
     }
 
     // MARK: Capture evidence
@@ -1615,8 +2139,10 @@ private final class NativeCADLiveSession {
     private func validateCapture(
         events: [RunEventRecord],
         runID: UUID,
-        minimumRevision: Int
-    ) throws -> Data {
+        requirement: NativeCADLiveRevisionRequirement,
+        preferLast: Bool
+    ) throws -> NativeCADLiveCapture {
+        var selected: NativeCADLiveCapture?
         for event in events where event.kind == .toolResult {
             guard let payload = NativeCADLiveJSON.object(event.payloadJSON),
                   (payload["tool"] as? String) == CadDocumentTool.name,
@@ -1631,7 +2157,14 @@ private final class NativeCADLiveSession {
                       let width = NativeCADLiveJSON.int(object["width"]),
                       let height = NativeCADLiveJSON.int(object["height"]),
                       let byteCount = NativeCADLiveJSON.int(object["byte_count"]),
-                      let renderer = object["renderer"] as? String else { continue }
+                      let renderer = object["renderer"] as? String,
+                      let callID = payload["id"] as? String else { continue }
+
+                let revision = try XCTUnwrap(
+                    NativeCADLiveJSON.int(object["revision"]),
+                    "The successful capture receipt did not report a document revision."
+                )
+                guard requirement.accepts(revision) else { continue }
 
                 guard width == 1024, height == 768 else {
                     throw NativeCADLiveError.invalidCapture("Expected a 1024×768 engineering PNG, got \(width)×\(height).")
@@ -1639,17 +2172,18 @@ private final class NativeCADLiveSession {
                 guard renderer == "engineering" else {
                     throw NativeCADLiveError.invalidCapture("Expected the engineering viewport renderer, got \(renderer).")
                 }
-                guard contentSHA.count == 64 else {
-                    throw NativeCADLiveError.invalidCapture("The capture does not carry a 64-character document content identity.")
-                }
-                if let revision = NativeCADLiveJSON.int(object["revision"]) {
-                    XCTAssertGreaterThanOrEqual(
-                        revision,
-                        minimumRevision,
-                        "The screenshot revision predates the verified Ø8/fillet package."
+                guard contentSHA.count == 64, imageSHA.count == 64 else {
+                    throw NativeCADLiveError.invalidCapture(
+                        "The capture does not carry a 64-character content/image identity."
                     )
-                } else {
-                    XCTFail("The successful capture receipt did not report a document revision.")
+                }
+                let components = relative.split(separator: "/", omittingEmptySubsequences: false)
+                guard components.count >= 3,
+                      components[0] == "CADViewportArtifacts",
+                      components[1] == runID.uuidString else {
+                    throw NativeCADLiveError.invalidCapture(
+                        "The capture artifact is not owned by run \(runID.uuidString): \(relative)"
+                    )
                 }
 
                 let url = try NativeCADLivePaths.captureArtifactURL(relativePath: relative)
@@ -1691,18 +2225,126 @@ private final class NativeCADLiveSession {
                 XCTAssertGreaterThan(stats.nonBackgroundFraction, 0.005, "The capture contains no visible rendered body.")
 
                 captureRelativePaths.append(relative)
-                XCTAssertTrue(runIDs.last == runID, "The capture must come from the final owned run.")
-                return png
+                XCTAssertTrue(runIDs.last == runID, "The capture must come from the current owned run.")
+                let capture = NativeCADLiveCapture(
+                    png: png,
+                    imageSHA256: imageSHA,
+                    contentSHA256: contentSHA,
+                    revision: revision,
+                    width: width,
+                    height: height,
+                    byteCount: byteCount,
+                    renderer: renderer,
+                    relativePath: relative,
+                    callID: callID,
+                    resultSequence: event.sequence
+                )
+                selected = capture
+                if !preferLast { return capture }
             }
         }
-        throw NativeCADLiveError.missingCapture
+        guard let selected else {
+            throw NativeCADLiveError.missingCapture
+        }
+        return selected
     }
 
-    private func attach(_ png: Data) {
+    private func assertCaptureMatches(
+        _ capture: NativeCADLiveCapture,
+        state: NativeCADLiveDocumentState,
+        label: String
+    ) throws {
+        XCTAssertEqual(
+            capture.revision,
+            state.revision,
+            "The \(label) capture revision does not match the independently verified package revision."
+        )
+        XCTAssertEqual(
+            capture.contentSHA256,
+            state.contentSHA256,
+            "The \(label) capture is not bound to the exact verified package content identity."
+        )
+        guard capture.revision == state.revision,
+              capture.contentSHA256 == state.contentSHA256 else {
+            throw NativeCADLiveError.invalidCapture(
+                "The \(label) capture does not belong to the verified package revision/content."
+            )
+        }
+    }
+
+    private func requireVisionReceipt(
+        runID: UUID,
+        capture: NativeCADLiveCapture
+    ) throws -> NativeCADLiveVisionReceipt {
+        guard let receipt = visionReceipts.first(where: {
+            $0.runID == runID
+                && $0.sourceSHA256 == capture.imageSHA256.lowercased()
+                && $0.modelDeclaresVision
+                && $0.imagePartCount >= 1
+                && $0.deliveredSHA256 == $0.attachedSHA256
+                && $0.deliveredByteCount == $0.attachedBytes
+        }) else {
+            XCTFail(
+                "No actual outbound image part was observed for the pre-correction capture. "
+                    + "The durable dispatch checkpoint did not show the verified image delivered "
+                    + "to a vision-declaring model. A capture result alone is not image receipt."
+            )
+            throw NativeCADLiveError.missingVisionReceipt(
+                "run \(runID.uuidString), image \(capture.imageSHA256)"
+            )
+        }
+
+        XCTAssertEqual(receipt.providerID, route.provider.id)
+        XCTAssertEqual(receipt.modelID, route.model.id)
+        XCTAssertEqual(receipt.remoteModelID, route.model.remoteModelID)
+        XCTAssertTrue(receipt.modelDeclaresVision)
+        XCTAssertGreaterThanOrEqual(receipt.imagePartCount, 1)
+        XCTAssertEqual(receipt.attachedSHA256, receipt.deliveredSHA256)
+        XCTAssertEqual(receipt.attachedBytes, receipt.deliveredByteCount)
+        XCTAssertTrue(ProviderImageEvidencePolicy.supportedMIMETypes.contains(receipt.deliveredMIMEType))
+        XCTAssertTrue(
+            receipt.captureCallIDs.contains(capture.callID),
+            "The image dispatch does not belong to the capture tool call."
+        )
+        XCTAssertTrue(
+            receipt.resultCallIDs.contains(capture.callID),
+            "The image dispatch does not carry the capture result in the same provider request."
+        )
+        XCTAssertTrue(
+            ["original", "derived-preview"].contains(receipt.representation),
+            "Unexpected image representation: \(receipt.representation)"
+        )
+        if receipt.representation == "original" {
+            XCTAssertEqual(receipt.deliveredSHA256, capture.imageSHA256.lowercased())
+        } else {
+            XCTAssertEqual(receipt.deliveredMIMEType, "image/jpeg")
+        }
+
+        guard receipt.providerID == route.provider.id,
+              receipt.modelID == route.model.id,
+              receipt.remoteModelID == route.model.remoteModelID,
+              receipt.modelDeclaresVision,
+              receipt.imagePartCount >= 1,
+              receipt.attachedSHA256 == receipt.deliveredSHA256,
+              receipt.attachedBytes == receipt.deliveredByteCount,
+              ProviderImageEvidencePolicy.supportedMIMETypes.contains(receipt.deliveredMIMEType),
+              receipt.captureCallIDs.contains(capture.callID),
+              receipt.resultCallIDs.contains(capture.callID),
+              ["original", "derived-preview"].contains(receipt.representation),
+              receipt.representation != "original"
+                || receipt.deliveredSHA256 == capture.imageSHA256.lowercased() else {
+            throw NativeCADLiveError.invalidVisionReceipt(
+                "digest/bytes/model/call binding did not match the captured viewport"
+            )
+        }
+        return receipt
+    }
+
+    private func attach(_ png: Data, name: String) {
         let attachment = XCTAttachment(data: png)
-        attachment.name = "native-cad-live-viewport.png"
+        attachment.name = name
         attachment.lifetime = .keepAlways
-        XCTContext.runActivity(named: "Native CAD live viewport") { activity in
+        XCTContext.runActivity(named: name) { activity in
             activity.add(attachment)
         }
     }
@@ -1745,6 +2387,49 @@ private final class NativeCADLiveSession {
         lines.append("ledger_cache_read_tokens=\(totals.cacheReadTokens)")
         lines.append("ledger_has_usage=\(totals.hasUsage)")
         lines.append("run_count=\(runIDs.count)")
+        lines.append("vision_receipt_count=\(visionReceipts.count)")
+        if let visionCaptureRevision, let visionCaptureContentSHA256, let visionCaptureImageSHA256 {
+            lines.append(
+                "vision_capture revision=\(visionCaptureRevision)"
+                    + " content_sha256=\(visionCaptureContentSHA256)"
+                    + " image_sha256=\(visionCaptureImageSHA256)"
+            )
+        }
+        for (index, receipt) in visionReceipts.enumerated() {
+            lines.append(
+                "vision_receipt[\(index)] run=\(receipt.runID.uuidString)"
+                    + " provider=\(receipt.providerID.uuidString)"
+                    + " model=\(receipt.modelID.uuidString)"
+                    + " remote=\(receipt.remoteModelID)"
+                    + " model_declares_vision=\(receipt.modelDeclaresVision)"
+                    + " image_parts=\(receipt.imagePartCount)"
+                    + " source_sha256=\(receipt.sourceSHA256)"
+                    + " attached_sha256=\(receipt.attachedSHA256)"
+                    + " bytes=\(receipt.attachedBytes)"
+                    + " representation=\(receipt.representation)"
+                    + " mime=\(receipt.deliveredMIMEType)"
+                    + " delivered_bytes=\(receipt.deliveredByteCount)"
+                    + " pending_calls=\(receipt.pendingCallIDs.count)"
+                    + " capture_calls=\(receipt.captureCallIDs.count)"
+                    + " result_calls=\(receipt.resultCallIDs.count)"
+            )
+        }
+        if let undoEvidence {
+            lines.append(
+                "undo_evidence commands=\(undoEvidence.undoCommandCount)"
+                    + " revisions=\(undoEvidence.initialRevision)->\(undoEvidence.editedRevision)->\(undoEvidence.undoneRevision)"
+                    + " last_undo_receipt_revision=\(undoEvidence.lastUndoReceiptRevision)"
+                    + " model_sha_equal=\(undoEvidence.initialModelSHA256 == undoEvidence.restoredModelSHA256)"
+            )
+        }
+        if let reopenEvidence {
+            lines.append(
+                "reopen_evidence instance_changed=\(reopenEvidence.instanceChanged)"
+                    + " revisions=\(reopenEvidence.revisionBefore)->\(reopenEvidence.revisionAfter)"
+                    + " content_sha256_after=\(reopenEvidence.contentSHA256After)"
+                    + " model_sha256_after=\(reopenEvidence.modelSHA256After)"
+            )
+        }
 
         for (index, runID) in runIDs.enumerated() {
             lines.append("")
@@ -1923,39 +2608,77 @@ private final class NativeCADLiveSession {
 
     private func turnTwoGoal(documentPath: String) -> String {
         """
-        Open the same native CAD document "\(documentPath)" and EDIT the existing
-        Ø6 hole; do not add a new hole and do not rebuild the plate.
+        Open the same native CAD document "\(documentPath)". The rendered opening
+        is too small for the intended Ø8 clearance. Inspect it and correct it.
 
-        1. query kind=sketches, find the existing non-construction circle in the
+        Do these steps IN ORDER; the first step must happen before any save or
+        edit:
+        1. Capture the CURRENT saved revision with cad.document action "capture",
+           width 1024, height 768. The App attaches that actual PNG to your next
+           turn because the selected model accepts image input; inspect the real
+           image before editing.
+        2. query kind=sketches, find the existing non-construction circle in the
            hole sketch, and keep its sketch id and stable entity id.
-        2. Change that SAME circle's radius from 3 to exactly 4 mm with
+        3. Correct that SAME circle's radius from 3 to exactly 4 mm with
            cad.document action "parameters", payload JSON:
            {"action":"updateSketchEntity","sketch_id":"<id>","entity_id":"<id>",
             "radius":4,"expected_radius":3}
-        3. query kind=bodies and kind=edges. Choose the vertical corner edge(s)
+        4. query kind=bodies and kind=edges. Choose the vertical corner edge(s)
            of the 10 mm plate (their edge midpoints are near (0,5,0), (80,5,0),
            (0,5,-50), (80,5,-50)). Propose feature.fillet with bodyID, radius 2,
            the chosen edge indices, and the current query_token. Apply it
-           (omit grant_id), then save.
-        4. Query kind=features and kind=sketches again and read back the actual
-           hole diameter and fillet radius/edge count.
+           (omit grant_id).
+        5. Save the document, then query kind=features and kind=sketches and
+           read back the actual hole diameter and fillet radius/edge count.
 
+        Do not create a new hole or a new sketch. Do not rebuild the plate.
         Apply every proposal you draft and do not add any other tool calls.
         """
     }
 
     private func turnThreeGoal(documentPath: String) -> String {
         """
-        Open the same native CAD document "\(documentPath)". Read back the actual
-        state, do not change geometry:
-        - query kind=sketches and confirm the existing hole circle diameter is 8 mm;
-        - query kind=features and confirm the fillet radius is 2 mm and read its edge count;
-        - query kind=bodies and measure the body (handles ["body:<body id>"]).
-        Then capture a real engineering viewport PNG with
-        cad.document action "capture", width 1024, height 768, and save the
-        document. Report only the revision, volume, hole diameter and fillet
-        edge count that the tool replies actually returned. Do not add any other
-        tool calls.
+        The same native CAD document "\(documentPath)" is still open. Undo the
+        last two native edits in this exact order with the REAL parameters undo
+        command; do not use versions restore and do not edit geometry by hand.
+
+        1. cad.document action "parameters", payload {"action":"undo"} — undo
+           the 2 mm fillet.
+        2. Query kind=features and kind=sketches, then repeat the same parameters
+           undo command — undo the Ø8 hole radius edit and restore that SAME
+           circle to radius 3.
+        3. Query kind=features, kind=sketches and kind=bodies again and read
+           back the actual hole radius/diameter and confirm no fillet remains.
+        4. Save the document.
+
+        Do not run redo, do not create anything, and do not add any other tool
+        calls. Report only values the tool replies actually returned.
+        """
+    }
+
+    private func turnFourGoal(documentPath: String) -> String {
+        """
+        The same native CAD package "\(documentPath)" was closed and reopened
+        from disk. Continue on the SAME body and hole; do not create a new
+        document, hole or sketch.
+
+        1. query kind=sketches, kind=features and kind=bodies to re-read the
+           stable sketch id, circle entity id and body id. Confirm the hole
+           radius is 3 (Ø6) and the fillet is gone.
+        2. Change that SAME circle from radius 3 to exactly 5 mm (Ø10) with
+           cad.document action "parameters", payload JSON:
+           {"action":"updateSketchEntity","sketch_id":"<id>","entity_id":"<id>",
+            "radius":5,"expected_radius":3}
+           Then save.
+        3. query kind=sketches, kind=features and kind=faces and measure the
+           body (handles ["body:<body id>"]) to read back the actual Ø10 hole
+           and volume.
+        4. Capture a real engineering viewport PNG of this final revision with
+           cad.document action "capture", width 1024, height 768. The capture
+           must be the LAST tool call: do not save or edit after it, so the
+           captured revision is the committed final package.
+
+        Do not undo or redo. Do not add any other tool calls.
         """
     }
 
@@ -1965,13 +2688,36 @@ private final class NativeCADLiveSession {
         guard !cleanupStarted else { return }
         cleanupStarted = true
 
+        // Cancel AND join every owned service before deleting its rows. A
+        // terminal transition is what guarantees no late callback can target a
+        // document after cleanup.
         for service in services {
             await service.cancel()
+        }
+        var allTerminal = true
+        for service in services {
+            var snapshot = await service.snapshot()
+            for _ in 0..<50 where !snapshot.isTerminal {
+                try? await Task.sleep(for: .milliseconds(100))
+                snapshot = await service.snapshot()
+            }
+            if !snapshot.isTerminal { allTerminal = false }
         }
 
         // The owning conversation and its runs/usage/events are deleted below.
         // Attach the exact durable evidence first on every exit path.
         await attachDurableEvidence()
+
+        // Never delete rows or close the document under a run that refused to
+        // reach a terminal state. Leaving the task-owned rows intact is the
+        // safe recovery choice; a late callback must not target a missing row.
+        guard allTerminal else {
+            XCTFail(
+                "An owned run did not reach a terminal state after cancellation; "
+                    + "task-owned rows and the live document were left intact for inspection."
+            )
+            return
+        }
 
         if let documentURL {
             for proposal in await environment.cadDocumentCenter.pendingNativeProposals(for: documentURL) {
@@ -2042,6 +2788,229 @@ private struct NativeCADLiveDocumentState {
     var circles: [NativeCADLiveCircle]
     var fillet: NativeCADLiveFillet?
     var cylindricalRadii: [Double]
+}
+
+private enum NativeCADLiveRevisionRequirement {
+    case exactly(Int)
+    case atLeast(Int)
+
+    func accepts(_ revision: Int) -> Bool {
+        switch self {
+        case .exactly(let expected): return revision == expected
+        case .atLeast(let minimum): return revision >= minimum
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .exactly(let expected): return "revision == \(expected)"
+        case .atLeast(let minimum): return "revision >= \(minimum)"
+        }
+    }
+}
+
+private struct NativeCADLiveCapture {
+    var png: Data
+    var imageSHA256: String
+    var contentSHA256: String
+    var revision: Int
+    var width: Int
+    var height: Int
+    var byteCount: Int
+    var renderer: String
+    var relativePath: String
+    var callID: String
+    var resultSequence: Int
+}
+
+/// Metadata-only observation of one actual image delivery at the provider
+/// dispatch boundary. It deliberately contains no base64 image and no
+/// conversation/model text.
+private struct NativeCADLiveVisionReceipt: Sendable {
+    var runID: UUID
+    var providerID: UUID
+    var modelID: UUID
+    var remoteModelID: String
+    var modelDeclaresVision: Bool
+    var sourceSHA256: String
+    var attachedSHA256: String
+    var attachedBytes: Int
+    var representation: String
+    var deliveredMIMEType: String
+    var deliveredByteCount: Int
+    var deliveredSHA256: String
+    var pendingCallIDs: [String]
+    var captureCallIDs: [String]
+    var resultCallIDs: [String]
+    var imagePartCount: Int
+}
+
+private struct NativeCADLiveUndoEvidence {
+    var initialRevision: Int
+    var editedRevision: Int
+    var undoneRevision: Int
+    var undoCommandCount: Int
+    var lastUndoReceiptRevision: Int
+    var initialModelSHA256: String
+    var restoredModelSHA256: String
+}
+
+private struct NativeCADLiveReopenEvidence {
+    var instanceChanged: Bool
+    var revisionBefore: Int
+    var revisionAfter: Int
+    var contentSHA256After: String
+    var modelSHA256After: String
+}
+
+/// Extracts only the bounded delivery receipt fields the runtime appends to
+/// the visual-evidence message. It never parses or retains model text.
+private enum NativeCADLiveVisionReceiptParser {
+    struct Fields: Sendable, Equatable {
+        var sourceSHA256: String
+        var attachedSHA256: String
+        var bytes: Int
+        var representation: String
+    }
+
+    static func parse(_ text: String) -> [Fields] {
+        var result: [Fields] = []
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            guard line.contains("sourceSHA256="), line.contains("attachedSHA256=") else { continue }
+            guard let source = value("sourceSHA256=", in: line),
+                  let attached = value("attachedSHA256=", in: line),
+                  let rawBytes = value("bytes=", in: line),
+                  let bytes = Int(rawBytes),
+                  bytes > 0,
+                  let representation = value("representation=", in: line),
+                  source.count == 64,
+                  attached.count == 64 else { continue }
+            result.append(Fields(
+                sourceSHA256: source.lowercased(),
+                attachedSHA256: attached.lowercased(),
+                bytes: bytes,
+                representation: representation
+            ))
+        }
+        return result
+    }
+
+    private static func value(_ prefix: String, in line: String) -> String? {
+        guard let range = line.range(of: prefix) else { return nil }
+        let tail = line[range.upperBound...]
+        let end = tail.firstIndex(where: { $0 == " " || $0 == "\t" }) ?? tail.endIndex
+        let value = String(tail[..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+}
+
+/// Polls the durable recovery checkpoint only while one turn is running. A
+/// dispatch checkpoint is written immediately before the provider request, so
+/// the image-delivery request is observable as the actual outbound bytes. Only
+/// image digest/size/MIME, model capability and call ids are retained; the
+/// base64 payload and message text are discarded on every read.
+private actor NativeCADLiveVisionCollector {
+    private var receipts: [NativeCADLiveVisionReceipt] = []
+    private var seenKeys: Set<String> = []
+    private let maximumReceipts = 12
+
+    func watch(
+        checkpointStore: any CheckpointStore,
+        runID: UUID,
+        deadline: Date
+    ) async {
+        while !Task.isCancelled, Date() < deadline {
+            if let checkpoint = try? await checkpointStore.load(runID: runID),
+               let snapshot = checkpoint.providerDispatchRequest {
+                ingest(snapshot, runID: runID)
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    func snapshot() -> [NativeCADLiveVisionReceipt] {
+        receipts
+    }
+
+    private func ingest(
+        _ snapshot: ProviderDispatchRequestSnapshot,
+        runID: UUID
+    ) {
+        guard receipts.count < maximumReceipts else { return }
+        let pendingCallIDs = snapshot.pendingToolCalls.map(\.id)
+        let captureCallIDs = snapshot.pendingToolCalls.compactMap { call -> String? in
+            guard call.toolName == CadDocumentTool.name,
+                  let arguments = NativeCADLiveJSON.object(call.argumentsJSON),
+                  (arguments["action"] as? String) == "capture" else { return nil }
+            return call.id
+        }
+        let resultCallIDs = snapshot.toolResults.map(\.callID)
+
+        for message in snapshot.messages where message.role == "user" {
+            var textParts: [String] = []
+            var images: [(mimeType: String, base64: String)] = []
+            for part in message.content {
+                switch part {
+                case .text(let text):
+                    textParts.append(text)
+                case .imageData(let mimeType, let base64):
+                    images.append((mimeType, base64))
+                case .imageURL:
+                    break
+                }
+            }
+            let text = textParts.joined(separator: "\n")
+            guard text.contains("Visual evidence delivery for the immediately preceding tool results")
+                    || text.contains("Source delivery receipts:") else { continue }
+            let fields = NativeCADLiveVisionReceiptParser.parse(text)
+            guard !fields.isEmpty else { continue }
+
+            for field in fields {
+                guard receipts.count < maximumReceipts else { return }
+                let key = [
+                    runID.uuidString,
+                    field.sourceSHA256,
+                    field.attachedSHA256,
+                    snapshot.model.id.uuidString,
+                    String(images.count),
+                ].joined(separator: "|")
+                guard seenKeys.insert(key).inserted else { continue }
+
+                var delivered: (mimeType: String, bytes: Int, sha256: String)?
+                for image in images {
+                    guard let data = Data(base64Encoded: image.base64) else { continue }
+                    let digest = FloeDigest.sha256Hex(data).lowercased()
+                    guard digest == field.attachedSHA256 else { continue }
+                    delivered = (
+                        ProviderImageEvidencePolicy.canonicalMIMEType(image.mimeType) ?? image.mimeType,
+                        data.count,
+                        digest
+                    )
+                    break
+                }
+
+                receipts.append(NativeCADLiveVisionReceipt(
+                    runID: runID,
+                    providerID: snapshot.provider.id,
+                    modelID: snapshot.model.id,
+                    remoteModelID: snapshot.model.remoteModelID,
+                    modelDeclaresVision: snapshot.model.capabilities.contains(.vision),
+                    sourceSHA256: field.sourceSHA256,
+                    attachedSHA256: field.attachedSHA256,
+                    attachedBytes: field.bytes,
+                    representation: field.representation,
+                    deliveredMIMEType: delivered?.mimeType ?? "",
+                    deliveredByteCount: delivered?.bytes ?? 0,
+                    deliveredSHA256: delivered?.sha256 ?? "",
+                    pendingCallIDs: pendingCallIDs,
+                    captureCallIDs: captureCallIDs,
+                    resultCallIDs: resultCallIDs,
+                    imagePartCount: images.count
+                ))
+            }
+        }
+    }
 }
 
 private enum NativeCADLiveEvidence {
@@ -2119,77 +3088,454 @@ private enum NativeCADLiveEvidence {
         )
     }
 
-    static func assertTurnTwoEvidence(_ events: [RunEventRecord]) throws {
-        let all = requests(events)
-        let editedExistingHole = all.contains { arguments in
-            if let payloadString = arguments["payload"] as? String,
-               let payload = NativeCADLiveJSON.object(payloadString),
-               let payloadAction = payload["action"] as? String,
-               ["updateSketchEntity", "setSketchDimension"].contains(payloadAction) {
-                return true
+    struct Request {
+        var callID: String
+        var arguments: [String: Any]
+        var sequence: Int
+    }
+
+    struct Response {
+        var callID: String
+        var status: String
+        var summary: String
+        var sequence: Int
+    }
+
+    static func assertTurnTwoEvidence(
+        _ events: [RunEventRecord],
+        capture: NativeCADLiveCapture,
+        initial: NativeCADLiveDocumentState
+    ) throws -> (correctionCallID: String, filletCallID: String) {
+        let all = requestRecords(events)
+        let responses = responseRecords(events)
+        let initialCircle = try XCTUnwrap(initial.circles.first)
+        let captureRequest = try XCTUnwrap(
+            all.first { ($0.arguments["action"] as? String) == "capture" },
+            "The visual turn did not call cad.document capture."
+        )
+        XCTAssertEqual(captureRequest.callID, capture.callID)
+
+        let corrections = all.compactMap { request -> (Request, [String: Any])? in
+            guard request.sequence > capture.resultSequence,
+                  let payload = parameterPayload(request.arguments),
+                  (payload["action"] as? String) == "updateSketchEntity" else { return nil }
+            return (request, payload)
+        }
+        XCTAssertEqual(
+            corrections.count,
+            1,
+            "The visual turn must make exactly one existing-hole correction command."
+        )
+        guard corrections.count == 1,
+              let (correctionRequest, correctionPayload) = corrections.first else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "missingCorrection",
+                detail: "No updateSketchEntity command followed the captured image."
+            )
+        }
+        let sketchID = (correctionPayload["sketch_id"] as? String)
+            ?? (correctionPayload["sketchID"] as? String)
+        let entityID = (correctionPayload["entity_id"] as? String)
+            ?? (correctionPayload["entityID"] as? String)
+        XCTAssertEqual(sketchID, initialCircle.sketchID, "The correction did not address the existing hole sketch.")
+        XCTAssertEqual(entityID, initialCircle.entityID, "The correction did not address the existing hole entity.")
+        let radius = NativeCADLiveJSON.number(correctionPayload["radius"])
+        let diameter = NativeCADLiveJSON.number(correctionPayload["diameter"])
+        let correctionToEight = radius.map { abs($0 - 4.0) < 1e-9 } == true
+            || diameter.map { abs($0 - 8.0) < 1e-9 } == true
+        XCTAssertTrue(correctionToEight, "The correction must set the same hole to Ø8 (radius 4 or diameter 8).")
+        if let radius {
+            XCTAssertEqual(radius, 4.0, accuracy: 1e-9)
+            if let expected = NativeCADLiveJSON.number(correctionPayload["expected_radius"]) {
+                XCTAssertEqual(expected, 3.0, accuracy: 1e-9)
             }
-            return false
+        } else if let diameter {
+            XCTAssertEqual(diameter, 8.0, accuracy: 1e-9)
+            if let expected = NativeCADLiveJSON.number(correctionPayload["expected_diameter"]) {
+                XCTAssertEqual(expected, 6.0, accuracy: 1e-9)
+            }
         }
-        let proposedFillet = all.contains { arguments in
-            (arguments["op"] as? String) == "feature.fillet"
+        guard sketchID == initialCircle.sketchID,
+              entityID == initialCircle.entityID,
+              correctionToEight else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "wrongCorrectionTarget",
+                detail: "The correction did not target the same stable hole identity at Ø8."
+            )
         }
-        XCTAssertTrue(
-            editedExistingHole || proposedFillet,
-            "The edit turn did not exercise an existing-hole parameter or fillet proposal route."
-        )
-        XCTAssertTrue(proposedFillet, "The edit turn did not propose feature.fillet.")
-    }
 
-    static func assertTurnThreeEvidence(_ events: [RunEventRecord]) throws {
-        let all = requests(events)
-        let readActions: Set<String> = ["query", "three_d_snapshot", "three_d_measure", "measure"]
+        guard let correctionResponse = responses[correctionRequest.callID],
+              correctionResponse.status == "ok",
+              let correctionReceipt = receipt(correctionResponse),
+              correctionReceipt["saved"] as? Bool == true,
+              let correctionRevision = NativeCADLiveJSON.int(correctionReceipt["revision"]),
+              correctionRevision > capture.revision else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "uncommittedCorrection",
+                detail: "The existing-hole correction was not saved as a newer revision."
+            )
+        }
+
+        let filletProposals = all.filter {
+            $0.sequence > capture.resultSequence && operationName($0.arguments) == "feature.fillet"
+        }
+        XCTAssertFalse(filletProposals.isEmpty, "The visual turn did not propose feature.fillet.")
+        guard let firstFillet = filletProposals.first else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "missingFilletProposal",
+                detail: "No feature.fillet proposal followed the image."
+            )
+        }
+        let applyRequests = all.filter {
+            $0.sequence > firstFillet.sequence
+                && ["apply", "three_d_apply"].contains($0.arguments["action"] as? String ?? "")
+        }
+        let appliedFillet = applyRequests.first { request in
+            responses[request.callID]?.status == "ok"
+        }
+        XCTAssertNotNil(appliedFillet, "The fillet proposal was not applied successfully.")
+        guard let appliedFillet,
+              let applyResponse = responses[appliedFillet.callID],
+              let applyReceipt = receipt(applyResponse),
+              let applyRevision = receiptRevision(applyReceipt),
+              applyRevision >= correctionRevision else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "uncommittedFillet",
+                detail: "The fillet apply did not commit a newer saved revision."
+            )
+        }
+
+        let readActions: Set<String> = ["query", "read", "three_d_snapshot", "three_d_measure", "measure"]
         XCTAssertTrue(
-            all.contains { action in
-                guard let action = action["action"] as? String else { return false }
-                return readActions.contains(action)
+            all.contains { request in
+                request.sequence > appliedFillet.sequence
+                    && readActions.contains(request.arguments["action"] as? String ?? "")
             },
-            "The final turn did not read actual parameters/geometry."
+            "The visual turn did not read the corrected parameters back."
         )
-        XCTAssertTrue(
-            all.contains { ($0["action"] as? String) == "capture" },
-            "The final turn did not request a real viewport capture."
+        let saveRevision = try XCTUnwrap(
+            successfulSaveRevision(events, after: appliedFillet.sequence),
+            "No successful save followed the corrected geometry."
         )
+        XCTAssertGreaterThanOrEqual(saveRevision, applyRevision)
+
+        let otherParameterActions = all.compactMap { request -> String? in
+            guard let payload = parameterPayload(request.arguments),
+                  let action = payload["action"] as? String else { return nil }
+            return action
+        }.filter { !["updateSketchEntity", "list"].contains($0) }
         XCTAssertTrue(
-            all.contains { ($0["action"] as? String) == "save" },
-            "The final turn did not call cad.document save."
+            otherParameterActions.isEmpty,
+            "The visual turn used unexpected parameter edits: \(otherParameterActions)"
         )
+        XCTAssertFalse(
+            all.contains { ($0.arguments["action"] as? String) == "versions" },
+            "The visual turn used a versions action instead of ordinary CAD edits."
+        )
+        XCTAssertFalse(
+            all.contains { ($0.arguments["action"] as? String) == "create" },
+            "The visual turn created a second document."
+        )
+        let proposedOps = all.compactMap { request -> String? in
+            guard ["propose", "three_d_propose"].contains(request.arguments["action"] as? String ?? "")
+            else { return nil }
+            return operationName(request.arguments)
+        }
+        XCTAssertEqual(
+            Set(proposedOps),
+            Set(["feature.fillet"]),
+            "The visual turn proposed an unexpected operation: \(proposedOps)"
+        )
+        let allowedActions: Set<String> = [
+            "query", "read", "locate", "three_d_snapshot", "three_d_measure", "measure",
+            "propose", "three_d_propose", "apply", "three_d_apply", "save", "capture",
+            "parameters",
+        ]
+        let unexpectedActions = all.compactMap { request -> String? in
+            let action = request.arguments["action"] as? String ?? ""
+            return allowedActions.contains(action) ? nil : action
+        }
         XCTAssertTrue(
-            successfulSaveReceipt(events),
-            "No successful cad.document save receipt was persisted for the explicit save call."
+            unexpectedActions.isEmpty,
+            "The visual turn used unexpected CAD actions: \(unexpectedActions)"
+        )
+        return (correctionCallID: corrections[0].0.callID, filletCallID: firstFillet.callID)
+    }
+
+    /// The undo turn must issue exactly two real `parameters` undo commands,
+    /// each committed by the owning bridge, and nothing else that mutates.
+    static func assertTurnThreeUndoEvidence(
+        _ events: [RunEventRecord]
+    ) throws -> (commandCount: Int, lastRevision: Int) {
+        let all = requestRecords(events)
+        let responses = responseRecords(events)
+        let undos = all.filter { parameterPayload($0.arguments)?["action"] as? String == "undo" }
+        XCTAssertEqual(undos.count, 2, "The undo turn must issue exactly two native undo commands.")
+        guard undos.count == 2 else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "wrongUndoCount",
+                detail: "Expected exactly two parameters undo commands; found \(undos.count)."
+            )
+        }
+        var revisions: [Int] = []
+        for undo in undos {
+            guard let response = responses[undo.callID], response.status == "ok",
+                  let object = receipt(response),
+                  (object["action"] as? String) == "undo",
+                  (object["mutated"] as? Bool) == true,
+                  (object["saved"] as? Bool) == true,
+                  let revision = NativeCADLiveJSON.int(object["revision"]) else {
+                throw NativeCADLiveError.runIncomplete(
+                    state: "uncommittedUndo",
+                    detail: "One native undo did not report a saved, mutated command."
+                )
+            }
+            XCTAssertEqual(object["can_redo"] as? Bool, true)
+            revisions.append(revision)
+        }
+        XCTAssertGreaterThan(revisions[1], revisions[0], "The second undo must commit a newer revision.")
+
+        XCTAssertFalse(
+            all.contains { ($0.arguments["action"] as? String) == "versions" },
+            "The undo turn used versions restore instead of the native undo command."
+        )
+        XCTAssertFalse(
+            all.contains { parameterPayload($0.arguments)?["action"] as? String == "redo" },
+            "The undo turn ran redo."
+        )
+        let readActions: Set<String> = ["query", "read", "three_d_snapshot", "three_d_measure", "measure"]
+        for request in all {
+            let action = request.arguments["action"] as? String ?? ""
+            if let parameterAction = parameterPayload(request.arguments)?["action"] as? String {
+                if parameterAction == "list" { continue }
+                XCTAssertEqual(parameterAction, "undo", "Unexpected parameter edit in the undo turn.")
+                continue
+            }
+            if ["save", "capture"].contains(action) || readActions.contains(action) { continue }
+            XCTFail("The undo turn performed an unexpected mutating action: \(action)")
+        }
+        XCTAssertTrue(
+            all.contains { request in
+                readActions.contains(request.arguments["action"] as? String ?? "")
+                    && request.sequence > undos[0].sequence
+            },
+            "The undo turn did not read the restored state back."
+        )
+        XCTAssertNotNil(
+            successfulSaveRevision(events),
+            "No successful save receipt was persisted in the undo turn."
+        )
+        return (undos.count, revisions.last ?? -1)
+    }
+
+    /// The post-reopen turn must make exactly one further existing-hole edit,
+    /// read it back, save and capture the final revision.
+    static func assertTurnFourEvidence(
+        _ events: [RunEventRecord],
+        initial: NativeCADLiveDocumentState,
+        reopenedRevision: Int,
+        finalState: NativeCADLiveDocumentState
+    ) throws {
+        let all = requestRecords(events)
+        let responses = responseRecords(events)
+        let initialCircle = try XCTUnwrap(initial.circles.first)
+        let edits = all.compactMap { request -> (Request, [String: Any])? in
+            guard let payload = parameterPayload(request.arguments),
+                  (payload["action"] as? String) == "updateSketchEntity" else { return nil }
+            return (request, payload)
+        }
+        XCTAssertEqual(edits.count, 1, "The post-reopen turn must make exactly one further hole edit.")
+        guard edits.count == 1, let (editRequest, payload) = edits.first else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "missingFurtherEdit",
+                detail: "No further existing-hole edit followed the disk reopen."
+            )
+        }
+        let sketchID = (payload["sketch_id"] as? String) ?? (payload["sketchID"] as? String)
+        let entityID = (payload["entity_id"] as? String) ?? (payload["entityID"] as? String)
+        XCTAssertEqual(sketchID, initialCircle.sketchID)
+        XCTAssertEqual(entityID, initialCircle.entityID)
+        let radius = NativeCADLiveJSON.number(payload["radius"])
+        let diameter = NativeCADLiveJSON.number(payload["diameter"])
+        let movesToTen = radius.map { abs($0 - 5.0) < 1e-9 } == true
+            || diameter.map { abs($0 - 10.0) < 1e-9 } == true
+        XCTAssertTrue(movesToTen, "The post-reopen edit must set the same hole to Ø10.")
+        if let radius {
+            XCTAssertEqual(radius, 5.0, accuracy: 1e-9)
+            if let expected = NativeCADLiveJSON.number(payload["expected_radius"]) {
+                XCTAssertEqual(expected, 3.0, accuracy: 1e-9)
+            }
+        } else if let diameter {
+            XCTAssertEqual(diameter, 10.0, accuracy: 1e-9)
+            if let expected = NativeCADLiveJSON.number(payload["expected_diameter"]) {
+                XCTAssertEqual(expected, 6.0, accuracy: 1e-9)
+            }
+        }
+        guard sketchID == initialCircle.sketchID, entityID == initialCircle.entityID, movesToTen else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "wrongFurtherEdit",
+                detail: "The post-reopen edit did not target the same stable hole identity at Ø10."
+            )
+        }
+        guard let response = responses[editRequest.callID],
+              response.status == "ok",
+              let object = receipt(response),
+              object["saved"] as? Bool == true,
+              let editRevision = NativeCADLiveJSON.int(object["revision"]),
+              editRevision > reopenedRevision else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "uncommittedFurtherEdit",
+                detail: "The post-reopen edit was not committed as a newer revision."
+            )
+        }
+        XCTAssertGreaterThanOrEqual(finalState.revision, editRevision)
+
+        let readActions: Set<String> = ["query", "read", "three_d_snapshot", "three_d_measure", "measure"]
+        XCTAssertTrue(
+            all.contains { request in
+                request.sequence > editRequest.sequence
+                    && readActions.contains(request.arguments["action"] as? String ?? "")
+            },
+            "The post-reopen turn did not read the further edit back."
+        )
+        let saveRevision = try XCTUnwrap(
+            successfulSaveRevision(events, after: editRequest.sequence),
+            "No successful save followed the post-reopen edit."
+        )
+        XCTAssertGreaterThanOrEqual(saveRevision, editRevision)
+        let captureRequests = all.filter { request in
+            (request.arguments["action"] as? String) == "capture"
+                && request.sequence > editRequest.sequence
+        }
+        XCTAssertFalse(
+            captureRequests.isEmpty,
+            "The post-reopen turn did not capture after the further edit."
+        )
+        guard let lastCapture = captureRequests.last else {
+            throw NativeCADLiveError.runIncomplete(
+                state: "missingFinalCapture",
+                detail: "No capture followed the post-reopen edit."
+            )
+        }
+        XCTAssertFalse(
+            all.contains { request in
+                (request.arguments["action"] as? String) == "save"
+                    && request.sequence > lastCapture.sequence
+            },
+            "The post-reopen turn saved after the final capture; the image would not bind the final package."
+        )
+        XCTAssertFalse(
+            all.contains { request in
+                let action = request.arguments["action"] as? String ?? ""
+                let mutating = ["parameters", "apply", "three_d_apply",
+                                "propose", "versions", "create"].contains(action)
+                return mutating && request.sequence > lastCapture.sequence
+            },
+            "The post-reopen turn mutated the document after the final capture."
+        )
+        XCTAssertFalse(
+            all.contains { request in
+                ["undo", "redo"].contains(parameterPayload(request.arguments)?["action"] as? String ?? "")
+            },
+            "The post-reopen turn undid or redid an edit."
+        )
+        XCTAssertFalse(
+            all.contains { ($0.arguments["action"] as? String) == "versions" },
+            "The post-reopen turn used versions instead of an ordinary edit."
+        )
+        let parameterActions = all.compactMap { request -> String? in
+            parameterPayload(request.arguments)?["action"] as? String
+        }
+        XCTAssertTrue(
+            parameterActions.allSatisfy { ["updateSketchEntity", "list"].contains($0) },
+            "The post-reopen turn used unexpected parameter edits: \(parameterActions)"
+        )
+        let otherMutations = all.filter { request in
+            let action = request.arguments["action"] as? String ?? ""
+            return !readActions.contains(action)
+                && !["save", "capture", "parameters"].contains(action)
+        }
+        XCTAssertTrue(
+            otherMutations.isEmpty,
+            "The post-reopen turn used unexpected mutating actions."
         )
     }
 
-    private static func successfulSaveReceipt(_ events: [RunEventRecord]) -> Bool {
-        var saveCallIDs = Set<String>()
-        for event in events where event.kind == .toolRequest {
-            guard let payload = NativeCADLiveJSON.object(event.payloadJSON),
+    private static func requestRecords(_ events: [RunEventRecord]) -> [Request] {
+        events.compactMap { event in
+            guard event.kind == .toolRequest,
+                  let payload = NativeCADLiveJSON.object(event.payloadJSON),
                   (payload["tool"] as? String) == CadDocumentTool.name,
                   let callID = payload["id"] as? String,
                   let input = payload["input"] as? String,
-                  let arguments = NativeCADLiveJSON.object(input),
-                  (arguments["action"] as? String) == "save" else { continue }
-            saveCallIDs.insert(callID)
+                  let arguments = NativeCADLiveJSON.object(input) else { return nil }
+            return Request(callID: callID, arguments: arguments, sequence: event.sequence)
         }
-        guard !saveCallIDs.isEmpty else { return false }
+    }
+
+    private static func responseRecords(_ events: [RunEventRecord]) -> [String: Response] {
+        var result: [String: Response] = [:]
         for event in events where event.kind == .toolResult {
             guard let payload = NativeCADLiveJSON.object(event.payloadJSON),
                   (payload["tool"] as? String) == CadDocumentTool.name,
                   let callID = payload["id"] as? String,
-                  saveCallIDs.contains(callID),
-                  (payload["status"] as? String) == "ok",
-                  let summary = payload["summary"] as? String else { continue }
-            if NativeCADLiveJSON.objects(in: summary).contains(where: {
-                $0["revision"] != nil && ($0["ok"] as? Bool) != false
-            }) {
-                return true
-            }
+                  let status = payload["status"] as? String else { continue }
+            result[callID] = Response(
+                callID: callID,
+                status: status,
+                summary: payload["summary"] as? String ?? "",
+                sequence: event.sequence
+            )
         }
-        return false
+        return result
+    }
+
+    private static func parameterPayload(_ arguments: [String: Any]) -> [String: Any]? {
+        guard (arguments["action"] as? String) == "parameters",
+              let payloadString = arguments["payload"] as? String,
+              let payload = NativeCADLiveJSON.object(payloadString) else { return nil }
+        return payload
+    }
+
+    private static func operationName(_ arguments: [String: Any]) -> String? {
+        if let op = arguments["op"] as? String { return op }
+        return parameterPayload(arguments)?["op"] as? String
+    }
+
+    private static func receipt(_ response: Response) -> [String: Any]? {
+        NativeCADLiveJSON.objects(in: response.summary).last
+    }
+
+    /// Native automatic apply wraps its committed receipt: the outer object
+    /// carries `ok`/`replay` and `receipt` carries the actual revision. The
+    /// ordinary parameter/save/undo replies carry the revision directly.
+    private static func receiptRevision(_ object: [String: Any]) -> Int? {
+        if let revision = NativeCADLiveJSON.int(object["revision"]) { return revision }
+        if let nested = object["receipt"] as? [String: Any] {
+            return NativeCADLiveJSON.int(nested["revision"])
+        }
+        return nil
+    }
+
+    private static func successfulSaveRevision(
+        _ events: [RunEventRecord],
+        after sequence: Int? = nil
+    ) -> Int? {
+        let all = requestRecords(events)
+        let responses = responseRecords(events)
+        let saves = all.filter { request in
+            guard (request.arguments["action"] as? String) == "save" else { return false }
+            if let sequence, request.sequence <= sequence { return false }
+            return true
+        }
+        for save in saves.sorted(by: { $0.sequence > $1.sequence }) {
+            guard let response = responses[save.callID], response.status == "ok",
+                  let object = receipt(response),
+                  (object["ok"] as? Bool) != false,
+                  let revision = NativeCADLiveJSON.int(object["revision"]) else { continue }
+            return revision
+        }
+        return nil
     }
 
     private static func requests(_ events: [RunEventRecord]) -> [[String: Any]] {
@@ -3530,6 +4876,176 @@ final class NativeCADSaveIdentityAppTests: XCTestCase {
         XCTAssertEqual(strings(current, "features", "kind"),
                        strings(base, "features", "kind"), file: file, line: line)
         XCTAssertEqual(try brepBytes(in: current, at: url), baseBRep, file: file, line: line)
+    }
+}
+
+/// Non-paid contract tests for the reviewed same-plan vision route and the
+/// bounded image-receipt parser. They never touch the App graph, a provider,
+/// a credential, an opt-in file, the network or a model request.
+@MainActor
+final class NativeCADLiveVisionContractTests: XCTestCase {
+
+    private func makeProvider(baseURL: URL = NativeCADLivePrepaidRoute.baseURL) -> ProviderProfile {
+        ProviderProfile(
+            id: NativeCADLivePrepaidRoute.providerID,
+            kind: .openAI,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: baseURL,
+            displayName: "Native CAD qualification",
+            secretRef: SecretReference(
+                keychainAccount: "native-cad-qualification.contract",
+                synchronizable: false
+            ),
+            toolNameCompatibility: true
+        )
+    }
+
+    private func makeModel(
+        remoteModelID: String,
+        vision: Bool,
+        contextTokens: Int = 131_072,
+        maxOutputTokens: Int = 8_192
+    ) -> ModelProfile {
+        ModelProfile(
+            id: NativeCADLivePrepaidRoute.modelID,
+            providerID: NativeCADLivePrepaidRoute.providerID,
+            remoteModelID: remoteModelID,
+            displayName: "Native CAD qualification",
+            limits: ModelLimits(
+                contextTokens: contextTokens,
+                maxOutputTokens: maxOutputTokens
+            ),
+            capabilities: vision ? [.text, .tools, .vision] : [.text, .tools],
+            useSurfaces: [.chatAgent],
+            reasoningEffort: .automatic,
+            isHiddenFromPrimaryPicker: true
+        )
+    }
+
+    func testReviewedPrepaidVisionRoutesMatchOnlyTheirReviewedCapability() {
+        let provider = makeProvider()
+        XCTAssertTrue(
+            NativeCADLivePrepaidRoute.matches(
+                provider: provider,
+                model: makeModel(remoteModelID: "deepseek-v4.1-flash", vision: true)
+            ),
+            "The reviewed v4.1 Flash native-image row must authorize the exact same-plan route."
+        )
+        XCTAssertTrue(
+            NativeCADLivePrepaidRoute.matches(
+                provider: provider,
+                model: makeModel(remoteModelID: "glm-5.3-flash", vision: true)
+            ),
+            "The reviewed GLM native-image row must authorize the exact same-plan route."
+        )
+        XCTAssertTrue(
+            NativeCADLivePrepaidRoute.matches(
+                provider: provider,
+                model: makeModel(remoteModelID: "deepseek-v4-flash", vision: false)
+            ),
+            "The historical text-only route must keep its exact old behavior."
+        )
+        XCTAssertFalse(
+            NativeCADLivePrepaidRoute.matches(
+                provider: provider,
+                model: makeModel(remoteModelID: "deepseek-v4-flash", vision: true)
+            ),
+            "A text-only reviewed row must not be relabeled as vision."
+        )
+        XCTAssertFalse(
+            NativeCADLivePrepaidRoute.matches(
+                provider: provider,
+                model: makeModel(remoteModelID: "deepseek-v4.1-flash", vision: false)
+            ),
+            "A reviewed native-image row must not be installed as text-only."
+        )
+        XCTAssertFalse(
+            NativeCADLivePrepaidRoute.matches(
+                provider: provider,
+                model: makeModel(remoteModelID: "deepseek-v4-pro", vision: true)
+            ),
+            "An unreviewed same-URL remote model must not become a zero-increment route."
+        )
+        XCTAssertFalse(
+            NativeCADLivePrepaidRoute.matches(
+                provider: makeProvider(baseURL: URL(string: "https://example.invalid/api/plan/v3")!),
+                model: makeModel(remoteModelID: "deepseek-v4.1-flash", vision: true)
+            ),
+            "A different base URL must never satisfy the reviewed route."
+        )
+        XCTAssertFalse(
+            NativeCADLivePrepaidRoute.matches(
+                provider: provider,
+                model: makeModel(
+                    remoteModelID: "deepseek-v4.1-flash",
+                    vision: true,
+                    contextTokens: NativeCADLivePrepaidRoute.recordedContextTokens + 1
+                )
+            ),
+            "A context window beyond the reviewed documentation must be refused."
+        )
+        XCTAssertFalse(
+            NativeCADLivePrepaidRoute.matches(
+                provider: provider,
+                model: makeModel(
+                    remoteModelID: "deepseek-v4.1-flash",
+                    vision: true,
+                    maxOutputTokens: 393_217
+                )
+            ),
+            "An output limit beyond the reviewed row must be refused."
+        )
+    }
+
+    /// The X35 undo and the M11 variable/formula workflow share the same typed
+    /// parameter command service. This non-paid check proves the executable
+    /// surface still carries both; it does not claim a live M11 run.
+    func testParameterSurfaceKeepsUndoAndM11VariableFormulaActions() {
+        let required = [
+            "updateSketchEntity", "undo", "redo",
+            "variable.create", "variable.update", "variable.delete",
+            "feature.setExpression", "setSketchDimension",
+        ]
+        for action in required {
+            XCTAssertTrue(
+                CadNativeEditActions.parameters.contains(action),
+                "The executable parameters surface lost \(action)."
+            )
+        }
+    }
+
+    func testVisionReceiptParserRequiresSourceAttachedSizeAndRepresentation() {
+        let source = String(repeating: "a", count: 64)
+        let attached = String(repeating: "b", count: 64)
+        let text = """
+        Visual evidence delivery for the immediately preceding tool results.
+        CADViewportArtifacts/run/capture.png: sourceSHA256=\(source) attachedSHA256=\(attached) bytes=1234 representation=original
+        """
+        let fields = NativeCADLiveVisionReceiptParser.parse(text)
+        XCTAssertEqual(fields.count, 1)
+        XCTAssertEqual(fields.first?.sourceSHA256, source)
+        XCTAssertEqual(fields.first?.attachedSHA256, attached)
+        XCTAssertEqual(fields.first?.bytes, 1234)
+        XCTAssertEqual(fields.first?.representation, "original")
+
+        XCTAssertTrue(
+            NativeCADLiveVisionReceiptParser.parse(
+                "CADViewportArtifacts/run/capture.png: not attached; this result exceeds the image-count budget."
+            ).isEmpty,
+            "A non-attached artifact must not become an image receipt."
+        )
+        XCTAssertTrue(
+            NativeCADLiveVisionReceiptParser.parse(
+                "sourceSHA256=\(source) attachedSHA256=\(attached) bytes=not-a-number representation=original"
+            ).isEmpty,
+            "A malformed byte count must not become an image receipt."
+        )
+        XCTAssertTrue(
+            NativeCADLiveVisionReceiptParser.parse(
+                "sourceSHA256=short attachedSHA256=\(attached) bytes=12 representation=original"
+            ).isEmpty,
+            "A truncated source digest must not become an image receipt."
+        )
     }
 }
 
