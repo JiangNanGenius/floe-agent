@@ -412,6 +412,47 @@ final class CADMaterialGLBRenderWitnessTests: XCTestCase {
                              distinct: distinct.count)
         }
 
+        struct RegionStats {
+            var changedFraction: Double
+            var changedMean: Double
+            var borderMax: Int
+        }
+
+        static func regionDiff(_ lhs: WitnessPixels, _ rhs: WitnessPixels,
+                               noiseFloor: Int = 4,
+                               borderFraction: Double = 0.01) -> RegionStats {
+            let count = lhs.width * lhs.height
+            var changed = 0
+            var changedTotal = 0
+            let border = max(8, Int(Double(min(lhs.width, lhs.height)) * borderFraction))
+            var borderMax = 0
+            for pixel in 0..<count {
+                let base = pixel * 4
+                var dmax = 0
+                for channel in 0..<3 {
+                    dmax = max(dmax, abs(Int(lhs.rgba[base + channel])
+                                         - Int(rhs.rgba[base + channel])))
+                }
+                let x = pixel % lhs.width, y = pixel / lhs.width
+                if x < border || y < border
+                    || x >= lhs.width - border || y >= lhs.height - border {
+                    borderMax = max(borderMax, dmax)
+                    continue
+                }
+                if dmax >= noiseFloor {
+                    changed += 1
+                    for channel in 0..<3 {
+                        changedTotal += abs(Int(lhs.rgba[base + channel])
+                                            - Int(rhs.rgba[base + channel]))
+                    }
+                }
+            }
+            return RegionStats(
+                changedFraction: Double(changed) / Double(count),
+                changedMean: changed > 0 ? Double(changedTotal) / Double(changed * 3) : 0,
+                borderMax: borderMax)
+        }
+
         static func diff(_ lhs: WitnessPixels, _ rhs: WitnessPixels) throws -> DiffStats {
             XCTAssertEqual(lhs.width, rhs.width)
             XCTAssertEqual(lhs.height, rhs.height)
