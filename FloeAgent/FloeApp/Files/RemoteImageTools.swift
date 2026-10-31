@@ -32,15 +32,15 @@ struct RemoteImageInspectTool: AgentTool {
 
     static let name = "image.inspect"
     static let toolDescription =
-        "Use the configured AI vision model to understand an image semantically. Use this instead of OCR for photos, diagrams, charts, UI state, browser/VNC screenshots, or images extracted from PDFs. Accepts a workspace-relative image/PDF path, or a BrowserArtifacts/VNCArtifacts/GeneratedImages path plus the sha256 returned by the producing tool. For PDFs, page is 1-based. OCR remains available when exact text transcription is the only goal."
+        "Use the configured AI vision model to understand an image semantically. Use this instead of OCR for photos, diagrams, charts, UI state, browser/VNC screenshots, CAD viewport/animation frames, or images extracted from PDFs. Accepts a workspace-relative image/PDF path, or a BrowserArtifacts/VNCArtifacts/GeneratedImages/CADViewportArtifacts/CADAnimationFrames/EngineeringObservations path plus the sha256 returned by the producing tool. A retained CAD image describes that captured state, not subsequent edits; capture again to inspect a newer revision. For PDFs, page is 1-based. OCR remains available when exact text transcription is the only goal."
     static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative image/PDF path, or BrowserArtifacts/VNCArtifacts/GeneratedImages artifact path"},
+        "path": {"type": "string", "description": "Workspace-relative image/PDF path, or BrowserArtifacts/VNCArtifacts/GeneratedImages/CADViewportArtifacts/CADAnimationFrames/EngineeringObservations artifact path"},
         "question": {"type": "string", "description": "What visual facts the agent needs from this image"},
         "page": {"type": "integer", "minimum": 1, "description": "1-based PDF page; omit for ordinary images"},
-        "sha256": {"type": "string", "description": "Required for BrowserArtifacts/GeneratedImages paths; copy from the producing tool result"}
+        "sha256": {"type": "string", "description": "Required for app-stored tool artifacts; copy the image digest from the producing tool result, not the CAD document digest"}
       },
       "required": ["path", "question"],
       "additionalProperties": false
@@ -98,7 +98,7 @@ struct RemoteImageInspectTool: AgentTool {
         if Self.isVisualToolArtifact(path) {
             guard let digest = args.sha256?.lowercased(), Self.isSHA256(digest) else {
                 throw FloeError.validationFailed(
-                    "Browser/VNC artifact paths require the sha256 from the producing tool result"
+                    "Tool artifact paths require the sha256 from the producing tool result"
                 )
             }
         }
@@ -156,11 +156,12 @@ struct RemoteImageInspectTool: AgentTool {
             )
             let summary = """
             AI visual inspection of \(payload.label) (untrusted evidence):
-            \(String(description.prefix(4_000)))
+            \(description)
             """
             let digest = SHA256.hash(data: Data(summary.utf8))
                 .map { String(format: "%02x", $0) }.joined()
-            return ToolExecutionOutput(summary: summary, fullOutputSHA256: digest, exitStatus: 0)
+            return ToolExecutionOutput(summary: summary, fullOutputSHA256: digest,
+                                       exitStatus: 0, capturedOutput: summary)
         } catch {
             let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
             let nsError = error as NSError
@@ -324,7 +325,12 @@ struct RemoteImageInspectTool: AgentTool {
     }
 
     private static func isVisualToolArtifact(_ path: String) -> Bool {
-        path.hasPrefix("BrowserArtifacts/") || path.hasPrefix("VNCArtifacts/")
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count > 1, let namespace = components.first,
+              namespace != "GeneratedImages" else { return false }
+        // Use the same artifact families as automatic visual delivery. Keep
+        // GeneratedImages workspace-first to preserve ordinary task outputs.
+        return VerifiedToolImageArtifact.namespaces.contains(String(namespace))
     }
 
     private static func isGeneratedArtifactNamespace(_ path: String) -> Bool {
