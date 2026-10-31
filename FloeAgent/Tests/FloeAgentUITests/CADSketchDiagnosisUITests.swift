@@ -183,7 +183,7 @@ final class CADSketchLoopDiagnosisUITests: XCTestCase {
         // (not a fabricated status label).
         updated.tap()
         CADSketchDiagnosisUI.replaceDimension(app, with: "0")
-        let notice = CADSketchDiagnosisUI.any(app, "EditorNotice")
+        let notice = app.staticTexts["EditorNotice"]
         XCTAssertTrue(notice.waitForExistence(timeout: 10),
                       "a refused dimension must surface its reason: \(app.debugDescription)")
         XCTAssertTrue(notice.label.contains("greater than zero"),
@@ -268,7 +268,7 @@ final class CADSketchConflictDiagnosisUITests: XCTestCase {
         // "best fit is never written as satisfied" UI path.
         conflicts.firstMatch.tap()
         CADSketchDiagnosisUI.replaceDimension(app, with: "30")
-        let notice = CADSketchDiagnosisUI.any(app, "EditorNotice")
+        let notice = app.staticTexts["EditorNotice"]
         XCTAssertTrue(notice.waitForExistence(timeout: 10),
                       "a conflicting dimension edit must surface its reason: \(app.debugDescription)")
         XCTAssertTrue(notice.label.lowercased().contains("conflict"),
