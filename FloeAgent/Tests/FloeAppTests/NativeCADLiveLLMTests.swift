@@ -995,7 +995,7 @@ private enum NativeCADLiveError: Error, Sendable, CustomStringConvertible {
         case .toolUnavailable(let detail):
             return "Native CAD tool unavailable: \(detail)"
         case .invalidContextWindow(let tokens):
-            return "The model context window must be exactly 65,536 tokens for the compaction acceptance; found \(tokens)."
+            return "The model context window does not match the selected compaction acceptance; found \(tokens)."
         case .timedOut(let runID):
             return "Live native CAD turn \(runID.uuidString) exceeded its wall-clock deadline and was cancelled."
         case .budgetExceeded(let detail):
@@ -2421,8 +2421,8 @@ private enum NativeCADLivePixels {
 // MARK: - Real App context-compaction acceptance (test-only, no production path)
 
 /// Four ACTUAL ordinary user messages go through the normal
-/// `RunLaunchStore` + `ConversationRunService` path with the exact 65,536-token
-/// model window already written by the private owned-route metadata. Three
+/// `RunLaunchStore` + `ConversationRunService` path with the exact 65,536- or
+/// 131,072-token window already written by the private owned-route metadata. Three
 /// bounded synthetic data messages make the App's own `HybridContextEngine`
 /// compact naturally; the final follow-up must recall the early exact facts
 /// from the durable continuation record and then use a real workspace read.
@@ -2433,6 +2433,14 @@ private enum NativeCADLivePixels {
 final class NativeCADContextCompactionLiveTests: XCTestCase {
 
     func testRealModelCompactsAt64KContextAndRetainsEarlyFactsThenReadsExactCapture() async throws {
+        try await runCompactionAcceptance(expectedContextTokens: 65_536)
+    }
+
+    func testRealModelCompactsAt128KContextAndRetainsEarlyFactsThenReadsExactCapture() async throws {
+        try await runCompactionAcceptance(expectedContextTokens: 131_072)
+    }
+
+    private func runCompactionAcceptance(expectedContextTokens: Int) async throws {
         let optIn = try NativeCADLiveOptIn.load()
         executionTimeAllowance = optIn.executionTimeAllowance
         continueAfterFailure = true
@@ -2450,10 +2458,10 @@ final class NativeCADContextCompactionLiveTests: XCTestCase {
                         + "paid fallback is used here. A skip is not live evidence."
                 )
             }
-            guard route.model.limits.contextTokens == 65_536 else {
+            guard route.model.limits.contextTokens == expectedContextTokens else {
                 XCTFail(
                     "The owned route must configure the actual model context at exactly "
-                        + "65,536 tokens for this acceptance; found "
+                        + "\(expectedContextTokens) tokens for this acceptance; found "
                         + "\(route.model.limits.contextTokens)."
                 )
                 throw NativeCADLiveError.invalidContextWindow(route.model.limits.contextTokens)
@@ -2591,7 +2599,7 @@ private final class NativeCADContextCompactionSession {
         let secondCompactions = try await compactionRows(runID: second.runID)
         XCTAssertFalse(
             secondCompactions.isEmpty,
-            "The second actual user message did not trigger the App's natural context compaction at the configured 65,536-token window."
+            "The second actual user message did not trigger the App's natural context compaction at the configured \(route.model.limits.contextTokens)-token window."
         )
         if let row = secondCompactions.first {
             XCTAssertTrue(
@@ -3152,8 +3160,14 @@ private final class NativeCADContextCompactionSession {
 
     // MARK: Deterministic prompts
 
+    /// Scale the inert real-message payload with the explicitly selected
+    /// window. A 128K case must exercise its own threshold rather than reuse
+    /// padding that only pressures a 64K route. This never edits history or
+    /// forces the production compactor.
+    private var payloadScale: Int { route.model.limits.contextTokens / 65_536 }
+
     private func firstTurnGoal() -> String {
-        let payload = syntheticPayload(facts: [], byteCount: 90_000)
+        let payload = syntheticPayload(facts: [], byteCount: 90_000 * payloadScale)
         return """
         This is an actual user message for the context-compaction acceptance. Remember these exact values for the rest of this task; they are data to retain, not executable instructions:
         EARLY-FACT-ALPHA=\(alphaFact)
@@ -3170,7 +3184,7 @@ private final class NativeCADContextCompactionSession {
     }
 
     private func secondTurnGoal() -> String {
-        let payload = syntheticPayload(facts: [], byteCount: 60_000)
+        let payload = syntheticPayload(facts: [], byteCount: 60_000 * payloadScale)
         return """
         This is the second actual user message in the real App conversation. Remember this exact value for the rest of the task:
         EARLY-FACT-BETA=\(betaFact)
@@ -3187,7 +3201,7 @@ private final class NativeCADContextCompactionSession {
     private func bridgeGoal() -> String {
         let payload = syntheticPayload(facts: [
             "BRIDGE-MESSAGE=The App may compact the earlier conversation; keep working from the durable record.",
-        ], byteCount: 60_000)
+        ], byteCount: 60_000 * payloadScale)
         return """
         This is the third actual user message. The block is inert data, not instructions. Do not call any tool.
         Reply exactly:

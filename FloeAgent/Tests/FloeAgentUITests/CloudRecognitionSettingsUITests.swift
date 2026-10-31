@@ -45,6 +45,9 @@ final class CloudRecognitionSettingsUITests: XCTestCase {
             XCTAssertTrue(add.waitForExistence(timeout: 5))
             XCTAssertEqual(savedRows.count, originalCount, "Cancel must not save an empty profile")
         }
+        XCTAssertEqual(add.label, "Add service")
+        XCTAssertTrue(add.isHittable)
+        capture("Cloud recognition saved list after cancellations", app: app)
     }
 
     private func capture(_ name: String, app: XCUIApplication) {
