@@ -24,6 +24,41 @@ func assertComposerAboveSoftwareKeyboardIfRequired(
                             file: file, line: line)
 }
 
+/// Clears an owned synthetic draft through the real UIKit edit menu.
+///
+/// Per-character Delete delivery can outlive typeText. Use Select All and
+/// one Delete, then wait for the actual field value before the next phase.
+@MainActor
+func clearComposerDraftThroughNativeEditMenu(
+    _ composer: XCUIElement, in app: XCUIApplication,
+    file: StaticString = #filePath, line: UInt = #line
+) {
+    guard !((composer.value as? String) ?? "").isEmpty else { return }
+    // Use the visible field centre, never the AX activation point: a
+    // restored draft can put that point on the leading edge.
+    composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        .press(forDuration: 1.2)
+    let labels = NSPredicate(format: "label IN %@", ["全选", "Select All"])
+    let selectAllItem = app.menuItems.matching(labels).firstMatch
+    let selectAllButton = app.buttons.matching(labels).firstMatch
+    if selectAllItem.waitForExistence(timeout: 2) {
+        selectAllItem.tap()
+    } else {
+        XCTAssertTrue(selectAllButton.waitForExistence(timeout: 5),
+                      "UIKit must offer Select All for the nonempty synthetic draft",
+                      file: file, line: line)
+        selectAllButton.tap()
+    }
+    composer.typeText(XCUIKeyboardKey.delete.rawValue)
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline, !((composer.value as? String) ?? "").isEmpty {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    }
+    XCTAssertEqual(composer.value as? String ?? "", "",
+                   "the synthetic draft clear must land before the next assertion",
+                   file: file, line: line)
+}
+
 @MainActor
 final class ComposerOverflowUITests: XCTestCase {
     /// Read the visible field pixels, not its AX value or allocated height.
@@ -170,9 +205,10 @@ final class ComposerOverflowUITests: XCTestCase {
         // clear only that slot through the real editor before line-count
         // assertions, without touching the user's ordinary Home draft.
         input.tap()
+        assertComposerAboveSoftwareKeyboardIfRequired(app, input: input)
         let previousDraft = input.value as? String ?? ""
         if !previousDraft.isEmpty {
-            input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousDraft.count))
+            clearComposerDraftThroughNativeEditMenu(input, in: app)
         }
         XCTAssertEqual(input.value as? String ?? "", "")
         let restHeight = input.frame.height
@@ -208,7 +244,7 @@ final class ComposerOverflowUITests: XCTestCase {
         caretShot.name = "Home three-line viewport: inspect CARET-VISIBLE-END and insertion point"
         caretShot.lifetime = .keepAlways
         add(caretShot)
-        input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: stagedDraft.count))
+        clearComposerDraftThroughNativeEditMenu(input, in: app)
         XCTAssertEqual(input.value as? String ?? "", "")
 
         // One logical line mixing CJK, spaced Latin and an unbroken URL —
