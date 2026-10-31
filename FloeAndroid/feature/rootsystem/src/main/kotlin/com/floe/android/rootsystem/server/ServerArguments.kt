@@ -56,10 +56,14 @@ internal data class ServerArguments(
 }
 
 internal object ServerExit {
+    /** Clean stop requested through the typed binder call. */
+    const val STOPPED = 0
     const val ARGUMENTS = 2
     const val UID = 3
     const val IDENTITY = 4
     const val CONTEXT = 5
     const val BINDER = 6
-    const val STOPPED = 0
+
+    /** The App never received the first binder publication; do not orphan. */
+    const val PUBLISH = 7
 }

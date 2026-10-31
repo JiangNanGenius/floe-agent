@@ -4,6 +4,7 @@ package com.floe.android.rootsystem.server
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.util.Log
 import com.floe.android.rootsystem.policy.AccessPolicy
 import com.floe.android.rootsystem.policy.GrantRegistry
 import java.util.concurrent.atomic.AtomicBoolean
@@ -47,6 +48,7 @@ object FloeSystemServer {
         val identity = ServerIdentity.resolve(context, parsed) ?: fail(ServerExit.IDENTITY)
         val registry = GrantRegistry()
         val operations = SystemOperations(context, identity)
+        val clientSeen = AtomicBoolean(false)
 
         lateinit var publisher: ProviderPublisher
         val binder = FloeSystemServiceBinder(
@@ -62,24 +64,38 @@ object FloeSystemServer {
                     }, 250)
                 }
             },
+            onClientSeen = {
+                clientSeen.set(true)
+                publisher.cancelInitialDeadline()
+            },
         )
         retainedBinder = binder
 
         publisher = try {
             ProviderPublisher(
-                context = context,
                 identity = identity,
                 token = parsed.token,
                 binder = binder,
+                hasClient = { clientSeen.get() },
+                onInitialPublicationFailed = {
+                    // The App already gave up waiting and no binder was ever
+                    // published: exit instead of leaving an unreachable UID 2000
+                    // helper retrying forever. Typed, non-zero exit code only.
+                    exitProcess(ServerExit.PUBLISH)
+                },
             )
         } catch (_: Throwable) {
             fail(ServerExit.BINDER)
         }
         retainedPublisher = publisher
+        // Bounded lifecycle marker only: no package, signing, token or payload.
+        Log.i(LOG_TAG, "start mode=" + identity.mode + " uid=" + identity.serverUid + " pid=" + identity.serverPid)
         publisher.start()
 
         Looper.loop()
     }
+
+    private const val LOG_TAG = "FloeSystemServer"
 
     private fun fail(code: Int): Nothing {
         System.err.println("floe embedded system service failed to start (code=$code)")

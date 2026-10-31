@@ -41,6 +41,18 @@ private class FullRuntimePlatformExtension(
             created.close()
             device = null
         }
+        // First-start ordering: the Application delivers the FIRST
+        // OwnedStoreReady to this extension before RuntimeHost.start():
+        // FloeApplication.observeBootstrap calls onBootstrapCapability (which
+        // forwards the live epoch) and only then calls start()/onHostStarted.
+        // The epoch callback therefore arrives while `device` is still null
+        // and is lost, leaving the Full platform-tool pump unbound for the
+        // whole first generation. Replay the SAME live accepted epoch after
+        // the host starts; DeviceAccessHost/PlatformToolHostPump re-validate
+        // it, so a stale or foreign epoch is refused (never fabricated).
+        if (device === created) {
+            host.nativeRootEpoch()?.takeIf { it > 0 }?.let { created.onOwnedStoreReady(it) }
+        }
     }
 
     override fun onOwnedStoreReady(epoch: Long) {

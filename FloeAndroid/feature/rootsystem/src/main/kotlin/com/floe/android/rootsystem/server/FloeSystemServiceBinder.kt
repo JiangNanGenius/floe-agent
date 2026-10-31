@@ -31,6 +31,7 @@ internal class FloeSystemServiceBinder(
     private val registry: GrantRegistry,
     private val mode: String,
     private val onStop: () -> Unit,
+    private val onClientSeen: (() -> Unit)? = null,
 ) : IFloeSystemService.Stub() {
 
     // Includes the stable Floe parent, not only the package that launched this
@@ -43,6 +44,9 @@ internal class FloeSystemServiceBinder(
 
     override fun describe(): Bundle {
         if (!callerAllowed()) return BinderProtocol.failure("caller")
+        // A verified App-side describe() proves this publication was adopted
+        // even if the publication reply itself was lost.
+        onClientSeen?.invoke()
         return identity.describe(registry.currentGeneration(), capabilities())
     }
 
