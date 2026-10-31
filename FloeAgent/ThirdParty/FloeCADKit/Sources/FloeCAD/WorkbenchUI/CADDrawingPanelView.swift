@@ -2159,11 +2159,13 @@ private struct CADDrawingDimensionSheet: View {
                             Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) {
                                 cancelDimensionEdit()
                             }
+                            .buttonStyle(.borderless)
                             .accessibilityIdentifier("CADDrawingDimensionCancel")
                             Spacer(minLength: 4)
                             Button(FloeCADStrings.text("cad.ui.common.save", "Save")) {
                                 saveDimensionEdit()
                             }
+                            .buttonStyle(.borderless)
                             .disabled(busy)
                             .accessibilityIdentifier("CADDrawingDimensionSave")
                         }
@@ -2818,9 +2820,11 @@ private struct CADDrawingManufacturingSheet: View {
                             Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) {
                                 cancelEdit()
                             }
+                            .buttonStyle(.borderless)
                             .accessibilityIdentifier("CADDrawingManufacturingCancel")
                             Spacer(minLength: 4)
                             Button(FloeCADStrings.text("cad.ui.common.save", "Save")) { add() }
+                                .buttonStyle(.borderless)
                                 .disabled(busy || !positionValid
                                           || (!hasExistingFeature && requiresHole
                                               && selectedCandidate == nil))
