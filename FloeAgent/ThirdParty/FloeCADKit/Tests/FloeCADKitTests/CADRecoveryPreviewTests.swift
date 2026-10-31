@@ -61,7 +61,7 @@ final class CADRecoveryPreviewTests: XCTestCase {
     private func addRectExtrude(_ document: FloeCADDocument,
                                 sketchName: String,
                                 at point: (min: [Int], max: [Int]) = ([0, 0], [12, 10]))
-    throws {
+    throws -> UUID {
         let sketch = document.executeJSON(Data(
             #"{"op":"sketch.create","args":{"name":"\#(sketchName)"}}"#.utf8))
         XCTAssertTrue(sketch.isOK, sketch.message ?? "")
@@ -77,6 +77,12 @@ final class CADRecoveryPreviewTests: XCTestCase {
         {"op":"feature.extrude","args":{"sketchID":"\(id)","seedPoint":[2,2],"distance":5}}
         """.utf8))
         XCTAssertTrue(extrude.isOK, extrude.message ?? "")
+        let result = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: extrude.payload) as? [String: Any])
+        let produced = try XCTUnwrap(result["producedBodyIDs"] as? [String],
+                                     "extrude must report the body it produced")
+        let rawID = try XCTUnwrap(produced.first, "extrude produced no body")
+        return try XCTUnwrap(UUID(uuidString: rawID), "produced body id is not a UUID")
     }
 
     /// Revision 3: the verified `previous/` commit (revision 2) carries real
@@ -85,11 +91,21 @@ final class CADRecoveryPreviewTests: XCTestCase {
     private func editedPackage(named name: String = "Box") async throws -> URL {
         let url = workDir.appendingPathComponent("\(name).floecad")
         let document = try await FloeCADDocument.create(at: url, name: name)
-        try addRectExtrude(document, sketchName: "Base")
-        document.project.materialsData = try JSONEncoder().encode(
-            CADMaterialLibrary(entries: [CADMaterialDefinition(name: "Recovered Material")]))
-        document.project.drawingsData = try JSONEncoder().encode(
-            CADDrawingSet.standardSheet(for: UUID(), title: "Sheet"))
+        let bodyID = try addRectExtrude(document, sketchName: "Base")
+        // Persist the optional resources through the same document-scoped
+        // services the editor and AI use. Assigning `project.materialsData` /
+        // `project.drawingsData` directly is not a live document edit: the
+        // real save prewarm mirrors the session graph over those columns, so
+        // the raw fixture blobs never reached the package.
+        let material = CADMaterialService(document: document).handle(
+            action: "create", args: ["name": "Recovered Material"])
+        XCTAssertEqual(material["ok"] as? Bool, true, "\(material)")
+        let sheet = CADDrawingService(document: document).handle(
+            action: "standardSheet",
+            args: ["bodyID": bodyID.uuidString, "title": "Sheet"])
+        XCTAssertEqual(sheet["ok"] as? Bool, true, "\(sheet)")
+        XCTAssertEqual(sheet["pageCount"] as? Int, 4,
+                       "the standard sheet must be four real drawing pages")
         document.project.thumbnail = Self.tinyPNG
         var saved = await document.save()
         XCTAssertTrue(saved.succeeded, saved.error ?? "")
@@ -132,6 +148,17 @@ final class CADRecoveryPreviewTests: XCTestCase {
         let url = try await editedPackage()
         let previousManifest = try manifest(url.appendingPathComponent("previous"))
         let previousRecord = try record(url.appendingPathComponent("previous"))
+        // Prove the fixture committed REAL typed resources before claiming a
+        // preview recovered them: the optional blobs must decode to the
+        // material and the four standard drawing pages themselves.
+        let previousMaterials = try JSONDecoder().decode(
+            CADMaterialLibrary.self,
+            from: try XCTUnwrap(previousRecord.materials,
+                                "previous commit must carry a material library"))
+        XCTAssertEqual(previousMaterials.entries.map(\.name), ["Recovered Material"])
+        let previousDrawings = try CADDrawingSet.decode(from: previousRecord.drawings)
+        XCTAssertEqual(previousDrawings.pages.count, 4)
+        let manifestBefore = try Data(contentsOf: url.appendingPathComponent("manifest.json"))
         let before = try packageBytes(url)
         let parentBefore = try directoryEntries(workDir)
         try corruptCurrentDocument(url)
@@ -170,12 +197,19 @@ final class CADRecoveryPreviewTests: XCTestCase {
         XCTAssertNil(row(preview, kind: .unavailable, category: .missingDamagedPreview))
 
         // Exact read-only proof: the current corrupt bytes, the verified
-        // previous commit and the rest of the package are unchanged, and no
-        // manifest/staging/sibling recovery point was created.
+        // previous commit and the rest of the package are unchanged. No
+        // staging or sibling recovery point was created and the existing
+        // manifest is preserved instead of removed or rewritten.
         XCTAssertEqual(try packageBytes(url), corrupted)
         XCTAssertNotEqual(corrupted, before, "the deliberate corruption changed bytes")
         XCTAssertEqual(try directoryEntries(workDir), parentBefore)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.appendingPathComponent("manifest.json").path))
+        // This case damages only document.json; the current manifest is still
+        // part of the package and must be preserved exactly, not removed.
+        let manifestURL = url.appendingPathComponent("manifest.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifestURL.path),
+                      "inspection must keep the damaged package's existing manifest")
+        XCTAssertEqual(try Data(contentsOf: manifestURL), manifestBefore,
+                       "inspection must not rewrite the damaged package's manifest")
         let identity = await FloeCADDocument.storedIdentity(at: url)
         XCTAssertNil(identity, "inspection must not promote previous")
     }
@@ -348,7 +382,12 @@ final class CADRecoveryPreviewTests: XCTestCase {
         try corruptCurrentDocument(url)
         let preview = try await damagedPreview(url)
         let sourceBefore = try packageBytes(url)
-        let destination = workDir.appendingPathComponent("Box Recovered.floecad")
+        // This destination is a KNOWN existing directory, so its URL carries
+        // the directory identity (trailing slash) that the store's canonical
+        // path reports in the typed refusal.
+        let destination = URL(
+            fileURLWithPath: workDir.appendingPathComponent("Box Recovered.floecad").path,
+            isDirectory: true)
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         try Data("other work".utf8).write(to: destination.appendingPathComponent("sentinel.txt"))
 

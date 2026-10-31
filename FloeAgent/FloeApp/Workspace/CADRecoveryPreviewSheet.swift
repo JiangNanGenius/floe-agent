@@ -536,6 +536,7 @@ struct CADRecoveryPreviewSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 14))
+        .accessibilityElement(children: .contain)
     }
 
     private func dateText(_ date: Date) -> String {
