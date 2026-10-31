@@ -154,10 +154,11 @@ final class CADPresentationResourceCache {
 
     // MARK: Internals
 
-    /// Decode the source image once, then cache a normalized top-left copy per
-    /// declared orientation. The same bytes therefore remain usable by a
-    /// top-left colour map and an opposite-origin normal map without sharing
-    /// one sampling direction.
+    /// Normalize the authored origin to the native CGImage upload convention.
+    /// The absolute-UV App witnesses verify all four source quadrants: this
+    /// RealityKit path samples the last CGImage row at v=0, unlike our shared
+    /// top-left texture contract. Convert each map independently; do not alter
+    /// the shared UVs or tangent frame to compensate for an image upload.
     private func decode(_ image: CADPresentationImage,
                         orientation: MaterialTextureOrientation) -> CGImage? {
         let key = "\(image.id)-\(orientation.rawValue)"
@@ -169,19 +170,18 @@ final class CADPresentationResourceCache {
         let normalized: CGImage
         switch orientation {
         case .topLeft:
-            normalized = cgImage
-        case .bottomLeft:
             guard let flipped = Self.verticallyFlipped(cgImage) else { return nil }
             normalized = flipped
+        case .bottomLeft:
+            normalized = cgImage
         }
         imageCache[key] = normalized
         return normalized
     }
 
-    /// Normalize a bottom-up authored map to the top-left row order that
-    /// RealityKit samples at v=0. This is a per-image transform; it never
-    /// touches mesh UVs, so the colour and normal maps can point in opposite
-    /// directions while still sampling the same surface points.
+    /// Lossless row reversal for the native image upload. It never changes
+    /// mesh UVs or normal-channel values; colour and normal maps may retain
+    /// opposite authored origins while addressing the same physical points.
     nonisolated static func verticallyFlipped(_ image: CGImage) -> CGImage? {
         let width = image.width
         let height = image.height
