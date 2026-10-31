@@ -44,6 +44,7 @@ struct SpeechInputSettingsView: View {
                         store: cloudStore,
                         preload: environment.voiceRecognitionPreload)
                 }
+                .accessibilityIdentifier("voice.cloud.profiles.open")
                 if let primary = cloudStore.primaryProfile {
                     LabeledContent("voice.cloud.profile.primary", value: primary.name)
                 }
@@ -56,6 +57,7 @@ struct SpeechInputSettingsView: View {
                     set: { value in
                         Task { await environment.voiceRecognitionPreload.setEnabled(value) }
                     }))
+                .accessibilityIdentifier("voice.input.preload.toggle")
             } footer: {
                 Text("voice.input.preload.footer")
             }

@@ -30,6 +30,7 @@ struct CloudASRProfilesView: View {
                     Label("voice.cloud.profiles.add", systemImage: "plus.circle")
                         .frame(minHeight: 44)
                 }
+                .accessibilityIdentifier("voice.cloud.profiles.add")
                 if store.profiles.isEmpty {
                     Text("voice.cloud.profiles.empty")
                         .foregroundStyle(.secondary)
@@ -70,6 +71,7 @@ struct CloudASRProfilesView: View {
                             }
                             .frame(minHeight: 44)
                         }
+                        .accessibilityIdentifier("voice.cloud.profile." + profile.id.uuidString)
                         .swipeActions {
                             Button(role: .destructive) {
                                 store.removeProfile(id: profile.id)
@@ -100,17 +102,9 @@ struct CloudASRProfilesView: View {
     }
 
     private func add(_ preset: CloudASRSettingsStore.ProviderPreset) {
-        do {
-            var draft = preset.makeProfile()
-            draft.name = FloeL10n.l(presetKey(preset))
-            let created = try store.addProfile(draft, credential: nil)
-            editing = created
-            if let preload {
-                Task { await preload.syncPrimaryRoute() }
-            }
-        } catch {
-            messageKey = "voice.cloud.error.save"
-        }
+        var draft = preset.makeProfile()
+        draft.name = FloeL10n.l(presetKey(preset))
+        editing = draft
     }
 
     private func presetTitle(_ preset: CloudASRSettingsStore.ProviderPreset) -> LocalizedStringKey {
@@ -158,6 +152,7 @@ private struct CloudASRProfileEditor: View {
     @State private var advanced = false
     @State private var errorKey: String?
     @State private var savedKey = false
+    @State private var isNew: Bool
 
     init(
         store: CloudASRSettingsStore,
@@ -168,6 +163,7 @@ private struct CloudASRProfileEditor: View {
         self.store = store
         self.original = original
         self.preload = preload
+        _isNew = State(initialValue: store.profile(id: original.id) == nil)
         self.onDone = onDone
         _name = State(initialValue: original.name)
         _fileModel = State(initialValue: original.fileModelID)
@@ -226,17 +222,19 @@ private struct CloudASRProfileEditor: View {
                     .autocorrectionDisabled()
             }
             Section {
-                if store.primaryProfileID != original.id {
+                if !isNew, store.primaryProfileID != original.id {
                     Button("voice.cloud.profile.use_primary") { makePrimary() }
                         .frame(minHeight: 44)
                 }
                 Button("voice.cloud.profile.save") { save() }
                     .frame(minHeight: 44)
-                Button("voice.cloud.profile.remove", role: .destructive) {
-                    store.removeProfile(id: original.id)
-                    if let preload { Task { await preload.syncPrimaryRoute() } }
-                    dismiss()
-                    onDone()
+                if !isNew {
+                    Button("voice.cloud.profile.remove", role: .destructive) {
+                        store.removeProfile(id: original.id)
+                        if let preload { Task { await preload.syncPrimaryRoute() } }
+                        dismiss()
+                        onDone()
+                    }
                 }
             }
             if let errorKey {
@@ -281,8 +279,12 @@ private struct CloudASRProfileEditor: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         do {
-            let saved = try store.updateProfile(
-                next, credential: key.isEmpty ? nil : key)
+            let saved: ASRProfile
+            if isNew {
+                saved = try store.addProfile(next, credential: key.isEmpty ? nil : key)
+            } else {
+                saved = try store.updateProfile(next, credential: key.isEmpty ? nil : key)
+            }
             savedKey = true
             key = ""
             _ = saved

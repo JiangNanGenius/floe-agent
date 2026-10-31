@@ -776,6 +776,7 @@
 		A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */; };
 		A513363756E58D540282E699 /* CadDocumentCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB89387AE42228EB05B6E255 /* CadDocumentCenter.swift */; };
 		A5534D340294AF8446983C78 /* AudioServicesTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DC4213DF9F3D021E69CC73 /* AudioServicesTool.swift */; };
+		A5601520971758EB3FAA8970 /* CloudRecognitionSettingsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27193B83587D2210EC6972BF /* CloudRecognitionSettingsUITests.swift */; };
 		A5AB13EFA07DB1A27D7C5606 /* OfficePDFExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 188DD85FC48694F7A050A940 /* OfficePDFExportService.swift */; };
 		A5D9B7533A42072342C3DE84 /* FloePackages in Frameworks */ = {isa = PBXBuildFile; productRef = 6B5C3F1CF8AF92A12DF3BDA8 /* FloePackages */; };
 		A685AF38B3C29D63C52FD31B /* WebSearchResultBudgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5A97C31E43C60FBDEE1D16D /* WebSearchResultBudgetTests.swift */; };
@@ -1452,6 +1453,7 @@
 		269EE03956D0D6EED5A1B0BD /* FloeShortcutRunServicePersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeShortcutRunServicePersistenceTests.swift; sourceTree = "<group>"; };
 		26D5EDD0548FFC779DE66566 /* MediaWorkbenchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaWorkbenchView.swift; sourceTree = "<group>"; };
 		26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = RARFixtures.LICENSE.txt; sourceTree = "<group>"; };
+		27193B83587D2210EC6972BF /* CloudRecognitionSettingsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudRecognitionSettingsUITests.swift; sourceTree = "<group>"; };
 		276A4BD225189F342404A19B /* PDFium.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PDFium.xcframework; path = Vendor/PDFium/PDFium.xcframework; sourceTree = "<group>"; };
 		2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeDiagnostics.swift; sourceTree = "<group>"; };
 		27A6ED2F73715446E0E215FD /* OfficeBackendReadinessProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeBackendReadinessProbe.swift; sourceTree = "<group>"; };
@@ -2698,6 +2700,7 @@
 				BE65485FC8E0E948FC57BB93 /* CanvasAgentToolContractTests.swift */,
 				CAA26450656DCB7E65879C8F /* CanvasCADEntryUITests.swift */,
 				71638AA6E6859511D4AF6124 /* CanvasTouchInteractionTests.swift */,
+				27193B83587D2210EC6972BF /* CloudRecognitionSettingsUITests.swift */,
 				F208E2FD680BDF6761B18C22 /* ComposerOverflowUITests.swift */,
 				C249A312D3F94BF9CBA98F76 /* CrashAndFeedbackRegressionTests.swift */,
 				A4C045D240779DF5FC64D438 /* CreativeAssetIngestionTests.swift */,
@@ -5433,6 +5436,7 @@
 				784FA7A7965AAE2F946434AD /* CADWorkbenchHostUITests.swift in Sources */,
 				D05579B4B974B8EBF359FDEE /* Canvas3DWorkbenchLabelUITests.swift in Sources */,
 				8D4EF206906C8AC2036155E8 /* CanvasCADEntryUITests.swift in Sources */,
+				A5601520971758EB3FAA8970 /* CloudRecognitionSettingsUITests.swift in Sources */,
 				9F4602DB3E1DE791B13C180B /* ComposerOverflowUITests.swift in Sources */,
 				3FC69AB81E76A725754E5542 /* CreativeConversationEntryUITests.swift in Sources */,
 				3D5A8812B2A110696477A8E0 /* DesignConversationPageUITests.swift in Sources */,

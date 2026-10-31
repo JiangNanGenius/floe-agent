@@ -11,7 +11,7 @@ import Testing
 import FloeCore
 @testable import FloeProviders
 
-private final class LockedBox<Value>: @unchecked Sendable {
+private final class RealtimeASRLockedBox<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Value
 
@@ -103,8 +103,8 @@ private final class FakeASRInbox: @unchecked Sendable {
 
 private final class FakeASRConnection: ASRWebSocketConnection, @unchecked Sendable {
     private let inbox = FakeASRInbox()
-    private let sent = LockedBox<[ASRWebSocketMessage]>([])
-    private let closed = LockedBox(false)
+    private let sent = RealtimeASRLockedBox<[ASRWebSocketMessage]>([])
+    private let closed = RealtimeASRLockedBox(false)
     var sendFailure: Error?
 
     func send(_ message: ASRWebSocketMessage) async throws {
@@ -151,7 +151,7 @@ private final class FakeASRConnection: ASRWebSocketConnection, @unchecked Sendab
 
 private final class FakeASRTransport: ASRWebSocketTransport, @unchecked Sendable {
     let connection: FakeASRConnection
-    let requests = LockedBox<[URLRequest]>([])
+    let requests = RealtimeASRLockedBox<[URLRequest]>([])
     var connectionFailure: Error?
 
     init(connection: FakeASRConnection = FakeASRConnection()) {
