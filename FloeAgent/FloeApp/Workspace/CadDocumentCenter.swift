@@ -2668,10 +2668,11 @@ actor CadDocumentCenter: CadDocumentHost {
                     + "section view, isolate state or alternate display mode is active, the "
                     + "summary's display block reports it; observation never changes it.",
                 "Frames are published only while the display scene carries no transient "
-                    + "editor preview geometry. A tool, blend, shell, delete/replace-face, "
-                    + "pattern-ghost or exploded-view preview is refused by name instead of "
-                    + "being labelled as the queried model; includeImages=false still returns "
-                    + "the queried rows at the same generation.",
+                    + "editor preview geometry or appearance. A tool, blend, shell, "
+                    + "delete/replace-face, pattern-ghost, exploded-view or material-draft "
+                    + "preview is refused by name instead of being labelled as the queried "
+                    + "model; includeImages=false still returns the queried rows and "
+                    + "committed material at the same generation.",
             ],
         ]
         summary["initial_identity"] = [

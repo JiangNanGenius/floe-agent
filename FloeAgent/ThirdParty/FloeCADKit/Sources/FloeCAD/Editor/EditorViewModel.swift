@@ -751,16 +751,17 @@ final class EditorViewModel {
     /// ONE derived, read-only answer to "may `cad.document observe` publish
     /// engineering frames of this scene right now?".
     ///
-    /// `scene` can draw transient bodies that are NOT part of the queried
-    /// document at the same `session.changeCount`: a tool preview (an additive
-    /// extrude/revolve/sweep/loft body, or a face push/pull body that replaces
-    /// its source), a live blend/shell/delete-face/replace-face result,
-    /// pattern ghost instances, or a saved exploded view's transient
-    /// placements. Those previews are computed in this view model and never
-    /// enter the document, so `nativeQueryJSON` would still describe the
-    /// un-previewed geometry. Observation refuses images while one is active
-    /// instead of labelling a previewed shape as the queried one; query-only
-    /// observation remains available.
+    /// `scene` can draw transient bodies and appearance that are NOT part of
+    /// the queried document at the same `session.changeCount`: a tool preview
+    /// (an additive extrude/revolve/sweep/loft body, or a face push/pull body
+    /// that replaces its source), a live blend/shell/delete-face/replace-face
+    /// result, pattern ghost instances, a saved exploded view's transient
+    /// placements, or the material inspector's in-flight body/face draft.
+    /// Those previews are computed in this view model and never enter the
+    /// document, so `nativeQueryJSON` would still describe the un-previewed
+    /// geometry and committed material. Observation refuses images while one
+    /// is active instead of labelling a previewed shape or appearance as the
+    /// queried one; query-only observation remains available.
     ///
     /// Purely derived: this never changes the tool, selection, camera,
     /// display state, document or undo history.
@@ -823,6 +824,16 @@ final class EditorViewModel {
                 .explodedViewPreview,
                 detail: "a transient exploded-view preview is offsetting assembly placements",
                 guidance: "Reset the exploded view to its base placement, then observe again.")
+        }
+        if let preview = materialDraftPreview {
+            return .blocked(
+                .materialPreview,
+                detail: preview.faceBodyID == nil
+                    ? "a live body-material preview is active and is not part of "
+                        + "the committed material rows"
+                    : "a live face-material preview is active and is not part of "
+                        + "the committed material rows",
+                guidance: "Apply or cancel the material preview, then observe again.")
         }
         return .ready
     }

@@ -66,10 +66,16 @@ final class EngineeringPreviewEntryUITests: XCTestCase {
 
     func test03FilesRecentRowUsesSharedEngineeringPreview() throws {
         let app = launch("files")
-        let fixtureRow = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "files.row."))
-            .containing(.staticText, identifier: "EngineeringEntryPlate.glb").firstMatch
-        let menu = fixtureRow.buttons["files.row.menu"].firstMatch
+        let fileName = app.staticTexts.matching(
+            NSPredicate(format: "label == %@", "EngineeringEntryPlate.glb")).firstMatch
+        XCTAssertTrue(fileName.waitForExistence(timeout: 90),
+                      "the owned fixture must be listed in Files")
+        // Native List propagates the row identifier to its text and More
+        // button. Use that actual shared identity to pick this file's menu.
+        let rowID = fileName.identifier
+        XCTAssertTrue(rowID.hasPrefix("files.row."))
+        let menu = app.buttons.matching(
+            NSPredicate(format: "identifier == %@ AND label == %@", rowID, "More")).firstMatch
         XCTAssertTrue(menu.waitForExistence(timeout: 90),
                       "the Files recent row menu must be reachable")
         menu.tap()

@@ -896,6 +896,217 @@ final class CadNativeObservationTests: XCTestCase {
         XCTAssertNil(model.cameraControl)
     }
 
+    /// The material inspector writes an in-flight body/face draft that changes
+    /// the engineering scene's appearance without entering the document or
+    /// moving `changeCount`. A frame rendered through it would not describe the
+    /// committed material rows at the same pins, so observation must refuse
+    /// images until the inspector's own preview reset runs; query-only still
+    /// reports the committed material and the blocker honestly.
+    func testTransientMaterialDraftFencesFramesUntilPreviewReset() async throws {
+        let center = makeCenter()
+        let tool = CadDocumentTool(host: center)
+        let context = makeContext()
+        let fixture = try await createFixture(tool: tool, context: context)
+        let document = fixture.document
+        let model = document.viewModel()
+        let bodyUUID = try XCTUnwrap(UUID(uuidString: fixture.bodyID))
+        let bodyID = try XCTUnwrap(document.session.document.bodies.first {
+            $0.id.raw == bodyUUID
+        }?.id)
+
+        // A real committed appearance through the production typed vocabulary.
+        // The draft below then differs from these queryable material rows.
+        _ = try run(document, """
+        {"op":"body.setMaterial","args":{"bodyIDs":["\(fixture.bodyID)"],
+         "color":[0.2,0.5,0.9]}}
+        """)
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let settle = try await document.session.settleSaveStateBeforeIdentityPin(
+            expectingChangeCount: document.liveChangeCount)
+        XCTAssertEqual(settle, .ready)
+        let committedSpec = try XCTUnwrap(
+            document.session.document.body(with: bodyID)?.material)
+        XCTAssertEqual(committedSpec.baseColor.x, 0.2, accuracy: 1e-9)
+        XCTAssertEqual(committedSpec.baseColor.y, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(committedSpec.baseColor.z, 0.9, accuracy: 1e-9)
+
+        let packageBefore = try packageDigest(fixture.url)
+        let identityBefore = document.observationIdentity()
+        let undoDepth = document.session.undoStack.undoCommands.count
+        let redoDepth = document.session.undoStack.redoCommands.count
+        let unsavedBefore = document.hasUnsavedChanges
+
+        // Stable image baseline of the same scene and camera.
+        let baseline = try await observe(tool, context: context, payload: [
+            "views": [["azimuthDegrees": 20.0, "elevationDegrees": 15.0,
+                       "distanceScale": 1.0]],
+            "width": 320,
+            "height": 240,
+            "includeImages": true,
+        ])
+        let baselineSummary = try observeSummary(baseline)
+        XCTAssertEqual(baselineSummary["completed_frames"] as? Int, 1)
+        XCTAssertEqual((baselineSummary["frame_fence"] as? [String: Any])?["ready"]
+                        as? Bool, true)
+        let baselineHierarchy = try XCTUnwrap(
+            baselineSummary["hierarchy"] as? [String: Any])
+        let baselineRow = try bodyRow(baselineHierarchy, id: fixture.bodyID)
+        let baselineQueryToken = try XCTUnwrap(baselineRow["query_token"] as? String)
+        let baselineMaterial = try XCTUnwrap(
+            baselineRow["material"] as? [String: Any])
+        let baselineColor = try XCTUnwrap(
+            baselineMaterial["base_color"] as? [Double])
+        XCTAssertEqual(baselineColor[0], 0.2, accuracy: 1e-9)
+        XCTAssertEqual(baselineColor[1], 0.5, accuracy: 1e-9)
+        XCTAssertEqual(baselineColor[2], 0.9, accuracy: 1e-9)
+
+        // The REAL inspector staging path: the selected body resolves to a
+        // whole-body target and the actual editor preview sink writes the
+        // transient draft the viewport renders.
+        let sink = CADEditorMaterialPreviewSink(viewModel: model)
+        model.selection = [bodyID]
+        let wholeTarget = CADMaterialTargetResolver.resolve(viewModel: model)
+        XCTAssertEqual(wholeTarget.bodyIDs, [bodyID.raw])
+        XCTAssertNil(wholeTarget.faceBodyID)
+        var wholeDraft = committedSpec
+        wholeDraft.baseColor = SIMD4(0.9, 0.2, 0.1, 1)
+        wholeDraft.materialName = "Preview Red"
+        sink.previewMaterial(wholeDraft, for: wholeTarget)
+        let wholePreview = try XCTUnwrap(model.materialDraftPreview)
+        XCTAssertNil(wholePreview.faceBodyID)
+        XCTAssertEqual(wholePreview.spec.baseColor.x, 0.9, accuracy: 1e-9)
+        XCTAssertEqual(document.liveChangeCount, identityBefore.changeCount,
+                       "a material draft must not move the queried generation")
+        XCTAssertEqual(document.session.document.body(with: bodyID)?.material,
+                       committedSpec,
+                       "the draft must not enter the document")
+        // The renderer consumes this scene, and the body drawable really wears
+        // the draft instead of the committed appearance.
+        let draftSceneBody = try XCTUnwrap(
+            model.scene.bodies.first { $0.id == bodyID })
+        XCTAssertEqual(try XCTUnwrap(draftSceneBody.material).baseColor.x,
+                       0.9, accuracy: 1e-6)
+
+        await assertTransientPreviewRefused(
+            tool: tool, context: context, expectedBlocker: "material_preview",
+            document: document, model: model,
+            selection: model.selection, cameraEpoch: model.cameraEpoch,
+            undoDepth: undoDepth, redoDepth: redoDepth,
+            packageURL: fixture.url, expectedPackageDigest: packageBefore,
+            expectedChangeCount: identityBefore.changeCount)
+        XCTAssertNotNil(model.materialDraftPreview,
+                        "the refusal must leave the inspector's draft active")
+
+        // Query-only is honest at the same generation: the committed material
+        // row is unchanged and the fence names the draft instead of an image.
+        let draftQuery = try await observe(tool, context: context, payload: [
+            "includeImages": false, "nodeLimit": 10,
+        ])
+        let draftSummary = try observeSummary(draftQuery)
+        XCTAssertTrue(draftQuery.artifacts.isEmpty)
+        XCTAssertEqual(draftSummary["completed_frames"] as? Int, 0)
+        let draftFence = try XCTUnwrap(draftSummary["frame_fence"] as? [String: Any])
+        XCTAssertEqual(draftFence["ready"] as? Bool, false)
+        XCTAssertEqual(draftFence["blocker"] as? String, "material_preview")
+        XCTAssertEqual(draftFence["query_only"] as? Bool, true)
+        XCTAssertNotNil(draftFence["detail"] as? String)
+        XCTAssertNotNil(draftFence["guidance"] as? String)
+        let draftHierarchy = try XCTUnwrap(
+            draftSummary["hierarchy"] as? [String: Any])
+        XCTAssertEqual(draftHierarchy["change_count"] as? Int,
+                       identityBefore.changeCount)
+        let draftRow = try bodyRow(draftHierarchy, id: fixture.bodyID)
+        XCTAssertEqual(draftRow["query_token"] as? String, baselineQueryToken,
+                       "query-only must describe the same committed body generation")
+        let draftMaterial = try XCTUnwrap(draftRow["material"] as? [String: Any])
+        let draftColor = try XCTUnwrap(draftMaterial["base_color"] as? [Double])
+        XCTAssertEqual(draftColor[0], 0.2, accuracy: 1e-9,
+                       "the committed material must not become the draft")
+        XCTAssertEqual(draftColor[1], 0.5, accuracy: 1e-9)
+        XCTAssertEqual(draftColor[2], 0.9, accuracy: 1e-9)
+
+        // The distinct face-target staging path. A real face table entry
+        // resolves the production face target, and the same sink writes the
+        // face draft (picked triangles included).
+        sink.endMaterialPreview()
+        XCTAssertNil(model.materialDraftPreview)
+        XCTAssertTrue(document.observationFrameReadiness().isReady)
+        let liveBody = try XCTUnwrap(document.session.document.body(with: bodyID))
+        let faceTable = try XCTUnwrap(document.session.lastFaceTables[bodyID])
+        XCTAssertEqual(document.session.lastNamingRevisions[bodyID],
+                       liveBody.meshRevision,
+                       "the face table must describe the body's current mesh")
+        let tableEntry = try XCTUnwrap(
+            faceTable.entries.first(where: { !$0.triangles.isEmpty }))
+        let faceTarget = CADMaterialTargetResolver.faceTarget(
+            for: liveBody, triangles: tableEntry.triangles,
+            session: document.session)
+        XCTAssertTrue(faceTarget.isFaceTarget)
+        XCTAssertEqual(faceTarget.faceBodyID, bodyID.raw)
+        XCTAssertNotNil(faceTarget.faceIndex,
+                        "the real face table must resolve one kernel face")
+        XCTAssertNotNil(faceTarget.faceIdentity)
+        var faceDraft = committedSpec
+        faceDraft.baseColor = SIMD4(0.1, 0.9, 0.3, 1)
+        sink.previewMaterial(faceDraft, for: faceTarget)
+        let facePreview = try XCTUnwrap(model.materialDraftPreview)
+        XCTAssertEqual(facePreview.faceBodyID, bodyID)
+        XCTAssertNotNil(facePreview.faceTriangles)
+        XCTAssertEqual(facePreview.spec.baseColor.y, 0.9, accuracy: 1e-9)
+        XCTAssertEqual(document.liveChangeCount, identityBefore.changeCount)
+        XCTAssertEqual(document.session.document.body(with: bodyID)?.material,
+                       committedSpec)
+        await assertTransientPreviewRefused(
+            tool: tool, context: context, expectedBlocker: "material_preview",
+            document: document, model: model,
+            selection: model.selection, cameraEpoch: model.cameraEpoch,
+            undoDepth: undoDepth, redoDepth: redoDepth,
+            packageURL: fixture.url, expectedPackageDigest: packageBefore,
+            expectedChangeCount: identityBefore.changeCount)
+        XCTAssertNotNil(model.materialDraftPreview,
+                        "the face refusal must leave the inspector's draft active")
+
+        // The inspector's normal reset path (Cancel/Apply/dismiss all call the
+        // same sink method) clears the draft; frames return unchanged.
+        sink.endMaterialPreview()
+        XCTAssertNil(model.materialDraftPreview)
+        XCTAssertTrue(document.observationFrameReadiness().isReady)
+        let afterDraft = try await observe(tool, context: context, payload: [
+            "views": [["azimuthDegrees": 20.0, "elevationDegrees": 15.0,
+                       "distanceScale": 1.0]],
+            "width": 320, "height": 240, "includeImages": true,
+        ])
+        let afterSummary = try observeSummary(afterDraft)
+        XCTAssertEqual(afterSummary["completed_frames"] as? Int, 1)
+        XCTAssertEqual(afterDraft.artifacts.count, 1)
+        let afterFence = try XCTUnwrap(afterSummary["frame_fence"] as? [String: Any])
+        XCTAssertEqual(afterFence["ready"] as? Bool, true)
+        XCTAssertEqual(afterFence["blocker"] as? String, "none")
+        let afterReceipts = try observeReceipts(afterDraft)
+        XCTAssertEqual(afterReceipts.count, 1)
+        XCTAssertEqual(afterReceipts.first?["changeCount"] as? Int,
+                       identityBefore.changeCount)
+        let afterPNG = try artifactData(try XCTUnwrap(afterDraft.artifacts.first))
+        XCTAssertFalse(afterPNG.isEmpty)
+        XCTAssertEqual(try pngSize(afterPNG).0, 320)
+        // The cleared scene is back on the committed appearance; no draft
+        // colour survives into the frame's source scene.
+        let resetSceneBody = try XCTUnwrap(
+            model.scene.bodies.first { $0.id == bodyID })
+        XCTAssertEqual(try XCTUnwrap(resetSceneBody.material).baseColor.x,
+                       Float(committedSpec.baseColor.x), accuracy: 1e-6)
+
+        // The draft, both refusals and the reset changed nothing durable.
+        XCTAssertEqual(document.observationIdentity(), identityBefore)
+        XCTAssertEqual(try packageDigest(fixture.url), packageBefore)
+        XCTAssertEqual(document.hasUnsavedChanges, unsavedBefore)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoDepth)
+        XCTAssertEqual(document.session.undoStack.redoCommands.count, redoDepth)
+        XCTAssertEqual(model.selection, [bodyID])
+        XCTAssertNil(model.cameraControl)
+    }
+
     // MARK: - Scene membership
 
     /// Two real bodies: persisted hidden and transient isolate are reported as

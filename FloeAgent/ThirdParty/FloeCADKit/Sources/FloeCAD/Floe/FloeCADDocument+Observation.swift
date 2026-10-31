@@ -28,13 +28,14 @@
 //  `present_pixels: false`; it never pretends to be a Present capture.
 //
 //  Frames are published only while the editor's ONE derived
-//  `observationFrameReadiness` reports no transient preview geometry. Tool,
-//  blend, shell, delete/replace-face, pattern-ghost and exploded-view previews
-//  change the display scene without moving `session.changeCount`; rendering
-//  through them would label uncommitted/unqueried geometry as the model at the
-//  returned generation. Such a state is refused before a frame exists, and
-//  `includeImages=false` remains the honest query-only route. The fence reads
-//  state and never cancels a tool, moves the camera or edits the document.
+//  `observationFrameReadiness` reports no transient preview. Tool, blend,
+//  shell, delete/replace-face, pattern-ghost, exploded-view and material-draft
+//  previews change the display scene without moving `session.changeCount`;
+//  rendering through them would label uncommitted/unqueried geometry or
+//  appearance as the model at the returned generation. Such a state is refused
+//  before a frame exists, and `includeImages=false` remains the honest
+//  query-only route. The fence reads state and never applies or cancels a
+//  draft, moves the camera or edits the document.
 //
 //  SPDX-License-Identifier: MPL-2.0
 //
@@ -45,10 +46,11 @@ import ImageIO
 import simd
 
 /// Which transient editor preview currently prevents a frame from being
-/// published as the queried model geometry. These are display-only states
-/// owned by the editor, not document commands: they change the live viewport
-/// without moving `session.changeCount`, so a frame rendered through them
-/// would not describe the body/occurrence rows returned at that generation.
+/// published as the queried model at the returned generation. These are
+/// display-only states owned by the editor, not document commands: they change
+/// the live viewport without moving `session.changeCount`, so a frame rendered
+/// through them would not describe the body/occurrence rows and committed
+/// material returned at that generation.
 public nonisolated enum CADObservationFrameBlocker: String, Sendable, Equatable {
     case toolPreview = "tool_preview"
     case blendPreview = "blend_preview"
@@ -57,6 +59,7 @@ public nonisolated enum CADObservationFrameBlocker: String, Sendable, Equatable 
     case replaceFacePreview = "replace_face_preview"
     case patternPreview = "pattern_preview"
     case explodedViewPreview = "exploded_view_preview"
+    case materialPreview = "material_preview"
 }
 
 /// The editor's derived, read-only answer to "may observation publish frames
