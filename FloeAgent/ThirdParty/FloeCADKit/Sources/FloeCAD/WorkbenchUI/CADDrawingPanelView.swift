@@ -1979,121 +1979,195 @@ private struct CADDrawingDimensionSheet: View {
     @State private var viewID: String?
     @State private var candidates: [[String: Any]] = []
     @State private var candidateIndex: Int?
+    @State private var editingDimensionID: String?
     @State private var busy = false
     @State private var errorText: String?
 
     private var pageID: String? { page["id"] as? String }
     private var requiredPoints: Int { kind == "angle" ? 3 : 2 }
+    /// ISO 286 covers a cylinder (diameter) or two opposite parallel surfaces
+    /// (length). A radius is half a diameter and an angle has no linear band,
+    /// so neither offers a fit control.
+    private var fitsAllowed: Bool { kind == "length" || kind == "diameter" }
     private var linkedCandidate: [String: Any]? {
         guard let candidateIndex, candidateIndex < candidates.count else { return nil }
         return candidates[candidateIndex]
+    }
+    private var editingDimensionRow: [String: Any]? {
+        guard let editingDimensionID else { return nil }
+        return manual.first { ($0["id"] as? String) == editingDimensionID }
+    }
+    private var selectedViewName: String? {
+        guard let viewID else { return nil }
+        return views.first { ($0["id"] as? String) == viewID }?["name"] as? String
+    }
+
+    @ViewBuilder
+    private var toleranceControls: some View {
+        Picker(FloeCADStrings.text("cad.workbench.drawing.dimensionTolerance",
+                                   "Tolerance"), selection: $toleranceKind) {
+            Text(FloeCADStrings.text("cad.workbench.drawing.toleranceNone", "None"))
+                .tag("none")
+            Text(FloeCADStrings.text("cad.workbench.drawing.toleranceSymmetric",
+                                     "Symmetric ±")).tag("symmetric")
+            Text(FloeCADStrings.text("cad.workbench.drawing.toleranceDeviation",
+                                     "Upper/lower deviation")).tag("deviation")
+            Text(FloeCADStrings.text("cad.workbench.drawing.toleranceLimits",
+                                     "Absolute limits")).tag("limits")
+            if fitsAllowed {
+                Text(FloeCADStrings.text("cad.workbench.drawing.toleranceFit",
+                                         "ISO 286 fit")).tag("fit")
+            }
+        }
+        .accessibilityIdentifier("CADDrawingDimensionToleranceKind")
+        if toleranceKind == "symmetric" {
+            CADPanelNumberField(title: "±", text: $toleranceA,
+                                identifier: "CADDrawingDimensionToleranceA")
+        } else if toleranceKind == "deviation" {
+            HStack(spacing: 10) {
+                CADPanelNumberField(title: "+", text: $toleranceA,
+                                    identifier: "CADDrawingDimensionToleranceA")
+                CADPanelNumberField(title: "−", text: $toleranceB,
+                                    identifier: "CADDrawingDimensionToleranceB")
+            }
+        } else if toleranceKind == "limits" {
+            HStack(spacing: 10) {
+                CADPanelNumberField(title: FloeCADStrings.text(
+                    "cad.workbench.drawing.limitMax", "Max"), text: $toleranceA,
+                                    identifier: "CADDrawingDimensionToleranceA")
+                CADPanelNumberField(title: FloeCADStrings.text(
+                    "cad.workbench.drawing.limitMin", "Min"), text: $toleranceB,
+                                    identifier: "CADDrawingDimensionToleranceB")
+            }
+        } else if toleranceKind == "fit", fitsAllowed {
+            Stepper(value: $fitHoleGrade, in: 5...11) {
+                Text("H\(fitHoleGrade)")
+            }
+            Picker(FloeCADStrings.text("cad.workbench.drawing.shaftLetter",
+                                       "Shaft"), selection: $fitShaftLetter) {
+                ForEach(["h", "g", "f", "e", "d"], id: \.self) { letter in
+                    Text(letter).tag(letter)
+                }
+            }
+            Stepper(value: $fitShaftGrade, in: 5...11) {
+                Text("\(fitShaftLetter)\(fitShaftGrade)")
+            }
+        }
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section(FloeCADStrings.text("cad.workbench.drawing.newDimension", "New dimension")) {
-                    Picker(FloeCADStrings.text("cad.workbench.drawing.dimensionKind", "Kind"),
-                           selection: $kind) {
-                        ForEach(CADDrawingDimensionKind.allCases, id: \.self) { kind in
-                            Text(kind.title).tag(kind.rawValue)
+                Section(editingDimensionID == nil
+                        ? FloeCADStrings.text("cad.workbench.drawing.newDimension",
+                                              "New dimension")
+                        : FloeCADStrings.text("cad.workbench.drawing.editDimension",
+                                              "Edit dimension")) {
+                    if editingDimensionID == nil {
+                        Picker(FloeCADStrings.text("cad.workbench.drawing.dimensionKind", "Kind"),
+                               selection: $kind) {
+                            ForEach(CADDrawingDimensionKind.allCases, id: \.self) { kind in
+                                Text(drawingDimensionKindTitle(kind)).tag(kind.rawValue)
+                            }
                         }
-                    }
-                    .onChange(of: kind) { _, _ in prefill() }
-                    if views.count > 1 {
-                        Picker(FloeCADStrings.text("cad.workbench.drawing.view", "View"),
-                               selection: $viewID) {
-                            ForEach(Array(views.enumerated()), id: \.offset) { _, row in
-                                if let id = row["id"] as? String {
+                        .onChange(of: kind) { _, _ in
+                            prefill()
+                            clearUnsupportedFit()
+                        }
+                        if views.count > 1 {
+                            Picker(FloeCADStrings.text("cad.workbench.drawing.view", "View"),
+                                   selection: $viewID) {
+                                ForEach(Array(views.enumerated()), id: \.offset) { _, row in
+                                    if let id = row["id"] as? String {
+                                        Text(row["name"] as? String ?? id).tag(String?.some(id))
+                                    }
+                                }
+                            }
+                            .onChange(of: viewID) { _, _ in loadCandidates() }
+                        }
+                        Picker(FloeCADStrings.text("cad.workbench.drawing.linkFeature",
+                                                   "Link to face"),
+                               selection: $candidateIndex) {
+                            Text(FloeCADStrings.text("cad.workbench.drawing.manualPoints",
+                                                     "Manual points"))
+                                .tag(Int?.none)
+                            ForEach(Array(candidates.enumerated()), id: \.offset) { index, row in
+                                Text(Self.candidateLabel(row)).tag(Int?.some(index))
+                            }
+                        }
+                        .onChange(of: candidateIndex) { _, value in
+                            if value != nil { kind = "diameter" }
+                        }
+                        Picker(FloeCADStrings.text("cad.workbench.drawing.boundInstance",
+                                                   "Instance"), selection: $instanceID) {
+                            Text(FloeCADStrings.text("cad.workbench.drawing.pickInstance",
+                                                     "Select…"))
+                                .tag(String?.none)
+                            ForEach(Array(instances.enumerated()), id: \.offset) { _, row in
+                                if let id = row["instanceID"] as? String {
                                     Text(row["name"] as? String ?? id).tag(String?.some(id))
                                 }
                             }
                         }
-                        .onChange(of: viewID) { _, _ in loadCandidates() }
-                    }
-                    Picker(FloeCADStrings.text("cad.workbench.drawing.linkFeature", "Link to face"),
-                           selection: $candidateIndex) {
-                        Text(FloeCADStrings.text("cad.workbench.drawing.manualPoints", "Manual points"))
-                            .tag(Int?.none)
-                        ForEach(Array(candidates.enumerated()), id: \.offset) { index, row in
-                            Text(Self.candidateLabel(row)).tag(Int?.some(index))
-                        }
-                    }
-                    .onChange(of: candidateIndex) { _, value in
-                        if value != nil { kind = "diameter" }
-                    }
-                    Picker(FloeCADStrings.text("cad.workbench.drawing.boundInstance", "Instance"),
-                           selection: $instanceID) {
-                        Text(FloeCADStrings.text("cad.workbench.drawing.pickInstance", "Select…"))
-                            .tag(String?.none)
-                        ForEach(Array(instances.enumerated()), id: \.offset) { _, row in
-                            if let id = row["instanceID"] as? String {
-                                Text(row["name"] as? String ?? id).tag(String?.some(id))
+                        .onChange(of: instanceID) { _, _ in prefill() }
+                        ForEach(0..<requiredPoints, id: \.self) { index in
+                            HStack(spacing: 10) {
+                                CADPanelNumberField(title: "P\(index) x", text: Binding(
+                                    get: { points[index * 2] },
+                                    set: { points[index * 2] = $0 }))
+                                CADPanelNumberField(title: "P\(index) y", text: Binding(
+                                    get: { points[index * 2 + 1] },
+                                    set: { points[index * 2 + 1] = $0 }))
                             }
                         }
-                    }
-                    .onChange(of: instanceID) { _, _ in prefill() }
-                    ForEach(0..<requiredPoints, id: \.self) { index in
-                        HStack(spacing: 10) {
-                            CADPanelNumberField(title: "P\(index) x", text: Binding(
-                                get: { points[index * 2] },
-                                set: { points[index * 2] = $0 }))
-                            CADPanelNumberField(title: "P\(index) y", text: Binding(
-                                get: { points[index * 2 + 1] },
-                                set: { points[index * 2 + 1] = $0 }))
+                    } else if let row = editingDimensionRow {
+                        HStack(spacing: 8) {
+                            Text(row["text"] as? String ?? "—").font(.callout)
+                            Spacer(minLength: 4)
+                            if views.count > 1, let name = selectedViewName {
+                                Text(name).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        if let feature = row["feature"] as? [String: Any],
+                           feature["featureID"] is String {
+                            Text(FloeCADStrings.text("cad.workbench.drawing.keepLinkedFeature",
+                                                     "The linked feature and measurement stay "
+                                                     + "unchanged; edit only the text, position "
+                                                     + "or tolerance here."))
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     TextField(FloeCADStrings.text("cad.workbench.drawing.dimensionText",
                                                   "Text override (optional)"), text: $text)
                     HStack(spacing: 10) {
-                        CADPanelNumberField(title: "Text X", text: $textX)
-                        CADPanelNumberField(title: "Text Y", text: $textY)
+                        CADPanelNumberField(title: "Text X", text: $textX,
+                                            identifier: "CADDrawingDimensionTextX")
+                        CADPanelNumberField(title: "Text Y", text: $textY,
+                                            identifier: "CADDrawingDimensionTextY")
                     }
-                    Picker(FloeCADStrings.text("cad.workbench.drawing.dimensionTolerance",
-                                               "Tolerance"), selection: $toleranceKind) {
-                        Text(FloeCADStrings.text("cad.workbench.drawing.toleranceNone", "None"))
-                            .tag("none")
-                        Text(FloeCADStrings.text("cad.workbench.drawing.toleranceSymmetric",
-                                                 "Symmetric ±")).tag("symmetric")
-                        Text(FloeCADStrings.text("cad.workbench.drawing.toleranceDeviation",
-                                                 "Upper/lower deviation")).tag("deviation")
-                        Text(FloeCADStrings.text("cad.workbench.drawing.toleranceLimits",
-                                                 "Absolute limits")).tag("limits")
-                        Text(FloeCADStrings.text("cad.workbench.drawing.toleranceFit",
-                                                 "ISO 286 fit")).tag("fit")
-                    }
-                    if toleranceKind == "symmetric" {
-                        CADPanelNumberField(title: "±", text: $toleranceA)
-                    } else if toleranceKind == "deviation" {
-                        HStack(spacing: 10) {
-                            CADPanelNumberField(title: "+", text: $toleranceA)
-                            CADPanelNumberField(title: "−", text: $toleranceB)
+                    toleranceControls
+                    if editingDimensionID == nil {
+                        Button(FloeCADStrings.text("cad.workbench.drawing.addDimension",
+                                                   "Add dimension")) {
+                            add()
                         }
-                    } else if toleranceKind == "limits" {
-                        HStack(spacing: 10) {
-                            CADPanelNumberField(title: "Max", text: $toleranceA)
-                            CADPanelNumberField(title: "Min", text: $toleranceB)
-                        }
-                    } else if toleranceKind == "fit" {
-                        Stepper(value: $fitHoleGrade, in: 5...11) {
-                            Text("H\(fitHoleGrade)")
-                        }
-                        Picker(FloeCADStrings.text("cad.workbench.drawing.shaftLetter",
-                                                   "Shaft"), selection: $fitShaftLetter) {
-                            ForEach(["h", "g", "f", "e", "d"], id: \.self) { letter in
-                                Text(letter).tag(letter)
+                        .disabled(busy || (linkedCandidate == nil
+                                           && (instanceID == nil || !pointsComplete)))
+                        .accessibilityIdentifier("CADDrawingDimensionAdd")
+                    } else {
+                        HStack(spacing: 12) {
+                            Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) {
+                                cancelDimensionEdit()
                             }
-                        }
-                        Stepper(value: $fitShaftGrade, in: 5...11) {
-                            Text("\(fitShaftLetter)\(fitShaftGrade)")
+                            .accessibilityIdentifier("CADDrawingDimensionCancel")
+                            Spacer(minLength: 4)
+                            Button(FloeCADStrings.text("cad.ui.common.save", "Save")) {
+                                saveDimensionEdit()
+                            }
+                            .disabled(busy)
+                            .accessibilityIdentifier("CADDrawingDimensionSave")
                         }
                     }
-                    Button(FloeCADStrings.text("cad.workbench.drawing.addDimension", "Add dimension")) {
-                        add()
-                    }
-                    .disabled(busy || (linkedCandidate == nil
-                                       && (instanceID == nil || !pointsComplete)))
-                    .accessibilityIdentifier("CADDrawingDimensionAdd")
                 }
 
                 if !manual.isEmpty {
@@ -2101,25 +2175,39 @@ private struct CADDrawingDimensionSheet: View {
                                                 "Manual dimensions")) {
                         ForEach(Array(manual.enumerated()), id: \.offset) { _, row in
                             HStack(spacing: 8) {
-                                Text(row["text"] as? String ?? "—")
-                                    .font(.callout)
-                                Spacer(minLength: 4)
-                                if row["dangling"] as? Bool == true {
-                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.dangling",
-                                                                         "dangling"), tint: .red)
-                                } else if row["invalid"] as? Bool == true {
-                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.invalid",
-                                                                         "invalid"), tint: .red)
-                                } else if row["remeasured"] as? Bool == true {
-                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.remeasured",
-                                                                         "updated"), tint: .blue)
-                                } else if row["stale"] as? Bool == true {
-                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.stale",
-                                                                         "stale"), tint: .orange)
-                                } else if row["unbound"] as? Bool == true {
-                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.unbound",
-                                                                         "unbound"), tint: .secondary)
+                                Button {
+                                    beginEdit(row)
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Text(row["text"] as? String ?? "—")
+                                            .font(.callout)
+                                        Spacer(minLength: 4)
+                                        if row["dangling"] as? Bool == true {
+                                            PanelBadge(text: FloeCADStrings.text(
+                                                "cad.workbench.badge.dangling", "dangling"),
+                                                       tint: .red)
+                                        } else if row["invalid"] as? Bool == true {
+                                            PanelBadge(text: FloeCADStrings.text(
+                                                "cad.workbench.badge.invalid", "invalid"),
+                                                       tint: .red)
+                                        } else if row["remeasured"] as? Bool == true {
+                                            PanelBadge(text: FloeCADStrings.text(
+                                                "cad.workbench.badge.remeasured", "updated"),
+                                                       tint: .blue)
+                                        } else if row["stale"] as? Bool == true {
+                                            PanelBadge(text: FloeCADStrings.text(
+                                                "cad.workbench.badge.stale", "stale"),
+                                                       tint: .orange)
+                                        } else if row["unbound"] as? Bool == true {
+                                            PanelBadge(text: FloeCADStrings.text(
+                                                "cad.workbench.badge.unbound", "unbound"),
+                                                       tint: .secondary)
+                                        }
+                                    }
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("CADDrawingDimensionRow")
                                 Button(role: .destructive) {
                                     remove(row["id"] as? String ?? "")
                                 } label: {
@@ -2246,22 +2334,11 @@ private struct CADDrawingDimensionSheet: View {
         if !text.trimmingCharacters(in: .whitespaces).isEmpty { args["text"] = text }
         if let x = Double(textX), let y = Double(textY) { args["textPosition"] = [x, y] }
         if toleranceKind != "none" {
-            var tolerance: [String: Any] = ["kind": toleranceKind]
-            switch toleranceKind {
-            case "symmetric":
-                tolerance["deviationMM"] = Double(toleranceA) ?? 0
-            case "deviation":
-                tolerance["upperDeviationMM"] = Double(toleranceA) ?? 0
-                tolerance["lowerDeviationMM"] = Double(toleranceB) ?? 0
-            case "limits":
-                tolerance["upperLimitMM"] = Double(toleranceA) ?? 0
-                tolerance["lowerLimitMM"] = Double(toleranceB) ?? 0
-            case "fit":
-                tolerance["fit"] = ["holeGrade": fitHoleGrade,
-                                    "shaftLetter": fitShaftLetter,
-                                    "shaftGrade": fitShaftGrade]
-            default:
-                break
+            guard let tolerance = tolerancePayload() else {
+                errorText = FloeCADStrings.text(
+                    "cad.workbench.drawing.invalidToleranceInput",
+                    "Enter valid tolerance values.")
+                return
             }
             args["tolerance"] = tolerance
         }
@@ -2281,8 +2358,157 @@ private struct CADDrawingDimensionSheet: View {
         }
     }
 
+    /// Strict tolerance drafts. A blank/partial/non-finite field is an error,
+    /// never a silent zero or the previous value.
+    private func tolerancePayload() -> [String: Any]? {
+        switch toleranceKind {
+        case "symmetric":
+            guard let deviation = CADDrawingTemplateRules.parseNumberDraft(toleranceA) else {
+                return nil
+            }
+            return ["kind": "symmetric", "deviationMM": deviation]
+        case "deviation":
+            guard let upper = CADDrawingTemplateRules.parseNumberDraft(toleranceA),
+                  let lower = CADDrawingTemplateRules.parseNumberDraft(toleranceB) else {
+                return nil
+            }
+            return ["kind": "deviation",
+                    "upperDeviationMM": upper, "lowerDeviationMM": lower]
+        case "limits":
+            guard let upper = CADDrawingTemplateRules.parseNumberDraft(toleranceA),
+                  let lower = CADDrawingTemplateRules.parseNumberDraft(toleranceB) else {
+                return nil
+            }
+            return ["kind": "limits",
+                    "upperLimitMM": upper, "lowerLimitMM": lower]
+        case "fit":
+            guard fitsAllowed else { return nil }
+            return ["kind": "fit",
+                    "fit": ["holeGrade": fitHoleGrade,
+                            "shaftLetter": fitShaftLetter,
+                            "shaftGrade": fitShaftGrade]]
+        default:
+            return nil
+        }
+    }
+
+    private func clearUnsupportedFit() {
+        guard !fitsAllowed, toleranceKind == "fit" else { return }
+        toleranceKind = "none"
+    }
+
+    private func beginEdit(_ row: [String: Any]) {
+        guard let id = row["id"] as? String else { return }
+        editingDimensionID = id
+        kind = row["kind"] as? String ?? kind
+        text = row["textOverride"] as? String ?? ""
+        if let position = row["localTextPosition"] as? [Double], position.count == 2 {
+            textX = Self.draftNumber(position[0])
+            textY = Self.draftNumber(position[1])
+        } else {
+            textX = ""
+            textY = ""
+        }
+        if let storedViewID = row["viewID"] as? String { viewID = storedViewID }
+        toleranceA = "0.05"
+        toleranceB = "0"
+        toleranceKind = "none"
+        if let tolerance = row["tolerance"] as? [String: Any],
+           let storedKind = tolerance["kind"] as? String {
+            switch storedKind {
+            case "symmetric":
+                toleranceKind = "symmetric"
+                toleranceA = Self.draftNumber(tolerance["deviationMM"] as? Double ?? 0)
+            case "deviation":
+                toleranceKind = "deviation"
+                toleranceA = Self.draftNumber(tolerance["upperDeviationMM"] as? Double ?? 0)
+                toleranceB = Self.draftNumber(tolerance["lowerDeviationMM"] as? Double ?? 0)
+            case "limits":
+                toleranceKind = "limits"
+                toleranceA = Self.draftNumber(tolerance["upperLimitMM"] as? Double ?? 0)
+                toleranceB = Self.draftNumber(tolerance["lowerLimitMM"] as? Double ?? 0)
+            case "fit":
+                toleranceKind = "fit"
+                if let fit = tolerance["fit"] as? [String: Any] {
+                    fitHoleGrade = fit["holeGrade"] as? Int ?? 7
+                    fitShaftLetter = fit["shaftLetter"] as? String ?? "h"
+                    fitShaftGrade = fit["shaftGrade"] as? Int ?? 6
+                }
+            default:
+                toleranceKind = "none"
+            }
+        }
+        if !fitsAllowed && toleranceKind == "fit" {
+            // An old record could carry a fit on a radius/angle before the
+            // scope was enforced. Do not pretend it is editable: clear the
+            // unsupported selection and tell the user why.
+            toleranceKind = "none"
+            errorText = FloeCADStrings.text(
+                "cad.workbench.drawing.fitIncompatible",
+                "ISO 286 fits apply to a diameter or a length, not a radius or an angle.")
+        } else {
+            errorText = nil
+        }
+    }
+
+    private func cancelDimensionEdit() {
+        editingDimensionID = nil
+        errorText = nil
+    }
+
+    private func saveDimensionEdit() {
+        guard let pageID, let dimensionID = editingDimensionID else { return }
+        guard let x = CADDrawingTemplateRules.parseNumberDraft(textX),
+              let y = CADDrawingTemplateRules.parseNumberDraft(textY) else {
+            errorText = FloeCADStrings.text("cad.workbench.drawing.invalidNumberDraft",
+                                            "Enter a valid number.")
+            return
+        }
+        let tolerance: Any
+        if toleranceKind == "none" {
+            tolerance = NSNull()
+        } else if let payload = tolerancePayload() {
+            tolerance = payload
+        } else {
+            errorText = FloeCADStrings.text(
+                "cad.workbench.drawing.invalidToleranceInput",
+                "Enter valid tolerance values.")
+            return
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let args: [String: Any] = [
+            "pageID": pageID,
+            "dimensionID": dimensionID,
+            "textPosition": [x, y],
+            "text": trimmed.isEmpty ? NSNull() : text,
+            "tolerance": tolerance,
+        ]
+        busy = true
+        Task { @MainActor in
+            let service = CADDrawingService(document: document)
+            let reply = service.handle(action: "updateDimension", args: args)
+            if reply["mutated"] as? Bool == true { _ = await document.save() }
+            busy = false
+            onChanged(reply)
+            if reply["ok"] as? Bool == true {
+                editingDimensionID = nil
+                errorText = nil
+                manual = reply["manualDimensions"] as? [[String: Any]] ?? manual
+            } else {
+                errorText = reply["message"] as? String
+            }
+        }
+    }
+
+    private static func draftNumber(_ value: Double) -> String {
+        var text = String(value)
+        if text.hasSuffix(".0") { text.removeLast(2) }
+        return text
+    }
+
     private func remove(_ dimensionID: String) {
         guard let pageID, let uuid = UUID(uuidString: dimensionID) else { return }
+        if editingDimensionID == dimensionID { editingDimensionID = nil }
         busy = true
         Task { @MainActor in
             let service = CADDrawingService(document: document)
@@ -2500,10 +2726,14 @@ private struct CADDrawingManufacturingSheet: View {
     @State private var threadThrough = true
     @State private var threadDepth = ""
     @State private var annotations: [[String: Any]] = []
+    @State private var editingID: String?
+    @State private var editingPayload: [String: Any] = [:]
+    @State private var preferredFeature: [String: Any]?
     @State private var busy = false
     @State private var errorText: String?
 
     private var pageID: String? { page["id"] as? String }
+    private var editing: Bool { editingID != nil }
     private var selectedCandidate: [String: Any]? {
         guard let candidateIndex, candidateIndex < candidates.count else { return nil }
         return candidates[candidateIndex]
@@ -2511,20 +2741,41 @@ private struct CADDrawingManufacturingSheet: View {
     private var requiresHole: Bool {
         kind == "threadCallout" || kind == "counterboreCallout"
     }
+    private var hasExistingFeature: Bool {
+        editingPayload["feature"] is [String: Any]
+    }
+    private var sourcePlaceholder: String {
+        if editing, hasExistingFeature {
+            return FloeCADStrings.text("cad.workbench.drawing.keepHoleSource",
+                                       "Keep the current linked face")
+        }
+        return requiresHole
+            ? FloeCADStrings.text("cad.workbench.drawing.pickHole", "Select a hole face")
+            : FloeCADStrings.text("cad.workbench.drawing.freeMark", "Free mark")
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section(FloeCADStrings.text("cad.workbench.drawing.newManufacturing",
-                                            "New manufacturing annotation")) {
-                    Picker(FloeCADStrings.text("cad.workbench.drawing.manufacturingKind",
-                                               "Kind"), selection: $kind) {
-                        ForEach(CADDrawingManufacturingKind.allCases, id: \.self) { kind in
-                            Text(manufacturingTitle(kind)).tag(kind.rawValue)
+                Section(editing
+                        ? FloeCADStrings.text("cad.workbench.drawing.editManufacturing",
+                                              "Edit annotation")
+                        : FloeCADStrings.text("cad.workbench.drawing.newManufacturing",
+                                              "New manufacturing annotation")) {
+                    if editing {
+                        Text(manufacturingTitle(
+                            CADDrawingManufacturingKind(rawValue: kind) ?? .datumFeature))
+                            .font(.callout)
+                    } else {
+                        Picker(FloeCADStrings.text("cad.workbench.drawing.manufacturingKind",
+                                                   "Kind"), selection: $kind) {
+                            ForEach(CADDrawingManufacturingKind.allCases, id: \.self) { kind in
+                                Text(manufacturingTitle(kind)).tag(kind.rawValue)
+                            }
                         }
+                        .onChange(of: kind) { _, _ in loadCandidates() }
                     }
-                    .onChange(of: kind) { _, _ in loadCandidates() }
-                    if views.count > 1 {
+                    if !editing, views.count > 1 {
                         Picker(FloeCADStrings.text("cad.workbench.drawing.view", "View"),
                                selection: $viewID) {
                             ForEach(Array(views.enumerated()), id: \.offset) { _, row in
@@ -2537,13 +2788,23 @@ private struct CADDrawingManufacturingSheet: View {
                     }
                     Picker(FloeCADStrings.text("cad.workbench.drawing.sourceFace", "Source face"),
                            selection: $candidateIndex) {
-                        Text(requiresHole
-                             ? FloeCADStrings.text("cad.workbench.drawing.pickHole", "Select a hole face")
-                             : FloeCADStrings.text("cad.workbench.drawing.freeMark", "Free mark"))
-                            .tag(Int?.none)
+                        Text(sourcePlaceholder).tag(Int?.none)
                         ForEach(Array(candidates.enumerated()), id: \.offset) { index, row in
                             Text(Self.candidateLabel(row)).tag(Int?.some(index))
                         }
+                    }
+                    if editing, hasExistingFeature, selectedCandidate == nil {
+                        Text(FloeCADStrings.text(
+                            "cad.workbench.drawing.keepLinkedSource",
+                            "The existing linked face is kept. Choosing another face would "
+                            + "re-bind this callout."))
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if editing, !hasExistingFeature {
+                        Text(FloeCADStrings.text(
+                            "cad.workbench.drawing.noLinkedSource",
+                            "This annotation has no linked source; a thread or counterbore "
+                            + "callout needs a live hole face."))
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 10) {
                         CADPanelNumberField(title: "X", text: $x)
@@ -2552,36 +2813,65 @@ private struct CADDrawingManufacturingSheet: View {
                             "cad.workbench.drawing.textHeight", "Height"), text: $height)
                     }
                     payloadFields
-                    Button(FloeCADStrings.text("cad.workbench.drawing.addManufacturing",
-                                               "Add annotation")) { add() }
-                        .disabled(busy || !positionValid || (requiresHole && selectedCandidate == nil))
-                        .accessibilityIdentifier("CADDrawingManufacturingAdd")
+                    if editing {
+                        HStack(spacing: 12) {
+                            Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) {
+                                cancelEdit()
+                            }
+                            .accessibilityIdentifier("CADDrawingManufacturingCancel")
+                            Spacer(minLength: 4)
+                            Button(FloeCADStrings.text("cad.ui.common.save", "Save")) { add() }
+                                .disabled(busy || !positionValid
+                                          || (!hasExistingFeature && requiresHole
+                                              && selectedCandidate == nil))
+                                .accessibilityIdentifier("CADDrawingManufacturingSave")
+                        }
+                    } else {
+                        Button(FloeCADStrings.text("cad.workbench.drawing.addManufacturing",
+                                                   "Add annotation")) { add() }
+                            .disabled(busy || !positionValid
+                                      || (requiresHole && selectedCandidate == nil))
+                            .accessibilityIdentifier("CADDrawingManufacturingAdd")
+                    }
                 }
 
                 if !annotations.isEmpty {
                     Section(FloeCADStrings.text("cad.workbench.drawing.manufacturingAnnotations",
                                                 "Manufacturing annotations")) {
                         ForEach(Array(annotations.enumerated()), id: \.offset) { _, row in
+                            let rowKind = CADDrawingManufacturingKind(
+                                rawValue: row["kind"] as? String ?? "") ?? .datumFeature
+                            let rowLabel = summary(row) + " · " + manufacturingTitle(rowKind)
                             HStack(spacing: 8) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(summary(row)).font(.callout)
-                                    Text(manufacturingTitle(
-                                        CADDrawingManufacturingKind(
-                                            rawValue: row["kind"] as? String ?? "")
-                                            ?? .datumFeature))
-                                        .font(.caption2).foregroundStyle(.secondary)
+                                Button {
+                                    beginEdit(row)
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(summary(row)).font(.callout)
+                                            Text(manufacturingTitle(rowKind))
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                        Spacer(minLength: 4)
+                                        if row["dangling"] as? Bool == true {
+                                            PanelBadge(text: FloeCADStrings.text(
+                                                "cad.workbench.badge.dangling", "dangling"),
+                                                       tint: .red)
+                                        } else if row["stale"] as? Bool == true {
+                                            PanelBadge(text: FloeCADStrings.text(
+                                                "cad.workbench.badge.stale", "stale"),
+                                                       tint: .orange)
+                                        } else if row["invalid"] as? Bool == true {
+                                            PanelBadge(text: FloeCADStrings.text(
+                                                "cad.workbench.badge.invalid", "invalid"),
+                                                       tint: .red)
+                                        }
+                                    }
+                                    .contentShape(Rectangle())
                                 }
-                                Spacer(minLength: 4)
-                                if row["dangling"] as? Bool == true {
-                                    PanelBadge(text: FloeCADStrings.text(
-                                        "cad.workbench.badge.dangling", "dangling"), tint: .red)
-                                } else if row["stale"] as? Bool == true {
-                                    PanelBadge(text: FloeCADStrings.text(
-                                        "cad.workbench.badge.stale", "stale"), tint: .orange)
-                                } else if row["invalid"] as? Bool == true {
-                                    PanelBadge(text: FloeCADStrings.text(
-                                        "cad.workbench.badge.invalid", "invalid"), tint: .red)
-                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(Text(rowLabel))
+                                .accessibilityIdentifier("CADDrawingManufacturingRow")
                                 Button(role: .destructive) {
                                     remove(row["id"] as? String ?? "")
                                 } label: { Image(systemName: "trash") }
@@ -2617,11 +2907,12 @@ private struct CADDrawingManufacturingSheet: View {
             Picker(FloeCADStrings.text("cad.workbench.drawing.characteristic",
                                        "Characteristic"), selection: $gdtCharacteristic) {
                 ForEach(CADDrawingGDTSymbol.allCases, id: \.self) { symbol in
-                    Text(symbol.title).tag(symbol.rawValue)
+                    Text(drawingGDTTitle(symbol)).tag(symbol.rawValue)
                 }
             }
             CADPanelNumberField(title: FloeCADStrings.text(
-                "cad.workbench.drawing.tolerance", "Tolerance (mm)"), text: $gdtTolerance)
+                "cad.workbench.drawing.tolerance", "Tolerance (mm)"), text: $gdtTolerance,
+                                identifier: "CADDrawingManufacturingTolerance")
             Toggle(FloeCADStrings.text("cad.workbench.drawing.diameterZone",
                                        "Diameter zone"), isOn: $gdtDiameterZone)
             Picker(FloeCADStrings.text("cad.workbench.drawing.materialCondition",
@@ -2629,7 +2920,7 @@ private struct CADDrawingManufacturingSheet: View {
                 Text(FloeCADStrings.text("cad.workbench.drawing.none", "None"))
                     .tag("none")
                 ForEach(CADDrawingMaterialCondition.allCases, id: \.self) { condition in
-                    Text(condition.title).tag(condition.rawValue)
+                    Text(drawingMaterialConditionTitle(condition)).tag(condition.rawValue)
                 }
             }
             HStack(spacing: 10) {
@@ -2648,13 +2939,19 @@ private struct CADDrawingManufacturingSheet: View {
             Picker(FloeCADStrings.text("cad.workbench.drawing.weldType", "Weld type"),
                    selection: $weldType) {
                 ForEach(CADDrawingWeldType.allCases, id: \.self) { type in
-                    Text(type.title).tag(type.rawValue)
+                    Text(drawingWeldTypeTitle(type)).tag(type.rawValue)
                 }
             }
             HStack(spacing: 10) {
-                CADPanelNumberField(title: "Size", text: $weldSize)
-                CADPanelNumberField(title: "Length", text: $weldLength)
-                CADPanelNumberField(title: "Pitch", text: $weldPitch)
+                CADPanelNumberField(title: FloeCADStrings.text(
+                    "cad.workbench.drawing.weldSize", "Size"), text: $weldSize,
+                                    identifier: "CADDrawingManufacturingWeldSize")
+                CADPanelNumberField(title: FloeCADStrings.text(
+                    "cad.workbench.drawing.weldLength", "Length"), text: $weldLength,
+                                    identifier: "CADDrawingManufacturingWeldLength")
+                CADPanelNumberField(title: FloeCADStrings.text(
+                    "cad.workbench.drawing.weldPitch", "Pitch"), text: $weldPitch,
+                                    identifier: "CADDrawingManufacturingWeldPitch")
             }
             Toggle(FloeCADStrings.text("cad.workbench.drawing.allAround",
                                        "All around"), isOn: $weldAllAround)
@@ -2665,7 +2962,9 @@ private struct CADDrawingManufacturingSheet: View {
         case .threadCallout:
             HStack(spacing: 10) {
                 TextField("M6", text: $threadDesignation)
-                CADPanelNumberField(title: "Pitch", text: $threadPitch)
+                CADPanelNumberField(title: FloeCADStrings.text(
+                    "cad.workbench.drawing.threadPitch", "Pitch"), text: $threadPitch,
+                                    identifier: "CADDrawingManufacturingThreadPitch")
                 TextField("6H", text: $threadClass)
             }
             Picker(FloeCADStrings.text("cad.workbench.drawing.handedness", "Handedness"),
@@ -2679,9 +2978,10 @@ private struct CADDrawingManufacturingSheet: View {
                                        "Through thread"), isOn: $threadThrough)
             if !threadThrough {
                 CADPanelNumberField(title: FloeCADStrings.text(
-                    "cad.workbench.drawing.threadDepth", "Thread depth"), text: $threadDepth)
+                    "cad.workbench.drawing.threadDepth", "Thread depth"), text: $threadDepth,
+                                    identifier: "CADDrawingManufacturingThreadDepth")
             }
-            if selectedCandidate == nil {
+            if selectedCandidate == nil && !(editing && hasExistingFeature) {
                 Text(FloeCADStrings.text("cad.workbench.drawing.threadNeedsHole",
                                          "Select the linked mechanical-hole face; the callout is checked "
                                          + "against its live pilot/tap-drill diameter."))
@@ -2764,84 +3064,277 @@ private struct CADDrawingManufacturingSheet: View {
                 return reference["featureID"] is String
             }
             : rows
+        // Re-select the annotation's existing source when it is still present
+        // in this view. A missing source is NOT replaced by the first
+        // candidate: nil keeps the stored reference on update.
         candidateIndex = nil
+        if let preferredFeature,
+           let index = candidates.firstIndex(where: { row in
+               guard let reference = row["reference"] as? [String: Any] else { return false }
+               return Self.reference(reference, matches: preferredFeature)
+           }) {
+            candidateIndex = index
+        }
+    }
+
+    private static func reference(_ reference: [String: Any],
+                                  matches feature: [String: Any]) -> Bool {
+        if let left = reference["featureID"] as? String,
+           let right = feature["featureID"] as? String {
+            return left == right
+        }
+        guard (reference["bodyID"] as? String) == (feature["bodyID"] as? String) else {
+            return false
+        }
+        if let left = reference["sketchEntityID"] as? String,
+           let right = feature["sketchEntityID"] as? String {
+            return left == right
+        }
+        guard let anchorA = reference["anchor"] as? [String: Any],
+              let anchorB = feature["anchor"] as? [String: Any],
+              let centroidA = anchorA["centroid"] as? [Double],
+              let centroidB = anchorB["centroid"] as? [Double],
+              centroidA.count == 3, centroidB.count == 3 else { return false }
+        let squared = zip(centroidA, centroidB)
+            .map { ($0 - $1) * ($0 - $1) }
+            .reduce(0, +)
+        return squared <= 1e-12
+    }
+
+    private func beginEdit(_ row: [String: Any]) {
+        guard let id = row["id"] as? String else { return }
+        let configured = row["configured"] as? [String: Any] ?? [:]
+        editingID = id
+        editingPayload = configured
+        preferredFeature = configured["feature"] as? [String: Any]
+            ?? row["feature"] as? [String: Any]
+        if let position = configured["position"] as? [Double], position.count == 2 {
+            x = Self.draftNumber(position[0])
+            y = Self.draftNumber(position[1])
+        }
+        if let storedHeight = configured["heightMM"] as? Double {
+            height = Self.draftNumber(storedHeight)
+        }
+        if let storedViewID = configured["viewID"] as? String {
+            viewID = storedViewID
+        } else if let storedViewID = row["viewID"] as? String {
+            viewID = storedViewID
+        }
+        kind = configured["kind"] as? String ?? row["kind"] as? String ?? kind
+        switch CADDrawingManufacturingKind(rawValue: kind) ?? .datumFeature {
+        case .datumFeature:
+            let datum = configured["datum"] as? [String: Any] ?? [:]
+            datumLetter = datum["letter"] as? String ?? "A"
+        case .featureControlFrame:
+            let frame = configured["featureControlFrame"] as? [String: Any] ?? [:]
+            gdtCharacteristic = frame["characteristic"] as? String ?? "position"
+            gdtTolerance = Self.draftNumber(frame["toleranceMM"] as? Double ?? 0.2)
+            gdtDiameterZone = frame["diameterZone"] as? Bool ?? false
+            gdtCondition = frame["materialCondition"] as? String ?? "none"
+            let references = frame["datumReferences"] as? [[String: Any]] ?? []
+            datumA = references.count > 0 ? (references[0]["letter"] as? String ?? "") : ""
+            datumB = references.count > 1 ? (references[1]["letter"] as? String ?? "") : ""
+            datumC = references.count > 2 ? (references[2]["letter"] as? String ?? "") : ""
+        case .surfaceFinish:
+            let finish = configured["surfaceFinish"] as? [String: Any] ?? [:]
+            ra = Self.draftNumber(finish["raMicrometres"] as? Double ?? 1.6)
+            machiningMethod = finish["machiningMethod"] as? String ?? ""
+            surfaceAllAround = finish["allAround"] as? Bool ?? false
+        case .weld:
+            let weld = configured["weld"] as? [String: Any] ?? [:]
+            weldType = weld["type"] as? String ?? "fillet"
+            weldSize = Self.draftNumber(weld["sizeMM"] as? Double ?? 6)
+            weldLength = weld["lengthMM"].flatMap { $0 as? Double }.map(Self.draftNumber) ?? ""
+            weldPitch = weld["pitchMM"].flatMap { $0 as? Double }.map(Self.draftNumber) ?? ""
+            weldAllAround = weld["allAround"] as? Bool ?? false
+            weldField = weld["fieldWeld"] as? Bool ?? false
+            weldTail = weld["tailNote"] as? String ?? ""
+        case .threadCallout:
+            let thread = configured["thread"] as? [String: Any] ?? [:]
+            threadDesignation = thread["designation"] as? String ?? "M6"
+            threadPitch = Self.draftNumber(thread["pitchMM"] as? Double ?? 1.0)
+            threadClass = thread["threadClass"] as? String ?? "6H"
+            threadHandedness = thread["handedness"] as? String ?? "rightHand"
+            threadThrough = thread["through"] as? Bool ?? true
+            threadDepth = thread["depthMM"].flatMap { $0 as? Double }.map(Self.draftNumber) ?? ""
+        case .counterboreCallout:
+            break
+        }
+        errorText = nil
+    }
+
+    private func cancelEdit() {
+        editingID = nil
+        editingPayload = [:]
+        preferredFeature = nil
+        errorText = nil
+        loadCandidates()
+    }
+
+    private static func draftNumber(_ value: Double) -> String {
+        var text = String(value)
+        if text.hasSuffix(".0") { text.removeLast(2) }
+        return text
+    }
+
+    /// Empty optional draft means "omit"; malformed text is an error and never
+    /// becomes zero.
+    private func parsedOptionalNumber(_ draft: String) -> (valid: Bool, value: Double?) {
+        let trimmed = draft.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return (true, nil) }
+        guard let value = CADDrawingTemplateRules.parseNumberDraft(trimmed) else {
+            return (false, nil)
+        }
+        return (true, value)
+    }
+
+    private func invalidNumber() -> String {
+        FloeCADStrings.text("cad.workbench.drawing.invalidNumberDraft",
+                            "Enter a valid number.")
     }
 
     private func add() {
         guard let pageID,
-              let xValue = Double(x), let yValue = Double(y),
-              let heightValue = Double(height) else { return }
+              let xValue = CADDrawingTemplateRules.parseNumberDraft(x),
+              let yValue = CADDrawingTemplateRules.parseNumberDraft(y),
+              let heightValue = CADDrawingTemplateRules.parseNumberDraft(height) else {
+            errorText = invalidNumber()
+            return
+        }
+        let payloadKind = CADDrawingManufacturingKind(rawValue: kind) ?? .datumFeature
+        let payloadKey: String
+        switch payloadKind {
+        case .datumFeature: payloadKey = "datum"
+        case .featureControlFrame: payloadKey = "featureControlFrame"
+        case .surfaceFinish: payloadKey = "surfaceFinish"
+        case .weld: payloadKey = "weld"
+        case .threadCallout: payloadKey = "thread"
+        case .counterboreCallout: payloadKey = "counterbore"
+        }
         var args: [String: Any] = [
             "pageID": pageID, "kind": kind,
             "position": [xValue, yValue], "heightMM": heightValue,
         ]
-        if let viewID { args["viewID"] = viewID }
+        if let editingID {
+            args["annotationID"] = editingID
+        } else if let viewID {
+            args["viewID"] = viewID
+        }
         if let candidate = selectedCandidate,
            let reference = candidate["reference"] as? [String: Any] {
             args["feature"] = reference
         }
-        switch CADDrawingManufacturingKind(rawValue: kind) ?? .datumFeature {
+        // Editing starts from the stored typed payload. Fields the form does
+        // not expose (for example leaderTarget or a datum modifier) survive a
+        // save because they are never dropped from the dictionary.
+        var payload: [String: Any] = editing
+            ? (editingPayload[payloadKey] as? [String: Any] ?? [:])
+            : [:]
+        switch payloadKind {
         case .datumFeature:
-            args["datum"] = ["letter": datumLetter]
+            payload["letter"] = datumLetter
         case .featureControlFrame:
+            guard let tolerance = CADDrawingTemplateRules.parseNumberDraft(gdtTolerance) else {
+                errorText = invalidNumber()
+                return
+            }
+            var modifiers: [String: Any] = [:]
+            let frame = editingPayload["featureControlFrame"] as? [String: Any]
+            let existing = frame?["datumReferences"] as? [[String: Any]] ?? []
+            for reference in existing {
+                if let letter = reference["letter"] as? String,
+                   let modifier = reference["modifier"] {
+                    modifiers[letter] = modifier
+                }
+            }
             var references: [[String: Any]] = []
             for raw in [datumA, datumB, datumC] {
                 let letter = raw.trimmingCharacters(in: .whitespaces).uppercased()
-                if letter.count == 1 { references.append(["letter": letter]) }
+                guard letter.count == 1 else { continue }
+                var reference: [String: Any] = ["letter": letter]
+                if let modifier = modifiers[letter] { reference["modifier"] = modifier }
+                references.append(reference)
             }
-            var payload: [String: Any] = [
-                "characteristic": gdtCharacteristic,
-                "toleranceMM": Double(gdtTolerance) ?? 0,
-                "diameterZone": gdtDiameterZone,
-                "datumReferences": references,
-            ]
-            if gdtCondition != "none" { payload["materialCondition"] = gdtCondition }
-            args["featureControlFrame"] = payload
+            payload["characteristic"] = gdtCharacteristic
+            payload["toleranceMM"] = tolerance
+            payload["diameterZone"] = gdtDiameterZone
+            payload["datumReferences"] = references
+            if gdtCondition == "none" {
+                payload.removeValue(forKey: "materialCondition")
+            } else {
+                payload["materialCondition"] = gdtCondition
+            }
         case .surfaceFinish:
-            var payload: [String: Any] = [
-                "raMicrometres": Double(ra) ?? 0,
-                "allAround": surfaceAllAround,
-            ]
-            if !machiningMethod.trimmingCharacters(in: .whitespaces).isEmpty {
-                payload["machiningMethod"] = machiningMethod
+            guard let roughness = CADDrawingTemplateRules.parseNumberDraft(ra) else {
+                errorText = invalidNumber()
+                return
             }
-            args["surfaceFinish"] = payload
+            payload["raMicrometres"] = roughness
+            payload["allAround"] = surfaceAllAround
+            let method = machiningMethod.trimmingCharacters(in: .whitespaces)
+            if method.isEmpty {
+                payload.removeValue(forKey: "machiningMethod")
+            } else {
+                payload["machiningMethod"] = method
+            }
         case .weld:
-            var payload: [String: Any] = [
-                "type": weldType,
-                "sizeMM": Double(weldSize) ?? 0,
-                "allAround": weldAllAround,
-                "fieldWeld": weldField,
-            ]
-            if let length = Double(weldLength) { payload["lengthMM"] = length }
-            if let pitch = Double(weldPitch) { payload["pitchMM"] = pitch }
-            if !weldTail.trimmingCharacters(in: .whitespaces).isEmpty {
-                payload["tailNote"] = weldTail
+            guard let size = CADDrawingTemplateRules.parseNumberDraft(weldSize) else {
+                errorText = invalidNumber()
+                return
             }
-            args["weld"] = payload
+            payload["type"] = weldType
+            payload["sizeMM"] = size
+            payload["allAround"] = weldAllAround
+            payload["fieldWeld"] = weldField
+            let length = parsedOptionalNumber(weldLength)
+            guard length.valid else { errorText = invalidNumber(); return }
+            if let value = length.value { payload["lengthMM"] = value }
+            else { payload.removeValue(forKey: "lengthMM") }
+            let pitch = parsedOptionalNumber(weldPitch)
+            guard pitch.valid else { errorText = invalidNumber(); return }
+            if let value = pitch.value { payload["pitchMM"] = value }
+            else { payload.removeValue(forKey: "pitchMM") }
+            let tail = weldTail.trimmingCharacters(in: .whitespaces)
+            if tail.isEmpty { payload.removeValue(forKey: "tailNote") }
+            else { payload["tailNote"] = weldTail }
         case .threadCallout:
-            var payload: [String: Any] = [
-                "designation": threadDesignation,
-                "threadClass": threadClass,
-                "handedness": threadHandedness,
-                "through": threadThrough,
-            ]
-            if let pitch = Double(threadPitch) { payload["pitchMM"] = pitch }
-            if !threadThrough, let depth = Double(threadDepth) {
-                payload["depthMM"] = depth
+            payload["designation"] = threadDesignation
+            payload["threadClass"] = threadClass
+            payload["handedness"] = threadHandedness
+            payload["through"] = threadThrough
+            let pitch = parsedOptionalNumber(threadPitch)
+            guard pitch.valid else { errorText = invalidNumber(); return }
+            if let value = pitch.value { payload["pitchMM"] = value }
+            else { payload.removeValue(forKey: "pitchMM") }
+            if threadThrough {
+                payload.removeValue(forKey: "depthMM")
+            } else {
+                let depth = parsedOptionalNumber(threadDepth)
+                guard depth.valid, let value = depth.value else {
+                    errorText = invalidNumber()
+                    return
+                }
+                payload["depthMM"] = value
             }
-            args["thread"] = payload
         case .counterboreCallout:
-            args["counterbore"] = [String: Any]()
+            break
         }
+        args[payloadKey] = payload
+        let action = editing ? "updateManufacturingAnnotation" : "addManufacturingAnnotation"
         busy = true
         Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "addManufacturingAnnotation", args: args)
+            let reply = service.handle(action: action, args: args)
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
             onChanged(reply)
-            if reply["ok"] as? Bool == true { load() } else {
+            if reply["ok"] as? Bool == true {
+                editingID = nil
+                editingPayload = [:]
+                preferredFeature = nil
+                errorText = nil
+                load()
+            } else {
                 errorText = reply["message"] as? String
             }
         }
@@ -2849,6 +3342,11 @@ private struct CADDrawingManufacturingSheet: View {
 
     private func remove(_ annotationID: String) {
         guard let pageID, let uuid = UUID(uuidString: annotationID) else { return }
+        if editingID == annotationID {
+            editingID = nil
+            editingPayload = [:]
+            preferredFeature = nil
+        }
         busy = true
         Task { @MainActor in
             let service = CADDrawingService(document: document)
@@ -2867,6 +3365,26 @@ private struct CADDrawingManufacturingSheet: View {
 
 // MARK: - Sheet templates (E18)
 
+private struct CADDrawingRevisionRowDraft: Identifiable, Equatable {
+    let id = UUID()
+    var persistedID: String?
+    var revision: String
+    var date: String
+    var description: String
+    /// Kept even though the compact editor does not show it, so updating a
+    /// template never silently drops an approved-by value.
+    var approvedBy: String?
+
+    init(persistedID: String? = nil, revision: String = "", date: String = "",
+         description: String = "", approvedBy: String? = nil) {
+        self.persistedID = persistedID
+        self.revision = revision
+        self.date = date
+        self.description = description
+        self.approvedBy = approvedBy
+    }
+}
+
 private struct CADDrawingTemplateSheet: View {
     let document: FloeCADDocument
     let onChanged: ([String: Any]) -> Void
@@ -2878,19 +3396,20 @@ private struct CADDrawingTemplateSheet: View {
     @State private var selectedTemplateID: String?
     @State private var selectedPageIDs: Set<String> = []
     @State private var editingID: String?
-    @State private var name = "Company A3"
+    @State private var name = FloeCADStrings.text(
+        "cad.workbench.drawing.defaultTemplateName", "Company A3")
     @State private var paper = "a3"
     @State private var projection = "thirdAngle"
     @State private var units = "millimetre"
     @State private var precision = 2
-    @State private var margin = 8.0
-    @State private var blockWidth = 120.0
-    @State private var blockHeight = 26.0
-    @State private var lineWidth = 0.25
-    @State private var textHeight = 3.5
+    @State private var marginDraft = "8"
+    @State private var blockWidthDraft = "120"
+    @State private var blockHeightDraft = "26"
+    @State private var lineWidthDraft = "0.25"
+    @State private var textHeightDraft = "3.5"
     @State private var company = ""
     @State private var drawingNumber = ""
-    @State private var revisionText = "A | | Initial release"
+    @State private var revisionRows: [CADDrawingRevisionRowDraft] = []
     @State private var busy = false
     @State private var errorText: String?
     @State private var notice: String?
@@ -2900,6 +3419,9 @@ private struct CADDrawingTemplateSheet: View {
         guard let selectedTemplateID else { return nil }
         return allTemplates.first { ($0["id"] as? String) == selectedTemplateID }
     }
+    private var defaultTemplateName: String {
+        FloeCADStrings.text("cad.workbench.drawing.defaultTemplateName", "Company A3")
+    }
 
     var body: some View {
         NavigationStack {
@@ -2908,6 +3430,10 @@ private struct CADDrawingTemplateSheet: View {
                                             "Sheet templates")) {
                     ForEach(Array(allTemplates.enumerated()), id: \.offset) { _, row in
                         let id = row["id"] as? String ?? ""
+                        let projectionTitle = drawingProjectionTitle(
+                            CADDrawingProjectionMethod(
+                                rawValue: row["projection"] as? String ?? "")
+                                ?? .thirdAngle)
                         Button {
                             selectedTemplateID = id
                             loadEditor(row)
@@ -2918,7 +3444,7 @@ private struct CADDrawingTemplateSheet: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(row["name"] as? String ?? "—")
                                         .font(.callout)
-                                    Text("\((row["projection"] as? String) ?? "thirdAngle") · "
+                                    Text("\(projectionTitle) · "
                                          + "\(row["precision"] as? Int ?? 2) dp · "
                                          + "\(row["paper"] as? String ?? "a3")")
                                         .font(.caption2).foregroundStyle(.secondary)
@@ -2936,10 +3462,7 @@ private struct CADDrawingTemplateSheet: View {
                     }
                     Button(FloeCADStrings.text("cad.workbench.drawing.newTemplate",
                                                "New template")) {
-                        selectedTemplateID = nil
-                        editingID = nil
-                        name = "Company A3"
-                        revisionText = "A | | Initial release"
+                        resetEditor()
                     }
                     .accessibilityIdentifier("CADDrawingTemplateNew")
                 }
@@ -2988,13 +3511,13 @@ private struct CADDrawingTemplateSheet: View {
                     Picker(FloeCADStrings.text("cad.workbench.drawing.projection", "Projection"),
                            selection: $projection) {
                         ForEach(CADDrawingProjectionMethod.allCases, id: \.self) { value in
-                            Text(value.title).tag(value.rawValue)
+                            Text(drawingProjectionTitle(value)).tag(value.rawValue)
                         }
                     }
                     Picker(FloeCADStrings.text("cad.workbench.drawing.units", "Units"),
                            selection: $units) {
                         ForEach(CADDrawingUnit.allCases, id: \.self) { value in
-                            Text(value.title).tag(value.rawValue)
+                            Text(drawingUnitTitle(value)).tag(value.rawValue)
                         }
                     }
                     Stepper(value: $precision, in: 0...4) {
@@ -3002,32 +3525,66 @@ private struct CADDrawingTemplateSheet: View {
                                                    "Precision: %lld dp", precision))
                     }
                     HStack(spacing: 10) {
-                        CADPanelNumberField(title: "Margin", text: Binding(
-                            get: { String(margin) }, set: { margin = Double($0) ?? margin }))
-                        CADPanelNumberField(title: "Block W", text: Binding(
-                            get: { String(blockWidth) },
-                            set: { blockWidth = Double($0) ?? blockWidth }))
-                        CADPanelNumberField(title: "Block H", text: Binding(
-                            get: { String(blockHeight) },
-                            set: { blockHeight = Double($0) ?? blockHeight }))
+                        CADPanelNumberField(title: FloeCADStrings.text(
+                            "cad.workbench.drawing.templateMargin", "Margin"),
+                                            text: $marginDraft,
+                                            identifier: "CADDrawingTemplateMargin")
+                        CADPanelNumberField(title: FloeCADStrings.text(
+                            "cad.workbench.drawing.templateBlockWidth", "Block W"),
+                                            text: $blockWidthDraft,
+                                            identifier: "CADDrawingTemplateBlockWidth")
+                        CADPanelNumberField(title: FloeCADStrings.text(
+                            "cad.workbench.drawing.templateBlockHeight", "Block H"),
+                                            text: $blockHeightDraft,
+                                            identifier: "CADDrawingTemplateBlockHeight")
                     }
                     HStack(spacing: 10) {
-                        CADPanelNumberField(title: "Line", text: Binding(
-                            get: { String(lineWidth) },
-                            set: { lineWidth = Double($0) ?? lineWidth }))
-                        CADPanelNumberField(title: "Text", text: Binding(
-                            get: { String(textHeight) },
-                            set: { textHeight = Double($0) ?? textHeight }))
+                        CADPanelNumberField(title: FloeCADStrings.text(
+                            "cad.workbench.drawing.templateLineWidth", "Line"),
+                                            text: $lineWidthDraft,
+                                            identifier: "CADDrawingTemplateLineWidth")
+                        CADPanelNumberField(title: FloeCADStrings.text(
+                            "cad.workbench.drawing.templateTextHeight", "Text"),
+                                            text: $textHeightDraft,
+                                            identifier: "CADDrawingTemplateTextHeight")
                     }
                     TextField(FloeCADStrings.text("cad.workbench.drawing.company",
                                                   "Company"), text: $company)
                     TextField(FloeCADStrings.text("cad.workbench.drawing.drawingNumber",
                                                   "Drawing number"), text: $drawingNumber)
-                    TextField(FloeCADStrings.text("cad.workbench.drawing.revisionRows",
-                                                  "Revision rows (revision | date | description)"),
-                              text: $revisionText, axis: .vertical)
-                        .lineLimit(2...6)
-                        .font(.footnote)
+                    ForEach($revisionRows) { $row in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                TextField(FloeCADStrings.text(
+                                    "cad.workbench.drawing.revision", "Rev"),
+                                          text: $row.revision)
+                                    .frame(maxWidth: 72)
+                                    .textInputAutocapitalization(.characters)
+                                TextField(FloeCADStrings.text(
+                                    "cad.workbench.drawing.revisionDate", "Date"),
+                                          text: $row.date)
+                                Button(role: .destructive) {
+                                    revisionRows.removeAll { $0.id == row.id }
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityIdentifier("CADDrawingRevisionRemove")
+                            }
+                            TextField(FloeCADStrings.text(
+                                "cad.workbench.drawing.revisionDescription", "Description"),
+                                      text: $row.description)
+                        }
+                    }
+                    Button {
+                        revisionRows.append(CADDrawingRevisionRowDraft())
+                    } label: {
+                        Label(FloeCADStrings.text("cad.workbench.drawing.addRevisionRow",
+                                                  "Add revision row"),
+                              systemImage: "plus")
+                    }
+                    .disabled(revisionRows.count >= CADDrawingTemplateRules.maximumRevisionRows)
+                    .accessibilityIdentifier("CADDrawingRevisionAdd")
                     Button(editingID == nil
                            ? FloeCADStrings.text("cad.workbench.drawing.saveTemplate",
                                                  "Save template")
@@ -3075,25 +3632,34 @@ private struct CADDrawingTemplateSheet: View {
 
     private func loadEditor(_ row: [String: Any]) {
         editingID = row["builtIn"] as? Bool == true ? nil : row["id"] as? String
-        name = row["name"] as? String ?? "Company A3"
+        name = row["name"] as? String ?? defaultTemplateName
         paper = row["paper"] as? String ?? "a3"
         projection = row["projection"] as? String ?? "thirdAngle"
         units = row["units"] as? String ?? "millimetre"
         precision = row["precision"] as? Int ?? 2
         let style = row["style"] as? [String: Any] ?? [:]
-        margin = style["marginMM"] as? Double ?? 8
-        blockWidth = style["titleBlockWidthMM"] as? Double ?? 120
-        blockHeight = style["titleBlockHeightMM"] as? Double ?? 26
-        lineWidth = style["lineWidthMM"] as? Double ?? 0.25
-        textHeight = style["textHeightMM"] as? Double ?? 3.5
+        marginDraft = Self.draftText(style["marginMM"] as? Double ?? 8)
+        blockWidthDraft = Self.draftText(style["titleBlockWidthMM"] as? Double ?? 120)
+        blockHeightDraft = Self.draftText(style["titleBlockHeightMM"] as? Double ?? 26)
+        lineWidthDraft = Self.draftText(style["lineWidthMM"] as? Double ?? 0.25)
+        textHeightDraft = Self.draftText(style["textHeightMM"] as? Double ?? 3.5)
         let block = row["titleBlock"] as? [String: Any] ?? [:]
         company = block["company"] as? String ?? ""
         drawingNumber = block["drawingNumber"] as? String ?? ""
         let rows = row["revisionRows"] as? [[String: Any]] ?? []
-        revisionText = rows.map {
-            "\($0["revision"] as? String ?? "") | \($0["date"] as? String ?? "") | "
-                + "\($0["description"] as? String ?? "")"
-        }.joined(separator: "\n")
+        revisionRows = rows.map { row in
+            CADDrawingRevisionRowDraft(
+                persistedID: row["id"] as? String,
+                revision: row["revision"] as? String ?? "",
+                date: row["date"] as? String ?? "",
+                description: row["description"] as? String ?? "",
+                approvedBy: row["approvedBy"] as? String)
+        }
+        errorText = nil
+    }
+
+    private static func draftText(_ value: Double) -> String {
+        CADDrawingManufacturingRules.formatNumber(value)
     }
 
     private func load() {
@@ -3115,42 +3681,73 @@ private struct CADDrawingTemplateSheet: View {
         }
     }
 
-    private func revisionRows() -> [[String: Any]] {
-        revisionText.split(separator: "\n").compactMap { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty else { return nil }
-            let parts = trimmed.split(separator: "|", omittingEmptySubsequences: false)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-            let revision = parts.first ?? ""
-            let date = parts.count > 1 ? parts[1] : ""
-            let description = parts.count > 2 ? parts[2] : ""
-            let row: [String: Any] = ["revision": revision, "date": date,
-                                      "description": description]
-            return row
+    private func parsedStyleDrafts() -> (margin: Double, width: Double, height: Double,
+                                         line: Double, text: Double)? {
+        guard let margin = CADDrawingTemplateRules.parseNumberDraft(marginDraft),
+              let width = CADDrawingTemplateRules.parseNumberDraft(blockWidthDraft),
+              let height = CADDrawingTemplateRules.parseNumberDraft(blockHeightDraft),
+              let line = CADDrawingTemplateRules.parseNumberDraft(lineWidthDraft),
+              let text = CADDrawingTemplateRules.parseNumberDraft(textHeightDraft) else {
+            return nil
         }
+        return (margin, width, height, line, text)
     }
 
-    private func templateArgs() -> [String: Any] {
-        [
+    private func templateArgs(style: (margin: Double, width: Double, height: Double,
+                                      line: Double, text: Double)) -> [String: Any] {
+        let rows: [[String: Any]] = revisionRows.map { row in
+            var object: [String: Any] = [
+                "revision": row.revision,
+                "date": row.date,
+                "description": row.description,
+            ]
+            if let persistedID = row.persistedID { object["id"] = persistedID }
+            if let approvedBy = row.approvedBy { object["approvedBy"] = approvedBy }
+            return object
+        }
+        return [
             "name": name,
             "paper": paper,
             "projection": projection,
             "units": units,
             "precision": precision,
+            // showZoneGrid, customWidth/Height and any other fields this
+            // compact editor does not show stay untouched: the service merges
+            // only the supplied keys into the existing template.
             "style": [
-                "marginMM": margin,
-                "titleBlockWidthMM": blockWidth,
-                "titleBlockHeightMM": blockHeight,
-                "lineWidthMM": lineWidth,
-                "textHeightMM": textHeight,
+                "marginMM": style.margin,
+                "titleBlockWidthMM": style.width,
+                "titleBlockHeightMM": style.height,
+                "lineWidthMM": style.line,
+                "textHeightMM": style.text,
             ],
             "titleBlock": ["company": company, "drawingNumber": drawingNumber],
-            "revisionRows": revisionRows(),
+            "revisionRows": rows,
         ]
     }
 
     private func saveTemplate() {
-        var args = templateArgs()
+        guard let style = parsedStyleDrafts() else {
+            errorText = FloeCADStrings.text("cad.workbench.drawing.invalidNumberDraft",
+                                            "Enter a valid number.")
+            return
+        }
+        guard revisionRows.count <= CADDrawingTemplateRules.maximumRevisionRows else {
+            errorText = FloeCADStrings.text(
+                "cad.workbench.drawing.tooManyRevisionRows",
+                "A template supports at most six revision rows.")
+            return
+        }
+        guard !revisionRows.contains(where: {
+            $0.revision.trimmingCharacters(in: .whitespaces).isEmpty
+                && $0.description.trimmingCharacters(in: .whitespaces).isEmpty
+        }) else {
+            errorText = FloeCADStrings.text(
+                "cad.workbench.drawing.revisionRowNeedsContent",
+                "Each revision row needs a revision or a description.")
+            return
+        }
+        var args = templateArgs(style: style)
         let action: String
         if let editingID {
             action = "updateTemplate"
@@ -3163,19 +3760,48 @@ private struct CADDrawingTemplateSheet: View {
                let id = template["id"] as? String {
                 selectedTemplateID = id
                 editingID = id
+                // Keep the server-assigned revision-row ids after the first
+                // create, so a later save updates the same rows instead of
+                // re-creating their identities.
+                loadEditor(template)
             }
         }
     }
 
+    private func resetEditor() {
+        selectedTemplateID = nil
+        editingID = nil
+        name = defaultTemplateName
+        paper = "a3"
+        projection = "thirdAngle"
+        units = "millimetre"
+        precision = 2
+        marginDraft = "8"
+        blockWidthDraft = "120"
+        blockHeightDraft = "26"
+        lineWidthDraft = "0.25"
+        textHeightDraft = "3.5"
+        company = ""
+        drawingNumber = ""
+        // A new template starts with no revision rows; the native "Add
+        // revision row" control creates the first one explicitly.
+        revisionRows = []
+        errorText = nil
+    }
+
     private func copyTemplate() {
         guard let selectedTemplateID else { return }
+        let suffix = FloeCADStrings.text("cad.workbench.drawing.copySuffix", "Copy")
+        let copyName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? defaultTemplateName + " " + suffix
+            : name + " " + suffix
         run(action: "copyTemplate",
-            args: ["templateID": selectedTemplateID,
-                   "name": name + " Copy"]) { reply in
+            args: ["templateID": selectedTemplateID, "name": copyName]) { reply in
             if let template = reply["template"] as? [String: Any],
                let id = template["id"] as? String {
                 self.selectedTemplateID = id
                 self.editingID = id
+                loadEditor(template)
             }
         }
     }
@@ -3183,9 +3809,7 @@ private struct CADDrawingTemplateSheet: View {
     private func deleteTemplate() {
         guard let editingID else { return }
         run(action: "deleteTemplate", args: ["templateID": editingID]) { _ in
-            self.editingID = nil
-            selectedTemplateID = nil
-            name = "Company A3"
+            self.resetEditor()
         }
     }
 
@@ -3220,6 +3844,36 @@ private struct CADDrawingTemplateSheet: View {
             }
         }
     }
+}
+
+// MARK: - Localized enum labels
+
+// The model enums keep stable English titles for exports and diagnostics; the
+// native pickers resolve the same value through the host catalog so a Chinese
+// iPad shows product terminology, not raw English enum titles.
+private func drawingDimensionKindTitle(_ kind: CADDrawingDimensionKind) -> String {
+    FloeCADStrings.text("cad.workbench.drawing.dimensionKind.\(kind.rawValue)", kind.title)
+}
+
+private func drawingGDTTitle(_ symbol: CADDrawingGDTSymbol) -> String {
+    FloeCADStrings.text("cad.workbench.drawing.gdt.\(symbol.rawValue)", symbol.title)
+}
+
+private func drawingMaterialConditionTitle(_ condition: CADDrawingMaterialCondition) -> String {
+    FloeCADStrings.text("cad.workbench.drawing.materialCondition.\(condition.rawValue)",
+                        condition.title)
+}
+
+private func drawingWeldTypeTitle(_ type: CADDrawingWeldType) -> String {
+    FloeCADStrings.text("cad.workbench.drawing.weldType.\(type.rawValue)", type.title)
+}
+
+private func drawingProjectionTitle(_ method: CADDrawingProjectionMethod) -> String {
+    FloeCADStrings.text("cad.workbench.drawing.projection.\(method.rawValue)", method.title)
+}
+
+private func drawingUnitTitle(_ unit: CADDrawingUnit) -> String {
+    FloeCADStrings.text("cad.workbench.drawing.unit.\(unit.rawValue)", unit.title)
 }
 
 #endif

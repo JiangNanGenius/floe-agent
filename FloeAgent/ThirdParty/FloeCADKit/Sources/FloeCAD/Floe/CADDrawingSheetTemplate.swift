@@ -292,6 +292,19 @@ public nonisolated enum CADDrawingTemplateRules {
 
     public static let maximumRevisionRows = 6
 
+    /// Strict numeric draft parsing for the native sheet editor. Empty,
+    /// partial and non-finite text returns nil; callers must surface an error
+    /// or keep the field unchanged instead of substituting zero or the old
+    /// value. The value is parsed only when Save is pressed, so typing "8."
+    /// or "0.25" never resets the draft or its caret.
+    public static func parseNumberDraft(_ raw: String) -> Double? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let value = Double(trimmed),
+              value.isFinite else { return nil }
+        return value
+    }
+
     public static func validate(_ template: CADDrawingSheetTemplate) -> [String] {
         var issues: [String] = []
         let name = template.name.trimmingCharacters(in: .whitespacesAndNewlines)

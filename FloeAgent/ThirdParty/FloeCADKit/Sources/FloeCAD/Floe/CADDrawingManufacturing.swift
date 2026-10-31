@@ -656,8 +656,19 @@ public nonisolated enum CADDrawingManufacturingRules {
             return ["The dimension value is not finite."]
         }
         if tolerance.kind == .fit {
-            guard kind != .angle else {
-                return ["An ISO 286 fit applies to a length/diameter/radius, not an angle."]
+            // ISO 286 is defined for a cylinder (diameter) or the distance
+            // between two opposite parallel surfaces (length). A radius value
+            // is already half a diameter: feeding it into the diameter bands
+            // would silently manufacture a doubled radius, so it is refused
+            // rather than approximated.
+            switch kind {
+            case .diameter, .length:
+                break
+            case .radius:
+                return ["An ISO 286 fit applies to a diameter or a length between parallel "
+                        + "surfaces, not a radius value."]
+            case .angle:
+                return ["An ISO 286 fit applies to a diameter or a length, not an angle."]
             }
             guard let fit = tolerance.fit else {
                 return ["A fit tolerance needs a fit object."]
@@ -703,9 +714,12 @@ public nonisolated enum CADDrawingManufacturingRules {
                 issues.append("limits tolerance needs finite absolute limits with upper > lower.")
                 return issues
             }
-            if nominal < lower - 1e-9 || nominal > upper + 1e-9 {
-                issues.append("The nominal value must lie inside the absolute limits.")
-            }
+            // Absolute limits are a real interval, not a band centred on the
+            // basic size. A valid pair may sit entirely above or below the
+            // nominal (for example 40.20/40.10 around a 40 basic size), so the
+            // nominal is deliberately NOT required to lie inside. The signed
+            // deviations are exposed from the limits and the nominal instead
+            // of turning a legitimate one-sided band into a warning.
         case .fit:
             break
         }
@@ -808,6 +822,85 @@ public nonisolated enum CADDrawingManufacturingRules {
         millimetres / unit.millimetresPerUnit
     }
 
+    /// Decimal places that print `value` without losing its meaningful digits,
+    /// with the page precision as a floor. The value must already be in the
+    /// display unit (millimetres, inches or micrometres). Tolerance, fit-limit
+    /// and roughness text use this rule so a valid 0.001 never prints as 0.00
+    /// and a 40.025 mm limit never rounds to 40.03 at "2 dp". Six places is the
+    /// normal `formatNumber` bound; only the explicit round-trip fallback in
+    /// `formatMeaningful` can produce a longer spelling.
+    private static func meaningfulDecimals(for value: Double, minimum: Int) -> Int {
+        let floor = max(0, min(6, minimum))
+        guard value.isFinite else { return floor }
+        let magnitude = abs(value)
+        let epsilon = max(1e-9, magnitude * 1e-9)
+        for digits in floor...6 {
+            let scale = pow(10.0, Double(digits))
+            let rounded = (value * scale).rounded() / scale
+            if abs(rounded - value) <= epsilon {
+                return digits
+            }
+        }
+        return 6
+    }
+
+    /// Format a value already expressed in display units using the page
+    /// precision as a floor plus any extra places the value genuinely needs.
+    static func formatMeaningful(_ value: Double, minimum: Int) -> String {
+        // `-0.0` is a zero deviation, not a negative one.
+        let clean = value == 0 ? 0 : value
+        let digits = meaningfulDecimals(for: clean, minimum: minimum)
+        guard clean.isFinite, abs(clean) < 1e12 else {
+            return formatNumber(clean, precision: digits)
+        }
+        let scale = pow(10.0, Double(digits))
+        let rounded = (clean * scale).rounded() / scale
+        if clean != 0 && rounded == 0 {
+            // The bounded six-place spelling would erase a real nonzero value.
+            // Fall back to Swift's shortest round-trip representation, which
+            // uses a scientific exponent for sub-microscopic values and is
+            // bounded by the 17 significant digits of a Double.
+            return roundTripText(clean)
+        }
+        return formatNumber(clean, precision: digits)
+    }
+
+    /// Shortest round-trip spelling that uniquely identifies this Double. Used
+    /// only as a bounded fallback for underflow/collapsed intervals, never for
+    /// ordinary page-precision text.
+    private static func roundTripText(_ value: Double) -> String {
+        let clean = value == 0 ? 0 : value
+        return String(clean)
+    }
+
+    /// Format interval endpoints with the normal page-precision spelling, but
+    /// if two distinct values would produce the same text, use the round-trip
+    /// spelling for both so a real interval never appears to be zero-width.
+    private static func distinctTexts(_ values: [Double], minimum: Int) -> [String] {
+        let texts = values.map { formatMeaningful($0, minimum: minimum) }
+        guard Set(values).count == values.count,
+              Set(texts).count < texts.count else { return texts }
+        return values.map { roundTripText($0) }
+    }
+
+    /// Feature-control-frame zone text exactly as the resolved rows and the
+    /// PDF/SVG/DXF exporters use it. The historical GD&T spelling keeps at
+    /// least two decimal places; a real 0.001 zone keeps its third place.
+    static func featureControlToleranceText(_ toleranceMM: Double,
+                                            diameterZone: Bool,
+                                            pagePrecision: Int?) -> String {
+        let floor = max(2, min(4, pagePrecision ?? 2))
+        return (diameterZone ? "Ø" : "")
+            + formatMeaningful(toleranceMM, minimum: floor)
+    }
+
+    /// Surface-finish Ra text in micrometres. Page precision is a floor, so a
+    /// nonzero 0.025 µm never becomes 0.03/0.00 at a coarse page setting.
+    static func surfaceFinishRaText(_ raMicrometres: Double,
+                                    pagePrecision: Int?) -> String {
+        "Ra " + formatMeaningful(raMicrometres, minimum: pagePrecision ?? 0)
+    }
+
     public static func formatTolerance(_ tolerance: CADDrawingTolerance,
                                        nominalMM: Double,
                                        kind: CADDrawingDimensionKind,
@@ -816,46 +909,62 @@ public nonisolated enum CADDrawingManufacturingRules {
         guard validateTolerance(tolerance, kind: kind, nominal: nominalMM).isEmpty else {
             return nil
         }
-        let digits = precision ?? 3
+        let minimumDigits = max(0, min(6, precision ?? 3))
         func converted(_ value: Double) -> Double {
             kind == .angle ? value : displayValue(value, unit: unit)
+        }
+        func toleranceText(_ value: Double) -> String {
+            // Page precision is a floor, not a ceiling: a tolerance of
+            // 40.025 mm at "2 dp" must still print 40.025, and a 0.001
+            // deviation must never become 0.00. The nominal dimension text
+            // keeps the page precision.
+            formatMeaningful(converted(value), minimum: minimumDigits)
         }
         switch tolerance.kind {
         case .symmetric:
             guard let deviation = tolerance.deviationMM else { return nil }
-            let text = "±" + formatNumber(converted(deviation), precision: digits)
+            let text = "±" + toleranceText(deviation)
             return CADDrawingToleranceDisplay(primarySuffix: text,
                                               upperDeviationMM: deviation,
                                               lowerDeviationMM: -deviation)
         case .deviation:
             guard let upper = tolerance.upperDeviationMM,
                   let lower = tolerance.lowerDeviationMM else { return nil }
-            func signed(_ value: Double) -> String {
-                let text = formatNumber(converted(value), precision: digits)
-                return value >= 0 ? "+" + text : text
+            let texts = distinctTexts([converted(upper), converted(lower)],
+                                      minimum: minimumDigits)
+            func signed(_ text: String) -> String {
+                text.hasPrefix("-") ? text : "+" + text
             }
-            return CADDrawingToleranceDisplay(lines: [signed(upper), signed(lower)],
-                                              upperDeviationMM: upper,
-                                              lowerDeviationMM: lower)
+            return CADDrawingToleranceDisplay(
+                lines: [signed(texts[0]), signed(texts[1])],
+                upperDeviationMM: upper,
+                lowerDeviationMM: lower)
         case .limits:
             guard let upper = tolerance.upperLimitMM,
                   let lower = tolerance.lowerLimitMM else { return nil }
-            let consistent = nominalMM >= lower - 1e-9 && nominalMM <= upper + 1e-9
+            // Both limits are absolute values. Their signed deviations are
+            // measured from the basic nominal, which may legitimately sit
+            // outside the interval; that is not an inconsistency. The pair
+            // formatter keeps two close endpoints textually distinct.
             return CADDrawingToleranceDisplay(
-                lines: [formatNumber(converted(upper), precision: digits),
-                        formatNumber(converted(lower), precision: digits)],
+                lines: distinctTexts([converted(upper), converted(lower)],
+                                     minimum: minimumDigits),
                 upperLimitMM: upper, lowerLimitMM: lower,
                 upperDeviationMM: upper - nominalMM,
                 lowerDeviationMM: lower - nominalMM,
-                consistentWithNominal: consistent)
+                consistentWithNominal: true)
         case .fit:
             guard let fit = tolerance.fit,
                   let limits = iso286Limits(fit: fit, nominalMM: nominalMM) else { return nil }
             let designation = "H\(fit.holeGrade)/\(fit.shaftLetter.lowercased())\(fit.shaftGrade)"
-            let holeLine = "HOLE " + formatNumber(converted(limits.holeLower), precision: digits)
-                + "–" + formatNumber(converted(limits.holeUpper), precision: digits)
-            let shaftLine = "SHAFT " + formatNumber(converted(limits.shaftLower), precision: digits)
-                + "–" + formatNumber(converted(limits.shaftUpper), precision: digits)
+            let hole = distinctTexts([converted(limits.holeLower),
+                                      converted(limits.holeUpper)],
+                                     minimum: minimumDigits)
+            let shaft = distinctTexts([converted(limits.shaftLower),
+                                       converted(limits.shaftUpper)],
+                                      minimum: minimumDigits)
+            let holeLine = "HOLE " + hole[0] + "–" + hole[1]
+            let shaftLine = "SHAFT " + shaft[0] + "–" + shaft[1]
             return CADDrawingToleranceDisplay(
                 primarySuffix: designation,
                 lines: [holeLine, shaftLine],

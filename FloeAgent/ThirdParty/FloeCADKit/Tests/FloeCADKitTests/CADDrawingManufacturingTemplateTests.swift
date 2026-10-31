@@ -164,6 +164,11 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
             .first { ($0["id"] as? String) == id }
     }
 
+    private func dimensionRow(_ geometry: [String: Any], id: String) -> [String: Any]? {
+        (geometry["manualDimensions"] as? [[String: Any]])?
+            .first { ($0["id"] as? String) == id }
+    }
+
     private func displayLines(_ row: [String: Any]) -> [String] {
         let display = row["display"] as? [String: Any] ?? [:]
         return display["textLines"] as? [String] ?? []
@@ -209,6 +214,220 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         // A fit on an angle is refused, never rendered as if valid.
         XCTAssertFalse(CADDrawingManufacturingRules.validateTolerance(
             tolerance, kind: .angle, nominal: 45).isEmpty)
+    }
+
+    func testISO286FitScopeAllowsOnlyDiameterAndLength() throws {
+        let fit = CADDrawingISO286Fit(holeGrade: 7, shaftLetter: "h", shaftGrade: 6)
+        let tolerance = CADDrawingTolerance(kind: .fit, fit: fit)
+        XCTAssertTrue(CADDrawingManufacturingRules.validateTolerance(
+            tolerance, kind: .diameter, nominal: 40).isEmpty)
+        XCTAssertTrue(CADDrawingManufacturingRules.validateTolerance(
+            tolerance, kind: .length, nominal: 40).isEmpty)
+
+        let radiusIssues = CADDrawingManufacturingRules.validateTolerance(
+            tolerance, kind: .radius, nominal: 20)
+        XCTAssertFalse(radiusIssues.isEmpty)
+        XCTAssertTrue(radiusIssues.joined().localizedCaseInsensitiveContains("radius"),
+                      "the radius refusal must name the actual scope: \(radiusIssues)")
+        let angleIssues = CADDrawingManufacturingRules.validateTolerance(
+            tolerance, kind: .angle, nominal: 45)
+        XCTAssertFalse(angleIssues.isEmpty)
+        XCTAssertTrue(angleIssues.joined().localizedCaseInsensitiveContains("angle"))
+
+        // Importantly, a radius is not silently doubled through the diameter
+        // bands: the formatter refuses it as well.
+        XCTAssertNil(CADDrawingManufacturingRules.formatTolerance(
+            tolerance, nominalMM: 20, kind: .radius, unit: .millimetre, precision: 2))
+        XCTAssertNil(CADDrawingManufacturingRules.formatTolerance(
+            tolerance, nominalMM: 45, kind: .angle, unit: .millimetre, precision: 2))
+    }
+
+    func testAbsoluteLimitsAllowOneSidedBandsWithSignedDeviations() throws {
+        // Both limits above the basic nominal are a valid absolute interval.
+        let above = CADDrawingTolerance(kind: .limits,
+                                        upperLimitMM: 40.2, lowerLimitMM: 40.1)
+        XCTAssertTrue(CADDrawingManufacturingRules.validateTolerance(
+            above, kind: .diameter, nominal: 40).isEmpty)
+        let aboveDisplay = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            above, nominalMM: 40, kind: .diameter, unit: .millimetre, precision: 2))
+        XCTAssertTrue(aboveDisplay.consistentWithNominal,
+                      "a valid one-sided absolute band is not an inconsistency")
+        XCTAssertEqual(try XCTUnwrap(aboveDisplay.upperDeviationMM), 0.2, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(aboveDisplay.lowerDeviationMM), 0.1, accuracy: 1e-9)
+        XCTAssertEqual(aboveDisplay.lines, ["40.20", "40.10"])
+
+        // Both limits below the basic nominal are equally valid.
+        let below = CADDrawingTolerance(kind: .limits,
+                                        upperLimitMM: 39.9, lowerLimitMM: 39.8)
+        XCTAssertTrue(CADDrawingManufacturingRules.validateTolerance(
+            below, kind: .diameter, nominal: 40).isEmpty)
+        let belowDisplay = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            below, nominalMM: 40, kind: .diameter, unit: .millimetre, precision: 2))
+        XCTAssertTrue(belowDisplay.consistentWithNominal)
+        XCTAssertEqual(try XCTUnwrap(belowDisplay.upperDeviationMM), -0.1, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(belowDisplay.lowerDeviationMM), -0.2, accuracy: 1e-9)
+        XCTAssertEqual(belowDisplay.lines, ["39.90", "39.80"])
+
+        // The existing exact, centred limits keep their usual signed offsets.
+        let centred = CADDrawingTolerance(kind: .limits,
+                                          upperLimitMM: 40.05, lowerLimitMM: 39.95)
+        let centredDisplay = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            centred, nominalMM: 40, kind: .diameter, unit: .millimetre, precision: 2))
+        XCTAssertEqual(try XCTUnwrap(centredDisplay.upperDeviationMM), 0.05, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(centredDisplay.lowerDeviationMM), -0.05, accuracy: 1e-9)
+        XCTAssertEqual(centredDisplay.lines, ["40.05", "39.95"])
+
+        // Malformed absolute limits still fail closed: non-finite, reversed,
+        // negative, missing and out-of-range values are all rejected.
+        for malformed in [
+            CADDrawingTolerance(kind: .limits, upperLimitMM: .nan, lowerLimitMM: 39.9),
+            CADDrawingTolerance(kind: .limits, upperLimitMM: 39.9, lowerLimitMM: 39.95),
+            CADDrawingTolerance(kind: .limits, upperLimitMM: 40.1, lowerLimitMM: -0.1),
+            CADDrawingTolerance(kind: .limits, upperLimitMM: nil, lowerLimitMM: 39.9),
+            CADDrawingTolerance(kind: .limits, upperLimitMM: 1_000_001, lowerLimitMM: 40),
+        ] {
+            XCTAssertFalse(CADDrawingManufacturingRules.validateTolerance(
+                malformed, kind: .diameter, nominal: 40).isEmpty,
+                           "\(malformed) must be rejected")
+            XCTAssertNil(CADDrawingManufacturingRules.formatTolerance(
+                malformed, nominalMM: 40, kind: .diameter,
+                unit: .millimetre, precision: 2))
+        }
+    }
+
+    func testToleranceTextKeepsNeededDecimalsAndExactMetadata() throws {
+        let fit = CADDrawingISO286Fit(holeGrade: 7, shaftLetter: "h", shaftGrade: 6)
+        let fitDisplay = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            CADDrawingTolerance(kind: .fit, fit: fit), nominalMM: 40,
+            kind: .diameter, unit: .millimetre, precision: 2))
+        XCTAssertEqual(fitDisplay.primarySuffix, "H7/h6")
+        XCTAssertTrue(fitDisplay.lines.contains { $0.contains("40.025") })
+        XCTAssertTrue(fitDisplay.lines.contains { $0.contains("39.984") })
+        XCTAssertFalse(fitDisplay.lines.joined().contains("40.03"),
+                       "page precision must not round away the published limits: \(fitDisplay.lines)")
+        // Exact millimetre metadata survives any display precision/unit.
+        XCTAssertEqual(try XCTUnwrap(fitDisplay.upperLimitMM), 40.025, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(fitDisplay.lowerLimitMM), 40, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(fitDisplay.maxClearanceMM), 0.041, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(fitDisplay.minClearanceMM), 0, accuracy: 1e-9)
+
+        // A tiny nonzero symmetric deviation must never format as zero.
+        let tiny = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            CADDrawingTolerance(kind: .symmetric, deviationMM: 0.001),
+            nominalMM: 40, kind: .diameter, unit: .millimetre, precision: 2))
+        XCTAssertEqual(tiny.primarySuffix, "±0.001")
+
+        // Unequal signed deviations keep their own minimal decimal count.
+        let deviation = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            CADDrawingTolerance(kind: .deviation,
+                                upperDeviationMM: 0.001, lowerDeviationMM: -0.0005),
+            nominalMM: 40, kind: .diameter, unit: .millimetre, precision: 2))
+        XCTAssertEqual(deviation.lines, ["+0.001", "-0.0005"])
+        XCTAssertEqual(try XCTUnwrap(deviation.upperDeviationMM), 0.001, accuracy: 1e-12)
+        XCTAssertEqual(try XCTUnwrap(deviation.lowerDeviationMM), -0.0005, accuracy: 1e-12)
+
+        // Unequal absolute limits keep exact places too.
+        let limits = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            CADDrawingTolerance(kind: .limits,
+                                upperLimitMM: 40.025, lowerLimitMM: 39.984),
+            nominalMM: 40, kind: .diameter, unit: .millimetre, precision: 2))
+        XCTAssertEqual(limits.lines, ["40.025", "39.984"])
+
+        // Inch display converts but still keeps enough places for 0.001 in.
+        let inch = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            CADDrawingTolerance(kind: .symmetric, deviationMM: 0.0254),
+            nominalMM: 25.4, kind: .length, unit: .inch, precision: 2))
+        XCTAssertEqual(inch.primarySuffix, "±0.001")
+
+        // Unit conversion still applies to limits/deviation (the edge fallback
+        // must not bypass it), while the exact millimetre metadata stays.
+        let inchLimits = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            CADDrawingTolerance(kind: .limits,
+                                upperLimitMM: 25.654, lowerLimitMM: 25.4),
+            nominalMM: 25.4, kind: .length, unit: .inch, precision: 2))
+        XCTAssertEqual(inchLimits.lines, ["1.01", "1.00"])
+        XCTAssertEqual(try XCTUnwrap(inchLimits.upperLimitMM), 25.654, accuracy: 1e-9)
+        let inchDeviation = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            CADDrawingTolerance(kind: .deviation,
+                                upperDeviationMM: 0.254, lowerDeviationMM: -0.254),
+            nominalMM: 25.4, kind: .length, unit: .inch, precision: 2))
+        XCTAssertEqual(inchDeviation.lines, ["+0.01", "-0.01"])
+
+        // A zero deviation prints as zero, never "+-".
+        let zero = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            CADDrawingTolerance(kind: .deviation,
+                                upperDeviationMM: 0, lowerDeviationMM: -0.05),
+            nominalMM: 10, kind: .length, unit: .millimetre, precision: 2))
+        XCTAssertEqual(zero.lines, ["+0.00", "-0.05"])
+        XCTAssertFalse(zero.lines.contains { $0.contains("+-") })
+
+        // The same meaningful-decimal rule is shared by the manufacturing
+        // display consumers (GD&T zone and surface roughness).
+        XCTAssertEqual(CADDrawingManufacturingRules.formatMeaningful(0.001, minimum: 2),
+                       "0.001")
+        XCTAssertEqual(CADDrawingManufacturingRules.formatMeaningful(0.025, minimum: 2),
+                       "0.025")
+        XCTAssertEqual(CADDrawingManufacturingRules.formatMeaningful(0.2, minimum: 2),
+                       "0.20")
+        XCTAssertEqual(CADDrawingManufacturingRules.formatMeaningful(1.6, minimum: 2),
+                       "1.60")
+        XCTAssertEqual(CADDrawingManufacturingRules.formatMeaningful(1.6, minimum: 0), "1.6")
+
+        // The actual manufacturing display consumers compose the same rule.
+        XCTAssertEqual(CADDrawingManufacturingRules.featureControlToleranceText(
+            0.001, diameterZone: true, pagePrecision: 2), "Ø0.001")
+        XCTAssertEqual(CADDrawingManufacturingRules.featureControlToleranceText(
+            0.001, diameterZone: false, pagePrecision: 2), "0.001")
+        XCTAssertEqual(CADDrawingManufacturingRules.featureControlToleranceText(
+            0.2, diameterZone: true, pagePrecision: 2), "Ø0.20")
+        XCTAssertEqual(CADDrawingManufacturingRules.surfaceFinishRaText(
+            0.025, pagePrecision: 2), "Ra 0.025")
+        XCTAssertEqual(CADDrawingManufacturingRules.surfaceFinishRaText(
+            1.6, pagePrecision: 2), "Ra 1.60")
+        XCTAssertEqual(CADDrawingManufacturingRules.surfaceFinishRaText(
+            1.6, pagePrecision: nil), "Ra 1.6")
+
+        // Underflow must not erase a nonzero value; distinct interval endpoints
+        // must not collapse to the same six-place text.
+        XCTAssertEqual(CADDrawingManufacturingRules.formatMeaningful(
+            1e-7, minimum: 2), "1e-07")
+        let tinySymmetric = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            CADDrawingTolerance(kind: .symmetric, deviationMM: 1e-7),
+            nominalMM: 1, kind: .length, unit: .millimetre, precision: 2))
+        XCTAssertEqual(tinySymmetric.primarySuffix, "±1e-07")
+        let tinyDeviation = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            CADDrawingTolerance(kind: .deviation,
+                                upperDeviationMM: 1e-7, lowerDeviationMM: -1e-7),
+            nominalMM: 1, kind: .length, unit: .millimetre, precision: 2))
+        XCTAssertEqual(tinyDeviation.lines, ["+1e-07", "-1e-07"])
+        let closeLimits = try XCTUnwrap(CADDrawingManufacturingRules.formatTolerance(
+            CADDrawingTolerance(kind: .limits,
+                                upperLimitMM: 1.00000002, lowerLimitMM: 1.00000001),
+            nominalMM: 1, kind: .length, unit: .millimetre, precision: 2))
+        XCTAssertEqual(closeLimits.lines, ["1.00000002", "1.00000001"],
+                       "distinct absolute limits must never print as the same value")
+        XCTAssertEqual(CADDrawingManufacturingRules.featureControlToleranceText(
+            1e-7, diameterZone: true, pagePrecision: 2), "Ø1e-07")
+        XCTAssertEqual(CADDrawingManufacturingRules.surfaceFinishRaText(
+            1e-7, pagePrecision: 2), "Ra 1e-07")
+    }
+
+    func testTemplateNumberDraftsNeverSubstituteZero() throws {
+        XCTAssertEqual(CADDrawingTemplateRules.parseNumberDraft("8"), 8)
+        XCTAssertEqual(CADDrawingTemplateRules.parseNumberDraft(" 0.25 "), 0.25)
+        XCTAssertEqual(CADDrawingTemplateRules.parseNumberDraft("8."), 8)
+        for raw in ["", "   ", "abc", "0.25mm", "nan", "inf", "-inf"] {
+            XCTAssertNil(CADDrawingTemplateRules.parseNumberDraft(raw),
+                         "\(raw.debugDescription) must be an explicit error, not 0")
+        }
+
+        var template = CADDrawingSheetTemplate(name: "Draft bounds")
+        template.style.marginMM = CADDrawingTemplateRules.parseNumberDraft("2") ?? 8
+        XCTAssertFalse(CADDrawingTemplateRules.validate(template).isEmpty,
+                       "a parsed out-of-range draft is still rejected by the template rules")
+        template.style.marginMM = 8
+        template.style.lineWidthMM = 0
+        XCTAssertFalse(CADDrawingTemplateRules.validate(template).isEmpty)
     }
 
     func testTemplateAndManufacturingRoundTripKeepsStructuredFields() throws {
@@ -572,6 +791,233 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         XCTAssertTrue(danglingDimension["value"] is NSNull)
         XCTAssertNil(danglingDimension["toleranceDisplay"])
         reopened.close()
+    }
+
+    // MARK: - Service edit contracts
+
+    func testDimensionEditAcceptsOneSidedLimitsAndClearsTolerance() async throws {
+        let document = try await makeDocument("dimension-edit")
+        let fixture = try makeCounterboreFixture(document)
+        let service = CADDrawingService(document: document)
+        let sheet = try makeMultiView(service, bodyID: fixture.bodyID,
+                                      title: "Dimension edit")
+        let pilot = try candidate(radius: 2.5, pageID: sheet.pageID,
+                                  viewID: sheet.frontID, service: service)
+        let reference = try XCTUnwrap(pilot["reference"] as? [String: Any])
+
+        // Both absolute limits above the Ø5 basic nominal are accepted by the
+        // service, not rejected as an out-of-range nominal.
+        let added = service.handle(action: "addDimension", args: [
+            "pageID": sheet.pageID, "viewID": sheet.frontID, "kind": "diameter",
+            "feature": reference,
+            "tolerance": ["kind": "limits",
+                          "upperLimitMM": 5.2, "lowerLimitMM": 5.1],
+        ])
+        XCTAssertEqual(added["ok"] as? Bool, true, "\(added)")
+        let dimension = try XCTUnwrap(added["dimension"] as? [String: Any])
+        let dimensionID = try XCTUnwrap(dimension["id"] as? String)
+        let originalPoints = try XCTUnwrap(dimension["drawingPoints"] as? [[Double]])
+        XCTAssertNil(dimension["toleranceWarning"])
+        let toleranceDisplay = try XCTUnwrap(
+            dimension["toleranceDisplay"] as? [String: Any])
+        XCTAssertEqual(toleranceDisplay["consistentWithNominal"] as? Bool, true)
+        XCTAssertEqual(try XCTUnwrap(toleranceDisplay["upperDeviationMM"] as? Double),
+                       0.2, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(toleranceDisplay["lowerDeviationMM"] as? Double),
+                       0.1, accuracy: 1e-9)
+
+        var geometry = service.handle(action: "project", args: ["pageID": sheet.pageID])
+        var row = try XCTUnwrap(dimensionRow(geometry, id: dimensionID))
+        XCTAssertEqual(row["stale"] as? Bool, false)
+        XCTAssertEqual(row["status"] as? String, "resolved")
+        XCTAssertNil(row["toleranceWarning"])
+
+        // One atomic edit clears the tolerance, sets a text override and moves
+        // the text, without touching the feature, value or geometry.
+        let undoBefore = document.session.undoStack.undoCommands.count
+        let cleared = service.handle(action: "updateDimension", args: [
+            "pageID": sheet.pageID, "dimensionID": dimensionID,
+            "text": "NOMINAL", "textPosition": [12.0, 13.0],
+            "tolerance": NSNull(),
+        ])
+        XCTAssertEqual(cleared["ok"] as? Bool, true, "\(cleared)")
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore + 1)
+        geometry = service.handle(action: "project", args: ["pageID": sheet.pageID])
+        row = try XCTUnwrap(dimensionRow(geometry, id: dimensionID))
+        XCTAssertEqual(row["text"] as? String, "NOMINAL")
+        XCTAssertEqual(row["textOverride"] as? String, "NOMINAL")
+        XCTAssertNil(row["tolerance"])
+        XCTAssertNil(row["toleranceDisplay"])
+        XCTAssertEqual(row["value"] as? Double ?? 0, 5, accuracy: 1e-9)
+        XCTAssertEqual(row["localTextPosition"] as? [Double], [12.0, 13.0])
+        let preservedPoints = try XCTUnwrap(row["drawingPoints"] as? [[Double]])
+        XCTAssertEqual(preservedPoints.count, originalPoints.count)
+        for (before, after) in zip(originalPoints, preservedPoints) {
+            XCTAssertEqual(before[0], after[0], accuracy: 1e-9)
+            XCTAssertEqual(before[1], after[1], accuracy: 1e-9)
+        }
+        let preservedFeature = try XCTUnwrap(row["feature"] as? [String: Any])
+        XCTAssertEqual(preservedFeature["featureID"] as? String, fixture.holeFeature)
+
+        // A tolerance-only edit keeps the text override and accepts a band
+        // entirely below the nominal, again without a stale/inconsistent flag.
+        let refit = service.handle(action: "updateDimension", args: [
+            "pageID": sheet.pageID, "dimensionID": dimensionID,
+            "tolerance": ["kind": "limits",
+                          "upperLimitMM": 4.9, "lowerLimitMM": 4.8],
+        ])
+        XCTAssertEqual(refit["ok"] as? Bool, true, "\(refit)")
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore + 2)
+        geometry = service.handle(action: "project", args: ["pageID": sheet.pageID])
+        row = try XCTUnwrap(dimensionRow(geometry, id: dimensionID))
+        XCTAssertEqual(row["text"] as? String, "NOMINAL",
+                       "a tolerance-only edit must not lose the text override")
+        XCTAssertEqual(row["textOverride"] as? String, "NOMINAL")
+        XCTAssertEqual((row["tolerance"] as? [String: Any])?["kind"] as? String, "limits")
+        XCTAssertEqual(row["stale"] as? Bool, false)
+        XCTAssertNil(row["toleranceWarning"])
+        let belowDisplay = try XCTUnwrap(row["toleranceDisplay"] as? [String: Any])
+        XCTAssertEqual(belowDisplay["consistentWithNominal"] as? Bool, true)
+        XCTAssertEqual(try XCTUnwrap(belowDisplay["upperDeviationMM"] as? Double),
+                       -0.1, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(belowDisplay["lowerDeviationMM"] as? Double),
+                       -0.2, accuracy: 1e-9)
+        document.close()
+    }
+
+    func testManufacturingUpdateKeepsIDSourceAndUntouchedPayload() async throws {
+        let document = try await makeDocument("manufacturing-edit")
+        let fixture = try makeCounterboreFixture(document)
+        let service = CADDrawingService(document: document)
+        let sheet = try makeMultiView(service, bodyID: fixture.bodyID,
+                                      title: "Manufacturing edit")
+        let pilot = try candidate(radius: 2.5, pageID: sheet.pageID,
+                                  viewID: sheet.frontID, service: service)
+        let reference = try XCTUnwrap(pilot["reference"] as? [String: Any])
+        let added = service.handle(action: "addManufacturingAnnotation", args: [
+            "pageID": sheet.pageID, "viewID": sheet.frontID, "kind": "datumFeature",
+            "position": [10.0, 10.0], "heightMM": 3.0,
+            "feature": reference,
+            "datum": ["letter": "A", "leaderTarget": [12.0, 8.0]],
+        ])
+        XCTAssertEqual(added["ok"] as? Bool, true, "\(added)")
+        let annotation = try XCTUnwrap(
+            added["manufacturingAnnotation"] as? [String: Any])
+        let annotationID = try XCTUnwrap(annotation["id"] as? String)
+
+        let undoBefore = document.session.undoStack.undoCommands.count
+        let updated = service.handle(action: "updateManufacturingAnnotation", args: [
+            "pageID": sheet.pageID, "annotationID": annotationID,
+            "kind": "datumFeature", "position": [20.0, 18.0], "heightMM": 4.0,
+            // The native editor starts from the stored payload and sends the
+            // merged object, so the leader target it does not display is kept.
+            "datum": ["letter": "B", "leaderTarget": [12.0, 8.0]],
+        ])
+        XCTAssertEqual(updated["ok"] as? Bool, true, "\(updated)")
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore + 1)
+        var geometry = service.handle(action: "project", args: ["pageID": sheet.pageID])
+        var row = try XCTUnwrap(manufacturingRow(geometry, id: annotationID))
+        XCTAssertEqual(row["id"] as? String, annotationID)
+        var configured = try XCTUnwrap(row["configured"] as? [String: Any])
+        XCTAssertEqual(configured["kind"] as? String, "datumFeature")
+        XCTAssertEqual(configured["position"] as? [Double], [20.0, 18.0])
+        XCTAssertEqual(configured["heightMM"] as? Double, 4.0)
+        var datum = try XCTUnwrap(configured["datum"] as? [String: Any])
+        XCTAssertEqual(datum["letter"] as? String, "B")
+        XCTAssertEqual(datum["leaderTarget"] as? [Double], [12.0, 8.0])
+        var feature = try XCTUnwrap(configured["feature"] as? [String: Any])
+        XCTAssertEqual(feature["featureID"] as? String, fixture.holeFeature)
+
+        // Omitting feature/position/height keeps them: this is what the native
+        // editor relies on when the stored source is not re-selected.
+        let second = service.handle(action: "updateManufacturingAnnotation", args: [
+            "pageID": sheet.pageID, "annotationID": annotationID,
+            "kind": "datumFeature",
+            "datum": ["letter": "C", "leaderTarget": [12.0, 8.0]],
+        ])
+        XCTAssertEqual(second["ok"] as? Bool, true, "\(second)")
+        geometry = service.handle(action: "project", args: ["pageID": sheet.pageID])
+        row = try XCTUnwrap(manufacturingRow(geometry, id: annotationID))
+        configured = try XCTUnwrap(row["configured"] as? [String: Any])
+        XCTAssertEqual(configured["position"] as? [Double], [20.0, 18.0])
+        XCTAssertEqual(configured["heightMM"] as? Double, 4.0)
+        datum = try XCTUnwrap(configured["datum"] as? [String: Any])
+        XCTAssertEqual(datum["letter"] as? String, "C")
+        feature = try XCTUnwrap(configured["feature"] as? [String: Any])
+        XCTAssertEqual(feature["featureID"] as? String, fixture.holeFeature)
+
+        // Kind remains immutable; the editor never delete/recreates to switch.
+        let bad = service.handle(action: "updateManufacturingAnnotation", args: [
+            "pageID": sheet.pageID, "annotationID": annotationID,
+            "kind": "weld", "weld": ["type": "fillet", "sizeMM": 6],
+        ])
+        XCTAssertEqual(bad["ok"] as? Bool, false)
+        XCTAssertEqual(bad["error"] as? String, "kind_immutable")
+        document.close()
+    }
+
+    func testManufacturingToleranceAndRoughnessKeepSmallValuesAtTwoDP() async throws {
+        let document = try await makeDocument("manufacturing-small-values")
+        let plate = try makePlate(document)
+        let service = CADDrawingService(document: document)
+        let sheet = try makeMultiView(service, bodyID: plate.bodyID,
+                                      title: "Small values")
+        let precision = service.handle(action: "updatePage", args: [
+            "pageID": sheet.pageID, "precision": 2,
+        ])
+        XCTAssertEqual(precision["ok"] as? Bool, true, "\(precision)")
+
+        let frame = service.handle(action: "addManufacturingAnnotation", args: [
+            "pageID": sheet.pageID, "viewID": sheet.frontID,
+            "kind": "featureControlFrame", "position": [20.0, 20.0], "heightMM": 3.0,
+            "featureControlFrame": [
+                "characteristic": "position", "toleranceMM": 0.001,
+                "diameterZone": true,
+                "datumReferences": [["letter": "A"]],
+            ],
+        ])
+        XCTAssertEqual(frame["ok"] as? Bool, true, "\(frame)")
+        let frameID = try XCTUnwrap(
+            (frame["manufacturingAnnotation"] as? [String: Any])?["id"] as? String)
+
+        let finish = service.handle(action: "addManufacturingAnnotation", args: [
+            "pageID": sheet.pageID, "viewID": sheet.frontID,
+            "kind": "surfaceFinish", "position": [40.0, 20.0], "heightMM": 3.0,
+            "surfaceFinish": ["raMicrometres": 0.025, "allAround": false],
+        ])
+        XCTAssertEqual(finish["ok"] as? Bool, true, "\(finish)")
+        let finishID = try XCTUnwrap(
+            (finish["manufacturingAnnotation"] as? [String: Any])?["id"] as? String)
+
+        let geometry = service.handle(action: "project", args: ["pageID": sheet.pageID])
+        XCTAssertEqual(geometry["ok"] as? Bool, true, "\(geometry)")
+
+        // The page says 2 dp, but the actual tolerance is 0.001 mm: the
+        // displayed value must keep the third place, not become 0.00.
+        let frameRow = try XCTUnwrap(manufacturingRow(geometry, id: frameID))
+        let frameDisplay = try XCTUnwrap(frameRow["display"] as? [String: Any])
+        XCTAssertEqual(frameDisplay["toleranceText"] as? String, "Ø0.001")
+        let frameConfigured = try XCTUnwrap(frameRow["configured"] as? [String: Any])
+        let framePayload = try XCTUnwrap(
+            frameConfigured["featureControlFrame"] as? [String: Any])
+        XCTAssertEqual(framePayload["toleranceMM"] as? Double ?? 0, 0.001,
+                       accuracy: 1e-12, "exact GD&T tolerance metadata is retained")
+
+        // Roughness is also a tolerance-like value; 0.025 µm must survive.
+        let finishRow = try XCTUnwrap(manufacturingRow(geometry, id: finishID))
+        let finishDisplay = try XCTUnwrap(finishRow["display"] as? [String: Any])
+        XCTAssertEqual(finishDisplay["raText"] as? String, "Ra 0.025")
+        let computed = try XCTUnwrap(finishRow["computed"] as? [String: Any])
+        XCTAssertEqual(computed["raMicrometres"] as? Double ?? 0, 0.025,
+                       accuracy: 1e-12, "exact micrometre metadata is retained")
+
+        // The same precise text reaches the real vector export.
+        let svg = try service.exportData(pageID: try XCTUnwrap(UUID(uuidString: sheet.pageID)),
+                                         format: "svg")
+        let svgText = try XCTUnwrap(String(data: svg, encoding: .utf8))
+        XCTAssertTrue(svgText.contains("Ø0.001"))
+        XCTAssertTrue(svgText.contains("Ra 0.025"))
+        document.close()
     }
 
     // MARK: - E18: one template, two sheets, one transaction, reopen/export

@@ -5300,9 +5300,12 @@ public final class CADDrawingService {
                 display["characteristic"] = frame.characteristic.rawValue
                 display["characteristicTitle"] = frame.characteristic.title
                 display["diameterZone"] = frame.diameterZone
-                let toleranceDigits = max(2, page.displayPrecision ?? 2)
-                display["toleranceText"] = (frame.diameterZone ? "Ø" : "")
-                    + CADDrawingManufacturingRules.formatNumber(frame.toleranceMM, precision: toleranceDigits)
+                // A GD&T zone is a tolerance, not a nominal size: page
+                // precision is a floor so a valid 0.001 never prints as 0.00.
+                display["toleranceText"] =
+                    CADDrawingManufacturingRules.featureControlToleranceText(
+                        frame.toleranceMM, diameterZone: frame.diameterZone,
+                        pagePrecision: page.displayPrecision)
                 if let condition = frame.materialCondition,
                    condition != .regardless {
                     display["materialCondition"] = condition.rawValue
@@ -5326,8 +5329,11 @@ public final class CADDrawingService {
                     reasons.append("The stored surface-finish payload is missing.")
                     break
                 }
-                display["raText"] = "Ra " + CADDrawingManufacturingRules.formatNumber(
-                    finish.raMicrometres, precision: page.displayPrecision)
+                // Roughness is a tolerance-like value: 0.025 µm must not round
+                // to 0.03/0.00 at a 2 dp page. The exact µm value stays in
+                // `computed` for metadata/native consumers.
+                display["raText"] = CADDrawingManufacturingRules.surfaceFinishRaText(
+                    finish.raMicrometres, pagePrecision: page.displayPrecision)
                 display["allAround"] = finish.allAround
                 if let method = finish.machiningMethod { display["machiningMethod"] = method }
                 computed["raMicrometres"] = finish.raMicrometres
@@ -5673,6 +5679,11 @@ public final class CADDrawingService {
                 "value": (value.map { $0 as Any }) ?? (NSNull() as Any),
                 "unit": dimension.kind == .angle ? "deg" : "mm",
                 "text": text,
+                // The native editor saves view-local values. The sheet-space
+                // point above is for hit-testing/rendering; these are the
+                // exact stored fields, so an edit round-trip never shifts a
+                // multi-view dimension by the view offset.
+                "localTextPosition": pointPayload(textPosition),
                 "textPosition": pointPayload(sheetPosition),
                 "drawingPoints": points.map(pointPayload),
                 "sheetPoints": points.map { pointPayload($0 + context.offset) },
@@ -5690,6 +5701,13 @@ public final class CADDrawingService {
             }
             if let feature = dimension.feature {
                 row["feature"] = featurePayload(feature)
+            }
+            // Raw stored override (the displayed `text` also carries the
+            // tolerance suffix). The editor needs the original value so an
+            // unrelated tolerance edit never promotes formatted display text
+            // into a permanent text override.
+            if let override = dimension.textOverride {
+                row["textOverride"] = override
             }
             if let resolvedFeature { row["resolvedFeature"] = resolvedFeature }
             if let tolerance = dimension.tolerance {
