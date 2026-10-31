@@ -20,10 +20,8 @@ name: floe-skill-hub-signing
 # Mode semantics: the reviews mode signs stage-honest review-record
 # envelopes for content that is packaged+reviewed on a staging branch (this
 # is BEFORE catalog qualification flags and promotes nothing); catalog
-# publication signing refuses unless the launch gate is genuinely satisfied
-# (>=40 unique qualified iOS offers, all nine pinned mandatory deep
-# adaptations present in both feeds with guest-qualified script bindings,
-# exact Android coverage). The signing key value never appears in logs or in
+# publication signing enforces the exact qualified sets, all four complete/
+# legacy views and unchanged per-item execution/engine/history gates. The signing key value never appears in logs or in
 # the canonical receipt (only the key ID).
 #
 # Integration boundary: this file lives in the ORIGINAL App repository
@@ -58,7 +56,7 @@ env:
   # NON-DISPATCHABLE until the root substitutes the exact reviewed 40-hex
   # tooling commit HERE (after the bridge code lands on the Hub default
   # branch and the root has verified that commit):
-  TOOLING_COMMIT: 647d8a7e59c8020d297a01a8c42382bcde46fb2c
+  TOOLING_COMMIT: 84c524b6fb483e4cad94db076e7d9c9962966c19
 
 jobs:
   sign:
@@ -96,7 +94,7 @@ jobs:
           repository: JiangNanGenius/floe-skill-hub
           ref: ${{ env.TOOLING_COMMIT }}
           path: tooling
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
       - name: Fetch the exact data snapshot S/X at the claimed commit (tokenless, public)
         env:
@@ -129,6 +127,17 @@ jobs:
             *) echo "unexpected tooling origin: $origin" >&2; exit 1 ;;
           esac
           test -z "$(git -C tooling -c core.fsmonitor=false status --porcelain --untracked-files=all)"
+      - name: Resolve the independent current publication baseline
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          baseline="$(git -C "$GITHUB_WORKSPACE/tooling" ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$baseline" =~ ^[0-9a-f]{40}$ ]]
+          git -C "$GITHUB_WORKSPACE/tooling" -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch --no-tags origin "$baseline"
+          echo "PUBLISHED_Y=$baseline" >> "$GITHUB_ENV"
       - name: Set up the pinned interpreter
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -146,6 +155,7 @@ jobs:
             --source-commit "$SOURCE_COMMIT" \
             --data "$GITHUB_WORKSPACE/data" \
             --tooling "$GITHUB_WORKSPACE/tooling" \
+            --published-y "$PUBLISHED_Y" \
             --out "$RUNNER_TEMP/bridge-out"
       - name: Upload the signed artifact bundle (no repository push, no release)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
