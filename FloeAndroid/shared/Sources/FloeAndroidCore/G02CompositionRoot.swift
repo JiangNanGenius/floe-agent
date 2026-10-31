@@ -469,6 +469,9 @@ public final class G02RuntimeComposition: @unchecked Sendable {
     /// (its facade revalidates identity internally).
     private func rollbackPartialBuild(epoch: UInt64,
                                       identity: RuntimeOwnerIdentity) async {
+        // G08: a failed build must not leave the artifact-root binding live
+        // for an epoch that never published composition.
+        PlatformToolHostMailbox.shared.retireArtifactRoot(epoch: epoch)
         // Capture the exact owned instance before any await.
         let ownedRunDomain: FacadeRunDomain? =
             RunDomainFacade.current(epoch: epoch)?.0
@@ -518,6 +521,10 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         //    binding is never touched, and a live-epoch re-check inside the
         //    registry independently fails a retired binding closed.
         routeContext.retireBoundRoute(epoch: epoch)
+        // G08: clear ONLY this generation's actual screenshot artifact root;
+        // a newer generation's binding is untouched and a retired epoch can
+        // never be rebound (monotonic fence inside the mailbox).
+        PlatformToolHostMailbox.shared.retireArtifactRoot(epoch: epoch)
 
         // 0b. G06 Notes authority retirement: exact-epoch close of the one
         //     service-owned NotesStore. A stale epoch is a no-op and never
@@ -623,6 +630,7 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         clearFences()
         AttachmentStagingFacade.uninstallAllForTesting()
         RunDomainFacade.uninstall()
+        PlatformToolHostMailbox.shared.resetArtifactRootBindingForTesting()
         // G03-R3 lanes owned by THIS composition's G02DomainServices build:
         // the workspace authority install slot and the live readiness
         // ingress. Same producer-ownership reset discipline; production

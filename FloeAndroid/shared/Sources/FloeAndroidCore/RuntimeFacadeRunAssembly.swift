@@ -587,7 +587,8 @@ extension FacadeRunDomain {
                 availableToolNames: ceiling,
                 skillInstructions: isNotes ? notes?.contextText : nil),
             personalizationProvider: personalizationProvider,
-            resourceAccessCleanup: nil)
+            resourceAccessCleanup: nil,
+            artifactRootURL: components.artifactRootURL)
         // The REAL per-run delegate/subagent wiring: the ORIGINAL
         // registerDelegateTool + SubagentRunner bound to this exact runID
         // (DelegateTool.swift:209-217 + SubagentRunner.swift:186-198). The

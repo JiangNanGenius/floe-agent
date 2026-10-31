@@ -565,6 +565,10 @@ public actor FloeAgentRuntime {
     public let runID: UUID
 
     private let configuration: Configuration
+    /// Actual App-owned artifact directory for visual evidence. Android
+    /// composition supplies the live generation's `<owned root>/FloeAgent`;
+    /// nil keeps the original iOS Application Support resolution.
+    private let artifactRootURL: URL?
     private let adapter: any ProviderAdapter
     private let policy: any ApprovalPolicy
     private let gate: CatastrophicActionGate?
@@ -803,9 +807,11 @@ public actor FloeAgentRuntime {
         sink: (any AgentEventSink)? = nil,
         runID: UUID = UUID(),
         runtimeAuthorities: RuntimeAuthorityStore = .shared,
-        peerBus: SubagentPeerBus = .shared
+        peerBus: SubagentPeerBus = .shared,
+        artifactRootURL: URL? = nil
     ) {
         self.configuration = configuration
+        self.artifactRootURL = artifactRootURL
         self.adapter = adapter
         self.policy = policy
         self.executor = executor
@@ -2159,7 +2165,7 @@ public actor FloeAgentRuntime {
                 .compactMap { artifact -> ProviderContentPart? in
                     let key = "\(artifact.relativePath)|\(artifact.sha256.lowercased())"
                     guard seenEvidence.insert(key).inserted else { return nil }
-                    return Self.providerImageEvidence(artifact)
+                    return self.providerImageEvidenceForDispatch(artifact)
                 }
             if !evidence.isEmpty {
                 contentMessages.append(ProviderMessage(
@@ -2426,6 +2432,28 @@ public actor FloeAgentRuntime {
         ) else { return nil }
         let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
         return providerImageEvidence(artifact, root: root)
+    }
+
+    /// Exact root selection for one dispatch. An injected actual owned root
+    /// is authoritative; only a runtime that was never given one (the iOS
+    /// call path) keeps the original Application Support behavior.
+    static func providerImageEvidence(
+        _ artifact: ToolArtifactReference,
+        artifactRootURL: URL?
+    ) -> ProviderContentPart? {
+        guard let artifactRootURL else {
+            return providerImageEvidence(artifact)
+        }
+        return providerImageEvidence(artifact, root: artifactRootURL)
+    }
+
+    /// The instance boundary used by provider assembly. Keeping this method
+    /// on the actor makes the injected root the ONLY source consulted for
+    /// Android runs; the static helper above never chooses a second root.
+    func providerImageEvidenceForDispatch(
+        _ artifact: ToolArtifactReference
+    ) -> ProviderContentPart? {
+        Self.providerImageEvidence(artifact, artifactRootURL: artifactRootURL)
     }
 
     /// Root-injected variant for tests; the same validation runs in

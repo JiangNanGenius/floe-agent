@@ -561,7 +561,12 @@ public final class G02InstalledComposition: @unchecked Sendable {
             // the same accepted-epoch domain's port, never a second runtime.
             notesRuntime: NotesAssistantDomain.shared,
             // G07.3B: terminal occurrence settlement + after-success enqueue.
-            scheduleCompletion: scheduleService)
+            scheduleCompletion: scheduleService,
+            // G08 visual evidence: the EXACT owned artifact directory of THIS
+            // accepted generation (`<owned root>/FloeAgent`). The original
+            // run factory forwards it to FloeAgentRuntime; nil would mean the
+            // iOS Application Support behavior and is never used on Android.
+            artifactRootURL: cluster.identity.root.artifactStoreURL)
         RunDomainFacade.install(components: runComponents, registry: gen.registry)
         G073TaskScheduleFacade.install(epoch: epoch, service: scheduleService)
         // Cold-start ordering is enforced by the service: settle occurrences
@@ -717,6 +722,15 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // runner's availability closure reads this installation, so a
         // retired graph never advertises a tool it cannot execute.
         _ = UserQuestionHostAPI.shared.install(database: database, epoch: epoch)
+        // G08 screenshot evidence: bind the mailbox's ONE artifact root to
+        // THIS accepted full-owner identity. The mailbox derives
+        // `<owned root>/FloeAgent` itself from the validated standardized
+        // root; no Foundation container, HOME, TEMP or first-project fallback
+        // exists. A refusal is non-gating for tool registration but leaves
+        // every screenshot artifact refused (fail closed) and visible as
+        // `artifactRootBound:false` in readiness.
+        _ = PlatformToolHostMailbox.shared.bindArtifactRoot(
+            ownedRootPath: cluster.identity.root.path, epoch: epoch)
         return installed
     }
 }
