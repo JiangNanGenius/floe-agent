@@ -316,6 +316,51 @@ class PcapAnalysisStoreTest {
     }
 
     @Test
+    fun writesAnUppercaseIdentityToOneLowercaseDirectory() {
+        val root = Files.createTempDirectory("floe-pcap-store-canonical").toFile()
+        try {
+            val lower = "a6e433a5-83cf-4ba5-9cb1-63a86081fbcb"
+            val upper = lower.uppercase(java.util.Locale.ROOT)
+            val store = PcapAnalysisStore(root)
+            val stored = store.write(
+                summary().copy(analysisID = upper),
+                ownerTaskId = null, ownerWorkspaceId = null, agentReadable = true,
+            )
+            assertEquals("pcap-$lower", stored.directory.name)
+            assertEquals(lower, stored.analysisID)
+            assertEquals(lower, JSONObject(stored.json).getString("analysisID"))
+            val reopened = store.read(upper)
+            assertNotNull(reopened)
+            assertEquals("pcap-$lower", reopened!!.directory.name)
+            assertEquals(lower, reopened.analysisID)
+            assertTrue(reopened.agentReadable)
+            assertEquals(lower, store.list().single().analysisID)
+            assertTrue(store.setAgentReadable(upper, false)!!.agentReadable.not())
+            assertTrue(store.delete(upper))
+            assertNull(store.read(upper))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun readsAnUppercaseIdentityWrittenInTheLowercaseAppForm() {
+        val root = Files.createTempDirectory("floe-pcap-store-uppercase-read").toFile()
+        try {
+            val lower = "a6e433a5-83cf-4ba5-9cb1-63a86081fbcb"
+            val upper = lower.uppercase(java.util.Locale.ROOT)
+            val store = PcapAnalysisStore(root)
+            store.write(summary().copy(analysisID = lower), agentReadable = true)
+            val reopened = store.read(upper)
+            assertNotNull(reopened)
+            assertEquals(lower, reopened!!.analysisID)
+            assertEquals("pcap-$lower", reopened.directory.name)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun plainFilesAreNotAnalyses() {
         val root = Files.createTempDirectory("floe-pcap-store-misc").toFile()
         try {

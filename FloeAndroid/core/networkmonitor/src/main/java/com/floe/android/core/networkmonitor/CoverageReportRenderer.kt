@@ -82,8 +82,7 @@ object CoverageReportRenderer {
             appendLine("- Stale points (>10 min): ${aggregate.staleCount}; cached scans: ${aggregate.cachedScanCount}; " +
                 "permission-required: ${aggregate.permissionRequiredCount}")
             appendLine()
-            appendLine("**Estimated legend (not a calibrated RF model):** strong ≥ -60 dBm, good -69..-60, " +
-                "fair -79..-70, weak < -80 dBm.")
+            appendLine(legendMarkdown(aggregate))
             appendLine()
             appendLine("| # | Location | x | y | RSSI dBm | Level | Channel | Age | Scan status |")
             appendLine("|---:|---|---:|---:|---:|---|---:|---|---|")
@@ -102,6 +101,23 @@ object CoverageReportRenderer {
             "coverage markdown exceeds its bounded size"
         }
         return text
+    }
+
+    /**
+     * Exported ranges come from the same legend buckets as the classifier and
+     * JSON legend; the literal version previously drifted by one decibel.
+     */
+    private fun legendMarkdown(aggregate: CoverageAggregate): String {
+        val byLevel = aggregate.legend.associateBy { it.level }
+        val strong = byLevel["strong"]?.minimumDbm ?: CoverageLimits.STRONG_RSSI
+        val goodMinimum = byLevel["good"]?.minimumDbm ?: CoverageLimits.GOOD_RSSI
+        val goodMaximum = byLevel["good"]?.maximumDbm ?: (CoverageLimits.STRONG_RSSI - 1)
+        val fairMinimum = byLevel["fair"]?.minimumDbm ?: CoverageLimits.FAIR_RSSI
+        val fairMaximum = byLevel["fair"]?.maximumDbm ?: (CoverageLimits.GOOD_RSSI - 1)
+        val weakMaximum = byLevel["weak"]?.maximumDbm ?: (CoverageLimits.FAIR_RSSI - 1)
+        return "**Estimated legend (not a calibrated RF model):** strong ≥ $strong dBm, " +
+            "good $goodMinimum..$goodMaximum, fair $fairMinimum..$fairMaximum, " +
+            "weak ≤ $weakMaximum dBm."
     }
 
     /** Shared UI/tool limitation text; no network identifiers. */

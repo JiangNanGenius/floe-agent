@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.feature.network
 
+import com.floe.android.core.networkmonitor.CoverageLimits
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 
@@ -311,6 +312,32 @@ data class CoveragePointUi(
 )
 
 data class CoverageLegendUi(val level: String, val minimumDbm: Int, val maximumDbm: Int, val points: Int)
+
+/**
+ * Display ranges derived from the same legend buckets as the classifier and
+ * exports. UI copy must not carry its own dB offsets, which previously drifted
+ * by one decibel from the real level mapping.
+ */
+data class CoverageLegendRanges(
+    val strongMinimumDbm: Int,
+    val goodMinimumDbm: Int,
+    val goodMaximumDbm: Int,
+    val fairMinimumDbm: Int,
+    val fairMaximumDbm: Int,
+    val weakMaximumDbm: Int,
+)
+
+fun coverageLegendRanges(legend: List<CoverageLegendUi>): CoverageLegendRanges {
+    val byLevel = legend.associateBy { it.level }
+    return CoverageLegendRanges(
+        strongMinimumDbm = byLevel["strong"]?.minimumDbm ?: CoverageLimits.STRONG_RSSI,
+        goodMinimumDbm = byLevel["good"]?.minimumDbm ?: CoverageLimits.GOOD_RSSI,
+        goodMaximumDbm = byLevel["good"]?.maximumDbm ?: (CoverageLimits.STRONG_RSSI - 1),
+        fairMinimumDbm = byLevel["fair"]?.minimumDbm ?: CoverageLimits.FAIR_RSSI,
+        fairMaximumDbm = byLevel["fair"]?.maximumDbm ?: (CoverageLimits.GOOD_RSSI - 1),
+        weakMaximumDbm = byLevel["weak"]?.maximumDbm ?: (CoverageLimits.FAIR_RSSI - 1),
+    )
+}
 
 data class CoverageGridCellUi(
     val column: Int,

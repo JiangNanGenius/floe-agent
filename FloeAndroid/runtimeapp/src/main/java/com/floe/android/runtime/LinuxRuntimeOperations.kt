@@ -584,6 +584,14 @@ internal class LinuxRuntimeOperations(
                 is StartOutcome.Accepted -> {
                     latency.mark(LinuxRuntimePhaseTiming.Phase.SPAWN)
                     RuntimeExecutionTrace.mark(Stage.OPS_SPAWN_ACCEPTED)
+                    // REAL EXECUTION ADMISSION. The supervisor accepted the
+                    // spawn here; the caller's command budget begins at this
+                    // monotonic instant and nowhere earlier. Recovery,
+                    // configure, acquire, cold rootfs materialization, the
+                    // workspace import, spec build and spawn are PREPARATION
+                    // bounded by their own phases — they must never consume
+                    // the command timeout.
+                    val admittedAtMillis = SystemClock.elapsedRealtime()
                     safeToAbandon = false
                     val isOwner = !isReuseParticipant
                     // Hand the START's OWN cancellation token to the Running;
@@ -593,7 +601,7 @@ internal class LinuxRuntimeOperations(
                     val startCancellation = checkNotNull(cancelledStarts[request.id]) {
                         "startCancellationMissing"
                     }
-                    val owned = Running(lease, outcome.job, SystemClock.elapsedRealtime() + (seconds * 1000).toLong(),
+                    val owned = Running(lease, outcome.job, executionDeadlineMillis(admittedAtMillis, seconds),
                         scratch, role, projectID, workspace, isOwner, workspaceSession, imported,
                         request.id, startCancellation, latency)
                     owned.startCancelled.set(isCancelled())
@@ -1324,6 +1332,20 @@ internal class LinuxRuntimeOperations(
     companion object {
         /** Hard ceiling: 2 interactive + ONE shared Agent/run execution slot. */
         const val MAX_CONCURRENT_WORKLOADS = 3
+
+        /**
+         * The ONE command-deadline anchor for an admitted workload.
+         * `admittedAtElapsedMillis` is the monotonic [SystemClock.elapsedRealtime]
+         * reading taken when the supervisor ACCEPTED the spawn; the caller's
+         * validated `timeoutSeconds` is added there and nowhere earlier.
+         * Cold rootfs materialization, the workspace import and the launch-spec
+         * build happen before admission and are bounded by their own phases, so
+         * they can never consume the command budget. Pure and clock-injected so
+         * the anchor is regression-tested on the JVM (no device, no spawn).
+         */
+        internal fun executionDeadlineMillis(admittedAtElapsedMillis: Long,
+                                             timeoutSeconds: Double): Long =
+            admittedAtElapsedMillis + (timeoutSeconds * 1000.0).toLong()
 
         /**
          * Pure shell.cancel scope decision (no Android, no org.json): a

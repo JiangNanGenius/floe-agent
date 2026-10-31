@@ -134,7 +134,10 @@ public struct NetworkArtifactToolRequest: Sendable, Equatable {
         filters: NetworkArtifactFilters? = nil,
         operationID: UUID = UUID()
     ) throws -> NetworkArtifactToolRequest {
-        var arguments: [String: Any] = ["analysisID": analysisID.uuidString]
+        // The App-private stores key summaries by lowercase UUID.toString().
+        // Foundation's uuidString is uppercase, so emit one canonical form
+        // before the Kotlin host sees the request.
+        var arguments: [String: Any] = ["analysisID": Self.canonicalArtifactID(analysisID)]
         if let filters {
             arguments["filters"] = try filters.validated().argumentObject()
         }
@@ -146,7 +149,12 @@ public struct NetworkArtifactToolRequest: Sendable, Equatable {
         operationID: UUID = UUID()
     ) throws -> NetworkArtifactToolRequest {
         try make(method: .coverageSummary, operationID: operationID,
-                 arguments: ["sessionID": sessionID.uuidString])
+                 arguments: ["sessionID": Self.canonicalArtifactID(sessionID)])
+    }
+
+    /// One lowercase canonical artifact identity across the bridge.
+    private static func canonicalArtifactID(_ id: UUID) -> String {
+        id.uuidString.lowercased()
     }
 
     private static func make(

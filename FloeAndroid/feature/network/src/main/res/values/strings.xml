@@ -353,8 +353,9 @@
     <string name="network_artifact_coverage_create">Create session</string>
     <string name="network_artifact_coverage_none">No coverage sessions.</string>
     <string name="network_artifact_coverage_row">%1$d points · %2$d locations · floorplan: %3$s</string>
-    <string name="network_artifact_coverage_summary">%1$d points · %2$d locations · RSSI %3$d to %4$d dBm · %5$d stale · %6$d permission issues</string>
-    <string name="network_artifact_coverage_legend">Estimated legend: strong ≥ -60, good -69 to -60, fair -79 to -70, weak below -80 dBm.</string>
+    <string name="network_artifact_rssi_range">%1$d to %2$d dBm</string>
+    <string name="network_artifact_coverage_summary">%1$d points · %2$d locations · RSSI %3$s · %4$d stale · %5$d permission issues</string>
+    <string name="network_artifact_coverage_legend">Estimated legend: strong ≥ %1$d, good %2$d to %3$d, fair %4$d to %5$d, weak ≤ %6$d dBm.</string>
     <string name="network_artifact_permission">Allow access</string>
     <string name="network_artifact_coverage_pending">Point: x %1$.3f · y %2$.3f</string>
     <string name="network_artifact_coverage_floorplan">Choose floorplan</string>

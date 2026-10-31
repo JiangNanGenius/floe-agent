@@ -1,11 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host.networkartifact
 
+import com.floe.android.core.networkmonitor.CoveragePoint
+import com.floe.android.core.networkmonitor.CoverageRefreshStatus
+import com.floe.android.core.networkmonitor.CoverageScanSnapshot
+import com.floe.android.core.networkmonitor.CoverageScanStatus
+import com.floe.android.core.networkmonitor.CoverageSession
 import com.floe.android.core.networkmonitor.CoverageSessionStore
+import com.floe.android.core.pcap.PcapAnalysisOptions
 import com.floe.android.core.pcap.PcapAnalysisStore
+import com.floe.android.core.pcap.PcapAnalyzer
 import com.floe.android.core.pcap.PcapCancellation
+import com.floe.android.core.pcap.PcapSource
+import com.floe.android.core.pcap.PcapSummary
 import com.floe.android.feature.network.CoverageProbeRequestUi
 import com.floe.android.feature.network.CoverageSampleRequest
+import com.floe.android.host.networkArtifactAccessFor
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
@@ -419,6 +429,332 @@ class NetworkArtifactPumpTest {
         .toString().toByteArray()
 
     private class FakeArtifactTransport(
+        private val descriptor: ByteArray,
+        private val payload: ByteArray,
+    ) : NetworkArtifactNativeTransport {
+        private var claimed = false
+        val completed = kotlinx.coroutines.CompletableDeferred<Pair<Int, ByteArray>>()
+
+        override fun bindEpoch(epoch: Long): Int = 0
+        override fun next(timeoutMillis: Int): Long {
+            if (claimed) return 0
+            claimed = true
+            return 1
+        }
+        override fun describe(claim: Long): ByteArray = descriptor
+        override fun payload(claim: Long): ByteArray = payload
+        override fun isLive(claim: Long): Int = 1
+        override fun shouldStop(claim: Long): Int = 0
+        override fun complete(claim: Long, status: Int, value: ByteArray): Int {
+            completed.complete(status to value)
+            return 0
+        }
+        override fun close(epoch: Long): Int = 0
+        override fun stats(): ByteArray? = "{}".toByteArray()
+        override fun readiness(): ByteArray? = "{}".toByteArray()
+    }
+}
+
+
+/**
+ * Regression for the real Alpha21 failure: the Swift tool re-encodes a saved
+ * artifact UUID through Foundation's uppercase `uuidString`, while the
+ * App-private stores write lowercase `UUID.toString()` directory names.
+ * Synthetic tests used digit-only UUIDs and self-built lowercase payloads, so
+ * neither the wire normalization nor the real store lookup was covered.
+ */
+class NetworkArtifactCasingRegressionTest {
+    private val epoch = 7L
+    private val analysisID = "a6e433a5-83cf-4ba5-9cb1-63a86081fbcb"
+    private val sessionID = "a5a18deb-cebf-4a17-97fd-0f6a30eb03bf"
+    private val taskID = "76000000-0000-4abc-8def-0123456789ab"
+    private val runID = "77000000-0000-4abc-8def-0123456789ac"
+    private val operationID = "79000000-0000-4abc-8def-0123456789ad"
+    private val foreignTaskID = "78000000-0000-4abc-8def-0123456789ae"
+
+    private fun upper(value: String): String = value.uppercase(java.util.Locale.ROOT)
+
+    @Test
+    fun shorthandZeroAndNonCanonicalArtifactIdsAreRefused() {
+        for (invalid in listOf("1-1-1-1-1", "00000000-0000-0000-0000-000000000000",
+            " $analysisID", "$analysisID ", analysisID.replace("-", ""))) {
+            for ((method, bytes) in listOf(
+                "network.pcapAnalyze" to pcapPayload(invalid),
+                "network.coverageSummary" to coveragePayload(invalid),
+            )) {
+                val ticket = NetworkArtifactWire.parseDescriptor(descriptor(method, bytes), epoch)
+                try {
+                    NetworkArtifactWire.validateRequest(bytes, ticket)
+                    throw AssertionError("Non-canonical artifact identity was accepted")
+                } catch (failure: NetworkArtifactWire.Refusal) {
+                    assertEquals("requestInvalid", failure.code)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun swiftUppercaseArtifactIdsBecomeOneCanonicalFormBeforeStoreLookup() {
+        val pcapRequestBytes = pcapPayload(upper(analysisID))
+        val pcapTicket = NetworkArtifactWire.parseDescriptor(
+            descriptor("network.pcapAnalyze", pcapRequestBytes), epoch,
+        )
+        val pcapRequest = NetworkArtifactWire.validateRequest(pcapRequestBytes, pcapTicket)
+        assertEquals(
+            analysisID,
+            (pcapRequest as NetworkArtifactWire.Request.Pcap).analysisID,
+        )
+
+        val coverageRequestBytes = coveragePayload(upper(sessionID))
+        val coverageTicket = NetworkArtifactWire.parseDescriptor(
+            descriptor("network.coverageSummary", coverageRequestBytes), epoch,
+        )
+        val coverageRequest = NetworkArtifactWire.validateRequest(
+            coverageRequestBytes, coverageTicket,
+        )
+        assertEquals(
+            sessionID,
+            (coverageRequest as NetworkArtifactWire.Request.Coverage).sessionID,
+        )
+    }
+
+    @Test
+    fun realPumpReadsUppercaseSwiftRequestsFromRealStoresAndProductionAccess() = runBlocking {
+        val root = Files.createTempDirectory("floe-artifact-casing").toFile()
+        try {
+            val pcapStore = PcapAnalysisStore(File(root, "pcap"))
+            pcapStore.write(pcapSummary(), ownerTaskId = null, ownerWorkspaceId = null, agentReadable = true)
+            val coverageStore = CoverageSessionStore(File(root, "coverage"))
+            coverageStore.save(coverageSession(agentReadable = true))
+
+            val pcapSettled = settle(
+                pcapStore, coverageStore,
+                descriptor("network.pcapAnalyze", pcapPayload(upper(analysisID))),
+                pcapPayload(upper(analysisID)),
+            )
+            assertEquals(0, pcapSettled.first)
+            val pcapReply = JSONObject(pcapSettled.second.toString(Charsets.UTF_8))
+            assertEquals("ok", pcapReply.getString("status"))
+            assertEquals(analysisID, pcapReply.getString("analysisID"))
+            assertEquals(1, pcapReply.getJSONObject("totals").getInt("packets"))
+
+            val coverageSettled = settle(
+                pcapStore, coverageStore,
+                descriptor("network.coverageSummary", coveragePayload(upper(sessionID))),
+                coveragePayload(upper(sessionID)),
+            )
+            assertEquals(0, coverageSettled.first)
+            val coverageReply = JSONObject(coverageSettled.second.toString(Charsets.UTF_8))
+            assertEquals("ok", coverageReply.getString("status"))
+            assertEquals(sessionID, coverageReply.getString("sessionID"))
+            assertEquals(1, coverageReply.getInt("pointCount"))
+            assertEquals(
+                1,
+                coverageReply.getJSONObject("aggregate").getInt("permissionRequiredCount"),
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun canonicalizationNeverBypassesTheExplicitShareOrStoredOwner() = runBlocking {
+        val root = Files.createTempDirectory("floe-artifact-casing-deny").toFile()
+        try {
+            val pcapStore = PcapAnalysisStore(File(root, "pcap"))
+            pcapStore.write(pcapSummary(), ownerTaskId = null, ownerWorkspaceId = null, agentReadable = false)
+            val coverageStore = CoverageSessionStore(File(root, "coverage"))
+            coverageStore.save(coverageSession(agentReadable = false))
+
+            val unsharedPcap = settle(
+                pcapStore, coverageStore,
+                descriptor("network.pcapAnalyze", pcapPayload(upper(analysisID))),
+                pcapPayload(upper(analysisID)),
+            )
+            assertEquals(1, unsharedPcap.first)
+            assertEquals(
+                "notAuthorized",
+                JSONObject(unsharedPcap.second.toString(Charsets.UTF_8)).getString("code"),
+            )
+
+            val unsharedCoverage = settle(
+                pcapStore, coverageStore,
+                descriptor("network.coverageSummary", coveragePayload(upper(sessionID))),
+                coveragePayload(upper(sessionID)),
+            )
+            assertEquals(1, unsharedCoverage.first)
+            assertEquals(
+                "notAuthorized",
+                JSONObject(unsharedCoverage.second.toString(Charsets.UTF_8)).getString("code"),
+            )
+
+            val otherRoot = Files.createTempDirectory("floe-artifact-casing-owner").toFile()
+            try {
+                val otherPcap = PcapAnalysisStore(File(otherRoot, "pcap"))
+                otherPcap.write(
+                    pcapSummary().copy(analysisID = "a6e433a5-83cf-4ba5-9cb1-63a86081fbcc"),
+                    ownerTaskId = foreignTaskID, ownerWorkspaceId = null, agentReadable = true,
+                )
+                val otherCoverage = CoverageSessionStore(File(otherRoot, "coverage"))
+                val owned = settle(
+                    otherPcap, otherCoverage,
+                    descriptor(
+                        "network.pcapAnalyze",
+                        pcapPayload("a6e433a5-83cf-4ba5-9cb1-63a86081fbcc"),
+                    ),
+                    pcapPayload("a6e433a5-83cf-4ba5-9cb1-63a86081fbcc"),
+                )
+                assertEquals(1, owned.first)
+                assertEquals(
+                    "notAuthorized",
+                    JSONObject(owned.second.toString(Charsets.UTF_8)).getString("code"),
+                )
+            } finally {
+                otherRoot.deleteRecursively()
+            }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    private suspend fun settle(
+        pcapStore: PcapAnalysisStore,
+        coverageStore: CoverageSessionStore,
+        descriptor: ByteArray,
+        payload: ByteArray,
+    ): Pair<Int, ByteArray> {
+        val transport = CasingTransport(descriptor, payload)
+        val pump = NetworkArtifactHostPump(
+            scope = kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO,
+            ),
+            ioDispatcher = kotlinx.coroutines.Dispatchers.IO,
+            currentNativeEpoch = { epoch },
+            pcapStore = pcapStore,
+            coverageStore = coverageStore,
+            transport = transport,
+            access = networkArtifactAccessFor { epoch },
+        )
+        assertTrue(pump.start(epoch))
+        val settled = kotlinx.coroutines.withTimeout(5_000) { transport.completed.await() }
+        assertTrue(pump.stopAndJoin(epoch, 2_000))
+        return settled
+    }
+
+    private fun descriptor(method: String, payload: ByteArray): ByteArray = JSONObject()
+        .put("operation", "networkArtifact.execute")
+        .put("epoch", epoch.toString())
+        .put("method", method)
+        .put("operationID", upper(operationID))
+        .put("taskID", upper(taskID))
+        .put("runID", upper(runID))
+        .put("payloadBytes", payload.size)
+        .put("budgetMs", 15_000)
+        .put("workspace", "")
+        .toString().toByteArray(Charsets.UTF_8)
+
+    private fun pcapPayload(analysisID: String): ByteArray = JSONObject()
+        .put("version", 1)
+        .put("operationID", upper(operationID))
+        .put("method", "network.pcapAnalyze")
+        .put("arguments", JSONObject().put("analysisID", analysisID))
+        .toString().toByteArray(Charsets.UTF_8)
+
+    private fun coveragePayload(sessionID: String): ByteArray = JSONObject()
+        .put("version", 1)
+        .put("operationID", upper(operationID))
+        .put("method", "network.coverageSummary")
+        .put("arguments", JSONObject().put("sessionID", sessionID))
+        .toString().toByteArray(Charsets.UTF_8)
+
+    private fun pcapSummary(): PcapSummary {
+        val fixture = pcapFixture()
+        return PcapAnalyzer().analyze(
+            object : PcapSource {
+                override val sizeBytes: Long = fixture.size.toLong()
+                override val label: String? = "casing.pcap"
+                override fun openStream() = ByteArrayInputStream(fixture)
+            },
+            PcapAnalysisOptions(analysisID = analysisID, sourceLabel = "casing.pcap"),
+        )
+    }
+
+    private fun coverageSession(agentReadable: Boolean): CoverageSession {
+        val capturedAt = 1_700_000_000_000L
+        return CoverageSession(
+            sessionID = sessionID,
+            name = "Casing survey",
+            createdAtEpochMillis = capturedAt,
+            updatedAtEpochMillis = capturedAt + 1,
+            ownerTaskId = null,
+            floorplan = null,
+            points = listOf(
+                CoveragePoint(
+                    pointID = "4d6ce246-ce8b-4539-a16a-d04925d35943",
+                    label = "TabletPointA",
+                    x = 0.25,
+                    y = 0.75,
+                    createdAtEpochMillis = capturedAt,
+                    scan = CoverageScanSnapshot(
+                        capturedAtEpochMillis = capturedAt,
+                        status = CoverageScanStatus.PERMISSION_REQUIRED,
+                        wifiEnabled = true,
+                        locationServicesEnabled = false,
+                        cachedAgeMs = null,
+                        freshness = null,
+                        refreshRequested = false,
+                        refreshStatus = CoverageRefreshStatus.UNKNOWN,
+                        scanAccepted = null,
+                        resultsUpdated = null,
+                        truncated = false,
+                        accessPoints = emptyList(),
+                        limitations = listOf(
+                            "Wi-Fi SSID is redacted or unavailable; fine location and " +
+                                "location services may be required.",
+                        ),
+                        missingPermissions = listOf("android.permission.ACCESS_FINE_LOCATION"),
+                    ),
+                    probe = null,
+                ),
+            ),
+            ownerWorkspaceId = null,
+            agentReadable = agentReadable,
+        )
+    }
+
+    private fun pcapFixture(): ByteArray {
+        val frame = ByteArray(14 + 20 + 8 + 4)
+        frame[12] = 0x08; frame[13] = 0x00
+        val ip = 14
+        frame[ip] = 0x45
+        frame[ip + 2] = 0x00; frame[ip + 3] = 32
+        frame[ip + 8] = 64
+        frame[ip + 9] = 17
+        frame[ip + 12] = 10; frame[ip + 15] = 1
+        frame[ip + 16] = 10; frame[ip + 19] = 2
+        val udp = 34
+        frame[udp] = 0x30; frame[udp + 1] = 0x39
+        frame[udp + 2] = 0x00; frame[udp + 3] = 0x35
+        frame[udp + 4] = 0x00; frame[udp + 5] = 12
+        val output = java.io.ByteArrayOutputStream()
+        output.write(byteArrayOf(0xD4.toByte(), 0xC3.toByte(), 0xB2.toByte(), 0xA1.toByte()))
+        write16(output, 2); write16(output, 4)
+        write32(output, 0); write32(output, 0); write32(output, 65_535); write32(output, 1)
+        write32(output, 1_700_000_000L); write32(output, 0)
+        write32(output, frame.size.toLong()); write32(output, frame.size.toLong())
+        output.write(frame)
+        return output.toByteArray()
+    }
+
+    private fun write16(output: java.io.ByteArrayOutputStream, value: Int) {
+        output.write(value and 0xFF); output.write((value ushr 8) and 0xFF)
+    }
+
+    private fun write32(output: java.io.ByteArrayOutputStream, value: Long) {
+        for (i in 0 until 4) output.write(((value ushr (i * 8)) and 0xFF).toInt())
+    }
+
+    private class CasingTransport(
         private val descriptor: ByteArray,
         private val payload: ByteArray,
     ) : NetworkArtifactNativeTransport {

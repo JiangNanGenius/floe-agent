@@ -81,7 +81,20 @@ public enum LinuxShellMailboxLimits {
     /// Bounded reply code string.
     public static let maximumCodeChars = 128
     /// Default bounded wait budgets (milliseconds) per operation.
-    public static let startBudgetMillis = 120_000
+    ///
+    /// `preparationBudgetMillis` bounds ONE `shell.start` wait. The engine
+    /// performs whole-runtime recovery, cold rootfs materialization and the
+    /// workspace import BEFORE it admits the command, so this is the explicit
+    /// bounded PREPARATION budget. It is CANCELLABLE: a cancelled or
+    /// timed-out waiter leaves a claimed ticket live (never a fabricated
+    /// settlement) so the trusted host pump can stop the pending start via
+    /// `shouldStop`/`shell.cancel {requestID}`. It is deliberately separate
+    /// from the caller's command timeout, which starts only at real execution
+    /// admission (the start reply) and is enforced by the engine from its own
+    /// spawn and by the backend's poll loop.
+    public static let preparationBudgetMillis = 120_000
+    /// Alias retained for existing call sites and authored tests.
+    public static let startBudgetMillis = preparationBudgetMillis
     public static let pollBudgetMillis = 15_000
     public static let inputBudgetMillis = 30_000
     public static let resizeBudgetMillis = 15_000
@@ -846,7 +859,7 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
         public var inputMillis: Int
         public var resizeMillis: Int
         public var cancelMillis: Int
-        public init(startMillis: Int = LinuxShellMailboxLimits.startBudgetMillis,
+        public init(startMillis: Int = LinuxShellMailboxLimits.preparationBudgetMillis,
                     pollMillis: Int = LinuxShellMailboxLimits.pollBudgetMillis,
                     inputMillis: Int = LinuxShellMailboxLimits.inputBudgetMillis,
                     resizeMillis: Int = LinuxShellMailboxLimits.resizeBudgetMillis,

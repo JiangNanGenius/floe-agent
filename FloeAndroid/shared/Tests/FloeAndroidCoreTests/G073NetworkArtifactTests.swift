@@ -73,7 +73,7 @@ final class G073NetworkArtifactTests: XCTestCase {
         XCTAssertEqual(root["method"] as? String, "network.pcapAnalyze")
         XCTAssertEqual(root["operationID"] as? String, operationID.uuidString)
         let arguments = try XCTUnwrap(root["arguments"] as? [String: Any])
-        XCTAssertEqual(arguments["analysisID"] as? String, analysisID.uuidString)
+        XCTAssertEqual(arguments["analysisID"] as? String, analysisID.uuidString.lowercased())
         let encodedFilters = try XCTUnwrap(arguments["filters"] as? [String: Any])
         XCTAssertEqual(encodedFilters["protocols"] as? [String], ["tcp", "udp"])
         XCTAssertEqual(encodedFilters["services"] as? [String], ["dns"])
@@ -88,6 +88,65 @@ final class G073NetworkArtifactTests: XCTestCase {
         XCTAssertLessThanOrEqual(request.requestJSON.count, NetworkArtifactLimits.maximumRequestBytes)
         let tool = NetworkCoverageSummaryTool.Arguments(sessionID: "not-a-uuid")
         XCTAssertThrowsError(try NetworkCoverageSummaryTool(executor: FakeExecuting()).validate(tool))
+    }
+
+    func testArtifactRequestJSONUsesOneLowercaseCanonicalId() throws {
+        // Hex-letter UUIDs are essential here: digit-only fixtures hide a
+        // case-only identity mismatch between Foundation and the App store.
+        let letteredAnalysis = try XCTUnwrap(UUID(
+            uuidString: "A6E433A5-83CF-4BA5-9CB1-63A86081FBCB"))
+        let letteredSession = try XCTUnwrap(UUID(
+            uuidString: "A5A18DEB-CEBF-4A17-97FD-0F6A30EB03BF"))
+        let pcap = try NetworkArtifactToolRequest.pcapAnalyze(analysisID: letteredAnalysis)
+        let pcapArguments = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: pcap.argumentsJSON) as? [String: Any])
+        XCTAssertEqual(
+            pcapArguments["analysisID"] as? String,
+            "a6e433a5-83cf-4ba5-9cb1-63a86081fbcb")
+        let pcapEnvelope = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: pcap.requestJSON) as? [String: Any])
+        let pcapRequestArguments = try XCTUnwrap(pcapEnvelope["arguments"] as? [String: Any])
+        XCTAssertEqual(
+            pcapRequestArguments["analysisID"] as? String,
+            "a6e433a5-83cf-4ba5-9cb1-63a86081fbcb")
+
+        let coverage = try NetworkArtifactToolRequest.coverageSummary(sessionID: letteredSession)
+        let coverageArguments = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: coverage.argumentsJSON) as? [String: Any])
+        XCTAssertEqual(
+            coverageArguments["sessionID"] as? String,
+            "a5a18deb-cebf-4a17-97fd-0f6a30eb03bf")
+    }
+
+    func testToolsCanonicalizeModelSuppliedArtifactIdsBeforeHostSubmission() async throws {
+        let pcapExecutor = RecordingNetworkArtifactExecutor(reply: pcapReply())
+        let pcapTool = NetworkPCAPAnalyzeTool(executor: pcapExecutor)
+        let context = ToolContext(
+            runID: runID, cancellation: CancellationToken(), conversationID: taskID)
+        _ = try await pcapTool.execute(
+            NetworkPCAPAnalyzeTool.Arguments(
+                analysisID: "a6e433a5-83cf-4ba5-9cb1-63a86081fbcb",
+                filters: nil),
+            context: context)
+        let pcapRequest = try XCTUnwrap(pcapExecutor.requests.first)
+        let pcapArguments = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: pcapRequest.argumentsJSON) as? [String: Any])
+        XCTAssertEqual(
+            pcapArguments["analysisID"] as? String,
+            "a6e433a5-83cf-4ba5-9cb1-63a86081fbcb")
+
+        let coverageExecutor = RecordingNetworkArtifactExecutor(reply: coverageReply())
+        let coverageTool = NetworkCoverageSummaryTool(executor: coverageExecutor)
+        _ = try await coverageTool.execute(
+            NetworkCoverageSummaryTool.Arguments(
+                sessionID: "a5a18deb-cebf-4a17-97fd-0f6a30eb03bf"),
+            context: context)
+        let coverageRequest = try XCTUnwrap(coverageExecutor.requests.first)
+        let coverageArguments = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: coverageRequest.argumentsJSON) as? [String: Any])
+        XCTAssertEqual(
+            coverageArguments["sessionID"] as? String,
+            "a5a18deb-cebf-4a17-97fd-0f6a30eb03bf")
     }
 
     func testFilterValidationRefusesUnboundedOrWrongValues() {
@@ -333,5 +392,21 @@ private final class FakeExecuting: NetworkArtifactHostExecuting, @unchecked Send
     var isAvailable: Bool { true }
     func execute(request: NetworkArtifactToolRequest, context: ToolContext) async throws -> Data {
         Data()
+    }
+}
+
+private final class RecordingNetworkArtifactExecutor:
+    NetworkArtifactHostExecuting, @unchecked Sendable {
+    private(set) var requests: [NetworkArtifactToolRequest] = []
+    private let reply: Data
+
+    init(reply: Data) { self.reply = reply }
+
+    var isAvailable: Bool { true }
+
+    func execute(request: NetworkArtifactToolRequest,
+                 context: ToolContext) async throws -> Data {
+        requests.append(request)
+        return reply
     }
 }

@@ -83,6 +83,26 @@ class PcapFilterFormTest {
 
 class CoverageFormTest {
     @Test
+    fun legendDisplayRangesComeFromTheClassifierBuckets() {
+        val bands = listOf(
+            CoverageLegendUi("strong", -60, 0, 1),
+            CoverageLegendUi("good", -70, -61, 2),
+            CoverageLegendUi("fair", -80, -71, 3),
+            CoverageLegendUi("weak", -127, -81, 4),
+        )
+        assertEquals(
+            CoverageLegendRanges(-60, -70, -61, -80, -71, -81),
+            coverageLegendRanges(bands),
+        )
+        // Missing/incomplete projections fall back to the same classifier
+        // constants; the UI never invents a separate dB range.
+        assertEquals(
+            CoverageLegendRanges(-60, -70, -61, -80, -71, -81),
+            coverageLegendRanges(emptyList()),
+        )
+    }
+
+    @Test
     fun normalizesCoordinatesAndAcceptsTypedProbe() {
         val result = CoverageForm.parse(
             label = " Desk ",

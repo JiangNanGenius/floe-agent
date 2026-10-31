@@ -36,14 +36,22 @@ class CoverageSessionStore internal constructor(
     )
 
     fun save(session: CoverageSession): CoverageStoredSession {
-        val json = CoverageSessionCodec.encode(session)
+        // One canonical storage identity: Foundation's uppercase UUID string
+        // and the App's lowercase form must address the same directory.
+        val sessionID = canonicalId(session.sessionID)
+        val canonicalSession = if (session.sessionID == sessionID) {
+            session
+        } else {
+            session.copy(sessionID = sessionID)
+        }
+        val json = CoverageSessionCodec.encode(canonicalSession)
         val bytes = json.toByteArray(Charsets.UTF_8)
-        val finalDirectory = File(rootDirectory, directoryName(session.sessionID))
+        val finalDirectory = File(rootDirectory, directoryName(sessionID))
         if (!finalDirectory.isDirectory) {
             if (!rootDirectory.isDirectory && !rootDirectory.mkdirs()) {
                 throw IOException("coverageDirectoryUnavailable")
             }
-            val staging = File(rootDirectory, ".coverage-${session.sessionID}.staging-${stagingIdFactory()}")
+            val staging = File(rootDirectory, ".coverage-$sessionID.staging-${stagingIdFactory()}")
             var created = false
             var published = false
             try {
@@ -53,7 +61,7 @@ class CoverageSessionStore internal constructor(
                 fileOperations.writeAndSync(sessionFile, bytes)
                 fileOperations.writeAndSync(
                     File(staging, "manifest.json"),
-                    manifest(session.sessionID, bytes, null).toByteArray(Charsets.UTF_8),
+                    manifest(sessionID, bytes, null).toByteArray(Charsets.UTF_8),
                 )
                 fileOperations.moveDirectory(staging, finalDirectory)
                 published = true
@@ -67,27 +75,27 @@ class CoverageSessionStore internal constructor(
             val floorplanHash = session.floorplan?.sha256
             fileOperations.writeAtomically(
                 manifestFile,
-                manifest(session.sessionID, bytes, floorplanHash).toByteArray(Charsets.UTF_8),
+                manifest(sessionID, bytes, floorplanHash).toByteArray(Charsets.UTF_8),
             )
         }
         return CoverageStoredSession(
-            sessionID = session.sessionID,
+            sessionID = sessionID,
             directory = finalDirectory,
             sessionFile = File(finalDirectory, "session.json"),
             manifestFile = File(finalDirectory, "manifest.json"),
-            session = session,
+            session = canonicalSession,
         )
     }
 
     fun load(sessionID: String): CoverageSession? {
-        validateId(sessionID)
-        val directory = File(rootDirectory, directoryName(sessionID))
+        val canonicalID = canonicalId(sessionID)
+        val directory = File(rootDirectory, directoryName(canonicalID))
         if (!directory.isDirectory) return null
         val file = File(directory, "session.json")
         if (!file.isFile || file.length() > CoverageLimits.MAX_SESSION_JSON_BYTES) return null
         val json = runCatching { file.readBytes().toString(Charsets.UTF_8) }.getOrNull() ?: return null
         return runCatching { CoverageSessionCodec.decode(json) }.getOrNull()
-            ?.takeIf { it.sessionID == sessionID }
+            ?.takeIf { it.sessionID == canonicalID }
     }
 
     fun list(limit: Int = CoverageLimits.MAX_SESSIONS): List<CoverageSession> {
@@ -103,8 +111,8 @@ class CoverageSessionStore internal constructor(
     }
 
     fun delete(sessionID: String): Boolean {
-        validateId(sessionID)
-        val directory = File(rootDirectory, directoryName(sessionID))
+        val canonicalID = canonicalId(sessionID)
+        val directory = File(rootDirectory, directoryName(canonicalID))
         if (!directory.exists()) return false
         fileOperations.deleteRecursively(directory)
         return !directory.exists()
@@ -129,7 +137,7 @@ class CoverageSessionStore internal constructor(
         }
         require(mimeType in setOf("image/png", "image/jpeg", "image/webp")) { "unsupported floorplan type" }
         val session = load(sessionID) ?: throw IOException("coverageSessionNotFound")
-        val directory = File(rootDirectory, directoryName(sessionID))
+        val directory = File(rootDirectory, directoryName(canonicalId(sessionID)))
         if (!directory.isDirectory) throw IOException("coverageSessionNotFound")
         val image = File(directory, FLOORPLAN_FILE)
         fileOperations.writeAtomically(image, bytes)
@@ -151,10 +159,9 @@ class CoverageSessionStore internal constructor(
     }
 
     fun readFloorplan(sessionID: String): ByteArray? {
-        validateId(sessionID)
         val session = load(sessionID) ?: return null
         val metadata = session.floorplan ?: return null
-        val file = File(rootDirectory, directoryName(sessionID) + File.separator + FLOORPLAN_FILE)
+        val file = File(rootDirectory, directoryName(canonicalId(sessionID)) + File.separator + FLOORPLAN_FILE)
         if (!file.isFile || file.length() != metadata.byteCount ||
             file.length() > CoverageLimits.MAX_FLOORPLAN_BYTES) return null
         val bytes = runCatching { file.readBytes() }.getOrNull() ?: return null
@@ -173,11 +180,13 @@ class CoverageSessionStore internal constructor(
         .put("floorplanSha256", floorplanHash ?: JSONObject.NULL)
         .toString(2)
 
-    private fun validateId(sessionID: String) {
+    /** One canonical storage identity; valid UUID casing is not authorization. */
+    private fun canonicalId(sessionID: String): String {
         require(runCatching { UUID.fromString(sessionID) }.isSuccess) { "sessionID must be a UUID" }
+        return UUID.fromString(sessionID).toString()
     }
 
-    private fun directoryName(sessionID: String): String = "coverage-$sessionID"
+    private fun directoryName(canonicalSessionID: String): String = "coverage-$canonicalSessionID"
 
     private companion object {
         const val FLOORPLAN_FILE = "floorplan.img"

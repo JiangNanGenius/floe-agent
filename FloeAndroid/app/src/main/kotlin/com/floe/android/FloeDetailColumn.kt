@@ -208,6 +208,12 @@ private fun TaskCenterDestination(
         FloeTaskCenterPage(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
         return
     }
+    // A background scheduled launch has no UI holder/event pump, so the
+    // one-time shell-bind refresh cannot see its new conversation. Re-read
+    // the durable history whenever Task Center is entered.
+    LaunchedEffect(runtimeHost) {
+        runtimeHost.conversations.reloadHistory()
+    }
     // The Task Center surface owns its REAL sub-view switch: the default
     // list, the schedule destination, the archive sheet and the management
     // (selection/bulk) view all render the SAME produced history wire through

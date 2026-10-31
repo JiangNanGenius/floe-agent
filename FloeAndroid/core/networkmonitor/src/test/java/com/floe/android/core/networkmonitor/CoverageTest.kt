@@ -204,6 +204,45 @@ class CoverageModelsTest {
     }
 
     @Test
+    fun legendRangesMatchClassifierAndMarkdownUsesTheSameBuckets() {
+        val sampledSession = session(
+            point(0, rssi = -60),
+            point(1, rssi = -61),
+            point(2, rssi = -70),
+            point(3, rssi = -71),
+            point(4, rssi = -80),
+            point(5, rssi = -81),
+        )
+        val aggregate = CoverageMetrics.aggregate(sampledSession, 1_700_000_500_000L)
+        val byLevel = aggregate.legend.associateBy { it.level }
+        assertEquals(-60, byLevel["strong"]!!.minimumDbm)
+        assertEquals(-70, byLevel["good"]!!.minimumDbm)
+        assertEquals(-61, byLevel["good"]!!.maximumDbm)
+        assertEquals(-80, byLevel["fair"]!!.minimumDbm)
+        assertEquals(-71, byLevel["fair"]!!.maximumDbm)
+        assertEquals(-81, byLevel["weak"]!!.maximumDbm)
+        assertEquals(1, byLevel["strong"]!!.pointCount)
+        assertEquals(2, byLevel["good"]!!.pointCount)
+        assertEquals(2, byLevel["fair"]!!.pointCount)
+        assertEquals(1, byLevel["weak"]!!.pointCount)
+
+        val markdown = CoverageReportRenderer.renderMarkdown(
+            sampledSession, false, 1_700_000_500_000L,
+        )
+        assertTrue(markdown.contains("good -70..-61"))
+        assertTrue(markdown.contains("fair -80..-71"))
+        assertTrue(markdown.contains("weak ≤ -81 dBm"))
+        assertFalse(markdown.contains("good -69..-60"))
+
+        val json = JSONObject(
+            CoverageReportRenderer.renderJson(sampledSession, false, 1_700_000_500_000L),
+        )
+        val legend = json.getJSONObject("aggregate").getJSONArray("legend")
+        assertEquals(-70, legend.getJSONObject(1).getInt("minimumDbm"))
+        assertEquals(-61, legend.getJSONObject(1).getInt("maximumDbm"))
+    }
+
+    @Test
     fun codecRoundTripsOptionalFloorplanAndProbe() {
         val base = session(point(0))
         val withProbe = base.copy(points = listOf(base.points.single().copy(
@@ -271,6 +310,45 @@ class CoverageSessionStoreTest {
             assertNotNull(reopened.floorplan)
             assertArrayEqualsCompat(image, store.readFloorplan(session().sessionID))
             assertEquals(1, store.list().size)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun saveWithUppercaseIdentityPublishesOneLowercaseDirectory() {
+        val root = Files.createTempDirectory("floe-coverage-store-canonical").toFile()
+        try {
+            val lower = "a5a18deb-cebf-4a17-97fd-0f6a30eb03bf"
+            val upper = lower.uppercase(java.util.Locale.ROOT)
+            val store = CoverageSessionStore(root)
+            val saved = store.save(session().copy(sessionID = upper))
+            assertEquals("coverage-$lower", saved.directory.name)
+            assertEquals(lower, saved.sessionID)
+            assertEquals(lower, saved.session.sessionID)
+            val reopened = store.load(upper)
+            assertNotNull(reopened)
+            assertEquals(lower, reopened!!.sessionID)
+            assertEquals("coverage-$lower", reopened.sessionFile.parentFile!!.name)
+            assertEquals(lower, store.list().single().sessionID)
+            assertTrue(store.delete(upper))
+            assertNull(store.load(lower))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun readsAnUppercaseIdentityWrittenInTheLowercaseAppForm() {
+        val root = Files.createTempDirectory("floe-coverage-store-uppercase-read").toFile()
+        try {
+            val lower = "a5a18deb-cebf-4a17-97fd-0f6a30eb03bf"
+            val upper = lower.uppercase(java.util.Locale.ROOT)
+            val store = CoverageSessionStore(root)
+            store.save(session().copy(sessionID = lower))
+            val reopened = store.load(upper)
+            assertNotNull(reopened)
+            assertEquals(lower, reopened!!.sessionID)
         } finally {
             root.deleteRecursively()
         }

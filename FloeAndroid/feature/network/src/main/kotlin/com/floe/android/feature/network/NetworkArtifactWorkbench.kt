@@ -691,6 +691,16 @@ private fun CoverageDetail(
         allowMetered = allowMetered,
     )
     val bitmap = rememberFloorplanBitmap(session.floorplan?.image)
+    val rssiRange = if (session.aggregate.rssiMin != null && session.aggregate.rssiMax != null) {
+        stringResource(
+            R.string.network_artifact_rssi_range,
+            session.aggregate.rssiMin,
+            session.aggregate.rssiMax,
+        )
+    } else {
+        "—"
+    }
+    val legend = coverageLegendRanges(session.aggregate.legend)
     LazyColumn(
         modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
@@ -702,12 +712,16 @@ private fun CoverageDetail(
                 FloeText(
                     stringResource(R.string.network_artifact_coverage_summary,
                         session.aggregate.pointCount, session.item.namedLocations.size,
-                        session.aggregate.rssiMin ?: 0, session.aggregate.rssiMax ?: 0,
+                        rssiRange,
                         session.aggregate.staleCount, session.aggregate.permissionRequiredCount),
                     style = Floe.typography.metadata, color = Floe.colors.secondaryLabel,
                 )
-                FloeText(stringResource(R.string.network_artifact_coverage_legend),
-                    style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                FloeText(
+                    stringResource(R.string.network_artifact_coverage_legend,
+                        legend.strongMinimumDbm, legend.goodMinimumDbm, legend.goodMaximumDbm,
+                        legend.fairMinimumDbm, legend.fairMaximumDbm, legend.weakMaximumDbm),
+                    style = Floe.typography.metadata, color = Floe.colors.secondaryLabel,
+                )
                 FloeCheckboxRow(
                     label = stringResource(R.string.network_artifact_agent_read),
                     checked = session.item.agentReadable,

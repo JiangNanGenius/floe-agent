@@ -52,9 +52,18 @@ class PcapAnalysisStore internal constructor(
             ownerWorkspaceId.none { it.code < 0x20 || it.code == 0x7f })) {
             "ownerWorkspaceId bounded"
         }
-        val json = PcapSummaryCodec.encode(summary)
+        // The Agent bridge may carry the same UUID in either Foundation's
+        // uppercase canonical form or the App's lowercase form. Persist and
+        // key by one canonical form so a case-only difference can never
+        // address a second (nonexistent) directory.
+        val analysisID = canonicalId(summary.analysisID)
+        val canonicalSummary = if (summary.analysisID == analysisID) {
+            summary
+        } else {
+            summary.copy(analysisID = analysisID)
+        }
+        val json = PcapSummaryCodec.encode(canonicalSummary)
         val bytes = json.toByteArray(Charsets.UTF_8)
-        val analysisID = summary.analysisID
         val finalDirectory = File(rootDirectory, directoryName(analysisID))
         if (finalDirectory.exists()) throw IOException("analysisAlreadyExists")
         if (!rootDirectory.isDirectory && !rootDirectory.mkdirs()) {
@@ -102,8 +111,8 @@ class PcapAnalysisStore internal constructor(
     }
 
     fun read(analysisID: String): PcapStoredAnalysis? {
-        validateId(analysisID)
-        val directory = File(rootDirectory, directoryName(analysisID))
+        val canonicalID = canonicalId(analysisID)
+        val directory = File(rootDirectory, directoryName(canonicalID))
         if (!directory.isDirectory) return null
         val summary = File(directory, "summary.json")
         if (!summary.isFile || summary.length() > PcapLimits.MAX_RESULT_BYTES) return null
@@ -126,7 +135,7 @@ class PcapAnalysisStore internal constructor(
             ?.takeIf { it != "null" && it.length <= 128 }
         val agentReadable = manifest?.optBoolean("agentReadable") == true
         return PcapStoredAnalysis(
-            analysisID = analysisID,
+            analysisID = canonicalID,
             directory = directory,
             summaryFile = summary,
             manifestFile = File(directory, "manifest.json"),
@@ -153,8 +162,8 @@ class PcapAnalysisStore internal constructor(
 
     /** Explicit user Agent-read grant; never implies any file/network permission. */
     fun setAgentReadable(analysisID: String, readable: Boolean): PcapStoredAnalysis? {
-        validateId(analysisID)
-        val directory = File(rootDirectory, directoryName(analysisID))
+        val canonicalID = canonicalId(analysisID)
+        val directory = File(rootDirectory, directoryName(canonicalID))
         if (!directory.isDirectory) return null
         val manifestFile = File(directory, "manifest.json")
         val manifest = runCatching {
@@ -166,22 +175,29 @@ class PcapAnalysisStore internal constructor(
         }.getOrNull() ?: return null
         manifest.put("agentReadable", readable)
         fileOperations.writeFileAtomically(manifestFile, manifest.toString(2).toByteArray(Charsets.UTF_8))
-        return read(analysisID)
+        return read(canonicalID)
     }
 
     fun delete(analysisID: String): Boolean {
-        validateId(analysisID)
-        val directory = File(rootDirectory, directoryName(analysisID))
+        val canonicalID = canonicalId(analysisID)
+        val directory = File(rootDirectory, directoryName(canonicalID))
         if (!directory.exists()) return false
         fileOperations.deleteRecursively(directory)
         return !directory.exists()
     }
 
-    private fun validateId(analysisID: String) {
+    /**
+     * Accepts either UUID case but returns exactly one storage identity:
+     * lowercase canonical `UUID.toString()`. This is identity normalization,
+     * not an authorization bypass; every owner/epoch/share check stays in the
+     * host pump and access binding.
+     */
+    private fun canonicalId(analysisID: String): String {
         require(runCatching { UUID.fromString(analysisID) }.isSuccess) { "analysisID must be a UUID" }
+        return UUID.fromString(analysisID).toString()
     }
 
-    private fun directoryName(analysisID: String): String = "pcap-$analysisID"
+    private fun directoryName(canonicalID: String): String = "pcap-$canonicalID"
 }
 
 internal interface PcapFileOperations {

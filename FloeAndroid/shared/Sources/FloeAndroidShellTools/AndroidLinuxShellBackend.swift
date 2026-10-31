@@ -6,6 +6,14 @@
 //   call on the injected `LinuxShellTransport` (Core mailbox in production;
 //   fakes in tests). Component selection, paths, leases and native
 //   completion are engine-owned, never caller/model fields.
+// * Budget separation (actual cold-start repair): `shell.start` includes the
+//   engine's whole-runtime recovery, cold rootfs materialization and the
+//   workspace import before any process is spawned. That is PREPARATION and
+//   is bounded by the transport's start budget. The caller's requested
+//   command timeout starts only at the start reply (real execution
+//   admission) and is enforced by this backend's poll loop and independently
+//   by the engine from its own spawn. Preparation time is therefore never
+//   charged to the command, and the timeout is not raised or disabled.
 // * Owner routing is explicit and fail-closed: a missing run identity or
 //   an unqualified readiness refuses work. The projectID is the
 //   deterministic SHA256-derived UUID of the TRUSTED canonical Core
@@ -331,12 +339,22 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         let holdKey = "run:" + request.sessionID + ":" + UUID().uuidString.lowercased()
         let started = Date()
         // G07.1 terminal04: bounded client-visible phase composition for THIS
-        // dispatch. Diagnostic only — every deadline/outcome/lease rule below
-        // is unchanged; `started` (wall clock) keeps its ORIGINAL position
-        // and its ORIGINAL meaning for `durationMs` and the local deadline.
-        // The composition is returned WITH the outcome (never stored globally
-        // for attribution), so a concurrent/denied dispatch can never be
-        // journaled against another call's timing.
+        // dispatch. Diagnostic only — every outcome/lease rule below is
+        // unchanged; `started` (wall clock) keeps its ORIGINAL position and
+        // meaning for `durationMs`. The composition is returned WITH the
+        // outcome (never stored globally for attribution), so a
+        // concurrent/denied dispatch can never be journaled against another
+        // call's timing.
+        //
+        // TWO SEPARATE BUDGETS (actual 2026-10-31 cold-start failure): the
+        // engine's `shell.start` performs whole-runtime recovery, rootfs
+        // materialization and the workspace import BEFORE it spawns anything
+        // (measured 38.087 s materialize on a cold API37 tablet). That work is
+        // PREPARATION and is bounded by the transport's start budget; it must
+        // never consume the caller's command timeout. The command deadline
+        // below therefore starts at the `shell.start` reply — the engine's
+        // real execution admission — not at request submission. The engine
+        // separately enforces the same timeout from its own spawn admission.
         var phases = TerminalLatencyPhases(originNanos: TerminalLatencyPhases.now())
         // G07.3A: the Agent command has ONE dedicated slot. A live terminal
         // no longer blocks it, and a live terminal in the SAME conversation
@@ -382,12 +400,31 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         )
         let reply: LinuxShellStartReply
         do {
+            // Bounded, cancellable PREPARATION wait. The typed transport owns
+            // the explicit start budget (MailboxLinuxShellTransport defaults
+            // to LinuxShellMailboxLimits.preparationBudgetMillis); a caller
+            // cancellation releases this waiter while the trusted host pump
+            // stops the pending start through the existing shouldStop lane.
+            // The reply carries admission metadata only; no command output
+            // can reach this backend before execution admission.
             reply = try await transport.shellStart(start)
         } catch {
             releaseGate(heldBy: holdKey, role: .agent)
             phases.mark(.start, at: TerminalLatencyPhases.now())
+            // A caller stop during preparation is the honest cancelled
+            // outcome, not an engine failure and never a fabricated command
+            // timeout. The pump retains real ownership until its release
+            // proof, so nothing is replayed.
+            if cancellation?.isCancelled == true || Task.isCancelled || error is CancellationError {
+                return (.cancelled, phases.render(terminal: .cancelled))
+            }
             return (.failed(message: describeTransportError(error)), phases.render(terminal: .failed))
         }
+        // REAL EXECUTION ADMISSION (the engine accepted and spawned the
+        // command). The caller's requested timeout starts here; the time
+        // already spent in gate waiting / recovery / materialization /
+        // import / spawn is preparation, bounded separately above.
+        let executionAdmittedAt = Date()
         phases.mark(.start, at: TerminalLatencyPhases.now())
         var engine = EngineSession(sessionKey: holdKey,
                                    engineSessionID: reply.sessionID,
@@ -444,7 +481,12 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         var cancelIntent = false
         var timeoutIntent = false
         var stopIssuedAt: Date?
-        let deadline = started.addingTimeInterval(request.timeout)
+        // The command budget is anchored at real execution admission. The
+        // engine's own deadline (runtime `Running.deadline`, anchored at the
+        // spawn) remains the authoritative bound; this local deadline is the
+        // bounded client-side stop guarantee. It is NEVER anchored before the
+        // start reply, so a cold preparation can neither fake nor consume it.
+        let deadline = executionAdmittedAt.addingTimeInterval(request.timeout)
 
         while true {
             if !cancelIntent, cancellation?.isCancelled == true || Task.isCancelled {

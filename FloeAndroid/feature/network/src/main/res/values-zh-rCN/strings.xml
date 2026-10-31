@@ -351,8 +351,9 @@
     <string name="network_artifact_coverage_create">创建会话</string>
     <string name="network_artifact_coverage_none">没有覆盖会话。</string>
     <string name="network_artifact_coverage_row">%1$d 个点 · %2$d 个位置 · 平面图：%3$s</string>
-    <string name="network_artifact_coverage_summary">%1$d 个点 · %2$d 个位置 · RSSI %3$d 到 %4$d dBm · %5$d 个过期 · %6$d 个权限问题</string>
-    <string name="network_artifact_coverage_legend">估算图例：强 ≥ -60，良好 -69 至 -60，一般 -79 至 -70，弱低于 -80 dBm。</string>
+    <string name="network_artifact_rssi_range">%1$d 至 %2$d dBm</string>
+    <string name="network_artifact_coverage_summary">%1$d 个点 · %2$d 个位置 · RSSI %3$s · %4$d 个过期 · %5$d 个权限问题</string>
+    <string name="network_artifact_coverage_legend">估算图例：强 ≥ %1$d，良好 %2$d 至 %3$d，一般 %4$d 至 %5$d，弱 ≤ %6$d dBm。</string>
     <string name="network_artifact_permission">允许访问</string>
     <string name="network_artifact_coverage_pending">位置：x %1$.3f · y %2$.3f</string>
     <string name="network_artifact_coverage_floorplan">选择平面图</string>

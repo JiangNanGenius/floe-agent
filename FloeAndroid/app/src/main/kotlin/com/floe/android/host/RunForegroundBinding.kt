@@ -85,6 +85,8 @@ class RunForegroundBinding(
     private val releaseLocalSession: (sessionID: String) -> Unit,
     /** Honest availability reporting for Main's UI copy/diagnostics. */
     private val onUnavailable: (operation: String, failure: RunForegroundFailure) -> Unit = { _, _ -> },
+    /** Counts only; no task, conversation, provider or file identifiers. */
+    private val onDiagnostic: (String) -> Unit = {},
 ) {
 
     private val agentRunLeases = ConcurrentHashMap<String, ForegroundLease>()
@@ -96,6 +98,7 @@ class RunForegroundBinding(
     private val localSessionLeases = ConcurrentHashMap<String, ForegroundLease>()
     private val installLeases = ConcurrentHashMap<String, ForegroundLease>()
     private val durableJobLeases = ConcurrentHashMap<String, ForegroundLease>()
+    private val lastLedgerDiagnostic = java.util.concurrent.atomic.AtomicReference<String?>(null)
 
     /** Concurrent duplicate lifecycle echoes must not lose a refcounted claim. */
     private fun retainSingleLease(leases: ConcurrentHashMap<String, ForegroundLease>, key: String, lease: ForegroundLease) {
@@ -251,9 +254,24 @@ class RunForegroundBinding(
         settleOnKnownQuiescence()
     }
 
+    private fun reportLedgerDiagnostic(snapshot: NativeLiveWork?) {
+        val native = snapshot?.let {
+            "epoch=${it.nativeRootEpoch},ready=${it.storeReady},fenced=${it.admissionFenced}," +
+                "run=${it.runCount},child=${it.childRunCount},tool=${it.toolCount}"
+        } ?: "unknown"
+        val value = "native=$native;agent=${agentRunLeases.size};" +
+            "launch=${provisionalLaunchLeases.size};local=${localSessionLeases.size};" +
+            "install=${installLeases.size};job=${durableJobLeases.size}"
+        if (lastLedgerDiagnostic.getAndSet(value) != value) {
+            runCatching { onDiagnostic(value) }
+        }
+    }
+
     private fun settleOnKnownQuiescence() {
+        val snapshot = nativeSnapshot?.read()
+        reportLedgerDiagnostic(snapshot)
         if (agentRunLeases.isEmpty()) return
-        val snapshot = nativeSnapshot?.read() ?: return // unknown: retain.
+        if (snapshot == null) return // unknown: retain.
         if (snapshot.nativeRootEpoch <= 0L) return // no trustworthy epoch: retain.
         if (snapshot.hasLiveRunOwnedWork) return // real work continues.
         settleAllAgentLeases()

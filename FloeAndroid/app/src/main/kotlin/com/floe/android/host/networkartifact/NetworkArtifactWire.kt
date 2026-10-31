@@ -122,6 +122,21 @@ internal object NetworkArtifactWire {
             payloadBytes, budgetMs, workspace)
     }
 
+    /**
+     * The Swift tool emits Foundation's uppercase canonical UUID string, while
+     * App-private store directories use lowercase `UUID.toString()`. Normalize
+     * exactly one artifact identity here, before any store lookup. This is
+     * identity normalization only: the ticket/owner/epoch/share checks are
+     * unchanged and an opaque UUID still grants nothing by itself.
+     */
+    private fun canonicalArtifactId(value: String): String? {
+        if (value.length != 36) return null
+        val id = runCatching { UUID.fromString(value) }.getOrNull() ?: return null
+        if (!id.toString().equals(value, ignoreCase = true)) return null
+        if (id.mostSignificantBits == 0L && id.leastSignificantBits == 0L) return null
+        return id.toString()
+    }
+
     fun validateRequest(bytes: ByteArray, ticket: Ticket): Request {
         if (bytes.isEmpty() || bytes.size > MAX_REQUEST_BYTES) throw Refusal("requestTooLarge")
         if (bytes.size != ticket.payloadBytes) throw Refusal("requestInvalid")
@@ -139,8 +154,7 @@ internal object NetworkArtifactWire {
                 if (arguments.keys.any { it !in setOf("analysisID", "filters") }) {
                     throw Refusal("requestInvalid")
                 }
-                val analysisID = arguments.text("analysisID")
-                    .takeIf { runCatching { UUID.fromString(it) }.isSuccess }
+                val analysisID = canonicalArtifactId(arguments.text("analysisID"))
                     ?: throw Refusal("requestInvalid")
                 val filters = (arguments["filters"] as? JsonObject)?.let(::filter)
                     ?: ArtifactFilter()
@@ -148,8 +162,7 @@ internal object NetworkArtifactWire {
             }
             "network.coverageSummary" -> {
                 if (arguments.keys != setOf("sessionID")) throw Refusal("requestInvalid")
-                val sessionID = arguments.text("sessionID")
-                    .takeIf { runCatching { UUID.fromString(it) }.isSuccess }
+                val sessionID = canonicalArtifactId(arguments.text("sessionID"))
                     ?: throw Refusal("requestInvalid")
                 Request.Coverage(operationID, sessionID)
             }
