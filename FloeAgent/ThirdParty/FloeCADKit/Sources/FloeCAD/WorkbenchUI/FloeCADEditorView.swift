@@ -257,6 +257,8 @@ struct FloeCADEditorView: View {
     @State private var isCanvasActionRunning = false
     /// Floe workbench tools (assembly / drawings / ShapeScript / mesh) sheet.
     @State private var showWorkbenchTools = false
+    /// User-named design versions (E34) sheet.
+    @State private var showVersions = false
         @State private var pendingMeshImport: MeshImportProbe?
     @State private var didHandleDebugImport = false
     @State private var showSettings = false
@@ -1762,6 +1764,14 @@ struct FloeCADEditorView: View {
                     .accessibilityIdentifier("VariablesButton")
 
                     Button {
+                        showVersions = true
+                    } label: {
+                        Label(FloeCADStrings.label("cad.toolbar.versions", "Versions"),
+                              systemImage: "bookmark")
+                    }
+                    .accessibilityIdentifier("CADVersionsButton")
+
+                    Button {
                         showItemsPanel.toggle()
                     } label: {
                         Label(FloeCADStrings.label("cad.toolbar.items", "Items"),
@@ -1856,6 +1866,10 @@ struct FloeCADEditorView: View {
                     .presentationDetents([.medium, .large])
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
+            .sheet(isPresented: $showVersions) {
+                CADVersionsPanelView(document: document)
+                    .presentationDetents([.medium, .large])
+            }
     }
 
     /// Compact-width toolbar: the CAD tools entry stays a DIRECT 44pt button
@@ -1937,6 +1951,13 @@ struct FloeCADEditorView: View {
                 Label(FloeCADStrings.label("cad.toolbar.history", "History"),
                       systemImage: "clock.arrow.circlepath")
             }
+            Button {
+                showVersions = true
+            } label: {
+                Label(FloeCADStrings.label("cad.toolbar.versions", "Versions"),
+                      systemImage: "bookmark")
+            }
+            .accessibilityIdentifier("CADVersionsButton")
             Button {
                 viewModel.showVariablesPanel.toggle()
             } label: {

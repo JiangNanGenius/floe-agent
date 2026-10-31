@@ -27,7 +27,11 @@ nonisolated enum CADDocumentFormatError: Error, LocalizedError, Equatable, Senda
 }
 
 nonisolated enum CADDocumentFormat {
-    static let supportedVersion = 5
+    static let supportedVersion = 6
+    /// Coordinated next package floor for a document that actually stores
+    /// user-named versions. Ordinary documents keep their existing schema
+    /// floor; only a package that gains a checkpoint is raised to this floor.
+    static let namedVersionFormatVersion = 6
     static let legacyVersion = 1
     static let associativeVersion = 2
     /// First format that can store a typed mechanical hole. Ordinary format

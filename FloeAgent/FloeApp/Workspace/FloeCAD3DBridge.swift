@@ -18,6 +18,7 @@
 //   {"kind":"propose","op":"feature.extrude",...}  -> proposal record JSON
 //   {"kind":"preview","proposal_id":"..."}         -> stored proposal preview
 //   {"kind":"save"}                                -> commit receipt (CAS)
+//   {"kind":"versions","payload":{"action":...}}   -> E34 named design versions
 //   {"kind":"apply","proposal_id":"...","grant_id":"..."} -> apply receipt JSON
 //
 // Propose never writes: it evaluates on a throwaway copy. Apply requires a
@@ -508,6 +509,27 @@ final class FloeCAD3DBridge {
                 "message": "Committed the native CAD package.",
             ])
 
+        case "versions":
+            // E34: user-named design versions. This is the same live document
+            // and the same save kernel; the service owns the checkpoint store,
+            // exact compare and the revision/CAS restore transaction. The
+            // request's task ownership has already been authorized by the
+            // host before this bridge is reached.
+            let payload = request["payload"] as? [String: Any] ?? [:]
+            guard let action = payload["action"] as? String,
+                  !action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw CADDocumentError(
+                    code: "missing_action",
+                    message: "versions requires payload.action "
+                        + "(list|create|compare|restore|delete|recoveries|recover|discard_recovery|record).")
+            }
+            do {
+                return try await document.handleNamedVersionAction(action, args: payload)
+            } catch let error as CADNamedVersionError {
+                throw CADDocumentError(code: "versions_failed",
+                                       message: error.localizedDescription)
+            }
+
         case "apply":
             // Authority lives in CadDocumentCenter's shared grant store; the
             // bridge must never consume a grant on its own. The host handles
@@ -582,6 +604,7 @@ final class FloeCAD3DBridge {
                 "partial": "requires accept_partial=true; the receipt is never reported complete",
             ],
             "viewport_capture": ["formats": ["png"], "min_size": 64, "max_size": 4096],
+            "animation_actions": CadNativeEditActions.animation.sorted(),
             "assembly_actions": CadServiceOperationCatalog.actionNames(forKind: "assembly"),
             "drawing_actions": CadServiceOperationCatalog.actionNames(forKind: "drawing"),
             "script_actions": CadServiceOperationCatalog.actionNames(forKind: "script"),

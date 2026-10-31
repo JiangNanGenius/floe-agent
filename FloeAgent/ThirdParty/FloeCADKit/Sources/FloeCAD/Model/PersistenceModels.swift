@@ -46,6 +46,17 @@ final class Project {
     /// their persisted rows; this is never a replacement on-disk version.
     var hasOpaqueAssociations = false
 
+    /// Runtime-only: this package has at least one visible named-version
+    /// checkpoint. Its writer floor is raised to the coordinated named-version
+    /// schema so an older build that does not know `versions/` opens it
+    /// read-only instead of deleting checkpoints on its next save.
+    var hasNamedVersions = false
+
+    /// Runtime-only warning set when an interrupted-commit recovery restored
+    /// the document but could not carry the named versions forward. It is
+    /// surfaced in the session's existing load warning, never silently hidden.
+    var recoveryWarning: String?
+
     /// Gallery folder this design sits in; `nil` = top level.
     var folderID: UUID? = nil
 

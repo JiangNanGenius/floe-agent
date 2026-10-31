@@ -71,11 +71,33 @@ nonisolated enum CADDocumentStoreError: Error, LocalizedError {
     }
 }
 
+/// Raised only by the store's synchronous active-owner write lease. It is
+/// deliberately distinct from a commit error so callers can tell "the live
+/// document was released" apart from an actual staged-write failure.
+nonisolated enum CADDocumentOwnerWriteLeaseError: Error, Equatable, Sendable {
+    case revoked
+}
+
 /// Fault hooks used only by tests to prove the recovery paths (failure
 /// injection). Production code never sets them.
 nonisolated enum CADDocumentFaultInjection {
     nonisolated(unsafe) static var beforeCommit: (@Sendable () throws -> Void)?
     nonisolated(unsafe) static var beforeCreateSwap: (@Sendable () throws -> Void)?
+    /// E34: fire while the commit is rotating the old package into the new
+    /// root, immediately before/after carrying `versions/`. Tests use these
+    /// to prove an interrupted transfer restores the old package/checkpoints.
+    nonisolated(unsafe) static var beforeVersionTransfer: (@Sendable () throws -> Void)?
+    nonisolated(unsafe) static var afterVersionTransfer: (@Sendable () throws -> Void)?
+    /// E34: fire immediately before the staged manifest/document/blobs are
+    /// promoted into the rebuilt package root.
+    nonisolated(unsafe) static var beforeStagedPromotion: (@Sendable () throws -> Void)?
+    /// E34: fire before carrying named versions from an interrupted sibling.
+    nonisolated(unsafe) static var beforeVersionRecoveryCarry: (@Sendable () throws -> Void)?
+    /// E34: fire immediately before a verified checkpoint is renamed from its
+    /// hidden `.pending-<uuid>` staging directory to the visible `<uuid>`
+    /// directory. This is the final promotion; a failure after the format-floor
+    /// commit must retain the pending bytes and report the committed identity.
+    nonisolated(unsafe) static var beforeNamedVersionPromotion: (@Sendable () throws -> Void)?
 }
 
 // MARK: - Wire records
@@ -250,6 +272,9 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     /// write already in flight has finished. A later flush of a released
     /// document can therefore never resurrect a removed package.
     private var revoked = false
+    /// Set when interrupted-commit recovery restored the document but could
+    /// not carry its named versions forward. Surfaced through Project.
+    private var recoveryWarning: String?
 
     init(packageURL: URL, fileManager: FileManager = .default) {
         self.packageURL = packageURL
@@ -269,6 +294,22 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             modelSHA256: storedModelSHA256, error: nil) }
     }
 
+    /// Adopt the identity returned by an exact-format-floor commit performed
+    /// by a cooperating store instance during named-version creation. The
+    /// caller must have settled this live store first; a concurrent writer is
+    /// still fenced by the package gate/disk CAS. Dirty in-memory edits are
+    /// deliberately NOT marked clean here.
+    func adoptExternalCommittedIdentity(_ receipt: CADSaveOutcome, schemaVersion: Int) {
+        guard receipt.succeeded else { return }
+        lock.withLock {
+            guard receipt.revision >= storedRevision else { return }
+            storedRevision = receipt.revision
+            storedContentSHA256 = receipt.contentSHA256
+            storedModelSHA256 = receipt.modelSHA256
+            storedSchemaVersion = max(storedSchemaVersion, schemaVersion)
+        }
+    }
+
     /// Fence the store: after this returns, no commit can land. Any write
     /// already in flight is waited out (both share `lock`), so the caller may
     /// safely delete the package knowing no late write will re-create it.
@@ -276,6 +317,32 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         lock.lock()
         revoked = true
         lock.unlock()
+    }
+
+    /// Check the REAL document-owner lifetime fence without retaining the
+    /// lock after return. This is the same `lock`/`revoked` pair every commit
+    /// and `revoke()` already use; it is not a second permission system.
+    ///
+    /// It is synchronous by design: a caller may check before an await and
+    /// must re-check inside `withActiveOwnerWriteLease` at the atomic mutation
+    /// boundary, never by holding this `NSLock` across the await.
+    func requireActiveOwnerWriteLease() throws {
+        try lock.withLock {
+            guard !revoked else { throw CADDocumentOwnerWriteLeaseError.revoked }
+        }
+    }
+
+    /// Run a synchronous mutation inside this store's existing active-owner
+    /// lifetime fence. `revoke()` takes the same lock, so a close either
+    /// refuses before the body starts or waits for this synchronous body to
+    /// finish. The body must never await and must not call back into this
+    /// store's commit path (the separate fresh commit store keeps its own
+    /// lock; the caller must preserve gate -> owner -> commit-store order).
+    func withActiveOwnerWriteLease<T>(_ body: () throws -> T) throws -> T {
+        try lock.withLock {
+            guard !revoked else { throw CADDocumentOwnerWriteLeaseError.revoked }
+            return try body()
+        }
     }
 
     private var manifestURL: URL { packageURL.appendingPathComponent("manifest.json") }
@@ -297,6 +364,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     }
 
     private func read(recoverInterruptedCommit: Bool) throws -> Project {
+        recoveryWarning = nil
         if !fileManager.fileExists(atPath: manifestURL.path) {
             let previousManifest = previousURL.appendingPathComponent("manifest.json")
             if recoverInterruptedCommit, fileManager.fileExists(atPath: previousManifest.path) {
@@ -325,9 +393,13 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         return project
     }
 
-    private struct VerifiedPackage {
+    struct CADVerifiedPackage {
         let manifest: CADManifest
         let document: CADDocumentRecord
+        /// Exact `document.json` bytes read from the package. Restore commits
+        /// these bytes unchanged so a checkpoint's content/model identity is
+        /// preserved instead of re-encoding decoded records.
+        let documentData: Data
         let blobs: [String: Data]
         let thumbnail: Data?
         let modelSHA256: String?
@@ -339,7 +411,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     /// The returned bytes are also used to construct the Project, so a file is
     /// not read again after validation. This is consistency, not authentication:
     /// the manifest itself is not signed.
-    private func verifiedPackage(at root: URL) throws -> VerifiedPackage {
+    func verifiedPackage(at root: URL) throws -> CADVerifiedPackage {
         let manifestURL = root.appendingPathComponent("manifest.json")
         let manifestData = try Data(contentsOf: manifestURL)
         let manifest: CADManifest
@@ -470,7 +542,8 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             throw CADDocumentStoreError.integrityFailed("package changed while it was read")
         }
         let formatAssessment = try CADDocumentFormat.assess(document)
-        return VerifiedPackage(manifest: manifest, document: document, blobs: blobs,
+        return CADVerifiedPackage(manifest: manifest, document: document,
+                               documentData: documentData, blobs: blobs,
                                thumbnail: thumbnail, modelSHA256: verifiedModelSHA256,
                                formatAssessment: formatAssessment)
     }
@@ -508,10 +581,12 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         }
     }
 
-    private func makeProject(manifest: CADManifest,
+    func makeProject(manifest: CADManifest,
                              document: CADDocumentRecord,
                              blobs: [String: Data], thumbnail: Data?) -> Project {
         let project = Project(name: manifest.name)
+        project.hasNamedVersions = hasVisibleNamedVersions(at: packageURL)
+        project.recoveryWarning = recoveryWarning
         project.createdAt = manifest.createdAt
         project.modifiedAt = manifest.modifiedAt
         project.formatVersion = manifest.schemaVersion
@@ -687,7 +762,14 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         guard !project.hasOpaqueAssociations else { throw CADDocumentFormatError.opaqueAssociations }
         let assessment = try CADDocumentFormat.assess(document)
         guard !assessment.isOpaqueReadOnly else { throw CADDocumentFormatError.opaqueAssociations }
-        let schemaVersion = max(project.formatVersion, max(assessment.requiredVersion, self.schemaVersion))
+        // Named-version checkpoints are non-additive for older writers: a
+        // package that actually stores versions must carry the coordinated
+        // floor. Legacy/ordinary documents keep their existing floor.
+        let namedVersionFloor = project.hasNamedVersions
+            ? CADDocumentFormat.namedVersionFormatVersion : 0
+        let schemaVersion = max(project.formatVersion,
+                                max(assessment.requiredVersion,
+                                    max(self.schemaVersion, namedVersionFloor)))
         let manifest = CADManifest(
             schemaVersion: schemaVersion,
             revision: revision + 1,
@@ -868,6 +950,160 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         }
     }
 
+    /// Commit the exact payload of a verified named-version checkpoint.
+    ///
+    /// Unlike `performWriteWithIdentity`, the checkpoint's `document.json`
+    /// bytes and blobs are preserved verbatim. Re-encoding decoded records can
+    /// change JSON key order (the historical model digest intentionally binds
+    /// those bytes), so a normal session save would not guarantee that a
+    /// restored checkpoint has the same content/model identity. Only the
+    /// manifest revision/timestamps and the package schema floor may advance.
+    @discardableResult
+    func performExactRestore(sourceManifest: CADManifest,
+                             document: CADDocumentRecord,
+                             documentData: Data,
+                             blobs: [String: Data],
+                             thumbnail: Data?,
+                             expectedRevision: Int,
+                             packageGateAlreadyHeld: Bool = false) throws -> CADSaveOutcome {
+        if !packageGateAlreadyHeld {
+            CADPackageGate.acquire(packageURL)
+        }
+        defer { if !packageGateAlreadyHeld { CADPackageGate.release(packageURL) } }
+        lock.lock()
+        defer { lock.unlock() }
+        guard !revoked else {
+            throw CADDocumentStoreError.commitFailed("store revoked (document released)")
+        }
+        if storedRevision != 0, storedRevision != expectedRevision {
+            throw CADDocumentStoreError.revisionMoved(expected: expectedRevision,
+                                                      actual: storedRevision)
+        }
+        let schemaVersion = max(sourceManifest.schemaVersion, storedSchemaVersion)
+        let payload = CADWritePayload(
+            expectedRevision: expectedRevision,
+            schemaVersion: schemaVersion,
+            name: sourceManifest.name,
+            createdAt: sourceManifest.createdAt,
+            modifiedAt: Date(),
+            unit: sourceManifest.unit,
+            tolerance: sourceManifest.tolerance,
+            appBuild: Self.appBuild,
+            document: document,
+            blobs: blobs,
+            thumbnail: thumbnail)
+        try CADDocumentFormat.validateWrite(payload)
+        if fileManager.fileExists(atPath: manifestURL.path) {
+            let onDisk = try verifiedPackage(at: packageURL)
+            guard onDisk.manifest.revision == expectedRevision else {
+                throw CADDocumentStoreError.revisionMoved(expected: expectedRevision,
+                                                          actual: onDisk.manifest.revision)
+            }
+            guard !onDisk.formatAssessment.isOpaqueReadOnly else {
+                throw CADDocumentFormatError.opaqueAssociations
+            }
+            try CADDocumentFormat.validateWrite(
+                payload,
+                storedSchema: max(onDisk.manifest.schemaVersion,
+                                  onDisk.formatAssessment.requiredVersion))
+        } else if expectedRevision != 0 {
+            throw CADDocumentStoreError.commitFailed("package manifest missing")
+        }
+        let commitRevision = expectedRevision + 1
+        let staging = packageURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(packageURL.lastPathComponent).restore-\(UUID().uuidString)")
+        let transaction = Transaction(fileManager: fileManager)
+        do {
+            try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+            try transaction.track(staging)
+            var contentHasher = SHA256()
+            for (path, data) in blobs.sorted(by: { $0.key < $1.key }) {
+                let url = staging.appendingPathComponent(path)
+                try fileManager.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+                try data.write(to: url)
+            }
+            contentHasher.update(data: documentData)
+            try documentData.write(to: staging.appendingPathComponent("document.json"))
+            for (path, data) in blobs.sorted(by: { $0.key < $1.key }) {
+                contentHasher.update(data: Data(path.utf8))
+                contentHasher.update(data: Data(Self.sha256(data).utf8))
+            }
+            var thumbnailSHA256: String?
+            if let thumbnail, !thumbnail.isEmpty {
+                let sha = Self.sha256(thumbnail)
+                thumbnailSHA256 = sha
+                let thumbnailURL = staging.appendingPathComponent("blobs/thumbnail.img")
+                try fileManager.createDirectory(at: thumbnailURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+                try thumbnail.write(to: thumbnailURL)
+                contentHasher.update(data: Data(sha.utf8))
+            }
+            let contentDigest = Self.hex(contentHasher.finalize())
+            guard contentDigest == sourceManifest.contentSHA256 else {
+                throw CADDocumentStoreError.commitFailed(
+                    "exact restore content digest does not match its checkpoint")
+            }
+            let modelDigest = try Self.modelDigest(
+                name: sourceManifest.name, unit: sourceManifest.unit,
+                tolerance: sourceManifest.tolerance,
+                document: document, blobs: blobs)
+            if let declaredModel = sourceManifest.modelSHA256, declaredModel != modelDigest {
+                throw CADDocumentStoreError.commitFailed(
+                    "exact restore model digest does not match its checkpoint")
+            }
+            // Historical checkpoints without the additive model identity stay
+            // without it; their exact content digest remains the authority.
+            let manifestModel = sourceManifest.modelSHA256 == nil ? nil : modelDigest
+            let manifest = CADManifest(
+                schemaVersion: schemaVersion,
+                revision: commitRevision,
+                name: sourceManifest.name,
+                createdAt: sourceManifest.createdAt,
+                modifiedAt: Date(),
+                unit: sourceManifest.unit,
+                tolerance: sourceManifest.tolerance,
+                contentSHA256: contentDigest,
+                modelSHA256: manifestModel,
+                thumbnailSHA256: thumbnailSHA256,
+                appBuild: Self.appBuild,
+                counts: payload.counts)
+            try JSONEncoder().encode(manifest)
+                .write(to: staging.appendingPathComponent("manifest.json"))
+
+            let staged = try verifiedPackage(at: staging)
+            guard staged.documentData == documentData,
+                  staged.manifest.contentSHA256 == contentDigest else {
+                throw CADDocumentStoreError.commitFailed(
+                    "exact restore staging did not preserve the checkpoint bytes")
+            }
+            if manifestModel != nil {
+                guard staged.modelSHA256 == modelDigest else {
+                    throw CADDocumentStoreError.commitFailed(
+                        "exact restore staging did not preserve the model identity")
+                }
+            }
+            // Last cancellation boundary before the atomic commit begins.
+            // Exact-restore staging can be large (blobs + digests); a named
+            // version create/restore cancelled during that work must abort
+            // before it enters commit, never leave a checkpoint or restore
+            // half-published. Nothing here observes cancellation after the
+            // commit call below starts.
+            try Task.checkCancellation()
+            try CADDocumentFaultInjection.beforeCommit?()
+            try commit(staging: staging, transaction: transaction)
+            storedRevision = commitRevision
+            storedSchemaVersion = schemaVersion
+            storedContentSHA256 = contentDigest
+            storedModelSHA256 = manifestModel ?? ""
+            return CADSaveOutcome(revision: commitRevision, contentSHA256: contentDigest,
+                                  modelSHA256: manifestModel ?? "", error: nil)
+        } catch {
+            transaction.rollback()
+            throw error
+        }
+    }
+
     /// Synchronous convenience used by `CADModelContext.save()` on the session
     /// actor. Prefer `performWrite` off-main for large documents.
     func write(_ project: Project) throws {
@@ -1006,38 +1242,144 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     private func commit(staging: URL, transaction: Transaction) throws {
         let parent = packageURL.deletingLastPathComponent()
         let rotating = parent.appendingPathComponent(".\(packageURL.lastPathComponent).rotate-\(UUID().uuidString)")
+        let failed = parent.appendingPathComponent(".\(packageURL.lastPathComponent).failed-\(UUID().uuidString)")
         try transaction.track(rotating)
-        if fileManager.fileExists(atPath: packageURL.path) {
-            try fileManager.moveItem(at: packageURL, to: rotating)
-            // Rebuild the package root with the old commit preserved under
-            // previous/. The intermediate directory `rotating` only holds the
-            // old manifest/document/blobs plus its own previous/.
-            try fileManager.createDirectory(at: packageURL, withIntermediateDirectories: true)
-            let previous = previousURL
-            try fileManager.createDirectory(at: previous, withIntermediateDirectories: true)
+        do {
+            if fileManager.fileExists(atPath: packageURL.path) {
+                try fileManager.moveItem(at: packageURL, to: rotating)
+                // Rebuild the package root with the old commit preserved under
+                // previous/. The intermediate directory `rotating` only holds
+                // the old manifest/document/blobs plus its own previous/.
+                try fileManager.createDirectory(at: packageURL, withIntermediateDirectories: true)
+                let previous = previousURL
+                try fileManager.createDirectory(at: previous, withIntermediateDirectories: true)
+                for name in ["manifest.json", "document.json", "blobs"] {
+                    let source = rotating.appendingPathComponent(name)
+                    guard fileManager.fileExists(atPath: source.path) else { continue }
+                    let destination = previous.appendingPathComponent(name)
+                    if fileManager.fileExists(atPath: destination.path) {
+                        try fileManager.removeItem(at: destination)
+                    }
+                    try fileManager.moveItem(at: source, to: destination)
+                }
+                // E34: named design versions are package-owned checkpoints and
+                // live under `versions/`. The commit rotation must carry them
+                // into the new package; otherwise every ordinary save would
+                // delete them with the rotated old root. This is a same-volume
+                // move, and failures below restore the old root.
+                try CADDocumentFaultInjection.beforeVersionTransfer?()
+                let oldVersions = rotating.appendingPathComponent("versions", isDirectory: true)
+                if fileManager.fileExists(atPath: oldVersions.path) {
+                    let newVersions = packageURL.appendingPathComponent("versions", isDirectory: true)
+                    if fileManager.fileExists(atPath: newVersions.path) {
+                        try fileManager.removeItem(at: newVersions)
+                    }
+                    try fileManager.moveItem(at: oldVersions, to: newVersions)
+                }
+                try CADDocumentFaultInjection.afterVersionTransfer?()
+            } else {
+                try fileManager.createDirectory(at: packageURL, withIntermediateDirectories: true)
+            }
+            try CADDocumentFaultInjection.beforeStagedPromotion?()
             for name in ["manifest.json", "document.json", "blobs"] {
-                let source = rotating.appendingPathComponent(name)
+                let source = staging.appendingPathComponent(name)
                 guard fileManager.fileExists(atPath: source.path) else { continue }
-                let destination = previous.appendingPathComponent(name)
+                let destination = packageURL.appendingPathComponent(name)
                 if fileManager.fileExists(atPath: destination.path) {
                     try fileManager.removeItem(at: destination)
                 }
                 try fileManager.moveItem(at: source, to: destination)
             }
+            try? fileManager.removeItem(at: staging)
             try? fileManager.removeItem(at: rotating)
-        } else {
-            try fileManager.createDirectory(at: packageURL, withIntermediateDirectories: true)
-        }
-        for name in ["manifest.json", "document.json", "blobs"] {
-            let source = staging.appendingPathComponent(name)
-            guard fileManager.fileExists(atPath: source.path) else { continue }
-            let destination = packageURL.appendingPathComponent(name)
-            if fileManager.fileExists(atPath: destination.path) {
-                try fileManager.removeItem(at: destination)
+        } catch {
+            // Do not let the outer rollback delete the only copy of an old
+            // package if our own recovery below cannot complete.
+            transaction.untrack(rotating)
+            // E34 failure recovery: the old package must never be deleted just
+            // because carrying versions or promoting staged files failed.
+            // Reassemble the old root from `rotating` plus the new root's
+            // `previous/` and `versions/`, keep any partial new root in a
+            // sibling, and only then rethrow.
+            var restored = false
+            var recoveryComplete = true
+            if fileManager.fileExists(atPath: rotating.path) {
+                let previous = previousURL
+                let previousManifest = previous.appendingPathComponent("manifest.json")
+                if fileManager.fileExists(atPath: previousManifest.path) {
+                    for name in ["manifest.json", "document.json", "blobs"] {
+                        let source = previous.appendingPathComponent(name)
+                        guard fileManager.fileExists(atPath: source.path) else { continue }
+                        let destination = rotating.appendingPathComponent(name)
+                        if fileManager.fileExists(atPath: destination.path) {
+                            try? fileManager.removeItem(at: destination)
+                        }
+                        do { try fileManager.moveItem(at: source, to: destination) }
+                        catch { recoveryComplete = false }
+                    }
+                }
+                let newVersions = packageURL.appendingPathComponent("versions", isDirectory: true)
+                let oldVersions = rotating.appendingPathComponent("versions", isDirectory: true)
+                if fileManager.fileExists(atPath: newVersions.path),
+                   !fileManager.fileExists(atPath: oldVersions.path) {
+                    do { try fileManager.moveItem(at: newVersions, to: oldVersions) }
+                    catch { recoveryComplete = false }
+                }
+                if fileManager.fileExists(atPath: packageURL.path) {
+                    do { try fileManager.moveItem(at: packageURL, to: failed) }
+                    catch { recoveryComplete = false }
+                }
+                if !fileManager.fileExists(atPath: packageURL.path) {
+                    do {
+                        try fileManager.moveItem(at: rotating, to: packageURL)
+                        restored = true
+                    } catch {
+                        // Leave rotating/failed as sibling recovery points.
+                        recoveryComplete = false
+                    }
+                }
             }
-            try fileManager.moveItem(at: source, to: destination)
+            if restored && recoveryComplete {
+                try? fileManager.removeItem(at: failed)
+            }
+            if !recoveryComplete {
+                recoveryWarning = "A failed commit could not carry every package component back. The old document and any un-carried bytes were retained for recovery."
+                throw CADDocumentStoreError.commitFailed(
+                    "commit failed: \(error.localizedDescription). Recovery is incomplete; retained bytes must be recovered from the sibling package.")
+            }
+            throw error
         }
-        try? fileManager.removeItem(at: staging)
+    }
+
+    /// True when the package currently holds at least one visible named
+    /// checkpoint. Hidden staging/trash entries do not raise the floor.
+    /// Recovery can restore an older manifest from `previous/` while carrying
+    /// newer versions from the interrupted root. Keep the package unreadable
+    /// to old writers by raising only the manifest floor; content/model
+    /// digests and the revision are unchanged.
+    private func raiseManifestFloorForNamedVersions() {
+        guard hasVisibleNamedVersions(at: packageURL),
+              var manifest = try? readManifest(at: packageURL),
+              manifest.schemaVersion < CADDocumentFormat.namedVersionFormatVersion else { return }
+        manifest.schemaVersion = CADDocumentFormat.namedVersionFormatVersion
+        do {
+            try JSONEncoder().encode(manifest).write(to: manifestURL, options: .atomic)
+        } catch {
+            recoveryWarning = "The document and named versions were recovered, but the package floor could not be raised; keep a current app open before saving."
+        }
+    }
+
+    private func hasVisibleNamedVersions(at root: URL) -> Bool {
+        let versions = root.appendingPathComponent("versions", isDirectory: true)
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: versions,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]) else { return false }
+        return entries.contains { entry in
+            guard let values = try? entry.resourceValues(
+                forKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else { return false }
+            return values.isDirectory == true && values.isSymbolicLink != true
+        }
     }
 
     private func restorePrevious() throws {
@@ -1063,6 +1405,26 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
                 movedOriginal = true
             }
             try fileManager.moveItem(at: restoring, to: packageURL)
+            // E34: an interrupted commit may have already moved the named
+            // versions into the new package root before its manifest landed.
+            // `previous/` predates that feature, so carry the versions forward
+            // when the recovered snapshot does not contain them. If the move
+            // fails they stay recoverable in the interrupted sibling.
+            let restoredVersions = packageURL.appendingPathComponent("versions", isDirectory: true)
+            let interruptedVersions = interrupted.appendingPathComponent("versions", isDirectory: true)
+            if !fileManager.fileExists(atPath: restoredVersions.path),
+               fileManager.fileExists(atPath: interruptedVersions.path) {
+                do {
+                    try CADDocumentFaultInjection.beforeVersionRecoveryCarry?()
+                    try fileManager.moveItem(at: interruptedVersions, to: restoredVersions)
+                    raiseManifestFloorForNamedVersions()
+                } catch {
+                    // The document itself was recovered; do not claim the
+                    // versions came with it. Keep the interrupted sibling and
+                    // surface this through the session's existing load warning.
+                    recoveryWarning = "The document recovered, but its named versions could not be carried forward. They remain in the interrupted package \(interrupted.lastPathComponent)."
+                }
+            }
             // Keep the interrupted package as a sibling recovery point. It
             // may contain newer residual geometry not present in `previous`.
         } catch {
@@ -1135,6 +1497,9 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         private var tracked: [URL] = []
         init(fileManager: FileManager) { self.fileManager = fileManager }
         func track(_ url: URL) throws { tracked.append(url) }
+        func untrack(_ url: URL) {
+            tracked.removeAll { $0 == url }
+        }
         func rollback() {
             for url in tracked where fileManager.fileExists(atPath: url.path) {
                 try? fileManager.removeItem(at: url)

@@ -97,6 +97,10 @@ public final class FloeCADDocument {
     public private(set) var name: String
     public var revision: Int { session.savedIdentity.revision }
     public var contentSHA256: String { session.savedIdentity.contentSHA256 }
+    /// Additive canonical model identity of the last verified save/load.
+    /// Empty only when the package predates the manifest field or this build
+    /// cannot reconstruct a complete canonical identity.
+    public var modelSHA256: String { session.savedIdentity.modelSHA256 }
 
     let project: Project
     let context: CADModelContext
@@ -229,6 +233,13 @@ public final class FloeCADDocument {
 
     public func close() {
         markClosed()
+    }
+
+    /// Adopt a verified checkpoint's document name after its commit succeeded.
+    /// The live facade is the single place that owns the display name; the
+    /// package manifest was already written from the restored project.
+    func adoptRestoredDocumentName(_ restored: String) {
+        name = restored
     }
 
     /// The newest still-uncommitted host-owned command, or nil. A host that

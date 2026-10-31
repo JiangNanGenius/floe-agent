@@ -348,9 +348,11 @@ struct HarnessPlanningTests {
         #expect(!ledger.allowsStatefulTool(named: "vnc.click"))
     }
 
-    @Test("An explicit SSH-before-VNC request keeps every VNC tool hidden until SSH executes")
-    func explicitSSHBeforeVNCGate() throws {
-        let goal = "请先用 SSH 配置主机，再用 VNC 测试点击"
+    @Test("An explicit SSH-before-VNC request keeps every VNC tool hidden until SSH executes",
+          arguments: ["请先用 SSH 配置主机，再用 VNC 测试点击",
+                      "Configure SSH before testing VNC clicks",
+                      "SSH first, then test VNC clicks"])
+    func explicitSSHBeforeVNCGate(goal: String) throws {
         var ledger = HarnessExecutionLedger()
         #expect(HarnessExecutionLedger.requiresSSHBeforeVNC(goal))
         #expect(!ledger.allowsStatefulTool(named: "vnc.status", userGoal: goal))

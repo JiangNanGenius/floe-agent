@@ -246,6 +246,23 @@ public enum TypedMutationContract {
                 return [.init(argument: "path", role: .outputWrite, whenAbsent: .required)]
             case "apply", "save", "three_d_apply", "import":
                 return [.init(argument: "path", role: .sourceWrite, whenAbsent: .required)]
+            case "versions":
+                // E34 checkpoint metadata lives INSIDE the same .floecad
+                // package. list/compare/recoveries/record are read-only;
+                // create/restore/delete/recover/discard_recovery rewrite only
+                // the addressed document package (never an external
+                // part-reference file). An unknown or malformed operation
+                // stays a conservative write target so it fails closed.
+                guard let raw = arguments["payload"] as? String,
+                      let payload = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+                      let operation = (payload["action"] as? String)?
+                          .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+                    return [.init(argument: "path", role: .sourceWrite, whenAbsent: .required)]
+                }
+                if ["list", "compare", "recoveries", "record"].contains(operation) {
+                    return []
+                }
+                return [.init(argument: "path", role: .sourceWrite, whenAbsent: .required)]
             case "material", "parameters", "animation":
                 guard let raw = arguments["payload"] as? String,
                       let payload = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],

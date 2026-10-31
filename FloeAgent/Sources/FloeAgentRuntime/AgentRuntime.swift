@@ -1729,6 +1729,7 @@ public actor FloeAgentRuntime {
             // those bytes from the trusted capture store instead of
             // duplicating them in every checkpoint.
             await rehydrateRestoredToolResults(&restoredRequest)
+            await rehydrateRestoredReplayPairs(&restoredRequest)
             providerRetryRequest = restoredRequest
         } else {
             // v4 and older checkpoints persisted only a digest. Rebuilding
@@ -2724,26 +2725,6 @@ public actor FloeAgentRuntime {
             legacyMessages.insert((role: "system", content: temporalContext), at: 0)
             contentMessages.insert(ProviderMessage(role: "system", content: [.text(temporalContext)]), at: 0)
         }
-        // Replay every settled pair from earlier turns as provider history.
-        // The pending batch keeps its existing follow-up semantics, so pairs
-        // awaiting this dispatch are excluded here to avoid double evidence.
-        let replayedToolPairs = Self.replayedToolPairsForDispatch(
-            history: replayableToolHistory,
-            pendingCalls: pendingToolCalls
-        )
-        let providerInvariantViolations = HarnessInvariantRegistry.validateProviderBoundary(
-            calls: pendingToolCalls,
-            results: pendingToolResults,
-            lifecycleByCallID: toolLifecycleByCallID,
-            replayedPairs: replayedToolPairs
-        )
-        guard providerInvariantViolations.isEmpty else {
-            await failRun(
-                message: "Harness invariant failed before model dispatch: \(HarnessInvariantRegistry.summary(providerInvariantViolations))",
-                recoverable: true
-            )
-            return
-        }
         if !pendingToolResults.flatMap(\.artifacts).isEmpty {
             // Every supported artifact from this dispatch's tool results
             // reaches the provider exactly once: duplicates (same path+bytes)
@@ -2837,6 +2818,71 @@ public actor FloeAgentRuntime {
         let selectionInputs = await makeToolResultSelectionInputs(
             pagingCallIDs: pendingPagingCallIDs
         )
+        // Replayed settled pairs and the pending batch share the SAME real
+        // leftover window. Plan them together: when their complete bytes fit,
+        // every result is sent whole; otherwise small results stay complete
+        // and a large result keeps a head/tail excerpt plus its stable capture
+        // ref. A paging page is never re-summarized.
+        let evidenceBudget = min(
+            Self.providerToolEvidenceBudgetBytes(
+                messages: contentMessages,
+                schemas: toolSchemasForRequest,
+                contextWindowTokens: configuration.model.limits.contextTokens,
+                reservedOutputTokens: Self.contextOutputReservation(limits: configuration.model.limits)
+            ),
+            Self.maximumProviderToolResultBytes
+        )
+        // Replay every settled pair from earlier turns as provider history.
+        // The pending batch keeps its existing follow-up semantics, so pairs
+        // awaiting this dispatch are excluded from replay. The window is
+        // sized by the actual request budget and each whole call's metadata
+        // (arguments, bounded reasoning, envelope) instead of a fixed count;
+        // the result bodies are then planned against what remains.
+        let replayWindow = Self.replayDispatchWindow(
+            history: replayableToolHistory,
+            pendingCalls: pendingToolCalls,
+            pendingResultCount: selectionInputs.count,
+            pendingAssistantReasoning: pendingToolCalls.isEmpty ? nil : responseReasoning,
+            budgetBytes: evidenceBudget
+        )
+        let replayCandidates = await makeReplayEvidenceCandidates(
+            pairs: replayWindow.pairs
+        )
+        // The real request budget is shared by result bodies and the
+        // complete metadata/reasoning each call already puts on the wire.
+        // Charge that fixed metadata before the result planner runs.
+        let resultBudget = max(
+            0,
+            evidenceBudget
+                - replayWindow.replayMetadataBytes
+                - replayWindow.pendingMetadataBytes
+        )
+        let evidencePlan = Self.planToolEvidence(
+            replayCandidates: replayCandidates,
+            pendingInputs: selectionInputs,
+            budgetBytes: resultBudget
+        )
+        let replayedToolPairs = evidencePlan.replayedPairs
+        let selection = ToolResultSelection(
+            items: evidencePlan.pendingItems,
+            budgetBytes: resultBudget,
+            requestedBytes: evidencePlan.requestedBytes,
+            sentBytes: evidencePlan.sentBytes,
+            allComplete: evidencePlan.allComplete
+        )
+        let providerInvariantViolations = HarnessInvariantRegistry.validateProviderBoundary(
+            calls: pendingToolCalls,
+            results: pendingToolResults,
+            lifecycleByCallID: toolLifecycleByCallID,
+            replayedPairs: replayedToolPairs
+        )
+        guard providerInvariantViolations.isEmpty else {
+            await failRun(
+                message: "Harness invariant failed before model dispatch: \(HarnessInvariantRegistry.summary(providerInvariantViolations))",
+                recoverable: true
+            )
+            return
+        }
         let requestSize = ProviderRequestSizer.measure(
             messages: contentMessages,
             schemas: toolSchemasForRequest,
@@ -2844,16 +2890,9 @@ public actor FloeAgentRuntime {
             contextWindowTokens: configuration.model.limits.contextTokens,
             reservedOutputTokens: Self.contextOutputReservation(limits: configuration.model.limits)
         )
-        let selection = ToolResultPlanner.plan(
-            inputs: selectionInputs,
-            budgetBytes: min(
-                requestSize.toolResultBudgetBytes,
-                Self.maximumProviderToolResultBytes
-            )
-        )
         lastProviderSchemaTokenEstimate = requestSize.schemaTokens
         logger.info(
-            "toolResultSelection run=\(runID.uuidString) results=\(selection.items.count) complete=\(selection.items.filter(\.complete).count) excerpted=\(selection.items.filter(\.excerpted).count) pointerOnly=\(selection.items.filter(\.pointerOnly).count) requestedBytes=\(selection.requestedBytes) sentBytes=\(selection.sentBytes) budgetBytes=\(selection.budgetBytes) messageTokens=\(requestSize.messageTokens) schemaTokens=\(requestSize.schemaTokens) replayTokens=\(requestSize.replayTokens) availableToolTokens=\(requestSize.availableToolResultTokens)"
+            "toolResultSelection run=\(runID.uuidString) results=\(selection.items.count) complete=\(selection.items.filter(\.complete).count) excerpted=\(selection.items.filter(\.excerpted).count) pointerOnly=\(selection.items.filter(\.pointerOnly).count) requestedBytes=\(selection.requestedBytes) sentBytes=\(selection.sentBytes) budgetBytes=\(selection.budgetBytes) messageTokens=\(requestSize.messageTokens) schemaTokens=\(requestSize.schemaTokens) replayTokens=\(requestSize.replayTokens) availableToolTokens=\(requestSize.availableToolResultTokens) replayPairs=\(replayedToolPairs.count)"
         )
         // Receipts describe this one batch; a later call id must not inherit
         // stale retention provenance.
@@ -5546,9 +5585,36 @@ public actor FloeAgentRuntime {
             ToolArgumentSanitizer.sanitizedForPersistence
         )
         if let pairs = snapshot.replayedToolPairs {
+            // Settled pairs reach the live request with as much complete
+            // evidence as its real window carries. The durable dispatch
+            // snapshot keeps only a bounded projection plus a stable ref for
+            // bytes that can be rehydrated on resume, so a large result is
+            // never encoded twice per tool turn.
+            var replayBytes = 0
             snapshot.replayedToolPairs = pairs.map { pair in
                 var copy = pair
                 copy.call = ToolArgumentSanitizer.sanitizedForPersistence(pair.call)
+                guard copy.call.toolName != ToolResultPagingTool.name else {
+                    return copy
+                }
+                let bytes = copy.result.outputSummary.utf8.count
+                let overBudget = bytes > Self.maximumCheckpointToolResultBytes
+                    || replayBytes + bytes > Self.maximumCheckpointReplayTotalBytes
+                if overBudget {
+                    let ref = ToolResultCaptureStore.reference(
+                        runID: runID,
+                        callID: copy.call.id
+                    )
+                    if capturableCallIDs.contains(copy.call.id) {
+                        copy.result.outputSummary = Self.replayRecoveryMarker
+                            + " \(bytes) bytes; complete captured output ref=\(ref) is rehydrated from the capture store on resume]"
+                    } else {
+                        copy.result.outputSummary = ToolReplayPlanner.compactResultSummary(
+                            copy.result.outputSummary
+                        )
+                    }
+                }
+                replayBytes += copy.result.outputSummary.utf8.count
                 return copy
             }
         }
@@ -5566,6 +5632,13 @@ public actor FloeAgentRuntime {
     static let maximumCheckpointToolResultBytes = 16 * 1_024
     static let maximumCheckpointPagingPageBytes = 48 * 1_024
     static let maximumCheckpointToolResultsTotalBytes = 96 * 1_024
+    /// Bounded at-rest copy of the replayed settled-pair channel. The live
+    /// request may carry more complete evidence; resume rehydrates from the
+    /// trusted capture store.
+    static let maximumCheckpointReplayTotalBytes = 96 * 1_024
+    /// Starts a durable replay recovery marker. Only this exact prefix opts
+    /// into capture rehydration; model text cannot invent one.
+    static let replayRecoveryMarker = "[replayed tool result persisted for recovery:"
 
     /// Builds the planner inputs for the pending batch from the runtime's own
     /// batch identities and the trusted task store. The complete captured
@@ -5748,12 +5821,14 @@ public actor FloeAgentRuntime {
         request.toolResults = plan.items.map { (callID: $0.callID, output: $0.output) }
     }
 
-    /// Extracts the stable capture ref from the recovery marker emitted by
-    /// `persistedDispatchSnapshot`. Exact live output never starts with that
-    /// marker, so ordinary bytes cannot accidentally opt into capture lookup.
-    /// The ref is still validated by the store before any read.
-    private static func persistedCaptureReference(in output: String) -> String? {
-        let marker = "[tool result persisted for recovery:"
+    /// Extracts the stable capture ref from a recovery marker emitted by
+    /// `persistedDispatchSnapshot`. Exact live output never starts with a
+    /// recovery marker, so ordinary bytes cannot accidentally opt into capture
+    /// lookup. The ref is still validated by the store before any read.
+    private static func persistedCaptureReference(
+        in output: String,
+        marker: String = "[tool result persisted for recovery:"
+    ) -> String? {
         let refMarker = "complete captured output ref="
         guard output.hasPrefix(marker),
               let range = output.range(of: refMarker) else { return nil }
@@ -5814,37 +5889,377 @@ public actor FloeAgentRuntime {
         Set(calls.lazy.filter { $0.toolName == ToolResultPagingTool.name }.map(\.id))
     }
 
-    /// Builds the replayed history for one dispatch. The run-level record is
-    /// never mutated here: pairs overlapping the pending batch are excluded
-    /// (the pending channel already carries them once), each summary gets the
-    /// same model-visible provenance envelope and compaction a pending result
-    /// would receive, and the replay budget drops oldest whole pairs.
-    private static func replayedToolPairsForDispatch(
-        history: [ReplayedToolPair],
-        pendingCalls: [ToolCall]
-    ) -> [ReplayedToolPair] {
-        let pendingIDs = Set(pendingCalls.map(\.id))
-        let candidates = history.filter { !pendingIDs.contains($0.call.id) }.map { pair in
-            var result = pair.result.durableProjection()
-            // Paging pages stay byte-exact in replay too: their own header
-            // promises nextOffset and a compacted excerpt would break it.
-            result.outputSummary = pair.call.toolName == ToolResultPagingTool.name
-                ? modelVisibleToolResult(pair.result)
-                : ToolReplayPlanner.compactResultSummary(modelVisibleToolResult(pair.result))
-            return ReplayedToolPair(call: pair.call, result: result)
+    /// A settled pair plus the complete post-redaction body rehydrated from
+    /// the trusted capture store, when that record is still retained. The
+    /// at-rest pair intentionally keeps only a bounded projection; this is
+    /// the dispatch-side view that can carry the complete evidence again.
+    private struct ReplayEvidenceCandidate {
+        var pair: ReplayedToolPair
+        var text: String
+        var ref: String?
+        var totalBytes: Int
+        var captureTruncated: Bool
+        var executionReportedTruncation: Bool
+        var captureUnavailable: Bool
+        var isPagingPage: Bool
+    }
+
+    private struct ToolEvidencePlan {
+        var replayedPairs: [ReplayedToolPair]
+        var pendingItems: [ToolResultSelection.Item]
+        var requestedBytes: Int
+        var sentBytes: Int
+        var allComplete: Bool
+    }
+
+    /// The newest whole settled pairs that fit the real request budget after
+    /// the complete call metadata each one puts on the wire (argument JSON,
+    /// bounded reasoning, call/result identities and provider envelope
+    /// framing). This is a byte-driven dispatch window, never a fixed pair
+    /// count: when 41/42 small pairs fit they all remain, while a larger
+    /// history drops oldest whole pairs until the metadata plus the planner's
+    /// per-item pointer reserve fits.
+    private struct ReplayDispatchWindow {
+        var pairs: [ReplayedToolPair]
+        var replayMetadataBytes: Int
+        var pendingMetadataBytes: Int
+    }
+
+    /// Conservative wire cost of one settled pair's metadata, excluding the
+    /// result body. `ProviderRequestSizer` counts tokens for arguments and
+    /// reasoning; using their UTF-8 byte counts over-estimates that cost,
+    /// which is safe before dispatch. The envelope allowance covers
+    /// tool/result names, ids, role framing and per-pair structural overhead
+    /// the sizer does not count.
+    private static func replayCallMetadataBytes(_ pair: ReplayedToolPair) -> Int {
+        pair.call.id.utf8.count
+            + pair.call.toolName.utf8.count
+            + pair.result.callID.utf8.count
+            + pair.call.argumentsJSON.count
+            + (pair.assistantReasoning?.utf8.count ?? 0)
+            + 128
+    }
+
+    private static func pendingCallMetadataBytes(
+        calls: [ToolCall],
+        reasoning: String?
+    ) -> Int {
+        guard !calls.isEmpty else { return 0 }
+        var bytes = reasoning?.utf8.count ?? 0
+        for call in calls {
+            bytes += call.id.utf8.count
+                + call.toolName.utf8.count
+                + call.argumentsJSON.count
+                + 128
         }
-        return ToolReplayPlanner.trimToBudget(candidates)
+        return bytes + 64
+    }
+
+    private static func replayDispatchWindow(
+        history: [ReplayedToolPair],
+        pendingCalls: [ToolCall],
+        pendingResultCount: Int,
+        pendingAssistantReasoning: String?,
+        budgetBytes: Int
+    ) -> ReplayDispatchWindow {
+        let pendingIDs = Set(pendingCalls.map(\.id))
+        let settled = history.filter { !pendingIDs.contains($0.call.id) }
+        let boundedPendingReasoning = pendingCalls.isEmpty
+            ? nil
+            : ToolReplayPlanner.boundedReasoning(pendingAssistantReasoning)
+        let pendingMetadata = pendingCallMetadataBytes(
+            calls: pendingCalls,
+            reasoning: boundedPendingReasoning
+        )
+        guard !settled.isEmpty else {
+            return ReplayDispatchWindow(
+                pairs: [],
+                replayMetadataBytes: 0,
+                pendingMetadataBytes: pendingMetadata
+            )
+        }
+        let budget = max(0, budgetBytes)
+        // The planner reserves this much per input even when a body must
+        // become a pointer. Reserving it while choosing the window keeps the
+        // number of replayed entries itself bounded by the real budget.
+        let pendingPointerReserve = pendingResultCount * ToolResultPlanner.pointerOverheadBytes
+        var selectionCost = pendingMetadata + pendingPointerReserve
+        var metadata = 0
+        var keptReversed: [ReplayedToolPair] = []
+        for pair in settled.reversed() {
+            let callBytes = replayCallMetadataBytes(pair)
+            let pairCost = callBytes + ToolResultPlanner.pointerOverheadBytes
+            if !keptReversed.isEmpty, selectionCost + pairCost > budget { break }
+            keptReversed.append(pair)
+            metadata += callBytes
+            selectionCost += pairCost
+            // Keep at least the newest whole pair even in a pathologically
+            // tiny window; the planner then emits its honest pointer instead
+            // of silently dropping the evidence channel.
+            if selectionCost > budget { break }
+        }
+        return ReplayDispatchWindow(
+            pairs: Array(keptReversed.reversed()),
+            replayMetadataBytes: metadata,
+            pendingMetadataBytes: pendingMetadata
+        )
+    }
+
+    /// Builds the dispatch-side view for the window chosen by
+    /// `replayDispatchWindow`. The caller passes the newest whole pairs that
+    /// fit the actual request budget (pending-overlapping pairs were already
+    /// excluded), so no fixed pair-count cap applies here. Each pair is
+    /// expanded from the trusted capture store when it survives. The stored
+    /// checkpoint summary is only a fallback: it is a bounded at-rest
+    /// projection, not a statement that the complete result was unavailable.
+    private func makeReplayEvidenceCandidates(
+        pairs: [ReplayedToolPair]
+    ) async -> [ReplayEvidenceCandidate] {
+        var candidates: [ReplayEvidenceCandidate] = []
+        candidates.reserveCapacity(pairs.count)
+        for pair in pairs {
+            let stored = pair.result.outputSummary
+            if pair.call.toolName == ToolResultPagingTool.name {
+                // A paging page is already the model-requested range; a
+                // second summary would make its own nextOffset header lie.
+                candidates.append(ReplayEvidenceCandidate(
+                    pair: pair,
+                    text: Self.modelVisibleToolResult(pair.result, body: stored),
+                    ref: nil,
+                    totalBytes: stored.utf8.count,
+                    captureTruncated: false,
+                    executionReportedTruncation: false,
+                    captureUnavailable: false,
+                    isPagingPage: true
+                ))
+                continue
+            }
+            let ref = ToolResultCaptureStore.reference(runID: runID, callID: pair.call.id)
+            let retained = await toolResultCaptures.retainedCapture(
+                conversationID: configuration.conversationID,
+                ref: ref
+            )
+            if let retained {
+                if retained.durability == .durable {
+                    durableCaptureCallIDs.insert(pair.call.id)
+                }
+                candidates.append(ReplayEvidenceCandidate(
+                    pair: pair,
+                    text: Self.modelVisibleToolResult(pair.result, body: retained.text),
+                    ref: ref,
+                    totalBytes: retained.text.utf8.count,
+                    captureTruncated: retained.retentionTruncated,
+                    executionReportedTruncation: retained.executionReportedTruncation,
+                    captureUnavailable: false,
+                    isPagingPage: false
+                ))
+            } else {
+                // No retained bytes survive for this pair (legacy checkpoint,
+                // eviction or disabled retention). Keep the honest stored
+                // projection and let the planner say paging cannot recover
+                // more; never promise a ref that does not resolve.
+                candidates.append(ReplayEvidenceCandidate(
+                    pair: pair,
+                    text: Self.modelVisibleToolResult(pair.result, body: stored),
+                    ref: nil,
+                    totalBytes: stored.utf8.count,
+                    captureTruncated: false,
+                    executionReportedTruncation: false,
+                    captureUnavailable: true,
+                    isPagingPage: false
+                ))
+            }
+        }
+        return candidates
+    }
+
+    /// Plans the replayed pair channel and the pending batch against one
+    /// shared byte budget derived from the actual outgoing request. Mapping
+    /// the planner items back preserves call order and pairing identity.
+    private static func planToolEvidence(
+        replayCandidates: [ReplayEvidenceCandidate],
+        pendingInputs: [ToolResultSelectionInput],
+        budgetBytes: Int
+    ) -> ToolEvidencePlan {
+        var inputs: [ToolResultSelectionInput] = []
+        inputs.reserveCapacity(replayCandidates.count + pendingInputs.count)
+        inputs.append(contentsOf: replayCandidates.map { selectionInput(for: $0) })
+        inputs.append(contentsOf: pendingInputs)
+        let selection = ToolResultPlanner.plan(inputs: inputs, budgetBytes: budgetBytes)
+        var pairs: [ReplayedToolPair] = []
+        pairs.reserveCapacity(replayCandidates.count)
+        var pending: [ToolResultSelection.Item] = []
+        for (index, item) in selection.items.enumerated() {
+            if index < replayCandidates.count {
+                var pair = replayCandidates[index].pair
+                pair.result.outputSummary = item.output
+                pairs.append(pair)
+            } else {
+                pending.append(item)
+            }
+        }
+        return ToolEvidencePlan(
+            replayedPairs: pairs,
+            pendingItems: pending,
+            requestedBytes: selection.requestedBytes,
+            sentBytes: selection.sentBytes,
+            allComplete: selection.allComplete
+        )
+    }
+
+    private static func selectionInput(
+        for candidate: ReplayEvidenceCandidate
+    ) -> ToolResultSelectionInput {
+        ToolResultSelectionInput(
+            callID: candidate.pair.call.id,
+            toolName: candidate.pair.call.toolName,
+            text: candidate.text,
+            ref: candidate.ref,
+            totalBytes: candidate.totalBytes,
+            captureTruncated: candidate.captureTruncated,
+            executionReportedTruncation: candidate.executionReportedTruncation,
+            captureUnavailable: candidate.captureUnavailable,
+            isPagingPage: candidate.isPagingPage
+        )
+    }
+
+    /// Rebuilds the replayed-pair channel for a resumed dispatch. The
+    /// checkpoint stores only a bounded projection; pairs that kept their
+    /// exact live bytes remain untouched, while a pair reduced to a recovery
+    /// marker is expanded from the trusted capture store and sized against
+    /// the same real request budget a live turn uses. A missing capture is
+    /// stated explicitly instead of replaying a promise that no longer holds.
+    private func rehydrateRestoredReplayPairs(_ request: inout ProviderStreamRequest) async {
+        guard !request.replayedToolPairs.isEmpty else { return }
+        enum Slot {
+            case fixed(ReplayedToolPair)
+            case candidate(ReplayEvidenceCandidate)
+        }
+        var slots: [Slot] = []
+        var fixedBytes = 0
+        for pair in request.replayedToolPairs {
+            if pair.call.toolName == ToolResultPagingTool.name {
+                slots.append(.fixed(pair))
+                fixedBytes += pair.result.outputSummary.utf8.count
+                continue
+            }
+            if pair.result.outputSummary.hasPrefix(Self.replayRecoveryMarker) {
+                let ref = Self.persistedCaptureReference(
+                    in: pair.result.outputSummary,
+                    marker: Self.replayRecoveryMarker
+                )
+                if let ref, let retained = await toolResultCaptures.retainedCapture(
+                    conversationID: configuration.conversationID,
+                    ref: ref
+                ) {
+                    if retained.durability == .durable {
+                        durableCaptureCallIDs.insert(pair.call.id)
+                    }
+                    slots.append(.candidate(ReplayEvidenceCandidate(
+                        pair: pair,
+                        text: Self.modelVisibleToolResult(pair.result, body: retained.text),
+                        ref: ref,
+                        totalBytes: retained.text.utf8.count,
+                        captureTruncated: retained.retentionTruncated,
+                        executionReportedTruncation: retained.executionReportedTruncation,
+                        captureUnavailable: false,
+                        isPagingPage: false
+                    )))
+                    continue
+                }
+                var notice = pair
+                notice.result.outputSummary = "[replayed tool result could not be rehydrated after recovery; the retained capture is no longer available]"
+                slots.append(.fixed(notice))
+                fixedBytes += notice.result.outputSummary.utf8.count
+                continue
+            }
+            slots.append(.fixed(pair))
+            fixedBytes += pair.result.outputSummary.utf8.count
+        }
+        let candidates = slots.compactMap { slot -> ReplayEvidenceCandidate? in
+            guard case .candidate(let candidate) = slot else { return nil }
+            return candidate
+        }
+        guard !candidates.isEmpty else { return }
+        let pendingBytes = request.toolResults.reduce(0) { $0 + $1.output.utf8.count }
+        let replayMetadataBytes = request.replayedToolPairs.reduce(0) {
+            $0 + Self.replayCallMetadataBytes($1)
+        }
+        let pendingMetadataBytes = Self.pendingCallMetadataBytes(
+            calls: request.pendingToolCalls,
+            reasoning: request.pendingAssistantReasoning
+        )
+        let budget = min(
+            Self.providerToolEvidenceBudgetBytes(
+                messages: request.contentMessages,
+                schemas: request.toolSchemas,
+                contextWindowTokens: configuration.model.limits.contextTokens,
+                reservedOutputTokens: Self.contextOutputReservation(limits: configuration.model.limits)
+            ),
+            Self.maximumProviderToolResultBytes
+        )
+        let remaining = max(
+            0,
+            budget
+                - fixedBytes
+                - pendingBytes
+                - replayMetadataBytes
+                - pendingMetadataBytes
+        )
+        let selection = ToolResultPlanner.plan(
+            inputs: candidates.map { Self.selectionInput(for: $0) },
+            budgetBytes: remaining
+        )
+        var candidateIndex = 0
+        var restored: [ReplayedToolPair] = []
+        restored.reserveCapacity(slots.count)
+        for slot in slots {
+            switch slot {
+            case .fixed(let pair):
+                restored.append(pair)
+            case .candidate(let candidate):
+                var pair = candidate.pair
+                if candidateIndex < selection.items.count {
+                    pair.result.outputSummary = selection.items[candidateIndex].output
+                }
+                candidateIndex += 1
+                restored.append(pair)
+            }
+        }
+        request.replayedToolPairs = restored
+    }
+
+    /// Largest complete tool-evidence body the actual request can carry
+    /// after messages, complete schemas, images and the output reservation.
+    /// No fixed per-result display cap participates here.
+    private static func providerToolEvidenceBudgetBytes(
+        messages: [ProviderMessage],
+        schemas: [ToolSchemaDescriptor],
+        contextWindowTokens: Int,
+        reservedOutputTokens: Int
+    ) -> Int {
+        ProviderRequestSizer.measure(
+            messages: messages,
+            schemas: schemas,
+            replayedToolPairs: [],
+            contextWindowTokens: contextWindowTokens,
+            reservedOutputTokens: reservedOutputTokens
+        ).toolResultBudgetBytes
     }
 
     /// Conservative token estimate for the replay channel. The replay pairs
     /// are dispatched outside `messages`, so the context-budget trigger must
     /// count them or a tool-heavy run can overflow before compaction fires.
-    /// Mirrors the dispatch bound: planner pair limit, compacted summary cap
-    /// and total byte budget.
+    /// The at-rest history is already bounded by the same evidence byte cap,
+    /// so every retained pair participates here: a legacy forty-pair count
+    /// must not make the trigger believe a larger under-budget evidence set
+    /// is smaller than it is.
     static func replayEvidenceTokenEstimate(_ history: [ReplayedToolPair]) -> Int {
         var characters = 0
-        for pair in history.suffix(ToolReplayPlanner.defaultMaxPairs) {
-            characters += pair.call.argumentsJSON.count + 64
+        for pair in history {
+            characters += pair.call.argumentsJSON.count
+                + (pair.assistantReasoning?.utf8.count ?? 0)
+                + 64
             characters += min(pair.result.outputSummary.count, 2_048)
         }
         return min(characters / 4, ToolReplayPlanner.defaultMaxResultBytes / 4)
@@ -7560,6 +7975,10 @@ struct ToolLoopGuard {
 /// checkpointed at-rest history at graduation, dropping oldest whole pairs
 /// only — argument JSON stays wire-valid or the pair falls out completely.
 enum ToolReplayPlanner {
+    /// Legacy default for explicit `trimToBudget` callers (subagent
+    /// checkpoints, durable at-rest trimming). The live dispatch window is
+    /// sized from the actual request budget and is never capped by this
+    /// count; use the planner for clients that intentionally request it.
     static let defaultMaxPairs = 40
     static let defaultMaxResultBytes = 96 * 1_024
     /// Ceiling for the reasoning excerpt stored with each settled pair.

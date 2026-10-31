@@ -230,7 +230,7 @@ final class DocumentSession {
     /// beats deletion.
     private var unreadableRows = UnreadableRows()
 
-    private struct UnreadableRows {
+    fileprivate struct UnreadableRows {
         var bodies: Set<UUID> = []
         var sketches: Set<UUID> = []
         var planes: Set<UUID> = []
@@ -355,8 +355,19 @@ final class DocumentSession {
     private var sketchPreview: SketchPreview?
     var isSketchPreviewActive: Bool { sketchPreview != nil }
     var previewSketchID: SketchID? { sketchPreview?.sketchID }
+    /// A named-version restore replaces the persisted record graph and then
+    /// commits it through the ordinary save kernel. While that transaction is
+    /// in flight every other command/save must refuse: otherwise a command
+    /// could mutate the half-replaced graph, or a second writer could commit a
+    /// stale generation. Only the restore's own internal save bypasses this.
+    private(set) var namedVersionRestoreInProgress = false
     var writeBlock: (code: String, message: String)? {
         if isReadOnly { return ("read_only", readOnlyMessage) }
+        if namedVersionRestoreInProgress {
+            return ("version_restore", FloeCADStrings.text(
+                "cad.versions.busy.restoring",
+                "A design version is being restored. Try again when it finishes."))
+        }
         if isSketchPreviewActive {
             return ("edit_in_progress", FloeCADStrings.text("cad.sketch.finishCurrentEdit", "Finish or cancel the sketch edit first."))
         }
@@ -1459,6 +1470,164 @@ final class DocumentSession {
         didChange(autosave: autosave, persistedChange: false)
     }
 
+    // MARK: - Named-version restore (E34)
+
+    /// Opaque rollback value for one named-version restore. It pins the exact
+    /// live document + undo/redo/caches, the exact persisted record graph and
+    /// the load-time diagnostics. Nothing here is a second undo system; it is
+    /// the existing edit checkpoint extended with the project rows a restore
+    /// replaces.
+    nonisolated struct NamedVersionRestoreRollback {
+        fileprivate let checkpoint: CADEditCheckpoint
+        fileprivate let project: CADProjectSnapshot
+        fileprivate let unreadableRows: UnreadableRows
+        fileprivate let storeIsNewerThanApp: Bool
+        fileprivate let loadWarning: String?
+        fileprivate let lastSaveError: String?
+        fileprivate let lastSaveErrorIsWriteBlock: Bool
+    }
+
+    var hasUnreadableRowsAfterNamedVersionRestore: Bool { unreadableRows.count > 0 }
+
+    /// Fence all other commands/saves and cancel the debounce before the
+    /// restore reads/settles the current commit. Returns false when the
+    /// document is read-only, already restoring, or in a sketch preview.
+    func beginNamedVersionRestore() -> Bool {
+        guard !isReadOnly, !namedVersionRestoreInProgress, writeBlock == nil else {
+            return false
+        }
+        namedVersionRestoreInProgress = true
+        saveTask?.cancel()
+        saveTask = nil
+        return true
+    }
+
+    /// Release the fence after a successful restore, a rollback, or a refusal
+    /// that happened before the in-memory graph was touched.
+    func endNamedVersionRestore() {
+        namedVersionRestoreInProgress = false
+    }
+
+    /// Settle the current document before taking the safety checkpoint: wait
+    /// out an already-running writer, then commit any real pending edits through
+    /// the ordinary async save path (allowed only while the restore fence owns
+    /// the session). Returns an actionable error without touching disk state
+    /// beyond that ordinary flush.
+    func settleForNamedVersionRestore() async -> String? {
+        guard namedVersionRestoreInProgress else {
+            return CADNamedVersionError.documentBusy(
+                FloeCADStrings.text("cad.versions.busy.notStarted",
+                                    "The version restore was not started.")).localizedDescription
+        }
+        while inFlightSaveCount > 0 {
+            do {
+                try await waitForInFlightSaveChange()
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        if hasUncommittedPersistenceChanges {
+            let outcome = await saveWithIdentityAsync(allowDuringNamedVersionRestore: true)
+            if let error = outcome.error { return error }
+        }
+        guard inFlightSaveCount == 0 else {
+            return FloeCADStrings.text("cad.versions.busy.writer",
+                                       "Another save is still running. Try again.")
+        }
+        return nil
+    }
+
+    /// Capture the exact state a failed restore must return to.
+    func captureNamedVersionRestoreRollback() -> NamedVersionRestoreRollback {
+        NamedVersionRestoreRollback(
+            checkpoint: captureEditCheckpoint(),
+            project: CADProjectSnapshot(project),
+            unreadableRows: unreadableRows,
+            storeIsNewerThanApp: storeIsNewerThanApp,
+            loadWarning: loadWarning,
+            lastSaveError: lastSaveError,
+            lastSaveErrorIsWriteBlock: lastSaveErrorIsWriteBlock)
+    }
+
+    /// Replace the persisted graph with the verified checkpoint and rebuild
+    /// the live document through the SAME `load()` used by open. Undo/redo is
+    /// cleared: restoring a named version is a new history boundary, not an
+    /// undoable edit. The package is untouched until the caller's save.
+    func applyNamedVersionProjectForRestore(_ restored: Project) throws {
+        guard namedVersionRestoreInProgress else {
+            throw CADNamedVersionError.documentBusy(
+                FloeCADStrings.text("cad.versions.busy.notStarted",
+                                    "The version restore was not started."))
+        }
+        project.replaceContentsForNamedVersionRestore(with: restored)
+        unreadableRows = UnreadableRows()
+        brepBlobCache.removeAll()
+        evalCache = EvalCache()
+        lastEvalErrors = [:]
+        lastReferenceErrors = [:]
+        lastBodyWriters = [:]
+        lastRebuildRejection = [:]
+        lastRejectedFeatureErrors = [:]
+        lastFaceTables = [:]
+        lastKernelNames = [:]
+        lastNamingRevisions = [:]
+        undoStack.reset()
+        document = DesignDocument()
+        load()
+        // The restored graph is not durable yet. Mark it pending so the
+        // internal save commits it and adoption starts from a clean marker.
+        persistenceChangeCount = changeCount
+        guard !isReadOnly else {
+            throw CADNamedVersionError.restoreRefused(
+                FloeCADStrings.text("cad.versions.error.format",
+                                    "This version requires a newer document format. The current document was not changed."))
+        }
+        guard unreadableRows.count == 0 else {
+            throw CADNamedVersionError.restoreRefused(
+                FloeCADStrings.text("cad.versions.error.unreadable",
+                                    "This version contains records this app cannot read. The current document was not changed."))
+        }
+    }
+
+    /// Put back the exact pre-restore state after a refused/failed commit. The
+    /// store's atomic commit has already kept the on-disk package untouched.
+    func restoreAfterFailedNamedVersionRestore(_ rollback: NamedVersionRestoreRollback) {
+        rollback.project.restore(into: project)
+        restoreCheckpointState(rollback.checkpoint, autosave: false)
+        unreadableRows = rollback.unreadableRows
+        storeIsNewerThanApp = rollback.storeIsNewerThanApp
+        loadWarning = rollback.loadWarning
+        lastSaveError = rollback.lastSaveError
+        lastSaveErrorIsWriteBlock = rollback.lastSaveErrorIsWriteBlock
+        brepBlobCache.removeAll()
+        namedVersionRestoreInProgress = false
+    }
+
+    /// Adopt an exact-format-floor commit performed for named-version
+    /// creation without changing the dirty persistence marker. If the user
+    /// edited while the checkpoint was being prepared, that edit stays dirty
+    /// and its next save uses the new store revision.
+    func adoptExternalStoreIdentity(_ receipt: CADSaveOutcome) {
+        guard receipt.succeeded else { return }
+        if receipt.revision >= savedIdentity.revision {
+            savedIdentity = receipt
+        }
+    }
+
+    /// Adopt the exact store receipt after `performExactRestore`. This does not
+    /// re-encode or re-save the document; the store already committed the
+    /// checkpoint bytes with the new revision. The restored graph was loaded
+    /// from those same rows, so the persistence marker becomes clean.
+    func adoptExactRestoredIdentity(_ outcome: CADSaveOutcome) {
+        guard outcome.succeeded else { return }
+        lastSavedPersistenceChangeCount = persistenceChangeCount
+        savedIdentity = outcome
+        recordSaveResult(nil)
+        lastOwnedCommandReceipt = nil
+        lastCommittedOwnedToken = nil
+    }
+
+
     // MARK: - Persistence
 
     private func load() {
@@ -1667,6 +1836,13 @@ final class DocumentSession {
                 """)
             }
             loadWarning = parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+        }
+        if let recoveryWarning = project.recoveryWarning, !recoveryWarning.isEmpty {
+            if let existing = loadWarning, !existing.isEmpty {
+                loadWarning = existing + "\n\n" + recoveryWarning
+            } else {
+                loadWarning = recoveryWarning
+            }
         }
         changeCount += 1
         // A document saved with broken refs used to reopen with NO badges,
@@ -2004,10 +2180,11 @@ final class DocumentSession {
     /// The one async writer. Callers receive THIS commit's immutable outcome;
     /// publishing the newest receipt for UI observation is a separate step.
     @discardableResult
-    func saveWithIdentityAsync() async -> CADSaveOutcome {
+    func saveWithIdentityAsync(allowDuringNamedVersionRestore: Bool = false) async -> CADSaveOutcome {
         saveTask?.cancel()
         saveTask = nil
-        if let block = writeBlock {
+        if let block = writeBlock,
+           !(allowDuringNamedVersionRestore && block.code == "version_restore") {
             recordWriteBlock(block.message)
             return failedSaveOutcome(block.message)
         }
@@ -2015,7 +2192,8 @@ final class DocumentSession {
         defer { finishInFlightSave() }
         await prewarmBrepSerialization()
         // Preserve owner acquisition and local-error fences across the await.
-        if let block = writeBlock {
+        if let block = writeBlock,
+           !(allowDuringNamedVersionRestore && block.code == "version_restore") {
             recordWriteBlock(block.message)
             return failedSaveOutcome(block.message)
         }

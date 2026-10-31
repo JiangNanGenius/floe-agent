@@ -2134,8 +2134,8 @@ struct AgentRuntimeTests {
         #expect(historyCall < pendingCall)
     }
 
-    @Test("Replay budget drops the oldest whole pairs once history exceeds forty")
-    func toolReplayBudgetDropsOldestPairs() async throws {
+    @Test("Replay budget keeps every small settled pair when the real window fits them")
+    func toolReplayBudgetKeepsSmallPairsWithinWindow() async throws {
         let adapter = MockAdapter()
         let batchCount = 45
         var script: [[AgentEvent]] = try (1...batchCount).map { index in
@@ -2158,10 +2158,12 @@ struct AgentRuntimeTests {
         #expect(adapter.requests.count == batchCount + 1)
         let finalRequest = try #require(adapter.requests.last)
         let replayedIDs = finalRequest.replayedToolPairs.map { $0.call.id }
-        #expect(replayedIDs.count == ToolReplayPlanner.defaultMaxPairs)
-        // The pending batch (budget-45) is excluded from replay; the oldest
-        // settled pairs were dropped whole, preserving settlement order.
-        #expect(replayedIDs == (5...(batchCount - 1)).map { "budget-\($0)" })
+        // The pending batch (budget-45) is excluded from replay. All 44
+        // settled small pairs fit this 128K request, so the legacy forty-pair
+        // dispatch count must not drop budget-1..budget-4.
+        #expect(replayedIDs.count == batchCount - 1)
+        #expect(replayedIDs.count > ToolReplayPlanner.defaultMaxPairs)
+        #expect(replayedIDs == (1...(batchCount - 1)).map { "budget-\($0)" })
         #expect(finalRequest.pendingToolCalls.map(\.id) == ["budget-\(batchCount)"])
         // No dangling half pairs: every replayed item binds call to result.
         #expect(finalRequest.replayedToolPairs.allSatisfy { $0.call.id == $0.result.callID })

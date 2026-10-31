@@ -679,6 +679,12 @@ public enum CadDocumentAction: String, Decodable, Sendable, CaseIterable {
     /// Durable native-task status and cancellation (long rebuild/export/mesh
     /// jobs). `status` lists or reports one task; `cancel` requires task_id.
     case status, cancel
+    /// E34: explicit user-named whole-document checkpoints. Read-only
+    /// list/compare/recoveries/record never write package bytes or draft
+    /// state; create/restore/delete/recover/discard_recovery are ordinary
+    /// task-authorized CAD edits with the document's own revision/ownership
+    /// CAS (no model-supplied grant is consulted).
+    case versions
     // Native FloeCAD compatibility aliases. The unified read/query/measure/
     // check/propose/preview/apply/save/export actions route on the document
     // representation (`.floecad` = native); these aliases stay for callers
@@ -931,10 +937,17 @@ public struct CadDocumentTool: AgentTool {
     playback/scrub never changes the geometry or assembly baseline), and \
     action "capture" (actual viewport PNG artifact bound to the document \
     revision/change_count; only a vision-capable model may inspect it — \
-    otherwise measure, never claim to have seen the image). Nothing is \
-    written by propose/preview/import; material/parameter/animation edits are \
-    undoable document commands committed with compare-and-swap, and temporary \
-    chat remains read-only.
+    otherwise measure, never claim to have seen the image). Action "versions" \
+    creates, lists, compares, restores and deletes user-named whole-document \
+    checkpoints through payload.action; it also lists retained unpublished \
+    checkpoints and can recover or discard one. Compare pages through every \
+    difference with identity pins, and record returns the exact stored record \
+    JSON (byte-bounded chunk pages) when a summary detail omits fields. Restore is \
+    revision/CAS-checked, the pre-restore state is kept as a recovery version, \
+    and in-memory undo does not cross a restore. Restore creates a named branch checkpoint of the restored state by default while keeping the same document identity; create_branch=false restricts it to the in-place restore. Nothing is written by \
+    propose/preview/import; material/parameter/animation edits are undoable \
+    document commands committed with compare-and-swap, and temporary chat \
+    remains read-only.
     """
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -957,7 +970,7 @@ public struct CadDocumentTool: AgentTool {
       "additionalProperties": false,
       "required": ["action"],
       "properties": {
-        "action": { "type": "string", "enum": ["capabilities", "create", "read", "query", "locate", "measure", "check", "propose", "import", "reference", "preview", "apply", "save", "export", "status", "cancel", "material", "parameters", "capture", "observe", "animation", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
+        "action": { "type": "string", "enum": ["capabilities", "create", "read", "query", "locate", "measure", "check", "propose", "import", "reference", "preview", "apply", "save", "export", "status", "cancel", "material", "parameters", "capture", "observe", "animation", "versions", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
         "path": { "type": "string", "description": "Document path relative to the task workspace (an allowed absolute workspace path is accepted too). Required for every action except capabilities without a path. observe reads an original GLB/glTF scene without conversion; A .floecad extension routes to the native 3D kernel; .dwg/.dxf route to the 2D engine. For 'create' it is the new package location inside the task workspace (a missing parent directory is created inside the guarded workspace; a path outside it is refused; the file need not exist); for 'import' it is the EXISTING .floecad package that receives the geometry. Never write a .floecad directory, manifest.json or zip yourself: use create." },
         "name": { "type": "string", "maxLength": 120, "description": "create: human-readable display name stored in the new native document. Letters and digits of ANY language (Chinese, Japanese, Cyrillic, ...), spaces and -_(). are accepted; it must not contain '/', '\\\\', control/invisible characters or a '..' path segment and must be at most 120 characters, otherwise the call is refused with a bilingual explanation. When omitted the display name defaults to the file stem. The FILE keeps the stem of 'path' and is uniquified, so the display name and the file name stay separate. import: optional name for the imported body(ies)." },
         "source_path": { "type": "string", "description": "import/reference: workspace-relative path resolved by the host through the task workspace guard. import supports .step/.stp, .iges/.igs, .stl/.obj/.glb/.gltf. reference requires an existing native .floecad package; the source is opened only by the App-owned bridge and is never granted by this string alone. DWG/DXF go through the 2D engine instead." },
@@ -997,7 +1010,7 @@ public struct CadDocumentTool: AgentTool {
         "dry_run": { "type": "boolean", "description": "export: return the coverage receipt only (counts, included/excluded occurrence ids and reasons); no file is written. Requires an explicit scope." },
         "op": { "type": "string", "description": "Native typed operation name at the TOP LEVEL beside action and path, never inside args. Native propose requires it; native measure may use it to name the measurement kind. Exact vocabulary (also reported by capabilities as operation_names): sketch.create, sketch.addEntities, sketch.addText, feature.extrude, feature.revolve, feature.hole, feature.pattern, feature.mirror, feature.transform, feature.boolean, feature.fillet, feature.chamfer, feature.shell, feature.sweep, feature.loft, feature.pushPull, feature.moveFace, feature.scaleFace, feature.rotateFace, feature.deleteFace, feature.replaceFace, feature.draftFace, body.setMaterial, item.setHidden." },
         "args": { "type": "string", "description": "JSON object STRING containing ONLY the typed operation's arguments, not an {op,args} envelope. Send op separately at the top level. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:\"line\",a:[x,y],b:[x,y]} | {kind:\"circle\",center:[x,y],radius} | {kind:\"arc\",center:[x,y],radius,startAngle,endAngle} | {kind:\"spline\",points:[[x,y],...],closed?} | {kind:\"rect\",min:[x,y],max:[x,y]} | {kind:\"polygon\",center:[x,y],radius,sides,rotation?} | {kind:\"ellipse\",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; sketch.addText {sketchID, text, height (cap height, mm), fontName? (installed family or PostScript name; default Helvetica), origin?[x,y] (baseline start in sketch-plane mm; default [0,0])} creates closed line loops for the glyphs as ordinary sketch entities (counter loops are holes) in ONE undo step; the reply reports entityCount, glyphCount, outlineLoopCount, boundsMM, advanceWidthMM, heightMM, resolvedFontNames, fallbackFontNames, units:\"mm\" and undoSteps. This is the native text-sketch route; this service has no standalone mesh.text operation. A missing font or a visible character without a real vector outline refuses with unsupported_font / unsupported_glyphs and adds nothing; entity ids stay available through query kind=sketches. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"text\":\"O\",\"height\":20,\"origin\":[10,5]}. feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:\"throughAll\"|\"upToNext\"|\"blind\", boolean?:\"newBody\"|\"union\"|\"subtract\"|\"intersect\", booleanTargets?:[bodyID]}. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"seedPoint\":[40,20],\"distance\":10}. feature.hole {sketchID, seedPoint:[x,y] inside the SINGLE locating circle, targetBodyID, type:\"throughAll\"|\"blind\"|\"counterbore\"|\"countersink\", depth? (blind, mm, flat bottom), counterboreDiameter?/counterboreDepth? (counterbore, mm; diameter > pilot), countersinkDiameter?/countersinkAngle? (countersink, mm; included angle 30…170 degrees; diameter > pilot), reversed? (drills along -plane.normal; a face sketch plane normal is the source face outward normal)}; the placement circle owns position and pilot diameter (edit it with updateSketchEntity, never the hole), through/counterbore/countersink pilots are through-all, and the target must be an analytic B-rep body. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet {bodyID,radius,edges,query_token?} / feature.chamfer {bodyID,setback,edges,query_token?}, feature.shell {bodyID,thickness,openFaces,query_token?}, feature.pattern {bodyID,kind,count,...}); Face/edge index operations require query_token from query kind=faces/edges (or the row's stable face signature/edge midpoint); index existence alone is rejected with requery_required because a rebuild can reuse an index for a different face/edge. measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild)." },
-        "payload": { "type": "string", "description": "JSON object string for the native workbench services (three_d_assembly / three_d_drawing) and the material/parameters/capture/animation actions. Animation actions: list|query|evaluate (real timeline data), createClip|updateClip|deleteClip|setActiveClip, addTrack|deleteTrack, setKeyframe|setCameraKeyframe|setPartKeyframe|deleteKeyframe, preset {kind:turntable|explodeReturn}, undo|redo, capture {clip_id?,time?|frame?,fps?,width?,height?,format?}, export {output? (workspace .mp4),width?,height?,fps?,codec?,bitrate?,overwrite?,poster?}. Animation edits are ordinary undoable document commands; capture returns a real animated native frame, export returns a verified MP4 with task_id and publishes it through RunOutput. Material actions: list|read|create|update|remove|apply|applyFaces|reassignFaces|mapping|textures|unresolved|libraryExport|libraryImport|libraryList|undo|redo; create/update/apply accept color [r,g,b(,a)] 0…1 (or #RRGGBB[AA]), metallic/roughness/opacity, emissive + emissive_strength, uv_mapping {source:mesh|planarProjection|boxProjection, axis:x|y|z, scale_mm:[u,v], rotation_degrees, offset:[u,v], flip_u, flip_v}, textures [{slot:baseColor|metallic|roughness|normal|emissive|opacity, asset_path? or asset_base64?, color_space?, orientation?}]. Parameter actions: list|update|updateSketchEntity|deleteSketchEntity|setSketchDimension|removeSketchDimension|variable.create|variable.update|variable.delete|feature.setExpression|datum.offsetPlane.create|datum.offsetPlane.update|datum.offsetPlane.delete|sketch.setSupport|sketch.clearSupport|feature.suppress|feature.delete|feature.move|undo|redo; update {feature_id, changes:{distance|angle|taper_angle|radius|setback|thickness|factor|count|spacing|total_angle|symmetric|rotate_instances|hole_type|depth|counterbore_diameter|counterbore_depth|countersink_diameter|countersink_angle|reversed:...}} uses the units query kind=features reports; updateSketchEntity {sketch_id, entity_id, a?, b? | min?, max?, center?, width?, height? | center?, radius?, diameter? | center?, radius?, diameter?, start_angle_deg?, end_angle_deg?, sweep_angle_deg? | center?, radius_x?, radius_y?, rotation_deg? | points? or point_index? + point?, expected_*} edits one existing line/rect/circle/arc/ellipse/spline by stable id and updates matching circle/arc radius or arc sweep dimensions in the same undo step (angles are degrees; an arc stores a CCW sweep under 360 degrees; spline point_index is the zero-based fit-point identity; refused as locked_entity for a Lock, dependent_reference for unsupported referenced geometry, or constraint_conflict if the saved sketch would become unsatisfied; polygon remains query-only); deleteSketchEntity {sketch_id, entity_id, remove_shared_references?, remove_pattern_link?} deletes exactly one entity by stable id in one undo step: references that only name it are removed and reported, a reference that also anchors another entity refuses with shared_references unless the explicit flag is true, and a pattern link refuses unless remove_pattern_link:true while every instance keeps its id; setSketchDimension {sketch_id, entity_id|entity_ids|refs, kind:length|distance|angle|diameter|radius|width|height, value, expected_value?, dimension_id?} creates or updates one driving value, solves with the existing solver and commits one undo step (angle is degrees; length is a line's distance; width/height store as horizontal/vertical); removeSketchDimension {sketch_id, dimension_id}; variable.create {name, expression} creates a named unitless scalar; variable.update {variable_id, name?, expression?, expected_expression?} edits/renames one variable and rewrites every variable/feature/sketch formula reference by identifier token (never substring); variable.delete {variable_id} refuses with exact dependent variable/feature/dimension ids while the name is still referenced; both create and update validate names, functions, references and cycles BEFORE commit, and one variable edit plus every dependent feature/sketch rebuild is ONE undo/redo transaction. feature.setExpression {feature_id, parameter, expression, expected_expression?} binds a formula to a parameter query kind=features reports with expression_action=feature.setExpression; expression is written in the PUBLIC unit (deg/mm/unitless) and a radian-persisted public-degree parameter stores an explicit radians(...) conversion rather than an unconverted degree value; expected_expression fences the exact stored `formula` row (radian-valued for a radian-persisted angle), not public_expression; parameters without a formula-capable Expr refuse unsupported_parameter instead of a value-only edit. feature.suppress {feature_id, suppressed}; feature.delete {feature_id, force?} refuses when later features consume its bodies unless forced and always rolls back a broken rebuild; feature.move {feature_id, to_index} verifies body dependency order before moving. datum.offsetPlane.create {body_id, face_index, query_token, expression, size?} creates an associative offset plane in mm from one exact named planar OCCT face; face_index is the kernel index from query kind=faces, never a render triangle. datum.offsetPlane.update {plane_id, expression?, expected_expression?, body_id?, face_index?, query_token?, size?} edits the same plane; source re-selection requires the complete fresh face triple. datum.offsetPlane.delete {plane_id} refuses while referenced. sketch.setSupport {sketch_id, plane_id} rehosts local sketch geometry on that construction plane; sketch.clearSupport {sketch_id} detaches at its current frame. All five operations are ordinary atomic undoable edits; invalid references/formulas refuse before commit. Discover exact ids/formulas/units/dependencies with query kind=planes/sketches/variables/constraints/features. Observe (original GLB/glTF): {views?:[{azimuthDegrees,elevationDegrees,distanceScale?}],width?,height?,sceneIndex?,cameraIndex?,clipIndex?,timeSeconds?,expectedSourceSHA256?,maximumSourceBytes?,maximumResources?,includeImages?,nodeOffset?,nodeLimit?}; defaults to four real camera views. The full original hierarchy remains pageable: use includeImages:false and nodeOffset=nextOffset with the same expectedSourceSHA256 to read later pages (nodeLimit 1...1000); no hidden tail is discarded. It preserves source/resource hashes and reports missing resources/partial frames; it does not create CAD topology or authorize file writes. Capture: {width?,height?} returns a real viewport PNG artifact with renderer=presentation only while Present is active, otherwise renderer=engineering; it is bound to revision/change_count and image_sha256 is separate from content_sha256. applyFaces/reassignFaces require query_token from query kind=faces or face_signatures; index-only edits are refused with requery_required (query tokens are generation proof, not permission). Workbench service payloads MUST name one operation via payload.action or legacy payload.op; mutating workbench services still use propose→apply, while material/parameter edits are ordinary authorized undoable document commands. A global libraryExport/libraryImport uses the single app-owned personal library (libraryList reads it with global:true); global export writes a file so it is refused in temporary/read-only contexts. Never contains file paths other than the guarded asset_path/output/import fields above." }
+        "payload": { "type": "string", "description": "JSON object string for native workbench services (three_d_assembly/three_d_drawing), material/parameters/capture/animation, and the versions action. versions: {action:list|create|compare|restore|delete|recoveries|recover|discard_recovery|record, name? (create), version_id? (compare/restore/delete/recover/discard_recovery/record), against_version_id? (compare/record; omit = current committed document), expected_revision? (restore CAS), expected_content_sha256? (restore CAS), create_branch? (restore; default true), branch_name? (restore), offset?/limit? (compare page; limit 1...240), identity? (compare/record continuation: copy the exact from/to objects returned by the first page), section?/identifier? (record: the difference section and record id), chunk_offset?/chunk_limit? (record page over the exact stored JSON; byte-bounded chunks; limit 1...256)}. list/compare/compare pages/recoveries/record are read-only; create/restore/delete/recover/discard_recovery are ordinary task-authorized CAD edits with the document's own ownership/revision CAS. list also returns retained unpublished checkpoints under recoveries; recover publishes one only after it verifies, while discard_recovery deletes only that unpublished checkpoint. compare returns totalDifferences/nextOffset; a later page requires identity pins and a changed current revision is refused. record returns the exact stored record JSON (or the whole stored section for section-level records), its whole-value SHA-256, and byte-bounded chunk pages, so omitted summary fields can be fetched without inventing data. A named version is an explicit whole-document checkpoint, not automatic per-edit history; restore starts a new undo boundary and keeps the pre-restore state as a recovery version. Animation actions: list|query|evaluate (real timeline data), createClip|updateClip|deleteClip|setActiveClip, addTrack|deleteTrack, setKeyframe|setCameraKeyframe|setPartKeyframe|deleteKeyframe, preset {kind:turntable|explodeReturn}, undo|redo, capture {clip_id?,time?|frame?,fps?,width?,height?,format?}, export {output? (workspace .mp4),width?,height?,fps?,codec?,bitrate?,overwrite?,poster?}. Animation edits are ordinary undoable document commands; capture returns a real animated native frame, export returns a verified MP4 with task_id and publishes it through RunOutput. Material actions: list|read|create|update|remove|apply|applyFaces|reassignFaces|mapping|textures|unresolved|libraryExport|libraryImport|libraryList|undo|redo; create/update/apply accept color [r,g,b(,a)] 0…1 (or #RRGGBB[AA]), metallic/roughness/opacity, emissive + emissive_strength, uv_mapping {source:mesh|planarProjection|boxProjection, axis:x|y|z, scale_mm:[u,v], rotation_degrees, offset:[u,v], flip_u, flip_v}, textures [{slot:baseColor|metallic|roughness|normal|emissive|opacity, asset_path? or asset_base64?, color_space?, orientation?}]. Parameter actions: list|update|updateSketchEntity|deleteSketchEntity|setSketchDimension|removeSketchDimension|variable.create|variable.update|variable.delete|feature.setExpression|datum.offsetPlane.create|datum.offsetPlane.update|datum.offsetPlane.delete|sketch.setSupport|sketch.clearSupport|feature.suppress|feature.delete|feature.move|undo|redo; update {feature_id, changes:{distance|angle|taper_angle|radius|setback|thickness|factor|count|spacing|total_angle|symmetric|rotate_instances|hole_type|depth|counterbore_diameter|counterbore_depth|countersink_diameter|countersink_angle|reversed:...}} uses the units query kind=features reports; updateSketchEntity {sketch_id, entity_id, a?, b? | min?, max?, center?, width?, height? | center?, radius?, diameter? | center?, radius?, diameter?, start_angle_deg?, end_angle_deg?, sweep_angle_deg? | center?, radius_x?, radius_y?, rotation_deg? | points? or point_index? + point?, expected_*} edits one existing line/rect/circle/arc/ellipse/spline by stable id and updates matching circle/arc radius or arc sweep dimensions in the same undo step (angles are degrees; an arc stores a CCW sweep under 360 degrees; spline point_index is the zero-based fit-point identity; refused as locked_entity for a Lock, dependent_reference for unsupported referenced geometry, or constraint_conflict if the saved sketch would become unsatisfied; polygon remains query-only); deleteSketchEntity {sketch_id, entity_id, remove_shared_references?, remove_pattern_link?} deletes exactly one entity by stable id in one undo step: references that only name it are removed and reported, a reference that also anchors another entity refuses with shared_references unless the explicit flag is true, and a pattern link refuses unless remove_pattern_link:true while every instance keeps its id; setSketchDimension {sketch_id, entity_id|entity_ids|refs, kind:length|distance|angle|diameter|radius|width|height, value, expected_value?, dimension_id?} creates or updates one driving value, solves with the existing solver and commits one undo step (angle is degrees; length is a line's distance; width/height store as horizontal/vertical); removeSketchDimension {sketch_id, dimension_id}; variable.create {name, expression} creates a named unitless scalar; variable.update {variable_id, name?, expression?, expected_expression?} edits/renames one variable and rewrites every variable/feature/sketch formula reference by identifier token (never substring); variable.delete {variable_id} refuses with exact dependent variable/feature/dimension ids while the name is still referenced; both create and update validate names, functions, references and cycles BEFORE commit, and one variable edit plus every dependent feature/sketch rebuild is ONE undo/redo transaction. feature.setExpression {feature_id, parameter, expression, expected_expression?} binds a formula to a parameter query kind=features reports with expression_action=feature.setExpression; expression is written in the PUBLIC unit (deg/mm/unitless) and a radian-persisted public-degree parameter stores an explicit radians(...) conversion rather than an unconverted degree value; expected_expression fences the exact stored `formula` row (radian-valued for a radian-persisted angle), not public_expression; parameters without a formula-capable Expr refuse unsupported_parameter instead of a value-only edit. feature.suppress {feature_id, suppressed}; feature.delete {feature_id, force?} refuses when later features consume its bodies unless forced and always rolls back a broken rebuild; feature.move {feature_id, to_index} verifies body dependency order before moving. datum.offsetPlane.create {body_id, face_index, query_token, expression, size?} creates an associative offset plane in mm from one exact named planar OCCT face; face_index is the kernel index from query kind=faces, never a render triangle. datum.offsetPlane.update {plane_id, expression?, expected_expression?, body_id?, face_index?, query_token?, size?} edits the same plane; source re-selection requires the complete fresh face triple. datum.offsetPlane.delete {plane_id} refuses while referenced. sketch.setSupport {sketch_id, plane_id} rehosts local sketch geometry on that construction plane; sketch.clearSupport {sketch_id} detaches at its current frame. All five operations are ordinary atomic undoable edits; invalid references/formulas refuse before commit. Discover exact ids/formulas/units/dependencies with query kind=planes/sketches/variables/constraints/features. Observe (original GLB/glTF): {views?:[{azimuthDegrees,elevationDegrees,distanceScale?}],width?,height?,sceneIndex?,cameraIndex?,clipIndex?,timeSeconds?,expectedSourceSHA256?,maximumSourceBytes?,maximumResources?,includeImages?,nodeOffset?,nodeLimit?}; defaults to four real camera views. The full original hierarchy remains pageable: use includeImages:false and nodeOffset=nextOffset with the same expectedSourceSHA256 to read later pages (nodeLimit 1...1000); no hidden tail is discarded. It preserves source/resource hashes and reports missing resources/partial frames; it does not create CAD topology or authorize file writes. Capture: {width?,height?} returns a real viewport PNG artifact with renderer=presentation only while Present is active, otherwise renderer=engineering; it is bound to revision/change_count and image_sha256 is separate from content_sha256. applyFaces/reassignFaces require query_token from query kind=faces or face_signatures; index-only edits are refused with requery_required (query tokens are generation proof, not permission). Workbench service payloads MUST name one operation via payload.action or legacy payload.op; mutating workbench services still use propose→apply, while material/parameter edits are ordinary authorized undoable document commands. A global libraryExport/libraryImport uses the single app-owned personal library (libraryList reads it with global:true); global export writes a file so it is refused in temporary/read-only contexts. Never contains file paths other than the guarded asset_path/output/import fields above." }
       }
     }
     """#
@@ -1712,6 +1725,98 @@ public struct CadDocumentTool: AgentTool {
             if let revision = args.revision, revision < 0 {
                 throw FloeError.validationFailed("revision must be >= 0")
             }
+        case .versions:
+            guard native else {
+                throw FloeError.validationFailed(
+                    "versions is available for native .floecad documents only")
+            }
+            let payload = try Self.servicePayloadObject(args)
+            let rawAction = (payload["action"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            let allowedActions: Set<String> = ["list", "create", "compare", "restore",
+                                               "delete", "recoveries", "recover",
+                                               "discard_recovery", "record"]
+            guard allowedActions.contains(rawAction) else {
+                throw FloeError.validationFailed(
+                    "versions requires payload.action "
+                        + "list|create|compare|restore|delete|recoveries|recover|discard_recovery|record "
+                        + "(got '\(rawAction)')")
+            }
+            if rawAction == "create" {
+                guard let name = payload["name"] as? String,
+                      !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw FloeError.validationFailed("versions create requires payload.name")
+                }
+            }
+            let idActions: Set<String> = ["compare", "restore", "delete",
+                                         "recover", "discard_recovery", "record"]
+            if idActions.contains(rawAction) {
+                guard let raw = payload["version_id"] as? String,
+                      UUID(uuidString: raw.trimmingCharacters(in: .whitespacesAndNewlines)) != nil else {
+                    throw FloeError.validationFailed(
+                        "versions \(rawAction) requires payload.version_id (a version UUID)")
+                }
+            }
+            if rawAction == "compare", let raw = payload["against_version_id"] as? String,
+               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               UUID(uuidString: raw.trimmingCharacters(in: .whitespacesAndNewlines)) == nil {
+                throw FloeError.validationFailed(
+                    "versions compare against_version_id must be a version UUID")
+            }
+            if let raw = payload["expected_content_sha256"] as? String,
+               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let hex = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit }) else {
+                    throw FloeError.validationFailed(
+                        "versions expected_content_sha256 must be a 64-character SHA-256 hex string")
+                }
+            }
+            if let branch = payload["create_branch"], !(branch is Bool) {
+                throw FloeError.validationFailed("versions create_branch must be true or false")
+            }
+            if let name = payload["branch_name"], !(name is String) {
+                throw FloeError.validationFailed("versions branch_name must be a string")
+            }
+            if rawAction == "record" {
+                guard let section = payload["section"] as? String,
+                      !section.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw FloeError.validationFailed(
+                        "versions record requires payload.section")
+                }
+                guard let identifier = payload["identifier"] as? String,
+                      !identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw FloeError.validationFailed(
+                        "versions record requires payload.identifier")
+                }
+            }
+            if let offset = payload["offset"], rawAction == "compare",
+               !Self.isBoundedInt(offset, 0...10_000_000) {
+                throw FloeError.validationFailed(
+                    "versions compare offset must be a non-negative integer")
+            }
+            if let limit = payload["limit"], rawAction == "compare",
+               !Self.isBoundedInt(limit, 1...240) {
+                throw FloeError.validationFailed(
+                    "versions compare limit must be an integer in 1...240")
+            }
+            if let offset = payload["chunk_offset"], rawAction == "record",
+               !Self.isBoundedInt(offset, 0...10_000_000) {
+                throw FloeError.validationFailed(
+                    "versions record chunk_offset must be a non-negative integer")
+            }
+            if let limit = payload["chunk_limit"], rawAction == "record",
+               !Self.isBoundedInt(limit, 1...256) {
+                throw FloeError.validationFailed(
+                    "versions record chunk_limit must be an integer in 1...256")
+            }
+            if let identity = payload["identity"],
+               !(identity is [String: Any]) {
+                throw FloeError.validationFailed(
+                    "versions identity must be the from/to object returned by the first page")
+            }
+            if let revision = args.revision, revision < 0 {
+                throw FloeError.validationFailed("revision must be >= 0")
+            }
         case .propose:
             if native {
                 // Native proposals use the typed operation vocabulary; the
@@ -2065,6 +2170,12 @@ public struct CadDocumentTool: AgentTool {
         // refused here even though the same actions are ordinary authorized
         // edits in a normal task. Reads/lists and a viewport capture remain
         // available.
+        // Temporary chat's global tool ceiling excludes CAD entirely. Do not
+        // use the internal read-only version/list defenses as temporary-chat
+        // authorization.
+        if context.temporaryReadOnly, args.action == .versions {
+            throw FloeError.unauthorized
+        }
         if context.temporaryReadOnly,
            args.action == .material || args.action == .parameters
             || args.action == .animation {
@@ -2403,6 +2514,24 @@ public struct CadDocumentTool: AgentTool {
             let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
                                                     access: access)
             return completeOutput("cad.document \(args.action.rawValue): \(reply)", 24_000)
+
+        case .versions:
+            guard native else {
+                throw FloeError.validationFailed(
+                    "versions is available for native .floecad documents only")
+            }
+            var payload = try Self.servicePayloadObject(args)
+            // An explicit top-level revision pin is also the restore base
+            // revision; the service/engine applies it as CAS and refuses a
+            // stale restore before touching the document.
+            if let revision = args.revision, payload["expected_revision"] == nil {
+                payload["expected_revision"] = revision
+            }
+            let request = try jsonString(["kind": "versions", "payload": payload])
+            let reply = try await host.threeDAction(documentID: args.path!,
+                                                    requestJSON: request,
+                                                    access: access)
+            return completeOutput("cad.document versions: \(reply)", 24_000)
 
         case .propose:
             if native {
@@ -2870,6 +2999,11 @@ public struct CadDocumentTool: AgentTool {
         if let value = value as? Double, value == value.rounded() { return Int(value) }
         if let value = value as? String { return Int(value) }
         return nil
+    }
+
+    static func isBoundedInt(_ value: Any?, _ range: ClosedRange<Int>) -> Bool {
+        guard let parsed = intValue(value) else { return false }
+        return range.contains(parsed)
     }
 
     static func doubleValue(_ value: Any?) -> Double? {

@@ -131,6 +131,20 @@ public enum OrdinaryDocumentActionProfile {
                 if operation == "libraryExport", payload["global"] as? Bool != true { return .readOnly }
                 return nil
             }
+            if action == "versions" {
+                // E34 read-only version inspection never writes package bytes
+                // or draft state. list/compare/record inspect stored
+                // checkpoints; recoveries lists the unpublished retained
+                // checkpoints without publishing one. create/restore/delete/
+                // recover/discard_recovery stay on the ordinary typed
+                // write-target path (no per-edit card; ownership, permissions
+                // and revision CAS still execute).
+                guard let payload = cadPayload(in: arguments),
+                      let operation = payload["action"] as? String else { return nil }
+                let normalized = operation.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return ["list", "compare", "recoveries", "record"].contains(normalized)
+                    ? .readOnly : nil
+            }
             if action == "three_d_assembly" || action == "three_d_drawing" {
                 guard let payload = cadPayload(in: arguments),
                       let raw = (payload["action"] as? String) ?? (payload["op"] as? String) else { return nil }

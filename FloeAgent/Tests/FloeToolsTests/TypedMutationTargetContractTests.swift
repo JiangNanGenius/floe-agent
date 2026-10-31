@@ -485,6 +485,83 @@ struct TypedMutationTargetContractTests {
         #expect(imported.mutableTargets == [TypedMutableTarget(path: native, role: .sourceWrite)])
     }
 
+    @Test("CAD version reads declare no write target; version writes pin the package")
+    func cadVersionReadsAndWrites() throws {
+        let root = try makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("part.floecad").path
+
+        func arguments(_ operation: String) throws
+        -> (json: String, object: [String: Any]) {
+            let payload = String(decoding: try JSONSerialization.data(
+                withJSONObject: ["action": operation]), as: UTF8.self)
+            let object: [String: Any] = ["action": "versions",
+                                         "path": "part.floecad",
+                                         "payload": payload]
+            let json = String(decoding: try JSONSerialization.data(
+                withJSONObject: object), as: UTF8.self)
+            return (json, object)
+        }
+
+        // The four read operations declare no mutable/write target at all,
+        // including with the same case/whitespace normalization the tool and
+        // the ordinary-action profile use.
+        for operation in ["list", "compare", "recoveries", "record",
+                          " List ", "COMPARE", "\trecoveries\n", "Record"] {
+            let call = try arguments(operation)
+            #expect(TypedMutationContract.specs(
+                for: "cad.document", arguments: call.object).isEmpty,
+                "versions \(operation) must declare no write target")
+            #expect(TypedMutationContract.resolveMutableTargets(
+                for: "cad.document", arguments: call.object,
+                workspaceRootURL: root, serviceStorePaths: [:])?.isEmpty == true,
+                "versions \(operation) must acquire no write target")
+            let resolution = try resolve("cad.document", call.json, root: root)
+            let claimsSourceWrite = resolution.mutableTargets.contains {
+                $0.role == .sourceWrite
+            }
+            #expect(!claimsSourceWrite,
+                    "versions \(operation) must not claim a source write")
+        }
+
+        // Every mutating version operation stays a single-package source
+        // write with the canonical file authority target.
+        for operation in ["create", "restore", "delete", "recover",
+                          "discard_recovery", " Restore "] {
+            let call = try arguments(operation)
+            let specs = TypedMutationContract.specs(
+                for: "cad.document", arguments: call.object)
+            #expect(specs.map(\.role) == [.sourceWrite])
+            let resolution = try resolve("cad.document", call.json, root: root)
+            #expect(resolution.contractCovered)
+            #expect(!resolution.hasUnresolvedExtent)
+            #expect(resolution.mutableTargets == [
+                TypedMutableTarget(path: target, role: .sourceWrite)
+            ])
+            #expect(try authorityTarget("cad.document", call.json, root: root)
+                == "file:" + target)
+        }
+
+        // Unknown/malformed payloads keep the conservative write target so
+        // the approval policy fails closed instead of granting a read.
+        for operation in ["publish", ""] {
+            let call = try arguments(operation)
+            #expect(TypedMutationContract.specs(
+                for: "cad.document", arguments: call.object).map(\.role)
+                == [.sourceWrite])
+        }
+        let malformedPayloads: [[String: Any]] = [
+            ["action": "versions", "path": "part.floecad", "payload": "broken"],
+            ["action": "versions", "path": "part.floecad"],
+            ["action": "versions", "path": "part.floecad", "payload": #"{"action":1}"#]
+        ]
+        for malformed in malformedPayloads {
+            #expect(TypedMutationContract.specs(
+                for: "cad.document", arguments: malformed).map(\.role)
+                == [.sourceWrite])
+        }
+    }
+
     @Test("The Canvas staged hook pins ONLY the authorized staged document")
     func canvasStagedHook() throws {
         let taskRoot = try makeTree()

@@ -5280,7 +5280,7 @@ final class ConversationCenter: ObservableObject {
             )
             return ([], [ConversationMessage(
                 role: "system",
-                content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\nThe selected model is text-only. No distinct compatible auxiliary vision model is configured, and on-device OCR found no usable text. Tell the user that this image cannot be understood in the current configuration. Do not claim to see it and do not call browser, Python, image.inspect, or directory-search tools to rediscover it."
+                content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\nThe selected model is text-only. No distinct compatible auxiliary vision model is configured, and on-device OCR found no usable text. No visual analysis was delivered for this image. Do not claim to have seen it. Other authorized tools remain available; distinguish their results from direct visual inspection."
             )])
         }
         FloeLogger(category: .app).info(

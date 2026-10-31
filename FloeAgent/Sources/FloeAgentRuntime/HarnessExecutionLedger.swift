@@ -257,7 +257,9 @@ struct HarnessExecutionLedger: Sendable {
         guard let ssh = value.range(of: "ssh"), let vnc = value.range(of: "vnc"),
               ssh.lowerBound < vnc.lowerBound else { return false }
         let between = value[ssh.lowerBound..<vnc.lowerBound]
-        return between.contains(FloeL10n.l("runtime.harness_execution_ledger.first")) || between.contains(FloeL10n.l("runtime.harness_execution_ledger.again"))
+        // Parse the user's language, independently of the interface language.
+        // Localized UI labels are neither protocol tokens nor intent markers.
+        return between.contains("先") || between.contains("再")
             || between.contains("before") || between.contains("then")
             || value.contains("ssh first")
     }

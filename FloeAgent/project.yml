@@ -703,6 +703,8 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/ConversationContextFeedbackTests.swift
       - path: Tests/FloeAgentRuntimeTests/SQLiteRunCheckpointStoreTests.swift
       - path: Tests/FloeAgentRuntimeTests/ContextCompactionDegradeTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ContextCompactionAcceptanceTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ContextSummaryIntegrationTests.swift
       - path: Tests/FloeAgentRuntimeTests/ModelContextSummarizerTests.swift
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
       - path: Tests/FloeAppTests/BackgroundWorkSessionTests.swift
@@ -1251,6 +1253,8 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADParameterCorrectnessTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADCapabilitySurfaceTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADStoredIntegrityTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADNamedVersionTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/StoreRecoveryTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSavePrewarmOwnershipTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADExactnessPreservationTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADUSDZMaterialExportTests.swift

@@ -14,17 +14,18 @@ import XCTest
 import UIKit
 @testable import FloeCAD
 
+@MainActor
 final class StoreRecoveryTests: XCTestCase {
 
     private var workDir: URL!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         workDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("FloeCADStore-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         CADDocumentFaultInjection.beforeCreateSwap = nil
         CADDocumentFaultInjection.beforeCommit = nil
         if let workDir { try? FileManager.default.removeItem(at: workDir) }

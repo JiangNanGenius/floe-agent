@@ -73,7 +73,12 @@ struct TaskChecklistTests {
             .init(id: "b", title: "Build", status: .inProgress),
             .init(id: "c", title: "Removed", status: .cancelled)
         ]), runID: run, operationID: "first")
-        #expect(first.progressSummary == "已完成 1/3 项 · 已取消 1 项")
+        let expectedSummary = FloeL10n.isChinese
+            ? "已完成 1/3 项 · 已取消 1 项"
+            : "1/3 items complete· 1 items canceled"
+        #expect(first.progressSummary == expectedSummary)
+        #expect(first.completedCount == 1)
+        #expect(first.cancelledCount == 1)
         #expect(first.currentStep?.id == "b")
         #expect(!first.isFinished)
         #expect(first.canReplace(nil, conversationID: task))

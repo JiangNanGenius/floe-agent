@@ -14,6 +14,7 @@ struct NativeCADCapabilityDiscoveryTests {
         #expect((capabilities["package_schema_version"] as? Int ?? 0) >= 3)
         let actions = try #require(capabilities["actions"] as? [String])
         for action in ["material", "parameters", "capture", "animation"] { #expect(actions.contains(action)) }
+        #expect(capabilities["animation_actions"] as? [String] == CadNativeEditActions.animation.sorted())
         #expect(!actions.contains("observe"), "original-file observation is a different representation")
         for kind in CadServiceOperationCatalog.kinds {
             let exposed = try #require(capabilities["\(kind)_actions"] as? [String])

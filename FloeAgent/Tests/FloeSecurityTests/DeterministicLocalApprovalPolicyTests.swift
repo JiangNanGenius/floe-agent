@@ -613,6 +613,13 @@ struct DeterministicLocalApprovalPolicyTests {
             ("cad.document", #"{"action":"status","path":"part.floecad"}"#),
             ("cad.document", #"{"action":"three_d_snapshot","path":"part.floecad"}"#),
             ("cad.document", #"{"action":"preview","path":"part.floecad","proposal_id":"p"}"#),
+            // E34 version inspection: all four read operations are audited
+            // reads, so a saved-version list/compare/recovery scan/exact
+            // record page needs no card and consumes no model review.
+            ("cad.document", #"{"action":"versions","path":"parts/a.floecad","payload":"{\"action\":\"list\"}"}"#),
+            ("cad.document", #"{"action":"versions","path":"parts/a.floecad","payload":"{\"action\":\"compare\",\"version_id\":\"11111111-1111-1111-1111-111111111111\"}"}"#),
+            ("cad.document", #"{"action":"versions","path":"parts/a.floecad","payload":"{\"action\":\"recoveries\"}"}"#),
+            ("cad.document", #"{"action":"versions","path":"parts/a.floecad","payload":"{\"action\":\"record\",\"version_id\":\"11111111-1111-1111-1111-111111111111\",\"section\":\"metadata\",\"identifier\":\"name\"}"}"#),
             ("image.svgDocument", #"{"operation":"inspect","path":"a.svg"}"#)
         ]
         for (tool, json) in reads {

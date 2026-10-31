@@ -67,6 +67,35 @@ struct OrdinaryDocumentActionProfileTests {
         }
     }
 
+    @Test("CAD named-version reads are read-only; every version write stays unlisted")
+    func cadVersionActions() throws {
+        func versionRole(_ operation: String) throws -> OrdinaryDocumentActionRole? {
+            let payload = String(decoding: try JSONSerialization.data(
+                withJSONObject: ["action": operation]), as: UTF8.self)
+            return OrdinaryDocumentActionProfile.role(
+                forToolName: "cad.document",
+                arguments: ["action": "versions", "path": "part.floecad",
+                            "payload": payload])
+        }
+        for operation in ["list", "compare", "recoveries", "record",
+                          " List ", "COMPARE", "\trecoveries\n", "Record"] {
+            #expect(try versionRole(operation) == .readOnly,
+                    "versions \(operation) is read-only inspection")
+        }
+        for operation in ["create", "restore", "delete", "recover",
+                          "discard_recovery", "publish", ""] {
+            #expect(try versionRole(operation) == nil,
+                    "versions \(operation) must not be classified as an ordinary read")
+        }
+        // Missing/malformed payloads and non-string actions fail closed.
+        #expect(role("cad.document", #"{"action":"versions","path":"part.floecad"}"#) == nil)
+        #expect(role("cad.document", #"{"action":"versions","path":"part.floecad","payload":"broken"}"#) == nil)
+        #expect(role("cad.document", #"{"action":"versions","path":"part.floecad","payload":"{\"action\":1}"}"#) == nil)
+        // A model-authored safe flag cannot turn a version write into a read.
+        #expect(role("cad.document", #"{"action":"versions","path":"part.floecad","payload":"{\"action\":\"restore\",\"readOnly\":true}"#) == nil)
+        #expect(role("cad.document", #"{"action":"versions","path":"part.floecad","payload":"{\"action\":\"record\"}","readOnly":true}"#) == .readOnly)
+    }
+
     @Test("SVG inspect is a read; edit and unknown tools/actions fail closed")
     func svgAndUnknown() {
         #expect(role("image.svgDocument", #"{"operation":"inspect","path":"a.svg"}"#) == .readOnly)
