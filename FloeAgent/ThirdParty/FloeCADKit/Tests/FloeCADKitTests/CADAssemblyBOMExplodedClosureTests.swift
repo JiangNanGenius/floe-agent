@@ -175,8 +175,12 @@ final class CADAssemblyBOMExplodedClosureTests: XCTestCase {
         return any ? (minPoint, maxPoint) : nil
     }
 
+    /// The SVG writer keeps BOM borders/lines in `<g id="BOM">` and every
+    /// table cell in the separate `<g id="BOM_TEXT">` group. Read the actual
+    /// text group; selecting only the rule group can never see a header or a
+    /// row value.
     private func bomGroup(_ svg: String) -> String {
-        guard let start = svg.range(of: "<g id=\"BOM\"") else { return "" }
+        guard let start = svg.range(of: "<g id=\"BOM_TEXT\"") else { return "" }
         let tail = svg[start.lowerBound...]
         guard let end = tail.range(of: "</g>") else { return String(tail) }
         return String(tail[..<end.upperBound])

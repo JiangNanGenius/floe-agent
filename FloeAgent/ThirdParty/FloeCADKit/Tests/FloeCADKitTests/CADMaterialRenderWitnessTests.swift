@@ -31,11 +31,34 @@
 //      deliberately reversed relative to A. Because B and C are
 //      byte-identical and differ only in the declared origin, a stale or
 //      cached texture cannot fake B==A while C!=A.
+//    * Negative-control gate: per the root's explicit fixed-footprint
+//      decision, the original whole-frame mean floor is enforced as the same
+//      >=8 response over the deterministic projected front-face interior;
+//      the whole-frame dominance, p95, max, changed-region and border
+//      gates are preserved.
 //
 //  Every attachment binds the rendered pixels to the source document
 //  (revision, change count, content SHA-256) and to the authored image bytes
 //  (SHA-256, declared orientation) that produced them. It always names the
 //  rendered PNG and the authored texture separately.
+//
+//  MIXED-MATERIAL witness (the original X13 criterion):
+//  `testMixedColorAndNormalOriginsRenderOneMaterialAtOnePlace` puts the 64x64
+//  colour map and the 2x2 normal map into ONE BodyMaterialSpec with separate
+//  typed metadata, then compares four variants through the same actual capture:
+//    A = colour topLeft + normal topLeft;
+//    B = the SAME colour topLeft + row-inverted normal bytes declared
+//        bottomLeft (opposite declared origins, physically the same samples);
+//    C = B's normal bytes wrongly declared topLeft (colour held fixed; only
+//        the actual normal lighting may differ);
+//    D = row-inverted colour bytes declared bottomLeft + the baseline
+//        topLeft normal (the opposite mixed assignment, physically A).
+//  A, B and D must match under the renderer's existing A/B equivalence
+//  criterion; C must show a material response over the same projected
+//  front-face footprint. Absolute colour landmarks are asserted for ALL four
+//  variants, so a renderer that drops either map, swaps a per-map origin, or
+//  samples a cached image cannot pass. Every capture attaches its actual PNG
+//  and a manifest carrying both authored image SHAs/origins/slots.
 //
 //  Run: App-hosted FloeAppTests bundle on the pinned iPad Simulator
 //  (`--ui-testing` NOT required; Metal must be available — a missing Metal
@@ -265,6 +288,86 @@ private enum MaterialRenderWitnessFixture {
             baseColor: SIMD4(1, 1, 1, 1), metallic: 0, roughness: 1.0,
             baseColorTexture: png, uvMapping: .mesh,
             textureMetadata: [metadata]), name: "X13 colour witness slab")
+    }
+
+    // MARK: Mixed-material fixture (colour + normal in ONE material)
+
+    /// One authored material carrying BOTH maps. The typed metadata records
+    /// are separate per slot, exactly like a real imported material whose
+    /// colour map and normal map were authored in opposite vertical
+    /// directions.
+    struct MixedSource {
+        var colorPNG: Data
+        var colorOrientation: MaterialTextureOrientation
+        var normalPNG: Data
+        var normalOrientation: MaterialTextureOrientation
+    }
+
+    enum MixedVariant: String, CaseIterable {
+        case a, b, c, d
+
+        /// A/B/C keep the exact authored colour bytes at topLeft; D is the
+        /// lossless row inversion declared bottomLeft. B/C share the exact
+        /// row-inverted normal bytes; only their declared normal origin
+        /// differs. Every variant is one material carrying both maps.
+        var source: MixedSource {
+            get throws {
+                switch self {
+                case .a:
+                    return MixedSource(
+                        colorPNG: try MaterialRenderWitnessFixture.colorPNG(.a),
+                        colorOrientation: .topLeft,
+                        normalPNG: try MaterialRenderWitnessFixture.normalPNG(.a),
+                        normalOrientation: .topLeft)
+                case .b:
+                    return MixedSource(
+                        colorPNG: try MaterialRenderWitnessFixture.colorPNG(.a),
+                        colorOrientation: .topLeft,
+                        normalPNG: try MaterialRenderWitnessFixture.normalPNG(.b),
+                        normalOrientation: .bottomLeft)
+                case .c:
+                    return MixedSource(
+                        colorPNG: try MaterialRenderWitnessFixture.colorPNG(.a),
+                        colorOrientation: .topLeft,
+                        normalPNG: try MaterialRenderWitnessFixture.normalPNG(.b),
+                        normalOrientation: .topLeft)
+                case .d:
+                    return MixedSource(
+                        colorPNG: try MaterialRenderWitnessFixture.colorPNG(.b),
+                        colorOrientation: .bottomLeft,
+                        normalPNG: try MaterialRenderWitnessFixture.normalPNG(.a),
+                        normalOrientation: .topLeft)
+                }
+            }
+        }
+
+        var displayName: String {
+            switch self {
+            case .a: return "A-colourTL_normalTL"
+            case .b: return "B-colourTL_normalBL"
+            case .c: return "C-colourTL_normalBLBytesTL"
+            case .d: return "D-colourBL_normalTL"
+            }
+        }
+    }
+
+    static func mixedSlabBody(_ source: MixedSource) -> Body {
+        let colorMetadata = CADMaterialTextureMetadata(
+            assetID: UUID(), slot: .baseColor, mimeType: "image/png",
+            colorSpace: .srgb, orientation: source.colorOrientation,
+            sha256: CADMaterialTexture.digest(source.colorPNG),
+            byteCount: source.colorPNG.count)
+        let normalMetadata = CADMaterialTextureMetadata(
+            assetID: UUID(), slot: .normal, mimeType: "image/png",
+            colorSpace: .linear, orientation: source.normalOrientation,
+            sha256: CADMaterialTexture.digest(source.normalPNG),
+            byteCount: source.normalPNG.count)
+        return slabBody(material: BodyMaterialSpec(
+            baseColor: SIMD4(1, 1, 1, 1), metallic: 0, roughness: 0.8,
+            baseColorTexture: source.colorPNG, normalTexture: source.normalPNG,
+            uvMapping: .mesh,
+            textureMetadata: [colorMetadata, normalMetadata]),
+            name: "X13 mixed-origin witness slab")
     }
 }
 
@@ -656,6 +759,62 @@ private extension WitnessPixels {
                                    changedFraction: Double(changed) / Double(count),
                                    pixelCount: count)
     }
+
+    /// RGB-channel mean over the same source-derived, fixed projected face.
+    /// Every pixel and all three channels (including zero channels) contribute
+    /// to the original mean >= 8 gate. Max-channel deltas are used only for
+    /// the separate changed-pixel fraction, never to inflate this mean.
+    func rgbMeanFootprintDiff(_ other: WitnessPixels,
+                               footprint: WitnessFootprint,
+                               inset: CGFloat = 0,
+                               noiseFloor: Int = 4) -> MixedFootprintStats {
+        guard width == other.width, height == other.height else {
+            return MixedFootprintStats(mean: .infinity, changedFraction: 0,
+                                          changedMean: .infinity, pixelCount: 0)
+        }
+        var total = 0
+        var changed = 0
+        var changedTotal = 0
+        var count = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                guard footprint.contains(CGPoint(x: CGFloat(x), y: CGFloat(y)),
+                                        inset: inset) else {
+                    continue
+                }
+                count += 1
+                let base = (y * width + x) * 4
+                var dmax = 0
+                var channelTotal = 0
+                for channel in 0..<3 {
+                    let delta = abs(Int(rgba[base + channel]) - Int(other.rgba[base + channel]))
+                    dmax = max(dmax, delta)
+                    channelTotal += delta
+                }
+                total += channelTotal
+                if dmax >= noiseFloor {
+                    changed += 1
+                    changedTotal += channelTotal
+                }
+            }
+        }
+        guard count > 0 else {
+            return MixedFootprintStats(mean: .infinity, changedFraction: 0,
+                                          changedMean: .infinity, pixelCount: 0)
+        }
+        return MixedFootprintStats(
+            mean: Double(total) / Double(count * 3),
+            changedFraction: Double(changed) / Double(count),
+            changedMean: changed > 0 ? Double(changedTotal) / Double(changed * 3) : 0,
+            pixelCount: count)
+    }
+}
+
+private struct MixedFootprintStats {
+    var mean: Double
+    var changedFraction: Double
+    var changedMean: Double
+    var pixelCount: Int
 }
 
 // MARK: - Engineering Metal render witness
@@ -854,6 +1013,137 @@ final class CADMaterialRenderWitnessTests: XCTestCase {
         json.name = "x13-metal-colour-\(captured.variantName)-manifest.json"
         json.lifetime = .keepAlways
         add(json)
+    }
+
+    // MARK: Mixed-material actual capture
+
+    private struct MixedCaptured {
+        var variantName: String
+        var png: Data
+        var pixels: WitnessPixels
+        var source: MaterialRenderWitnessFixture.MixedSource
+        var colorSHA256: String
+        var normalSHA256: String
+        var revision: Int
+        var changeCount: Int
+        var contentSHA256: String
+        var imageSHA256: String
+        var renderer: String
+    }
+
+    /// One actual engineering capture of a material that carries BOTH maps.
+    /// Same square framing, same entry point and same slab as the normal and
+    /// colour witnesses; only the single BodyMaterialSpec changes.
+    private func captureMixed(_ variant: MaterialRenderWitnessFixture.MixedVariant)
+        async throws -> MixedCaptured {
+        let source = try variant.source
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("X13MetalMixedWitness-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        directories.append(directory)
+        let body = MaterialRenderWitnessFixture.mixedSlabBody(source)
+        let document = try await FloeCADDocument.create(
+            at: directory.appendingPathComponent("mixed-\(variant.displayName).floecad"),
+            name: "X13 mixed \(variant.displayName)")
+        documents.append(document)
+        document.session.perform(AddBodyCommand(body: body,
+                                                title: "Add mixed witness slab"))
+        // Commit before capture so documentContentSHA256 is the actual
+        // material-bound identity, not the empty pre-edit baseline that a
+        // debounced autosave would eventually replace.
+        document.session.save()
+        XCTAssertNil(document.session.lastSaveError,
+                     "the mixed witness document must commit before capture")
+        let result = try document.captureViewportPNG(width: 1024, height: 1024)
+        XCTAssertEqual(result.renderer, "engineering",
+                       "the mixed capture must name the actual renderer")
+        XCTAssertFalse(result.pngData.isEmpty)
+        XCTAssertEqual(result.pngData.prefix(2), Data([0x89, 0x50]),
+                       "mixed capture must be a real PNG")
+        let pixels = try WitnessPixels.decode(result.pngData)
+        XCTAssertEqual(pixels.width, 1024)
+        XCTAssertEqual(pixels.height, 1024)
+        return MixedCaptured(
+            variantName: variant.displayName, png: result.pngData, pixels: pixels,
+            source: source,
+            colorSHA256: CADMaterialTexture.digest(source.colorPNG),
+            normalSHA256: CADMaterialTexture.digest(source.normalPNG),
+            revision: result.revision, changeCount: result.changeCount,
+            contentSHA256: result.contentSHA256, imageSHA256: result.sha256,
+            renderer: result.renderer)
+    }
+
+    private func attachMixed(_ captured: MixedCaptured) {
+        let png = XCTAttachment(data: captured.png,
+                                uniformTypeIdentifier: UTType.png.identifier)
+        png.name = "x13-metal-mixed-\(captured.variantName)-rev\(captured.revision)"
+        png.lifetime = .keepAlways
+        add(png)
+        let colorSource = XCTAttachment(data: captured.source.colorPNG,
+                                        uniformTypeIdentifier: UTType.png.identifier)
+        colorSource.name = "x13-metal-mixed-\(captured.variantName)-baseColor-source.png"
+        colorSource.lifetime = .keepAlways
+        add(colorSource)
+        let normalSource = XCTAttachment(data: captured.source.normalPNG,
+                                         uniformTypeIdentifier: UTType.png.identifier)
+        normalSource.name = "x13-metal-mixed-\(captured.variantName)-normal-source.png"
+        normalSource.lifetime = .keepAlways
+        add(normalSource)
+        let manifest: [String: Any] = [
+            "witness": "X13 mixed colour+normal map origins — engineering Metal viewport",
+            "variant": captured.variantName,
+            "renderer": captured.renderer,
+            "sameMaterialCarriesBoth": true,
+            "materialTextureSlots": ["baseColor", "normal"],
+            "baseColorMap": [
+                "slot": "baseColor",
+                "bytesSHA256": captured.colorSHA256,
+                "orientation": "\(captured.source.colorOrientation)",
+                "colorSpace": "srgb",
+                "mimeType": "image/png",
+                "byteCount": captured.source.colorPNG.count,
+            ],
+            "normalMap": [
+                "slot": "normal",
+                "bytesSHA256": captured.normalSHA256,
+                "orientation": "\(captured.source.normalOrientation)",
+                "colorSpace": "linear",
+                "mimeType": "image/png",
+                "byteCount": captured.source.normalPNG.count,
+            ],
+            "documentRevision": captured.revision,
+            "documentChangeCount": captured.changeCount,
+            "documentContentSHA256": captured.contentSHA256,
+            "renderedImageSHA256": captured.imageSHA256,
+            "captureEntryPoint": "FloeCADDocument.captureViewportPNG",
+            "shader": "Shaders.metal fragment_litTextured (baseColorTex + per-map flipV + shared-UV derivative TBN)",
+        ]
+        let data = (try? JSONSerialization.data(
+            withJSONObject: manifest, options: [.sortedKeys])) ?? Data()
+        let json = XCTAttachment(data: data, uniformTypeIdentifier: UTType.json.identifier)
+        json.name = "x13-metal-mixed-\(captured.variantName)-manifest.json"
+        json.lifetime = .keepAlways
+        add(json)
+    }
+
+    private func assertMixedEquivalent(_ lhs: MixedCaptured, _ rhs: MixedCaptured,
+                                       footprint: WitnessFootprint, erosion: CGFloat,
+                                       label: String) throws {
+        let diff = try WitnessPixels.diff(lhs.pixels, rhs.pixels)
+        XCTAssertLessThanOrEqual(diff.mean, 1.0,
+                                 "\(label) mixed mean \(diff.mean) exceeds the "
+                                 + "existing Metal A/B tolerance")
+        XCTAssertGreaterThanOrEqual(diff.exactFraction, 0.97,
+                                    "\(label) mixed exact fraction "
+                                    + "\(diff.exactFraction)")
+        XCTAssertLessThanOrEqual(diff.max, 12, "\(label) mixed max \(diff.max)")
+        let fixed = lhs.pixels.footprintDiff(rhs.pixels, footprint: footprint,
+                                             inset: erosion)
+        XCTAssertGreaterThanOrEqual(fixed.pixelCount, 1_000)
+        XCTAssertLessThanOrEqual(fixed.mean, 1.0,
+                                 "\(label) mixed fixed-footprint mean \(fixed.mean)")
     }
 
     func testOppositeNormalOriginsRenderIdenticallyAndReversedGreenDoesNot()
@@ -1107,5 +1397,188 @@ final class CADMaterialRenderWitnessTests: XCTestCase {
         XCTAssertLessThanOrEqual(region.borderMax, 4,
                                  "A/C border max \(region.borderMax): the background "
                                  + "must be identical across colour variants")
+    }
+
+    /// Original X13: ONE material carries an asymmetric 64x64 colour map and
+    /// an asymmetric 2x2 normal map with opposite declared origins; the
+    /// actual samples must agree across the mixed assignment, and the
+    /// reversed normal declaration must still move the actual lighting.
+    func testMixedColorAndNormalOriginsRenderOneMaterialAtOnePlace()
+        async throws {
+        #if canImport(MetalKit)
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            XCTFail("Metal is unavailable: the mixed-material witness requires "
+                    + "the real GPU renderer; it must not be skipped or faked.")
+            return
+        }
+        #else
+        XCTFail("MetalKit is unavailable in this build; the mixed-material "
+                + "witness cannot run and must not be faked.")
+        return
+        #endif
+
+        let sourceA = try MaterialRenderWitnessFixture.MixedVariant.a.source
+        let sourceB = try MaterialRenderWitnessFixture.MixedVariant.b.source
+        let sourceC = try MaterialRenderWitnessFixture.MixedVariant.c.source
+        let sourceD = try MaterialRenderWitnessFixture.MixedVariant.d.source
+
+        // Source-level discriminant. A/B/C use the identical colour bytes and
+        // declaration; B/C use the identical normal bytes with opposite
+        // declarations; D is the lossless row inversion of A's colour bytes
+        // declared bottomLeft and reuses A's baseline normal.
+        XCTAssertEqual(sourceA.colorPNG, sourceB.colorPNG)
+        XCTAssertEqual(sourceB.colorPNG, sourceC.colorPNG)
+        XCTAssertEqual(sourceB.normalPNG, sourceC.normalPNG)
+        XCTAssertNotEqual(sourceA.normalPNG, sourceB.normalPNG)
+        XCTAssertNotEqual(sourceA.colorPNG, sourceD.colorPNG)
+        XCTAssertEqual(sourceA.colorOrientation, .topLeft)
+        XCTAssertEqual(sourceB.colorOrientation, .topLeft)
+        XCTAssertEqual(sourceC.colorOrientation, .topLeft)
+        XCTAssertEqual(sourceD.colorOrientation, .bottomLeft)
+        XCTAssertEqual(sourceA.normalOrientation, .topLeft)
+        XCTAssertEqual(sourceB.normalOrientation, .bottomLeft)
+        XCTAssertEqual(sourceC.normalOrientation, .topLeft)
+        XCTAssertEqual(sourceD.normalOrientation, .topLeft)
+
+        // ONE BodyMaterialSpec carries both maps with separate typed metadata.
+        let authoredBody = MaterialRenderWitnessFixture.mixedSlabBody(sourceA)
+        let material = try XCTUnwrap(authoredBody.material)
+        XCTAssertEqual(material.baseColorTexture, sourceA.colorPNG,
+                       "the same material must carry the colour map")
+        XCTAssertEqual(material.normalTexture, sourceA.normalPNG,
+                       "the same material must carry the normal map")
+        XCTAssertEqual(material.textureMetadata?.count, 2)
+        let colorMetadata = try XCTUnwrap(
+            material.verifiedTextureMetadata(for: .baseColor))
+        let normalMetadata = try XCTUnwrap(
+            material.verifiedTextureMetadata(for: .normal))
+        XCTAssertEqual(colorMetadata.orientation, .topLeft)
+        XCTAssertEqual(normalMetadata.orientation, .topLeft)
+        XCTAssertEqual(colorMetadata.sha256,
+                       CADMaterialTexture.digest(sourceA.colorPNG))
+        XCTAssertEqual(normalMetadata.sha256,
+                       CADMaterialTexture.digest(sourceA.normalPNG))
+
+        // Every variant's body carries both maps with its own declared
+        // per-slot origin; the actual capture is built from that same body.
+        for source in [sourceA, sourceB, sourceC, sourceD] {
+            let variantBody = MaterialRenderWitnessFixture.mixedSlabBody(source)
+            let variantMaterial = try XCTUnwrap(variantBody.material)
+            XCTAssertEqual(variantMaterial.baseColorTexture, source.colorPNG)
+            XCTAssertEqual(variantMaterial.normalTexture, source.normalPNG)
+            XCTAssertEqual(variantMaterial.verifiedTextureMetadata(for: .baseColor)?.orientation,
+                           source.colorOrientation)
+            XCTAssertEqual(variantMaterial.verifiedTextureMetadata(for: .normal)?.orientation,
+                           source.normalOrientation)
+        }
+
+        let a = try await captureMixed(.a)
+        let b = try await captureMixed(.b)
+        let c = try await captureMixed(.c)
+        let d = try await captureMixed(.d)
+        attachMixed(a); attachMixed(b); attachMixed(c); attachMixed(d)
+
+        // Actual capture receipts: each image hash is the digest of that
+        // capture's own PNG; the authored maps and orientations are the ones
+        // asserted above. The four documents differ in material bytes.
+        for captured in [a, b, c, d] {
+            XCTAssertEqual(captured.imageSHA256,
+                           CADMaterialTexture.digest(captured.png))
+            XCTAssertEqual(captured.colorSHA256,
+                           CADMaterialTexture.digest(captured.source.colorPNG))
+            XCTAssertEqual(captured.normalSHA256,
+                           CADMaterialTexture.digest(captured.source.normalPNG))
+            XCTAssertEqual(captured.renderer, "engineering")
+        }
+        XCTAssertEqual(a.revision, b.revision)
+        XCTAssertEqual(a.revision, c.revision)
+        XCTAssertEqual(a.revision, d.revision)
+        XCTAssertEqual(a.changeCount, b.changeCount)
+        XCTAssertEqual(a.changeCount, c.changeCount)
+        XCTAssertEqual(a.changeCount, d.changeCount)
+        XCTAssertEqual(Set([a.contentSHA256, b.contentSHA256,
+                            c.contentSHA256, d.contentSHA256]).count, 4,
+                       "each variant must be its own source-bound document")
+        XCTAssertNotEqual(a.imageSHA256, c.imageSHA256,
+                          "the reversed normal must produce a different actual frame")
+        XCTAssertNotEqual(b.imageSHA256, c.imageSHA256)
+        XCTAssertNotEqual(d.imageSHA256, c.imageSHA256)
+
+        let projection = ColorProjection.engineering(width: a.pixels.width,
+                                                     height: a.pixels.height)
+        let footprint = try projection.frontFaceFootprint()
+        let footprintFraction = Double(footprint.area)
+            / Double(a.pixels.width * a.pixels.height)
+        XCTAssertGreaterThanOrEqual(footprintFraction, 0.05)
+        XCTAssertLessThanOrEqual(footprintFraction, 0.60)
+        let erosion = CGFloat(max(6, Int(Double(min(a.pixels.width,
+                                                      a.pixels.height)) * 0.02)))
+
+        // B is one material with colour topLeft and normal bottomLeft; D is
+        // the opposite mixed assignment. Both are physically A and must match
+        // under the existing Metal equivalence criterion.
+        try assertMixedEquivalent(a, b, footprint: footprint, erosion: erosion,
+                                  label: "A/B mixed origins")
+        try assertMixedEquivalent(a, d, footprint: footprint, erosion: erosion,
+                                  label: "A/D mixed origins")
+
+        // Absolute authored colour landmarks for every variant: A/B/C share
+        // A's colour bytes and D is their row inversion declared bottomLeft,
+        // so all four must show the authored quadrant identity at the same
+        // world/UV points even while the normal maps differ.
+        try assertColorLandmarks(a.pixels, projection: projection,
+                                 footprint: footprint, mirrored: false, label: "A")
+        try assertColorLandmarks(b.pixels, projection: projection,
+                                 footprint: footprint, mirrored: false, label: "B")
+        try assertColorLandmarks(c.pixels, projection: projection,
+                                 footprint: footprint, mirrored: false, label: "C")
+        try assertColorLandmarks(d.pixels, projection: projection,
+                                 footprint: footprint, mirrored: false, label: "D")
+
+        // Negative control: colour is held fixed byte-for-byte in A/B/C.
+        // Measure all RGB channels over the same fixed projected face and
+        // retain the original mean >= 8, changed-area and noise gates.
+        let acFixed = a.pixels.rgbMeanFootprintDiff(c.pixels, footprint: footprint,
+                                                     inset: erosion)
+        let abNoise = a.pixels.footprintDiff(b.pixels, footprint: footprint,
+                                             inset: erosion)
+        let acDiff = try WitnessPixels.diff(a.pixels, c.pixels)
+        XCTAssertGreaterThanOrEqual(acFixed.pixelCount, 1_000)
+        XCTAssertGreaterThanOrEqual(acFixed.mean, 8.0,
+            "A/C mixed authored-face RGB-channel mean \(acFixed.mean) "
+            + "at \(acFixed.pixelCount) pixels; whole-frame mean \(acDiff.mean)")
+        XCTAssertGreaterThanOrEqual(acFixed.changedFraction, 0.25,
+            "the reversed normal must affect a substantial fixed material area")
+        XCTAssertGreaterThanOrEqual(acFixed.mean, 6 * max(abNoise.mean, 0.25),
+            "the negative control must dominate the A/B numerical noise")
+        let acRegion = WitnessPixels.regionDiff(a.pixels, c.pixels)
+        XCTAssertLessThanOrEqual(acRegion.borderMax, 4,
+            "A/C mixed border max \(acRegion.borderMax): the background must "
+            + "be identical across variants")
+
+        let footprintRecord: [String: Any] = [
+            "witness": "X13 mixed colour+normal origins — engineering Metal viewport",
+            "physicalEquivalence": ["A", "B", "D"],
+            "negativeControl": "C",
+            "sameMaterialCarriesBoth": true,
+            "wholeFrameACMean": acDiff.mean,
+            "fixedACDominantMean": acFixed.mean,
+            "fixedACChangedFraction": acFixed.changedFraction,
+            "fixedACChangedMean": acFixed.changedMean,
+            "fixedABNoiseMean": abNoise.mean,
+            "fixedPixelCount": acFixed.pixelCount,
+            "projectedFrameFraction": footprintFraction,
+            "insetPixels": Double(erosion),
+            "polygon": footprint.corners.map { [Double($0.x), Double($0.y)] },
+            "source": "Authored +Z face projected from source/capture camera; "
+                + "not difference-selected",
+        ]
+        let footprintAttachment = XCTAttachment(string: String(decoding:
+            try JSONSerialization.data(withJSONObject: footprintRecord,
+                                       options: [.sortedKeys]),
+            as: UTF8.self))
+        footprintAttachment.name = "Mixed material fixed footprint"
+        footprintAttachment.lifetime = .keepAlways
+        add(footprintAttachment)
     }
 }

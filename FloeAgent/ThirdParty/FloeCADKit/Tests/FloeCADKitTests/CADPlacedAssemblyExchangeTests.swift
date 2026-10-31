@@ -11,6 +11,8 @@
 //   * actual PBR texture / UV accessors on every placed source occurrence,
 //   * STEP coverage before promotion, exact placed B-rep copies and mesh-only
 //     exclusion, same-engine reparse as a SUPPLEMENTARY check only,
+//   * real production STEP/GLB bytes, coverage receipts and parsed world
+//     matrices are attached to the .xcresult before fixture teardown,
 //   * no double transform after save/reopen.
 //
 //  The STEP same-engine reparse is NOT external CAD acceptance. An external
@@ -283,6 +285,11 @@ final class CADPlacedAssemblyExchangeTests: XCTestCase {
             XCTAssertFalse(receipt.complete)
             XCTAssertTrue(receipt.acceptedPartial)
             XCTAssertEqual(receipt.includedCount, 4)
+            attach(data, name: "placed-assembly.step",
+                   uniformTypeIdentifier: "public.data")
+            attach(Data(receipt.jsonString().utf8),
+                   name: "placed-assembly-step-coverage.json",
+                   uniformTypeIdentifier: "public.json")
             XCTAssertTrue(String(decoding: data.prefix(32), as: UTF8.self)
                 .contains("ISO-10303-21"))
             let solids = STEPKit.solids(from: data)
@@ -292,9 +299,24 @@ final class CADPlacedAssemblyExchangeTests: XCTestCase {
             // Supplementary same-engine placement check (NOT external CAD
             // acceptance): a reparsed box's world bounding-box centre must be
             // the freshly composed placement, not the source definition alone.
+            //
+            // Independent derivation from SketchPlane.ground and the supplied
+            // sketch coordinates (not copied from the writer):
+            //   ground U=+X, V=-Z, normal=+Y.
+            //   A rect [0,0]-[40,20] extruded +10 along +Y occupies
+            //   X 0...40, Y 0...10, Z -20...0; its body-local centre is
+            //   (20,5,-10). The 10x10 independent source's local centre is
+            //   (65,5,-5).
+            //   A2: +90 deg about Y maps the local centre to (-10,5,-20),
+            //       then +(40,0,0) -> (30,5,-20).
+            //   A3: local +(100,0,0) = (120,5,-10); parent 180 deg about Z
+            //       -> (-120,-5,-10); parent +(0,50,0) -> (-120,45,-10).
+            //   Independent B: (65,5,-5) + (0,0,100) -> (65,5,95).
+            // Positive Z here would contradict that basis and the actual
+            // production placement.
             let centers = solids.map(solidCentreMM)
             let expectedCenters: [[Double]] = [
-                [20, 5, 10], [50, 5, -20], [-120, 45, 10], [65, 5, 105],
+                [20, 5, -10], [30, 5, -20], [-120, 45, -10], [65, 5, 95],
             ]
             for expected in expectedCenters {
                 XCTAssertTrue(centers.contains { distance($0, expected) < 0.5 },
@@ -313,11 +335,32 @@ final class CADPlacedAssemblyExchangeTests: XCTestCase {
 
         let (data, coverage) = try exportGLB(selection: .init(scope: .assembly))
         XCTAssertTrue(coverage.complete)
+        attach(data, name: "placed-assembly.glb",
+               uniformTypeIdentifier: "public.data")
+        attach(Data(coverage.jsonString().utf8),
+               name: "placed-assembly-glb-coverage.json",
+               uniformTypeIdentifier: "public.json")
         let parsed = try glbJSON(data)
         let nodes = try XCTUnwrap(parsed["nodes"] as? [[String: Any]])
         let scenes = try XCTUnwrap(parsed["scenes"] as? [[String: Any]])
         let roots = try XCTUnwrap(scenes.first?["nodes"] as? [Int])
         let world = worldMatrices(nodes: nodes, roots: roots)
+        let matrixRows: [[String: Any]] = nodes.enumerated().compactMap { index, node in
+            guard let matrix = world[index] else { return nil }
+            var row: [String: Any] = ["node": index, "world_matrix": matrix]
+            if let name = node["name"] as? String { row["name"] = name }
+            if let extras = node["extras"] as? [String: Any] {
+                row["extras"] = extras
+            }
+            return row
+        }
+        let matrixJSON = try jsonData([
+            "unit": "metres",
+            "source": "GLBExporter world matrices from the production GLB bytes",
+            "nodes": matrixRows,
+        ])
+        attach(matrixJSON, name: "placed-assembly-world-matrices.json",
+               uniformTypeIdentifier: "public.json")
 
         let meshNodes = nodes.enumerated().filter { $0.element["mesh"] != nil }
         XCTAssertEqual(meshNodes.count, 5,
@@ -407,7 +450,12 @@ final class CADPlacedAssemblyExchangeTests: XCTestCase {
         try applyTexturedMaterial(to: fixture.sourceA)
         let (before, _) = try exportGLB(selection: .init(scope: .assembly))
         let beforePositions = try occurrencePositions(before)
-        XCTAssertEqual(beforePositions[fixture.a3] ?? [], [-100, 50, 0])
+        // GLB world matrices are metres (the root node carries a 0.001 scale);
+        // the fixture placement is authored in millimetres. Compare the same
+        // physical position after an explicit unit conversion. The geometry and
+        // the exporter are unchanged.
+        let expectedA3Metres = [-100.0, 50.0, 0.0].map { $0 / 1000 }
+        assertVector(beforePositions[fixture.a3] ?? [], expectedA3Metres, accuracy: 1e-9)
 
         let save = await document.save()
         XCTAssertTrue(save.succeeded, save.error ?? "")
@@ -493,18 +541,52 @@ final class CADPlacedAssemblyExchangeTests: XCTestCase {
 
     // MARK: - Export / parser helpers
 
+    private struct ExportUnexpectedOutcome: Error, CustomStringConvertible {
+        let description: String
+    }
+
     private func exportGLB(selection: CADExchangeSelection) throws -> (Data, CADExchangeCoverage) {
         switch document.nativeExchangeExport(format: "glb", pageID: nil,
                                              selection: selection, dryRun: false) {
         case let .success(data, _, coverage):
             return (data, coverage)
         case .coverageRequired(let coverage):
-            throw XCTSkip("coverage requires confirmation: \(coverage.excludedItems.map(\.name))")
+            let excluded = coverage.excludedItems
+                .map { "\($0.name):\($0.reason ?? "unknown")" }
+                .joined(separator: ", ")
+            let detail = "GLB expected a complete fixture but requires confirmation; "
+                + "excluded [\(excluded)]"
+            XCTFail(detail)
+            throw ExportUnexpectedOutcome(description: detail)
         case .coverage(let coverage):
-            throw XCTSkip("dry run only: \(coverage.selectedCount)")
+            let detail = "GLB expected exported bytes but returned a dry-run receipt "
+                + "(selected \(coverage.selectedCount))"
+            XCTFail(detail)
+            throw ExportUnexpectedOutcome(description: detail)
         case .failure(let error):
             throw error
         }
+    }
+
+    /// Keep real production export bytes and receipts in the .xcresult before
+    /// tearDown deletes the temporary document. Root's independent viewer/reader
+    /// is the acceptance authority; these attachments are not a substitute.
+    private func attach(_ data: Data, name: String,
+                        uniformTypeIdentifier: String,
+                        file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(data.isEmpty, "attachment \(name) must contain real export bytes",
+                       file: file, line: line)
+        let attachment = XCTAttachment(data: data,
+                                       uniformTypeIdentifier: uniformTypeIdentifier)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func jsonData(_ object: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: object,
+                                   options: [.sortedKeys, .prettyPrinted,
+                                             .withoutEscapingSlashes])
     }
 
     private func glbJSON(_ data: Data) throws -> [String: Any] {

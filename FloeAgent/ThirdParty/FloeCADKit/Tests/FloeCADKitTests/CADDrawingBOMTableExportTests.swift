@@ -7,9 +7,12 @@
 //
 //  * nine distinct part definitions (including one shared definition with two
 //    occurrences across nested subassemblies) produce exactly nine BOM rows;
-//  * the complete CSV export is independent read back with an RFC 4180 parser:
-//    every row, ID, item number, live quantity and engineering value survives
-//    Chinese text, long strings, quotes, commas and embedded newlines;
+//  * the complete CSV export is independently read back with a byte-level
+//    RFC 4180 parser: every row, ID, item number, live quantity and engineering
+//    value survives Chinese text, long strings, quotes, commas and embedded
+//    CRLF/LF newlines;
+//  * the real production CSV and representative SVG/PDF/DXF bytes are attached
+//    to the .xcresult before the temporary fixture is deleted;
 //  * the vector sheet either carries all nine rows and all six columns across
 //    SVG/PDF/DXF, or a sheet that cannot fit them refuses `bom_output_incomplete`
 //    with actualRows/capacity/nextAction and no partial table;
@@ -285,54 +288,128 @@ final class CADDrawingBOMTableExportTests: XCTestCase {
 
     // MARK: - RFC 4180 read-back (independent of the exporter)
 
+    /// Independent RFC 4180 reader over UTF-8 bytes. Swift's `Character`
+    /// treats a CRLF pair as one extended grapheme cluster, so a
+    /// character-based reader sees neither "\r" nor "\n"; the byte reader
+    /// keeps CRLF record separators and CRLF inside quoted fields distinct.
+    private enum CSVReadbackError: Error, CustomStringConvertible {
+        case unterminatedQuote(offset: Int)
+        case unexpectedQuote(offset: Int)
+        case unexpectedByteAfterQuote(offset: Int)
+        case invalidUTF8(offset: Int)
+
+        var description: String {
+            switch self {
+            case let .unterminatedQuote(offset):
+                return "unterminated CSV quote at byte \(offset)"
+            case let .unexpectedQuote(offset):
+                return "quote inside an unquoted CSV field at byte \(offset)"
+            case let .unexpectedByteAfterQuote(offset):
+                return "unexpected byte after a closing CSV quote at byte \(offset)"
+            case let .invalidUTF8(offset):
+                return "field starting at byte \(offset) is not valid UTF-8"
+            }
+        }
+    }
+
     private func parseCSV(_ text: String) throws -> [[String]] {
+        let bytes = Array(text.utf8)
         var rows: [[String]] = []
         var row: [String] = []
-        var field = ""
+        var field: [UInt8] = []
+        var fieldStart = 0
+        var index = 0
         var inQuotes = false
-        var index = text.startIndex
-        while index < text.endIndex {
-            let character = text[index]
-            if inQuotes {
-                if character == "\"" {
-                    let next = text.index(after: index)
-                    if next < text.endIndex, text[next] == "\"" {
-                        field.append("\"")
-                        index = next
-                    } else {
-                        inQuotes = false
-                    }
-                } else {
-                    field.append(character)
-                }
-            } else {
-                switch character {
-                case "\"":
-                    inQuotes = true
-                case ",":
-                    row.append(field)
-                    field = ""
-                case "\r":
-                    let next = text.index(after: index)
-                    if next < text.endIndex, text[next] == "\n" { index = next }
-                    row.append(field)
-                    field = ""
-                    rows.append(row)
-                    row = []
-                case "\n":
-                    row.append(field)
-                    field = ""
-                    rows.append(row)
-                    row = []
-                default:
-                    field.append(character)
-                }
+        var afterClosingQuote = false
+
+        func finishField() throws {
+            guard let value = String(bytes: field, encoding: .utf8) else {
+                throw CSVReadbackError.invalidUTF8(offset: fieldStart)
             }
-            index = text.index(after: index)
+            row.append(value)
+            field.removeAll(keepingCapacity: true)
+            afterClosingQuote = false
         }
-        XCTAssertFalse(inQuotes, "unterminated CSV quote")
-        if !field.isEmpty || !row.isEmpty {
-            row.append(field)
+
+        func finishRecord() throws {
+            try finishField()
+            rows.append(row)
+            row = []
+            fieldStart = index
+        }
+
+        while index < bytes.count {
+            let byte = bytes[index]
+            if inQuotes {
+                if byte == 0x22 {
+                    // A doubled quote is one literal quote; a lone quote closes
+                    // the field and must be followed by a delimiter or record end.
+                    if index + 1 < bytes.count, bytes[index + 1] == 0x22 {
+                        field.append(0x22)
+                        index += 2
+                        continue
+                    }
+                    inQuotes = false
+                    afterClosingQuote = true
+                    index += 1
+                    continue
+                }
+                // Preserve CR/LF and every other byte inside the quoted field.
+                field.append(byte)
+                index += 1
+                continue
+            }
+            if afterClosingQuote {
+                switch byte {
+                case 0x2C: // comma
+                    try finishField()
+                    index += 1
+                    fieldStart = index
+                case 0x0D: // CR or CRLF
+                    if index + 1 < bytes.count, bytes[index + 1] == 0x0A {
+                        index += 1
+                    }
+                    try finishRecord()
+                    index += 1
+                case 0x0A: // LF
+                    try finishRecord()
+                    index += 1
+                default:
+                    throw CSVReadbackError.unexpectedByteAfterQuote(offset: index)
+                }
+                continue
+            }
+            switch byte {
+            case 0x22: // opening quote
+                guard field.isEmpty else {
+                    throw CSVReadbackError.unexpectedQuote(offset: index)
+                }
+                inQuotes = true
+                fieldStart = index
+                index += 1
+            case 0x2C: // comma
+                try finishField()
+                index += 1
+                fieldStart = index
+            case 0x0D: // CR or CRLF
+                if index + 1 < bytes.count, bytes[index + 1] == 0x0A {
+                    index += 1
+                }
+                try finishRecord()
+                index += 1
+            case 0x0A: // LF
+                try finishRecord()
+                index += 1
+            default:
+                field.append(byte)
+                index += 1
+            }
+        }
+        if inQuotes {
+            throw CSVReadbackError.unterminatedQuote(offset: fieldStart)
+        }
+        if afterClosingQuote || !field.isEmpty || !row.isEmpty {
+            try finishField()
             rows.append(row)
         }
         return rows
@@ -352,6 +429,21 @@ final class CADDrawingBOMTableExportTests: XCTestCase {
             XCTAssertEqual(row.count, header.count, "every row must have the header's exact width")
             return record(header: header, row: row)
         }
+    }
+
+    /// Keep real production export bytes in the .xcresult for root's
+    /// independent viewer/reader. Attachments are made before tearDown deletes
+    /// the temporary document directory.
+    private func attach(_ data: Data, name: String,
+                        uniformTypeIdentifier: String,
+                        file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(data.isEmpty, "attachment \(name) must contain real export bytes",
+                       file: file, line: line)
+        let attachment = XCTAttachment(data: data,
+                                       uniformTypeIdentifier: uniformTypeIdentifier)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     private func svgLayerTexts(_ svg: String, layer: String) -> [String] {
@@ -399,7 +491,8 @@ final class CADDrawingBOMTableExportTests: XCTestCase {
         }
         return document.string ?? ""
 #else
-        throw XCTSkip("PDFKit is unavailable on this test host")
+        XCTFail("PDFKit is unavailable on this test host; PDF coverage cannot be skipped")
+        return ""
 #endif
     }
 
@@ -429,6 +522,8 @@ final class CADDrawingBOMTableExportTests: XCTestCase {
         let fixture = try makeNineRowFixture()
         let drawing = CADDrawingService(document: document)
         let data = try drawing.exportData(pageID: fixture.pageUUID, format: "csv")
+        attach(data, name: "bom-full-table.csv",
+               uniformTypeIdentifier: "public.comma-separated-values-text")
         let text = try XCTUnwrap(String(data: data, encoding: .utf8))
         XCTAssertTrue(text.hasSuffix("\r\n"), "RFC 4180 rows end with CRLF")
         XCTAssertFalse(text.hasPrefix("\u{FEFF}"), "the table is exact UTF-8 without a hidden BOM")
@@ -523,21 +618,27 @@ final class CADDrawingBOMTableExportTests: XCTestCase {
         XCTAssertEqual(output["vectorComplete"] as? Bool, true)
         XCTAssertEqual(output["requiredColumnsFit"] as? Bool, true)
         XCTAssertGreaterThanOrEqual(output["capacity"] as? Int ?? 0, 9)
-        let previewTexts = (geometry["texts"] as? [[String: Any]] ?? [])
-            .filter { $0["layer"] as? String == "bom" }
-            .compactMap { $0["text"] as? String }
-        assertVectorCoverage(previewTexts, fixture: fixture)
+        XCTAssertNil(output["previewRows"],
+                     "a complete vector table must not advertise a continuation")
+        XCTAssertNil(output["nextAction"],
+                     "a complete vector table needs no CSV fallback")
+        XCTAssertEqual((bom["entries"] as? [[String: Any]])?.count, 9,
+                       "pageGeometry must expose every BOM row even though the table text "
+                         + "itself is generated only by the vector sheet renderer")
 
         let svg = try drawing.exportData(pageID: fixture.pageUUID, format: "svg")
+        attach(svg, name: "bom-vector.svg", uniformTypeIdentifier: "public.svg-image")
         let svgText = try XCTUnwrap(String(data: svg, encoding: .utf8))
         let svgTexts = svgLayerTexts(svgText, layer: "BOM_TEXT")
         assertVectorCoverage(svgTexts, fixture: fixture)
 
         let dxf = try drawing.exportData(pageID: fixture.pageUUID, format: "dxf")
+        attach(dxf, name: "bom-vector.dxf", uniformTypeIdentifier: "public.data")
         let dxfText = try XCTUnwrap(String(data: dxf, encoding: .utf8))
         assertVectorCoverage(dxfBOMTexts(dxfText), fixture: fixture)
 
         let pdf = try drawing.exportData(pageID: fixture.pageUUID, format: "pdf")
+        attach(pdf, name: "bom-vector.pdf", uniformTypeIdentifier: "com.adobe.pdf")
         let pdfContent = try pdfText(pdf)
         assertVectorCoverage([pdfContent], fixture: fixture)
     }
@@ -566,12 +667,12 @@ final class CADDrawingBOMTableExportTests: XCTestCase {
         XCTAssertEqual(output["capacity"] as? Int, 6)
         XCTAssertEqual(output["previewRows"] as? Int, 4)
         XCTAssertEqual(output["requiredColumnsFit"] as? Bool, true)
-        let previewTexts = (geometry["texts"] as? [[String: Any]] ?? [])
-            .filter { $0["layer"] as? String == "bom" }
-            .compactMap { $0["text"] as? String }
-        let previewJoined = previewTexts.joined(separator: "\n")
-        XCTAssertTrue(previewJoined.contains("of 9"), "preview shows total/continuation")
-        XCTAssertTrue(previewJoined.contains("CSV: full table"))
+        XCTAssertEqual(output["fullTableFormat"] as? String, "csv")
+        let nextAction = try XCTUnwrap(output["nextAction"] as? String)
+        XCTAssertTrue(nextAction.contains("format=csv"),
+                      "the preview status offers the complete CSV fallback")
+        XCTAssertTrue(nextAction.contains("complete table"),
+                      "the fallback names the complete BOM table")
 
         for format in ["svg", "pdf", "dxf"] {
             XCTAssertThrowsError(try drawing.exportData(pageID: fixture.pageUUID,
@@ -598,6 +699,8 @@ final class CADDrawingBOMTableExportTests: XCTestCase {
         XCTAssertEqual(afterFiles, beforeFiles, "no half artifact and no temporary output")
 
         let csv = try drawing.exportData(pageID: fixture.pageUUID, format: "csv")
+        attach(csv, name: "bom-small-sheet-fallback.csv",
+               uniformTypeIdentifier: "public.comma-separated-values-text")
         let records = try csvRecords(csv)
         XCTAssertEqual(records.count, 9, "the CSV fallback still carries every row")
         let shared = try XCTUnwrap(records.first {
