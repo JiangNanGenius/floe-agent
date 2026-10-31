@@ -262,6 +262,17 @@ final class CADSketchConflictDiagnosisUITests: XCTestCase {
                       "one highlighted label must name the 40 mm driving value: \(labels)")
         XCTAssertTrue(clean.label.contains("60"),
                       "unexpected clean dimension label: \(clean.label)")
+        // Being present is not enough: actual83 projected both radius badges
+        // to the same anchor and the pair read like "R2405mm". The real hit
+        // frames must be separate so both values are readable and tappable.
+        // Keep this after the snapshot/value assertions so a failure still
+        // leaves the actual screenshot attached.
+        let firstFrame = conflicts.element(boundBy: 0).frame
+        let secondFrame = conflicts.element(boundBy: 1).frame
+        XCTAssertFalse(firstFrame.isEmpty || secondFrame.isEmpty,
+                       "both conflicting badges need a real frame; got \(firstFrame) and \(secondFrame)")
+        XCTAssertFalse(firstFrame.intersects(secondFrame),
+                       "the two conflicting values must not share an anchor; got \(firstFrame) and \(secondFrame)")
 
         // Editing a red driving value must be refused with the real conflict
         // reason and must not commit the solver's compromise. This is the

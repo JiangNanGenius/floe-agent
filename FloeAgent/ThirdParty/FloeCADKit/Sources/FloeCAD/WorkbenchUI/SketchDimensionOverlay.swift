@@ -42,9 +42,28 @@ struct SketchDimensionOverlay: View {
         // nothing to draw simply stops taking taps.
         if viewModel.mode.isSketching || !labels.isEmpty {
             GeometryReader { geo in
+            let presentations = labels.compactMap { presentation(for: $0, in: geo.size) }
+            // Resolve overlapping projected anchors once per layout pass, in
+            // document label order. Badges, their hit targets, the connector
+            // and the inline editor all read the same placement below.
+            let placements = SketchBadgeCollisionLayout.placements(
+                for: presentations.map { $0.collisionItem },
+                in: badgeLayoutBounds(in: geo.size))
             ZStack(alignment: .topLeading) {
-                ForEach(labels) { label in
-                    labelView(label, in: geo.size)
+                // Stems go behind EVERY badge. A displaced value can move
+                // across an earlier badge's row; drawing its stem inside that
+                // row would paint the connector over the earlier value. The
+                // badges below cover the stem where it passes underneath.
+                ForEach(presentations) { presentation in
+                    if let center = placements[presentation.id]?.center,
+                       center != presentation.defaultCenter {
+                        displacedConnector(presentation, to: center)
+                    }
+                }
+                ForEach(presentations) { presentation in
+                    labelView(presentation,
+                              placement: placements[presentation.id]?.center
+                                  ?? presentation.defaultCenter)
                 }
                 // The editor lives HERE, not inside the ForEach. There is only
                 // ever one, and building it per-label tied its identity — and
@@ -56,10 +75,16 @@ struct SketchDimensionOverlay: View {
                 if let worldAnchor = viewModel.pendingRectangleEditorAnchor ?? labels.first(where: {
                     $0.id == viewModel.editingDimension?.labelID
                 })?.worldAnchor, let anchor = project(worldAnchor) {
+                    // Open beside the badge the user tapped, including one the
+                    // collision layout displaced, not the raw world anchor.
+                    let editingID = viewModel.pendingRectangleEditorAnchor == nil
+                        ? viewModel.editingDimension?.labelID : nil
                     DimensionField(viewModel: viewModel)
                         .id(viewModel.editingDimension?.sessionID)
                         .onGeometryChange(for: CGSize.self) { $0.size } action: { editorSize = $0 }
-                        .position(editorPosition(anchor, in: geo.size))
+                        .position(editorPosition(
+                            editingID.flatMap { placements[$0]?.center } ?? anchor,
+                            in: geo.size))
                 }
             }
             }
@@ -120,6 +145,19 @@ struct SketchDimensionOverlay: View {
                    high: size.height - 110 - editorSize.height / 2))
     }
 
+    /// Room a collision-displaced badge may use. Same palette/rail margins the
+    /// projection helpers already respect; an existing badge that already sits
+    /// near an edge is never moved merely to satisfy this rectangle.
+    private func badgeLayoutBounds(in size: CGSize) -> CGRect {
+        let palette: CGFloat = 96
+        let rail = railInset
+        let left = CADPreferences.shared.paletteOnRight ? rail : palette
+        let right = CADPreferences.shared.paletteOnRight ? palette : rail
+        return CGRect(x: left, y: 140,
+                      width: max(1, size.width - left - right),
+                      height: max(1, size.height - 250))
+    }
+
     /// Keep dimension badges clear of selected geometry's central control
     /// region, including while a draw tool hides the manipulation gizmo.
     /// Otherwise line-length badges collide with the line/constraint anchor.
@@ -153,28 +191,188 @@ struct SketchDimensionOverlay: View {
                        y: point.y + dx / length * Self.gizmoHandleRadius)
     }
 
+    private static let dimensionFont =
+        UIFont.monospacedDigitSystemFont(ofSize: 16, weight: .regular)
+    private static let captionFont = UIFontMetrics(forTextStyle: .caption1)
+        .scaledFont(for: UIFont.systemFont(ofSize: 12, weight: .semibold))
+
+    /// One label's projection and screen-space footprint, resolved once per
+    /// overlay layout pass. The same values feed the badge position, the
+    /// collision solver, the connector and the inline editor.
+    private struct SketchLabelPresentation: Identifiable {
+        let label: EditorViewModel.SketchDimensionLabel
+        let start: CGPoint
+        let end: CGPoint
+        let arc: (points: [CGPoint], anchor: CGPoint, rotation: Double)?
+        let radial: (tail: CGPoint, anchor: CGPoint, rotation: Double)?
+        let diameter: SketchDiameterDimensionLayout?
+        let linear: SketchLinearDimensionLayout?
+        let isManual: Bool
+        let isSelectedCircleRadius: Bool
+        let defaultCenter: CGPoint
+        let hitSize: CGSize
+        let inkSize: CGSize
+        let rotation: Double
+        let leaderPoints: [CGPoint]
+
+        var id: String { label.id }
+
+        var collisionItem: SketchBadgeCollisionLayout.Item {
+            SketchBadgeCollisionLayout.Item(
+                id: id, center: defaultCenter, hitSize: hitSize,
+                inkSize: inkSize, rotation: rotation, isFixed: isManual)
+        }
+    }
+
+    /// The angle badge's visible text; measurement and rendering must use the
+    /// same formatting, or the collision footprint drifts from the view.
+    private func arcText(_ label: EditorViewModel.SketchDimensionLabel) -> String {
+        label.displayValue.formatted(.number.precision(.fractionLength(0...2))) + "°"
+    }
+
+    private static func dimensionHitSize(text: String, horizontalPadding: CGFloat,
+                                         extraWidth: CGFloat = 0) -> CGSize {
+        let measured = (text as NSString).size(withAttributes: [.font: dimensionFont])
+        return CGSize(width: ceil(max(44, measured.width + horizontalPadding)) + extraWidth,
+                      height: 44)
+    }
+
+    private static func dimensionInkSize(text: String, horizontalPadding: CGFloat,
+                                         verticalPadding: CGFloat,
+                                         extraWidth: CGFloat = 0) -> CGSize {
+        let measured = (text as NSString).size(withAttributes: [.font: dimensionFont])
+        return CGSize(width: ceil(measured.width + horizontalPadding) + extraWidth,
+                      height: ceil(measured.height + verticalPadding))
+    }
+
+    /// Project one label and measure the exact badge SwiftUI will position.
+    /// No world geometry is changed; this only reports screen-space metrics.
+    private func presentation(for label: EditorViewModel.SketchDimensionLabel,
+                              in size: CGSize) -> SketchLabelPresentation? {
+        guard let anchor = project(label.worldAnchor),
+              let start = project(label.worldStart),
+              let end = project(label.worldEnd) else { return nil }
+        let arc = arcLeader(label)
+        let isLinear = label.isStandaloneLineLength || label.isRectangleSize
+        let interior = label.worldRectangleCenter.flatMap(project)
+        // A dragged label (live preview, or a saved/selection-lived
+        // placement) moves the whole leader, as native's does.
+        let draggedLeader: CGFloat? = isLinear
+            ? (diameterDragPreviews[label.id] ?? label.worldLinearLabelAnchor.flatMap(project)).flatMap {
+                SketchLinearDimensionLayout.leaderOffset(start: start, end: end, textAnchor: $0, awayFrom: interior)
+            } : nil
+        let linear = isLinear
+            ? SketchLinearDimensionLayout.make(start: start, end: end,
+                leaderOffset: draggedLeader ?? (label.isProjectedLineLength ? 0 : label.isRectangleSize ? 100 : 60),
+                awayFrom: interior) : nil
+        let radial = label.isArcRadius ? radiusLeader(start, end, text: label.text, compact: label.isCircleRadius && ((label.dimensionID != nil && (label.hasCircleRadiusDirection || viewModel.mode.sketchTool == .circle)) || (viewModel.mode.sketchTool == .circle && viewModel.selectedCircleCenterID == label.refs.first?.entityID)), in: size) : nil
+        let manualDiameterAnchor = diameterDragPreviews[label.id]
+            ?? label.worldDiameterLabelAnchor.flatMap(project)
+        let diameter = label.kind == .diameter ? diameterLayout(start, end, anchor: anchor, text: label.text, sketchID: label.sketchID,
+            manualAnchor: manualDiameterAnchor, in: size) : nil
+        let isSelectedCircleRadius = label.isCircleRadius && !viewModel.sketchTransformActive
+            && (viewModel.mode.sketchTool == .circle || label.hasCircleRadiusDirection)
+            && label.dimensionID.map { viewModel.selectedDimensionID == $0 } == true
+
+        let defaultCenter: CGPoint
+        let rotation: Double
+        let hitSize: CGSize
+        let inkSize: CGSize
+        if label.isPolygonSideCount {
+            defaultCenter = polygonCountAnchor(start: start, end: end, in: size)
+            rotation = atan2(end.y - start.y, end.x - start.x) - .pi / 2
+            hitSize = Self.dimensionHitSize(text: label.text, horizontalPadding: 0)
+            inkSize = Self.dimensionInkSize(text: label.text, horizontalPadding: 0,
+                                            verticalPadding: 0)
+        } else if let arc {
+            defaultCenter = arc.anchor
+            rotation = arc.rotation
+            let text = arcText(label)
+            hitSize = Self.dimensionHitSize(text: text, horizontalPadding: 0)
+            inkSize = Self.dimensionInkSize(text: text, horizontalPadding: 0,
+                                            verticalPadding: 0)
+        } else if let radial {
+            defaultCenter = radial.anchor
+            rotation = radial.rotation
+            let measured = (label.text as NSString).size(withAttributes: [.font: Self.dimensionFont])
+            if isSelectedCircleRadius {
+                // The selected circle-radius badge adds a 44-pt lock button;
+                // its white value background and that button are both ink.
+                let buttonWidth = ceil(max(44, measured.width + 6))
+                hitSize = CGSize(width: buttonWidth + 44, height: 44)
+                inkSize = CGSize(width: buttonWidth + 44, height: 44)
+            } else {
+                hitSize = CGSize(width: ceil(max(44, measured.width)), height: 44)
+                inkSize = CGSize(width: ceil(measured.width), height: ceil(measured.height))
+            }
+        } else if let diameter {
+            defaultCenter = diameter.anchor
+            rotation = diameter.rotation
+            hitSize = CGSize(width: max(44, diameter.targetSize.width),
+                             height: max(44, diameter.targetSize.height))
+            inkSize = Self.dimensionInkSize(text: label.text, horizontalPadding: 0,
+                                            verticalPadding: 0)
+        } else if let linear {
+            defaultCenter = badgeWithinCanvas(linear.anchor, in: size)
+            rotation = linear.rotation
+            let padded = label.isRectangleSize && label.dimensionID != nil &&
+                viewModel.selectedDimensionID == label.dimensionID &&
+                viewModel.selectedMigratedRectangleCornerMarker != nil
+            let horizontalPadding: CGFloat = padded ? 6 : 0
+            let verticalPadding: CGFloat = padded ? 2 : 0
+            hitSize = Self.dimensionHitSize(text: label.text,
+                                            horizontalPadding: horizontalPadding)
+            inkSize = Self.dimensionInkSize(text: label.text,
+                                            horizontalPadding: horizontalPadding,
+                                            verticalPadding: verticalPadding)
+        } else {
+            defaultCenter = clearOfGizmo(anchor, along: start, end)
+            rotation = 0
+            let measured = (label.text as NSString).size(withAttributes: [.font: Self.captionFont])
+            let ink = CGSize(width: ceil(measured.width) + 12, height: ceil(measured.height) + 6)
+            hitSize = CGSize(width: max(44, ink.width), height: max(44, ink.height))
+            inkSize = ink
+        }
+
+        let leaderPoints: [CGPoint]
+        if let arc {
+            leaderPoints = [start] + arc.points + [end]
+        } else if let radial {
+            leaderPoints = [start, radial.tail]
+        } else if let diameter {
+            leaderPoints = [diameter.start, diameter.tail]
+        } else if let linear {
+            leaderPoints = [label.worldLineStart.flatMap(project) ?? start,
+                            linear.start, linear.end,
+                            label.worldLineEnd.flatMap(project) ?? end]
+        } else if label.isPolygonSideCount {
+            leaderPoints = []
+        } else {
+            leaderPoints = [start, end]
+        }
+        // A live drag preview and a saved/manual placement are authored: the
+        // collision solver may not overwrite them.
+        let isManual = (linear != nil && draggedLeader != nil)
+            || (label.kind == .diameter && manualDiameterAnchor != nil)
+        return SketchLabelPresentation(
+            label: label, start: start, end: end,
+            arc: arc, radial: radial, diameter: diameter, linear: linear,
+            isManual: isManual, isSelectedCircleRadius: isSelectedCircleRadius,
+            defaultCenter: defaultCenter, hitSize: hitSize, inkSize: inkSize,
+            rotation: rotation, leaderPoints: leaderPoints)
+    }
+
     @ViewBuilder
-    private func labelView(_ label: EditorViewModel.SketchDimensionLabel,
-                           in size: CGSize) -> some View {
-        if let anchor = project(label.worldAnchor),
-           let start = project(label.worldStart),
-           let end = project(label.worldEnd) {
-            let arc = arcLeader(label)
-            let isLinear = label.isStandaloneLineLength || label.isRectangleSize
-            let interior = label.worldRectangleCenter.flatMap(project)
-            // A dragged label (live preview, or a saved/selection-lived
-            // placement) moves the whole leader, as native's does.
-            let draggedLeader: CGFloat? = isLinear
-                ? (diameterDragPreviews[label.id] ?? label.worldLinearLabelAnchor.flatMap(project)).flatMap {
-                    SketchLinearDimensionLayout.leaderOffset(start: start, end: end, textAnchor: $0, awayFrom: interior)
-                } : nil
-            let linear = isLinear
-                ? SketchLinearDimensionLayout.make(start: start, end: end,
-                    leaderOffset: draggedLeader ?? (label.isProjectedLineLength ? 0 : label.isRectangleSize ? 100 : 60),
-                    awayFrom: interior) : nil
-            let radial = label.isArcRadius ? radiusLeader(start, end, text: label.text, compact: label.isCircleRadius && ((label.dimensionID != nil && (label.hasCircleRadiusDirection || viewModel.mode.sketchTool == .circle)) || (viewModel.mode.sketchTool == .circle && viewModel.selectedCircleCenterID == label.refs.first?.entityID)), in: size) : nil
-            let diameter = label.kind == .diameter ? diameterLayout(start, end, anchor: anchor, text: label.text, sketchID: label.sketchID,
-                manualAnchor: diameterDragPreviews[label.id] ?? label.worldDiameterLabelAnchor.flatMap(project), in: size) : nil
+    private func labelView(_ presentation: SketchLabelPresentation,
+                           placement: CGPoint) -> some View {
+        let label = presentation.label
+        let start = presentation.start
+        let end = presentation.end
+        let arc = presentation.arc
+        let radial = presentation.radial
+        let diameter = presentation.diameter
+        let linear = presentation.linear
+        Group {
             if let arc {
                 Path { path in
                     path.addLines(arc.points)
@@ -288,7 +486,7 @@ struct SketchDimensionOverlay: View {
                     }
                 }
                 .rotationEffect(.radians(radial.rotation))
-                .position(radial.anchor)
+                .position(placement)
             } else {
                 // Stage-2 conflict attribution: a dimension the solver could
                 // not satisfy paints red — dueling lengths are the archetypal
@@ -306,7 +504,7 @@ struct SketchDimensionOverlay: View {
                             .frame(minWidth: 44, minHeight: 44)
                             .contentShape(Rectangle())
                     } else if let arc {
-                        Text(label.displayValue.formatted(.number.precision(.fractionLength(0...2))) + "°")
+                        Text(arcText(label))
                             .font(.system(size: 16))
                             .monospacedDigit()
                             .foregroundStyle(conflicting ? Color.red : Color.black)
@@ -391,13 +589,13 @@ struct SketchDimensionOverlay: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .highPriorityGesture(diameterDrag(label, anchor: diameter?.anchor ?? linear?.anchor ?? anchor),
+                // Start a drag from the badge the user actually sees, not the
+                // raw projected anchor. Otherwise a displaced badge jumps back
+                // to its old leader position on the first touch and overwrites
+                // the authored offset with that jump.
+                .highPriorityGesture(diameterDrag(label, anchor: placement),
                     including: diameter != nil || linear != nil ? .all : .none)
-                .position(label.isPolygonSideCount
-                    ? polygonCountAnchor(start: start, end: end, in: size)
-                    : arc?.anchor ?? radial?.anchor ?? diameter?.anchor
-                        ?? linear.map { badgeWithinCanvas($0.anchor, in: size) }
-                        ?? clearOfGizmo(anchor, along: start, end))
+                .position(placement)
                 .accessibilityIdentifier(
                     conflicting ? "DimensionLabelConflict" : "DimensionLabel")
                 if let linear, viewModel.canChooseLineDimensionKind(label) {
@@ -421,11 +619,27 @@ struct SketchDimensionOverlay: View {
                     }
                     .accessibilityLabel("Distance Type")
                     .accessibilityIdentifier("LineDistanceTypeBadge")
-                    .position(x: linear.anchor.x - cos(linear.rotation) * (textWidth / 2 + 24),
-                              y: linear.anchor.y - sin(linear.rotation) * (textWidth / 2 + 24))
+                    .position(x: placement.x - cos(linear.rotation) * (textWidth / 2 + 24),
+                              y: placement.y - sin(linear.rotation) * (textWidth / 2 + 24))
                 }
             }
         }
+    }
+
+    /// Connector for a collision-displaced badge, drawn behind every badge by
+    /// the calling layer. It starts at the nearest point of the existing leader
+    /// so the moved value still reads as attached to this dimension.
+    private func displacedConnector(_ presentation: SketchLabelPresentation,
+                                    to center: CGPoint) -> some View {
+        let start = Self.closestPoint(on: presentation.leaderPoints,
+                                      to: presentation.defaultCenter)
+            ?? presentation.defaultCenter
+        return Path { path in
+            path.move(to: start)
+            path.addLine(to: center)
+        }
+        .stroke(Color.black.opacity(0.75), lineWidth: 1)
+        .allowsHitTesting(false)
     }
 
     private func polygonCountAnchor(start: CGPoint, end: CGPoint, in size: CGSize) -> CGPoint {
@@ -563,6 +777,30 @@ struct SketchDimensionOverlay: View {
                 offset(projected[middle], by: viewModel.selectedSingleArc != nil ? 80 : 40), rotation)
     }
 
+    /// Nearest point on the drawn leader, used to start a displaced badge's
+    /// connector at the leader rather than in empty space.
+    private static func closestPoint(on polyline: [CGPoint], to point: CGPoint) -> CGPoint? {
+        guard let first = polyline.first else { return nil }
+        guard polyline.count > 1 else { return first }
+        var best = first
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+        for index in 1..<polyline.count {
+            let a = polyline[index - 1], b = polyline[index]
+            let dx = b.x - a.x, dy = b.y - a.y
+            let lengthSquared = dx * dx + dy * dy
+            let t: CGFloat = lengthSquared > 0.0001
+                ? min(max(((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared, 0), 1)
+                : 0
+            let candidate = CGPoint(x: a.x + dx * t, y: a.y + dy * t)
+            let distance = hypot(candidate.x - point.x, candidate.y - point.y)
+            if distance < bestDistance {
+                bestDistance = distance
+                best = candidate
+            }
+        }
+        return best
+    }
+
     private func addArrow(to path: inout Path, tip: CGPoint, toward point: CGPoint) {
         let dx = point.x - tip.x, dy = point.y - tip.y
         let length = hypot(dx, dy)
@@ -652,6 +890,44 @@ private struct DimensionField: View {
             }
     }
 
+    /// Resign the live responder before an action that ends
+    /// `editingDimension` and removes this field. @FocusState alone lands on
+    /// the next SwiftUI transaction; the UIKit call is immediate.
+    private func resignFocusBeforeTeardown() {
+        focused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
+    }
+
+    /// Commit without tearing a focused UITextField out of the view graph.
+    /// `commitDimensionEdit` clears `editingDimension`, which removes this
+    /// editor. Removing the first responder during that same display-list
+    /// update trips `UIFocusSystem._focusEnvironmentWillDisappear`'s assertion
+    /// (actual84b: SIGABRT immediately after DimensionCommit, before the
+    /// refusal notice). Resign FIRST, let that focus transaction land on the
+    /// next main-queue turn, then commit exactly once for the session that
+    /// asked for it. A stale draft is never applied to a different dimension.
+    private func commitKeepingFocusStable() {
+        guard let sessionID = viewModel.editingDimension?.sessionID else { return }
+        let draft = text
+        let restoresKeyboard = acceptsHardwareInput
+        resignFocusBeforeTeardown()
+        DispatchQueue.main.async {
+            // Click-away, Cancel, or another badge may have ended or replaced
+            // the edit before this turn. Never commit into a reopened session.
+            guard viewModel.editingDimension?.sessionID == sessionID else { return }
+            viewModel.commitDimensionEdit(draft)
+            // An invalid draft keeps the same editor open. Restore the input
+            // method the user was already using; a successful or refused size
+            // has already closed the session, so this cannot reopen it.
+            if restoresKeyboard,
+               viewModel.editingDimension?.sessionID == sessionID,
+               viewModel.editingDimension?.validationMessage != nil {
+                focused = true
+            }
+        }
+    }
+
     private var content: some View {
         VStack(spacing: 6) {
             valueRow
@@ -661,8 +937,15 @@ private struct DimensionField: View {
                     isLocked: viewModel.editingDimension?.dimensionID != nil,
                     lockEnabled: viewModel.canToggleDimensionLock(text),
                     initialValueSelected: $initialValueSelected,
-                    onToggleLock: { viewModel.toggleDimensionLock(text) },
-                    onCommit: { viewModel.commitDimensionEdit(text) },
+                    // The lock key closes the editor through
+                    // `toggleDimensionLock`; resign before that synchronous
+                    // teardown too (it can be reached from a focused
+                    // hardware-keyboard edit).
+                    onToggleLock: {
+                        resignFocusBeforeTeardown()
+                        viewModel.toggleDimensionLock(text)
+                    },
+                    onCommit: { commitKeepingFocusStable() },
                     onSwitchToSystemKeyboard: {
                         usingSystemKeyboard = true
                         focused = true
@@ -720,21 +1003,7 @@ private struct DimensionField: View {
                 .allowsHitTesting(acceptsHardwareInput)
                 .focusable(acceptsHardwareInput)
                 .submitLabel(.done)
-                .onSubmit {
-                    let sessionID = viewModel.editingDimension?.sessionID
-                    viewModel.commitDimensionEdit(text)
-                    if viewModel.editingDimension?.validationMessage != nil {
-                        // Return normally resigns UIKit focus. A rejected draft
-                        // stays editable without an extra tap, as in native.
-                        focused = false
-                        DispatchQueue.main.async {
-                            if acceptsHardwareInput,
-                               viewModel.editingDimension?.sessionID == sessionID {
-                                focused = true
-                            }
-                        }
-                    }
-                }
+                .onSubmit { commitKeepingFocusStable() }
                 .accessibilityIdentifier("DimensionField")
                 .onReceive(NotificationCenter.default.publisher(for: UITextField.textDidBeginEditingNotification)) { notification in
                     guard usingSystemKeyboard, initialValueSelected,
@@ -805,7 +1074,7 @@ private struct DimensionField: View {
                 // With the system keyboard up the pad is gone, so the commit
                 // control has to live here instead.
                 Button {
-                    viewModel.commitDimensionEdit(text)
+                    commitKeepingFocusStable()
                 } label: {
                     Image(systemName: "checkmark.circle.fill")
                 }

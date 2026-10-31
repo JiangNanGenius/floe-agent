@@ -18,6 +18,7 @@
 import Foundation
 import XCTest
 import simd
+import CoreGraphics
 @testable import FloeCAD
 
 @MainActor
@@ -368,3 +369,130 @@ final class CADSketchFixtureAndLabelContractTests: XCTestCase {
     }
 }
 #endif
+
+/// Screen-space collision regression for the M06 badge pair. Geometry,
+/// dimension values and leader endpoints are not involved: these tests feed
+/// the same projected metrics the overlay measures and assert the actual
+/// hit/ink separation predicate it uses.
+@MainActor
+final class CADSketchBadgeCollisionLayoutTests: XCTestCase {
+    private let canvas = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+
+    private func badge(_ id: String,
+                       at center: CGPoint = CGPoint(x: 500, y: 400),
+                       rotation: Double = 55 * Double.pi / 180,
+                       fixed: Bool = false) -> SketchBadgeCollisionLayout.Item {
+        SketchBadgeCollisionLayout.Item(
+            id: id, center: center,
+            hitSize: CGSize(width: 61.5, height: 44),
+            inkSize: CGSize(width: 61.078125, height: 19),
+            rotation: rotation, isFixed: fixed)
+    }
+
+    private func assertSeparated(_ items: [SketchBadgeCollisionLayout.Item],
+                                 _ placements: [String: SketchBadgeCollisionLayout.Placement],
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        for first in items.indices {
+            for second in items.indices where second > first {
+                let a = placements[items[first].id]!.center
+                let b = placements[items[second].id]!.center
+                XCTAssertFalse(
+                    SketchBadgeCollisionLayout.collides(items[first], at: a,
+                                                        with: items[second], at: b),
+                    "\(items[first].id) at \(a) must not overlap \(items[second].id) at \(b)",
+                    file: file, line: line)
+            }
+        }
+    }
+
+    func testCoincidentRadiusBadgesKeepTheFirstAndDisplaceOnlyTheSecond() {
+        let first = badge("R25")
+        let second = badge("R40")
+        let placements = SketchBadgeCollisionLayout.placements(for: [first, second],
+                                                               in: canvas)
+
+        XCTAssertEqual(placements["R25"]!.center, first.center,
+                       "the first, non-displaced badge must stay exactly on its leader")
+        XCTAssertFalse(placements["R25"]!.isDisplaced)
+        XCTAssertTrue(placements["R40"]!.isDisplaced)
+        XCTAssertEqual(placements["R40"]!.center.x, first.center.x, accuracy: 1e-9)
+        XCTAssertEqual(placements["R40"]!.center.y, first.center.y + 52, accuracy: 1e-9,
+                       "the closest clear slot for this 61.5x44 hit frame / 61.078x19 ink " +
+                       "at 55 degrees is the next 8-point vertical step")
+        assertSeparated([first, second], placements)
+    }
+
+    func testAlreadySeparatedBadgesAreNotMoved() {
+        let first = badge("R25", at: CGPoint(x: 200, y: 300))
+        let second = badge("R40", at: CGPoint(x: 700, y: 550))
+        let placements = SketchBadgeCollisionLayout.placements(for: [first, second],
+                                                               in: canvas)
+
+        XCTAssertEqual(placements["R25"]!.center, first.center)
+        XCTAssertEqual(placements["R40"]!.center, second.center)
+        XCTAssertFalse(placements["R25"]!.isDisplaced)
+        XCTAssertFalse(placements["R40"]!.isDisplaced)
+    }
+
+    func testPlacementOrderFollowsTheArrayNotTheIdentifierSort() {
+        let first = badge("z-first")
+        let second = badge("a-second")
+        let placements = SketchBadgeCollisionLayout.placements(for: [first, second],
+                                                               in: canvas)
+
+        XCTAssertEqual(placements["z-first"]!.center, first.center,
+                       "array/document order owns the anchor, never UUID or id sort")
+        XCTAssertTrue(placements["a-second"]!.isDisplaced)
+        assertSeparated([first, second], placements)
+    }
+
+    func testThreeCoincidentBadgesGetDistinctDeterministicSlots() {
+        let items = [badge("R25"), badge("R40"), badge("R60")]
+        let first = SketchBadgeCollisionLayout.placements(for: items, in: canvas)
+        let second = SketchBadgeCollisionLayout.placements(for: items, in: canvas)
+
+        XCTAssertEqual(first["R25"]!.center, items[0].center)
+        for item in items {
+            XCTAssertEqual(first[item.id]!.center, second[item.id]!.center,
+                           "\(item.id): repeated layout of the same frame must be identical")
+        }
+        let centers = items.map { first[$0.id]!.center }
+        XCTAssertEqual(Set(centers.map { "\($0.x),\($0.y)" }).count, 3)
+        assertSeparated(items, first)
+    }
+
+    func testManualPlacementIsPreservedAndAutomaticBadgeAvoidsIt() {
+        let manual = badge("manual", at: CGPoint(x: 500, y: 430), fixed: true)
+        let automatic = badge("auto")
+        let placements = SketchBadgeCollisionLayout.placements(for: [manual, automatic],
+                                                               in: canvas)
+
+        XCTAssertEqual(placements["manual"]!.center, manual.center,
+                       "an authored/dragged placement must never be overwritten")
+        XCTAssertFalse(placements["manual"]!.isDisplaced)
+        XCTAssertTrue(placements["auto"]!.isDisplaced)
+        assertSeparated([manual, automatic], placements)
+    }
+
+    func testNearVerticalRotationSeparatesRealInkNotJustHitBoxes() {
+        let rotation = 88 * Double.pi / 180
+        let items = [badge("R25", rotation: rotation),
+                     badge("R40", rotation: rotation)]
+        let placements = SketchBadgeCollisionLayout.placements(for: items, in: canvas)
+
+        XCTAssertTrue(placements["R40"]!.isDisplaced)
+        assertSeparated(items, placements)
+    }
+
+    func testDisplacedBadgeStaysInsideTheCanvasNearTheBottomEdge() {
+        let edge = badge("R25", at: CGPoint(x: 950, y: 760))
+        let other = badge("R40", at: CGPoint(x: 950, y: 760))
+        let placements = SketchBadgeCollisionLayout.placements(for: [edge, other],
+                                                               in: canvas)
+
+        XCTAssertLessThan(placements["R40"]!.center.y, edge.center.y,
+                          "the +y slot exits the canvas; the solver must use the clear -y slot")
+        XCTAssertGreaterThanOrEqual(placements["R40"]!.center.y, 0)
+        assertSeparated([edge, other], placements)
+    }
+}
