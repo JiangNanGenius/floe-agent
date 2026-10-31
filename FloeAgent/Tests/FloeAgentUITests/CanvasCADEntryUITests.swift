@@ -129,9 +129,10 @@ final class CADRecoveryCopyFlowUITests: XCTestCase {
         let sheet = app.descendants(matching: .any)
             .matching(identifier: "cad.recovery.sheet").firstMatch
         XCTAssertTrue(sheet.waitForExistence(timeout: 30))
-        XCTAssertTrue(app.descendants(matching: .any)["cad.recovery.previewImage"].exists,
-                      "the real previous viewport thumbnail must be available")
+        let imageReady = app.descendants(matching: .any)["cad.recovery.previewImage"]
+            .waitForExistence(timeout: 10)
         snapshot("Damaged canvas verified previous preview")
+        XCTAssertTrue(imageReady, "the real previous viewport thumbnail must be accessible")
         // Cancel does not silently replace the damaged package.
         app.buttons["cad.recovery.closeButton"].tap()
         let review = app.buttons["cad.recovery.reviewButton"]

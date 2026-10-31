@@ -66,6 +66,11 @@ struct ToolVisualEvidenceDispatchTests {
             return text
         }.joined(separator: "\n")
         #expect(text.contains(artifact.sha256))
+#if canImport(ImageIO)
+        #expect(text.contains("sourcePixels=1x1"))
+        #expect(text.contains("attachedPixels=1x1"))
+        #expect(text.contains("scaleX=1 scaleY=1"))
+#endif
         switch route {
         case .direct:
             #expect(images == [data])

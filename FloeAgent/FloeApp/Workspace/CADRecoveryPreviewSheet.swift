@@ -126,6 +126,7 @@ struct CADRecoveryPreviewSheet: View {
                     .frame(maxWidth: .infinity, maxHeight: 240)
                     .background(Color(uiColor: .secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .accessibilityElement()
                     .accessibilityIdentifier("cad.recovery.previewImage")
                     .accessibilityLabel(Text("cad.recovery.previewImage.caption"))
                 Text("cad.recovery.previewImage.caption")

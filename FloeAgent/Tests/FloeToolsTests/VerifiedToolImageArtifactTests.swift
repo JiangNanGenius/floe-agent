@@ -73,6 +73,44 @@ struct VerifiedToolImageArtifactTests {
         #expect(delivery.attachedSHA256 == FloeDigest.sha256Hex(delivery.data))
         #expect(delivery.attachedSHA256 != delivery.sourceSHA256)
         #expect(try Data(contentsOf: loaded.fileURL) == original)
+        #expect(delivery.sourceGeometry?.width == 8)
+        #expect(delivery.sourceGeometry?.height == 8)
+        #expect(delivery.attachedGeometry?.width == 8)
+        #expect(delivery.attachedGeometry?.height == 8)
+        #expect(delivery.receipt.contains("scaleX=1 scaleY=1"))
+    }
+
+    @Test func defaultBudgetPreviewRecordsRealPixelScalingAndRetainsTheOriginal() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = try #require(CGContext(data: nil, width: 4096, height: 256, bitsPerComponent: 8,
+            bytesPerRow: 4096 * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 4096, height: 256))
+        let image = try #require(context.makeImage())
+        let encoded = NSMutableData()
+        let encoder = try #require(CGImageDestinationCreateWithData(encoded, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(encoder, image, nil)
+        #expect(CGImageDestinationFinalize(encoder))
+        var original = encoded as Data
+        original.append(Data(repeating: 0, count: ProviderImageEvidencePolicy.maximumImageBytes + 1024))
+        let ref = try write(original, path: "CADAnimationFrames/run/scaled.png", root: root)
+        let loaded = try VerifiedToolImageArtifact.load(ref, root: root)
+        let delivery = try loaded.providerDelivery()
+        #expect(delivery.isPreview)
+        #expect(delivery.data.count <= ProviderImageEvidencePolicy.maximumImageBytes)
+        #expect(delivery.sourceGeometry?.width == 4096)
+        #expect(delivery.sourceGeometry?.height == 256)
+        #expect(delivery.attachedGeometry?.width == 2048)
+        #expect(delivery.attachedGeometry?.height == 128)
+        #expect(delivery.receipt.contains("sourcePixels=4096x256"))
+        #expect(delivery.receipt.contains("attachedPixels=2048x128"))
+        #expect(delivery.receipt.contains("scaleX=0.5 scaleY=0.5"))
+        #expect(delivery.sourceSHA256 == ref.sha256)
+        #expect(delivery.attachedSHA256 == FloeDigest.sha256Hex(delivery.data))
+        #expect(delivery.attachedSHA256 != ref.sha256)
+        #expect(try Data(contentsOf: loaded.fileURL) == original)
     }
 #endif
 }

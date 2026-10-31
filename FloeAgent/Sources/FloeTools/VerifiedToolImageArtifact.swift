@@ -20,17 +20,62 @@ public struct VerifiedToolImageArtifact: Sendable {
     public let mimeType: String
     public let data: Data
 
+    /// Encoded pixel dimensions and EXIF orientation, read without decoding
+    /// the full bitmap. Display dimensions account for quarter-turn metadata.
+    public struct PixelGeometry: Sendable, Equatable {
+        public let width: Int
+        public let height: Int
+        public let orientation: Int
+
+        public var displayWidth: Int { (5...8).contains(orientation) ? height : width }
+        public var displayHeight: Int { (5...8).contains(orientation) ? width : height }
+    }
+
     public struct Delivery: Sendable {
         public let data: Data
         public let mimeType: String
         public let sourceSHA256: String
         public let attachedSHA256: String
         public let isPreview: Bool
+        public let sourceGeometry: PixelGeometry?
+        public let attachedGeometry: PixelGeometry?
 
         public var receipt: String {
-            "sourceSHA256=\(sourceSHA256) attachedSHA256=\(attachedSHA256) "
+            var text = "sourceSHA256=\(sourceSHA256) attachedSHA256=\(attachedSHA256) "
                 + "bytes=\(data.count) representation=\(isPreview ? "derived-preview" : "original")"
+            if let sourceGeometry {
+                text += " sourcePixels=\(sourceGeometry.width)x\(sourceGeometry.height)"
+                    + " sourceOrientation=\(sourceGeometry.orientation)"
+            }
+            if let attachedGeometry {
+                text += " attachedPixels=\(attachedGeometry.width)x\(attachedGeometry.height)"
+                    + " attachedOrientation=\(attachedGeometry.orientation)"
+            }
+            if let sourceGeometry, let attachedGeometry {
+                let scaleX = Double(attachedGeometry.displayWidth) / Double(sourceGeometry.displayWidth)
+                let scaleY = Double(attachedGeometry.displayHeight) / Double(sourceGeometry.displayHeight)
+                let locale = Locale(identifier: "en_US_POSIX")
+                text += " scaleX=\(String(format: "%.6g", locale: locale, scaleX))"
+                    + " scaleY=\(String(format: "%.6g", locale: locale, scaleY))"
+            }
+            return text
         }
+    }
+
+    private static func pixelGeometry(in data: Data) -> PixelGeometry? {
+#if canImport(ImageIO)
+        guard let source = CGImageSourceCreateWithData(data as CFData,
+                    [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              width > 0, height > 0 else { return nil }
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        guard (1...8).contains(orientation) else { return nil }
+        return PixelGeometry(width: width, height: height, orientation: orientation)
+#else
+        return nil
+#endif
     }
 
     public static func load(_ reference: ToolArtifactReference, root: URL) throws -> Self {
@@ -71,9 +116,11 @@ public struct VerifiedToolImageArtifact: Sendable {
         guard byteLimit > 0 else {
             throw FloeError.validationFailed("The visual evidence budget is exhausted.")
         }
+        let originalGeometry = Self.pixelGeometry(in: data)
         if data.count <= byteLimit {
             return Delivery(data: data, mimeType: mimeType, sourceSHA256: reference.sha256.lowercased(),
-                            attachedSHA256: reference.sha256.lowercased(), isPreview: false)
+                            attachedSHA256: reference.sha256.lowercased(), isPreview: false,
+                            sourceGeometry: originalGeometry, attachedGeometry: originalGeometry)
         }
 #if canImport(ImageIO)
         guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else {
@@ -94,7 +141,10 @@ public struct VerifiedToolImageArtifact: Sendable {
             let bytes = output as Data
             if !bytes.isEmpty, bytes.count <= byteLimit {
                 return Delivery(data: bytes, mimeType: "image/jpeg", sourceSHA256: reference.sha256.lowercased(),
-                                attachedSHA256: FloeDigest.sha256Hex(bytes), isPreview: true)
+                                attachedSHA256: FloeDigest.sha256Hex(bytes), isPreview: true,
+                                sourceGeometry: originalGeometry,
+                                attachedGeometry: PixelGeometry(width: thumbnail.width,
+                                                                height: thumbnail.height, orientation: 1))
             }
         }
 #endif
