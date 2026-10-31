@@ -647,9 +647,9 @@ final class CadNativeObservationTests: XCTestCase {
         var checks = 0
         do {
             _ = try fixture.document.captureObservationViews(
-                [CadObservationView(azimuthDegrees: 0, elevationDegrees: 0),
-                 CadObservationView(azimuthDegrees: 90, elevationDegrees: 20),
-                 CadObservationView(azimuthDegrees: 180, elevationDegrees: 20)],
+                [CADObservationView(azimuthDegrees: 0, elevationDegrees: 0),
+                 CADObservationView(azimuthDegrees: 90, elevationDegrees: 20),
+                 CADObservationView(azimuthDegrees: 180, elevationDegrees: 20)],
                 width: 320, height: 240,
                 projection: .perspective,
                 shouldCancel: {
