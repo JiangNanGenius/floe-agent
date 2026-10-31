@@ -43,6 +43,39 @@ struct CADDrawingPreviewText {
     var layer: String
 }
 
+/// Machine-readable BOM output capacity from `bom.bomOutput`. Every field is
+/// optional so a reply from a service that predates the status keeps the
+/// existing row-count-only summary; absent fields are never rendered as zero.
+struct CADDrawingBOMOutputStatus: Equatable {
+    var totalRows: Int?
+    var capacity: Int?
+    var vectorComplete: Bool?
+    var vectorTextComplete: Bool?
+
+    init?(reply: [String: Any]) {
+        let nested = (reply["bom"] as? [String: Any])?["bomOutput"] as? [String: Any]
+        guard let raw = nested ?? reply["bomOutput"] as? [String: Any] else {
+            return nil
+        }
+        totalRows = raw["totalRows"] as? Int
+        capacity = raw["capacity"] as? Int
+        vectorComplete = raw["vectorComplete"] as? Bool
+        vectorTextComplete = raw["vectorTextComplete"] as? Bool
+        guard totalRows != nil || capacity != nil
+            || vectorComplete != nil || vectorTextComplete != nil else {
+            return nil
+        }
+    }
+
+    /// The vector sheet cannot hold every row and required column.
+    var showsCapacityLimit: Bool { vectorComplete == false }
+
+    /// The vector sheet shortened at least one long cell; CSV keeps exact text.
+    var showsTextShortening: Bool { vectorTextComplete == false }
+
+    var isLimited: Bool { showsCapacityLimit || showsTextShortening }
+}
+
 struct CADDrawingPreview {
     var pageID: UUID
     var name: String
@@ -54,6 +87,7 @@ struct CADDrawingPreview {
     var balloons: [[String: Any]] = []
     var manualDimensions: [[String: Any]] = []
     var bomRows: [[String: Any]] = []
+    var bomOutput: CADDrawingBOMOutputStatus?
     var centerlines: [CADDrawingPreviewEntity] = []
     var counts: [String: Int] = [:]
     var notes: [String] = []
@@ -105,10 +139,20 @@ struct CADDrawingPreview {
         balloons = reply["balloons"] as? [[String: Any]] ?? []
         manualDimensions = reply["manualDimensions"] as? [[String: Any]] ?? []
         bomRows = ((reply["bom"] as? [String: Any])?["entries"] as? [[String: Any]]) ?? []
+        bomOutput = CADDrawingBOMOutputStatus(reply: reply)
         if let issues = reply["bindingIssues"] as? [String], !issues.isEmpty {
             notes.append(contentsOf: issues)
         }
     }
+
+    /// Honest BOM row count for the summary: never smaller than the rows that
+    /// are actually listed. The service status remains the authority when it is
+    /// present; a legacy reply falls back to the rows it returned.
+    var bomTotalRows: Int {
+        max(bomRows.count, bomOutput?.totalRows ?? 0)
+    }
+
+    var bomSummaryRowCount: Int { min(8, bomRows.count) }
 
     private static func parseEntity(_ row: [String: Any]) -> CADDrawingPreviewEntity? {
         let layer = row["layer"] as? String ?? "geometry"
@@ -202,6 +246,7 @@ struct CADDrawingPanelView: View {
     @State private var exportURL: URL?
     @State private var busy = false
     @State private var preview: CADDrawingPreview?
+    @State private var previewPage: [String: Any]?
     @State private var activeSheet: CADDrawingSheetRoute?
 
     /// Explicit source body: the current viewport selection ONLY (never a
@@ -250,9 +295,15 @@ struct CADDrawingPanelView: View {
             PanelOutcome(reply: outcome)
 
             if let preview {
-                CADDrawingVectorPreview(preview: preview) {
-                    self.preview = nil
-                }
+                CADDrawingVectorPreview(
+                    preview: preview,
+                    onClose: {
+                        self.preview = nil
+                        previewPage = nil
+                    },
+                    onExportCSV: previewPage.map { page -> () -> Void in
+                        { export(page, format: "csv") }
+                    })
             }
 
             if pages.isEmpty {
@@ -335,6 +386,18 @@ struct CADDrawingPanelView: View {
                                 panelHitTarget(Button("DXF") { export(page, format: "dxf") }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small))
+                                // The complete-table fallback for the vector
+                                // BOM limit; only a page with real rows needs it.
+                                if (page["bomEntryCount"] as? Int ?? 0) > 0 {
+                                    panelHitTarget(Button(FloeCADStrings.label(
+                                        "cad.workbench.drawing.bomCSV", "Export CSV")) {
+                                        export(page, format: "csv")
+                                    }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .accessibilityIdentifier(
+                                            "CADDrawingBOMCSV-\(page["id"] as? String ?? "")"))
+                                }
                                 panelHitTarget(Button(FloeCADStrings.label("cad.workbench.drawing.bom", "BOM")) {
                                     activeSheet = .bom(CADDrawingAnnotationPageRequest(page: page))
                                 }
@@ -377,6 +440,7 @@ struct CADDrawingPanelView: View {
                     Label(FloeCADStrings.label("cad.workbench.drawing.share", "Share export"),
                           systemImage: "square.and.arrow.up")
                 }
+                .accessibilityIdentifier("CADDrawingShareExport")
                 .font(.callout)
             }
         }
@@ -496,6 +560,7 @@ struct CADDrawingPanelView: View {
         let reply = service.handle(action: "project", args: ["pageID": uuid.uuidString])
         outcome = reply
         if reply["ok"] as? Bool == true {
+            previewPage = page
             preview = CADDrawingPreview(reply: reply)
             if reply["mutated"] as? Bool == true { refresh() }
         }
@@ -509,7 +574,10 @@ struct CADDrawingPanelView: View {
             let reply = service.handle(action: "removePage", args: ["pageID": uuid.uuidString])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             outcome = reply
-            if preview?.pageID == uuid { preview = nil }
+            if preview?.pageID == uuid {
+                preview = nil
+                previewPage = nil
+            }
             refresh()
             busy = false
         }
@@ -543,6 +611,30 @@ struct CADDrawingPanelView: View {
 struct CADDrawingVectorPreview: View {
     let preview: CADDrawingPreview
     var onClose: () -> Void
+    var onExportCSV: (() -> Void)? = nil
+
+    /// One truthful line for a vector table that cannot hold every row. The
+    /// service capacity is authoritative; a missing capacity is never shown as
+    /// "0 of N" and a legacy reply simply has no notice.
+    private var bomCapacityLimitText: String? {
+        guard let output = preview.bomOutput, output.showsCapacityLimit else { return nil }
+        if let capacity = output.capacity, capacity > 0 {
+            return FloeCADStrings.format(
+                "cad.workbench.drawing.bomRowsFit",
+                "The sheet can show at most %d of %d BOM rows; Export CSV keeps every row.",
+                capacity, preview.bomTotalRows)
+        }
+        return FloeCADStrings.text(
+            "cad.workbench.drawing.bomDoesNotFit",
+            "The sheet can't fit the BOM table; Export CSV keeps every row.")
+    }
+
+    private var bomTextShortenedText: String? {
+        guard preview.bomOutput?.showsTextShortening == true else { return nil }
+        return FloeCADStrings.text(
+            "cad.workbench.drawing.bomTextShortened",
+            "Long BOM values are shortened on the sheet; Export CSV keeps the exact text.")
+    }
 
     private var bounds: CGRect {
         var minPoint = CGPoint(x: CGFloat.greatestFiniteMagnitude, y: CGFloat.greatestFiniteMagnitude)
@@ -706,13 +798,34 @@ struct CADDrawingVectorPreview: View {
                             }
                         }
                     }
-                    if preview.bomRows.count > 8 {
+                    if preview.bomTotalRows > preview.bomSummaryRowCount {
                         Text(FloeCADStrings.format(
                             "cad.workbench.drawing.bomRowsShown",
                             "Showing %d of %d BOM rows",
-                            8, preview.bomRows.count))
+                            preview.bomSummaryRowCount, preview.bomTotalRows))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                    }
+                    if let text = bomCapacityLimitText {
+                        Text(text)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("CADDrawingPreviewBOMRowsFit")
+                    }
+                    if let text = bomTextShortenedText {
+                        Text(text)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("CADDrawingPreviewBOMTextShortened")
+                    }
+                    if preview.bomOutput?.isLimited == true, let onExportCSV {
+                        panelHitTarget(Button(FloeCADStrings.label(
+                            "cad.workbench.drawing.bomCSV", "Export CSV")) {
+                            onExportCSV()
+                        }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .accessibilityIdentifier("CADDrawingPreviewBOMCSV"))
                     }
                 }
             }
@@ -1555,6 +1668,7 @@ private struct CADDrawingBOMSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(FloeCADStrings.text("cad.ui.common.close", "Close")) { dismiss() }
+                        .accessibilityIdentifier("CADDrawingBOMClose")
                 }
             }
             .task { load() }

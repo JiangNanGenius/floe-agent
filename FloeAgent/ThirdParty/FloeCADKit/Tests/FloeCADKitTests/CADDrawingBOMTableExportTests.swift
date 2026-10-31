@@ -755,3 +755,100 @@ final class CADDrawingBOMTableExportTests: XCTestCase {
         XCTAssertEqual(records.count, 9)
     }
 }
+
+#if canImport(SwiftUI) && canImport(UIKit)
+// MARK: - Drawing preview BOM status (focused pure mapping + UI source contract)
+
+/// The preview mapping must stay additive: a service reply without
+/// `bom.bomOutput` keeps the existing rows/count summary, and only the four
+/// provided status fields drive the capacity/shortening notice. The panel is
+/// checked at the source level because presenting it requires the full App.
+@MainActor
+final class CADDrawingBOMUIMappingTests: XCTestCase {
+
+    private func preview(_ reply: [String: Any]) -> CADDrawingPreview {
+        CADDrawingPreview(reply: reply)
+    }
+
+    private func reply(bomOutput: [String: Any]?, rows: Int) -> [String: Any] {
+        let entries: [[String: Any]] = (0..<rows).map { index in
+            ["itemNumber": index + 1, "name": "Part \(index + 1)", "quantity": 1]
+        }
+        let page: [String: Any] = [
+            "id": UUID().uuidString,
+            "name": "Sheet",
+            "kind": "front",
+        ]
+        var bom: [String: Any] = ["entries": entries]
+        if let bomOutput { bom["bomOutput"] = bomOutput }
+        return ["page": page, "bom": bom]
+    }
+
+    func testLegacyReplyWithoutBOMOutputKeepsRowsAndNoLimit() {
+        let value = preview(reply(bomOutput: nil, rows: 2))
+        XCTAssertEqual(value.bomRows.count, 2)
+        XCTAssertNil(value.bomOutput)
+        XCTAssertEqual(value.bomTotalRows, 2)
+        XCTAssertFalse(value.bomOutput?.isLimited == true)
+    }
+
+    func testCapacityOverflowUsesOnlyProvidedStatusFields() throws {
+        let value = preview(reply(bomOutput: [
+            "totalRows": 9,
+            "capacity": 4,
+            "vectorComplete": false,
+            "previewRows": 4,
+            "nextAction": "Export the complete table as CSV with drawing.export format=csv.",
+        ], rows: 9))
+        let output = try XCTUnwrap(value.bomOutput)
+        XCTAssertEqual(output.totalRows, 9)
+        XCTAssertEqual(output.capacity, 4)
+        XCTAssertEqual(output.vectorComplete, false)
+        XCTAssertNil(output.vectorTextComplete,
+                     "an absent field must stay absent, not become false")
+        XCTAssertTrue(output.showsCapacityLimit)
+        XCTAssertFalse(output.showsTextShortening)
+        XCTAssertTrue(output.isLimited)
+        XCTAssertEqual(value.bomTotalRows, 9)
+    }
+
+    func testTopLevelBOMOutputRemainsCompatible() throws {
+        let status: [String: Any] = [
+            "totalRows": 2,
+            "capacity": 2,
+            "vectorComplete": true,
+        ]
+        let output = try XCTUnwrap(CADDrawingBOMOutputStatus(reply: ["bomOutput": status]))
+        XCTAssertEqual(output.totalRows, 2)
+        XCTAssertEqual(output.capacity, 2)
+        XCTAssertEqual(output.vectorComplete, true)
+        XCTAssertNil(output.vectorTextComplete)
+        XCTAssertFalse(output.isLimited)
+    }
+
+    func testShortenedVectorTextIsReportedSeparately() throws {
+        let value = preview(reply(bomOutput: [
+            "totalRows": 3,
+            "capacity": 3,
+            "vectorComplete": true,
+            "vectorTextComplete": false,
+        ], rows: 3))
+        let output = try XCTUnwrap(value.bomOutput)
+        XCTAssertFalse(output.showsCapacityLimit)
+        XCTAssertTrue(output.showsTextShortening)
+        XCTAssertTrue(output.isLimited)
+        XCTAssertEqual(value.bomTotalRows, 3)
+    }
+
+    func testSummaryShowsActualSubsetAndTrueTotal() {
+        let partial = preview(reply(bomOutput: ["totalRows": 12], rows: 3))
+        XCTAssertEqual(partial.bomSummaryRowCount, 3)
+        XCTAssertEqual(partial.bomTotalRows, 12)
+        let complete = preview(reply(bomOutput: ["totalRows": 2], rows: 9))
+        XCTAssertEqual(complete.bomSummaryRowCount, 8)
+        XCTAssertEqual(complete.bomTotalRows, 9,
+                       "a stale total cannot hide rows actually returned")
+    }
+
+}
+#endif

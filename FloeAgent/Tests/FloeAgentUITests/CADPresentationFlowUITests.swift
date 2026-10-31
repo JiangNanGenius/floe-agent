@@ -128,6 +128,43 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         try checkSharedSheet(compact: true)
     }
 
+    func testBOMCSVExportFromNativeDrawingPanel() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                               "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture",
+                               "--ui-test-cad-shared-sheet"]
+        app.launch()
+        defer { app.terminate() }
+        XCTAssertTrue(app.otherElements["CADFixtureHarness"].waitForExistence(timeout: 30))
+        app.buttons["CADWorkbenchToolsButton"].tap()
+        XCTAssertTrue(app.otherElements["CADWorkbenchToolsPanel"].waitForExistence(timeout: 15))
+        app.buttons["Drawings"].tap()
+        let bom = app.buttons["BOM"].firstMatch
+        reveal(bom, in: app)
+        bom.tap()
+        let derive = app.buttons["CADDrawingBOMDerive"]
+        XCTAssertTrue(derive.waitForExistence(timeout: 10))
+        derive.tap()
+        let close = app.buttons["CADDrawingBOMClose"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        close.tap()
+        let csv = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "CADDrawingBOMCSV-")).firstMatch
+        reveal(csv, in: app)
+        XCTAssertFalse(app.buttons["CADDrawingShareExport"].exists)
+        csv.tap()
+        let share = app.buttons["CADDrawingShareExport"]
+        reveal(share, in: app, scrollingUp: false)
+        XCTAssertTrue(share.isHittable,
+                      "The actual native CSV action must produce a shareable file")
+        let screen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screen.name = "CAD-BOM-CSV-native-export"
+        screen.lifetime = .keepAlways
+        add(screen)
+    }
+
     private func checkSharedSheet(compact: Bool) throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = compact ? .portrait : .landscapeLeft
