@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import androidx.compose.runtime.snapshotFlow
 import androidx.core.app.NotificationCompat
 import androidx.core.app.RemoteInput
 import androidx.core.app.NotificationManagerCompat
@@ -76,10 +77,12 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -186,6 +189,7 @@ internal class DeviceAccessHost(
 
     @Volatile
     private var settings = AccessSettings()
+    @Volatile
     private var phoneStatus: PhoneControlStatus = PhoneControlModule.statusSnapshot()
     @Volatile
     private var adbStatus: AdbStatus? = null
@@ -224,6 +228,15 @@ internal class DeviceAccessHost(
 
     @Volatile
     private var lastStoppedOwner: PhoneControlOwner? = null
+
+    /**
+     * True once a post-stop observation proved the exact stopped run is no
+     * longer live (its cancellation settled). A later live run with the same
+     * owner is then an explicit Continue/retry incarnation, not the original
+     * stop still settling, and may receive a fresh user grant.
+     */
+    @Volatile
+    private var stoppedOwnerSettled = false
 
     @Volatile
     private var recentOwner: PhoneControlOwner? = null
@@ -340,6 +353,18 @@ internal class DeviceAccessHost(
                 onRootStateChanged()
             }
         }
+        // The settings page collects a StateFlow; no host event fires merely
+        // because a run started or ended while the sheet was closed. Observe
+        // the EXISTING history projection (live-run ids only) so the Active
+        // phone task card tracks real run liveness without polling and
+        // without a second owner registry. publish() only reads state.
+        statusJobs += scope.launch(Dispatchers.Main.immediate) {
+            snapshotFlow {
+                host.conversations.historyHolder.state.value?.runningConversationIds.orEmpty()
+            }
+                .distinctUntilChanged()
+                .collect { if (!closed) publish() }
+        }
         statusJobs += scope.launch(io) {
             refreshPackages()
             refreshControllerStatus()
@@ -398,6 +423,8 @@ internal class DeviceAccessHost(
         recentOwner = null
         recentTitle = null
         userStopped = false
+        lastStoppedOwner = null
+        stoppedOwnerSettled = false
         publish()
     }
 
@@ -418,6 +445,17 @@ internal class DeviceAccessHost(
     }
 
     fun onActivityPaused() = Unit
+
+    /**
+     * Explicit presentation entry: the stateless settings page was composed.
+     * The presentation is a one-shot StateFlow projection, and a run can have
+     * started after the last publish, so recompute it now. This only reads
+     * live task/arm state; it never arms or resumes anything.
+     */
+    fun onPresentationVisible() {
+        if (closed) return
+        publish()
+    }
 
     fun close() {
         if (closed) return
@@ -935,12 +973,25 @@ internal class DeviceAccessHost(
         packagesLoaded = true
     }
 
+    /**
+     * The visible running task, or — when the chat surface is not the
+     * currently bound one (for example while the Settings dialog owns the
+     * window) — exactly one uniquely resolved live task from the existing
+     * history projection. Never inferred from a previous phone tool call,
+     * never from a finished owner, and never guessed among several live
+     * tasks.
+     */
     private fun currentCandidate(): TaskCandidate? {
-        val conversationId = try {
+        val visible = try {
             host.conversations.currentVisibleConversationId()
         } catch (_: Throwable) {
             null
-        } ?: return null
+        }
+        if (visible != null) return candidateFor(visible)
+        return liveCandidateFallback()
+    }
+
+    private fun candidateFor(conversationId: String): TaskCandidate? {
         val entry = try {
             host.conversations.entryFor(conversationId)
         } catch (_: Throwable) {
@@ -967,6 +1018,32 @@ internal class DeviceAccessHost(
         )
     }
 
+    /**
+     * Bounded fallback over the history projection's REAL live-run ids. The
+     * projection is refreshed by the conversation host on launch/terminal, so
+     * this is not a poller; each id is still resolved through the same holder
+     * snapshot and must report a running selected run.
+     *
+     * Only a UNIQUELY resolved live candidate is returned. Several
+     * concurrently running tasks are ambiguous, and choosing the first or the
+     * "newest" would grant phone control to a task the user is not looking
+     * at. Ambiguity means no candidate; the user selects/opens the task.
+     */
+    private fun liveCandidateFallback(): TaskCandidate? {
+        val state = runCatching {
+            host.conversations.historyHolder.state.value
+        }.getOrNull() ?: return null
+        val running = state.runningConversationIds
+        if (running.isEmpty()) return null
+        // A set larger than the scan cannot be proven unique within bounds.
+        if (running.size > MAX_LIVE_TASK_SCAN) return null
+        val resolved = running.mapNotNull { candidateFor(it) }
+        val unique = PhoneTaskPresentation.uniqueLiveCandidate(
+            resolved.map { PhoneTaskLiveCandidate(it.owner, it.title, it.phase) },
+        ) ?: return null
+        return resolved.first { it.owner == unique.owner }
+    }
+
     private fun titleFor(owner: PhoneControlOwner): String =
         if (recentOwner == owner) {
             recentTitle?.takeIf { it.isNotBlank() }
@@ -975,28 +1052,58 @@ internal class DeviceAccessHost(
             context.getString(R.string.device_access_current_task)
         }
 
+    /**
+     * Latch the exact stop as settled only after the ACTUAL holder no longer
+     * reports that run live. This is what separates the short cancellation
+     * window from a real Continue/retry incarnation of the same run id.
+     * A missing/released holder is not live and therefore settled.
+     */
+    private fun markStoppedOwnerSettled() {
+        if (!userStopped) return
+        val owner = lastStoppedOwner ?: return
+        if (stoppedOwnerSettled) return
+        val entry = runCatching {
+            host.conversations.entryFor(owner.taskID.toString())
+        }.getOrNull()
+        val state = entry?.let {
+            runCatching { it.holder.snapshot.value }.getOrNull()
+        }
+        val live = state != null &&
+            state.isRunning &&
+            state.selectedRunId == owner.runID.toString()
+        if (!live) stoppedOwnerSettled = true
+    }
+
     // ------------------------------------------------------------ presentation
 
     private fun publish() {
         if (closed) return
+        markStoppedOwnerSettled()
         val candidate = currentCandidate()
-        val activeOwner = armedOwner ?: candidate?.owner?.takeIf { !userStopped }
-            ?: recentOwner?.takeIf { !userStopped }
-        val active = if (activeOwner == null) null else {
-            val phase = when {
-                armedOwner == activeOwner -> DeviceAccessTaskPhaseUi.RUNNING
-                candidate?.owner == activeOwner -> candidate.phase
-                userStopped && lastStoppedOwner == activeOwner -> DeviceAccessTaskPhaseUi.TAKEN_OVER
-                else -> DeviceAccessTaskPhaseUi.RUNNING
-            }
-            DeviceAccessActiveTaskUi(titleFor(activeOwner), phase)
+        // Only the phone service's ACTUAL fence owner may be shown as armed.
+        // After a user touch, stop, takeover, lock or service loss the host's
+        // armedOwner is stale: it is not live authorization and must not hide
+        // the current run's explicit Allow entry.
+        val ownership = PhoneTaskPresentation.ownership(
+            candidate = candidate?.let {
+                PhoneTaskLiveCandidate(it.owner, it.title, it.phase)
+            },
+            armedOwner = armedOwner,
+            actualOwner = phoneStatus.activeOwner,
+            stoppedOwner = lastStoppedOwner,
+            userStopped = userStopped,
+        )
+        val active = ownership?.let {
+            DeviceAccessActiveTaskUi(
+                title = if (it.titleSource == PhoneTaskTitleSource.CANDIDATE) {
+                    candidate?.title ?: titleFor(it.owner)
+                } else {
+                    titleFor(it.owner)
+                },
+                phase = it.phase,
+            )
         }
-        val control = when {
-            armedOwner != null -> DeviceAccessTaskControlUi.ARMED
-            activeOwner != null && userStopped && lastStoppedOwner == activeOwner ->
-                DeviceAccessTaskControlUi.STOPPED
-            else -> DeviceAccessTaskControlUi.OFF
-        }
+        val control = ownership?.control ?: DeviceAccessTaskControlUi.OFF
         val roots = cachedRoots
         val writableSelected = hasWritableSelection()
         val targets = DeviceAccessTargetsUi(
@@ -1128,19 +1235,32 @@ internal class DeviceAccessHost(
 
     private fun armVisibleTask() {
         if (busy != DeviceAccessBusyUi.NONE) return
+        markStoppedOwnerSettled()
         val candidate = currentCandidate()
-        val owner = candidate?.owner ?: recentOwner
-        if (owner == null) {
-            error = DeviceAccessUiError(
-                context.getString(R.string.device_access_error_no_task), "no_task")
-            publish()
-            return
+        val decision = PhoneTaskPresentation.armTarget(
+            candidate = candidate?.let {
+                PhoneTaskLiveCandidate(it.owner, it.title, it.phase)
+            },
+            userStopped = userStopped,
+            stoppedOwner = lastStoppedOwner,
+            stoppedOwnerSettled = stoppedOwnerSettled,
+        )
+        val target = when (decision) {
+            is PhoneTaskArmDecision.Refuse -> {
+                error = if (decision.code == PhoneTaskPresentation.CODE_STOP_SETTLING) {
+                    DeviceAccessUiError(
+                        context.getString(R.string.device_access_active_stopping), decision.code)
+                } else {
+                    DeviceAccessUiError(
+                        context.getString(R.string.device_access_error_no_task), decision.code)
+                }
+                publish()
+                return
+            }
+            is PhoneTaskArmDecision.Arm -> decision.candidate
         }
-        val title = if (candidate != null && candidate.owner == owner) {
-            candidate.title
-        } else {
-            titleFor(owner)
-        }
+        val owner = target.owner
+        val title = target.title
         val epoch = host.nativeRootEpoch()?.takeIf { it > 0 }
         if (epoch == null) {
             error = DeviceAccessUiError(
@@ -1167,9 +1287,19 @@ internal class DeviceAccessHost(
                     epoch = epoch,
                     allowedPackages = packages,
                 )
+                // If the service still has a DIFFERENT actual owner, this
+                // explicit user gesture transfers the one phone-control
+                // grant. Fence the old owner first (its in-flight operation
+                // is aborted); the old grant is never inherited or reused.
+                val liveOwner = phoneStatus.activeOwner
+                if (liveOwner != null && liveOwner != owner) {
+                    armedOwner = null
+                    client.takeover()
+                }
                 when (val result = client.arm(principal)) {
                     is PhoneControlResult.Ok -> {
                         armedOwner = owner
+                        phoneStatus = result.value
                         userStopped = false
                         lastStoppedOwner = null
                         recentOwner = owner
@@ -1203,7 +1333,7 @@ internal class DeviceAccessHost(
 
     private fun stopActiveTask(takeOver: Boolean) {
         if (busy != DeviceAccessBusyUi.NONE) return
-        val owner = armedOwner ?: recentOwner ?: currentCandidate()?.owner ?: return
+        val owner = armedOwner ?: currentCandidate()?.owner ?: return
         busy = if (takeOver) {
             DeviceAccessBusyUi.TASK_TAKE_OVER
         } else {
@@ -1216,6 +1346,7 @@ internal class DeviceAccessHost(
             // from discovery until a fresh USER arm).
             userStopped = true
             lastStoppedOwner = owner
+            stoppedOwnerSettled = false
             armedOwner = null
             recentOwner = owner
             // Both scope choices end with the user's stop/takeover; a later
@@ -3037,6 +3168,7 @@ internal class DeviceAccessHost(
         const val KEY_ADB_ENABLED = "adb_enabled"
         const val MAX_TARGET_PACKAGES = 64
         const val MAX_LISTED_PACKAGES = 200
+        const val MAX_LIVE_TASK_SCAN = 8
         const val MAX_DIGEST_NODES = 28
         const val MAX_LIST_ROWS = 24
         const val MAX_WRITE_BYTES = 48_000
