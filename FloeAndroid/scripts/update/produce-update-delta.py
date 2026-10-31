@@ -58,6 +58,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zipfile
+import zlib
 
 MAGIC = b"FLOEPATCH1\n"
 FORMAT_VERSION = 1
@@ -71,6 +73,20 @@ MAX_MANIFEST_BYTES = 64 * 1024
 MAX_APK_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_WINDOW = 2048
 DEFAULT_STRIDE = 512
+# ZIP-aware matcher: raw-byte matching must be independent of the
+# absolute file offset.  The v1 producer indexed the base only at multiples of
+# 512 and advanced the target in 512-byte steps, so a single 4-byte shift in
+# the ZIP layout (or any other pack/alignment change) hid almost every
+# identical span.  Anchors below are chosen from content alone: a fixed byte
+# class plus a CRC32 low-bit filter on the following ANCHOR_WINDOW bytes.
+ANCHOR_CLASS = bytes(range(0x40, 0x50))
+ANCHOR_PATTERN = re.compile(b"[" + re.escape(ANCHOR_CLASS) + b"]")
+ANCHOR_WINDOW = 16
+ANCHOR_FILTER = 0x03          # keep 1/4 of the byte-class candidates
+MIN_MATCH = 32                # reject accidental short matches
+MAX_ANCHOR_CANDIDATES = 8
+MAX_ANCHORS_PER_ENTRY = 4_000_000
+MIN_ENTRY_MATCH = 65536
 
 
 class ProducerError(Exception):
@@ -208,105 +224,146 @@ def file_size(path):
     return os.path.getsize(path)
 
 
-def build_ops(base_path, target_path, window, stride, max_candidates):
-    """Yield COPY(offset, length) and INSERT(bytes) ops plus running totals."""
-    base_handle = open(base_path, "rb")
-    target_handle = open(target_path, "rb")
-    base_map = mmap.mmap(base_handle.fileno(), 0, access=mmap.ACCESS_READ)
-    target_map = mmap.mmap(target_handle.fileno(), 0, access=mmap.ACCESS_READ)
-    base = memoryview(base_map)
-    target = memoryview(target_map)
-    base_size = len(base)
-    target_size = len(target)
-    if base_size <= 0 or target_size <= 0:
-        raise ProducerError("empty APK input")
-    if window <= 0 or stride <= 0 or window < stride:
-        raise ProducerError("invalid matcher parameters")
+def _anchor_positions(data):
+    """Content-defined anchor positions (independent of absolute file offset).
 
-    def digest(view):
-        return hashlib.blake2b(view, digest_size=12).digest()
+    A position is an anchor when its byte is in ANCHOR_CLASS and the CRC32 of
+    the next ANCHOR_WINDOW bytes passes the low-bit filter.  Identical content
+    therefore yields the same anchors in base and target even when every ZIP
+    entry has moved to a different absolute offset.
+    """
+    positions = []
+    if len(data) < ANCHOR_WINDOW:
+        return positions
+    view = memoryview(data)
+    for match in ANCHOR_PATTERN.finditer(data):
+        offset = match.start()
+        if offset + ANCHOR_WINDOW > len(data):
+            break
+        if zlib.crc32(view[offset:offset + ANCHOR_WINDOW]) & ANCHOR_FILTER == 0:
+            positions.append(offset)
+            if len(positions) > MAX_ANCHORS_PER_ENTRY:
+                # Pathological repetition: fall back to literal inserts for
+                # this entry instead of growing an unbounded dictionary.
+                return []
+    return positions
 
+
+def _extend_match(base, target, base_offset, target_offset):
+    """Grow an equal run from a verified ANCHOR_WINDOW prefix."""
+    limit = min(len(base) - base_offset, len(target) - target_offset)
+    length = ANCHOR_WINDOW
+    while length < limit:
+        step = min(max(length, 64 << 10), limit - length)
+        if base[base_offset + length:base_offset + length + step] == \
+                target[target_offset + length:target_offset + length + step]:
+            length += step
+            continue
+        while step > 1:
+            step //= 2
+            if base[base_offset + length:base_offset + length + step] == \
+                    target[target_offset + length:target_offset + length + step]:
+                length += step
+                break
+        break
+    return length
+
+
+def _match_bytes(base, target):
+    """Return deterministic, non-overlapping (target, base, length) runs."""
+    if not target:
+        return []
+    if base == target:
+        return [(0, 0, len(target))]
     index = {}
-    offset = 0
-    while offset + window <= base_size:
-        key = digest(base[offset:offset + window])
+    for offset in _anchor_positions(base):
+        key = zlib.crc32(base[offset:offset + ANCHOR_WINDOW])
         bucket = index.get(key)
         if bucket is None:
             index[key] = [offset]
-        elif len(bucket) < max_candidates:
+        elif len(bucket) < MAX_ANCHOR_CANDIDATES:
             bucket.append(offset)
-        offset += stride
-
-    pending = bytearray()
-    position = 0
-    copy_count = 0
-    insert_count = 0
-    copy_bytes = 0
-    insert_bytes = 0
-
-    def flush_pending():
-        nonlocal insert_count, insert_bytes
-        if not pending:
-            return None
-        chunk = bytes(pending)
-        pending.clear()
-        insert_count += 1
-        insert_bytes += len(chunk)
-        return chunk
-
-    while position < target_size:
-        matched = False
-        if position + window <= target_size:
-            key = digest(target[position:position + window])
-            for candidate in index.get(key, ()):
-                if base[candidate:candidate + window] != target[position:position + window]:
-                    continue
-                maximum = min(base_size - candidate, target_size - position)
-                length = window
-                while length < maximum:
-                    step = min(1 << 20, maximum - length)
-                    if base[candidate + length:candidate + length + step] == \
-                            target[position + length:position + length + step]:
-                        length += step
-                        continue
-                    step = min(4096, maximum - length)
-                    while step > 0 and base[candidate + length:candidate + length + step] != \
-                            target[position + length:position + length + step]:
-                        step //= 2
-                    if step == 0:
-                        break
-                    length += step
-                if length < window:
-                    continue
-                chunk = flush_pending()
-                if chunk is not None:
-                    yield ("insert", chunk)
-                yield ("copy", candidate, length)
-                copy_count += 1
-                copy_bytes += length
-                position += length
-                matched = True
-                break
-        if matched:
+    matches = []
+    covered = 0
+    for target_offset in _anchor_positions(target):
+        if target_offset < covered:
             continue
-        step = min(stride, target_size - position)
-        pending.extend(target[position:position + step])
-        position += step
-        if len(pending) >= (4 * 1024 * 1024):
-            chunk = flush_pending()
-            if chunk is not None:
-                yield ("insert", chunk)
+        key = zlib.crc32(target[target_offset:target_offset + ANCHOR_WINDOW])
+        best = None
+        for base_offset in index.get(key, ()):
+            if base[base_offset:base_offset + ANCHOR_WINDOW] != \
+                    target[target_offset:target_offset + ANCHOR_WINDOW]:
+                continue
+            length = _extend_match(base, target, base_offset, target_offset)
+            if length >= MIN_MATCH and (best is None or length > best[2]):
+                best = (target_offset, base_offset, length)
+        if best is not None:
+            matches.append(best)
+            covered = best[0] + best[2]
+    return matches
 
-    chunk = flush_pending()
-    if chunk is not None:
-        yield ("insert", chunk)
 
-    base.release()
-    target.release()
-    base_map.close()
-    target_map.close()
-    base_handle.close()
-    target_handle.close()
+def _primitive_ops_for_bytes(base, target, target_abs_offset):
+    """COPY base runs, INSERT everything else, for one raw byte span."""
+    ops = []
+    cursor = 0
+    for target_offset, base_offset, length in _match_bytes(base, target):
+        if target_offset > cursor:
+            ops.append(("insert", target_abs_offset + cursor, target_offset - cursor))
+        ops.append(("copy", base_offset, length))
+        cursor = target_offset + length
+    if cursor < len(target):
+        ops.append(("insert", target_abs_offset + cursor, len(target) - cursor))
+    return ops
+
+
+def _merge_primitive_ops(ops):
+    """Coalesce adjacent INSERT ranges and contiguous COPY ranges."""
+    merged = []
+    for kind, offset, length in ops:
+        if length <= 0:
+            continue
+        if merged:
+            prev_kind, prev_offset, prev_length = merged[-1]
+            if kind == "insert" and prev_kind == "insert" and \
+                    prev_offset + prev_length == offset:
+                merged[-1] = ("insert", prev_offset, prev_length + length)
+                continue
+            if kind == "copy" and prev_kind == "copy" and \
+                    prev_offset + prev_length == offset:
+                # COPY offsets are base-file offsets, not target offsets.
+                # Contiguity is still a valid merge because both the base and
+                # target cursors advance by the same lengths.
+                merged[-1] = ("copy", prev_offset, prev_length + length)
+                continue
+        merged.append((kind, offset, length))
+    return merged
+
+
+def _emit_ops(plan, target_map, target_size, base_size, matcher_stats):
+    copy_count = insert_count = copy_bytes = insert_bytes = 0
+    for kind, offset, length in plan:
+        if kind == "copy":
+            if offset + length > base_size:
+                raise ProducerError("internal COPY outside the base file")
+            yield ("copy", offset, length)
+            copy_count += 1
+            copy_bytes += length
+        else:
+            if offset + length > target_size:
+                raise ProducerError("internal INSERT outside the target file")
+            yield ("insert", target_map[offset:offset + length])
+            insert_count += 1
+            insert_bytes += length
+    if copy_bytes + insert_bytes != target_size:
+        raise ProducerError("plan totals %d do not equal target size %d" %
+                            (copy_bytes + insert_bytes, target_size))
+    matcher_stats.update({
+        "copies": copy_count,
+        "copyBytes": copy_bytes,
+        "inserts": insert_count,
+        "insertBytes": insert_bytes,
+    })
     yield ("stats", {
         "copies": copy_count,
         "copyBytes": copy_bytes,
@@ -314,10 +371,212 @@ def build_ops(base_path, target_path, window, stride, max_candidates):
         "insertBytes": insert_bytes,
         "baseSize": base_size,
         "targetSize": target_size,
-        "window": window,
-        "stride": stride,
-        "maxCandidates": max_candidates,
+        "window": ANCHOR_WINDOW,
+        "filter": ANCHOR_FILTER,
+        "minMatch": MIN_MATCH,
+        "matcherName": matcher_stats["matcherName"],
+        "matcherStats": matcher_stats,
     })
+
+
+def build_ops(base_path, target_path, window, stride, max_candidates):
+    """Generic non-ZIP fallback used by the producer's unit fixtures.
+
+    The legacy stride grid is intentionally ignored: content-defined anchors
+    make the match phase-independent.  The release producer uses
+    ``build_zip_ops`` below, which is ZIP-entry aware.
+    """
+    base_handle = open(base_path, "rb")
+    target_handle = open(target_path, "rb")
+    base_map = mmap.mmap(base_handle.fileno(), 0, access=mmap.ACCESS_READ)
+    target_map = mmap.mmap(target_handle.fileno(), 0, access=mmap.ACCESS_READ)
+    try:
+        base = base_map[:]
+        target = target_map[:]
+        base_size = len(base)
+        target_size = len(target)
+        if base_size <= 0 or target_size <= 0:
+            raise ProducerError("empty input")
+        plan = _primitive_ops_for_bytes(base, target, 0)
+        plan = _merge_primitive_ops(plan)
+        stats = {
+            "matcherName": "anchor-crc32",
+            "baseSize": base_size,
+            "matched": bool(_match_bytes(base, target)),
+        }
+        for item in _emit_ops(plan, target_map, target_size, base_size, stats):
+            yield item
+    finally:
+        base_map.close()
+        target_map.close()
+        base_handle.close()
+        target_handle.close()
+
+
+def _scan_zip(path):
+    """Return (entries, segments, size) for one APK/ZIP.
+
+    Each segment is ("data", entry) or ("gap", absolute_offset, length) and
+    the segments cover the whole file exactly once, in file order.
+    """
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            infos = archive.infolist()
+    except zipfile.BadZipFile as failure:
+        raise ProducerError("not a readable ZIP/APK: %s" % failure)
+    size = file_size(path)
+    entries = []
+    with open(path, "rb") as handle:
+        for info in infos:
+            handle.seek(info.header_offset)
+            head = handle.read(30)
+            if len(head) != 30 or head[:4] != b"PK\x03\x04":
+                raise ProducerError("bad local header for %s" % info.filename)
+            name_len, extra_len = struct.unpack("<HH", head[26:30])
+            data_offset = info.header_offset + 30 + name_len + extra_len
+            if data_offset < info.header_offset or data_offset + info.compress_size > size:
+                raise ProducerError("entry outside the file: %s" % info.filename)
+            entries.append({
+                "name": info.filename,
+                "method": info.compress_type,
+                "flags": info.flag_bits,
+                "headerOffset": info.header_offset,
+                "dataOffset": data_offset,
+                "size": info.compress_size,
+                "uncompressedSize": info.file_size,
+            })
+    entries.sort(key=lambda entry: entry["headerOffset"])
+    segments = []
+    cursor = 0
+    for entry in entries:
+        if entry["headerOffset"] < cursor:
+            raise ProducerError("overlapping ZIP entries at %s" % entry["name"])
+        if entry["headerOffset"] > cursor:
+            segments.append(("gap", cursor, entry["headerOffset"] - cursor))
+        header_length = entry["dataOffset"] - entry["headerOffset"]
+        if header_length < 30:
+            raise ProducerError("invalid local header length for %s" % entry["name"])
+        segments.append(("gap", entry["headerOffset"], header_length))
+        if entry["size"] > 0:
+            segments.append(("data", entry))
+        cursor = entry["dataOffset"] + entry["size"]
+    if cursor > size:
+        raise ProducerError("ZIP entries extend past the file")
+    if cursor < size:
+        segments.append(("gap", cursor, size - cursor))
+    covered = 0
+    for segment in segments:
+        covered += segment[2] if segment[0] == "gap" else segment[1]["size"]
+    if covered != size:
+        raise ProducerError("ZIP layout does not cover the file")
+    return entries, segments, size
+
+
+def _entry_hashes(path, entries):
+    with open(path, "rb") as handle:
+        mapped = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+        try:
+            view = memoryview(mapped)
+            for entry in entries:
+                if entry["size"]:
+                    entry["sha256"] = hashlib.sha256(
+                        view[entry["dataOffset"]:entry["dataOffset"] + entry["size"]]
+                    ).hexdigest()
+                else:
+                    entry["sha256"] = hashlib.sha256(b"").hexdigest()
+        finally:
+            view.release()
+            mapped.close()
+
+
+def build_zip_ops(base_path, target_path):
+    """ZIP-entry-aware phase-independent matcher for two APKs."""
+    base_entries, base_segments, base_size = _scan_zip(base_path)
+    target_entries, target_segments, target_size = _scan_zip(target_path)
+    if base_size <= 0 or target_size <= 0:
+        raise ProducerError("empty APK input")
+    _entry_hashes(base_path, base_entries)
+    _entry_hashes(target_path, target_entries)
+
+    base_by_name = {}
+    for entry in base_entries:
+        base_by_name.setdefault(entry["name"], entry)
+    base_by_sha = {}
+    for entry in base_entries:
+        if entry["size"]:
+            base_by_sha.setdefault(entry["sha256"], []).append(entry)
+
+    stats = {
+        "matcherName": "zip-anchor-crc32",
+        "baseSize": base_size,
+        "targetSize": target_size,
+        "baseEntries": len(base_entries),
+        "targetEntries": len(target_entries),
+        "identicalEntries": 0,
+        "identicalBytes": 0,
+        "anchorEntries": 0,
+        "anchorTargetBytes": 0,
+        "anchorCopyBytes": 0,
+        "gapBytes": 0,
+        "uncopiedDataBytes": 0,
+    }
+    plan = []
+    data_copied = 0
+    data_inserted = 0
+    with open(base_path, "rb") as base_handle, open(target_path, "rb") as target_handle:
+        base_map = mmap.mmap(base_handle.fileno(), 0, access=mmap.ACCESS_READ)
+        target_map = mmap.mmap(target_handle.fileno(), 0, access=mmap.ACCESS_READ)
+        try:
+            for segment in target_segments:
+                if segment[0] == "gap":
+                    _, offset, length = segment
+                    plan.append(("insert", offset, length))
+                    stats["gapBytes"] += length
+                    continue
+                entry = segment[1]
+                same_name = base_by_name.get(entry["name"])
+                candidates = base_by_sha.get(entry["sha256"]) if entry["size"] else None
+                chosen = None
+                if candidates:
+                    chosen = next((c for c in candidates if c["name"] == entry["name"]), candidates[0])
+                if chosen is not None and chosen["size"] == entry["size"]:
+                    plan.append(("copy", chosen["dataOffset"], entry["size"]))
+                    stats["identicalEntries"] += 1
+                    stats["identicalBytes"] += entry["size"]
+                    data_copied += entry["size"]
+                    continue
+                if same_name is not None and same_name["method"] == entry["method"] and \
+                        entry["size"] >= MIN_ENTRY_MATCH:
+                    base_data = base_map[same_name["dataOffset"]:same_name["dataOffset"] + same_name["size"]]
+                    target_data = target_map[entry["dataOffset"]:entry["dataOffset"] + entry["size"]]
+                    matches = _match_bytes(base_data, target_data)
+                    stats["anchorEntries"] += 1
+                    stats["anchorTargetBytes"] += entry["size"]
+                    cursor = 0
+                    for target_offset, base_offset, length in matches:
+                        if target_offset > cursor:
+                            plan.append(("insert", entry["dataOffset"] + cursor,
+                                         target_offset - cursor))
+                            data_inserted += target_offset - cursor
+                        plan.append(("copy", same_name["dataOffset"] + base_offset, length))
+                        data_copied += length
+                        stats["anchorCopyBytes"] += length
+                        cursor = target_offset + length
+                    if cursor < entry["size"]:
+                        plan.append(("insert", entry["dataOffset"] + cursor, entry["size"] - cursor))
+                        data_inserted += entry["size"] - cursor
+                    continue
+                plan.append(("insert", entry["dataOffset"], entry["size"]))
+                data_inserted += entry["size"]
+                stats["uncopiedDataBytes"] += entry["size"]
+            plan = _merge_primitive_ops(plan)
+            stats["copiedDataBytes"] = data_copied
+            stats["insertedDataBytes"] = data_inserted
+            for item in _emit_ops(plan, target_map, target_size, base_size, stats):
+                yield item
+        finally:
+            base_map.close()
+            target_map.close()
 
 
 def write_patch(ops, patch_path, base_sha, base_size, target_sha, target_size):
@@ -361,8 +620,9 @@ def write_patch(ops, patch_path, base_sha, base_size, target_sha, target_size):
             "inserts": insert_count,
             "insertBytes": insert_bytes,
         },
-        "matcher": {"name": "block-blake2b", "window": stats["window"], "stride": stats["stride"]},
-        "producer": "produce-update-delta.py/1",
+        "matcher": {"name": stats["matcherName"], "window": stats["window"],
+                    "filter": stats["filter"], "minMatch": stats["minMatch"]},
+        "producer": "produce-update-delta.py/2",
     }
     encoded = json.dumps(header, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > MAX_MANIFEST_BYTES:
@@ -385,6 +645,7 @@ def write_patch(ops, patch_path, base_sha, base_size, target_sha, target_size):
         "patchSha256": sha256_file(patch_path),
         "ops": header["ops"],
         "matcher": header["matcher"],
+        "matcherStats": stats.get("matcherStats"),
     }
 
 
@@ -580,7 +841,7 @@ def main(argv):
 
     import time
     started = time.time()
-    ops = build_ops(args.base_apk, args.target_apk, args.window, args.stride, args.max_candidates)
+    ops = build_zip_ops(args.base_apk, args.target_apk)
     patch_info = write_patch(ops, patch_path, base_sha, base_size, target_sha, target_size)
     elapsed = time.time() - started
 
@@ -613,6 +874,7 @@ def main(argv):
         "baseApk": {"sizeBytes": base_size, "sha256": base_sha, "apkName": os.path.basename(args.base_apk)},
         "ops": patch_info["ops"],
         "matcher": patch_info["matcher"],
+        "matcherStats": patch_info["matcherStats"],
         "elapsedSeconds": round(elapsed, 3),
         "roundTrip": proof,
         "toolchain": {"aapt2": aapt2, "apksigner": apksigner, "javaHome": java_home},
