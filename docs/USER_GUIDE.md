@@ -476,6 +476,10 @@ Tap the chat microphone, grant OS permission and wait for preparation before spe
 
 Voice input waits for microphone audio before showing that it is listening and retries a recoverable startup failure once. If it still fails, use Retry. Choose the recognition method, language and optional enhanced recognition model under **Settings → General → Voice Input**.
 
+Under **Cloud recognition**, add OpenAI, an OpenAI-compatible relay, Volcengine or Alibaba Cloud. Pay-as-you-go and plan services are separate choices with independent credentials. New services are saved only when you tap Save; Cancel keeps the existing list unchanged. Choose the service to use under Voice Input. Saving a configuration does not send an audio request.
+
+**Preload recognizer** is off by default. Turn it on to prepare an installed local recognizer while Floe is in the foreground. This does not download a model or activate the microphone. Your choice survives relaunch; changing the recognition method or primary cloud service turns it off. Backgrounding or memory pressure can release the model.
+
 Live input, file transcription and video subtitles are separate paths. Check text and timing after SRT/VTT/JSON export.
 
 ### Chat, voice conversations and read-aloud
@@ -492,7 +496,7 @@ Under **Settings → General → Voice Output**, choose a **Playback Source**, t
 
 ### Assistant audio files
 
-Ask the assistant to transcribe an existing audio file or create a playable audio file from text. **Voice Input → File transcription** and **Voice Output → Generate audio** each have a service order. Ready local models are preferred by default; configured cloud services may be chosen explicitly. A failed request does not switch to a paid channel. These choices do not change ordinary dictation or the current read-aloud voice.
+Ask the assistant to transcribe an existing audio file or create a playable audio file from text. **Voice Input → File transcription** and **Voice Output → Generate audio** each have a service order. File transcription uses your saved order; without one, it follows the current recognition method. Audio generation prefers a ready local service by default. You can explicitly choose a configured cloud service. A failed request does not switch to a paid channel. These choices do not change ordinary dictation or the current read-aloud voice.
 
 **Read links aloud** applies to local read-aloud and is off by default: link labels remain, while addresses are skipped. Cloud speech keeps the full final prose, including links. Local mixed-language preparation changes spoken punctuation only, leaving the answer and subtitles unchanged.
 

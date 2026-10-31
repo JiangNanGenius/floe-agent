@@ -48,7 +48,9 @@ final class CloudRecognitionSettingsUITests: XCTestCase {
     }
 
     private func capture(_ name: String, app: XCUIApplication) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        // App snapshots can clip landscape sheets and omit system menus.
+        // Capture the actual display so visual review includes both.
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
