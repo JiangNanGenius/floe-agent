@@ -476,7 +476,7 @@ final class CADPlacedAssemblyExchangeTests: XCTestCase {
 
     func testStaleRevisionFenceWritesNothing() throws {
         _ = try makeFixture()
-        let receipt = document.exchangeCoverage(
+        let receipt = try document.exchangeCoverage(
             format: "glb", selection: .init(scope: .assembly)).get()
         let stale = document.nativeExchangeExport(
             format: "glb", pageID: nil,

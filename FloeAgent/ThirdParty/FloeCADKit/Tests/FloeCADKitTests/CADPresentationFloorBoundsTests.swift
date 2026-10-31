@@ -181,7 +181,8 @@ final class CADPresentationFloorBoundsTests: XCTestCase {
         }
 
         // Placement is the only change: the authored 2 m floor extent remains.
-        let meshBounds = try XCTUnwrap(ground.model?.mesh.bounds)
+        let groundModel = try XCTUnwrap(ground as? ModelEntity)
+        let meshBounds = try XCTUnwrap(groundModel.model?.mesh.bounds)
         XCTAssertEqual(meshBounds.max.x - meshBounds.min.x, 2.0, accuracy: 1e-3)
         XCTAssertEqual(meshBounds.max.z - meshBounds.min.z, 2.0, accuracy: 1e-3)
     }

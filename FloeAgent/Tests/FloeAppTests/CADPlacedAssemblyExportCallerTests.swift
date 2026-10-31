@@ -87,7 +87,7 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
             0, 1, 5, 0, 5, 4, 2, 3, 7, 2, 7, 6,
             1, 2, 6, 1, 6, 5, 0, 4, 7, 0, 7, 3,
         ]
-        let body = Body(name: name, transform: .identity, primitive: nil,
+        let body = Body(id: BodyID(), name: name, transform: .identity, primitive: nil,
                         render: RenderMesh(positions: positions, normals: normals,
                                            indices: indices), revision: 1)
         document.session.perform(AddBodyCommand(body: body, title: "Add \(name)"))
@@ -141,7 +141,7 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
 
     func testDryRunCoverageAndSelectedOccurrenceExportBeforeAnyWrite() async throws {
         let (_, nestedID, _) = try makeWorkspaceDocument()
-        let center = CadDocumentCenter(nativeProposalStoreFileURL: workspace
+        let center = await CadDocumentCenter(nativeProposalStoreFileURL: workspace
             .appendingPathComponent("proposals.json"))
         let tool = CadDocumentTool(host: center)
 
@@ -169,7 +169,7 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
 
     func testSTEPPartialChoiceLeavesNoHalfArtifact() async throws {
         _ = try makeWorkspaceDocument()
-        let center = CadDocumentCenter(nativeProposalStoreFileURL: workspace
+        let center = await CadDocumentCenter(nativeProposalStoreFileURL: workspace
             .appendingPathComponent("proposals-partial.json"))
         let tool = CadDocumentTool(host: center)
         let target = workspace.appendingPathComponent("assembly.step")
@@ -199,7 +199,7 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
 
     func testStaleExportPreservesExistingTarget() async throws {
         _ = try makeWorkspaceDocument()
-        let center = CadDocumentCenter(nativeProposalStoreFileURL: workspace
+        let center = await CadDocumentCenter(nativeProposalStoreFileURL: workspace
             .appendingPathComponent("proposals-stale.json"))
         let tool = CadDocumentTool(host: center)
         let target = workspace.appendingPathComponent("stale.glb")
@@ -218,7 +218,7 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
     }
     func testWriteFailureEndsOnlyTheOwnedExportAndPreservesFiles() async throws {
         _ = try makeWorkspaceDocument()
-        let center = CadDocumentCenter(nativeProposalStoreFileURL: workspace
+        let center = await CadDocumentCenter(nativeProposalStoreFileURL: workspace
             .appendingPathComponent("proposals-write-failure.json"))
         let tool = CadDocumentTool(host: center)
         let ctx = context()
