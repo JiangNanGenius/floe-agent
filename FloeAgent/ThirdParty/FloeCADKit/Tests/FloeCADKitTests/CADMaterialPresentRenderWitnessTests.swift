@@ -13,7 +13,7 @@
 //  the live RealityKit render (nil/inactive Present can never count, and a
 //  stale capture throws instead of falling back).
 //
-//  Fixture: the exact same A/B/C slab and 2x2 asymmetric normal map as the
+//  Fixture: the exact same A/B/C slab and 2x2 asymmetric, steep normal map as the
 //  Metal witness (see that file and checks/witness_fixture_check.py):
 //    A = topLeft bytes; B = row-inverted bytes declared bottomLeft
 //      (identical physical normals -> identical lighting);
@@ -86,8 +86,8 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
     // MARK: Fixture (constants pinned with the Metal witness + the checker)
 
     private enum Fixture {
-        static let rowTop: [[UInt8]] = [[96, 204, 255, 255], [160, 204, 255, 255]]
-        static let rowBottom: [[UInt8]] = [[96, 51, 255, 255], [160, 51, 255, 255]]
+        static let rowTop: [[UInt8]] = [[112, 249, 164, 255], [144, 249, 164, 255]]
+        static let rowBottom: [[UInt8]] = [[112, 6, 164, 255], [144, 6, 164, 255]]
 
         enum Variant {
             case a, b, c
@@ -176,7 +176,7 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
                 colorSpace: .linear, orientation: orientation,
                 sha256: CADMaterialTexture.digest(png), byteCount: png.count)
             body.material = BodyMaterialSpec(
-                baseColor: SIMD4(0.80, 0.80, 0.85, 1), metallic: 0, roughness: 0.5,
+                baseColor: SIMD4(0.18, 0.18, 0.20, 1), metallic: 0, roughness: 0.5,
                 normalTexture: png, uvMapping: .mesh,
                 textureMetadata: [metadata])
             return body
@@ -290,10 +290,14 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
             previousKeyWindow = scene.windows.first { $0.isKeyWindow }
         }
         let testWindow = UIWindow(windowScene: scene)
-        testWindow.frame = scene.coordinateSpace.bounds
+        // A square viewport keeps the slab prominent in either device
+        // orientation, so a whole-frame contrast test measures the material
+        // rather than mostly empty portrait background.
+        testWindow.frame = CGRect(x: 0, y: 0, width: 512, height: 512)
         let hosting = UIHostingController(rootView: AnyView(
             CADPresentationPresentationPane(document: document, handle: handle,
                                             store: store, onEdit: {})
+                .frame(width: 512, height: 512)
                 .id(ObjectIdentifier(document))))
         testWindow.rootViewController = hosting
         windows.append(testWindow)

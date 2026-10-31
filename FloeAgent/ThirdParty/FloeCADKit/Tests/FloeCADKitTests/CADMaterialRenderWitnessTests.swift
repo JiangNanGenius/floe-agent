@@ -60,9 +60,9 @@ import MetalKit
 
 private enum MaterialRenderWitnessFixture {
     /// 2x2 RGBA rows, memory top -> bottom. Green is asymmetric between
-    /// rows (+0.60 / -0.60); red varies per column (96 / 160).
-    static let rowTop: [[UInt8]] = [[96, 204, 255, 255], [160, 204, 255, 255]]
-    static let rowBottom: [[UInt8]] = [[96, 51, 255, 255], [160, 51, 255, 255]]
+    /// rows (+0.95 / -0.95); red varies per column (112 / 144).
+    static let rowTop: [[UInt8]] = [[112, 249, 164, 255], [144, 249, 164, 255]]
+    static let rowBottom: [[UInt8]] = [[112, 6, 164, 255], [144, 6, 164, 255]]
 
     enum Variant {
         case a, b, c
@@ -157,7 +157,7 @@ private enum MaterialRenderWitnessFixture {
             colorSpace: .linear, orientation: orientation,
             sha256: CADMaterialTexture.digest(png), byteCount: png.count)
         body.material = BodyMaterialSpec(
-            baseColor: SIMD4(0.80, 0.80, 0.85, 1), metallic: 0, roughness: 0.5,
+            baseColor: SIMD4(0.18, 0.18, 0.20, 1), metallic: 0, roughness: 0.5,
             normalTexture: png, uvMapping: .mesh,
             textureMetadata: [metadata])
         return body
