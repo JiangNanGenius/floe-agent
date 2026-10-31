@@ -612,10 +612,15 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         geometry = service.handle(action: "project", args: ["pageID": sheet.pageID])
         _ = try XCTUnwrap(manufacturingRow(geometry, id: datumID))
 
-        func add(_ kind: String, _ payload: [String: Any]) throws -> String {
+        // Explicit, separated fixture positions: five marks at one point overlap
+        // visually even though every semantic value is correct. These are the
+        // author-supplied view-local positions a user would choose; production
+        // never lays user annotations out automatically.
+        func add(_ kind: String, position: [Double],
+                 _ payload: [String: Any]) throws -> String {
             var args: [String: Any] = [
                 "pageID": sheet.pageID, "viewID": sheet.frontID,
-                "kind": kind, "position": [30.0, 30.0], "heightMM": 3.0,
+                "kind": kind, "position": position, "heightMM": 3.0,
                 "feature": reference,
             ]
             for (key, value) in payload { args[key] = value }
@@ -625,19 +630,22 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
             return try XCTUnwrap(row["id"] as? String)
         }
 
-        let counterboreID = try add("counterboreCallout", ["counterbore": [String: Any]()])
-        let threadID = try add("threadCallout", ["thread": [
+        let counterboreID = try add("counterboreCallout", position: [0, 80],
+                                    ["counterbore": [String: Any]()])
+        let threadID = try add("threadCallout", position: [0, -20], ["thread": [
             "designation": "M6", "pitchMM": 1.0, "threadClass": "6H", "through": true,
         ]])
-        let fcfID = try add("featureControlFrame", ["featureControlFrame": [
-            "characteristic": "position", "toleranceMM": 0.2,
-            "diameterZone": true,
-            "datumReferences": [["letter": "A"], ["letter": "B"]],
-        ]])
-        _ = try add("surfaceFinish", ["surfaceFinish": [
+        let fcfID = try add("featureControlFrame", position: [55, 80], [
+            "featureControlFrame": [
+                "characteristic": "position", "toleranceMM": 0.2,
+                "diameterZone": true,
+                "datumReferences": [["letter": "A"], ["letter": "B"]],
+            ],
+        ])
+        _ = try add("surfaceFinish", position: [55, -20], ["surfaceFinish": [
             "raMicrometres": 1.6, "machiningMethod": "Ground", "allAround": true,
         ]])
-        _ = try add("weld", ["weld": [
+        _ = try add("weld", position: [110, 30], ["weld": [
             "type": "fillet", "sizeMM": 6, "lengthMM": 20, "pitchMM": 40,
             "allAround": true, "tailNote": "WPS-01",
         ]])
@@ -655,6 +663,17 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
 
         geometry = service.handle(action: "project", args: ["pageID": sheet.pageID])
         XCTAssertEqual(geometry["ok"] as? Bool, true, "\(geometry)")
+        // The user-authored marks must occupy distinct view positions so each
+        // mark can be read independently in the exported sheet (the datum is
+        // the sixth). This guards the fixture, not an automatic layout rule.
+        let markPositions = (geometry["manufacturingAnnotations"] as? [[String: Any]] ?? [])
+            .compactMap { $0["localPosition"] as? [Double] }
+        XCTAssertEqual(markPositions.count, 6)
+        let uniqueMarks = Set(markPositions.map { pair in
+            pair.map { String(format: "%.6f", $0) }.joined(separator: ",")
+        })
+        XCTAssertEqual(uniqueMarks.count, markPositions.count,
+                       "the demonstration marks must not share one position")
         let counterbore = try XCTUnwrap(manufacturingRow(geometry, id: counterboreID))
         XCTAssertEqual(counterbore["status"] as? String, "resolved")
         XCTAssertTrue(displayLines(counterbore).contains { $0.contains("CBORE Ø11") })
@@ -691,8 +710,12 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         XCTAssertEqual(toleranceDisplay["lowerLimitMM"] as? Double ?? 0, 5.000, accuracy: 1e-9)
         XCTAssertEqual((toleranceDisplay["lines"] as? [String])?.count, 2)
 
-        // Real vector output: the symbols are line/circle/polyline entities and
-        // the thread/counterbore text is present in the SAME annotation layer.
+        // Real vector output: the symbols are line/circle/path entities on the
+        // ANNOTATIONS layer and the measured text is on DIMENSIONS. SVG needs
+        // a separate fill-enabled group for glyphs, so the writer emits each
+        // layer's text in its real `<layer>_TEXT` sibling (the DXF writer uses
+        // one named layer for both). Assert both actual groups; the layer is
+        // the pair, not a substring of the whole document.
         let svg = try service.exportData(pageID: UUID(uuidString: sheet.pageID)!,
                                          format: "svg")
         retainExport(svg, name: "e16-manufacturing.svg", type: "public.svg-image")
@@ -701,22 +724,37 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         XCTAssertTrue(annotationGroup.contains("<line"))
         XCTAssertTrue(annotationGroup.contains("<circle"))
         XCTAssertTrue(annotationGroup.contains("<path"))
-        XCTAssertTrue(annotationGroup.contains("M6×1.0-6H"))
-        XCTAssertTrue(annotationGroup.contains("CBORE Ø11"))
-        XCTAssertTrue(annotationGroup.contains("Ra 1.6"))
-        XCTAssertTrue(annotationGroup.contains("6 L20 P40"))
+        let annotationText = try XCTUnwrap(svgGroup(svgText, id: "ANNOTATIONS_TEXT"))
+        XCTAssertTrue(annotationText.contains("M6×1.0-6H"))
+        XCTAssertTrue(annotationText.contains("CBORE Ø11"))
+        XCTAssertTrue(annotationText.contains("Ra 1.6"))
+        XCTAssertTrue(annotationText.contains("6 L20 P40"))
         let svgDimensions = try XCTUnwrap(svgGroup(svgText, id: "DIMENSIONS"))
-        XCTAssertTrue(svgDimensions.contains("H7/h6"))
-        XCTAssertTrue(svgDimensions.contains("5.012"))
+        XCTAssertTrue(svgDimensions.contains("<line"))
+        let svgDimensionText = try XCTUnwrap(svgGroup(svgText, id: "DIMENSIONS_TEXT"))
+        XCTAssertTrue(svgDimensionText.contains("H7/h6"))
+        XCTAssertTrue(svgDimensionText.contains("5.012"))
 
         let dxf = try service.exportData(pageID: UUID(uuidString: sheet.pageID)!,
                                          format: "dxf")
         retainExport(dxf, name: "e16-manufacturing.dxf", type: "public.data")
-        let dxfText = try XCTUnwrap(String(data: dxf, encoding: .utf8))
+        // AC1009 is an ASCII file: $DWGCODEPAGE (ANSI_1252 here) plus the
+        // `\U+nnnn` schema for characters outside the codepage, never raw
+        // UTF-8. Assert the exact wire escape AND the real text a reader
+        // obtains from one decode pass; the symbol expectations stay.
+        XCTAssertTrue(dxf.allSatisfy { $0 < 0x80 },
+                      "an R12/AC1009 DXF must be pure ASCII on the wire")
+        let dxfText = try XCTUnwrap(String(data: dxf, encoding: .ascii))
+        XCTAssertTrue(dxfText.contains("9\n$DWGCODEPAGE\n3\nANSI_1252"))
         XCTAssertTrue(dxfText.contains("ANNOTATIONS"))
         XCTAssertTrue(dxfText.contains("0\nTEXT\n"))
-        XCTAssertTrue(dxfText.contains("M6×1.0-6H"))
-        XCTAssertTrue(dxfText.contains("CBORE Ø11"))
+        XCTAssertTrue(dxfText.contains(#"M6\U+00D71.0-6H"#))
+        XCTAssertTrue(dxfText.contains(#"CBORE \U+00D811"#))
+        let dxfDecoded = DXFTextCodec.decode(dxfText)
+        XCTAssertTrue(dxfDecoded.contains("M6×1.0-6H"))
+        XCTAssertTrue(dxfDecoded.contains("CBORE Ø11"))
+        XCTAssertTrue(dxfDecoded.contains("HOLE 5.000–5.012"))
+        XCTAssertTrue(dxfDecoded.contains("SCALE 1:1 · mm"))
         XCTAssertTrue(dxfText.contains("0\nPOLYLINE\n"))
         XCTAssertTrue(dxfText.contains("0\nCIRCLE\n"))
         XCTAssertTrue(dxfText.contains("0\nLINE\n"))
@@ -745,6 +783,25 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         XCTAssertEqual(updatedCounterbore["id"] as? String, counterboreID)
         XCTAssertTrue(displayLines(updatedCounterbore).contains { $0.contains("CBORE Ø13") })
         XCTAssertTrue(displayLines(updatedCounterbore).contains { $0.contains("DEPTH 8") })
+
+        // The linked DIMENSION does not get the manufacturing station-drift
+        // relaxation. The depth edit moved the captured pilot face's centroid
+        // 1.0 mm (tolerance 0.5) and no other face sits at the captured
+        // station, so it must report the precise MISSING-cylinder reason —
+        // never the ambiguous-face error (an empty match set is not
+        // "several valid faces").
+        let shiftedDimension = try XCTUnwrap(dimensionRow(geometry, id: dimensionID))
+        XCTAssertEqual(shiftedDimension["id"] as? String, dimensionID)
+        XCTAssertEqual(shiftedDimension["dangling"] as? Bool, true,
+                       "the dimension keeps the captured axial station: \(shiftedDimension)")
+        XCTAssertTrue(shiftedDimension["value"] is NSNull)
+        XCTAssertTrue((shiftedDimension["reasons"] as? [String] ?? []).contains {
+            $0.contains("The linked cylindrical face no longer exists")
+                && $0.contains("deleted or the topology changed")
+        }, "\(shiftedDimension)")
+        XCTAssertFalse((shiftedDimension["reasons"] as? [String] ?? []).contains {
+            $0.localizedCaseInsensitiveContains("ambiguous")
+        }, "a missing cylinder must not be reported as an ambiguous face: \(shiftedDimension)")
 
         // Changing the pilot to Ø8 makes the explicit M6 callout conflict; it
         // becomes visibly stale, never retaining a plausible old value.
@@ -790,6 +847,116 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         XCTAssertEqual(danglingDimension["dangling"] as? Bool, true)
         XCTAssertTrue(danglingDimension["value"] is NSNull)
         XCTAssertNil(danglingDimension["toleranceDisplay"])
+        reopened.close()
+    }
+
+    // MARK: - R12 text encoding
+
+    /// The isolated R12 codec: printable ASCII stays literal, Chinese and
+    /// engineering symbols use `\U+nnnn`, non-BMP scalars use the UTF-16
+    /// surrogate pair, and a literal author `\U+0041` is escaped once so a
+    /// single decode pass restores it byte for byte. A legacy file with no
+    /// escapes decodes to itself.
+    func testDXFTextCodecRoundTripsEscapesAndLiteralBackslashes() throws {
+        let cases = [
+            "",
+            "M6×1.0-6H",
+            "CBORE Ø11",
+            "HOLE 5.000–5.012",
+            "SCALE 1:1 · mm · 3 dp",
+            "中文零件 总成A",
+            #"C:\U+0041"#,
+            #"\\U+0041"#,
+            #"literal \U+4E2D text"#,
+            "naïve façade",
+            "emoji 👩🏽‍👩🏽‍👧🏽‍👧🏽 🇦🇺",
+            "tab\there",
+        ]
+        for original in cases {
+            let wire = DXFTextCodec.encode(original)
+            XCTAssertTrue(wire.unicodeScalars.allSatisfy { $0.value < 0x80 },
+                          "the R12 wire form must be ASCII: \(wire)")
+            XCTAssertEqual(DXFTextCodec.decode(wire), original,
+                           "one decode pass must restore \(original.debugDescription)")
+        }
+        XCTAssertEqual(DXFTextCodec.encode("中文"), #"\U+4E2D\U+6587"#)
+        XCTAssertEqual(DXFTextCodec.encode("Ø5 × M6–M8 · 1:1"),
+                       #"\U+00D85 \U+00D7 M6\U+2013M8 \U+00B7 1:1"#)
+        XCTAssertEqual(DXFTextCodec.encode(#"\U+0041"#), #"\U+005CU+0041"#)
+        XCTAssertEqual(DXFTextCodec.decode(#"\U+005CU+0041"#), #"\U+0041"#)
+        XCTAssertEqual(DXFTextCodec.decode(#"\U+D83DXU+DE00"#),
+                       #"\U+D83DXU+DE00"#,
+                       "A malformed second escape must not invent a surrogate pair")
+        XCTAssertEqual(DXFTextCodec.decode(DXFTextCodec.encode(#"\U+0041"#)),
+                       #"\U+0041"#, "the emitted backslash must not be decoded twice")
+        // An existing unescaped legacy value keeps its literal bytes.
+        XCTAssertEqual(DXFTextCodec.decode("Ø5 H7/h6"), "Ø5 H7/h6")
+    }
+
+    /// Real R12 export with Chinese and engineering symbols: asserted on the
+    /// exact wire escapes, on the text one decode pass produces, and on the
+    /// same page/annotation ids exporting byte-identical DXF after reopen.
+    /// Both exports are retained for Root's independent reader.
+    func testR12DXFEncodesChineseEngineeringTextAndLiteralBackslash() async throws {
+        let document = try await makeDocument("R12-unicode")
+        let fixture = try makeCounterboreFixture(document)
+        let service = CADDrawingService(document: document)
+        let sheetTitle = "中文 Ø5 × M6–M8 · 1:1"
+        let created = service.handle(action: "standardSheet", args: [
+            "bodyID": fixture.bodyID, "title": sheetTitle, "replace": true,
+        ])
+        XCTAssertEqual(created["ok"] as? Bool, true, "\(created)")
+        let pages = try XCTUnwrap(created["pages"] as? [[String: Any]])
+        let front = try XCTUnwrap(pages.first { ($0["kind"] as? String) == "front" })
+        let pageID = try XCTUnwrap(front["id"] as? String)
+        let annotationText = #"中文 Ø5 × M6–M8 · C:\U+0041 · Ra 1.6"#
+        let added = service.handle(action: "addAnnotation", args: [
+            "pageID": pageID,
+            "text": annotationText, "position": [20.0, -20.0], "heightMM": 3.0,
+        ])
+        XCTAssertEqual(added["ok"] as? Bool, true, "\(added)")
+        let annotation = try XCTUnwrap(added["annotation"] as? [String: Any])
+        let annotationID = try XCTUnwrap(annotation["id"] as? String)
+        XCTAssertEqual(annotation["text"] as? String, annotationText)
+
+        let pageUUID = try XCTUnwrap(UUID(uuidString: pageID))
+        let dxf = try service.exportData(pageID: pageUUID, format: "dxf")
+        retainExport(dxf, name: "r12-unicode-before-reopen.dxf", type: "public.data")
+        XCTAssertTrue(dxf.allSatisfy { $0 < 0x80 },
+                      "an R12/AC1009 DXF must not carry raw UTF-8 bytes")
+        let wire = try XCTUnwrap(String(data: dxf, encoding: .ascii))
+        XCTAssertTrue(wire.contains("9\n$DWGCODEPAGE\n3\nANSI_1252"))
+        // Exact wire escapes for 中文, the title's Ø/×/–/· and the annotation.
+        XCTAssertTrue(wire.contains(#"\U+4E2D\U+6587 \U+00D85 \U+00D7 M6\U+2013M8 \U+00B7 1:1"#),
+                      "the sheet title must be ASCII-escaped on the wire")
+        XCTAssertTrue(wire.contains(
+            #"\U+4E2D\U+6587 \U+00D85 \U+00D7 M6\U+2013M8 \U+00B7 C:\U+005CU+0041 \U+00B7 Ra 1.6"#),
+            "the annotation must be ASCII-escaped on the wire")
+        XCTAssertFalse(wire.contains(#"\U+0041"#),
+                       "a literal author \\U+0041 must be escaped, not emitted raw")
+        // One decode pass (what an independent DXF reader performs) gives the
+        // real author text back, including the literal backslash.
+        let decoded = DXFTextCodec.decode(wire)
+        XCTAssertTrue(decoded.contains(annotationText))
+        XCTAssertTrue(decoded.contains(sheetTitle))
+        XCTAssertTrue(decoded.contains(#"C:\U+0041"#))
+        XCTAssertTrue(decoded.contains("Ra 1.6"))
+
+        let save = await document.save()
+        XCTAssertTrue(save.succeeded, save.error ?? "")
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: document.url)
+        let reopenedService = CADDrawingService(document: reopened)
+        let geometry = reopenedService.handle(action: "project", args: ["pageID": pageID])
+        let annotations = try XCTUnwrap(geometry["annotations"] as? [[String: Any]])
+        let reopenedAnnotation = try XCTUnwrap(
+            annotations.first { ($0["id"] as? String) == annotationID })
+        XCTAssertEqual(reopenedAnnotation["text"] as? String, annotationText,
+                       "the same annotation id and exact author text must survive reopen")
+        let reopenedDxf = try reopenedService.exportData(pageID: pageUUID, format: "dxf")
+        XCTAssertEqual(reopenedDxf, dxf,
+                       "the same ids/annotations must export byte-identical R12 DXF")
+        retainExport(reopenedDxf, name: "r12-unicode-after-reopen.dxf", type: "public.data")
         reopened.close()
     }
 
@@ -1112,7 +1279,10 @@ final class CADDrawingManufacturingTemplateTests: XCTestCase {
         XCTAssertTrue(titleA.contains("<line"))
         XCTAssertTrue(titleA.contains("<circle"), "projection symbol carries its circle")
         XCTAssertTrue(titleA.contains("<path"), "projection symbol carries its cone")
-        XCTAssertTrue(titleA.contains("Floe Works"))
+        // TITLE carries the frame/symbol geometry; the title-block strings are
+        // the writer's filled TITLE_TEXT sibling of the same layer.
+        let titleTextA = try XCTUnwrap(svgGroup(svgA, id: "TITLE_TEXT"))
+        XCTAssertTrue(titleTextA.contains("Floe Works"))
         let dxfA = try XCTUnwrap(String(data: service.exportData(pageID: pageAUUID,
                                                                  format: "dxf"),
                                         encoding: .utf8))

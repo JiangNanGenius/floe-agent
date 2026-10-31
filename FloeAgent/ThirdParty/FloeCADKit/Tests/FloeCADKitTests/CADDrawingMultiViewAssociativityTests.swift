@@ -564,6 +564,17 @@ final class CADDrawingMultiViewAssociativityTests: XCTestCase {
         XCTAssertTrue(row["value"] is NSNull, "the groove's Ø20 must not be displayed: \(row)")
         XCTAssertFalse((row["text"] as? String ?? "").contains("20"),
                        "the dangling label must not present the groove value: \(row)")
+        // Exact strict-path classification: the captured station still has a
+        // face (the groove), but it is not the captured cylinder, so this is
+        // LOST PROVENANCE. An empty provenance-filtered set is not an
+        // ambiguous face and must never fall through to that message.
+        XCTAssertTrue((row["reasons"] as? [String] ?? []).contains {
+            $0.contains("The linked feature no longer owns this geometry")
+                && $0.contains("the captured cylinder is gone")
+        }, "expected the exact provenance-lost reason: \(row)")
+        XCTAssertFalse((row["reasons"] as? [String] ?? []).contains {
+            $0.localizedCaseInsensitiveContains("ambiguous")
+        }, "one surviving foreign cylinder is not an ambiguous face: \(row)")
 
         // Deleting the measured hole while the groove remains must keep the
         // dimension dangling (provenance gate), never rematch the groove.

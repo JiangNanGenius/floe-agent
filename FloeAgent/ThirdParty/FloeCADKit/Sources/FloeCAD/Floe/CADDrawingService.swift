@@ -2675,8 +2675,9 @@ public final class CADDrawingService {
             switch parseFeatureReference(rawFeature, page: page) {
             case .failure(let error): return fail(error.code, error.message)
             case .success(let parsed):
-                if case .failure(let message) = resolveFeatureFace(parsed, page: page,
-                                                                   context: context) {
+                if case .failure(let message) = resolveFeatureFace(
+                    parsed, page: page, context: context,
+                    allowLiveProvenanceStationDrift: true) {
                     return fail("stale_feature_reference", message)
                 }
                 feature = parsed
@@ -2740,8 +2741,9 @@ public final class CADDrawingService {
                 switch parseFeatureReference(rawFeature!, page: page) {
                 case .failure(let error): return fail(error.code, error.message)
                 case .success(let parsed):
-                    if case .failure(let message) = resolveFeatureFace(parsed, page: page,
-                                                                       context: context) {
+                    if case .failure(let message) = resolveFeatureFace(
+                        parsed, page: page, context: context,
+                        allowLiveProvenanceStationDrift: true) {
                         return fail("stale_feature_reference", message)
                     }
                     feature = parsed
@@ -5091,9 +5093,16 @@ public final class CADDrawingService {
         return (radius: radius, center: center, plane: sketch.plane)
     }
 
+    /// - Parameter allowLiveProvenanceStationDrift: Manufacturing callouts are
+    ///   bound to a mechanical-hole feature whose live spec is their semantic
+    ///   authority; a parameter edit may legitimately trim the captured pilot
+    ///   face and move its centroid along the axis. Only those callers pass
+    ///   `true`. A linked DIMENSION keeps the captured axial station as part of
+    ///   its face identity.
     private func resolveFeatureFace(_ feature: CADDrawingFeatureReference,
                                     page: CADDrawingPage,
-                                    context: ResolvedViewContext)
+                                    context: ResolvedViewContext,
+                                    allowLiveProvenanceStationDrift: Bool = false)
         -> FeatureFaceResolution {
         guard let plane = context.plane else {
             return .failure("The view has no valid projection plane.")
@@ -5142,68 +5151,110 @@ public final class CADDrawingService {
             return .failure("The view is not looking along the linked cylinder's axis.")
         }
         let tolerance = max(feature.anchor.toleranceMM, 0.05)
-        var matches: [(face: OCCTKernel.KernelFaceInfo, radius: Double)] = []
-        for face in OCCTKernel.faceInfo(brep) {
-            guard let signature = face.signature,
-                  case let .cylindrical(radius) = signature.kind else { continue }
-            let axis = simd_normalize(signature.normal)
-            guard abs(simd_dot(anchorAxis, axis)) >= 0.995 else { continue }
-            // Compare the AXIAL position, not the radial centroid: a
-            // half-cylinder's centroid moves inward/outward when its radius
-            // changes, while the hole's axis and axial station do not.
-            let delta = signature.centroid - feature.anchor.centroid
-            let axialDelta = abs(simd_dot(delta, anchorAxis))
-            let radial = delta - simd_dot(delta, anchorAxis) * anchorAxis
-            // A partial cylindrical face's centroid sits off-axis and moves
-            // with the radius; allow that bounded radial drift but still
-            // reject a different bore at the same axial station.
-            let radialLimit = max(tolerance,
-                                  0.5 * max(radius, feature.anchor.radiusMM ?? radius))
-            guard axialDelta <= tolerance,
-                  simd_length(radial) <= radialLimit else { continue }
-            matches.append((face: face, radius: radius))
+        // A cylindrical face is a candidate when it shares the captured axis
+        // and radial station. `requireStation` also demands the captured axial
+        // position: that is the right identity test for a bare geometric
+        // anchor, but NOT sufficient for a live authoring feature. A
+        // legitimate parameter edit can shorten the very bore it authored (a
+        // counterbore-depth change moves the remaining pilot face's centroid
+        // along the axis) while its radius, axis and radial station stay
+        // exact. The provenance check below re-locates that bore by identity.
+        func cylindricalMatches(requireStation: Bool)
+            -> [(face: OCCTKernel.KernelFaceInfo, radius: Double)] {
+            var found: [(face: OCCTKernel.KernelFaceInfo, radius: Double)] = []
+            for face in OCCTKernel.faceInfo(brep) {
+                guard let signature = face.signature,
+                      case let .cylindrical(radius) = signature.kind else { continue }
+                let axis = simd_normalize(signature.normal)
+                guard abs(simd_dot(anchorAxis, axis)) >= 0.995 else { continue }
+                // Compare the AXIAL position, not the radial centroid: a
+                // half-cylinder's centroid moves inward/outward when its radius
+                // changes, while the hole's axis and axial station do not.
+                let delta = signature.centroid - feature.anchor.centroid
+                let axialDelta = abs(simd_dot(delta, anchorAxis))
+                let radial = delta - simd_dot(delta, anchorAxis) * anchorAxis
+                // A partial cylindrical face's centroid sits off-axis and moves
+                // with the radius; allow that bounded radial drift but still
+                // reject a different bore at the same axial station.
+                let radialLimit = max(tolerance,
+                                      0.5 * max(radius, feature.anchor.radiusMM ?? radius))
+                guard simd_length(radial) <= radialLimit else { continue }
+                guard !requireStation || axialDelta <= tolerance else { continue }
+                found.append((face: face, radius: radius))
+            }
+            return found
         }
-        guard !matches.isEmpty else {
-            return .failure("The linked cylindrical face no longer exists "
-                            + "(the hole feature was deleted or the topology changed).")
-        }
+
+        let strictMatches = cylindricalMatches(requireStation: true)
         // When the captured provenance names the authoring sketch circle, the
         // surviving match must be the SAME cylinder that entity describes:
-        // same axis, same axial station and a consistent radius. The entity
-        // may legitimately change radius (Ø10 → Ø8 remeasures on the SAME
-        // feature); a face that only shares axis and station but not the
-        // entity's cylinder (e.g. the coaxial counterbore left behind after a
-        // hole edit consumed the measured band) is a DIFFERENT cylinder and
-        // dangles instead of adopting its value. The displayed measurement
-        // still comes from the live kernel face below, never from the entity.
-        var provenanceMatches = matches
+        // same axis, a bounded radial station and a consistent radius. A
+        // linked dimension additionally requires the captured axial station
+        // (part of the strict scan); the manufacturing-only re-location below
+        // relaxes that one attribute when the live hole feature still authors
+        // the bore. The entity may legitimately change radius (Ø10 → Ø8
+        // remeasures on the SAME feature); a face that only shares axis and
+        // station but not the entity's cylinder (e.g. the coaxial counterbore
+        // left behind after a hole edit consumed the measured band) is a
+        // DIFFERENT cylinder and dangles instead of adopting its value. The
+        // displayed measurement still comes from the live kernel face below,
+        // never from the entity.
+        var matches = strictMatches
         if let entity = provenanceCircle(feature) {
-            let axis = simd_normalize(feature.anchor.direction)
-            let tolerance = max(feature.anchor.toleranceMM, 0.05)
             let radiusLimit = max(0.25,
                                   0.05 * max(entity.radius,
                                              feature.anchor.radiusMM ?? entity.radius))
-            provenanceMatches = matches.filter { candidate in
+            func provenanceConsistent(
+                _ candidate: (face: OCCTKernel.KernelFaceInfo, radius: Double)
+            ) -> Bool {
                 guard let signature = candidate.face.signature,
                       case let .cylindrical(radius) = signature.kind else { return false }
-                guard abs(simd_dot(simd_normalize(signature.normal), axis)) >= 0.995 else {
+                guard abs(simd_dot(simd_normalize(signature.normal), anchorAxis)) >= 0.995 else {
                     return false
                 }
-                // Same axial-position discipline as the anchor scan above:
-                // the centroid's station along the axis, with bounded radial
-                // drift for partial cylindrical faces.
+                // Radial station, never the captured axial station: the live
+                // circle still identifies this bore when an edit only changes
+                // how much of the same bore remains.
                 let delta = signature.centroid - feature.anchor.centroid
-                guard abs(simd_dot(delta, axis)) <= tolerance else { return false }
-                let radial = delta - simd_dot(delta, axis) * axis
+                let radial = delta - simd_dot(delta, anchorAxis) * anchorAxis
                 guard simd_length(radial) <= max(tolerance, radius * 0.5) else { return false }
                 return abs(radius - entity.radius) <= radiusLimit
             }
-            guard !provenanceMatches.isEmpty else {
+            let strictProvenanceMatches = strictMatches.filter(provenanceConsistent)
+            if strictProvenanceMatches.isEmpty, allowLiveProvenanceStationDrift {
+                // The authoring circle is still live, but the captured face
+                // moved along the axis (for example, a counterbore depth edit
+                // shortens the remaining pilot bore and moves that face's
+                // centroid). A manufacturing callout follows the live hole
+                // feature, so re-locate the SAME bore by axis, live radius and
+                // radial station. A genuinely deleted or replaced cylinder
+                // still fails below: no face of that radius remains.
+                matches = cylindricalMatches(requireStation: false)
+                    .filter(provenanceConsistent)
+            } else {
+                matches = strictProvenanceMatches
+            }
+            // Classify an empty result BEFORE the count == 1 ambiguity guard.
+            // An empty set is never "several valid faces": it means the strict
+            // station scan found NO face at all (the captured cylinder is
+            // missing) or it found faces but none is the captured cylinder
+            // (the live feature no longer owns this geometry). The original
+            // absent / provenance-lost messages stay exact.
+            if matches.isEmpty {
+                if strictMatches.isEmpty {
+                    return .failure("The linked cylindrical face no longer exists "
+                                    + "(the hole feature was deleted or the topology changed).")
+                }
                 return .failure("The linked feature no longer owns this geometry "
                                 + "(the captured cylinder is gone); the dimension is dangling.")
             }
+        } else {
+            guard !matches.isEmpty else {
+                return .failure("The linked cylindrical face no longer exists "
+                                + "(the hole feature was deleted or the topology changed).")
+            }
         }
-        guard provenanceMatches.count == 1, let match = provenanceMatches.first else {
+        guard matches.count == 1, let match = matches.first else {
             return .failure("The linked cylindrical face is ambiguous after the source change; "
                             + "re-select the feature.")
         }
@@ -5259,7 +5310,8 @@ public final class CADDrawingService {
             var target: SIMD2<Double>?
             var resolvedFeature: [String: Any]?
             if let feature = annotation.feature {
-                switch resolveFeatureFace(feature, page: page, context: context) {
+                switch resolveFeatureFace(feature, page: page, context: context,
+                                          allowLiveProvenanceStationDrift: true) {
                 case .success(let live):
                     target = live.drawingCenter
                     resolvedFeature = [
@@ -6157,8 +6209,9 @@ public final class CADDrawingService {
                                                   plane: plane(for: page, view: view),
                                                   scale: view.scale,
                                                   isLegacy: page.sheetViews == nil)
-                if case .failure(let message) = resolveFeatureFace(feature, page: page,
-                                                                  context: context) {
+                if case .failure(let message) = resolveFeatureFace(
+                    feature, page: page, context: context,
+                    allowLiveProvenanceStationDrift: true) {
                     messages.append("Manufacturing annotation "
                                     + "\(annotation.id.uuidString) is dangling: \(message)")
                 }
@@ -7982,6 +8035,12 @@ public final class CADDrawingService {
         var out = "999\nFloeCAD drawing export (units: mm)\n"
         out += "0\nSECTION\n2\nHEADER\n"
         out += "9\n$ACADVER\n1\nAC1009\n"
+        // R2004 and prior are ASCII files: $DWGCODEPAGE names the single-byte
+        // codepage (ANSI_1252 default) and characters outside it use the
+        // `\U+nnnn` schema. The writer emits pure ASCII; declaring the
+        // codepage keeps the truthful R12 contract explicit instead of
+        // relying on UTF-8 autodetection, which no AC1009 reader promises.
+        out += "9\n$DWGCODEPAGE\n3\nANSI_1252\n"
         out += "9\n$INSUNITS\n70\n4\n"
         out += "9\n$MEASUREMENT\n70\n1\n"
         out += "0\nENDSEC\n"
@@ -8057,8 +8116,16 @@ public final class CADDrawingService {
     }
 
     private func sanitizedDXFText(_ text: String) -> String {
-        text.replacingOccurrences(of: "\n", with: " ")
+        // One TEXT tag is one line. Every remaining scalar then goes through
+        // the isolated R12 codec: printable ASCII stays literal and everything
+        // else is a `\U+nnnn` escape, so the entity bytes remain ASCII and a
+        // real DXF reader decodes the author's Chinese and engineering
+        // symbols (Ø, ×, –, ·) instead of mojibake. The codec also escapes a
+        // literal `\U+0041`-style author backslash once, so it survives a
+        // single decode pass unchanged.
+        let singleLine = text.replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
+        return DXFTextCodec.encode(singleLine)
     }
 
     private func escapeXML(_ text: String) -> String {

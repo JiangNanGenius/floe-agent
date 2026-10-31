@@ -542,7 +542,11 @@ final class CADDrawingBOMTableExportTests: XCTestCase {
             var cursor = start + 1
             while cursor < pairs.count, pairs[cursor].0 != "0" {
                 if pairs[cursor].0 == "8" { layer = pairs[cursor].1 }
-                if pairs[cursor].0 == "1" { value = pairs[cursor].1 }
+                // R12 TEXT values are ASCII with `\U+nnnn` escapes; the cell
+                // text compared below is the value one decode pass yields.
+                if pairs[cursor].0 == "1" {
+                    value = DXFTextCodec.decode(pairs[cursor].1)
+                }
                 cursor += 1
             }
             if layer == "BOM" { result.append(value) }
@@ -744,7 +748,8 @@ final class CADDrawingBOMTableExportTests: XCTestCase {
                 case "40":
                     textHeight = Double(value) ?? textHeight
                 case "1":
-                    text = value
+                    // R12 wire escape -> the cell text a DXF reader shows.
+                    text = DXFTextCodec.decode(value)
                 default:
                     break
                 }

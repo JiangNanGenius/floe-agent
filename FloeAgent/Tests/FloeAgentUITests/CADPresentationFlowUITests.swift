@@ -238,6 +238,10 @@ final class CADDrawingMultiViewFlowUITests: XCTestCase {
         let templateSave = app.buttons["CADDrawingTemplateSave"]
         reveal(templateSave, in: app)
         templateSave.tap()
+        // Saving inserts the template library and application sections above
+        // this action. Bring its new lazy Form row back onscreen before
+        // checking the exact saved-state label.
+        reveal(templateSave, in: app)
         let saved = expectation(for: NSPredicate(format: "label == %@", "Update template"),
                                 evaluatedWith: templateSave)
         wait(for: [saved], timeout: 20)

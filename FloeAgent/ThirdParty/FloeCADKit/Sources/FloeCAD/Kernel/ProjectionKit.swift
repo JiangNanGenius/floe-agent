@@ -162,6 +162,14 @@ nonisolated enum ProjectionKit {
     /// Groups segments by their carrier line (canonical direction + signed
     /// offset, quantized), merges overlapping/touching parameter intervals
     /// per line, and emits one `.line` entity per merged interval.
+    ///
+    /// Emission order is canonical (line start, then end, in sheet space),
+    /// never the `groups` dictionary's hash order. A body saved or reopened
+    /// re-extracts the same edge set from re-tessellated render buffers, so
+    /// the input segments can arrive in a different order and a welded
+    /// coordinate can land on the other side of the 1e-4 key quantum while
+    /// still printing the same 4-decimal geometry. Exact SVG/DXF reopen
+    /// comparisons require the same geometry to keep the same order.
     static func mergedLineEntities(
         from segments: [(SIMD2<Double>, SIMD2<Double>)]
     ) -> [SketchEntity] {
@@ -205,7 +213,7 @@ nonisolated enum ProjectionKit {
             ))
         }
 
-        var entities: [SketchEntity] = []
+        var lines: [(a: SIMD2<Double>, b: SIMD2<Double>)] = []
         for intervals in groups.values {
             let sorted = intervals.sorted { $0.t0 < $1.t0 }
             var merged: [Interval] = []
@@ -222,13 +230,30 @@ nonisolated enum ProjectionKit {
             for interval in merged {
                 let offset = interval.offsetSum / Double(interval.count)
                 let base = interval.normal * offset
-                entities.append(.line(
-                    id: UUID(),
+                lines.append((
                     a: base + interval.direction * interval.t0,
                     b: base + interval.direction * interval.t1
                 ))
             }
         }
-        return entities
+        // Canonical order at the exporters' 4-decimal-millimetre precision:
+        // two lines that print the same coordinates compare equal even when a
+        // save/reopen re-tessellation left sub-quantum noise on one endpoint.
+        // Ordering by the raw doubles could otherwise flip two lines that
+        // share a corner while their SVG/DXF text is unchanged.
+        func sortKey(_ value: Double) -> Int64 {
+            MeshQuantize.key64(value, quantum: 0.0001)
+        }
+        lines.sort { lhs, rhs in
+            let la = (sortKey(lhs.a.x), sortKey(lhs.a.y),
+                      sortKey(lhs.b.x), sortKey(lhs.b.y))
+            let lb = (sortKey(rhs.a.x), sortKey(rhs.a.y),
+                      sortKey(rhs.b.x), sortKey(rhs.b.y))
+            if la.0 != lb.0 { return la.0 < lb.0 }
+            if la.1 != lb.1 { return la.1 < lb.1 }
+            if la.2 != lb.2 { return la.2 < lb.2 }
+            return la.3 < lb.3
+        }
+        return lines.map { .line(id: UUID(), a: $0.a, b: $0.b) }
     }
 }
