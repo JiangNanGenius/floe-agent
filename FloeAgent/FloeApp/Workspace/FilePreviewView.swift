@@ -71,6 +71,23 @@ struct FilePreviewView: View {
     @State private var engineeringRoot: URL?
     @State private var cadDirty = false
     @State private var confirmDiscardCAD = false
+    /// E33: a verified previous save found by the non-mutating inspection.
+    /// Present only while the damaged package is still the target; the sheet
+    /// decides whether to create a new copy.
+    @State private var recoveryPreview: CADRecoveryPreview?
+    @State private var recoverySheet: CADRecoverySheet?
+    @State private var recoveredCopyNotice: CADRecoveryRestoreResult?
+    /// Fences every inspection/restore completion to the load that started it
+    /// and records the one-way switch from the damaged package to the verified
+    /// new copy. A late result can never present a stale sheet, open a second
+    /// copy, or make the preview act on the damaged original again.
+    @State private var recoveryFence = CADRecoveryPresentationFence()
+    @State private var recoveryTicket: CADRecoveryPresentationFence.Ticket?
+    @State private var recoveredCopyPath: String?
+    @State private var recoveredCopyOrigin: String?
+    /// Restarts the bounded `.task` load after a sheet asks for a refresh
+    /// without spawning an untracked task that can outlive this view.
+    @State private var reloadGeneration = 0
     @StateObject private var engineeringSession = EngineeringWebSession()
     @State private var shareURL: URL?
     @State private var isPreparingShare = false
@@ -92,8 +109,14 @@ struct FilePreviewView: View {
                 } description: {
                     Text(loadError)
                 } actions: {
+                    if let preview = recoveryPreview {
+                        Button("cad.recovery.action.review") {
+                            recoverySheet = .decision(preview)
+                        }
+                        .accessibilityIdentifier("cad.recovery.reviewButton")
+                    }
                     if mayOpenLargeModel {
-                        Button("engineering.large_model.open") { largePreviewPath = relativePath }
+                        Button("engineering.large_model.open") { largePreviewPath = displayedPath }
                     }
                 }
             } else if let floecadDocument {
@@ -110,7 +133,12 @@ struct FilePreviewView: View {
                     .modifier(FloeCADHostChrome(document: floecadDocument,
                                                 canvasActions: CADCanvasActionBridge.actions(
                                                     assetStore: environment.creativeAssetStore)))
-                    .safeAreaInset(edge: .top) { nativeCADProposalBanner }
+                    .safeAreaInset(edge: .top) {
+                        VStack(spacing: 0) {
+                            recoveredCopyBanner
+                            nativeCADProposalBanner
+                        }
+                    }
             } else if let engineeringPackage {
                 if isEngineeringFullScreen {
                     Color.clear
@@ -145,7 +173,7 @@ struct FilePreviewView: View {
                 InlinePDFReader(url: pdfURL, validateRead: {
                     if remotePreview.url == pdfURL { return }
                     guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
-                    let resolved = try service.guardResolver.resolve(relativePath)
+                    let resolved = try service.guardResolver.resolve(displayedPath)
                     guard resolved.standardizedFileURL == pdfURL.standardizedFileURL else { throw CocoaError(.fileReadNoPermission) }
                     try service.guardResolver.assertReadableSize(resolved)
                 }).id(pdfURL)
@@ -194,7 +222,18 @@ struct FilePreviewView: View {
         .sheet(item: $fileDesignTarget) { target in
             CreativeDesignStartView(previousTarget: nil, fileTarget: target)
         }
-        .task(id: "\(relativePath)-\(usesExpandedReadOnly)") { await load() }
+        .task(id: "\(relativePath)-\(usesExpandedReadOnly)-\(reloadGeneration)") { await load() }
+        .onChange(of: relativePath) { _, _ in
+            // The caller retargeted this preview to another file. No result
+            // from the old recovery presentation may surface in the new one.
+            recoveryFence.invalidate()
+            recoveryTicket = nil
+            recoveredCopyPath = nil
+            recoveredCopyOrigin = nil
+            recoveryPreview = nil
+            recoverySheet = nil
+            recoveredCopyNotice = nil
+        }
         .fullScreenCover(isPresented: $isIDEPresented, onDismiss: {
             // The IDE can be swipe-dismissed on a clean session without
             // invoking onSaved. The Office preview session was released
@@ -203,7 +242,7 @@ struct FilePreviewView: View {
             Task { await load() }
         }) {
             WorkspaceIDEView(
-                initialRelativePath: relativePath,
+                initialRelativePath: displayedPath,
                 center: center
             ) {
                 Task { await load() }
@@ -211,7 +250,7 @@ struct FilePreviewView: View {
         }
         .fullScreenCover(isPresented: $isArchiveBrowserPresented) {
             NavigationStack {
-                ArchiveBrowserView(relativePath: relativePath, center: center)
+                ArchiveBrowserView(relativePath: displayedPath, center: center)
             }
         }
         .fullScreenCover(isPresented: $isReadingModePresented) {
@@ -230,7 +269,7 @@ struct FilePreviewView: View {
         }) {
             if let editorSession, let nativeOfficeURL {
                 OfficeStandaloneEditorHost(
-                    relativePath: relativePath,
+                    relativePath: displayedPath,
                     documentURL: nativeOfficeURL,
                     session: editorSession
                 )
@@ -333,6 +372,42 @@ struct FilePreviewView: View {
         .onDisappear {
             if !isIDEPresented, !isOfficeEditorPresented { Task { await officeSession.release() } }
         }
+        .sheet(item: $recoverySheet) { sheet in
+            switch sheet {
+            case .decision(let preview):
+                CADRecoveryPreviewSheet(
+                    preview: preview,
+                    mode: .decide,
+                    restore: { try await restoreRecoveryCopy(preview) },
+                    onRestored: { result in
+                        // Only the presentation that ACTUALLY adopted this
+                        // exact copy may show the post-restore notice. A late
+                        // result for another file is never presented here.
+                        guard recoveredCopyOrigin == relativePath,
+                              recoveredCopyPath != nil,
+                              recoveryFence.activeCopyURL
+                                == result.packageURL.standardizedFileURL else { return }
+                        recoverySheet = nil
+                        recoveredCopyNotice = result
+                        loadError = nil
+                    },
+                    onClose: { recoverySheet = nil },
+                    onRefresh: {
+                        recoverySheet = nil
+                        recoveryTicket = nil
+                        // Restart the bounded `.task` load instead of spawning
+                        // an untracked task that can outlive this view.
+                        reloadGeneration &+= 1
+                    })
+            case .report(let preview):
+                CADRecoveryPreviewSheet(
+                    preview: preview,
+                    mode: .report,
+                    restore: nil,
+                    onRestored: { _ in },
+                    onClose: { recoverySheet = nil })
+            }
+        }
         .alert("inspector.preview.error", isPresented: Binding(
             get: { previewError != nil },
             set: { if !$0 { previewError = nil } }
@@ -363,7 +438,7 @@ struct FilePreviewView: View {
             return
         }
         guard let stored = DrawingAssistantConversationStore.shared
-            .conversationID(workspaceID: workspaceID, relativePath: relativePath) else {
+            .conversationID(workspaceID: workspaceID, relativePath: displayedPath) else {
             drawingAssistantConversationID = nil
             return
         }
@@ -387,14 +462,14 @@ struct FilePreviewView: View {
     /// is marked as a staged snapshot. Task-private workspace files are
     /// readable but their reading position is not persisted.
     private var readingSource: TextReaderSource {
-        let path = relativePath
+        let path = displayedPath
         let remote = center.isCloudWorkspacePath(path) || center.isNetworkWorkspacePath(path)
         let persistsPosition = center.currentWorkspace?.kind != .privateTask
         return TextReaderSource(
             kind: .workspaceFile,
             ownerID: center.currentWorkspace?.id.uuidString ?? "workspace",
             documentKey: path,
-            displayName: fileName,
+            displayName: displayedFileName,
             format: WorkspaceFileType.pathExtension(for: path),
             markdown: isMarkdown,
             isRemoteSnapshot: remote,
@@ -429,20 +504,20 @@ struct FilePreviewView: View {
             package: package,
             onReview: { capture in
             engineeringReview = EngineeringReviewCapture(
-                context: "Workspace path: \(relativePath)\n" + capture.context,
-                image: capture.image, documentID: relativePath, workspaceRoot: engineeringRoot)
+                context: "Workspace path: \(displayedPath)\n" + capture.context,
+                image: capture.image, documentID: displayedPath, workspaceRoot: engineeringRoot)
         }, onSave: editing && engineeringRoot != nil && (package.kind == .dxf || package.kind == .dwg) ? { data, baseline in
             guard let service = center.fileService, service.guardResolver.rootURL == engineeringRoot else {
                 throw CocoaError(.fileReadNoPermission)
             }
-            let path = relativePath
+            let path = displayedPath
             let result = try await Task.detached(priority: .userInitiated) {
                 try service.commitBinaryEdit(path: path, data: data, expectedSHA256: baseline)
             }.value
             return result.write.sha256
         } : nil, onDirty: { cadDirty = $0 }, session: engineeringSession,
         identity: EngineeringWebSession.documentKey(
-            rootPath: engineeringRoot?.path, relativePath: relativePath))
+            rootPath: engineeringRoot?.path, relativePath: displayedPath))
     }
 
     /// Interactive confirmation for a native CAD proposal drafted by the
@@ -520,35 +595,67 @@ struct FilePreviewView: View {
         }
     }
 
+    /// The file this preview is ACTUALLY showing. After a successful restore
+    /// this is the verified new copy, never the damaged package the view was
+    /// originally opened for, so the title, save/close, export/share,
+    /// Quick Look, design, IDE and recent-item paths all target the document
+    /// that is really open.
+    private var displayedPath: String {
+        guard recoveredCopyOrigin == relativePath, let recoveredCopyPath else {
+            return relativePath
+        }
+        return recoveredCopyPath
+    }
+
+    private var displayedFileName: String {
+        (displayedPath as NSString).lastPathComponent
+    }
+
+    private var isPresentingRecoveredCopy: Bool {
+        recoveredCopyOrigin == relativePath && recoveredCopyPath != nil
+    }
+
+    /// Workspace-relative path for a URL proven to be below this workspace's
+    /// exact root. Nil keeps the caller from inventing a prefix match.
+    private func workspaceRelativePath(for url: URL) -> String? {
+        guard let service = center.fileService else { return nil }
+        let root = service.guardResolver.rootURL.standardizedFileURL
+            .resolvingSymlinksInPath().path
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        guard path.hasPrefix(prefix) else { return nil }
+        return String(path.dropFirst(prefix.count))
+    }
+
     private var fileName: String {
-        (relativePath as NSString).lastPathComponent
+        displayedFileName
     }
 
     private var isPDF: Bool {
-        WorkspaceFileType.isPDF(relativePath)
+        WorkspaceFileType.isPDF(displayedPath)
     }
 
     private var isMarkdown: Bool {
-        WorkspaceFileType.isMarkdown(relativePath)
+        WorkspaceFileType.isMarkdown(displayedPath)
     }
 
     private var isHTML: Bool {
-        WorkspaceFileType.isHTML(relativePath)
+        WorkspaceFileType.isHTML(displayedPath)
     }
 
     private var isTextual: Bool {
-        WorkspaceFileType.isText(relativePath)
+        WorkspaceFileType.isText(displayedPath)
     }
 
     private var isOfficeDocument: Bool {
-        WorkspaceFileType.isOffice(relativePath)
+        WorkspaceFileType.isOffice(displayedPath)
     }
 
     private var officeEditingAvailable: Bool {
         isOfficeDocument
             && OfficeFileSession.available
-            && !center.isCloudWorkspacePath(relativePath)
-            && !center.isNetworkWorkspacePath(relativePath)
+            && !center.isCloudWorkspacePath(displayedPath)
+            && !center.isNetworkWorkspacePath(displayedPath)
             && center.fileService != nil
     }
 
@@ -573,21 +680,21 @@ struct FilePreviewView: View {
     /// overwritten (cloud/network snapshots, read-only mounts, unsupported
     /// formats). Nil for non-image previews so their toolbars stay unchanged.
     private var imageEditAvailability: ImageEditAvailability? {
-        guard WorkspaceFileType.isImage(relativePath) else { return nil }
+        guard WorkspaceFileType.isImage(displayedPath) else { return nil }
         guard center.fileService != nil else {
             return .unavailable(OfficeInkText.t(
                 "当前工作区不可用，无法编辑。",
                 "The workspace is unavailable, so editing is unavailable."
             ))
         }
-        if center.isCloudWorkspacePath(relativePath) {
+        if center.isCloudWorkspacePath(displayedPath) {
             return .unavailable(OfficeInkText.t(
                 "云工作区文件仅供只读预览，本版本不支持写回原文件。",
                 "Cloud workspace files are preview-only here; writing back is not supported in this version."
             ))
         }
-        if center.isNetworkWorkspacePath(relativePath) {
-            if let mount = center.networkWorkspaceMount(for: relativePath), mount.readOnly {
+        if center.isNetworkWorkspacePath(displayedPath) {
+            if let mount = center.networkWorkspaceMount(for: displayedPath), mount.readOnly {
                 return .unavailable(OfficeInkText.t(
                     "“\(mount.name)”是只读网络挂载，无法写回文件。",
                     "“\(mount.name)” is a read-only network mount, so the file cannot be written back."
@@ -598,7 +705,7 @@ struct FilePreviewView: View {
                 "Network mount files are preview-only here; writing back is not supported in this version."
             ))
         }
-        guard ImageFileFormat(pathExtension: WorkspaceFileType.pathExtension(for: relativePath)) != nil else {
+        guard ImageFileFormat(pathExtension: WorkspaceFileType.pathExtension(for: displayedPath)) != nil else {
             return .unavailable(OfficeInkText.t(
                 "此图片格式暂不支持编辑（支持 PNG、JPEG、HEIC）。",
                 "This image format can't be edited yet (PNG, JPEG and HEIC are supported)."
@@ -625,7 +732,7 @@ struct FilePreviewView: View {
             return
         }
         guard let format = ImageFileFormat(
-            pathExtension: WorkspaceFileType.pathExtension(for: relativePath)
+            pathExtension: WorkspaceFileType.pathExtension(for: displayedPath)
         ) else {
             previewError = OfficeInkText.t(
                 "此图片格式暂不支持编辑（支持 PNG、JPEG、HEIC）。",
@@ -633,7 +740,7 @@ struct FilePreviewView: View {
             )
             return
         }
-        let path = relativePath
+        let path = displayedPath
         Task {
             do {
                 let request = try await Task.detached(priority: .userInitiated) {
@@ -655,7 +762,7 @@ struct FilePreviewView: View {
                         format: format
                     )
                 }.value
-                guard request.relativePath == relativePath else { return }
+                guard request.relativePath == displayedPath else { return }
                 imageEditRequest = request
             } catch { previewError = error.localizedDescription }
         }
@@ -665,7 +772,7 @@ struct FilePreviewView: View {
     /// raster container, then commits it atomically through the workspace
     /// file service against the pre-edit digest.
     private func saveEditedImage(_ request: WorkspaceImageEditRequest, editorPNG: Data) async throws {
-        guard request.relativePath == relativePath,
+        guard request.relativePath == displayedPath,
               let service = center.fileService,
               service.guardResolver.rootURL == request.rootURL else {
             throw CocoaError(.fileReadNoPermission)
@@ -694,11 +801,11 @@ struct FilePreviewView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
-            if WorkspaceFileType.isImage(relativePath), let imageURL = binaryPreviewURL {
+            if WorkspaceFileType.isImage(displayedPath), let imageURL = binaryPreviewURL {
                 SaveImageToPhotosButton(imageURL: imageURL, validateRead: {
                     if remotePreview.url == imageURL { return }
                     guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
-                    let resolved = try service.guardResolver.resolve(relativePath)
+                    let resolved = try service.guardResolver.resolve(displayedPath)
                     guard resolved.standardizedFileURL == imageURL.standardizedFileURL else {
                         throw CocoaError(.fileReadNoPermission)
                     }
@@ -711,12 +818,12 @@ struct FilePreviewView: View {
                 }
                 .accessibilityIdentifier("file.preview.engineering.fullscreen")
             }
-            if WorkspaceFileType.isMedia(relativePath),
-               !center.isCloudWorkspacePath(relativePath), !center.isNetworkWorkspacePath(relativePath) {
+            if WorkspaceFileType.isMedia(displayedPath),
+               !center.isCloudWorkspacePath(displayedPath), !center.isNetworkWorkspacePath(displayedPath) {
                 Button {
                     do {
                         guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
-                        mediaEditorSource = try service.guardResolver.resolve(relativePath)
+                        mediaEditorSource = try service.guardResolver.resolve(displayedPath)
                     } catch { previewError = error.localizedDescription }
                 } label: { Label("media.media_editor_view.media_workbench", systemImage: "film.stack") }
                 .accessibilityIdentifier("file.preview.mediaEditor")
@@ -781,11 +888,11 @@ struct FilePreviewView: View {
             if allowsDesignPage,
                let workspace = center.currentWorkspace,
                center.fileService != nil,
-               !center.isCloudWorkspacePath(relativePath),
-               !center.isNetworkWorkspacePath(relativePath) {
+               !center.isCloudWorkspacePath(displayedPath),
+               !center.isNetworkWorkspacePath(displayedPath) {
                 Button {
                     let target = DesignOwnerTargets.file(
-                        workspaceID: workspace.id, relativePath: relativePath)
+                        workspaceID: workspace.id, relativePath: displayedPath)
                     if engineeringConversationID != nil {
                         designTarget = target
                     } else {
@@ -799,10 +906,10 @@ struct FilePreviewView: View {
                 .accessibilityIdentifier("file.preview.design")
             }
             if allowsIDEExpansion,
-               WorkspaceFileRouter.allowsCodeEditor(relativePath),
+               WorkspaceFileRouter.allowsCodeEditor(displayedPath),
                content != nil,
-               !center.isCloudWorkspacePath(relativePath),
-               !center.isNetworkWorkspacePath(relativePath) {
+               !center.isCloudWorkspacePath(displayedPath),
+               !center.isNetworkWorkspacePath(displayedPath) {
                 Button {
                     isIDEPresented = true
                 } label: {
@@ -840,7 +947,10 @@ struct FilePreviewView: View {
             // Low-frequency actions live behind More instead of occupying a
             // permanent toolbar badge.
             Menu {
-                if let onAddToContext {
+                // The parent's callback is bound to the file this preview was
+                // opened for. After a restore it would add the damaged
+                // package, so it stays available only for the original file.
+                if let onAddToContext, !isPresentingRecoveredCopy {
                     Button {
                         onAddToContext()
                     } label: {
@@ -862,7 +972,8 @@ struct FilePreviewView: View {
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("file.preview.more")
             .accessibilityIdentifier("file.preview.more")
-            .disabled(onAddToContext == nil && (isTextual || nativeOfficeURL != nil || !quickLookAvailable))
+            .disabled((onAddToContext == nil || isPresentingRecoveredCopy)
+                      && (isTextual || nativeOfficeURL != nil || !quickLookAvailable))
         }
     }
 
@@ -874,7 +985,7 @@ struct FilePreviewView: View {
     /// extension the browser can route (other formats still open there to
     /// report their own truthful unsupported reason).
     private var isArchiveBrowsable: Bool {
-        WorkspaceFileType.isArchive(relativePath)
+        WorkspaceFileType.isArchive(displayedPath)
             && (center.fileService?.guardResolver.rootURL ?? center.currentRootURL) != nil
     }
 
@@ -886,7 +997,7 @@ struct FilePreviewView: View {
         } description: {
             Text("inspector.preview.binary")
         } actions: {
-            if WorkspaceFileType.isArchive(relativePath), isArchiveBrowsable {
+            if WorkspaceFileType.isArchive(displayedPath), isArchiveBrowsable {
                 Button {
                     isArchiveBrowserPresented = true
                 } label: {
@@ -956,7 +1067,121 @@ struct FilePreviewView: View {
         }
     }
 
+    /// E33: create the atomic new package through the store seam, then open
+    /// that copy in the existing shared native session. The damaged package is
+    /// only read; the sheet's fingerprint CAS refuses a changed source.
+    ///
+    /// The atomic copy is allowed to finish even if the presentation is
+    /// canceled mid-step (aborting between staging and promotion would be
+    /// worse). Its result is recorded as a real recent file first; only the
+    /// still-current ticket may then open and ADOPT it. A late result therefore
+    /// never retargets another view, never opens a second copy, and never
+    /// leaves a bridge session without an owner.
+    @MainActor
+    private func restoreRecoveryCopy(_ preview: CADRecoveryPreview) async throws
+    -> CADRecoveryRestoreResult {
+        let origin = relativePath
+        guard let ticket = recoveryTicket,
+              recoveryFence.accepts(ticket),
+              ticket.sourceURL == preview.sourceURL.standardizedFileURL,
+              recoveredCopyPath == nil,
+              !Task.isCancelled else {
+            throw CancellationError()
+        }
+        let destination = CADRecoveryCopyDestination.suggestedURL(
+            for: preview.sourceURL,
+            suffix: FloeL10n.l("cad.recovery.copySuffix"))
+        let result = try await FloeCADDocument.restorePreviousCopy(preview, to: destination)
+
+        // The copy exists now. Record the honest outcome before any
+        // presentation check so a canceled/retargeted view cannot lose it.
+        guard let copyPath = workspaceRelativePath(for: result.packageURL) else {
+            throw CADRecoveryOpenError(message: FloeL10n.l(
+                "cad.recovery.error.openFailed", result.packageURL.lastPathComponent))
+        }
+        await center.recordRecentFile(
+            relativePath: copyPath,
+            displayName: (copyPath as NSString).lastPathComponent)
+
+        guard recoveryFence.accepts(ticket), !Task.isCancelled,
+              origin == relativePath, recoveredCopyPath == nil else {
+            // The atomic step finished, but this presentation moved on. Do
+            // not open or attach the copy to whatever is displayed now.
+            return result
+        }
+        do {
+            let document = try await FloeCAD3DBridge.shared.openDocument(at: result.packageURL)
+            guard recoveryFence.accepts(ticket), !Task.isCancelled,
+                  origin == relativePath, recoveredCopyPath == nil,
+                  recoveryFence.adopt(ticket,
+                                      copyURL: result.packageURL,
+                                      resultSourceURL: result.sourceURL) != nil else {
+                // A session was opened for a result this view can no longer
+                // present. Release that exact new owner; never a different
+                // file and never the damaged package.
+                await FloeCAD3DBridge.shared.releaseDocument(
+                    at: result.packageURL, expected: document)
+                return result
+            }
+            floecadDocument = document
+            recoveredCopyOrigin = origin
+            recoveredCopyPath = copyPath
+            return result
+        } catch is CancellationError {
+            // The copy was recorded above; no bridge owner was adopted.
+            return result
+        } catch {
+            throw CADRecoveryOpenError(message: FloeL10n.l(
+                "cad.recovery.error.openFailed", result.packageURL.lastPathComponent))
+        }
+    }
+
+    /// Post-restore notice: the copy is open, the damaged package and its
+    /// previous commit are unchanged, and the same report stays reachable.
+    @ViewBuilder
+    private var recoveredCopyBanner: some View {
+        if recoveredCopyNotice != nil, isPresentingRecoveredCopy,
+           let preview = recoveryPreview {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("cad.recovery.restored.title")
+                        .font(.caption.weight(.semibold))
+                    Text("cad.recovery.restored.detail")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("cad.recovery.action.details") {
+                    recoverySheet = .report(preview)
+                }
+                .font(.caption)
+                .accessibilityIdentifier("cad.recovery.restored.detailsButton")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.bar)
+            .accessibilityIdentifier("cad.recovery.restored.banner")
+        }
+    }
+
     private func load() async {
+        // A view retargeted to another file must not keep showing (or acting
+        // on) the previous file's recovered copy.
+        if recoveredCopyOrigin != relativePath {
+            recoveredCopyOrigin = nil
+            recoveredCopyPath = nil
+            recoveryFence.invalidate()
+        }
+        // No ticket from an earlier load may survive into this one, including
+        // a load that fails before it can begin its own ticket. The adopted
+        // copy keeps its state; its own reload begins a fresh ticket below.
+        if recoveredCopyPath == nil {
+            recoveryFence.invalidate()
+        }
         loadError = nil
         content = nil
         pdfURL = nil
@@ -966,16 +1191,46 @@ struct FilePreviewView: View {
         mayOpenLargeModel = false
         engineeringRoot = nil
         cadDirty = false
+        recoveryPreview = nil
+        recoverySheet = nil
+        recoveryTicket = nil
+        recoveredCopyNotice = nil
+        let path = displayedPath
+        let name = (path as NSString).lastPathComponent
         // Flush the document this preview owned BEFORE releasing it: a failed
         // commit keeps the preview and its error visible instead of being
-        // dropped behind a fire-and-forget task.
+        // dropped behind a fire-and-forget task. Release through the bridge so
+        // the shared owner forgets the saved, closed session: a later open of
+        // the same path must create a fresh document, never hand back a
+        // closed instance.
         if let previous = floecadDocument {
-            let outcome = await previous.save()
-            if let error = outcome.error {
-                loadError = "CAD save failed: \(error)"
-                return
+            if FloeCAD3DBridge.shared.releaseReadOnlyDocument(previous) {
+                // A read-only copy (newer/opaque previous save) has nothing to
+                // commit; releasing it must not look like a failed save.
+            } else if let outcome = await FloeCAD3DBridge.shared
+                .releaseDocumentOutcome(at: previous.url, expected: previous) {
+                if let error = outcome.error {
+                    loadError = "CAD save failed: \(error)"
+                    return
+                }
+            } else if previous.isReadOnly {
+                // A read-only session the bridge did not cache: close it
+                // without pretending a commit could succeed.
+                previous.close()
+            } else {
+                // Not owned by the bridge (should not happen for a session it
+                // opened): save and close locally.
+                let outcome = await previous.save()
+                if let error = outcome.error {
+                    loadError = "CAD save failed: \(error)"
+                    return
+                }
+                guard !previous.hasUnsavedChanges else {
+                    loadError = String(localized: "cad.recovery.release.changed")
+                    return
+                }
+                previous.close()
             }
-            previous.close()
             floecadDocument = nil
         }
         remotePreview.clear()
@@ -992,7 +1247,7 @@ struct FilePreviewView: View {
             loadError = String(localized: "inspector.no_workspace")
             return
         }
-        if (relativePath as NSString).pathExtension.lowercased() == "floecad" {
+        if (path as NSString).pathExtension.lowercased() == "floecad" {
             // Native FloeCAD package: a directory with JSON metadata and
             // separate binary B-rep/mesh blobs. Open it as a live document;
             // remote/cloud packages are not staged for editing yet and say so
@@ -1001,7 +1256,7 @@ struct FilePreviewView: View {
                 loadError = String(localized: "inspector.no_workspace")
                 return
             }
-            if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
+            if center.isCloudWorkspacePath(path) || center.isNetworkWorkspacePath(path) {
                 loadError = "FloeCAD documents must be downloaded to a local workspace before editing."
                 return
             }
@@ -1010,43 +1265,84 @@ struct FilePreviewView: View {
                 // workspace-boundary enforcement and read-size guards all live
                 // in the resolver; never concatenate a relative path onto the
                 // root by hand.
-                let resolved = try service.guardResolver.resolve(relativePath)
+                let resolved = try service.guardResolver.resolve(path)
                 guard resolved.standardizedFileURL.path.hasPrefix(
                     service.guardResolver.rootURL.standardizedFileURL.path) else {
                     throw CocoaError(.fileReadNoPermission)
                 }
                 // A package must carry a manifest (current or recoverable
                 // previous) before it is offered as an editable document.
+                // The rotated previous commit lives at `previous/manifest.json`
+                // (the layout `FileCADDocumentStore.restorePrevious` verifies);
+                // `previous/snapshot` is the replaced-package backup written by
+                // an overwrite create. Both keep the file openable enough to
+                // reach the read-only recovery inspection below.
                 let manifest = resolved.appendingPathComponent("manifest.json")
-                let recoverable = resolved.appendingPathComponent("previous/snapshot/manifest.json")
+                let rotatedPrevious = resolved.appendingPathComponent("previous/manifest.json")
+                let replacedOriginal = resolved.appendingPathComponent("previous/snapshot/manifest.json")
                 guard FileManager.default.fileExists(atPath: manifest.path)
-                        || FileManager.default.fileExists(atPath: recoverable.path) else {
+                        || FileManager.default.fileExists(atPath: rotatedPrevious.path)
+                        || FileManager.default.fileExists(atPath: replacedOriginal.path) else {
                     throw CocoaError(.fileReadCorruptFile)
                 }
+                // Every load owns a ticket. A canceled/older inspection can
+                // never present its sheet or attach its document to a newer
+                // load of this same preview.
+                let ticket = recoveryFence.begin(sourceURL: resolved)
+                // E33: inspect BEFORE the store's ordinary open. Ordinary
+                // open promotes a verified previous commit in place; the
+                // interactive route must show the real previous save first and
+                // let the user decide whether to create a new copy. The
+                // inspection is strictly read-only.
+                switch await FloeCADDocument.recoveryInspection(at: resolved) {
+                case .intact:
+                    break
+                case .damaged(_, let preview):
+                    guard recoveryFence.accepts(ticket), !Task.isCancelled else { return }
+                    if let preview {
+                        recoveryPreview = preview
+                        recoveryTicket = ticket
+                        recoverySheet = .decision(preview)
+                        loadError = FloeL10n.l("cad.recovery.unavailable")
+                    } else {
+                        loadError = FloeL10n.l("cad.recovery.error.noPrevious")
+                    }
+                    return
+                }
+                guard recoveryFence.accepts(ticket), !Task.isCancelled else { return }
                 // One live session: the bridge owns it so the workbench and
                 // the assistant route operate on the same in-memory document.
                 let document = try await FloeCAD3DBridge.shared.openDocument(at: resolved)
-                try Task.checkCancellation()
+                guard recoveryFence.accepts(ticket), !Task.isCancelled else {
+                    // A canceled load of the recovered copy would otherwise
+                    // leave the bridge owning a session no view presents. The
+                    // originally selected package keeps the existing shared
+                    // session lifetime.
+                    if recoveredCopyPath != nil, path != relativePath {
+                        await FloeCAD3DBridge.shared.releaseDocument(
+                            at: resolved, expected: document)
+                    }
+                    return
+                }
                 floecadDocument = document
                 // Restore durable pending proposals (post-restart recovery)
                 // and surface ones invalidated by manual edits.
                 await environment.cadDocumentCenter.pendingNativeProposals(for: resolved)
-                await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+                await center.recordRecentFile(relativePath: path, displayName: name)
             } catch is CancellationError {
             } catch {
                 loadError = error.localizedDescription
             }
             return
         }
-        if EngineeringPreviewKind.identify(relativePath) != nil, let service = center.fileService {
+        if EngineeringPreviewKind.identify(path) != nil, let service = center.fileService {
             do {
                 let package: EngineeringPreviewPackage
-                if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
-                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
-                    package = try EngineeringPreviewPackage.single(name: fileName, bytes: bytes)
+                if center.isCloudWorkspacePath(path) || center.isNetworkWorkspacePath(path) {
+                    let bytes = try await center.readRemotePreview(relativePath: path)
+                    package = try EngineeringPreviewPackage.single(name: name, bytes: bytes)
                 } else {
                     engineeringRoot = service.guardResolver.rootURL
-                    let path = relativePath
                     let limits: EngineeringPreviewLimits = usesExpandedReadOnly ? .expandedReadOnly : .standard
                     let previewService = WorkspaceFileService(guard: service.guardResolver.withReadLimit(limits.maximumBytes))
                     let work = Task.detached(priority: .userInitiated) {
@@ -1056,14 +1352,14 @@ struct FilePreviewView: View {
                 }
                 try Task.checkCancellation()
                 engineeringPackage = package
-                await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+                await center.recordRecentFile(relativePath: path, displayName: name)
             } catch is CancellationError {} catch {
                 guard !Task.isCancelled else { return }
                 let tooLarge = (error as NSError).domain == NSCocoaErrorDomain
                     && (error as NSError).code == NSFileReadTooLargeError
                 mayOpenLargeModel = tooLarge && !usesExpandedReadOnly
-                    && !center.isCloudWorkspacePath(relativePath) && !center.isNetworkWorkspacePath(relativePath)
-                    && [EngineeringPreviewKind.mesh, .cadSurface].contains(where: { $0 == EngineeringPreviewKind.identify(relativePath) })
+                    && !center.isCloudWorkspacePath(path) && !center.isNetworkWorkspacePath(path)
+                    && [EngineeringPreviewKind.mesh, .cadSurface].contains(where: { $0 == EngineeringPreviewKind.identify(path) })
                 loadError = usesExpandedReadOnly && tooLarge
                     ? String(localized: "engineering.large_model.limit") : error.localizedDescription
             }
@@ -1080,42 +1376,42 @@ struct FilePreviewView: View {
                 generation: 0,
                 stage: "engine.unavailable",
                 detail: ["surface": "workspace-preview",
-                         "format": (relativePath as NSString).pathExtension.lowercased()])
+                         "format": (path as NSString).pathExtension.lowercased()])
         }
         if isOfficeDocument, OfficeFileSession.available, let service = center.fileService {
             do {
                 // A cloud/network document is staged into a private temporary
                 // copy; the session must treat it as a read-only snapshot and
                 // never present edits as a successful remote save.
-                let remote = center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath)
+                let remote = center.isCloudWorkspacePath(path) || center.isNetworkWorkspacePath(path)
                 let url: URL
                 if remote {
-                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                    let bytes = try await center.readRemotePreview(relativePath: path)
                     try Task.checkCancellation()
-                    url = try remotePreview.store(bytes, fileName: fileName)
+                    url = try remotePreview.store(bytes, fileName: name)
                 } else {
-                    url = try service.guardResolver.resolve(relativePath)
+                    url = try service.guardResolver.resolve(path)
                     try service.guardResolver.assertReadableSize(url)
                 }
                 officeSession.isRemoteSnapshot = remote
                 nativeOfficeURL = url
                 await officeSession.open(url)
-                await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+                await center.recordRecentFile(relativePath: path, displayName: name)
             } catch { loadError = error.localizedDescription }
             return
         }
         if isPDF, let service = center.fileService {
             do {
-                if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
-                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                if center.isCloudWorkspacePath(path) || center.isNetworkWorkspacePath(path) {
+                    let bytes = try await center.readRemotePreview(relativePath: path)
                     try Task.checkCancellation()
-                    pdfURL = try remotePreview.store(bytes, fileName: fileName)
+                    pdfURL = try remotePreview.store(bytes, fileName: name)
                 } else {
-                    let url = try service.guardResolver.resolve(relativePath)
+                    let url = try service.guardResolver.resolve(path)
                     try service.guardResolver.assertReadableSize(url)
                     pdfURL = url
                 }
-                await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+                await center.recordRecentFile(relativePath: path, displayName: name)
             } catch { loadError = error.localizedDescription }
             return
         }
@@ -1123,22 +1419,22 @@ struct FilePreviewView: View {
             // Embed the read-only renderer directly in the inspector. Full
             // Office editing remains a separate native-engine qualification.
             do {
-                if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
-                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                if center.isCloudWorkspacePath(path) || center.isNetworkWorkspacePath(path) {
+                    let bytes = try await center.readRemotePreview(relativePath: path)
                     try Task.checkCancellation()
-                    binaryPreviewURL = try remotePreview.store(bytes, fileName: fileName)
+                    binaryPreviewURL = try remotePreview.store(bytes, fileName: name)
                 } else if let service = center.fileService {
-                    let url = try service.guardResolver.resolve(relativePath)
+                    let url = try service.guardResolver.resolve(path)
                     try service.guardResolver.assertReadableSize(url)
                     binaryPreviewURL = url
                 }
-                await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+                await center.recordRecentFile(relativePath: path, displayName: name)
             } catch { loadError = error.localizedDescription }
             return
         }
         do {
-            content = try await center.readFile(relativePath: relativePath)
-            await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+            content = try await center.readFile(relativePath: path)
+            await center.recordRecentFile(relativePath: path, displayName: name)
         } catch let error as WorkspaceToolError {
             loadError = error.errorDescription ?? error.localizedDescription
         } catch {
@@ -1154,18 +1450,18 @@ struct FilePreviewView: View {
         isPreparingShare = true
         Task {
             defer { isPreparingShare = false }
-            let remote = center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath)
+            let remote = center.isCloudWorkspacePath(displayedPath) || center.isNetworkWorkspacePath(displayedPath)
             do {
                 if !remote, let pdfURL { shareURL = pdfURL; return }
                 if !remote, let binaryPreviewURL { shareURL = binaryPreviewURL; return }
                 if remote {
-                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                    let bytes = try await center.readRemotePreview(relativePath: displayedPath)
                     try Task.checkCancellation()
                     shareURL = try shareCopy.store(bytes, fileName: fileName)
                     return
                 }
                 guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
-                let url = try service.guardResolver.resolve(relativePath)
+                let url = try service.guardResolver.resolve(displayedPath)
                 try service.guardResolver.assertReadableSize(url)
                 shareURL = url
             } catch is CancellationError {
@@ -1177,12 +1473,12 @@ struct FilePreviewView: View {
         Task {
             do {
                 if let pdfURL { quickLookURL = pdfURL; return }
-                if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
-                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                if center.isCloudWorkspacePath(displayedPath) || center.isNetworkWorkspacePath(displayedPath) {
+                    let bytes = try await center.readRemotePreview(relativePath: displayedPath)
                     quickLookURL = try remotePreview.store(bytes, fileName: fileName)
                 } else {
                     guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
-                    let url = try service.guardResolver.resolve(relativePath)
+                    let url = try service.guardResolver.resolve(displayedPath)
                     try service.guardResolver.assertReadableSize(url)
                     quickLookURL = url
                 }
@@ -1210,7 +1506,7 @@ struct FilePreviewView: View {
                 _ = try await environment.previewCenter.start(
                     root: root,
                     relativeRoot: nil,
-                    entry: relativePath,
+                    entry: displayedPath,
                     owner: owner
                 )
                 // The start can outlive the user's route. Only project its

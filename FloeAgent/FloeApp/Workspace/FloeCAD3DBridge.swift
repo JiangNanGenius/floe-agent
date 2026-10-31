@@ -91,8 +91,15 @@ final class FloeCAD3DBridge {
 
     private func document(at url: URL) async throws -> FloeCADDocument {
         let key = key(url)
-        if let existing = documents[key], !existing.isReadOnly {
+        if let existing = documents[key], !existing.isReadOnly, !existing.isClosed {
             return existing
+        }
+        // A closed session is ownerless. Never hand it to a new presentation:
+        // a FilePreview reload may have flushed and closed its document before
+        // releasing ownership, and a reopened path must start fresh.
+        if documents[key]?.isClosed == true {
+            documents[key] = nil
+            services[key] = nil
         }
         // Reentrancy guard: one in-flight open per canonical path, shared by
         // every concurrent caller.
@@ -121,21 +128,93 @@ final class FloeCAD3DBridge {
         try await document(at: url)
     }
 
-    /// Release a document that the workbench/FilePreviewView closed. The cache
-    /// entry is kept until the commit SUCCEEDS: a failed save must not drop
-    /// the only live owner of the draft. The retained document stays open for
-    /// retry/recovery and the failure is surfaced.
-    func releaseDocument(at url: URL) async {
+    /// Save and release one document, returning its real outcome. The cache
+    /// entry is kept until the commit SUCCEEDS: a failed save must not drop the
+    /// only live owner of the draft, so the caller can keep the editor open and
+    /// retry. Nil means this bridge did not own that exact document (the caller
+    /// still owns the instance it passed to `openDocument`).
+    ///
+    /// `expected` pins the release to the instance the caller adopted.
+    /// Omitting it keeps the legacy URL-only behaviour, and the post-await
+    /// ownership check below still prevents a stale completion from touching a
+    /// session that was closed and reopened at the same path. That check is
+    /// always applied: ownership may move while the commit awaits real I/O,
+    /// and a command may run while it is blocked, leaving a newer edit that
+    /// this save payload does not contain.
+    @discardableResult
+    func releaseDocumentOutcome(at url: URL,
+                                expected: FloeCADDocument? = nil) async -> CADSaveOutcome? {
         let key = key(url)
-        guard let document = documents[key] else { return }
+        guard let document = documents[key] else { return nil }
+        if let expected, document !== expected { return nil }
+        guard !document.isClosed else {
+            // An already-closed session has no owner and no draft to save.
+            documents[key] = nil
+            services[key] = nil
+            return nil
+        }
         let outcome = await document.save()
-        if let error = outcome.error {
-            lastMessage = "CAD save failed (document kept open for retry): \(error)"
-            return
+        guard documents[key] === document else {
+            // A newer session owns the path now. Never let this stale
+            // completion drop it or close it. If the caller's own instance was
+            // already closed by that newer flow, its release is complete and
+            // it still gets its real outcome; otherwise it remains the
+            // caller's to save/release.
+            return document.isClosed ? outcome : nil
+        }
+        guard !document.isClosed else {
+            // The owner closed this instance while its commit was in flight.
+            // There is no owner left for a draft; drop only the dead entry.
+            documents[key] = nil
+            services[key] = nil
+            return outcome
+        }
+        guard outcome.error == nil else {
+            lastMessage = "CAD save failed (document kept open for retry): \(outcome.error ?? "")"
+            return outcome
+        }
+        // A command that ran while the commit was suspended is not part of
+        // this payload. Closing now would silently discard that draft: keep
+        // the only live owner and its cache entry, and report a retryable
+        // release failure instead of pretending the document is clean.
+        guard !document.hasUnsavedChanges else {
+            lastMessage = "CAD document changed while releasing; kept open for retry."
+            var retry = outcome
+            retry.error = String(localized: "cad.recovery.release.changed")
+            return retry
         }
         documents[key] = nil
         services[key] = nil
         document.close()
+        return outcome
+    }
+
+    /// Drop ownership of a READ-ONLY document without attempting a commit.
+    /// Such a document has no writable draft (newer schema / opaque package),
+    /// so a failed "save" must not keep an editor open or claim data loss. A
+    /// writable document is refused (false) so no draft is ever discarded here.
+    @discardableResult
+    func releaseReadOnlyDocument(_ document: FloeCADDocument) -> Bool {
+        guard document.isReadOnly else { return false }
+        let key = key(document.url)
+        // Drop the cache entry only when it is THIS instance, so a concurrent
+        // read-only open of the same path is never closed by this release.
+        if documents[key] === document {
+            documents[key] = nil
+            services[key] = nil
+        }
+        document.close()
+        return true
+    }
+
+    /// Release a document that the workbench/FilePreviewView closed. The cache
+    /// entry is kept until the commit SUCCEEDS: a failed save must not drop
+    /// the only live owner of the draft. The retained document stays open for
+    /// retry/recovery and the failure is surfaced. `expected` keeps a late
+    /// release on the exact adopted instance; existing URL-only callers keep
+    /// their current behaviour.
+    func releaseDocument(at url: URL, expected: FloeCADDocument? = nil) async {
+        _ = await releaseDocumentOutcome(at: url, expected: expected)
     }
 
     func handle(url: URL, requestJSON: String) async throws -> String {

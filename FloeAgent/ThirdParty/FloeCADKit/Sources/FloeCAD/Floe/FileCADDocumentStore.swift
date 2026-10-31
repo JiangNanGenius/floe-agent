@@ -98,6 +98,11 @@ nonisolated enum CADDocumentFaultInjection {
     /// directory. This is the final promotion; a failure after the format-floor
     /// commit must retain the pending bytes and report the committed identity.
     nonisolated(unsafe) static var beforeNamedVersionPromotion: (@Sendable () throws -> Void)?
+    /// E33: fire immediately before the verified recovery-copy staging
+    /// directory is promoted to the caller-chosen destination. Tests use it to
+    /// prove a failed promotion leaves the source untouched and no partial
+    /// destination behind.
+    nonisolated(unsafe) static var beforeRecoveryCopyPromotion: (@Sendable () throws -> Void)?
 }
 
 // MARK: - Wire records
@@ -260,8 +265,8 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
     static let packageExtension = "floecad"
     static let currentSchemaVersion = CADDocumentFormat.supportedVersion
 
-    private let packageURL: URL
-    private let fileManager: FileManager
+    let packageURL: URL
+    let fileManager: FileManager
     private let lock = NSLock()
     private var storedRevision: Int = 0
     private var storedSchemaVersion = CADDocumentFormat.legacyVersion
@@ -345,11 +350,11 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         }
     }
 
-    private var manifestURL: URL { packageURL.appendingPathComponent("manifest.json") }
-    private var documentURL: URL { packageURL.appendingPathComponent("document.json") }
+    var manifestURL: URL { packageURL.appendingPathComponent("manifest.json") }
+    var documentURL: URL { packageURL.appendingPathComponent("document.json") }
     private var blobsURL: URL { packageURL.appendingPathComponent("blobs") }
     private var imagesURL: URL { blobsURL.appendingPathComponent("images") }
-    private var previousURL: URL { packageURL.appendingPathComponent("previous") }
+    var previousURL: URL { packageURL.appendingPathComponent("previous") }
 
     // MARK: Read
 
@@ -395,6 +400,8 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
 
     struct CADVerifiedPackage {
         let manifest: CADManifest
+        /// Exact `manifest.json` bytes that were decoded and verified.
+        let manifestData: Data
         let document: CADDocumentRecord
         /// Exact `document.json` bytes read from the package. Restore commits
         /// these bytes unchanged so a checkpoint's content/model identity is
@@ -542,13 +549,13 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             throw CADDocumentStoreError.integrityFailed("package changed while it was read")
         }
         let formatAssessment = try CADDocumentFormat.assess(document)
-        return CADVerifiedPackage(manifest: manifest, document: document,
+        return CADVerifiedPackage(manifest: manifest, manifestData: manifestData, document: document,
                                documentData: documentData, blobs: blobs,
                                thumbnail: thumbnail, modelSHA256: verifiedModelSHA256,
                                formatAssessment: formatAssessment)
     }
 
-    private static func hasUnknownFields(_ raw: Any, comparedTo known: Any) -> Bool {
+    static func hasUnknownFields(_ raw: Any, comparedTo known: Any) -> Bool {
         if let raw = raw as? [String: Any], let known = known as? [String: Any] {
             for (key, value) in raw {
                 guard let knownValue = known[key] else { return true }

@@ -975,6 +975,9 @@ targets:
       - path: Tests/FloeAppTests/NativeCADDocumentCreationTests.swift
       - path: Tests/FloeAppTests/NativeCADCanvasCreationTests.swift
       - path: Tests/FloeAppTests/NativeCADCanvasBackupTests.swift
+      # E33 follow-up: exact bridge ownership for closed sessions and adopted
+      # recovery copies (real packages + production bridge).
+      - path: Tests/FloeAppTests/CADRecoveryBridgeOwnershipTests.swift
       - path: Tests/FloeAppTests/CADPlacedAssemblyExportCallerTests.swift
       - path: Tests/FloeAppTests/NativeCADPartReferenceHostTests.swift
       - path: Tests/FloeAppTests/EngineeringWebSessionReparentTests.swift
@@ -1260,6 +1263,8 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADParameterCorrectnessTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADCapabilitySurfaceTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADStoredIntegrityTests.swift
+      # E33: non-mutating previous-save preview + atomic restore-copy (FloeCADKit).
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADRecoveryPreviewTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADNamedVersionTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/StoreRecoveryTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSavePrewarmOwnershipTests.swift
