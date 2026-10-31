@@ -376,9 +376,12 @@ class FloeApplication : Application() {
                 prepareNotesForRootStop() &&
                 // G07.1: the full-window PDF/image preview holds a verified
                 // native-root snapshot plus an isolated renderer lease. Its
-                // real quiescent closure must precede Root retirement; the
-                // network lane remains the LAST drain clause.
+                // real quiescent closure must precede Root retirement.
                 (runtimeHost?.prepareWorkspaceDocumentPreviewForRootStop() != false) &&
+                // G08: the Full platform-tool pump/phone/ADB/Root extension
+                // fences and joins its own work before the root retires.
+                (runtimeHost?.preparePlatformForRootStop() != false) &&
+                // The network lane remains the LAST drain clause.
                 (runtimeHost?.prepareNetworkForRootStop() != false)
         }
         runtimeCoordinator.start()
@@ -589,6 +592,15 @@ class FloeApplication : Application() {
         activityForeground = active
         runtimeHost?.workspaceActions?.scene(active)
         if (!active) runtimeHost?.browser?.flushPersistentState()
+    }
+
+    /** Channel flavour resume hook (FULL reconciles real phone/ADB status). */
+    internal fun onPlatformActivityResumed(activity: android.app.Activity) {
+        runCatching { runtimeHost?.platformExtension?.onActivityResumed(activity) }
+    }
+
+    internal fun onPlatformActivityPaused() {
+        runCatching { runtimeHost?.platformExtension?.onActivityPaused() }
     }
 
     private suspend fun startBrowserLane(epoch: Long) {

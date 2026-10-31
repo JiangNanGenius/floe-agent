@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- G08 手机/设备访问设置（仅完整版）。后端状态接口就绪后由 App 接入该无状态页面。 -->
+<resources>
+    <string name="settings_phone">手机</string>
+    <string name="device_access_status_label">状态</string>
+    <string name="device_access_root_enable">启用 Root 访问</string>
+    <string name="device_access_intro">每一层都需要单独授权。Floe 不会绕过密码、安全窗口或锁屏。</string>
+
+    <string name="device_access_accessibility_section">手机操作（无障碍）</string>
+    <string name="device_access_accessibility_disclosure">手机操作只读取当前页面的节点树，并且只在你启动的任务中执行。</string>
+    <string name="device_access_state_off">关闭</string>
+    <string name="device_access_state_not_granted">未授权</string>
+    <string name="device_access_state_granted">已授权</string>
+    <string name="device_access_state_restricted">被系统设置阻止</string>
+    <string name="device_access_state_revoked">已撤销</string>
+    <string name="device_access_open_settings">打开无障碍设置</string>
+    <string name="device_access_boundary_title">边界</string>
+    <string name="device_access_boundary_nodes">仅观察当前任务正在显示的页面。</string>
+    <string name="device_access_boundary_secrets">不会读取或填写密码框、安全窗口和锁屏。</string>
+    <string name="device_access_boundary_actions">动作执行后会重新读取；不会盲目重放手势。</string>
+    <string name="device_access_boundary_screenshots">仅在任务请求时截取正在观察的页面。</string>
+
+    <string name="device_access_active_section">当前手机任务</string>
+    <string name="device_access_active_none">没有任务正在使用手机操作。</string>
+    <string name="device_access_active_running">运行中</string>
+    <string name="device_access_active_waiting">等待你</string>
+    <string name="device_access_active_taken_over">已接管</string>
+    <string name="device_access_active_stopping">正在停止</string>
+    <string name="device_access_stop_task">停止</string>
+    <string name="device_access_take_over">接管</string>
+    <string name="device_access_take_over_hint">接管后会阻止新动作，任务保留供你查看。</string>
+
+    <string name="device_access_screen_section">屏幕内容</string>
+    <string name="device_access_screen_hint">选择当前任务何时可以查看屏幕。不会持续录制。</string>
+    <string name="device_access_screen_off">关闭</string>
+    <string name="device_access_screen_task">仅此任务</string>
+    <string name="device_access_screen_until_stopped">直到停止</string>
+    <string name="device_access_screen_requires_task">启动手机任务后才能选择共享范围。</string>
+
+    <string name="device_access_adb_section">内嵌 ADB 访问</string>
+    <string name="device_access_adb_intro">由 Floe 自带的 shell 权限服务提供。它不是 Root，需要在本机配对，并已包含在此版本中。</string>
+    <string name="device_access_adb_state_off">关闭</string>
+    <string name="device_access_adb_state_pair_required">需要配对</string>
+    <string name="device_access_adb_state_pairing">等待配对</string>
+    <string name="device_access_adb_state_paired">已配对</string>
+    <string name="device_access_adb_state_alive">服务运行中</string>
+    <string name="device_access_adb_state_died">服务已停止</string>
+    <string name="device_access_adb_state_restart">需要重启</string>
+    <string name="device_access_adb_state_revoked">配对已撤销</string>
+    <string name="device_access_adb_state_error">不可用</string>
+    <string name="device_access_adb_state_uid">Shell 身份（UID %1$d）</string>
+    <string name="device_access_adb_enable">开启内嵌 ADB</string>
+    <string name="device_access_adb_pair">与 Android 配对</string>
+    <string name="device_access_adb_pair_hint">Floe 会打开开发者选项；请开启无线调试后返回输入 6 位配对码。临时通知会带你回来。</string>
+    <string name="device_access_adb_code_label">配对码</string>
+    <string name="device_access_adb_code_submit">完成配对</string>
+    <string name="device_access_adb_code_invalid">请输入 6 位配对码</string>
+    <string name="device_access_adb_cancel_pairing">取消配对</string>
+    <string name="device_access_adb_start">启动服务</string>
+    <string name="device_access_adb_stop">停止服务</string>
+    <string name="device_access_adb_forget">忘记配对</string>
+    <string name="device_access_adb_forget_title">忘记配对？</string>
+    <string name="device_access_adb_forget_message">将删除已保存的配对，并先停止 Floe 服务。不会影响其他应用。</string>
+    <string name="device_access_adb_restart_hint">重启后需要重新开启无线调试并再次启动服务。</string>
+    <string name="device_access_adb_revoked_hint">配对已在 Android 设置中移除。重新配对即可恢复访问。</string>
+    <string name="device_access_adb_open_developer_options">打开开发者选项</string>
+
+    <string name="device_access_root_section">Root 访问</string>
+    <string name="device_access_root_intro">默认关闭。仅使用设备已有的 Root 授权；Floe 不会为手机获取 Root，也不会把 ADB 提升为 Root。</string>
+    <string name="device_access_root_state_off">关闭</string>
+    <string name="device_access_root_state_no_grant">无 Root 授权</string>
+    <string name="device_access_root_state_grant_found">已找到 Root 授权</string>
+    <string name="device_access_root_state_enabled">已启用</string>
+    <string name="device_access_root_state_refused">已拒绝</string>
+    <string name="device_access_root_state_error">不可用</string>
+    <string name="device_access_root_uid">UID %1$d</string>
+    <string name="device_access_root_check">检查 Root 授权</string>
+    <string name="device_access_root_enable_hint">开启后只以 Root 执行你主动启动的操作。</string>
+
+    <string name="device_access_error_details">详情</string>
+    <string name="device_access_error_hide_details">收起详情</string>
+    <string name="device_access_retry">重新检查</string>
+
+    <string name="device_access_task_not_allowed">此任务尚未开启手机控制。需要你明确允许，Agent 不能自行开启。</string>
+    <string name="device_access_task_stopped">你已停止手机控制。再次允许后才会恢复。</string>
+    <string name="device_access_allow_task">允许此任务使用手机控制</string>
+    <string name="device_access_select_apps_first">请先在下方选择至少一个目标应用。</string>
+    <string name="device_access_current_task">当前任务</string>
+
+    <string name="device_access_targets_section">Agent 可控制的应用</string>
+    <string name="device_access_targets_intro">只有你选择的应用可以被查看或操作，不存在“全部应用”授权；切换到其他应用会被拒绝。</string>
+    <string name="device_access_targets_empty">Floe 暂时看不到可启动的应用。</string>
+
+    <string name="device_access_roots_section">系统访问的共享文件夹</string>
+    <string name="device_access_roots_intro">内嵌服务只能访问你选择的文件夹。Floe 数据、凭据和私有应用存储永远不会包含在内。</string>
+    <string name="device_access_roots_empty">此设备没有可用的共享存储文件夹；系统文件夹和 Root 访问不受影响。</string>
+    <string name="device_access_root_downloads">下载</string>
+    <string name="device_access_root_documents">文档</string>
+    <string name="device_access_root_pictures">图片</string>
+    <string name="device_access_root_dcim">相机（DCIM）</string>
+    <string name="device_access_root_music">音乐</string>
+    <string name="device_access_root_movies">影片</string>
+    <string name="device_access_file_writes">允许修改所选文件夹</string>
+    <string name="device_access_file_writes_hint">关闭时，共享文件夹和应用数据文件夹对 Agent 只读；系统文件夹始终只读。</string>
+    <string name="device_access_system_roots_section">系统文件夹（只读）</string>
+    <string name="device_access_system_roots_hint">只查看平台文件，不做修改。Floe 不会重新挂载或改动系统。</string>
+    <string name="device_access_root_system">系统</string>
+    <string name="device_access_root_vendor">厂商</string>
+    <string name="device_access_root_product">产品</string>
+    <string name="device_access_root_system_ext">系统扩展</string>
+    <string name="device_access_root_odm">ODM</string>
+    <string name="device_access_root_apex">APEX</string>
+    <string name="device_access_app_data_section">其他应用数据（仅 Root）</string>
+    <string name="device_access_app_data_hint">以绝对路径添加一个应用的数据文件夹。仅在 Root 运行时可用；Android、SELinux 或设备加密仍可能拒绝访问。</string>
+    <string name="device_access_app_data_add_label">应用数据文件夹</string>
+    <string name="device_access_app_data_example">例如：/data/user/0/com.example.app/files</string>
+    <string name="device_access_app_data_add">添加文件夹</string>
+    <string name="device_access_app_data_requires_root">开启 Root 访问后才能添加其他应用的数据文件夹。</string>
+    <string name="device_access_management_section">应用管理</string>
+    <string name="device_access_package_management">允许应用管理</string>
+    <string name="device_access_package_management_hint">允许 Agent 通过运行中的系统服务强制停止某个应用，并且仍需要已批准的任务授权。Floe 自身始终被拒绝。</string>
+
+    <string name="device_access_whole_screen_capture">允许整屏截图</string>
+    <string name="device_access_whole_screen_required">此 Android 版本的截图会包含整个屏幕，因此需要这项同意。安全窗口、密码字段和悬浮层会被拒绝。</string>
+    <string name="device_access_whole_screen_hint">优先只截取当前观察到的窗口；只有窗口截图不可用且你在此允许时，才会尝试整屏截图。</string>
+
+    <string name="device_access_pairing_port_label">配对端口</string>
+    <string name="device_access_pairing_port_searching">正在查找本机的配对端口…</string>
+    <string name="device_access_pairing_port_find">查找配对端口</string>
+    <string name="device_access_pairing_unsupported">无线配对需要 Android 11 或更高版本。此设备需要从电脑进行一次 USB 初始化；这里不会把服务显示为可用。</string>
+
+    <string name="device_access_root_check_title">检查 Root 权限？</string>
+    <string name="device_access_root_check_message">Floe 不会 Root 此设备。如果设备已有 Root 授权，检查会为你主动发起的操作开启 Root；否则会如实显示未找到授权。你可以随时关闭。</string>
+
+    <string name="device_access_pairing_notification_channel">设备配对</string>
+    <string name="device_access_pairing_notification_title">正在与 Android 配对</string>
+    <string name="device_access_pairing_notification_text">返回 Floe 输入 6 位配对码。</string>
+
+    <string name="device_access_error_open_settings">无法打开系统设置。</string>
+    <string name="device_access_error_no_task">当前没有正在使用此设备的任务。</string>
+    <string name="device_access_error_runtime_not_ready">Floe 运行时尚未就绪。</string>
+    <string name="device_access_error_select_apps">请先选择至少一个目标应用。</string>
+    <string name="device_access_error_phone_failed">手机控制失败。</string>
+    <string name="device_access_error_phone_stopped">手机控制已停止。</string>
+    <string name="device_access_error_phone_taken">你已接管设备。</string>
+    <string name="device_access_error_phone_service">手机控制服务未连接。</string>
+    <string name="device_access_error_phone_target">当前应用不在允许的目标列表中。</string>
+    <string name="device_access_error_phone_protected">密码字段、安全窗口和锁屏永远不会被读取或操作。</string>
+    <string name="device_access_error_phone_stale">页面已变化，请重新观察。</string>
+    <string name="device_access_error_phone_not_allowed">此任务不允许手机控制。</string>
+    <string name="device_access_error_phone_not_enabled">未在 Android 设置中启用手机控制。</string>
+    <string name="device_access_error_screenshot_unsupported">此 Android 版本不支持该截图请求。</string>
+    <string name="device_access_error_unavailable">此能力当前不可用。</string>
+    <string name="device_access_error_pairing_port">请输入 Android 显示的配对端口。</string>
+    <string name="device_access_error_pairing_code">配对码未被接受。</string>
+    <string name="device_access_error_pairing_timeout">配对超时，请重试。</string>
+    <string name="device_access_error_pairing_unsupported">此 Android 版本不支持无线配对。</string>
+    <string name="device_access_error_pairing_failed">配对失败。</string>
+    <string name="device_access_error_forget">无法移除已保存的配对。</string>
+    <string name="device_access_error_root_not_granted">此设备未找到 Root 授权。</string>
+    <string name="device_access_error_root_failed">无法开启 Root 访问。</string>
+    <string name="device_access_error_app_data_requires_root">请先开启 Root 访问，再添加其他应用的数据文件夹。</string>
+    <string name="device_access_error_app_data_path">请输入应用数据文件夹，例如 /data/user/0/com.example.app。</string>
+    <string name="device_access_error_app_data_limit">最多可添加 8 个应用数据文件夹。</string>
+    <string name="device_access_error_local_network">查找和连接本机配对端口需要局域网访问权限。请在系统设置中允许后重试。</string>
+    <string name="device_access_error_backend_failed">系统服务拒绝了该操作。</string>
+    <string name="device_access_usb_bootstrap">复制 USB 初始化命令</string>
+    <string name="device_access_usb_bootstrap_copied">已复制 USB 初始化命令。请在电脑上用 ADB 执行一次。</string>
+    <string name="device_access_accessibility_restricted_hint">如果 Android 限制了此应用，请在应用信息中允许受限设置，然后重新启用服务。</string>
+</resources>

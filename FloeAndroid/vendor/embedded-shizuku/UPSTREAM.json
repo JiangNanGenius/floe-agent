@@ -1,0 +1,259 @@
+{
+  "primary": {
+    "repository": "https://github.com/RikkaApps/Shizuku",
+    "revision": "b844bc491f1790c72328e1a8e5b2349f8978f0ea",
+    "license": "Apache-2.0",
+    "licenseFile": "LICENSE",
+    "treeURL": "https://api.github.com/repos/RikkaApps/Shizuku/git/trees/b844bc491f1790c72328e1a8e5b2349f8978f0ea?recursive=1"
+  },
+  "apiReference": {
+    "repository": "https://github.com/RikkaApps/Shizuku-API",
+    "revision": "a27f6e4151ba7b39965ca47edb2bf0aeed7102e5",
+    "license": "MIT",
+    "licenseFile": "LICENSE-Shizuku-API",
+    "usedFor": "architecture/protocol reference only; no source copied"
+  },
+  "nativeBuildDependencies": [
+    {
+      "coordinate": "io.github.vvb2060.ndk:boringssl:20250114",
+      "use": "SPAKE2/HKDF/AES-128-GCM",
+      "buildRepository": "https://github.com/vvb2060/BoringSSL_Android",
+      "buildRevision": "20b87e2e25a793531c9cd651c629c62976b42e2b",
+      "upstreamRepository": "https://github.com/google/boringssl",
+      "upstreamRevision": "571a7432a19592c620fa316abde47770dad4f82b",
+      "licenseAssets": [
+        "BoringSSL-LICENSE.txt",
+        "BoringSSL-fiat-LICENSE.txt"
+      ]
+    },
+    {
+      "coordinate": "org.lsposed.libcxx:libcxx:27.0.12077973",
+      "use": "libc++ runtime",
+      "buildRepository": "https://github.com/LSPosed/prefab-libcxx",
+      "buildRevision": "4ba72efedb6d6bee40ad3ac7f484ecdbb1a3ea5c",
+      "licenseAssets": [
+        "libcxx-LICENSE.TXT",
+        "libcxxabi-LICENSE.TXT"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/pairing/PairingWire.kt",
+      "floeSha256": "71edcf249e1133a25b3338cb0fa0ff22fe9374bf158ed458bcefab6813b05ab7",
+      "floeBytes": 4054,
+      "modification": "extracted bounded packet codec",
+      "upstreamPath": "manager/src/main/java/moe/shizuku/manager/adb/AdbPairingClient.kt",
+      "upstreamBlobSha": "c03370d5f875a3c2ddb38eda9b9eb278a3f8863c",
+      "upstreamBytes": 9665
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/pairing/AdbPairingClient.kt",
+      "floeSha256": "99e17d9153a1f1427226c74302f093e292573ab891d99e41c4e9d1384575c60f",
+      "floeBytes": 7379,
+      "modification": "TLS exporter injection, timeouts, typed outcomes, code wipe, no logs",
+      "upstreamPath": "manager/src/main/java/moe/shizuku/manager/adb/AdbPairingClient.kt",
+      "upstreamBlobSha": "c03370d5f875a3c2ddb38eda9b9eb278a3f8863c",
+      "upstreamBytes": 9665
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/pairing/AdbIdentity.kt",
+      "floeSha256": "184100b3e5869aab2d26ba6feef1941bb744cfccfab814b6b0fddeeda09b3c32",
+      "floeBytes": 4485,
+      "modification": "host-supplied key pair, SHA1withRSA ADB token signature, TLS managers",
+      "upstreamPath": "manager/src/main/java/moe/shizuku/manager/adb/AdbKey.kt",
+      "upstreamBlobSha": "102082dd9d21e1555b88a1b14211d9bfc0bfc34a",
+      "upstreamBytes": 13348
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/pairing/AdbPublicKey.kt",
+      "floeSha256": "e21e0486800b4215b80d207f7ed0fe6daba5e1490de81be9348701378e1324c1",
+      "floeBytes": 2568,
+      "modification": "android_pubkey encoding extracted, pure, no logging",
+      "upstreamPath": "manager/src/main/java/moe/shizuku/manager/adb/AdbKey.kt",
+      "upstreamBlobSha": "102082dd9d21e1555b88a1b14211d9bfc0bfc34a",
+      "upstreamBytes": 13348
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/pairing/SelfSignedCertificate.kt",
+      "floeSha256": "659effaa676ad1d21fbb442c42ab56937dd3983a4fca5af02812c8967cafb979",
+      "floeBytes": 4584,
+      "modification": "replaces BouncyCastle certificate builder with minimal DER implementation"
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/pairing/KeyingMaterialExporter.kt",
+      "floeSha256": "82b8df1614480c9df39a891c24df2a891a0074dbb46040fe1119ff72d6d42049",
+      "floeBytes": 3324,
+      "modification": "API31 public exporter plus explicit API30 Conscrypt compatibility",
+      "upstreamPath": "manager/src/main/java/moe/shizuku/manager/adb/AdbPairingClient.kt",
+      "upstreamBlobSha": "c03370d5f875a3c2ddb38eda9b9eb278a3f8863c",
+      "upstreamBytes": 9665
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/pairing/NativePairingContext.kt",
+      "floeSha256": "155e3c5ae430ca65b79cd641f2879f43d0364641fb8c5a7916d6340d11bd1e4f",
+      "floeBytes": 1850,
+      "modification": "renamed JNI context, bounded password/input sizes",
+      "upstreamPath": "manager/src/main/java/moe/shizuku/manager/adb/AdbPairingClient.kt",
+      "upstreamBlobSha": "c03370d5f875a3c2ddb38eda9b9eb278a3f8863c",
+      "upstreamBytes": 9665
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/pairing/AdbIdentityCodec.kt",
+      "floeSha256": "0891da17baad7d195e4960b82fea06084b8cd8fc45f5d845bd6d74024b73c583",
+      "floeBytes": 4432,
+      "modification": "Floe-authored bounded identity envelope for approved CredentialStore"
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/adb/AdbClient.kt",
+      "floeSha256": "43c9c13df01e283406955ca89a993b88da6948a1d88418ff7c59638de43c4b93",
+      "floeBytes": 7450,
+      "modification": "bounded payload/output, no logs, typed failures, NUL-terminated ADB payloads",
+      "upstreamPath": "manager/src/main/java/moe/shizuku/manager/adb/AdbClient.kt",
+      "upstreamBlobSha": "7c9085f426360e984c220e6bd857743f62a20034",
+      "upstreamBytes": 6179
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/adb/AdbMessage.kt",
+      "floeSha256": "3f2b3b928ad036e8cd5a83fa040c5ff875582303e504a05cad84b2fa0eacf1a2",
+      "floeBytes": 3109,
+      "modification": "strict bounded codec, no payload logging",
+      "upstreamPath": "manager/src/main/java/moe/shizuku/manager/adb/AdbMessage.kt",
+      "upstreamBlobSha": "64b7b3a9f334dc06a87f72ae38d180f58a196841",
+      "upstreamBytes": 3947
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/adb/AdbProtocol.kt",
+      "floeSha256": "cb15b68403322f850b7f70f5d6fe0ab238e37915044fb0135b484b3d04ccac9f",
+      "floeBytes": 824,
+      "modification": "constants plus message bound",
+      "upstreamPath": "manager/src/main/java/moe/shizuku/manager/adb/AdbProtocol.kt",
+      "upstreamBlobSha": "20d7b00ba137d905cd935669db827c113f19d163",
+      "upstreamBytes": 551
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/java/moe/shizuku/starter/StarterCommand.kt",
+      "floeSha256": "c933bd18be4c320a65ca9931310e97305e2346b8e95a7a92ca4ebfc0068094a8",
+      "floeBytes": 6238,
+      "modification": "Floe-authored validated/escaped launch command/script builders; optional exact verified replacePid"
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/cpp/floe_starter.cpp",
+      "floeSha256": "5decbe6610b2d1728b6c58d6c2c7db6871f297a12e10d5a7f3ae0d349eec1d38",
+      "floeBytes": 12226,
+      "modification": "shell-UID-only launcher, fixed floe_adb_server identity, whitelisted args, exact verified-PID replacement via floe_starter_ownership, no /proc scan or name kill, no root path, no token output",
+      "upstreamPath": "manager/src/main/jni/starter.cpp",
+      "upstreamBlobSha": "889e409a86d140b13d620a9f80623ada0ea405d3",
+      "upstreamBytes": 8363
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/cpp/floe_starter_ownership.h",
+      "floeSha256": "7ae98c1a07630b501440976c1948e56af10d2ccd5208bab468ad85ce7cb1368c",
+      "floeBytes": 3173,
+      "modification": "Floe-authored strict PID parser and exact-PID recheck interface; documents that Android erases app_process argv"
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/cpp/floe_starter_ownership.cpp",
+      "floeSha256": "323f394ab8e19247c528da591d790591d53d9d6a5834bf550e00a8dd196b395c",
+      "floeBytes": 5720,
+      "modification": "Floe-authored exact-PID shell UID/nice-name recheck; no /proc scan, no name-only selection, no pkill/killall"
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/test/cpp/floe_starter_ownership_test.cpp",
+      "floeSha256": "6e99852d7d4e8b3dbd0094a7b8915bf35b3b10381c90b7d86d0405c22b19ba85",
+      "floeBytes": 5349,
+      "modification": "Floe-authored host unit test for the stale-PID policy, including the actual nice-name-only argv shape; not packaged"
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/cpp/CMakeLists.txt",
+      "floeSha256": "0f281050a52c2c9e832bd7d0013929fe541ba6658d4a061454940e39dac89c51",
+      "floeBytes": 1953,
+      "modification": "Floe build integration: starter compiles floe_starter_ownership.cpp; floe_adb_pairing links cxx::cxx like upstream",
+      "upstreamPath": "manager/src/main/jni/CMakeLists.txt",
+      "upstreamBlobSha": "8965bda48dbc5c455fa43c255228369a57860758",
+      "upstreamBytes": 1293
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/cpp/floe_pairing_jni.cpp",
+      "floeSha256": "65e87052c3fca2d5e63126090e2983311ddccbba262d9db854969f8aa497439b",
+      "floeBytes": 11395,
+      "modification": "renamed JNI class, bounded inputs, nonce-wrap refusal, no secret logging",
+      "upstreamPath": "manager/src/main/jni/adb_pairing.cpp",
+      "upstreamBlobSha": "1a44981e28f06d5592d70970790c2b074270c1ce",
+      "upstreamBytes": 7728
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/cpp/upstream/misc.cpp",
+      "floeSha256": "69548ab774f74e5bb26709a925be14f33f34ac3e192e49c44a0a7775146091ed",
+      "floeBytes": 4114,
+      "modification": "copied unchanged",
+      "upstreamPath": "manager/src/main/jni/misc.cpp",
+      "upstreamBlobSha": "1824b742b8457e848233cf92e87125c9907ff3cc",
+      "upstreamBytes": 4114
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/cpp/upstream/misc.h",
+      "floeSha256": "f674f7fc194a6e54f1c19ab38638c98e24722b40e96373e7b0aa9e4e6b8c6839",
+      "floeBytes": 402,
+      "modification": "copied unchanged",
+      "upstreamPath": "manager/src/main/jni/misc.h",
+      "upstreamBlobSha": "3ab3e87d4a9c98e95fc928b6af130528fc21a77d",
+      "upstreamBytes": 402
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/cpp/upstream/logging.h",
+      "floeSha256": "599e95771052d808b5efb203cb3e169e706f7e4d6eeb687401505d42d6a4b9bd",
+      "floeBytes": 848,
+      "modification": "copied unchanged",
+      "upstreamPath": "manager/src/main/jni/logging.h",
+      "upstreamBlobSha": "102e46e1689bca35ff92f7878c3776ce179c9d2e",
+      "upstreamBytes": 848
+    }
+  ],
+  "licenseAssets": [
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/assets/legal/embedded-shizuku/BoringSSL-LICENSE.txt",
+      "sha256": "756a61a8300d105ae68e7f2993e27d41a765c946f3400422e2403b01e7ded527",
+      "bytes": 12534,
+      "upstreamRepository": "https://github.com/google/boringssl",
+      "upstreamRevision": "571a7432a19592c620fa316abde47770dad4f82b",
+      "upstreamPath": "LICENSE",
+      "upstreamBlobSha": "3aa5aa6911da87a6dd95105c27b0e0aed946970c",
+      "upstreamBytes": 12534
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/assets/legal/embedded-shizuku/BoringSSL-fiat-LICENSE.txt",
+      "sha256": "43e358d7b6eb109d0f51f7b3a090fd82607965767c25fadee39e922475de2061",
+      "bytes": 1161,
+      "upstreamRepository": "https://github.com/google/boringssl",
+      "upstreamRevision": "571a7432a19592c620fa316abde47770dad4f82b",
+      "upstreamPath": "third_party/fiat/LICENSE",
+      "upstreamBlobSha": "70cae03773c68f43a4adc7b1b0421915f5527f13",
+      "upstreamBytes": 1161
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/assets/legal/embedded-shizuku/libcxx-LICENSE.TXT",
+      "sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b",
+      "bytes": 16703,
+      "upstreamRepository": "https://github.com/LSPosed/prefab-libcxx",
+      "upstreamRevision": "4ba72efedb6d6bee40ad3ac7f484ecdbb1a3ea5c",
+      "upstreamPath": "cxx/jni/libcxx/LICENSE.TXT",
+      "upstreamBlobSha": "e159d283443f92ac78b964d2bccebe8f95d5d445",
+      "upstreamBytes": 16703
+    },
+    {
+      "floePath": "FloeAndroid/vendor/embedded-shizuku/src/main/assets/legal/embedded-shizuku/libcxxabi-LICENSE.TXT",
+      "sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c",
+      "bytes": 16706,
+      "upstreamRepository": "https://github.com/LSPosed/prefab-libcxx",
+      "upstreamRevision": "4ba72efedb6d6bee40ad3ac7f484ecdbb1a3ea5c",
+      "upstreamPath": "cxx/jni/libcxxabi/LICENSE.TXT",
+      "upstreamBlobSha": "b75c0441bcd5be32b5a07e2a1ffc7e67b6d99f16",
+      "upstreamBytes": 16706
+    }
+  ],
+  "notCopied": [
+    "Shizuku manager UI, provider, ShizukuService, config/client managers, rish, user services, hidden-api compat wrappers, prebuilt manager/starter binaries"
+  ],
+  "note": "Upstream blob SHAs are from the immutable tree snapshot. Copied files keep their original headers; adapted files carry an SPDX line and modification record in the file header and README."
+}

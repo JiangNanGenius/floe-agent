@@ -104,6 +104,13 @@ class RuntimeHost internal constructor(
     private val configProjectionRefreshed = java.util.concurrent.atomic.AtomicBoolean(false)
     /** Application-owned foreground adapter; absent in pure controller fixtures. */
     internal var runForeground: RunForegroundBinding? = null
+    /**
+     * Channel flavour extension (FULL: real phone/ADB/Root settings + trusted
+     * platform-tool pump; PLAY: inert). Application-owned through this host; a
+     * null value means a pure controller fixture and every hook is skipped.
+     */
+    internal var platformExtension: RuntimePlatformExtension? = null
+
     /** Application-owned provider transport; null in fixtures/unbound hosts. */
     internal var workspaceSources: WorkspaceSourcePump? = null
     /** Same Application owner and native epoch as the provider transport. */
@@ -414,6 +421,7 @@ class RuntimeHost internal constructor(
     /** Called once by the Application owner, off-main. */
     fun start() {
         if (!started.compareAndSet(false, true)) return
+        platformExtension?.onHostStarted(this)
         observationJob = scope.launch(ioDispatcher) { observeCapabilities() }
         providers.start()
         conversations.start()
@@ -457,7 +465,16 @@ class RuntimeHost internal constructor(
                 officeAi = null
             }
         }
+        platformExtension?.close()
     }
+
+    /**
+     * Root-retirement drain clause for the flavour platform extension. The
+     * Application calls this inside the existing local-runtime drain BEFORE
+     * the native root is retired; false keeps the old generation pending.
+     */
+    internal suspend fun preparePlatformForRootStop(): Boolean =
+        platformExtension?.prepareForRootStop() ?: true
 
     // ------------------------------------------------- Office AI host lane
 
@@ -579,6 +596,11 @@ class RuntimeHost internal constructor(
                 startOfficeAiLane()
                 startNetworkDiagnosticsLane()
                 startNetworkArtifactLane()
+                // G08 Full-only platform extension follows the SAME accepted
+                // generation. A null/foreign epoch is never fabricated.
+                nativeRootEpoch()?.takeIf { it > 0 }?.let { epoch ->
+                    platformExtension?.onOwnedStoreReady(epoch)
+                }
             }
             is RuntimeBootstrapCapability.Failed ->
                 update { it.copy(store = RuntimeHostReadiness.StoreReadiness.Failed(value.reason)) }
@@ -591,6 +613,10 @@ class RuntimeHost internal constructor(
                 }
                 g02ReadinessAdapter.reset()
                 stopOfficeAiLane()
+                // Fence the flavour extension on the real retirement. The
+                // main pre-stop drain already ran prepareForRootStop(); this
+                // closes the terminal state and never retires a newer epoch.
+                if (nativeRootEpoch() == null) platformExtension?.onRootStopped()
                 scope.launch(ioDispatcher) {
                     // Post-stop cleanup only for a genuinely retired root. A
                     // live non-null epoch means a NEW generation has already
@@ -925,7 +951,15 @@ class RuntimeHost internal constructor(
             commandClient = RuntimeHostCommandClient.system(),
             gatewayCapability = gatewayCapability,
             bootstrapCapability = bootstrapCapability,
-        ).also { it.appContext = context.applicationContext ?: context }
+        ).also {
+            it.appContext = context.applicationContext ?: context
+            // Flavour seam: FULL returns the real phone/ADB/Root extension,
+            // PLAY an inert one. Construction is data-only; no backend,
+            // native, disk or device work happens here.
+            it.platformExtension =
+                com.floe.android.host.platform.DistributionPlatformFeature.create(
+                    context.applicationContext ?: context)
+        }
     }
 }
 

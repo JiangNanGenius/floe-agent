@@ -63,7 +63,7 @@ set_target_properties(FloeAndroidCore PROPERTIES
 # readiness) over the epoch-fenced Swift saved-artifact mailbox. Not a V3
 # command, never model-reachable; all decisions live in FloeAndroidCore and
 # the App-private stores. Additive TU only; all prior wrappers byte-identical.
-add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp floe_run_output_jni.cpp floe_office_ai_jni.cpp floe_network_diagnostics_jni.cpp floe_network_artifact_jni.cpp)
+add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp floe_run_output_jni.cpp floe_office_ai_jni.cpp floe_network_diagnostics_jni.cpp floe_network_artifact_jni.cpp floe_platform_tools_jni.cpp)
 target_link_libraries(floe_jni PRIVATE FloeAndroidCore)
 target_link_options(floe_jni PRIVATE "-Wl,-z,max-page-size=16384")
 
@@ -74,7 +74,7 @@ target_link_options(floe_jni PRIVATE "-Wl,-z,max-page-size=16384")
 # Genuinely debug-variant-only: the flag below is passed by the `debug`
 # buildType in core/swiftbridge/build.gradle.kts, so release AAR native
 # entries never build or package this wrapper (verified by
-# Local/Private/android-g02-20261018/native-jni-qualification evidence; the
+# Historical native JNI qualification evidence; the
 # prebuilt libFloeAndroidCore.so export table itself is shared across all
 # variants and IS inventory-reported, not claimed absent).
 option(FLOE_BUILD_QUALIFICATION_JNI "Build the debug-only qualification JNI wrapper" OFF)

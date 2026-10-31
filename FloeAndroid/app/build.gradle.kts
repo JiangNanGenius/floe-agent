@@ -406,7 +406,10 @@ android {
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     packaging {
-        jniLibs.useLegacyPackaging = false
+        // The Full embedded starter is executed from nativeLibraryDir. Extract
+        // native libraries instead of treating an APK ZIP entry as executable.
+        // Play still excludes every enhancement module and native target.
+        jniLibs.useLegacyPackaging = true
         // Preserve the verified upstream Office bytes. Their own immutable
         // payload pins are checked independently from Floe's Swift core;
         // a packaging strip must not silently replace that native identity.

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="phonecontrol_service_label">Floe phone control</string>
+    <string name="phonecontrol_service_description">Lets a task you start observe and operate app screens. It stops when you interact with the screen, lock the device, or turn this service off.</string>
+</resources>

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -203,6 +202,11 @@ private fun FloeShellContent(
     var inspectorRoute by rememberSaveable { mutableStateOf<String?>(null) }
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
     var drawerOpen by rememberSaveable { mutableStateOf(false) }
+    // The IME belongs to the surface that opened it. Opening the compact
+    // drawer is explicit navigation to another surface, so the drawer takes
+    // the keyboard away BEFORE it paints (device evidence: the terminal IME
+    // covered the drawer bottom).
+    val dismissIme = rememberImeDismissal()
     // One-shot sub-view signal for the Task Center. Incremented ONLY by an
     // ADMITTED Home→Task Center navigation commit (never by a refused
     // temporary-session fence), so the schedules surface cannot bypass the
@@ -461,7 +465,7 @@ private fun FloeShellContent(
         val baseNavCanRun = !persistentSidebar && route == null && !drawerOpen &&
             !settingsVisible && !previewVisible &&
             selection.key != SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK).key
-        BackHandler(enabled = baseNavCanRun) {
+        ImeFirstBackHandler(enabled = baseNavCanRun) {
             // System Back at a conversation surface IS an actual navigation
             // to New Task: when a temporary session owns the surface it
             // must pass the same synchronous fence as every other route
@@ -488,7 +492,7 @@ private fun FloeShellContent(
                     SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK))
             }
         }
-        BackHandler(enabled = drawerOpen) { drawerOpen = false }
+        ImeFirstBackHandler(enabled = drawerOpen) { drawerOpen = false }
 
         fun navigateTo(target: SidebarSelection, openSchedules: Boolean) {
             officeNavigationGeneration++
@@ -656,7 +660,10 @@ private fun FloeShellContent(
                     selection = selection,
                     showSidebarToggle = !persistentSidebar && twoColumn,
                     onExpandSidebar = { sidebarCollapsed = false },
-                    onOpenDrawer = { drawerOpen = true },
+                    onOpenDrawer = {
+                        dismissIme()
+                        drawerOpen = true
+                    },
                     compact = !twoColumn,
                     inspectorRoute = route,
                     onInspectorDismiss = { inspectorRoute = null },
@@ -731,7 +738,10 @@ private fun FloeShellContent(
                     enter = fadeIn(tween(200)) + slideInHorizontally(tween(320, easing = LinearOutSlowInEasing)) { -it },
                     exit = fadeOut(tween(180)) + slideOutHorizontally(tween(260)) { -it },
                 ) {
-                    Box(Modifier.fillMaxSize()) {
+                    // Even during the IME's exit animation the drawer panel
+                    // must end above the keyboard instead of hiding its
+                    // bottom rows behind it.
+                    Box(Modifier.fillMaxSize().imePadding()) {
                         Box(
                             Modifier
                                 .fillMaxSize()
@@ -813,6 +823,11 @@ private fun FloeShellContent(
                     )
                 }
             },
+            // Channel-neutral seam: the FULL flavour contributes the category
+            // only after the App integrator attaches a real presentation; the
+            // PLAY flavour returns an empty list and imports no channel type.
+            externalSections =
+                com.floe.android.host.settings.DistributionSettingsFeature.sections(),
         )
 
         // G05-R3 Alpha14: one self-update surface (full channel only; the

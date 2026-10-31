@@ -3,7 +3,12 @@ pluginManagement {
 }
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories { google(); mavenCentral() }
+    repositories {
+        google()
+        mavenCentral()
+        // Source-pinned libsu only; never a fallback repository for other groups.
+        maven { url = uri("https://jitpack.io"); content { includeGroup("com.github.topjohnwu.libsu") } }
+    }
 }
 rootProject.name = "FloeAndroid"
 include(":app", ":core:contracts", ":core:credentials", ":core:designsystem", ":core:swiftbridge")
@@ -55,3 +60,6 @@ include(":core:notesmedia", ":feature:notes")
 include(":core:network", ":feature:network")
 include(":core:networkmonitor")
 include(":core:pcap")
+
+// G08 embedded ADB pairing/starter source; consumed only by the Full root-system module.
+include(":vendor:embedded-shizuku")

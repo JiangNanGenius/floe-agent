@@ -14,8 +14,12 @@ class MainActivity : ComponentActivity() {
         // Cooldown-gated automatic update check + install/permission resume.
         com.floe.android.host.update.AppUpdateFeature.onApplicationForeground()
         (application as FloeApplication).setActivityForeground(true)
+        // FULL: reconcile real Accessibility/ADB/Root status after the user
+        // returns from a system settings/pairing screen; PLAY is inert.
+        (application as FloeApplication).onPlatformActivityResumed(this)
     }
     override fun onPause() {
+        (application as FloeApplication).onPlatformActivityPaused()
         (application as FloeApplication).setActivityForeground(false)
         super.onPause()
     }

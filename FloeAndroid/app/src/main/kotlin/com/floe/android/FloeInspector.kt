@@ -2,7 +2,6 @@
 package com.floe.android
 
 import androidx.compose.ui.platform.LocalContext
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -71,7 +70,10 @@ fun FloeInspectorPane(
     modifier: Modifier = Modifier,
     runtimeHost: RuntimeHost? = null,
 ) {
-    BackHandler(onBack = onDismiss)
+    // The terminal pane owns a real IME connection. Closing the inspector
+    // with system Back must dismiss that keyboard first (device evidence:
+    // Back closed the pane before the keyboard went away).
+    ImeFirstBackHandler(onBack = onDismiss)
     val colors = Floe.colors
     var environmentVisible by remember(route.conversationId) { mutableStateOf(false) }
     // Safe-area ownership (2026-10-25 device evidence: the IDE status strip
@@ -133,7 +135,13 @@ fun FloeInspectorPane(
             InspectorContent.PROGRESS -> TaskProgressPane(conversations, route.conversationId)
             InspectorContent.CHILD_AGENTS -> ChildAgentsPane(conversations, route.conversationId)
             InspectorContent.PERMISSIONS -> TaskPermissionsPane(conversations, route.conversationId)
-            InspectorContent.WORKSPACE_FILES -> WorkspaceFilesPane(runtimeHost, route.conversationId, inspectorTitle(route.content), onDismiss)
+            InspectorContent.WORKSPACE_FILES -> WorkspaceFilesPane(
+                runtimeHost,
+                route.conversationId,
+                inspectorTitle(route.content),
+                onDismiss,
+                onOpenEnvironment = { environmentVisible = true },
+            )
             InspectorContent.CHANGES -> WorkspaceGitPane(runtimeHost, route.conversationId)
             InspectorContent.BROWSER -> {
                 val taskID = route.conversationId

@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- G08 phone/device access settings. Full-channel only; the App wires this
+     stateless page when the phonecontrol, embedded ADB and root status APIs
+     are available. No copy here promises an external manager or a root grant. -->
+<resources>
+    <string name="settings_phone">Phone</string>
+    <string name="device_access_status_label">Status</string>
+    <string name="device_access_root_enable">Enable root access</string>
+    <string name="device_access_intro">Grant each layer separately. Floe never bypasses passwords, secure windows or the lock screen.</string>
+
+    <string name="device_access_accessibility_section">Phone control (Accessibility)</string>
+    <string name="device_access_accessibility_disclosure">Phone control reads the visible page’s node tree and acts only for the task you start.</string>
+    <string name="device_access_state_off">Off</string>
+    <string name="device_access_state_not_granted">Not granted</string>
+    <string name="device_access_state_granted">Granted</string>
+    <string name="device_access_state_restricted">Blocked by system settings</string>
+    <string name="device_access_state_revoked">Revoked</string>
+    <string name="device_access_open_settings">Open Accessibility settings</string>
+    <string name="device_access_boundary_title">Limits</string>
+    <string name="device_access_boundary_nodes">Only the visible page of the active task is observed.</string>
+    <string name="device_access_boundary_secrets">Password fields, secure windows and the lock screen are never read or filled.</string>
+    <string name="device_access_boundary_actions">Actions are read back after they run; gestures are not replayed blindly.</string>
+    <string name="device_access_boundary_screenshots">A screenshot is captured only when the task asks for the observed page.</string>
+
+    <string name="device_access_active_section">Active phone task</string>
+    <string name="device_access_active_none">No task is using phone control.</string>
+    <string name="device_access_active_running">Running</string>
+    <string name="device_access_active_waiting">Waiting for you</string>
+    <string name="device_access_active_taken_over">Taken over</string>
+    <string name="device_access_active_stopping">Stopping</string>
+    <string name="device_access_stop_task">Stop</string>
+    <string name="device_access_take_over">Take over</string>
+    <string name="device_access_take_over_hint">Taking over blocks new actions and leaves the task for your review.</string>
+
+    <string name="device_access_screen_section">Screen content</string>
+    <string name="device_access_screen_hint">Choose when the active task may see the screen. Nothing is recorded continuously.</string>
+    <string name="device_access_screen_off">Off</string>
+    <string name="device_access_screen_task">This task</string>
+    <string name="device_access_screen_until_stopped">Until stopped</string>
+    <string name="device_access_screen_requires_task">Start a phone task to choose a sharing scope.</string>
+
+    <string name="device_access_adb_section">Embedded ADB access</string>
+    <string name="device_access_adb_intro">A private Floe service with shell access. It is not root, needs pairing on this device, and is included in this build.</string>
+    <string name="device_access_adb_state_off">Off</string>
+    <string name="device_access_adb_state_pair_required">Pairing required</string>
+    <string name="device_access_adb_state_pairing">Waiting for pairing</string>
+    <string name="device_access_adb_state_paired">Paired</string>
+    <string name="device_access_adb_state_alive">Service running</string>
+    <string name="device_access_adb_state_died">Service stopped</string>
+    <string name="device_access_adb_state_restart">Restart required</string>
+    <string name="device_access_adb_state_revoked">Pairing revoked</string>
+    <string name="device_access_adb_state_error">Unavailable</string>
+    <string name="device_access_adb_state_uid">Shell UID %1$d</string>
+    <string name="device_access_adb_enable">Turn on embedded ADB</string>
+    <string name="device_access_adb_pair">Pair with Android</string>
+    <string name="device_access_adb_pair_hint">Floe opens Developer options; turn on Wireless debugging, then return to enter the 6-digit code. A temporary notification brings you back.</string>
+    <string name="device_access_adb_code_label">Pairing code</string>
+    <string name="device_access_adb_code_submit">Finish pairing</string>
+    <string name="device_access_adb_code_invalid">Enter the 6-digit code</string>
+    <string name="device_access_adb_cancel_pairing">Cancel pairing</string>
+    <string name="device_access_adb_start">Start service</string>
+    <string name="device_access_adb_stop">Stop service</string>
+    <string name="device_access_adb_forget">Forget pairing</string>
+    <string name="device_access_adb_forget_title">Forget pairing?</string>
+    <string name="device_access_adb_forget_message">The saved pairing is removed and the Floe service is stopped first. Other apps are not affected.</string>
+    <string name="device_access_adb_restart_hint">After a restart, turn on Wireless debugging and start the service again.</string>
+    <string name="device_access_adb_revoked_hint">Pairing was removed in Android settings. Pair again to restore access.</string>
+    <string name="device_access_adb_open_developer_options">Open developer options</string>
+
+    <string name="device_access_root_section">Root access</string>
+    <string name="device_access_root_intro">Off by default. Uses a root grant this device already has; Floe never roots a phone or promotes ADB to root.</string>
+    <string name="device_access_root_state_off">Off</string>
+    <string name="device_access_root_state_no_grant">No root grant</string>
+    <string name="device_access_root_state_grant_found">Root grant found</string>
+    <string name="device_access_root_state_enabled">Enabled</string>
+    <string name="device_access_root_state_refused">Refused</string>
+    <string name="device_access_root_state_error">Unavailable</string>
+    <string name="device_access_root_uid">UID %1$d</string>
+    <string name="device_access_root_check">Check root grant</string>
+    <string name="device_access_root_enable_hint">Turning this on runs only operations you start, as root.</string>
+
+    <string name="device_access_error_details">Details</string>
+    <string name="device_access_error_hide_details">Hide details</string>
+    <string name="device_access_retry">Check again</string>
+
+<!-- G08 App integration: explicit capability ceilings, pairing/root flow. -->
+    <string name="device_access_task_not_allowed">Phone control is off for this task. Allow it explicitly; the Agent cannot arm it.</string>
+    <string name="device_access_task_stopped">You stopped phone control. Allow this task again to resume.</string>
+    <string name="device_access_allow_task">Allow phone control for this task</string>
+    <string name="device_access_select_apps_first">Select at least one target app below first.</string>
+    <string name="device_access_current_task">Current task</string>
+
+    <string name="device_access_targets_section">Apps the Agent may control</string>
+    <string name="device_access_targets_intro">Only the apps you select can be observed or controlled. There is no all-apps grant; a different foreground app is refused.</string>
+    <string name="device_access_targets_empty">No launchable apps are visible to Floe yet.</string>
+
+    <string name="device_access_roots_section">Shared folders for system access</string>
+    <string name="device_access_roots_intro">The embedded service may reach only the folders you select. Floe data, credentials and private app storage are never included.</string>
+    <string name="device_access_roots_empty">No shared storage folder is available. System folders and Root access are unaffected.</string>
+    <string name="device_access_root_downloads">Downloads</string>
+    <string name="device_access_root_documents">Documents</string>
+    <string name="device_access_root_pictures">Pictures</string>
+    <string name="device_access_root_dcim">Camera (DCIM)</string>
+    <string name="device_access_root_music">Music</string>
+    <string name="device_access_root_movies">Movies</string>
+    <string name="device_access_file_writes">Allow changes in the selected folders</string>
+    <string name="device_access_file_writes_hint">When off, shared and app data folders are read-only for the Agent. System folders are always read-only.</string>
+    <string name="device_access_system_roots_section">System folders (read-only)</string>
+    <string name="device_access_system_roots_hint">Inspect platform files without changing them. Floe never remounts or modifies the system.</string>
+    <string name="device_access_root_system">System</string>
+    <string name="device_access_root_vendor">Vendor</string>
+    <string name="device_access_root_product">Product</string>
+    <string name="device_access_root_system_ext">System extension</string>
+    <string name="device_access_root_odm">ODM</string>
+    <string name="device_access_root_apex">APEX</string>
+    <string name="device_access_app_data_section">Other app data (Root only)</string>
+    <string name="device_access_app_data_hint">Add one app\'s data folder as an absolute path. It is available only while Root is running; Android, SELinux or device encryption can still refuse it.</string>
+    <string name="device_access_app_data_add_label">App data folder</string>
+    <string name="device_access_app_data_example">For example: /data/user/0/com.example.app/files</string>
+    <string name="device_access_app_data_add">Add folder</string>
+    <string name="device_access_app_data_requires_root">Turn on Root access to add another app\'s data folder.</string>
+    <string name="device_access_management_section">App management</string>
+    <string name="device_access_package_management">Allow app management</string>
+    <string name="device_access_package_management_hint">Lets the Agent force-stop a package through the running system service, with an approved task grant. Floe itself is always refused.</string>
+
+    <string name="device_access_whole_screen_capture">Allow whole-screen capture</string>
+    <string name="device_access_whole_screen_required">On this Android version a screenshot captures the entire screen, so this consent is required. The service refuses secure, password and overlay windows.</string>
+    <string name="device_access_whole_screen_hint">Preferred screenshots capture only the observed window. Whole-screen capture is used only when a window capture is unavailable and you allowed it here.</string>
+
+    <string name="device_access_pairing_port_label">Pairing port</string>
+    <string name="device_access_pairing_port_searching">Looking for this device’s pairing port…</string>
+    <string name="device_access_pairing_port_find">Find pairing port</string>
+    <string name="device_access_pairing_unsupported">Wireless pairing needs Android 11 or later. This device needs the one-time USB setup from a computer; the service is not presented as available here.</string>
+
+    <string name="device_access_root_check_title">Check for root access?</string>
+    <string name="device_access_root_check_message">Floe never roots this device. If a root grant already exists, checking turns root access on for the operations you start; otherwise it reports that no grant was found. You can turn it off again.</string>
+
+    <string name="device_access_pairing_notification_channel">Device pairing</string>
+    <string name="device_access_pairing_notification_title">Pairing with Android</string>
+    <string name="device_access_pairing_notification_text">Return to Floe to enter the 6-digit pairing code.</string>
+
+    <string name="device_access_error_open_settings">Could not open system settings.</string>
+    <string name="device_access_error_no_task">No running task is using this device.</string>
+    <string name="device_access_error_runtime_not_ready">The Floe runtime is not ready yet.</string>
+    <string name="device_access_error_select_apps">Select at least one target app first.</string>
+    <string name="device_access_error_phone_failed">Phone control failed.</string>
+    <string name="device_access_error_phone_stopped">Phone control was stopped.</string>
+    <string name="device_access_error_phone_taken">You took the device back.</string>
+    <string name="device_access_error_phone_service">Phone control service is not connected.</string>
+    <string name="device_access_error_phone_target">The current app is not in the allowed target list.</string>
+    <string name="device_access_error_phone_protected">Password fields, secure windows and the lock screen are never touched.</string>
+    <string name="device_access_error_phone_stale">The page changed; observe it again.</string>
+    <string name="device_access_error_phone_not_allowed">Phone control is not allowed for this task.</string>
+    <string name="device_access_error_phone_not_enabled">Phone control is not enabled in Android settings.</string>
+    <string name="device_access_error_screenshot_unsupported">Screen capture is not supported for this request on this Android version.</string>
+    <string name="device_access_error_unavailable">This capability is unavailable.</string>
+    <string name="device_access_error_pairing_port">Enter the pairing port shown by Android.</string>
+    <string name="device_access_error_pairing_code">The pairing code was not accepted.</string>
+    <string name="device_access_error_pairing_timeout">Pairing timed out. Try again.</string>
+    <string name="device_access_error_pairing_unsupported">Wireless pairing is not supported on this Android version.</string>
+    <string name="device_access_error_pairing_failed">Pairing failed.</string>
+    <string name="device_access_error_forget">The saved pairing could not be removed.</string>
+    <string name="device_access_error_root_not_granted">No root grant was found on this device.</string>
+    <string name="device_access_error_root_failed">Root access could not be enabled.</string>
+    <string name="device_access_error_app_data_requires_root">Turn on Root access before adding another app\'s data folder.</string>
+    <string name="device_access_error_app_data_path">Enter an app data folder such as /data/user/0/com.example.app.</string>
+    <string name="device_access_error_app_data_limit">You can add up to 8 app data folders.</string>
+    <string name="device_access_error_local_network">Local network access is required to find and reach this device\'s pairing port. Allow it in Settings, then try again.</string>
+    <string name="device_access_error_backend_failed">The system service refused the operation.</string>
+    <string name="device_access_usb_bootstrap">Copy USB setup command</string>
+    <string name="device_access_usb_bootstrap_copied">USB setup command copied. Run it once from a computer with ADB.</string>
+    <string name="device_access_accessibility_restricted_hint">If Android blocks this app, open App info and allow restricted settings, then enable the service again.</string>
+</resources>
