@@ -758,6 +758,14 @@ targets:
       - path: Tests/FloeAppTests/SpeechSentenceInputTests.swift
       - path: Tests/FloeAppTests/VoiceSentenceIntegrationTests.swift
       - path: Tests/FloeProvidersTests/SpeechProviderTests.swift
+      - path: Tests/FloeProvidersTests/ASRConfigurationTests.swift
+      - path: Tests/FloeProvidersTests/OpenAIFileTranscriptionTests.swift
+      - path: Tests/FloeProvidersTests/OpenAIRealtimeTranscriptionTests.swift
+      - path: Tests/FloeProvidersTests/ASRAdapterFactoryTests.swift
+      - path: Tests/FloeProvidersTests/ASRPacketProgressTests.swift
+      - path: Tests/FloeProvidersTests/ASRVendorTestSupport.swift
+      - path: Tests/FloeProvidersTests/AlibabaASRTests.swift
+      - path: Tests/FloeProvidersTests/VolcengineASRTests.swift
       - path: Tests/FloeSyncTests/CredentialDescriptorSyncTests.swift
       - path: Tests/FloeSyncTests/SyncControlPreferencesTests.swift
       - path: Tests/FloeSyncTests/CredentialSyncMigrationTests.swift

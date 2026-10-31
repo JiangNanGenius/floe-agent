@@ -348,6 +348,28 @@ struct WhisperKitRecognitionModel: SpeechRecognitionModelInstance, @unchecked Se
         return try await kit.transcribe(audioArray: audio, decodeOptions: options).map(\.text)
     }
 
+    /// Timed file/caption path. The same mounted WhisperKit instance is used
+    /// for live and file decoding; the runtime lease serializes them. Real
+    /// decoder segment/word times are clamped to this audio window and
+    /// mapped by `SpeechRecognitionTimedMapping`; no timing is synthesized
+    /// from the whole asset or a text-only result.
+    func transcribeTimed(audio: [Float], decoding: SpeechRecognitionDecoding) async throws -> [SpeechRecognitionTimedSegment] {
+        let options = DecodingOptions(language: decoding.languageCode, detectLanguage: decoding.detectLanguage,
+                                      skipSpecialTokens: true, withoutTimestamps: false, wordTimestamps: true)
+        let results = try await kit.transcribe(audioArray: audio, decodeOptions: options)
+        let raw = results.flatMap(\.segments).map { segment in
+            SpeechRecognitionTimedMapping.RawSegment(
+                start: segment.start,
+                end: segment.end,
+                text: segment.text,
+                words: segment.words?.map {
+                    SpeechRecognitionTimedMapping.RawWord(start: $0.start, end: $0.end, text: $0.word)
+                })
+        }
+        let duration = Double(audio.count) / 16_000
+        return SpeechRecognitionTimedMapping.relativeSegments(raw: raw, duration: duration)
+    }
+
     func unmount() async {
         await kit.unloadModels()
     }

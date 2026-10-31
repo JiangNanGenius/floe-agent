@@ -798,8 +798,10 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         stack.stopCapture()
         stack.stopPlayback()
         self.stack = nil
-        // finishTranscription is bounded inside the stack implementation.
-        Task { [stack] in await stack.finishTranscription() }
+        // Teardown is a fence (end/navigation, background/generation failure),
+        // not an ordinary stop: cancel pending cloud turns immediately. No
+        // final transcript may be manufactured into a retired session.
+        Task { [stack] in await stack.cancelTranscription() }
         stack.deactivate()
     }
 
@@ -1101,7 +1103,13 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         if !isMuted, state.hasSession {
             observedSecondsWithoutText += sampleSeconds
             if level.isSpeech { voicedSecondsWithoutText += sampleSeconds }
-            if state == .listening, round == nil,
+            // Per-utterance batch routes (for example Alibaba Token Plan)
+            // legitimately emit no partials while the user is speaking; the
+            // partial-cadence health bound must not kill that session. The
+            // batch request keeps its own bounded transport/final deadline,
+            // and dead capture is still covered by the capture stall proof.
+            let streamingPartials = stack?.recognitionProgressMode != .batchFile
+            if streamingPartials, state == .listening, round == nil,
                voicedSecondsWithoutText >= timing.voicedWithoutTextLimit {
                 report("voicedWithoutText", "seconds=\(Int(voicedSecondsWithoutText))")
                 failCurrentSession(.recognizerFailed)

@@ -3703,9 +3703,9 @@ run_engine() {
     pid=$!
     peak=""
     while [ -d "/proc/$pid" ]; do
-        v=$(awk '/VmHWM/{print $2}' "/proc/$pid/status" 2>/dev/null)
+        v=$(awk '/VmHWM/{print $2}' "/proc/$pid/status" 2>/dev/null) || v=""
         if [ -n "$v" ]; then peak=$v; fi
-        state=$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)
+        state=$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null) || state=""
         if [ "$state" = "Z" ] || [ -z "$state" ]; then break; fi
         sleep 0.02
     done

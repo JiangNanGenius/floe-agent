@@ -136,6 +136,7 @@ final class MediaEditorModel: ObservableObject {
 
 struct MediaEditorView: View {
     @StateObject private var model: MediaEditorModel
+    @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.dismiss) private var dismiss
     private let onExported: ((URL) -> Void)?
     @State private var previewOutput = false
@@ -265,7 +266,7 @@ private struct FloeVisualVideoEditor: View {
             .fullScreenCover(isPresented: $showEditor) {
                 VideoEditorView(FloeL10n.l("media.media_editor_view.media_workbench"), sourceVideoURL: source,
                     editingConfiguration: configuration,
-                    configuration: .init(transcription: .init(provider: FloeVideoTranscriptionProvider(root: root))),
+                    configuration: .init(transcription: .init(provider: FloeVideoTranscriptionProvider(root: root, assistant: environment.assistantAudioService))),
                     onSavedVideo: { saved in
                         configuration = saved.editingConfiguration
                         persist()

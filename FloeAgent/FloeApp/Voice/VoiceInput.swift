@@ -14,7 +14,7 @@
 // - No audio is persisted; the transcript is only staged into the draft
 //   and is sent to a model solely by the user's explicit send action.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(AVFoundation)
 import Foundation
 import FloeCore
 import Speech
@@ -96,6 +96,16 @@ enum VoiceInputFailure: String, Equatable, Sendable {
     case interrupted
 }
 
+/// How a transcriber produces visible text while the user is speaking.
+/// Streaming backends emit partials; per-utterance batch backends (for
+/// example a file-only cloud route) legitimately emit nothing until the
+/// utterance is committed. Recognition-health policy must consult this
+/// instead of treating silence-during-speech as a dead recognizer.
+enum VoiceRecognitionProgressMode: String, Sendable, Equatable {
+    case streaming
+    case batchFile
+}
+
 /// Structured, redacted voice diagnostics. The app layer forwards these
 /// into FloeLogger; tests capture them. No audio, no transcript body,
 /// no secrets ever flow through here.
@@ -138,12 +148,24 @@ protocol SpeechTranscribing: Sendable {
     /// buffer after the callback returns, and spawning one Task per buffer
     /// can reorder or corrupt the audio stream.
     func feed(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime?)
-    /// Signals end of audio and lets the transcriber finish.
+    /// Signals end of audio and lets the transcriber finish. Ordinary stop:
+    /// a final result may still be drained within `finalDrainTimeout`.
     func finishAudio() async
+    /// Immediate cancellation/fence (navigation, superseded start). No final
+    /// transcript may be manufactured after this call.
+    func cancelAudio() async
+    /// Streaming vs per-utterance batch behavior for health policy.
+    var recognitionProgressMode: VoiceRecognitionProgressMode { get }
+    /// Bounded ordinary-stop drain. Local recognizers finalize quickly; a
+    /// cloud/file route needs a real network window.
+    var finalDrainTimeout: Duration { get }
 }
 
 extension SpeechTranscribing {
     var failure: VoiceInputFailure? { nil }
+    var recognitionProgressMode: VoiceRecognitionProgressMode { .streaming }
+    var finalDrainTimeout: Duration { .milliseconds(900) }
+    func cancelAudio() async { await finishAudio() }
 }
 
 /// One real capture-level observation from the microphone seam.

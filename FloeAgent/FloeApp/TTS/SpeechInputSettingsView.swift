@@ -1,4 +1,4 @@
-// FloeApp — Speech recognition preferences and model management.
+// FloeApp — Speech recognition preferences, cloud profiles and model management.
 #if canImport(UIKit)
 import SwiftUI
 import FloeCore
@@ -6,15 +6,26 @@ import FloeCore
 // Shared by dictation and continuous voice. No view owns the recognition engine.
 enum VoiceRecognitionPreferences {
     static let methodKey = "voice.input.method.v1"
-    enum Method: String, CaseIterable, Sendable { case automatic, system, enhanced }
+    enum Method: String, CaseIterable, Sendable {
+        case automatic
+        case system
+        case enhanced
+        /// Explicit cloud primary. Requires a configured profile; an unusable
+        /// selection surfaces a normal configuration error instead of a silent
+        /// local switch.
+        case cloud
+    }
     static var method: Method { UserDefaults.standard.string(forKey: methodKey).flatMap(Method.init(rawValue:)) ?? .automatic }
     static func title(_ method: Method) -> String { FloeL10n.l("voice.input.method." + method.rawValue) }
 }
 
 struct SpeechInputSettingsView: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @ObservedObject private var cloudStore = CloudASRSettingsStore.shared
     @AppStorage(VoiceRecognitionLanguage.defaultsKey) private var language = VoiceRecognitionLanguage.automatic.rawValue
     @AppStorage(VoiceRecognitionPreferences.methodKey) private var method = VoiceRecognitionPreferences.Method.automatic.rawValue
+    @AppStorage(VoiceRecognitionPreloadPolicy.enabledDefaultsKey) private var preloadEnabled = false
+
     var body: some View {
         Form {
             Section {
@@ -27,6 +38,27 @@ struct SpeechInputSettingsView: View {
                     }
                 }
             }
+            Section {
+                NavigationLink("voice.cloud.profiles.title") {
+                    CloudASRProfilesView(
+                        store: cloudStore,
+                        preload: environment.voiceRecognitionPreload)
+                }
+                if let primary = cloudStore.primaryProfile {
+                    LabeledContent("voice.cloud.profile.primary", value: primary.name)
+                }
+            } footer: {
+                Text("voice.cloud.profiles.settings_footer")
+            }
+            Section {
+                Toggle("voice.input.preload", isOn: Binding(
+                    get: { preloadEnabled },
+                    set: { value in
+                        Task { await environment.voiceRecognitionPreload.setEnabled(value) }
+                    }))
+            } footer: {
+                Text("voice.input.preload.footer")
+            }
             Section { NavigationLink("voice.input.model") { EnhancedRecognitionModelView() } }
             Section {
                 NavigationLink("voice.assistant.transcription") {
@@ -37,33 +69,81 @@ struct SpeechInputSettingsView: View {
             } footer: {
                 Text("voice.assistant.transcription.footer")
             }
-        }.navigationTitle("voice.input.title")
+        }
+        .navigationTitle("voice.input.title")
+        .onAppear {
+            Task { await environment.voiceRecognitionPreload.refreshAfterSettingsEntry() }
+        }
     }
 }
 
 private struct SpeechInputMethodView: View {
+    @EnvironmentObject private var environment: AppEnvironment
+    @ObservedObject private var cloudStore = CloudASRSettingsStore.shared
     @AppStorage(VoiceRecognitionPreferences.methodKey) private var method = VoiceRecognitionPreferences.Method.automatic.rawValue
     @State private var installed = false
     @State private var showModel = false
+    @State private var showCloudProfiles = false
+
     var body: some View {
         List {
             ForEach(VoiceRecognitionPreferences.Method.allCases, id: \.rawValue) { option in
                 Button {
-                    if option == .enhanced && !installed { showModel = true }
-                    else { method = option.rawValue }
+                    select(option)
                 } label: {
                     HStack {
-                        Text(VoiceRecognitionPreferences.title(option)).foregroundStyle(.primary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(VoiceRecognitionPreferences.title(option)).foregroundStyle(.primary)
+                            if option == .cloud {
+                                Text(cloudDetail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Spacer()
                         if option == .enhanced && !installed { Image(systemName: "arrow.down.circle") }
-                        else if method == option.rawValue { Image(systemName: "checkmark") }
+                        else if option == .cloud && cloudStore.readyProfiles.isEmpty {
+                            Image(systemName: "key")
+                        } else if method == option.rawValue { Image(systemName: "checkmark") }
                     }.frame(minHeight: 44)
+                }
+            }
+            Section {
+                NavigationLink("voice.cloud.profiles.title") {
+                    CloudASRProfilesView(
+                        store: cloudStore,
+                        preload: environment.voiceRecognitionPreload)
                 }
             }
         }.navigationTitle("voice.input.method")
             .navigationDestination(isPresented: $showModel) { EnhancedRecognitionModelView() }
+            .navigationDestination(isPresented: $showCloudProfiles) {
+                CloudASRProfilesView(
+                    store: cloudStore,
+                    preload: environment.voiceRecognitionPreload)
+            }
             .task { installed = await WhisperModelStore.shared.isInstalled() }
             .onChange(of: showModel) { _, showing in if !showing { Task { installed = await WhisperModelStore.shared.isInstalled() } } }
+    }
+
+    private var cloudDetail: String {
+        if let primary = cloudStore.primaryProfile {
+            return "\(primary.name) · \(primary.fileModelID)"
+        }
+        return FloeL10n.l("voice.cloud.profiles.empty")
+    }
+
+    private func select(_ option: VoiceRecognitionPreferences.Method) {
+        if option == .enhanced && !installed {
+            showModel = true
+            return
+        }
+        if option == .cloud && cloudStore.profiles.isEmpty {
+            showCloudProfiles = true
+            return
+        }
+        method = option.rawValue
+        Task { await environment.voiceRecognitionPreload.syncPrimaryRoute() }
     }
 }
 

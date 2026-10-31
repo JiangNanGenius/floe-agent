@@ -242,6 +242,9 @@ final class AssistantAudioService: ObservableObject {
 
     private let settings: TTSSettingsService
     private let speech: TTSSpeechService
+    /// Shared multi-profile cloud ASR store. Dictation/continuous voice/file
+    /// tools/video captions all resolve through this one App-owned store.
+    let cloudASRSettings: CloudASRSettingsStore
     private let asrAdapter: any ASRTranscribing
     private let keychain: any KeychainProbeStore
     private let defaults: UserDefaults
@@ -255,13 +258,15 @@ final class AssistantAudioService: ObservableObject {
         defaults: UserDefaults = .standard,
         keychain: any KeychainProbeStore = KeychainStore(
             service: "org.floeagent.ios.assistant-audio", synchronizable: false),
-        asrAdapter: any ASRTranscribing = OpenAITranscriptionAdapter()
+        asrAdapter: any ASRTranscribing = OpenAITranscriptionAdapter(),
+        cloudASRSettings: CloudASRSettingsStore = .shared
     ) {
         self.settings = settings
         self.speech = speech
         self.defaults = defaults
         self.keychain = keychain
         self.asrAdapter = asrAdapter
+        self.cloudASRSettings = cloudASRSettings
         self.preferences = defaults.data(forKey: Self.storageKey)
             .flatMap { try? JSONDecoder().decode(AssistantAudioPreferences.self, from: $0) }
             ?? AssistantAudioPreferences()
@@ -277,13 +282,11 @@ final class AssistantAudioService: ObservableObject {
     }
 
     var hasASRProfile: Bool {
-        asrCredentialConfigured && asrValidationProblem == nil
-            && !preferences.asrModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        cloudASRSettings.hasAnyReadyProfile
     }
 
     var asrValidationProblem: String? {
-        guard let raw = preferences.asrBaseURL, !raw.isEmpty else { return nil }
-        return OpenAITranscriptionEndpoint.validationProblem(for: raw)
+        cloudASRSettings.legacyValidationProblem
     }
 
     func service(id: String?, for capability: AssistantAudioCapability) -> AssistantAudioServiceDescriptor? {
@@ -373,7 +376,7 @@ final class AssistantAudioService: ObservableObject {
         let systemAvailable = systemRecognizer?.isAvailable == true
             && authorization != .denied && authorization != .restricted
         let systemAuthorized = authorization == .authorized
-        asrCredentialConfigured = hasASRCredential
+        asrCredentialConfigured = cloudASRSettings.hasAnyReadyProfile
 
         var next: [AssistantAudioServiceDescriptor] = []
         var nextSources: [String: SpeechOutputSource] = [:]
@@ -389,15 +392,19 @@ final class AssistantAudioService: ObservableObject {
                 detail: "Enhanced file model · no upload",
                 requiresCredential: false))
         }
-        if hasASRProfile {
+        for profile in cloudASRSettings.profiles {
+            // Every configured provider/billing route is listed as its own
+            // stable service. Readiness means supplied configuration + key;
+            // there is deliberately no developer-test/membership switch.
+            guard cloudASRSettings.isReady(profile) else { continue }
             next.append(AssistantAudioServiceDescriptor(
-                id: ID.transcriptionCloud,
+                id: cloudASRSettings.serviceID(for: profile),
                 capability: .transcription,
-                title: "Cloud transcription",
-                provider: "openai-compatible",
+                title: profile.name,
+                provider: profile.provider.rawValue,
                 local: false,
                 ready: true,
-                detail: "\(preferences.asrModelID) · sends the audio to the configured service",
+                detail: Self.cloudDetail(profile),
                 requiresCredential: true))
         }
         if systemAvailable {
@@ -461,6 +468,7 @@ final class AssistantAudioService: ObservableObject {
         fileURL: URL,
         language: VoiceRecognitionLanguage,
         serviceID: String? = nil,
+        requiresTiming: Bool = false,
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) async throws -> AssistantAudioTranscriptionResult {
         await refreshAvailability()
@@ -513,10 +521,13 @@ final class AssistantAudioService: ObservableObject {
                 service: descriptor,
                 engine: result.engine.rawValue,
                 language: language.recognitionCode)
-        case ID.transcriptionCloud:
-            return try await transcribeCloud(
-                fileURL: fileURL, language: language, descriptor: descriptor)
         default:
+            if descriptor.id == ID.transcriptionCloud
+                || cloudASRSettings.profile(forServiceID: descriptor.id) != nil {
+                return try await transcribeCloud(
+                    fileURL: fileURL, language: language, descriptor: descriptor,
+                    requiresTiming: requiresTiming, progress: progress)
+            }
             throw AssistantAudioError.serviceUnavailable(descriptor.id)
         }
     }
@@ -524,56 +535,124 @@ final class AssistantAudioService: ObservableObject {
     private func transcribeCloud(
         fileURL: URL,
         language: VoiceRecognitionLanguage,
-        descriptor: AssistantAudioServiceDescriptor
+        descriptor: AssistantAudioServiceDescriptor,
+        requiresTiming: Bool,
+        progress: @escaping @Sendable (Double) -> Void
     ) async throws -> AssistantAudioTranscriptionResult {
-        guard hasASRProfile else { throw AssistantAudioError.transcriptionUnavailable }
-        let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
-        let size = (attributes?[.size] as? NSNumber)?.intValue ?? 0
-        guard size > 0, size <= Self.maximumTranscriptionBytes else {
-            throw AssistantAudioError.invalidConfiguration("audio must be between 1 byte and 25 MiB")
+        guard let profile = cloudASRSettings.profile(forServiceID: descriptor.id) else {
+            throw AssistantAudioError.serviceUnavailable(descriptor.id)
         }
-        let audio: Data
+        guard cloudASRSettings.isReady(profile) else {
+            throw AssistantAudioError.transcriptionUnavailable
+        }
+        let credential: String
         do {
-            audio = try await Self.detached {
-                try Data(contentsOf: fileURL, options: [.mappedIfSafe])
-            }
-        } catch is CancellationError {
-            throw CancellationError()
+            credential = try cloudASRSettings.credential(for: profile)
         } catch {
-            throw AssistantAudioError.transcriptionFailed
+            throw AssistantAudioError.credentialMissing
         }
-        guard audio.count <= Self.maximumTranscriptionBytes else {
-            throw AssistantAudioError.invalidConfiguration("audio exceeds the 25 MiB transcription limit")
-        }
-        let duration = await Self.mediaDuration(fileURL)
-        let request = ASRTranscriptionRequest(
-            endpointBaseURL: preferences.asrBaseURL,
-            modelID: preferences.asrModelID,
-            language: language.recognitionCode,
-            filename: fileURL.lastPathComponent,
-            mimeType: Self.mimeType(for: fileURL.pathExtension),
-            audio: audio,
-            durationSeconds: duration)
-        let credential = try asrCredential()
-        let result: ASRTranscriptionResult
+        let adapter: any ASRTranscribing
         do {
-            result = try await asrAdapter.transcribe(request, credential: credential)
-        } catch is CancellationError {
-            throw CancellationError()
+            adapter = try ASRAdapterFactory.fileAdapter(for: profile)
         } catch let error as ASRTranscriptionError {
             throw Self.mapASRError(error)
         } catch {
+            throw AssistantAudioError.invalidConfiguration("provider adapter is unavailable")
+        }
+        do {
+            let result = try await CloudASRFilePipeline.transcribe(
+                fileURL: fileURL,
+                profile: profile,
+                adapter: adapter,
+                credential: credential,
+                language: language,
+                requiresTiming: requiresTiming,
+                progress: progress)
+            // A text-only model cannot be turned into caption alignment. Use
+            // the local timed model for this request when it is installed;
+            // otherwise return the honest plain text result (no segments).
+            if CloudASRTimingPolicy.requiresLocalTimedFallback(
+                requiresTiming: requiresTiming, result: result),
+               let timed = try? await localTranscription(
+                   fileURL: fileURL, language: language, preferApple: false,
+                   progress: progress),
+               !timed.segments.isEmpty {
+                return AssistantAudioTranscriptionResult(
+                    text: SpeechCaptionExport.plainText(segments: timed.segments),
+                    segments: timed.segments,
+                    service: descriptor,
+                    engine: "cloud->local-timed",
+                    language: language.recognitionCode)
+            }
+            try Task.checkCancellation()
+            return AssistantAudioTranscriptionResult(
+                text: result.text,
+                segments: result.segments.map {
+                    TimedSpeechSegment(start: $0.start, end: $0.end, text: $0.text, words: [])
+                },
+                service: descriptor,
+                engine: "cloud",
+                language: result.language ?? language.recognitionCode)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            // Cloud-first, local fallback for file work. Never substitute a
+            // different cloud billing route. A local result may be text-only
+            // when timing is unavailable; plain text remains usable.
+            if let local = try? await localTranscription(
+                fileURL: fileURL, language: language, preferApple: false,
+                progress: progress) {
+                return AssistantAudioTranscriptionResult(
+                    text: SpeechCaptionExport.plainText(segments: local.segments),
+                    segments: local.segments,
+                    service: descriptor,
+                    engine: "cloud->local",
+                    language: language.recognitionCode)
+            }
+            try Task.checkCancellation()
+            if let asr = error as? ASRTranscriptionError { throw Self.mapASRError(asr) }
             throw AssistantAudioError.transcriptionFailed
         }
-        let segments = result.segments.map {
-            TimedSpeechSegment(start: $0.start, end: $0.end, text: $0.text, words: [])
+    }
+
+    /// Local file fallback used only after cloud failure or for a
+    /// timing-required request that the cloud model cannot satisfy. Apple is
+    /// preferred only when the explicit system route was requested; a cloud
+    /// fallback tries the enhanced model first and then the system recognizer.
+    private func localTranscription(
+        fileURL: URL,
+        language: VoiceRecognitionLanguage,
+        preferApple: Bool,
+        progress: @escaping @Sendable (Double) -> Void
+    ) async throws -> FileSpeechResult {
+        do {
+            return try await FileSpeechTranscriber.shared.transcribeResult(
+                url: fileURL,
+                language: language,
+                allowAppleFallback: !preferApple,
+                preferApple: preferApple,
+                progress: progress)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if !preferApple {
+                return try await FileSpeechTranscriber.shared.transcribeResult(
+                    url: fileURL,
+                    language: language,
+                    allowAppleFallback: true,
+                    preferApple: true,
+                    progress: progress)
+            }
+            throw error
         }
-        return AssistantAudioTranscriptionResult(
-            text: result.text,
-            segments: segments,
-            service: descriptor,
-            engine: "cloud",
-            language: result.language ?? language.recognitionCode)
+    }
+
+    nonisolated private static func cloudDetail(_ profile: ASRProfile) -> String {
+        let model = profile.fileModelID
+        let route = profile.billingRoute.rawValue
+        let provider = profile.provider.rawValue
+        return "\(provider) · \(route) · \(model)"
     }
 
     // MARK: - Synthesis
@@ -722,60 +801,41 @@ final class AssistantAudioService: ObservableObject {
             inlineArtifact: inline ?? nil)
     }
 
-    // MARK: - ASR profile
+    // MARK: - ASR profiles
 
+    /// Legacy source-compatible save entry point. It updates the migrated
+    /// OpenAI-compatible alias profile; new code uses `cloudASRSettings`.
     func saveASRProfile(baseURL: String, modelID: String, credential: String) throws {
-        let normalized: String?
         do {
-            normalized = try OpenAITranscriptionEndpoint.normalized(baseURL)
-        } catch {
-            throw AssistantAudioError.invalidConfiguration("endpoint must be a valid HTTPS address")
-        }
-        let model = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !model.isEmpty, model.count <= 128 else {
-            throw AssistantAudioError.invalidConfiguration("transcription model is required")
-        }
-        let key = credential.trimmingCharacters(in: .whitespacesAndNewlines)
-        if OpenAITranscriptionEndpoint.originChanged(from: preferences.asrBaseURL, to: normalized),
-           key.isEmpty {
+            try cloudASRSettings.saveLegacyProfile(
+                baseURL: baseURL, modelID: modelID, credential: credential)
+        } catch CloudASRSettingsStore.StoreError.credentialChangedRequiresNewKey {
             throw AssistantAudioError.credentialChangedRequiresNewKey
+        } catch CloudASRSettingsStore.StoreError.credentialMissing {
+            throw AssistantAudioError.credentialMissing
+        } catch CloudASRSettingsStore.StoreError.invalidConfiguration(let reason) {
+            throw AssistantAudioError.invalidConfiguration(reason)
+        } catch {
+            throw AssistantAudioError.transcriptionFailed
         }
-        if !key.isEmpty {
-            try keychain.store(account: Self.asrAccount, secret: Data(key.utf8))
-        }
-        guard hasASRCredential else { throw AssistantAudioError.credentialMissing }
-        var next = preferences
-        next.asrBaseURL = normalized
-        next.asrModelID = model
-        preferences = next
-        persist()
         Task { [weak self] in await self?.refreshAvailability() }
     }
 
     func removeASRProfile() throws {
-        try keychain.delete(account: Self.asrAccount)
-        var next = preferences
-        next.asrBaseURL = nil
-        next.asrModelID = AssistantAudioPreferences.defaultASRModelID
-        // Keep the cloud ID in the saved priority list. It stays truthfully
-        // unavailable and is skipped; removing the credential never silently
-        // substitutes a different provider.
-        preferences = next
-        persist()
+        cloudASRSettings.removeLegacyProfile()
         Task { [weak self] in await self?.refreshAvailability() }
     }
 
+    /// Legacy callers (tools/tests) can still ask for the primary/legacy
+    /// credential without learning the new multi-profile API.
     func asrCredential() throws -> String {
-        guard let data = try? keychain.read(account: Self.asrAccount),
-              let value = String(data: data, encoding: .utf8),
-              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw AssistantAudioError.credentialMissing
+        if let legacy = cloudASRSettings.legacyAliasProfileID.flatMap({ cloudASRSettings.profile(id: $0) }) {
+            return try cloudASRSettings.credential(for: legacy)
         }
-        return value
-    }
-
-    private var hasASRCredential: Bool {
-        (try? keychain.read(account: Self.asrAccount))?.isEmpty == false
+        if let primary = cloudASRSettings.readyProfiles.first {
+            return try cloudASRSettings.credential(for: primary)
+        }
+        throw AssistantAudioError.credentialMissing
     }
 
     private func persist() {
@@ -788,6 +848,36 @@ final class AssistantAudioService: ObservableObject {
     private func automaticService(for capability: AssistantAudioCapability) -> AssistantAudioServiceDescriptor? {
         let ready = services.filter { $0.capability == capability && $0.ready }
         let byID = Dictionary(uniqueKeysWithValues: ready.map { ($0.id, $0) })
+        if capability == .transcription {
+            switch VoiceRecognitionPreferences.method {
+            case .system:
+                return byID[ID.transcriptionSystem]
+            case .enhanced:
+                return byID[ID.transcriptionEnhanced]
+            case .cloud, .automatic:
+                // Explicit priority (including a deliberate local order) is
+                // preserved; otherwise the shared route resolver decides:
+                // usable selected cloud first, local when it is unusable.
+                for id in priorityIDs(for: capability) {
+                    if let descriptor = byID[id] { return descriptor }
+                }
+                let resolution = CloudASRRouteResolver.resolve(
+                    method: VoiceRecognitionPreferences.method.rawValue,
+                    profiles: cloudASRSettings.profiles,
+                    primaryProfileID: cloudASRSettings.primaryProfileID,
+                    readyProfileIDs: Set(cloudASRSettings.readyProfiles.map(\.id)))
+                switch resolution.route {
+                case .cloud(let profile):
+                    return byID[cloudASRSettings.serviceID(for: profile)]
+                case .localWhisper:
+                    return byID[ID.transcriptionEnhanced] ?? byID[ID.transcriptionSystem]
+                case .apple:
+                    return byID[ID.transcriptionSystem]
+                case .cloudUnavailable:
+                    return nil
+                }
+            }
+        }
         for id in priorityIDs(for: capability) {
             if let descriptor = byID[id] { return descriptor }
         }
@@ -801,8 +891,10 @@ final class AssistantAudioService: ObservableObject {
     private static func automaticRank(_ descriptor: AssistantAudioServiceDescriptor) -> Int {
         switch descriptor.capability {
         case .transcription:
-            if descriptor.id == ID.transcriptionEnhanced { return 0 }
-            if descriptor.id == ID.transcriptionCloud { return 1 }
+            // Cloud primary first; explicit local methods bypass this rank
+            // through `automaticService(for:)`.
+            if descriptor.id.hasPrefix("asr.cloud.") { return 0 }
+            if descriptor.id == ID.transcriptionEnhanced { return 1 }
             return 2
         case .synthesis:
             if descriptor.provider == "apple" { return 2 }

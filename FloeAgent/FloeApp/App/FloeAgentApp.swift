@@ -574,6 +574,12 @@ struct RootView: View {
             // remote run.
             GitHubActionsJobCenter.shared.scenePhaseChanged(active: newPhase == .active, sceneID: sceneID)
             if newPhase == .active, environment.persistenceReady {
+                // The optional local preload is root-owned: a genuine
+                // foreground return (or the launch readiness transition) may
+                // re-arm one warm attempt after memory pressure. Duplicate
+                // active notifications and settings entry never do.
+                Task { await environment.voiceRecognitionPreload.activate(
+                    foreground: true, persistenceReady: true) }
                 // First active rendered launch, after setup readiness: ask for
                 // When-In-Use location access exactly once. Denied/restricted
                 // never re-prompts, and the app never requests Always. The
@@ -605,6 +611,9 @@ struct RootView: View {
             }
             if newPhase != .active {
                 environment.voiceInput.handleInterruption(reason: .interrupted)
+                if newPhase == .background {
+                    Task { await environment.voiceRecognitionPreload.setForeground(false) }
+                }
                 // Persist the diagnostics ring buffer before suspension so a
                 // crash or relaunch never loses the most recent evidence.
                 FloeLogger.buffer.flush()
@@ -625,6 +634,11 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) {
             environment.voiceInput.handleAudioRouteChange($0)
         }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            // Observe primary changes from every settings entry point. The
+            // coordinator neither re-arms nor retries for unrelated edits.
+            Task { await environment.voiceRecognitionPreload.syncPrimaryRoute() }
+        }
         .onReceive(NotificationCenter.default.publisher(
             for: NSUbiquitousKeyValueStore.didChangeExternallyNotification
         )) { _ in
@@ -637,6 +651,8 @@ struct RootView: View {
                 // Covers a launch where persistence readiness landed after the
                 // scene-phase report (and is an idempotent no-op otherwise).
                 LocationServicesCenter.shared.requestInitialAuthorizationIfNeeded()
+                await environment.voiceRecognitionPreload.activate(
+                    foreground: true, persistenceReady: true)
             }
             Self.importCanvasSyncPreferenceFromCloud()
             NSUbiquitousKeyValueStore.default.synchronize()

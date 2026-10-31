@@ -24,7 +24,7 @@ struct FileSpeechResult: Sendable {
     let engine: FileSpeechEngine
 }
 
-enum FileSpeechError: Error, LocalizedError {
+enum FileSpeechError: Error, LocalizedError, Sendable {
     case invalidAudio, unavailable, timedOut, empty
     var errorDescription: String? {
         switch self {
@@ -34,6 +34,28 @@ enum FileSpeechError: Error, LocalizedError {
         case .empty: FloeL10n.l("voice.file_speech_transcriber.no_usable_speech_recognized")
         }
     }
+}
+
+/// One file/caption decode pass. The worker returns this instead of throwing
+/// across the runtime worker boundary, so the actor can report the correct
+/// warm-model health even when cancellation interrupts a decoder fault.
+private enum FileDecodeOutcome: Sendable {
+    case success(segments: [TimedSpeechSegment], engine: FileSpeechEngine, decoderFault: Bool)
+    case failure(FileSpeechError, decoderFault: Bool)
+    case cancelled(decoderFault: Bool)
+}
+
+/// Writes the worker outcome exactly once. The worker is attached to the
+/// runtime lease so memory pressure can cancel and join it before unmount.
+private final class FileDecodeBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: FileDecodeOutcome?
+
+    func set(_ value: FileDecodeOutcome) {
+        lock.withLock { stored = value }
+    }
+
+    var value: FileDecodeOutcome? { lock.withLock { stored } }
 }
 
 /// The file path used by captions and file tools. No microphone, exported audio copy,
@@ -64,88 +86,206 @@ actor FileSpeechTranscriber {
         let duration = try await asset.load(.duration).seconds
         guard duration.isFinite, duration > 0,
               let track = try await asset.loadTracks(withMediaType: .audio).first else { throw FileSpeechError.invalidAudio }
-        var kit: WhisperKit?
-        var lease: UUID?
-        if !preferApple {
-            do {
-                let acquired = try await WhisperModelStore.shared.acquire()
-                lease = acquired.0
-                kit = try await WhisperKit(WhisperKitConfig(modelFolder: acquired.1.appendingPathComponent("model").path,
-                    tokenizerFolder: acquired.1.appendingPathComponent("tokenizer"), verbose: false, prewarm: false, load: true, download: false))
-            } catch {
-                if let lease { await WhisperModelStore.shared.release(lease) }
-                lease = nil
-                try Task.checkCancellation()
-            }
+
+        // A file/caption pass is a REAL exclusive session on the same model
+        // owner as dictation and continuous voice. Its decode runs inside a
+        // runtime-attached worker, so memory pressure cancels and joins the
+        // worker before the model is unmounted. A healthy end keeps the
+        // foreground warm model; this path never unloads it directly.
+        if preferApple {
+            let outcome = await Self.decodeFile(
+                asset: asset, track: track, duration: duration, language: language,
+                allowAppleFallback: allowAppleFallback, lease: nil, progress: progress)
+            return try await finish(outcome, lease: nil)
         }
+
+        var lease: SpeechRecognitionLease?
         do {
-            var output: [TimedSpeechSegment] = []
-            var offset = 0.0
-            var appleAuthorized = false
-            var usedEngine: FileSpeechEngine?
+            lease = try await SpeechRecognitionRuntime.live.acquireForTimedTranscription()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+        }
+        guard let lease else {
+            // Model unavailable or busy: the Apple fallback below decides
+            // honestly when the caller allows it.
+            let outcome = await Self.decodeFile(
+                asset: asset, track: track, duration: duration, language: language,
+                allowAppleFallback: allowAppleFallback, lease: nil, progress: progress)
+            return try await finish(outcome, lease: nil)
+        }
+
+        let box = FileDecodeBox()
+        let (gate, gateContinuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        let worker = Task<Void, Never> {
+            var iterator = gate.makeAsyncIterator()
+            _ = await iterator.next()
+            guard !Task.isCancelled else {
+                box.set(.cancelled(decoderFault: false))
+                return
+            }
+            let outcome = await Self.decodeFile(
+                asset: asset, track: track, duration: duration, language: language,
+                allowAppleFallback: allowAppleFallback, lease: lease, progress: progress)
+            box.set(outcome)
+        }
+        let start = gateContinuation
+        guard await lease.attachWorker(worker, start: { start.finish() }) else {
+            // The claim was retired between acquire and attachment. The
+            // runtime already cancelled the worker and opened its gate; join
+            // it, then use the honest Apple-only path.
+            await worker.value
+            try Task.checkCancellation()
+            let outcome = await Self.decodeFile(
+                asset: asset, track: track, duration: duration, language: language,
+                allowAppleFallback: allowAppleFallback, lease: nil, progress: progress)
+            return try await finish(outcome, lease: nil)
+        }
+
+        let outcome = await withTaskCancellationHandler {
+            await worker.value
+            return box.value ?? .cancelled(decoderFault: false)
+        } onCancel: {
+            // Consumer cancellation must reach the attached worker; the
+            // runtime retirement paths cancel it directly too.
+            worker.cancel()
+        }
+        if Task.isCancelled {
+            await lease.sessionEnded(healthy: true)
+            throw CancellationError()
+        }
+        return try await finish(outcome, lease: lease)
+    }
+
+    /// Reports the worker's exit once with the correct warm-model health.
+    /// Cancellation is not decoder corruption; a real model error is.
+    private func finish(_ outcome: FileDecodeOutcome,
+                        lease: SpeechRecognitionLease?) async throws -> FileSpeechResult {
+        switch outcome {
+        case .success(let segments, let engine, let decoderFault):
+            await lease?.sessionEnded(healthy: !decoderFault)
+            return FileSpeechResult(segments: segments, engine: engine)
+        case .failure(let error, let decoderFault):
+            await lease?.sessionEnded(healthy: !decoderFault)
+            throw error
+        case .cancelled(let decoderFault):
+            await lease?.sessionEnded(healthy: !decoderFault)
+            throw CancellationError()
+        }
+    }
+
+    /// The actual chunk loop. It runs inside the attached worker for the
+    /// model path, so a memory-pressure cancel reaches it and the runtime
+    /// joins it before unmount. It never unloads the model itself.
+    private static func decodeFile(
+        asset: AVAsset,
+        track: AVAssetTrack,
+        duration: Double,
+        language: VoiceRecognitionLanguage,
+        allowAppleFallback: Bool,
+        lease: SpeechRecognitionLease?,
+        progress: @escaping @Sendable (Double) -> Void
+    ) async -> FileDecodeOutcome {
+        var output: [TimedSpeechSegment] = []
+        var offset = 0.0
+        var appleAuthorized = false
+        var usedEngine: FileSpeechEngine?
+        var decoderFault = false
+
+        do {
             while offset < duration {
                 try Task.checkCancellation()
                 let length = min(25, duration - offset)
-                let audio = try SpeechAudioChunk.read(asset: asset, track: track, start: offset, duration: length)
+                let audio: [Float]
+                do {
+                    audio = try SpeechAudioChunk.read(asset: asset, track: track, start: offset, duration: length)
+                } catch is CancellationError {
+                    return .cancelled(decoderFault: decoderFault)
+                } catch let error as FileSpeechError {
+                    return .failure(error, decoderFault: decoderFault)
+                } catch {
+                    return .failure(.invalidAudio, decoderFault: decoderFault)
+                }
+
                 let energy = audio.reduce(Float(0)) { $0 + $1 * $1 } / Float(max(1, audio.count))
                 if energy >= 0.000_01 {
                     var segments: [TimedSpeechSegment]?
-                    if let whisper = kit {
+                    if let lease, !decoderFault {
                         do {
-                            let code: String? = language.recognitionCode
-                            let results = try await whisper.transcribe(audioArray: audio, decodeOptions: DecodingOptions(
-                                language: code, detectLanguage: code == nil, skipSpecialTokens: true,
-                                withoutTimestamps: false, wordTimestamps: true))
-                            let decoded = results.flatMap(\.segments).compactMap { item -> TimedSpeechSegment? in
-                                let start = max(0, Double(item.start)), end = min(length, Double(item.end))
-                                let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                                guard start.isFinite, end.isFinite, end > start, !text.isEmpty else { return nil }
-                                let words = (item.words ?? []).compactMap { word -> TimedSpeechSegment.Word? in
-                                    let a = max(start, Double(word.start)), b = min(end, Double(word.end))
-                                    guard a.isFinite, b.isFinite, b > a else { return nil }
-                                    return .init(start: offset + a, end: offset + b, text: word.word)
-                                }
-                                return .init(start: offset + start, end: offset + end, text: text, words: words)
-                            }
+                            let decoded = try await lease.model.transcribeTimed(
+                                audio: audio,
+                                decoding: SpeechRecognitionDecoding(
+                                    languageCode: language.recognitionCode,
+                                    detectLanguage: language.recognitionCode == nil))
                             guard !decoded.isEmpty else { throw FileSpeechError.empty }
-                            segments = decoded
+                            segments = decoded.map { segment in
+                                let value = segment.offsetting(by: offset)
+                                return TimedSpeechSegment(
+                                    start: value.start, end: value.end, text: value.text,
+                                    words: value.words.map { .init(start: $0.start, end: $0.end, text: $0.text) })
+                            }
                             usedEngine = .enhanced
+                        } catch is CancellationError {
+                            return .cancelled(decoderFault: decoderFault)
                         } catch {
-                            try Task.checkCancellation()
-                            // Keep the lease until the inference and unload have both returned.
-                            await whisper.unloadModels(); kit = nil
-                            if let lease { await WhisperModelStore.shared.release(lease) }
-                            lease = nil
+                            if Task.isCancelled {
+                                return .cancelled(decoderFault: decoderFault)
+                            }
+                            // An empty decode is no-speech, not decoder
+                            // corruption. A real model error marks the lease
+                            // unhealthy, but the file path never unloads the
+                            // model directly.
+                            if let speechError = error as? FileSpeechError,
+                               case .empty = speechError {
+                                decoderFault = false
+                            } else {
+                                decoderFault = true
+                            }
                         }
                     }
                     if segments == nil {
                         guard allowAppleFallback else {
-                            throw FileSpeechError.unavailable
+                            return .failure(.unavailable, decoderFault: decoderFault)
                         }
                         if !appleAuthorized {
-                            guard await SystemSpeechAuthorizationProvider.requestAppleAccess() else { throw FileSpeechError.unavailable }
+                            guard await SystemSpeechAuthorizationProvider.requestAppleAccess() else {
+                                return .failure(.unavailable, decoderFault: decoderFault)
+                            }
                             appleAuthorized = true
                         }
-                        let words = try await AppleSpeechChunk().recognize(audio: audio, locale: language.locale)
-                        segments = Self.captionGroups(words: words, offset: offset, length: length)
-                        if usedEngine == nil { usedEngine = .apple }
+                        do {
+                            let words = try await AppleSpeechChunk().recognize(audio: audio, locale: language.locale)
+                            segments = Self.captionGroups(words: words, offset: offset, length: length)
+                            if usedEngine == nil { usedEngine = .apple }
+                        } catch is CancellationError {
+                            return .cancelled(decoderFault: decoderFault)
+                        } catch let error as FileSpeechError {
+                            return .failure(error, decoderFault: decoderFault)
+                        } catch {
+                            return .failure(.unavailable, decoderFault: decoderFault)
+                        }
                     }
                     output.append(contentsOf: segments ?? [])
                     // Text is bounded too; an enormous asset must be split explicitly.
-                    guard output.count <= 100_000 else { throw FileSpeechError.invalidAudio }
+                    guard output.count <= 100_000 else {
+                        return .failure(.invalidAudio, decoderFault: decoderFault)
+                    }
                 }
                 offset += length
                 progress(min(1, offset / duration))
             }
             try Task.checkCancellation()
-            guard !output.isEmpty else { throw FileSpeechError.empty }
-            if let kit { await kit.unloadModels() }
-            if let lease { await WhisperModelStore.shared.release(lease) }
-            return FileSpeechResult(segments: output, engine: usedEngine ?? .apple)
+            guard !output.isEmpty else {
+                return .failure(.empty, decoderFault: decoderFault)
+            }
+            return .success(segments: output, engine: usedEngine ?? .apple, decoderFault: decoderFault)
+        } catch is CancellationError {
+            return .cancelled(decoderFault: decoderFault)
+        } catch let error as FileSpeechError {
+            return .failure(error, decoderFault: decoderFault)
         } catch {
-            if let kit { await kit.unloadModels() }
-            if let lease { await WhisperModelStore.shared.release(lease) }
-            throw error
+            return .failure(.invalidAudio, decoderFault: decoderFault)
         }
     }
 

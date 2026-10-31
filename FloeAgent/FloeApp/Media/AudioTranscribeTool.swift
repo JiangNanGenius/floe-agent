@@ -88,20 +88,25 @@ struct AudioTranscribeTool: AgentTool {
             throw FloeError.validationFailed(AssistantAudioError.temporaryWriteRefused.errorDescription!)
         }
         let language = VoiceRecognitionLanguage(rawValue: args.language ?? "automatic") ?? .automatic
-
+        let requestedFormat: String = {
+            if let output = args.output,
+               !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let ext = (output as NSString).pathExtension.lowercased()
+                return ext == "txt" ? "text" : ext
+            }
+            return args.format?.lowercased() ?? "text"
+        }()
+        // SRT/VTT/JSON demand real timing. A text-only cloud model may use the
+        // local timed model for this request; it must never fabricate caption
+        // alignment from the whole-file duration.
         let result = try await transcribe(
-            input: input, language: language, serviceID: args.service, context: context)
+            input: input, language: language, serviceID: args.service,
+            requiresTiming: requestedFormat != "text", context: context)
         guard !result.segments.isEmpty || !result.text.isEmpty else {
             throw FloeError.validationFailed(FileSpeechError.empty.errorDescription ?? "No usable speech recognized")
         }
 
-        let format: String
-        if let outputURL {
-            let ext = outputURL.pathExtension.lowercased()
-            format = ext == "txt" ? "text" : ext
-        } else {
-            format = args.format?.lowercased() ?? "text"
-        }
+        let format = requestedFormat
 
         if format != "text", result.segments.isEmpty {
             throw FloeError.validationFailed(
@@ -162,13 +167,15 @@ struct AudioTranscribeTool: AgentTool {
         input: URL,
         language: VoiceRecognitionLanguage,
         serviceID: String?,
+        requiresTiming: Bool,
         context: ToolContext
     ) async throws -> AssistantAudioTranscriptionResult {
         try await withThrowingTaskGroup(of: AssistantAudioTranscriptionResult.self) { group in
             group.addTask {
                 if let assistant {
                     return try await assistant.transcribe(
-                        fileURL: input, language: language, serviceID: serviceID)
+                        fileURL: input, language: language, serviceID: serviceID,
+                        requiresTiming: requiresTiming)
                 }
                 let local = try await FileSpeechTranscriber.shared.transcribeResult(
                     url: input, language: language,

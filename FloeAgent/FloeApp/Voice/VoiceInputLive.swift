@@ -21,6 +21,7 @@ import Foundation
 import Speech
 import AVFoundation
 import FloeCore
+import FloeProviders
 
 // MARK: - Authorization
 
@@ -35,11 +36,39 @@ struct SystemSpeechAuthorizationProvider: SpeechAuthorizationProviding {
     }
 
     func requestSpeechRecognitionAccess() async -> Bool {
+        let method = VoiceRecognitionPreferences.method
+        // A configured cloud primary needs the microphone only. Apple speech
+        // permission is requested later, exactly when an Apple fallback is
+        // actually selected. An explicit cloud route with no usable profile
+        // also never prompts for Apple here; it surfaces its configuration
+        // error through the normal voice failure path.
+        if await Self.cloudRouteSelected(method: method) { return true }
         #if canImport(WhisperKit)
-        if VoiceRecognitionPreferences.method == .enhanced { return true }
-        if VoiceRecognitionPreferences.method == .automatic, await WhisperModelStore.shared.isInstalled() { return true }
+        if method == .enhanced { return true }
+        if method == .automatic, await WhisperModelStore.shared.isInstalled() { return true }
         #endif
         return await Self.requestAppleAccess()
+    }
+
+    /// Whether the CURRENT primary method resolves to a cloud attempt. This
+    /// is metadata only (no endpoint call, no credential probe) and runs on
+    /// the MainActor because the profile store is App-owned.
+    static func cloudRouteSelected(method: VoiceRecognitionPreferences.Method) async -> Bool {
+        if method == .cloud { return true }
+        guard method == .automatic else { return false }
+        return await MainActor.run {
+            let store = CloudASRSettingsStore.shared
+            let resolution = CloudASRRouteResolver.resolve(
+                method: method.rawValue,
+                profiles: store.profiles,
+                primaryProfileID: store.primaryProfileID,
+                readyProfileIDs: Set(store.readyProfiles.map(\.id)))
+            if case .cloud = resolution.route { return true }
+            // Selected-but-unusable cloud is still a cloud attempt (normal
+            // configuration error), not an Apple permission request.
+            if case .cloudUnavailable = resolution.route { return true }
+            return false
+        }
     }
     static func requestAppleAccess() async -> Bool {
         await withCheckedContinuation { continuation in
@@ -602,8 +631,47 @@ extension VoiceInputController {
             diagnostics: diagnostics
         )
     }
+    @MainActor
     static func makePreferredTranscriber(language: VoiceRecognitionLanguage, diagnostics: (any VoiceInputDiagnostics)? = nil) async throws -> any SpeechTranscribing {
         let method = VoiceRecognitionPreferences.method
+        let store = CloudASRSettingsStore.shared
+        let resolution = CloudASRRouteResolver.resolve(
+            method: method.rawValue,
+            profiles: store.profiles,
+            primaryProfileID: store.primaryProfileID,
+            readyProfileIDs: Set(store.readyProfiles.map(\.id)))
+        switch resolution.route {
+        case .cloud(let profile):
+            do {
+                let cloud = try Self.makeCloudTranscriber(
+                    profile: profile,
+                    language: language,
+                    diagnostics: diagnostics)
+                FloeLogger(category: .app).info(
+                    "voiceBackendStarted domain=voice kind=cloud provider=\(profile.provider.rawValue) route=\(profile.billingRoute.rawValue)")
+                return cloud
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if method == .cloud {
+                    throw VoiceSessionError.failure(.recognizerFailed)
+                }
+                FloeLogger(category: .app).warning(
+                    "voiceBackendFallback domain=voice from=cloud error=\(String(reflecting: type(of: error)))")
+                // Automatic keeps its cloud-first promise but local is a real
+                // fallback for this attempt.
+            }
+        case .cloudUnavailable:
+            // Explicit cloud with no usable selected profile: normal
+            // actionable configuration failure, never a silent local switch.
+            // Automatic resolves to .localWhisper above instead.
+            throw VoiceSessionError.failure(.modelNotReady)
+        case .localWhisper, .apple:
+            break
+        }
+        if method == .system {
+            return try await Self.makeAppleTranscriber(language: language, diagnostics: diagnostics)
+        }
         #if canImport(WhisperKit)
         if method != .system {
             do {
@@ -631,10 +699,73 @@ extension VoiceInputController {
         #else
         if method == .enhanced { throw VoiceSessionError.failure(.modelNotReady) }
         #endif
+        return try await Self.makeAppleTranscriber(language: language, diagnostics: diagnostics)
+    }
+
+    /// Local-only recovery factory for an uncommitted cloud utterance.
+    /// Whisper is tried first when installed (no Apple prompt); Apple is
+    /// requested only when it is actually about to be used.
+    static func makeLocalFallbackTranscriber(
+        language: VoiceRecognitionLanguage,
+        diagnostics: (any VoiceInputDiagnostics)? = nil
+    ) async throws -> (any SpeechTranscribing)? {
+        #if canImport(WhisperKit)
+        if await WhisperModelStore.shared.isInstalled() {
+            do {
+                return try await WhisperStreamingTranscriber.make(
+                    language: language, diagnostics: diagnostics,
+                    allowSystemFallback: false)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                FloeLogger(category: .app).warning(
+                    "voiceFallbackWhisperUnavailable domain=voice code=\((error as NSError).code)")
+            }
+        }
+        #endif
+        guard await SystemSpeechAuthorizationProvider.requestAppleAccess() else {
+            return nil
+        }
+        return try StreamingSpeechRecognizerTranscriber(
+            locale: language.locale, diagnostics: diagnostics)
+    }
+
+    /// Uses the single ASR profile store, the frozen adapter factory and the
+    /// existing native transcriber seams. The secret is read at request time
+    /// and never retained in profile metadata or diagnostics.
+    static func makeCloudTranscriber(
+        profile: ASRProfile,
+        language: VoiceRecognitionLanguage,
+        diagnostics: (any VoiceInputDiagnostics)? = nil
+    ) throws -> CloudSpeechTranscriber {
+        let adapters = CloudSpeechAdapters(
+            file: { try ASRAdapterFactory.fileAdapter(for: $0) },
+            live: { try ASRAdapterFactory.liveAdapter(for: $0) })
+        return try CloudSpeechTranscriber(
+            profile: profile,
+            language: language,
+            adapters: adapters,
+            credentialProvider: {
+                try await MainActor.run {
+                    try CloudASRSettingsStore.shared.credential(for: profile)
+                }
+            },
+            localFallback: {
+                try await Self.makeLocalFallbackTranscriber(
+                    language: language, diagnostics: diagnostics)
+            },
+            diagnostics: diagnostics)
+    }
+
+    private static func makeAppleTranscriber(
+        language: VoiceRecognitionLanguage,
+        diagnostics: (any VoiceInputDiagnostics)? = nil
+    ) async throws -> any SpeechTranscribing {
         guard await SystemSpeechAuthorizationProvider.requestAppleAccess() else {
             throw VoiceSessionError.failure(.speechPermissionDenied)
         }
-        let apple = try StreamingSpeechRecognizerTranscriber(locale: language.locale, diagnostics: diagnostics)
+        let apple = try StreamingSpeechRecognizerTranscriber(
+            locale: language.locale, diagnostics: diagnostics)
         FloeLogger(category: .app).info("voiceBackendStarted domain=voice kind=apple")
         return apple
     }

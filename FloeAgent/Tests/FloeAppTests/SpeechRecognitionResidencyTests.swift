@@ -49,16 +49,20 @@ final class SpeechRecognitionResidencyTests: XCTestCase {
         private var externalLeaseHeldStorage = false
         private var selfRetirementAttemptsStorage = 0
         private var loadCountStorage = 0
+        private var loadStartedStorage = 0
         private var unmountCountStorage = 0
         private var releaseCountStorage = 0
         private var concurrentTranscribesStorage = 0
         private var maxConcurrentTranscribesStorage = 0
+        private var unmountOverlappedTranscribeStorage = 0
 
         var identity: String? { lock.withLock { identityStorage } }
         var loadCount: Int { lock.withLock { loadCountStorage } }
+        var loadStartedCount: Int { lock.withLock { loadStartedStorage } }
         var unmountCount: Int { lock.withLock { unmountCountStorage } }
         var releaseCount: Int { lock.withLock { releaseCountStorage } }
         var maxConcurrentTranscribes: Int { lock.withLock { maxConcurrentTranscribesStorage } }
+        var unmountOverlappedTranscribe: Int { lock.withLock { unmountOverlappedTranscribeStorage } }
         var mountOverlapsUnmount: Int { lock.withLock { mountOverlapsUnmountStorage } }
         var unmountInFlight: Bool { lock.withLock { unmountInFlightStorage } }
         var unmountDelayMilliseconds: Int { lock.withLock { unmountDelayMillisecondsStorage } }
@@ -98,7 +102,12 @@ final class SpeechRecognitionResidencyTests: XCTestCase {
         func markMounted(_ id: UUID) { lock.withLock { _ = mountedIDs.insert(id) } }
         func evict(_ id: UUID) { lock.withLock { _ = mountedIDs.remove(id) } }
         func isMounted(_ id: UUID) -> Bool { lock.withLock { mountedIDs.contains(id) } }
-        func beginUnmount() { lock.withLock { unmountInFlightStorage = true } }
+        func beginUnmount() {
+            lock.withLock {
+                if concurrentTranscribesStorage > 0 { unmountOverlappedTranscribeStorage += 1 }
+                unmountInFlightStorage = true
+            }
+        }
         func finishUnmount() {
             lock.withLock {
                 unmountInFlightStorage = false
@@ -122,7 +131,10 @@ final class SpeechRecognitionResidencyTests: XCTestCase {
             }
             // A mount that starts while an unmount is still running is the
             // overlapping file access the retirement window must prevent.
-            lock.withLock { if unmountInFlightStorage { mountOverlapsUnmountStorage += 1 } }
+            lock.withLock {
+                loadStartedStorage += 1
+                if unmountInFlightStorage { mountOverlapsUnmountStorage += 1 }
+            }
             if delay > 0 {
                 let duration = Duration.milliseconds(delay)
                 if ignore { try? await Task.sleep(for: duration) } else { try await Task.sleep(for: duration) }
@@ -141,6 +153,14 @@ final class SpeechRecognitionResidencyTests: XCTestCase {
             let model = ResidencyModel(loader: self, identity: mountedIdentity)
             markMounted(model.mountID)
             return SpeechRecognitionRuntime.Loaded(model: model, leaseID: UUID())
+        }
+
+        func waitForLoadStart(_ minimum: Int = 1) async throws {
+            for _ in 0..<600 {
+                if loadStartedCount >= minimum { return }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            XCTFail("the cold mount did not start")
         }
 
         func beginTranscribe() -> Bool {
@@ -166,6 +186,15 @@ final class SpeechRecognitionResidencyTests: XCTestCase {
             loader.endTranscribe()
             if overlapped { throw ResidencyStubError.unmounted }
             return ["ok"]
+        }
+
+        func transcribeTimed(audio: [Float], decoding: SpeechRecognitionDecoding) async throws -> [SpeechRecognitionTimedSegment] {
+            guard loader.isMounted(mountID) else { throw ResidencyStubError.unmounted }
+            let overlapped = loader.beginTranscribe()
+            try? await Task.sleep(for: .milliseconds(5))
+            loader.endTranscribe()
+            if overlapped { throw ResidencyStubError.unmounted }
+            return [SpeechRecognitionTimedSegment(start: 0.1, end: 0.5, text: "file", words: [])]
         }
 
         func unmount() async {
@@ -619,6 +648,458 @@ final class SpeechRecognitionResidencyTests: XCTestCase {
         XCTAssertTrue(SpeechRecognitionResidencyPolicy.unloadsAfterSessionEnd(healthy: true, isForeground: false))
         XCTAssertTrue(SpeechRecognitionResidencyPolicy.releasesOnIdleLifecycle(hasActiveSession: false))
         XCTAssertFalse(SpeechRecognitionResidencyPolicy.releasesOnIdleLifecycle(hasActiveSession: true))
+    }
+
+    // MARK: - Optional model preload
+
+    func testWarmUpConsumesNoSessionLeaseAndReusesItsMount() async throws {
+        let loader = ResidencyLoader()
+        let runtime = runtime(loader)
+
+        let warmed = await runtime.warmUp()
+        XCTAssertTrue(warmed)
+        XCTAssertEqual(loader.loadCount, 1, "preload mounted the installed model")
+        // If warmUp had consumed a session lease this would throw .busy.
+        let lease = try await runtime.acquire()
+        XCTAssertEqual(loader.loadCount, 1, "the first real session reused the preload mount")
+        await (await startSession(lease)).value
+        XCTAssertEqual(loader.unmountCount, 0, "ordinary end kept the foreground model warm")
+    }
+
+    func testWarmUpAndAcquireCoalesceOneColdMount() async throws {
+        let loader = ResidencyLoader()
+        loader.configure(delayMilliseconds: 250)
+        let runtime = runtime(loader)
+
+        let warm = Task { await runtime.warmUp() }
+        try await Task.sleep(for: .milliseconds(60))
+        let lease = try await runtime.acquire()
+        let warmed = await warm.value
+        XCTAssertTrue(warmed)
+        XCTAssertEqual(loader.loadCount, 1, "warm-up and acquire shared one verification/mount")
+        XCTAssertEqual(loader.unmountCount, 0)
+        await (await startSession(lease)).value
+        XCTAssertEqual(loader.unmountCount, 0)
+    }
+
+    func testWarmUpJoinsAnAcquireStartedColdMount() async throws {
+        let loader = ResidencyLoader()
+        loader.configure(delayMilliseconds: 220)
+        let runtime = runtime(loader)
+
+        let acquire = Task { try await runtime.acquire() }
+        try await loader.waitForLoadStart()
+        let warm = Task { await runtime.warmUp() }
+        let lease = try await acquire.value
+        let warmed = await warm.value
+        XCTAssertTrue(warmed)
+        XCTAssertEqual(loader.loadCount, 1)
+        XCTAssertEqual(loader.unmountCount, 0)
+        await (await startSession(lease)).value
+    }
+
+    func testCancelledWarmUpDiscardsUnusedSpeculativeMount() async throws {
+        let loader = ResidencyLoader()
+        loader.configure(delayMilliseconds: 200, unmountDelayMilliseconds: 30, ignoreCancellation: true)
+        let runtime = runtime(loader)
+
+        let warm = Task { await runtime.warmUp() }
+        try await loader.waitForLoadStart()
+        warm.cancel()
+        let warmed = await warm.value
+        XCTAssertFalse(warmed, "a cancelled preload must not claim success")
+        XCTAssertEqual(loader.loadCount, 1, "the discarded mount was built once")
+        XCTAssertEqual(loader.unmountCount, 1, "unused speculative mount was unmounted")
+        XCTAssertEqual(loader.releaseCount, 1, "the discarded mount returned its file lease")
+        XCTAssertEqual(loader.mountOverlapsUnmount, 0, "no mount overlapped the discard")
+
+        let lease = try await runtime.acquire()
+        XCTAssertEqual(loader.loadCount, 2, "a later explicit acquire mounted again")
+        await (await startSession(lease)).value
+    }
+
+    func testCancelledWarmUpKeepsLoadForWaitingAcquire() async throws {
+        let loader = ResidencyLoader()
+        loader.configure(delayMilliseconds: 220)
+        let runtime = runtime(loader)
+
+        let warm = Task { await runtime.warmUp() }
+        try await loader.waitForLoadStart()
+        let acquire = Task { try await runtime.acquire() }
+        try await Task.sleep(for: .milliseconds(80))
+        warm.cancel()
+        let warmed = await warm.value
+        XCTAssertFalse(warmed, "the cancelled preload did not claim success")
+        let lease = try await acquire.value
+        XCTAssertEqual(loader.loadCount, 1, "real demand kept the single mount")
+        XCTAssertEqual(loader.unmountCount, 0, "speculative cancellation never failed a real waiter")
+        await (await startSession(lease)).value
+    }
+
+    func testDisableCancelsAnInFlightSpeculativeMount() async throws {
+        let loader = ResidencyLoader()
+        loader.configure(delayMilliseconds: 180, ignoreCancellation: true)
+        let runtime = runtime(loader)
+        let warm = Task { await runtime.warmUp() }
+        try await loader.waitForLoadStart()
+        let cancelled = await runtime.cancelSpeculativeWarmUp()
+        XCTAssertTrue(cancelled)
+        let warmed = await warm.value
+        XCTAssertFalse(warmed, "in-flight preload did not install a disabled model")
+        XCTAssertEqual(loader.unmountCount, 1)
+        XCTAssertEqual(loader.releaseCount, 1)
+    }
+
+    func testWarmUpDoesNotMountWhileBackgrounded() async throws {
+        let loader = ResidencyLoader()
+        let runtime = runtime(loader)
+        await runtime.setForeground(false)
+        let warmed = await runtime.warmUp()
+        XCTAssertFalse(warmed)
+        XCTAssertEqual(loader.loadCount, 0)
+    }
+
+    func testDisableFencesAWarmUpSuspendedBeforeItsColdLoad() async throws {
+        let loader = ResidencyLoader()
+        loader.configure(identityDelayMilliseconds: 220)
+        let runtime = runtime(loader)
+        let warm = Task { await runtime.warmUp() }
+        try await Task.sleep(for: .milliseconds(60))
+        let cancelled = await runtime.cancelSpeculativeWarmUp()
+        XCTAssertFalse(cancelled, "nothing was mounted yet to discard")
+        let warmed = await warm.value
+        XCTAssertFalse(warmed, "disabled warm-up did not mount after the identity await")
+        XCTAssertEqual(loader.loadCount, 0)
+        await runtime.allowSpeculativeWarmUp()
+        let reenabled = await runtime.warmUp()
+        XCTAssertTrue(reenabled)
+        XCTAssertEqual(loader.loadCount, 1)
+    }
+
+    func testDisableRetiresIdleSpeculativeWarmButNotLiveSession() async throws {
+        let loader = ResidencyLoader()
+        let runtime = runtime(loader)
+        let firstWarm = await runtime.warmUp()
+        XCTAssertTrue(firstWarm)
+        let disabled = await runtime.cancelSpeculativeWarmUp()
+        XCTAssertTrue(disabled, "disabling released the idle preload")
+        XCTAssertEqual(loader.unmountCount, 1)
+        XCTAssertEqual(loader.releaseCount, 1)
+
+        await runtime.allowSpeculativeWarmUp()
+        let secondWarm = await runtime.warmUp()
+        XCTAssertTrue(secondWarm)
+        let lease = try await runtime.acquire()
+        let worker = Task<Void, Never> {
+            do { try await Task.sleep(for: .milliseconds(120)) } catch { }
+        }
+        await lease.attachWorker(worker)
+        let cancelWhileLive = await runtime.cancelSpeculativeWarmUp()
+        XCTAssertFalse(cancelWhileLive, "a live session is never cancelled")
+        XCTAssertEqual(loader.unmountCount, 1)
+        await lease.beginFinishing()
+        await worker.value
+        await lease.sessionEnded(healthy: true)
+        XCTAssertEqual(loader.unmountCount, 1, "a real-use warm model is not speculative")
+    }
+
+    func testWarmUpIsSuppressedAfterMemoryPressureUntilExplicitlyReenabled() async throws {
+        let loader = ResidencyLoader()
+        let runtime = runtime(loader)
+        let initialWarm = await runtime.warmUp()
+        XCTAssertTrue(initialWarm)
+        await runtime.handleMemoryWarning()
+        XCTAssertEqual(loader.unmountCount, 1)
+        let suppressed = await runtime.warmUp()
+        XCTAssertFalse(suppressed, "speculation must not undo a memory-pressure release")
+        XCTAssertEqual(loader.loadCount, 1)
+
+        let lease = try await runtime.acquire()
+        XCTAssertEqual(loader.loadCount, 2, "explicit acquisition still mounts after pressure")
+        await (await startSession(lease)).value
+        await runtime.allowSpeculativeWarmUp()
+        let rearmed = await runtime.warmUp()
+        XCTAssertTrue(rearmed, "explicit enable re-arms preload")
+        XCTAssertEqual(loader.loadCount, 2, "already-warm model is reused")
+    }
+
+    func testWarmUpRetriesStaleIdentityAndReturnsTheStaleLease() async throws {
+        let loader = ResidencyLoader()
+        loader.setNextMountIdentity("rev-stale")
+        let runtime = runtime(loader)
+
+        let warmed = await runtime.warmUp()
+        XCTAssertTrue(warmed)
+        XCTAssertEqual(loader.loadCount, 2, "stale mount then current revision")
+        XCTAssertEqual(loader.unmountCount, 1)
+        XCTAssertEqual(loader.releaseCount, 1)
+        XCTAssertEqual(loader.mountOverlapsUnmount, 0)
+        let lease = try await runtime.acquire()
+        XCTAssertEqual(lease.model.identity, "rev-a")
+        XCTAssertEqual(loader.loadCount, 2)
+        await (await startSession(lease)).value
+    }
+
+    func testWarmUpRetiresAWarmModelWhenTheInstalledIdentityMoves() async throws {
+        let loader = ResidencyLoader()
+        let runtime = runtime(loader)
+        let initial = await runtime.warmUp()
+        XCTAssertTrue(initial)
+        loader.setIdentity("rev-b")
+        let rewarmed = await runtime.warmUp()
+        XCTAssertTrue(rewarmed)
+        XCTAssertEqual(loader.loadCount, 2)
+        XCTAssertEqual(loader.unmountCount, 1)
+        XCTAssertEqual(loader.releaseCount, 1)
+        let lease = try await runtime.acquire()
+        XCTAssertEqual(lease.model.identity, "rev-b")
+        XCTAssertEqual(loader.loadCount, 2)
+        await (await startSession(lease)).value
+    }
+
+    func testWarmUpRetirementIsTerminalAndReturnsTheLease() async throws {
+        let loader = ResidencyLoader()
+        loader.configure(delayMilliseconds: 180, unmountDelayMilliseconds: 40, ignoreCancellation: true)
+        let runtime = runtime(loader)
+
+        let warm = Task { await runtime.warmUp() }
+        try await loader.waitForLoadStart()
+        let released = await runtime.releaseForModelManagement()
+        XCTAssertTrue(released)
+        let warmed = await warm.value
+        XCTAssertFalse(warmed, "a retired speculative mount is never installed")
+        XCTAssertEqual(loader.unmountCount, 1)
+        XCTAssertEqual(loader.releaseCount, 1)
+        XCTAssertEqual(loader.mountOverlapsUnmount, 0)
+
+        let lease = try await runtime.acquire()
+        XCTAssertEqual(loader.loadCount, 2, "a fresh acquire mounts after retirement")
+        await (await startSession(lease)).value
+    }
+
+    func testTimedFileLeaseSharesTheModelAndSerializesWithVoice() async throws {
+        let loader = ResidencyLoader()
+        let runtime = runtime(loader)
+        let initialWarm = await runtime.warmUp()
+        XCTAssertTrue(initialWarm)
+        let fileLease = try await runtime.acquireForTimedTranscription()
+        XCTAssertEqual(loader.loadCount, 1, "file pass reused the warm mount")
+        let segments = try await fileLease.model.transcribeTimed(
+            audio: [0.1], decoding: SpeechRecognitionDecoding(languageCode: "en", detectLanguage: false))
+        XCTAssertEqual(segments.count, 1)
+        XCTAssertLessThan(segments[0].start, segments[0].end)
+
+        do {
+            _ = try await runtime.acquire()
+            XCTFail("a live timed file lease must not be stolen")
+        } catch SpeechRecognitionRuntime.Failure.busy {
+            // Expected.
+        }
+        await fileLease.beginFinishing()
+        await fileLease.sessionEnded(healthy: true)
+        XCTAssertEqual(loader.unmountCount, 0, "healthy file end kept the warm model")
+        let voice = try await runtime.acquire()
+        XCTAssertEqual(loader.loadCount, 1, "voice reused the same mounted model")
+        await (await startSession(voice)).value
+        XCTAssertEqual(loader.maxConcurrentTranscribes, 1)
+    }
+
+    func testTimedFileWorkerIsJoinedBeforeMemoryPressureUnmount() async throws {
+        let loader = ResidencyLoader()
+        let runtime = runtime(loader)
+        let warmed = await runtime.warmUp()
+        XCTAssertTrue(warmed)
+        let lease = try await runtime.acquireForTimedTranscription()
+        let cancelled = ResidencyFlag()
+        let worker = Task {
+            while !Task.isCancelled {
+                _ = try? await lease.model.transcribeTimed(
+                    audio: [0.1], decoding: SpeechRecognitionDecoding(languageCode: "en", detectLanguage: false))
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            cancelled.set()
+        }
+        await lease.attachWorker(worker)
+        try await Task.sleep(for: .milliseconds(40))
+        await runtime.handleMemoryWarning()
+        XCTAssertTrue(cancelled.value, "the timed file worker observed cancellation")
+        XCTAssertEqual(loader.unmountCount, 1, "unmount happened only after the worker exited")
+        XCTAssertEqual(loader.maxConcurrentTranscribes, 1, "retirement never overlapped timed inference")
+        XCTAssertEqual(loader.unmountOverlappedTranscribe, 0, "unmount happened only after the timed worker exited")
+
+        let successor = try await runtime.acquire()
+        await lease.sessionEnded(healthy: false)
+        XCTAssertEqual(loader.unmountCount, 1, "a late file callback cannot release the successor")
+        await (await startSession(successor)).value
+        XCTAssertEqual(loader.unmountCount, 1, "successor stayed mounted")
+    }
+
+    func testBackgroundKeepsLiveTimedFileWorkerMountedUntilExit() async throws {
+        let loader = ResidencyLoader()
+        let runtime = runtime(loader)
+        let warmed = await runtime.warmUp()
+        XCTAssertTrue(warmed)
+        let lease = try await runtime.acquireForTimedTranscription()
+        let worker = Task {
+            while !Task.isCancelled {
+                _ = try? await lease.model.transcribeTimed(
+                    audio: [0.1], decoding: SpeechRecognitionDecoding(languageCode: "en", detectLanguage: false))
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        await lease.attachWorker(worker)
+        await runtime.setForeground(false)
+        XCTAssertEqual(loader.unmountCount, 0, "background never unmounted under the live file worker")
+        XCTAssertEqual(loader.unmountOverlappedTranscribe, 0, "background did not overlap the timed worker")
+        await lease.beginFinishing()
+        worker.cancel()
+        await worker.value
+        await lease.sessionEnded(healthy: true)
+        XCTAssertEqual(loader.unmountCount, 1, "background retired only after the file worker ended")
+        await runtime.setForeground(true)
+    }
+
+    func testPackManagementIsBusyForALiveTimedFileWorker() async throws {
+        let loader = ResidencyLoader()
+        let runtime = runtime(loader)
+        let warmed = await runtime.warmUp()
+        XCTAssertTrue(warmed)
+        let lease = try await runtime.acquireForTimedTranscription()
+        let worker = Task {
+            while !Task.isCancelled {
+                _ = try? await lease.model.transcribeTimed(
+                    audio: [0.1], decoding: SpeechRecognitionDecoding(languageCode: "en", detectLanguage: false))
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        await lease.attachWorker(worker)
+        let busy = await runtime.releaseForModelManagement()
+        XCTAssertFalse(busy, "a live timed file worker reports busy")
+        XCTAssertEqual(loader.unmountCount, 0, "pack management did not unmount under the worker")
+        XCTAssertEqual(loader.unmountOverlappedTranscribe, 0, "pack management did not overlap the timed worker")
+        await lease.beginFinishing()
+        worker.cancel()
+        await worker.value
+        await lease.sessionEnded(healthy: true)
+        let released = await runtime.releaseForModelManagement()
+        XCTAssertTrue(released, "idle warm model is retired for management")
+        XCTAssertEqual(loader.unmountCount, 1)
+    }
+
+    func testTimedMappingKeepsRealTimingAndDropsInvalidAlignment() {
+        let raw = [
+            SpeechRecognitionTimedMapping.RawSegment(start: -0.5, end: 2.5, text: " hello ",
+                words: [.init(start: -1, end: 1, text: "hello")]),
+            SpeechRecognitionTimedMapping.RawSegment(start: 5, end: 9, text: "outside", words: nil),
+            SpeechRecognitionTimedMapping.RawSegment(start: 0, end: 0, text: "zero", words: nil),
+            SpeechRecognitionTimedMapping.RawSegment(start: .nan, end: 1, text: "nan", words: nil),
+            SpeechRecognitionTimedMapping.RawSegment(start: 1, end: 2, text: "   ", words: nil)
+        ]
+        let mapped = SpeechRecognitionTimedMapping.relativeSegments(raw: raw, duration: 4)
+        XCTAssertEqual(mapped.count, 1)
+        XCTAssertEqual(mapped[0].start, 0)
+        XCTAssertEqual(mapped[0].end, 2.5)
+        XCTAssertEqual(mapped[0].text, "hello")
+        XCTAssertEqual(mapped[0].words.count, 1)
+        XCTAssertEqual(mapped[0].words[0].start, 0)
+        XCTAssertEqual(mapped[0].words[0].end, 1)
+        let shifted = mapped[0].offsetting(by: 25)
+        XCTAssertEqual(shifted.start, 25)
+        XCTAssertEqual(shifted.end, 27.5)
+        XCTAssertEqual(shifted.words[0].start, 25)
+        XCTAssertEqual(shifted.words[0].end, 26)
+    }
+}
+
+
+final class VoiceRecognitionPreloadPolicyTests: XCTestCase {
+    private func makeDefaults() -> (UserDefaults, String) {
+        let suite = "org.floeagent.preload.tests.\(UUID().uuidString)"
+        return (UserDefaults(suiteName: suite)!, suite)
+    }
+
+    func testDefaultIsOffForEveryRouteAndObservationNeverEnables() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertFalse(VoiceRecognitionPreloadPolicy.isEnabled(defaults: defaults))
+        let routes = [
+            VoiceRecognitionPreloadPolicy.primaryIdentity(method: "enhanced"),
+            VoiceRecognitionPreloadPolicy.primaryIdentity(method: "openai", provider: "p1", profile: "f1"),
+            VoiceRecognitionPreloadPolicy.primaryIdentity(method: "volcengine", provider: "p2", profile: "f2"),
+            VoiceRecognitionPreloadPolicy.primaryIdentity(method: "alibaba", provider: "p3", profile: "f3")
+        ]
+        for _ in routes {
+            XCTAssertFalse(VoiceRecognitionPreloadPolicy.isEnabled(defaults: defaults))
+        }
+        let route = VoiceRecognitionPreloadPolicy.primaryIdentity(method: "enhanced")
+        XCTAssertEqual(VoiceRecognitionPreloadPolicy.observePrimaryIdentity(route, defaults: defaults), .recorded)
+        XCTAssertFalse(VoiceRecognitionPreloadPolicy.isEnabled(defaults: defaults))
+        XCTAssertEqual(VoiceRecognitionPreloadPolicy.primaryIdentity(defaults: defaults), route)
+    }
+
+    func testExplicitOnPersistsAcrossDefaultsInstanceAndSettingsEntry() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let route = VoiceRecognitionPreloadPolicy.primaryIdentity(method: "enhanced")
+        VoiceRecognitionPreloadPolicy.setEnabled(true, primaryIdentity: route, defaults: defaults)
+        defaults.synchronize()
+        let relaunched = UserDefaults(suiteName: suite)!
+        XCTAssertTrue(VoiceRecognitionPreloadPolicy.isEnabled(defaults: relaunched))
+        XCTAssertEqual(VoiceRecognitionPreloadPolicy.observePrimaryIdentity(route, defaults: relaunched), .unchanged)
+        XCTAssertTrue(VoiceRecognitionPreloadPolicy.isEnabled(defaults: relaunched))
+    }
+
+    func testPrimaryRouteChangeResetsOnAndDoesNotAutoRestore() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let first = VoiceRecognitionPreloadPolicy.primaryIdentity(method: "automatic")
+        let second = VoiceRecognitionPreloadPolicy.primaryIdentity(method: "openai", provider: "p1", profile: "f1")
+        VoiceRecognitionPreloadPolicy.setEnabled(true, primaryIdentity: first, defaults: defaults)
+        XCTAssertEqual(VoiceRecognitionPreloadPolicy.observePrimaryIdentity(second, defaults: defaults), .reset)
+        XCTAssertFalse(VoiceRecognitionPreloadPolicy.isEnabled(defaults: defaults))
+        VoiceRecognitionPreloadPolicy.setEnabled(true, primaryIdentity: second, defaults: defaults)
+        XCTAssertEqual(VoiceRecognitionPreloadPolicy.observePrimaryIdentity(first, defaults: defaults), .reset)
+        XCTAssertFalse(VoiceRecognitionPreloadPolicy.isEnabled(defaults: defaults))
+
+        let providerA = VoiceRecognitionPreloadPolicy.primaryIdentity(method: "openai", provider: "p1", profile: "f1")
+        let providerB = VoiceRecognitionPreloadPolicy.primaryIdentity(method: "openai", provider: "p2", profile: "f1")
+        VoiceRecognitionPreloadPolicy.setEnabled(true, primaryIdentity: providerA, defaults: defaults)
+        XCTAssertEqual(VoiceRecognitionPreloadPolicy.observePrimaryIdentity(providerB, defaults: defaults), .reset)
+        XCTAssertFalse(VoiceRecognitionPreloadPolicy.isEnabled(defaults: defaults))
+    }
+
+    func testLanguageModelAndCredentialChangesDoNotReset() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let route = VoiceRecognitionPreloadPolicy.primaryIdentity(method: "enhanced")
+        VoiceRecognitionPreloadPolicy.setEnabled(true, primaryIdentity: route, defaults: defaults)
+        defaults.set("zh-CN", forKey: "org.floeagent.voice.recognitionLanguage")
+        defaults.set("small", forKey: "voice.local.model.parameter")
+        defaults.set(true, forKey: "voice.provider.credential.changed")
+        XCTAssertEqual(VoiceRecognitionPreloadPolicy.observePrimaryIdentity(route, defaults: defaults), .unchanged)
+        XCTAssertTrue(VoiceRecognitionPreloadPolicy.isEnabled(defaults: defaults))
+    }
+
+    func testUnboundOnResetsAndSchedulingRequiresEveryGate() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        VoiceRecognitionPreloadPolicy.setEnabled(true, primaryIdentity: nil, defaults: defaults)
+        XCTAssertTrue(VoiceRecognitionPreloadPolicy.isEnabled(defaults: defaults))
+        XCTAssertEqual(VoiceRecognitionPreloadPolicy.observePrimaryIdentity(nil, defaults: defaults), .reset)
+        XCTAssertFalse(VoiceRecognitionPreloadPolicy.isEnabled(defaults: defaults))
+
+        XCTAssertFalse(VoiceRecognitionPreloadPolicy.shouldWarm(isEnabled: false, isForeground: true, isInstalled: true))
+        XCTAssertFalse(VoiceRecognitionPreloadPolicy.shouldWarm(isEnabled: true, isForeground: false, isInstalled: true))
+        XCTAssertFalse(VoiceRecognitionPreloadPolicy.shouldWarm(isEnabled: true, isForeground: true, isInstalled: false))
+        XCTAssertFalse(VoiceRecognitionPreloadPolicy.shouldWarm(isEnabled: true, isForeground: true, isInstalled: true, isReady: false))
+        XCTAssertTrue(VoiceRecognitionPreloadPolicy.shouldWarm(isEnabled: true, isForeground: true, isInstalled: true))
+    }
+
+    func testPrimaryIdentityIsStableAndTrimmed() {
+        XCTAssertEqual(VoiceRecognitionPreloadPolicy.primaryIdentity(method: " enhanced "),
+                       "enhanced\u{1F}\u{1F}")
+        XCTAssertEqual(VoiceRecognitionPreloadPolicy.primaryIdentity(method: "openai", provider: " p1 ", profile: " f1 "),
+                       "openai\u{1F}p1\u{1F}f1")
     }
 }
 #endif

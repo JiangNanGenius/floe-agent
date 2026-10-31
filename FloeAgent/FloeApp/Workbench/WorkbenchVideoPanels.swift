@@ -682,6 +682,7 @@ struct WorkbenchVideoTimeline: View {
 // MARK: - Video properties
 
 struct VideoPropertiesView: View {
+    @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var center: WorkbenchCenter
     @State private var showMusicImporter = false
     @State private var isTranscribing = false
@@ -1052,7 +1053,15 @@ struct VideoPropertiesView: View {
         do {
             let language = VoiceRecognitionLanguage(
                 rawValue: UserDefaults.standard.string(forKey: VoiceRecognitionLanguage.defaultsKey) ?? "") ?? .automatic
-            let segments = try await FileSpeechTranscriber.shared.transcribe(url: url, language: language)
+            // Use the same shared cloud-first/local-fallback ASR service as
+            // dictation and file tools; text-only cloud results cannot be
+            // used as caption alignment, so timing is required here.
+            let result = try await environment.assistantAudioService.transcribe(
+                fileURL: url,
+                language: language,
+                serviceID: nil,
+                requiresTiming: true)
+            let segments = result.segments
             let placed = MediaTimelineMath.placeClips(project.videoTimeline?.clips ?? [])
             guard let item = placed.first(where: { $0.clip.id == clip.id }) else { return }
             var added = 0

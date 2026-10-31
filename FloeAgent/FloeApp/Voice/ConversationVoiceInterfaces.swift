@@ -450,6 +450,13 @@ protocol VoiceConversationStack: AnyObject, Sendable {
     func beginTranscription() async throws(VoiceConversationFailure)
     /// Signal end of audio and drain the final transcript with a bounded wait.
     func finishTranscription() async
+    /// Immediate fence for navigation/background/failure teardown: discard
+    /// pending cloud turns and emit no manufactured final.
+    func cancelTranscription() async
+    /// Streaming vs per-utterance batch progress. The health watchdog must
+    /// not treat a batch route's legitimate silence-during-speech as a dead
+    /// recognizer; the batch request's own bounded final deadline stays.
+    var recognitionProgressMode: VoiceRecognitionProgressMode { get }
     func transcriptionFailureSnapshot() -> VoiceConversationFailure?
 
     /// Enqueue one PCM chunk on the shared player output. The result carries
@@ -488,6 +495,10 @@ protocol VoiceConversationStack: AnyObject, Sendable {
 }
 
 extension VoiceConversationStack {
+    /// Existing doubles/tests drain as before; the live stack overrides with
+    /// an immediate cancel on teardown.
+    func cancelTranscription() async { await finishTranscription() }
+    var recognitionProgressMode: VoiceRecognitionProgressMode { .streaming }
     /// Old stacks/test doubles simply carry no controls and no output clock.
     func applySpeechControls(_ controls: VoicePlaybackControls, for unitID: UUID) {}
     var outputRenderedFrames: Int { 0 }

@@ -833,6 +833,21 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
         backendLock.withLock { transcriptContinuation }.finish()
     }
 
+    func cancelTranscription() async {
+        let retire = backendLock.withLock { () -> (any SpeechTranscribing)? in
+            audioFinished = true
+            return backend
+        }
+        if let retire { await retire.cancelAudio() }
+        backendFeed?.cancel()
+        backendFeed = nil
+        backendLock.withLock { transcriptContinuation }.finish()
+    }
+
+    var recognitionProgressMode: VoiceRecognitionProgressMode {
+        backendLock.withLock { backend?.recognitionProgressMode ?? .streaming }
+    }
+
     func transcriptionFailureSnapshot() -> VoiceConversationFailure? {
         backendLock.withLock { terminalFailure }
     }
@@ -1395,8 +1410,11 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
             backend = nil
             return value
         }
+        // Teardown is a navigation/background/failure fence: cancel pending
+        // cloud turns immediately instead of draining a final into a session
+        // that no longer exists.
         if let pending {
-            Task { [pending] in await pending.finishAudio() }
+            Task { [pending] in await pending.cancelAudio() }
         }
         let feed = backendLock.withLock { () -> Task<Void, Never>? in
             let value = backendFeed

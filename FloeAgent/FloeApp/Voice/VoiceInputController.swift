@@ -161,7 +161,7 @@ final class VoiceInputController: ObservableObject {
                 return
             }
             guard canPrepare(token) else {
-                await transcriber.finishAudio()
+                await transcriber.cancelAudio()
                 return
             }
             let capturer = makeCapturer()
@@ -174,7 +174,7 @@ final class VoiceInputController: ObservableObject {
             } catch {
                 guard canPrepare(token) else {
                     capturer.stop()
-                    await transcriber.finishAudio()
+                    await transcriber.cancelAudio()
                     return
                 }
                 let failure = (error as? VoiceSessionError)?.failure ?? .recognizerFailed
@@ -187,7 +187,7 @@ final class VoiceInputController: ObservableObject {
             }
             guard canPrepare(token) else {
                 capturer.stop()
-                await transcriber.finishAudio()
+                await transcriber.cancelAudio()
                 return
             }
             preparationWatchdog?.cancel()
@@ -232,6 +232,11 @@ final class VoiceInputController: ObservableObject {
         capturer = nil
         let activeTranscriber = transcriber
         let observation = transcriptTask
+        // Ordinary stop drains the final with the backend's own bounded
+        // deadline. Local recognizers finalize in well under a second; a
+        // cloud live/file route needs a real network window, otherwise the
+        // final utterance spoken just before Stop would be silently lost.
+        let drainTimeout = activeTranscriber?.finalDrainTimeout ?? .milliseconds(900)
         activeCapturer?.stop()
         stopTask?.cancel()
         stopTask = Task { [weak self] in
@@ -240,7 +245,7 @@ final class VoiceInputController: ObservableObject {
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask { await observation.value }
                     group.addTask {
-                        try? await Task.sleep(for: .milliseconds(900))
+                        try? await Task.sleep(for: drainTimeout)
                         if !Task.isCancelled { observation.cancel() }
                     }
                     _ = await group.next()
@@ -384,7 +389,9 @@ final class VoiceInputController: ObservableObject {
         let previousCleanup = cleanupTask
         cleanupTask = Task {
             if let previousCleanup { await previousCleanup.value }
-            if let activeTranscriber { await activeTranscriber.finishAudio() }
+            // Teardown is a fence (superseded start, failure, navigation):
+            // never manufacture a late final after the session is gone.
+            if let activeTranscriber { await activeTranscriber.cancelAudio() }
         }
     }
 }

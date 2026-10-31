@@ -383,9 +383,32 @@ final class AppEnvironment: ObservableObject {
     private var speechMemoryWarningCancellable: AnyCancellable?
     private lazy var _localSpeechRuntime = LocalSpeechRuntime()
     private lazy var _ttsSpeechService = TTSSpeechService(localProvider: localSpeechRuntime)
+    /// One App-owned cloud recognition profile store for dictation,
+    /// continuous voice, file tools and video captions.
+    lazy var cloudASRSettingsStore = CloudASRSettingsStore.shared
     private lazy var _assistantAudioService = AssistantAudioService(
-        settings: ttsSettingsService, speech: ttsSpeechService)
+        settings: ttsSettingsService,
+        speech: ttsSpeechService,
+        cloudASRSettings: cloudASRSettingsStore)
     var assistantAudioService: AssistantAudioService { _assistantAudioService }
+    /// Root-owned optional local-model preload lifecycle. It never downloads,
+    /// records or requests Apple permission; AppEnvironment injects the real
+    /// residency runtime.
+    lazy var voiceRecognitionPreload = CloudASRPreloadCoordinator(
+        store: cloudASRSettingsStore,
+        runtime: Self.makeVoicePreloadRuntime())
+
+    private static func makeVoicePreloadRuntime() -> CloudASRPreloadCoordinator.Runtime {
+        #if canImport(WhisperKit)
+        return CloudASRPreloadCoordinator.Runtime(
+            isInstalled: { await WhisperModelStore.shared.isInstalled() },
+            allowSpeculativeWarmUp: { await SpeechRecognitionRuntime.live.allowSpeculativeWarmUp() },
+            warmUp: { await SpeechRecognitionRuntime.live.warmUp() },
+            cancelSpeculativeWarmUp: { await SpeechRecognitionRuntime.live.cancelSpeculativeWarmUp() })
+        #else
+        return .disabled
+        #endif
+    }
     private lazy var _speechService: SpeechService = {
         let service = SpeechService()
         service.configure(settings: ttsSettingsService, speech: ttsSpeechService, localRuntime: localSpeechRuntime)

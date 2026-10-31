@@ -12,8 +12,14 @@
 // and decoding options.
 //
 // Ownership rules encoded here:
-// - The model loads on the first ACTUAL foreground acquisition only; there is
-//   no launch preload, no background preload and no automatic retry loop.
+// - The model loads on the first ACTUAL foreground acquisition, or on an
+//   explicit user-enabled speculative `warmUp()` while the app is foreground.
+//   There is no launch/background preload, no automatic retry loop and no
+//   download; preload is best effort and never takes a session lease.
+// - A speculative mount is discarded when its last preload waiter is
+//   cancelled/disabled and no real acquisition is waiting. That discard uses
+//   the same retirement window as background/pressure/pack management, so a
+//   replacement mount can never overlap its unmount or file-lease return.
 // - One session lease at a time. A live session is never stolen: a second
 //   acquisition while it is still recording fails fast, so the caller keeps
 //   its existing Whisper → Apple fallback / model-not-ready rules.
@@ -63,6 +69,83 @@ struct SpeechRecognitionDecoding: Sendable, Equatable {
     var detectLanguage: Bool
 }
 
+/// One timed segment returned by the mounted model for file/caption work.
+/// Times are REAL decoder timestamps relative to the supplied audio window;
+/// `FileSpeechTranscriber` adds the window offset. A segment without a finite
+/// positive duration is dropped rather than invented from the asset duration.
+struct SpeechRecognitionTimedSegment: Sendable, Equatable {
+    struct Word: Sendable, Equatable {
+        var start: Double
+        var end: Double
+        var text: String
+    }
+
+    var start: Double
+    var end: Double
+    var text: String
+    var words: [Word]
+
+    /// Shifts this window's relative timestamps into the parent asset's time
+    /// coordinate system. `FileSpeechTranscriber` only calls this with the
+    /// offset of a real decoded chunk.
+    func offsetting(by offset: Double) -> Self {
+        guard offset.isFinite else { return self }
+        return Self(
+            start: start + offset,
+            end: end + offset,
+            text: text,
+            words: words.map { Word(start: $0.start + offset, end: $0.end + offset, text: $0.text) })
+    }
+}
+
+enum SpeechRecognitionModelFailure: Error, Sendable, Equatable {
+    /// The mounted model was asked for timestamps it does not provide. The
+    /// caller must fail honestly or fall back; it must not synthesize times.
+    case timedTranscriptionUnsupported
+}
+
+/// Converts raw WhisperKit segment timing into the runtime's neutral timed
+/// type. Kept Foundation-only so the clamping/drop rules are host-testable
+/// with the exact production bytes.
+enum SpeechRecognitionTimedMapping {
+    struct RawWord: Sendable, Equatable {
+        var start: Float
+        var end: Float
+        var text: String
+    }
+
+    struct RawSegment: Sendable, Equatable {
+        var start: Float
+        var end: Float
+        var text: String
+        var words: [RawWord]?
+    }
+
+    static func relativeSegments(raw: [RawSegment], duration: Double) -> [SpeechRecognitionTimedSegment] {
+        guard duration.isFinite, duration > 0 else { return [] }
+        return raw.compactMap { item in
+            var start = Double(item.start)
+            var end = Double(item.end)
+            guard start.isFinite, end.isFinite else { return nil }
+            start = max(0, start)
+            end = min(duration, end)
+            guard end > start else { return nil }
+            let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            let words = (item.words ?? []).compactMap { word -> SpeechRecognitionTimedSegment.Word? in
+                var from = Double(word.start)
+                var to = Double(word.end)
+                guard from.isFinite, to.isFinite else { return nil }
+                from = max(start, from)
+                to = min(end, to)
+                guard to > from, !word.text.isEmpty else { return nil }
+                return .init(start: from, end: to, text: word.text)
+            }
+            return .init(start: start, end: end, text: text, words: words)
+        }
+    }
+}
+
 /// One mounted recognition model behind the residency runtime.
 ///
 /// Inference is NOT thread-safe. The runtime guarantees exactly one session
@@ -74,8 +157,19 @@ protocol SpeechRecognitionModelInstance: Sendable {
     var identity: String { get }
     /// Decode one audio window. Never called concurrently.
     func transcribe(audio: [Float], decoding: SpeechRecognitionDecoding) async throws -> [String]
+    /// Decode one audio window while preserving the decoder's real segment
+    /// and word timestamps. Never called concurrently with `transcribe` or
+    /// another timed call; the runtime lease is the serialization boundary.
+    func transcribeTimed(audio: [Float], decoding: SpeechRecognitionDecoding) async throws -> [SpeechRecognitionTimedSegment]
     /// Release the resident weights.
     func unmount() async
+}
+
+extension SpeechRecognitionModelInstance {
+    /// Voice-only models and test seams do not have to fabricate timing.
+    func transcribeTimed(audio: [Float], decoding: SpeechRecognitionDecoding) async throws -> [SpeechRecognitionTimedSegment] {
+        throw SpeechRecognitionModelFailure.timedTranscriptionUnsupported
+    }
 }
 
 /// One session's claim on the warm model. The transcription worker reports
@@ -232,10 +326,11 @@ actor SpeechRecognitionRuntime {
         case loaded
         case failed
         case cancelled
-        /// A retirement window (pack management, background or memory
-        /// pressure) discarded the mount before it could be installed; its
-        /// unmount and lease return already completed. Terminal for this
-        /// acquisition: only a fresh explicit acquire may remount.
+        /// A retirement window (pack management, background, memory
+        /// pressure or speculative-disable) discarded the mount before it
+        /// could be installed; its unmount and lease return already
+        /// completed. Terminal for this acquisition: only a fresh explicit
+        /// acquire may remount.
         case retired
         /// The mount completed for a stale installed identity without a
         /// retirement; the acquisition may retry the current revision.
@@ -245,6 +340,9 @@ actor SpeechRecognitionRuntime {
     private struct Warm {
         let model: any SpeechRecognitionModelInstance
         let leaseID: UUID
+        /// The mount was requested only by speculative preload and no real
+        /// session has used it yet. Disabling preload may release it.
+        var speculative: Bool
     }
 
     private struct Session {
@@ -256,7 +354,14 @@ actor SpeechRecognitionRuntime {
 
     private struct ColdLoad {
         let id: UUID
+        let identity: String
         let task: Task<ColdOutcome, Never>
+        /// Real acquisitions currently awaiting this mount. A speculative
+        /// cancel must never discard a mount a session is waiting for.
+        var acquirers = 0
+        /// Individual preload waiters, keyed so cancelling one waiter only
+        /// cancels the mount after the last speculative demand is gone.
+        var speculations: Set<UUID> = []
     }
 
     private let dependencies: Dependencies
@@ -274,6 +379,16 @@ actor SpeechRecognitionRuntime {
     /// discarded (never installed) when retirement/failure intervened.
     private var generation: UInt64 = 0
     private var isForeground = true
+    /// A memory warning retires the resident for this foreground lifetime.
+    /// Speculative preload must not immediately recreate the model that the
+    /// system just asked us to release; a real acquire still may.
+    private var speculativeWarmUpSuppressed = false
+    /// Explicit enable/disable state for speculative preload. `warmUp()`
+    /// starts enabled so direct host use works; the app hook calls
+    /// `cancelSpeculativeWarmUp()` on OFF and `allowSpeculativeWarmUp()` on
+    /// ON. The epoch fences a warm-up already suspended across a disable.
+    private var speculativeWarmUpEnabled = true
+    private var speculativeWarmUpEpoch: UInt64 = 0
     private var hookInstalled = false
 
     init(dependencies: Dependencies) {
@@ -321,7 +436,11 @@ actor SpeechRecognitionRuntime {
                 return grant(warm.model)
             }
             let load = coldLoad ?? startColdLoad(identity: identity)
+            // Register real demand BEFORE awaiting. A cancelled speculative
+            // warm-up then sees an acquirer and keeps this mount alive for it.
+            joinColdLoad(id: load.id, asAcquirer: true)
             let outcome = await load.task.value
+            leaveColdLoad(id: load.id, asAcquirer: true)
             try await revalidateForGrant()
             guard session == nil else { throw Failure.busy }
             switch outcome {
@@ -341,6 +460,126 @@ actor SpeechRecognitionRuntime {
             }
         }
         throw Failure.busy
+    }
+
+    /// Speculatively mounts the installed model without taking a session
+    /// lease. Returns `true` when the model is already warm or this call
+    /// completed the mount, and `false` when the app is backgrounded, the
+    /// model is not installed, a memory warning suppressed speculation, the
+    /// caller was cancelled, or a retirement discarded the pending mount.
+    ///
+    /// `warmUp()` joins the SAME cold load as a real `acquire()`: either can
+    /// start it, the other waits, and exactly one verification/mount happens.
+    /// A cancelled warm-up discards the mount only when no real acquisition
+    /// is waiting for it and no session owns the model.
+    @discardableResult
+    func warmUp() async -> Bool {
+        guard isForeground, !speculativeWarmUpSuppressed, speculativeWarmUpEnabled,
+              !Task.isCancelled else { return false }
+        let epoch = speculativeWarmUpEpoch
+        // Do not report a warm model that a retirement is already unmounting,
+        // and do not start a speculative mount inside its window.
+        if retirementDepth > 0 {
+            do { try await revalidateForGrant() } catch { return false }
+            guard speculationStillValid(epoch) else { return false }
+        }
+        if session != nil { return true }
+        if !hookInstalled {
+            hookInstalled = true
+            await dependencies.installResidencyHook(self)
+            guard speculationStillValid(epoch) else { return false }
+        }
+        let speculationID = UUID()
+        for _ in 0..<2 {
+            do { try await revalidateForGrant() } catch { return false }
+            guard speculationStillValid(epoch) else { return false }
+            if session != nil { return true }
+            let identity = await dependencies.installedIdentity()
+            do { try await revalidateForGrant() } catch { return false }
+            guard speculationStillValid(epoch) else { return false }
+            guard session == nil else { return true }
+            guard let identity else { return false }
+            if let warm {
+                guard warm.model.identity == identity else {
+                    // Never report stale weights as preloaded. Retire the
+                    // idle warm model in the normal window, then mount the
+                    // current installed revision below.
+                    await retireWarmInWindow()
+                    continue
+                }
+                return true
+            }
+            let load = coldLoad ?? startColdLoad(identity: identity)
+            joinColdLoad(id: load.id, speculationID: speculationID)
+            let loadID = load.id
+            let task = load.task
+            let outcome = await withTaskCancellationHandler {
+                await task.value
+            } onCancel: {
+                Task { [weak self] in
+                    await self?.cancelSpeculativeDemand(loadID: loadID, speculationID: speculationID)
+                }
+            }
+            leaveColdLoad(id: load.id, speculationID: speculationID)
+            guard speculationStillValid(epoch) else { return false }
+            switch outcome {
+            case .loaded:
+                return warm != nil
+            case .staleIdentity:
+                continue
+            case .failed, .cancelled, .retired:
+                return false
+            }
+        }
+        return false
+    }
+
+    /// Re-arms speculative preload after an explicit user enable. A genuine
+    /// foreground return also clears memory-pressure suppression, but only
+    /// this call re-enables speculation after an OFF decision. Ordinary
+    /// scheduling must not call it, so a pressure release is not undone.
+    func allowSpeculativeWarmUp() {
+        // Only a real OFF→ON / suppressed→allowed transition fences an
+        // older warm-up. A redundant enable (for example, re-entering the
+        // settings screen) must not cancel the warm-up already in flight.
+        if !speculativeWarmUpEnabled || speculativeWarmUpSuppressed {
+            speculativeWarmUpEpoch &+= 1
+        }
+        speculativeWarmUpSuppressed = false
+        speculativeWarmUpEnabled = true
+    }
+
+    /// Disabling preload cancels an unused speculative mount and releases an
+    /// idle model that was mounted only by preload. It never disturbs a live
+    /// session or a cold mount a real acquisition is waiting for. Returns
+    /// `true` when something speculative was discarded.
+    @discardableResult
+    func cancelSpeculativeWarmUp() async -> Bool {
+        // Fence any warm-up already suspended before its cold load starts,
+        // and keep future speculative mounts out until an explicit enable.
+        speculativeWarmUpEnabled = false
+        speculativeWarmUpEpoch &+= 1
+        guard retirementDepth == 0 else { return false }
+        if let load = coldLoad {
+            guard load.acquirers == 0, session == nil else { return false }
+            beginRetirement()
+            defer { endRetirement() }
+            await discardColdLoad()
+            return true
+        }
+        guard session == nil, let warm, warm.speculative else { return false }
+        beginRetirement()
+        defer { endRetirement() }
+        await retireWarm()
+        return true
+    }
+
+    /// Claims the same single model owner for a timed file/caption pass.
+    /// This is a real exclusive session, not speculative preload: voice and
+    /// file transcription never share the decoder, and a healthy end keeps
+    /// the foreground warm model for the next user.
+    func acquireForTimedTranscription() async throws -> SpeechRecognitionLease {
+        try await acquire()
     }
 
     /// A finishing session (its `finishAudio()` started) is joined before the
@@ -371,6 +610,9 @@ actor SpeechRecognitionRuntime {
 
     private func grant(_ model: any SpeechRecognitionModelInstance) -> SpeechRecognitionLease {
         let token = UUID()
+        // A real session (dictation, continuous voice or file/caption) owns
+        // the model now; disabling preload must not unload it.
+        warm?.speculative = false
         session = Session(token: token, phase: .active, worker: nil)
         return SpeechRecognitionLease(runtime: self, token: token, model: model)
     }
@@ -421,7 +663,12 @@ actor SpeechRecognitionRuntime {
     /// model (and a mount that is still being built); a session that still
     /// owns the model keeps it until it ends.
     func setForeground(_ value: Bool) async {
+        let wasForeground = isForeground
         isForeground = value
+        // A genuine return to the foreground is a fresh preload opportunity;
+        // a redundant `true` while already active must not clear the memory
+        // pressure suppression.
+        if value, !wasForeground { speculativeWarmUpSuppressed = false }
         guard !value else { return }
         // Synchronous decision + window: no grant or mount can interleave
         // between deciding to retire and closing the window.
@@ -435,6 +682,9 @@ actor SpeechRecognitionRuntime {
     /// join the owning worker, then release. Never overlaps a live decode and
     /// never unmounts a successor (the window blocks grants first).
     func handleMemoryWarning() async {
+        // Speculation must not rebuild the resident immediately after the
+        // system asked for memory back. Explicit acquisition still may.
+        speculativeWarmUpSuppressed = true
         beginRetirement()
         defer { endRetirement() }
         if let current = session {
@@ -511,6 +761,50 @@ actor SpeechRecognitionRuntime {
 
     // MARK: Cold load
 
+    private func speculationStillValid(_ epoch: UInt64) -> Bool {
+        speculativeWarmUpEnabled && speculativeWarmUpEpoch == epoch
+            && !speculativeWarmUpSuppressed && isForeground && !Task.isCancelled
+    }
+
+    private func joinColdLoad(id: UUID, asAcquirer: Bool) {
+        guard var load = coldLoad, load.id == id else { return }
+        if asAcquirer { load.acquirers += 1 }
+        coldLoad = load
+    }
+
+    private func joinColdLoad(id: UUID, speculationID: UUID) {
+        guard var load = coldLoad, load.id == id else { return }
+        load.speculations.insert(speculationID)
+        coldLoad = load
+    }
+
+    private func leaveColdLoad(id: UUID, asAcquirer: Bool) {
+        guard var load = coldLoad, load.id == id else { return }
+        if asAcquirer { load.acquirers = max(0, load.acquirers - 1) }
+        coldLoad = load
+    }
+
+    private func leaveColdLoad(id: UUID, speculationID: UUID) {
+        guard var load = coldLoad, load.id == id else { return }
+        load.speculations.remove(speculationID)
+        coldLoad = load
+    }
+
+    /// Cancels the cold load only when the cancelled preload was its last
+    /// speculative user and no real acquisition is waiting. The discard runs
+    /// inside a retirement window so a new grant cannot overlap the unmount.
+    private func cancelSpeculativeDemand(loadID: UUID, speculationID: UUID) async {
+        guard var load = coldLoad, load.id == loadID,
+              load.speculations.contains(speculationID) else { return }
+        load.speculations.remove(speculationID)
+        coldLoad = load
+        guard load.acquirers == 0, load.speculations.isEmpty,
+              session == nil, retirementDepth == 0 else { return }
+        beginRetirement()
+        defer { endRetirement() }
+        await discardColdLoad()
+    }
+
     private func startColdLoad(identity: String) -> ColdLoad {
         generation &+= 1
         let expected = generation
@@ -538,7 +832,7 @@ actor SpeechRecognitionRuntime {
                 return .failed
             }
         }
-        let load = ColdLoad(id: id, task: task)
+        let load = ColdLoad(id: id, identity: identity, task: task)
         coldLoad = load
         return load
     }
@@ -590,8 +884,11 @@ actor SpeechRecognitionRuntime {
             guard expected == generation, isForeground else { return .retired }
             return .staleIdentity
         }
+        // Provenance for the preload toggle: only a mount that NO real
+        // acquisition waited for may be released by disabling preload.
+        let speculative = coldLoad?.id == id && coldLoad?.acquirers == 0
         clearColdLoad(id: id)
-        warm = Warm(model: loaded.model, leaseID: loaded.leaseID)
+        warm = Warm(model: loaded.model, leaseID: loaded.leaseID, speculative: speculative)
         return .loaded
     }
 

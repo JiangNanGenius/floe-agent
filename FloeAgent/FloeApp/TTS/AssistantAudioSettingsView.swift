@@ -32,25 +32,14 @@ enum AssistantAudioSettingsMode: String, Hashable {
 struct AssistantAudioSettingsView: View {
     let mode: AssistantAudioSettingsMode
     @ObservedObject var assistant: AssistantAudioService
-    @State private var baseURL = ""
-    @State private var modelID = AssistantAudioPreferences.defaultASRModelID
-    @State private var credential = ""
-    @State private var messageKey: String?
-    @State private var errorKey: String?
-    @State private var confirmRemove = false
+    @EnvironmentObject private var environment: AppEnvironment
 
     var body: some View {
         List {
             prioritySection
             availabilitySection
             if mode == .transcription {
-                cloudTranscriptionSection
-            }
-            if let messageKey {
-                Section { Text(LocalizedStringKey(messageKey)).foregroundStyle(.secondary) }
-            }
-            if let errorKey {
-                Section { Text(LocalizedStringKey(errorKey)).foregroundStyle(.red) }
+                profilesSection
             }
         }
         .navigationTitle(LocalizedStringKey(mode.titleKey))
@@ -58,20 +47,7 @@ struct AssistantAudioSettingsView: View {
             ToolbarItem(placement: .topBarTrailing) { EditButton() }
         }
         .onAppear {
-            if mode == .transcription {
-                baseURL = assistant.preferences.asrBaseURL ?? ""
-                modelID = assistant.preferences.asrModelID
-            }
             Task { await assistant.refresh() }
-        }
-        .onChange(of: assistant.preferences.asrBaseURL) { _, value in
-            if mode == .transcription, baseURL.isEmpty { baseURL = value ?? "" }
-        }
-        .alert("voice.assistant.cloud.remove", isPresented: $confirmRemove) {
-            Button("voice.local.cancel", role: .cancel) {}
-            Button("voice.assistant.cloud.remove", role: .destructive) { removeCloudProfile() }
-        } message: {
-            Text("voice.assistant.cloud.remove.confirm")
         }
     }
 
@@ -135,38 +111,20 @@ struct AssistantAudioSettingsView: View {
         }
     }
 
-    private var cloudTranscriptionSection: some View {
+    private var profilesSection: some View {
         Section {
-            TextField("voice.assistant.cloud.endpoint", text: $baseURL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-            TextField("voice.assistant.cloud.model", text: $modelID)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            SecureField("voice.assistant.cloud.key.placeholder", text: $credential)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            if assistant.hasASRProfile {
-                Label("voice.assistant.cloud.ready", systemImage: "checkmark.circle")
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("voice.assistant.cloud.not_ready").foregroundStyle(.secondary)
+            NavigationLink("voice.cloud.profiles.title") {
+                CloudASRProfilesView(
+                    store: assistant.cloudASRSettings,
+                    preload: environment.voiceRecognitionPreload)
             }
-            if assistant.asrValidationProblem != nil {
-                Text("voice.assistant.cloud.invalid_endpoint")
-                    .font(.footnote).foregroundStyle(.red)
-            }
-            Button("voice.assistant.cloud.save") { saveCloudProfile() }
-            if assistant.hasASRProfile {
-                Button("voice.assistant.cloud.remove", role: .destructive) {
-                    confirmRemove = true
-                }
+            if let primary = assistant.cloudASRSettings.primaryProfile {
+                LabeledContent("voice.cloud.profile.primary", value: primary.name)
             }
         } header: {
-            Text("voice.assistant.cloud.title")
+            Text("voice.cloud.profiles.title")
         } footer: {
-            Text("voice.assistant.cloud.endpoint.footer")
+            Text("voice.cloud.profiles.footer")
         }
     }
 
@@ -196,39 +154,7 @@ struct AssistantAudioSettingsView: View {
         default:
             if service.provider == "apple" { return FloeL10n.l("voice.assistant.detail.system_voice") }
             if service.local { return FloeL10n.l("voice.assistant.detail.local_voice") }
-            return FloeL10n.l("voice.assistant.detail.cloud_voice")
-        }
-    }
-
-    private func saveCloudProfile() {
-        messageKey = nil
-        errorKey = nil
-        do {
-            try assistant.saveASRProfile(
-                baseURL: baseURL, modelID: modelID, credential: credential)
-            credential = ""
-            messageKey = "voice.assistant.cloud.saved"
-        } catch AssistantAudioError.credentialChangedRequiresNewKey {
-            errorKey = "voice.assistant.cloud.key_required"
-        } catch AssistantAudioError.invalidConfiguration {
-            errorKey = "voice.assistant.cloud.invalid_endpoint"
-        } catch AssistantAudioError.credentialMissing {
-            errorKey = "voice.assistant.cloud.key_required"
-        } catch {
-            errorKey = "voice.assistant.cloud.save_failed"
-        }
-    }
-
-    private func removeCloudProfile() {
-        messageKey = nil
-        errorKey = nil
-        do {
-            try assistant.removeASRProfile()
-            credential = ""
-            baseURL = ""
-            modelID = AssistantAudioPreferences.defaultASRModelID
-        } catch {
-            errorKey = "voice.assistant.cloud.remove_failed"
+            return service.detail ?? FloeL10n.l("voice.assistant.detail.cloud_voice")
         }
     }
 }

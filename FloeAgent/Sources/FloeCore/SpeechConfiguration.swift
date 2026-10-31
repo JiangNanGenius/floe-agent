@@ -685,17 +685,26 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
 /// only for the duration of the request; the adapter never writes them to a
 /// cache or a temporary file. `endpointBaseURL` follows the same explicit
 /// OpenAI-compatible base semantics as TTS: nil means the official endpoint.
+/// `languages` and `streamsResponse` are additive; the legacy `language`
+/// field and every previous initializer call keep working unchanged.
 public struct ASRTranscriptionRequest: Sendable {
     public var endpointBaseURL: String?
     public var modelID: String
-    /// Optional ISO/BCP-47 language hint (for example `en` or `zh`).
+    /// Optional ISO/BCP-47 language hint (for example `en` or `zh`). For
+    /// models that accept an array, `languages` takes precedence.
     public var language: String?
+    /// Ordered language hints for models that document a `languages` array.
+    public var languages: [String]
     public var filename: String
     public var mimeType: String
     public var audio: Data
-    /// Locally measured duration used only when the provider omits segment
-    /// timestamps. It is never invented by the adapter.
+    /// Locally measured source duration. It is never converted into a
+    /// provider segment; the result reports `.sourceSpanOnly` when it is the
+    /// only timing information available.
     public var durationSeconds: Double?
+    /// Ask a modern model for its SSE transcript stream. The adapter only
+    /// sends `stream=true` when the model capability supports it.
+    public var streamsResponse: Bool
 
     public init(
         endpointBaseURL: String? = nil,
@@ -704,15 +713,19 @@ public struct ASRTranscriptionRequest: Sendable {
         filename: String,
         mimeType: String,
         audio: Data,
-        durationSeconds: Double? = nil
+        durationSeconds: Double? = nil,
+        languages: [String] = [],
+        streamsResponse: Bool = false
     ) {
         self.endpointBaseURL = endpointBaseURL
         self.modelID = modelID
         self.language = language
+        self.languages = languages
         self.filename = filename
         self.mimeType = mimeType
         self.audio = audio
         self.durationSeconds = durationSeconds
+        self.streamsResponse = streamsResponse
     }
 }
 
@@ -732,13 +745,32 @@ public struct ASRTranscriptionSegment: Codable, Sendable, Hashable {
 
 public struct ASRTranscriptionResult: Sendable, Hashable {
     public var text: String
+    /// Provider-supplied timing only. Empty when the provider returned no
+    /// segment timestamps; the adapter never fabricates a whole-file segment.
     public var segments: [ASRTranscriptionSegment]
+    /// Primary language code for backward compatibility. For modern
+    /// `gpt-transcribe` responses this is the first detected language, if any.
     public var language: String?
+    /// How `segments` should be interpreted. `.sourceSpanOnly` means only the
+    /// caller-measured whole-source duration is known and the transcript must
+    /// not be used as caption alignment.
+    public var timing: ASRTimingProvenance
+    /// All detected language codes reported by the provider (modern OpenAI
+    /// responses return an ordered array). Empty when the provider reports none.
+    public var detectedLanguages: [String]
 
-    public init(text: String, segments: [ASRTranscriptionSegment], language: String? = nil) {
+    public init(
+        text: String,
+        segments: [ASRTranscriptionSegment],
+        language: String? = nil,
+        timing: ASRTimingProvenance = .none,
+        detectedLanguages: [String] = []
+    ) {
         self.text = text
         self.segments = segments
         self.language = language
+        self.timing = timing
+        self.detectedLanguages = detectedLanguages
     }
 }
 
