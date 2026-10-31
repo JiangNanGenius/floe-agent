@@ -305,8 +305,6 @@ final class CADMaterialUVSourceContractTests: XCTestCase {
             .deletingLastPathComponent() // FloeCADKitTests
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // FloeCADKit
-            .deletingLastPathComponent() // ThirdParty
-            .deletingLastPathComponent() // FloeAgent
             .appendingPathComponent("Sources/FloeCAD/Shaders/Shaders.metal")
         let source = try String(contentsOf: shaderURL, encoding: .utf8)
         let start = try XCTUnwrap(source.range(of: "static float3 sampleNormalMap"))
