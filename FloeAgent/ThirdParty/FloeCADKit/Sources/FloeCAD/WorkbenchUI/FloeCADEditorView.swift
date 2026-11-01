@@ -2763,32 +2763,7 @@ struct FloeCADEditorView: View {
             )) { draft in
                 HoleOptionsSheet(viewModel: viewModel, draft: draft)
             }
-            .sheet(isPresented: Binding(
-                get: { viewModel.showThreePointPlaneSheet },
-                set: { viewModel.showThreePointPlaneSheet = $0 }
-            )) {
-                ThreePointPlaneSheet(viewModel: viewModel)
-            }
-            .sheet(isPresented: Binding(
-                get: { viewModel.showDatumAxisCreateSheet },
-                set: { viewModel.showDatumAxisCreateSheet = $0 }
-            )) {
-                DatumAxisCreateSheet(viewModel: viewModel)
-            }
-            .sheet(isPresented: Binding(
-                get: { viewModel.showDatumAxisSheet },
-                set: { if !$0 { viewModel.closeDatumAxisSheet() } }
-            )) {
-                if let id = viewModel.datumAxisSheetID {
-                    DatumAxisEditSheet(viewModel: viewModel, axisID: id)
-                }
-            }
-            .sheet(isPresented: Binding(
-                get: { viewModel.showDatumPointSheet },
-                set: { if !$0 { viewModel.closeDatumPointSheet() } }
-            )) {
-                DatumPointSheet(viewModel: viewModel, pointID: viewModel.datumPointSheetID)
-            }
+            .modifier(CADDatumEditorSheets(viewModel: viewModel))
             .sheet(isPresented: Binding(
                 get: { viewModel.showConstraintSettings },
                 set: { viewModel.showConstraintSettings = $0 }
@@ -2967,5 +2942,42 @@ struct FloeCADEditorView: View {
             .background(.bar)
             .accessibilityIdentifier("CADCanvasActionStatus")
         }
+    }
+}
+
+/// Keep the datum presenters on the same editor subtree without growing the
+/// import/export presentation expression every time a datum form is added.
+@MainActor
+private struct CADDatumEditorSheets: ViewModifier {
+    let viewModel: EditorViewModel
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: Binding<Bool>(
+                get: { viewModel.showThreePointPlaneSheet },
+                set: { viewModel.showThreePointPlaneSheet = $0 }
+            )) {
+                ThreePointPlaneSheet(viewModel: viewModel)
+            }
+            .sheet(isPresented: Binding<Bool>(
+                get: { viewModel.showDatumAxisCreateSheet },
+                set: { viewModel.showDatumAxisCreateSheet = $0 }
+            )) {
+                DatumAxisCreateSheet(viewModel: viewModel)
+            }
+            .sheet(isPresented: Binding<Bool>(
+                get: { viewModel.showDatumAxisSheet },
+                set: { if !$0 { viewModel.closeDatumAxisSheet() } }
+            )) {
+                if let id = viewModel.datumAxisSheetID {
+                    DatumAxisEditSheet(viewModel: viewModel, axisID: id)
+                }
+            }
+            .sheet(isPresented: Binding<Bool>(
+                get: { viewModel.showDatumPointSheet },
+                set: { if !$0 { viewModel.closeDatumPointSheet() } }
+            )) {
+                DatumPointSheet(viewModel: viewModel, pointID: viewModel.datumPointSheetID)
+            }
     }
 }
